@@ -1,0 +1,192 @@
+[project]
+name = "algan"
+version = "0.0.0"
+description = "The simplest animation engine for 3D graphics."
+authors = [
+  {name = "Algorithmic Simplicity", email = "algorithmicsimplicity@gmail.com"},
+]
+license = "MIT"
+readme = "README.md"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Graphics",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Natural Language :: English",
+    ]
+requires-python = ">=3.9,<=3.12"
+dependencies = [
+    "ground>=1.0.0",
+    "matplotlib>=3.9.4", # Using the version from your dev dependencies as a hint
+    "moviepy>=1.0.0",
+    "numpy>=1.20.0",
+    "opencv-python>=4.0.0",
+    "scipy>=1.8.0",
+    "sect>=1.0.0",
+    "svgelements>=1.0.0",
+    "torch>=2.0.0", # Requires a recent version for features used
+    "torch-scatter>=2.1.0", # Compatible with recent torch
+    "torchvision>=0.15.0", # Compatible with recent torch
+]
+
+[project.urls]
+repository = "https://github.com/algorithmicsimplicity/algan"
+documentation = "https://docs.manim.community/"
+homepage = "https://github.com/algorithmicsimplicity/algan"
+"Bug Tracker" = "https://github.com/algorithmicsimplicity/algan/issues"
+"X / Twitter" = "https://x.com/algorithmicsimplicity"
+"Discord" = "https://www.manim.community/discord/"
+
+[project.optional-dependencies]
+manim = [
+    "manim>=0.18.0",
+]
+[dependency-groups]
+dev = [
+    "furo>=2024.8.6",
+    "gitpython>=3.1.44",
+    "matplotlib>=3.9.4",
+    "myst-parser>=3.0.1",
+    "pre-commit>=4.1.0",
+    "pygithub>=2.5.0",
+    "pytest-cov>=6.0.0",
+    "pytest-xdist>=2.2,<3.0",
+    "ruff>=0.9.3",
+    "sphinx>=7.4.7",
+    "sphinx-copybutton>=0.5.2",
+    "sphinx-design>=0.6.1",
+    "sphinx-reredirects>=0.1.5",
+    "sphinxcontrib-programoutput>=0.18",
+    "sphinxext-opengraph>=0.9.1",
+    "types-decorator>=5.1.8.20250121",
+    "types-pillow>=10.2.0.20240822",
+    "types-pygments>=2.19.0.20250107",
+    "psutil>=6.1.1",
+    "requests>=2.32.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+  "/algan"
+]
+exclude = [
+  "/docker",
+  "/logo",
+  "/scripts",
+]
+
+[tool.pytest.ini_options]
+markers = "slow: Mark the test as slow. Can be skipped with --skip_slow"
+addopts = "--no-cov-on-fail --cov=manim --cov-report xml --cov-report term -n auto --dist=loadfile --durations=0"
+
+[tool.isort]
+profile = "black"
+
+[tool.coverage.run]
+omit = ["*tests*"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+extend-exclude = [
+  ".github",
+  ".hg",
+  ".env",
+  "env",
+  "build",
+  "buck-out",
+  "media",
+]
+fix = true
+
+[tool.ruff.lint]
+select = [
+  "A",
+  "B",
+  "C4",
+  "D",
+  "E",
+  "F",
+  "I",
+  "PGH",
+  "PT",
+  "SIM",
+  "UP",
+]
+
+ignore = [
+  # (sub)module shadows standard library module
+  "A005",
+  # mutable argument defaults (too many changes)
+  "B006",
+  # No function calls in defaults
+  # ignored because np.array() and straight_path()
+  "B008",
+  # docstring ignores - mostly stylistic
+  "D1",
+  "D203",
+  "D205",
+  "D212",
+  "D4",
+  # due to the import * used in manim
+  "F403",
+  "F405",
+  # Exception too broad (this would require lots of changes + re.escape) for little benefit
+  "PT011",
+  # as recommended by https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
+  "D206",
+  "D300",
+  "E111",
+  "E114",
+  "E117",
+  "E501",
+]
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+  # flake8-builtins
+  "A",
+  # unused expression
+  "B018",
+  # unused variable
+  "F841",
+  # from __future__ import annotations
+  "I002",
+]
+
+"example_scenes/*" = [
+  "I002",
+]
+
+"__init__.py" = [
+  "F401",
+  "F403",
+]
+
+[tool.ruff.lint.isort]
+required-imports = ["from __future__ import annotations"]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.format]
+docstring-code-format = true
