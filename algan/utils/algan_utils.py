@@ -16,7 +16,7 @@ from algan.rendering.camera import Camera
 from algan.scene_tracker import SceneTracker
 
 
-def render_to_file(file_name=None, output_dir=None, render_settings=None, overwrite=True, codec='h265', **kwargs):
+def render_to_file(file_name=None, output_dir=None, render_settings=None, overwrite=True, codec='h264', **kwargs):
     """Runs all of the animations specified in the active Scene, then renders the animations to video
     as captured by the active Camera, and saves the video to a file.
 

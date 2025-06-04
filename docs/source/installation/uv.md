@@ -142,21 +142,26 @@ versions of Pytorch. By default Algan is setup to install for NVIDIA GPUs on Win
 If that's you then go ahead and run
 
 ```bash
-uv init algamations
-cd algamations
-uv add algan
+uv init alganimations
+cd alganimations
+uv pip install --extra-index-url https://test.pypi.org/simple/ --extra-index-url https://download.pytorch.org/whl/cu128 --find-links https://data.pyg.org/whl/torch-2.7.0+cu128.html algan==0.0.1 --index-strategy unsafe-best-match
 ```
 
 If you are using a different setup, or If you get an error when running the above command,
 you will need to first install Pytorch manually. To do so, head over to 
-https://pytorch.org/get-started/locally/ and follow the instructions provided for your
+[https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) and follow the instructions provided for your
 operating system and hardware. If you wish to use GPU acceleration in Algan, 
 make sure to select the CUDA (for NVIDIA GPUs) or ROCm (for AMD GPUs) option when
 installing Pytorch.
 
-Once you have installed Pytorch, go ahead and run the previous instructions to install Algan.
+Once you have installed Pytorch, go ahead and run these commands:
+```bash
+uv init alganimations
+cd alganimations
+uv pip install --extra-index-url https://test.pypi.org/simple/ algan==0.0.1
+```
 
-If it works with no errors, then you are ready to alganimate!
+If it works with no errors, then you are ready to Alganimate!
 
 At this point, you can also open your project folder with the
 IDE of your choice. All modern Python IDEs (for example VS Code

@@ -30,4 +30,4 @@ def clear_cache():
         shutil.rmtree(f)
 
 
-algan_version = '0.1.0'
+algan_version = '0.0.1'

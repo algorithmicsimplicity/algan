@@ -10,7 +10,7 @@ Algan is an animation engine for explanatory math videos meant to supersede Mani
 
 
 Algan requires a few dependencies that must be installed prior to using it. For detailed installation instructions,
-please visit the [Documentation](https://github.io/algan.html) and follow the appropriate instructions for your
+please visit the [Documentation](https://algorithmicsimplicity.github.io/algan) and follow the appropriate instructions for your
 operating system.
 
 ## Usage
@@ -41,7 +41,7 @@ You should see an algan_outputs directory in the same directory as your example.
 
 ## Documentation
 
-Documentation is in progress at [Documentation](https://github.io/algan.html).
+Documentation is in progress at [Documentation](https://algorithmicsimplicity.github.io/algan/installation/uv.html).
 
 ## License
 

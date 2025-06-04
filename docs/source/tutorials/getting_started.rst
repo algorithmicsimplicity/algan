@@ -26,7 +26,7 @@ Create a new file named my_first_algan.py, copy the below code into it, and then
 
     from algan import *
 
-    Text('Hello World!', font_size=100).spawn()
+    #Text('Hello World!', font_size=100).spawn()
 
     render_to_file()
 
