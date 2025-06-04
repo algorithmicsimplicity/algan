@@ -11,7 +11,7 @@
 <meta property="og:image:width" content="1146" />
 <meta property="og:image:height" content="600" />
 <meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_installation_uv_faa0be76.png" />
-<meta property="og:image:alt" content="The standard way of installing Algan is by using Python’s package manager pip to install the latest release from PyPI. To make it easier for you to follow be..." />
+<meta property="og:image:alt" content="The standard way of installing Algan is by using Python’s package manager pip to install the latest release from PyPI. To make it easier for you to follow best practices when it comes to setting up..." />
 <meta name="description" content="The standard way of installing Algan is by using Python’s package manager pip to install the latest release from PyPI. To make it easier for you to follow best practices when it comes to setting up..." />
 <meta name="twitter:card" content="summary_large_image" />
 <link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Tutorials &amp; Guides" href="../tutorials_guides.html" /><link rel="prev" title="Installation" href="../installation.html" />
@@ -439,7 +439,7 @@ comes to setting up a Python project for your Algan animations,
 we strongly recommend using a tool for managing Python environments
 and dependencies. In particular,
 <a class="reference external" href="https://docs.astral.sh/uv/#getting-started">we strongly recommend using <code class="docutils literal notranslate"><span class="pre">uv</span></code></a>.</p>
-<p>For the two main ways of installing Algan described below, we assume
+<p>For the main way of installing Algan described below, we assume
 that <code class="docutils literal notranslate"><span class="pre">uv</span></code> is available; we think it is particularly helpful if you are
 new to Python or programming in general. It is not a hard requirement
 whatsoever; if you know what you are doing you can just use <code class="docutils literal notranslate"><span class="pre">pip</span></code> to
@@ -559,37 +559,30 @@ setspace standalone tipa wasy wasysym xcolor xetex xkeyval
 </div>
 </div>
 </details></section>
-<section id="step-3-installing-pytorch">
-<h3>Step 3: Installing Pytorch<a class="headerlink" href="#step-3-installing-pytorch" title="Link to this heading">¶</a></h3>
-<p>Algan is built on top of Pytorch, to provide GPU accelerated operations and rendering. The next step is to install
-Pytorch to the uv environment you created previously, which you can do by heading over to
-https://pytorch.org/get-started/locally/ and following the instructions provided for your operating system.
-If you wish to use GPU acceleration in Algan, make sure to select the CUDA (for NVIDIA GPUs) or ROCm (for AMD GPUs)
-option when installing Pytorch.</p>
-</section>
-<section id="step-4-installing-algan">
-<h3>Step 4: Installing Algan<a class="headerlink" href="#step-4-installing-algan" title="Link to this heading">¶</a></h3>
-<p>Finally, we can install Algan itself.</p>
-<p>The following commands will</p>
-<ul class="simple">
-<li><p>create a new directory for a Python project,</p></li>
-<li><p>and add Algan as a dependency, which installs it into the corresponding
-local Python environment.</p></li>
-</ul>
-<p>The name for the Python project is <em>algations</em>, which you can change
-to anything you like.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>init<span class="w"> </span>algamations
-<span class="nb">cd</span><span class="w"> </span>algamations
-uv<span class="w"> </span>add<span class="w"> </span>algan
+<section id="step-3-installing-algan">
+<h3>Step 3: Installing Algan<a class="headerlink" href="#step-3-installing-algan" title="Link to this heading">¶</a></h3>
+<p>Algan is built on top of Pytorch, to provide GPU accelerated animations and rendering.
+Depending on your operating system and GPU hardware, you will need to install different
+versions of Pytorch. By default Algan is setup to install for NVIDIA GPUs on Windows operating systems.
+If that’s you then go ahead and run</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>init<span class="w"> </span>alganimations
+<span class="nb">cd</span><span class="w"> </span>alganimations
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--extra-index-url<span class="w"> </span>https://test.pypi.org/simple/<span class="w"> </span>--extra-index-url<span class="w"> </span>https://download.pytorch.org/whl/cu128<span class="w"> </span>--find-links<span class="w"> </span>https://data.pyg.org/whl/torch-2.7.0+cu128.html<span class="w"> </span><span class="nv">algan</span><span class="o">==</span><span class="m">0</span>.0.1<span class="w"> </span>--index-strategy<span class="w"> </span>unsafe-best-match
 </pre></div>
 </div>
-<p>Algan is now installed in your local project environment!</p>
-<div class="docutils">
-<p>To verify that your local Python project is setup correctly
-and that Algan is available, simply run</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>algan<span class="w"> </span>checkhealth
+<p>If you are using a different setup, or If you get an error when running the above command,
+you will need to first install Pytorch manually. To do so, head over to
+<a class="reference external" href="https://pytorch.org/get-started/locally/">https://pytorch.org/get-started/locally/</a> and follow the instructions provided for your
+operating system and hardware. If you wish to use GPU acceleration in Algan,
+make sure to select the CUDA (for NVIDIA GPUs) or ROCm (for AMD GPUs) option when
+installing Pytorch.</p>
+<p>Once you have installed Pytorch, go ahead and run these commands:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>init<span class="w"> </span>alganimations
+<span class="nb">cd</span><span class="w"> </span>alganimations
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--extra-index-url<span class="w"> </span>https://test.pypi.org/simple/<span class="w"> </span><span class="nv">algan</span><span class="o">==</span><span class="m">0</span>.0.1
 </pre></div>
 </div>
+<p>If it works with no errors, then you are ready to Alganimate!</p>
 <p>At this point, you can also open your project folder with the
 IDE of your choice. All modern Python IDEs (for example VS Code
 with the Python extension, or PyCharm) should automatically detect
@@ -600,7 +593,9 @@ the local environment created by <code class="docutils literal notranslate"><spa
 <p>into a new file <code class="docutils literal notranslate"><span class="pre">my-first-animation.py</span></code>, the import is resolved
 correctly and autocompletion is available.</p>
 <p><em>Happy Algamating!</em></p>
-<p class="rubric" id="step-5-optional-installing-manim">Step 5 (optional): Installing Manim</p>
+</section>
+<section id="step-4-optional-installing-manim">
+<h3>Step 4 (optional): Installing Manim<a class="headerlink" href="#step-4-optional-installing-manim" title="Link to this heading">¶</a></h3>
 <p>While Algan provides built-in support for text, latex, and simple geometric shapes, Manim provides a much richer
 library of built-in objects which can imported, especially with regards to mathematical graphs and functions. If you wish
 to use Manim objects in your Algan animations, you will need to install Manim to your Python environment, with
@@ -655,8 +650,7 @@ version satisfies the requirement. Change the line to, for example
 to pin the python version to <code class="docutils literal notranslate"><span class="pre">3.12</span></code>. Finally, run <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code>, and your
 environment is updated!</p>
 </div>
-</details></div>
-</section>
+</details></section>
 </section>
 </section>
 
@@ -719,8 +713,8 @@ environment is updated!</p>
 <li><a class="reference internal" href="#installation">Installation</a><ul>
 <li><a class="reference internal" href="#step-1-installing-python">Step 1: Installing Python</a></li>
 <li><a class="reference internal" href="#step-2-optional-installing-latex">Step 2 (optional): Installing LaTeX</a></li>
-<li><a class="reference internal" href="#step-3-installing-pytorch">Step 3: Installing Pytorch</a></li>
-<li><a class="reference internal" href="#step-4-installing-algan">Step 4: Installing Algan</a></li>
+<li><a class="reference internal" href="#step-3-installing-algan">Step 3: Installing Algan</a></li>
+<li><a class="reference internal" href="#step-4-optional-installing-manim">Step 4 (optional): Installing Manim</a></li>
 </ul>
 </li>
 </ul>
@@ -741,7 +735,7 @@ environment is updated!</p>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../_static/copybutton.js?v=f281be69"></script>
     <script src="../_static/manim-binder.min.js?v=29f72615"></script>
-    <script>window.initManimBinder({branch: "v0.1.0"})</script>
+    <script>window.initManimBinder({branch: "v0.0.1"})</script>
     <script src="../_static/design-tabs.js?v=f930bc37"></script>
     <script async="async" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     <script src="../_static/responsiveSvg.js?v=f1528c9d"></script>
