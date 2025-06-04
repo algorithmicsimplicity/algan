@@ -1,4 +1,5 @@
-Algan is an animation engine for explanatory math videos meant to supersede Manim. It's used to create precise animations programmatically, as demonstrated in the videos of [AlgorithmicSimplicity](https://www.youtube.com/AlgorithmicSimplicity/).
+Algan is an animation engine for explanatory math videos meant to supersede Manim. It's used to create
+precise animations programmatically, as demonstrated in the videos of [AlgorithmicSimplicity](https://www.youtube.com/@algorithmicsimplicity).
 
 ## Table of Contents:
 
