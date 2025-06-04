@@ -10,7 +10,7 @@ we strongly recommend using a tool for managing Python environments
 and dependencies. In particular,
 [we strongly recommend using `uv`](https://docs.astral.sh/uv/#getting-started).
 
-For the two main ways of installing Algan described below, we assume
+For the main way of installing Algan described below, we assume
 that `uv` is available; we think it is particularly helpful if you are
 new to Python or programming in general. It is not a hard requirement
 whatsoever; if you know what you are doing you can just use `pip` to
@@ -49,7 +49,6 @@ not worry: check our [installation FAQs](<project:/faq/installation.md>) to
 see whether the problem is already addressed there -- and otherwise go and
 check [how to contact our community](<project:/faq/help.md>) to get help.
 :::
-
 
 
 ## Installation
@@ -135,26 +134,12 @@ setspace standalone tipa wasy wasysym xcolor xetex xkeyval
 ```
 :::
 
-### Step 3: Installing Pytorch
+### Step 3: Installing Algan
 
-Algan is built on top of Pytorch, to provide GPU accelerated operations and rendering. The next step is to install
-Pytorch to the uv environment you created previously, which you can do by heading over to 
-https://pytorch.org/get-started/locally/ and following the instructions provided for your operating system.
-If you wish to use GPU acceleration in Algan, make sure to select the CUDA (for NVIDIA GPUs) or ROCm (for AMD GPUs)
-option when installing Pytorch.
-
-### Step 4: Installing Algan
-
-Finally, we can install Algan itself.
-
-The following commands will
-
-- create a new directory for a Python project,
-- and add Algan as a dependency, which installs it into the corresponding
-  local Python environment.
-
-The name for the Python project is *algations*, which you can change
-to anything you like.
+Algan is built on top of Pytorch, to provide GPU accelerated animations and rendering.
+Depending on your operating system and GPU hardware, you will need to install different
+versions of Pytorch. By default Algan is setup to install for NVIDIA GPUs on Windows operating systems.
+If that's you then go ahead and run
 
 ```bash
 uv init algamations
@@ -162,15 +147,16 @@ cd algamations
 uv add algan
 ```
 
-Algan is now installed in your local project environment!
+If you are using a different setup, or If you get an error when running the above command,
+you will need to first install Pytorch manually. To do so, head over to 
+https://pytorch.org/get-started/locally/ and follow the instructions provided for your
+operating system and hardware. If you wish to use GPU acceleration in Algan, 
+make sure to select the CUDA (for NVIDIA GPUs) or ROCm (for AMD GPUs) option when
+installing Pytorch.
 
-::::::
+Once you have installed Pytorch, go ahead and run the previous instructions to install Algan.
 
-To verify that your local Python project is setup correctly
-and that Algan is available, simply run
-```bash
-uv run algan checkhealth
-```
+If it works with no errors, then you are ready to alganimate!
 
 At this point, you can also open your project folder with the
 IDE of your choice. All modern Python IDEs (for example VS Code
@@ -184,7 +170,7 @@ correctly and autocompletion is available.
 
 *Happy Algamating!*
 
-### Step 5 (optional): Installing Manim
+### Step 4 (optional): Installing Manim
 
 While Algan provides built-in support for text, latex, and simple geometric shapes, Manim provides a much richer
 library of built-in objects which can imported, especially with regards to mathematical graphs and functions. If you wish

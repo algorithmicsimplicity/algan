@@ -2,7 +2,6 @@ import math
 
 import torch
 import torch.nn.functional as F
-from torch_scatter import scatter_max
 
 from algan.constants.color import BLUE, BLACK
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE

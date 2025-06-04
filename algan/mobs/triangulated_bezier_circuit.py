@@ -48,8 +48,29 @@ def get_points_per_tile(grid, perimeter_points, max_pp=500):
     return broadcast_gather(torch.cat((perimeter_points, torch.full_like(perimeter_points[...,:1,:], -1e12)), -2), -2, inds.unsqueeze(-1), keepdim=True)
 
 
-from ground.base import get_context
-from sect.triangulation import Triangulation
+from algan.external_libraries.ground.base import get_context
+from algan.external_libraries.sect.triangulation import Triangulation
+
+
+"""import triangle as tr
+import numpy as np
+
+
+def circle(N, R):
+    i = np.arange(N)
+    theta = i * 2 * np.pi / N
+    pts = np.stack([np.cos(theta), np.sin(theta)], axis=1) * R
+    seg = np.stack([i, i + 1], axis=1) % N
+    return pts, seg
+
+
+pts0, seg0 = circle(30, 1.4)
+pts1, seg1 = circle(16, 0.6)
+pts = np.vstack([pts0, pts1])
+seg = np.vstack([seg0, seg1 + seg0.shape[0]])
+
+A = dict(vertices=pts, segments=seg, holes=[[0, 0]])
+B = tr.triangulate(A, 'qpa0.05')"""
 
 
 def triangulate_simple_polygon(polygons):

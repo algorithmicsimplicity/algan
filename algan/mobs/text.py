@@ -4,6 +4,7 @@ import numpy
 import torch.nn.functional as F
 import manim as mn
 from svgelements import Path, Line, Move, Close
+import pathlib
 
 from algan.defaults.style_defaults import *
 from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag
@@ -34,6 +35,8 @@ class Text(Mob):
         self.latex = latex
         self.create_character_mobs(text, **kwargs2)
         self.add_children(self.character_mobs)
+        with Off():
+            self.scale(self.convert_ratio)
 
     def __getitem__(self, item):
         return Group([self.character_mobs[item]])
@@ -96,7 +99,10 @@ class Text(Mob):
         return self
 
     def create_character_mobs(self, text, **kwargs):
-        s = 0.105 * self.size / 100
+        pathlib.Path('media/tex').mkdir(exist_ok=True, parents=True)
+        #s = 0.105 * self.size / 100
+        s = 0.02 * 90 / 100
+        self.convert_ratio = (0.105 * self.font_size / 100) / s
         if self.latex:
             manim_kwargs = {k: v for k, v in kwargs.items()}
             if 'color' in manim_kwargs:
@@ -120,7 +126,6 @@ class Text(Mob):
 
             svg_mobs = [[__ if isinstance(__, mn.VMobjectFromSVGPath) else get_rect_as_path(_.original_points[i]) for i, __ in enumerate(_.submobjects)] for _ in text.submobjects]
             svg_mobs = [x for l in svg_mobs for x in l]
-
         else:
             text = mn.Text(text)
             svg_mobs = text.chars
@@ -153,7 +158,7 @@ class Text(Mob):
         self.mx_point = torch.cat((torch.zeros_like(mx_point[..., :1]), mx_point), -1)
 
         with Off():
-            self.character_mobs = TriangulatedBezierCircuit([c.path_obj for c in svg_mobs], invert=self.latex, hash_keys=[(normalize(text.original_points[i][:,:2])) for i in range(len(svg_mobs))], reverse_points=hasattr(svg_mobs[0], 'needs_to_reverse'), init=False, **kwargs)
+            self.character_mobs = TriangulatedBezierCircuit([c.path_obj for c in svg_mobs], invert=self.latex, hash_keys=None, reverse_points=hasattr(svg_mobs[0], 'needs_to_reverse'), init=False, **kwargs)
 
     def get_boundary_points_test(self):
         return torch.stack((self.mn_point,

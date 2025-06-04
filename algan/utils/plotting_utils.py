@@ -1,6 +1,6 @@
 import matplotlib
 import matplotlib.pyplot as plt
-matplotlib.use('Qt5Agg')
+#matplotlib.use('Qt5Agg')
 
 
 def plot_tensor(x, norm=True, save_file=None, background=None, background_cmap=None, figsize=3/100, **kwargs):

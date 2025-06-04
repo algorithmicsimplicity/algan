@@ -19,20 +19,65 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Natural Language :: English",
     ]
-requires-python = ">=3.9,<=3.12"
+
+
+requires-python = ">=3.10,<=3.12"
+
 dependencies = [
-    "ground>=1.0.0",
-    "matplotlib>=3.9.4", # Using the version from your dev dependencies as a hint
-    "moviepy>=1.0.0",
+    "dendroid>=1.6.0",
+    "prioq>=0.6.0",
+    "cfractions>=2.0.0",
+    "reprit>=0.9.0",
+    "decision>=0.3.0",
     "numpy>=1.20.0",
     "opencv-python>=4.0.0",
     "scipy>=1.8.0",
-    "sect>=1.0.0",
     "svgelements>=1.0.0",
-    "torch>=2.0.0", # Requires a recent version for features used
-    "torch-scatter>=2.1.0", # Compatible with recent torch
-    "torchvision>=0.15.0", # Compatible with recent torch
+    "torch>=2.7.0",
+    "torchvision>=0.16.0",
+    # "torch-scatter==2.1.2 ; sys_platform == 'darwin'", # ; sys_platform == 'linux'",
+    "torch-scatter==2.1.2+pt27cu128",
+    "manim>=0.18.0",
 ]
+
+[tool.uv.sources]
+torch = [{ index = "torch-cu128"}]#, marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "torch-cu128"}]#, marker = "sys_platform == 'linux'" }]
+algan = { workspace = true }
+
+[[tool.uv.index]]
+name = "torch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.workspace]
+members = [
+    "algamations",
+]
+
+[tool.uv]
+#environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'"]
+find-links = [
+  # "https://data.pyg.org/whl/torch-2.1.0+cpu.html",
+  "https://data.pyg.org/whl/torch-2.7.0+cu128.html",
+]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 [project.urls]
 repository = "https://github.com/algorithmicsimplicity/algan"
@@ -48,6 +93,8 @@ manim = [
 ]
 [dependency-groups]
 dev = [
+    'parameterized>=0.9.0',
+    "manim>=0.19.0",
     "furo>=2024.8.6",
     "gitpython>=3.1.44",
     "matplotlib>=3.9.4",
@@ -68,6 +115,7 @@ dev = [
     "types-pygments>=2.19.0.20250107",
     "psutil>=6.1.1",
     "requests>=2.32.3",
+    "algan",
 ]
 
 [build-system]

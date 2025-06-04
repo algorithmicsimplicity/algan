@@ -30,5 +30,4 @@ def text():
     #    x.rotate(180, OUT)
     return
 
-text()
 render_all_funcs(__name__)
