@@ -45,4 +45,4 @@ Documentation is in progress at [Documentation](https://github.io/algan.html).
 
 ## License
 
-The software is double-licensed under the MIT license, with copyright by 3blue1brown LLC (see LICENSE), and copyright by Manim Community Developers (see LICENSE.community).
+The software is double-licensed under the MIT license, with copyright by Algorithmic Simplicity (see LICENSE).
