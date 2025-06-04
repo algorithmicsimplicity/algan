@@ -1,0 +1,34 @@
+﻿camera
+======
+
+.. currentmodule:: algan.rendering.camera
+
+.. automodule:: algan.rendering.camera
+
+   
+   
+   .. autoaliasattr:: algan.rendering.camera
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        Camera
+      
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

@@ -1,0 +1,43 @@
+Scene
+=====
+
+Qualified name: ``algan.scene.Scene``
+
+.. currentmodule:: algan.scene
+
+.. autoclass:: Scene
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~Scene.add_actor
+      ~Scene.add_effect
+      ~Scene.clear_scene
+      ~Scene.get_actors
+      ~Scene.get_audio
+      ~Scene.get_current_frame
+      ~Scene.get_fragments
+      ~Scene.get_frame
+      ~Scene.get_frames_from_fragments
+      ~Scene.get_new_id
+      ~Scene.get_num_batches
+      ~Scene.increment_current_time
+      ~Scene.initialize_frames
+      ~Scene.length_to_num_pixels
+      ~Scene.num_pixels_to_length
+      ~Scene.render_to_video
+      ~Scene.reset_scene
+      ~Scene.set_current_time
+      ~Scene.set_render_settings
+      ~Scene.set_time_to_latest
+      ~Scene.update_max_time
+
+   
+   

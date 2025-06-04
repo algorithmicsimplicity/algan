@@ -1,0 +1,35 @@
+Triangle
+========
+
+Qualified name: ``algan.mobs.shapes\_2d.Triangle``
+
+.. currentmodule:: algan.mobs.shapes_2d
+
+.. autoclass:: Triangle
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Triangle.animation_manager
+     ~Triangle.basis
+     ~Triangle.color
+     ~Triangle.glow
+     ~Triangle.location
+     ~Triangle.max_opacity
+     ~Triangle.normalized_basis
+     ~Triangle.opacity
+     ~Triangle.scale_coefficient
+   

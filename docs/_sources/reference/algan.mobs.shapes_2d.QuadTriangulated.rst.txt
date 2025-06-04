@@ -1,0 +1,35 @@
+QuadTriangulated
+================
+
+Qualified name: ``algan.mobs.shapes\_2d.QuadTriangulated``
+
+.. currentmodule:: algan.mobs.shapes_2d
+
+.. autoclass:: QuadTriangulated
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~QuadTriangulated.animation_manager
+     ~QuadTriangulated.basis
+     ~QuadTriangulated.color
+     ~QuadTriangulated.glow
+     ~QuadTriangulated.location
+     ~QuadTriangulated.max_opacity
+     ~QuadTriangulated.normalized_basis
+     ~QuadTriangulated.opacity
+     ~QuadTriangulated.scale_coefficient
+   

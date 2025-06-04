@@ -1,0 +1,34 @@
+﻿manim\_mob
+==========
+
+.. currentmodule:: algan.mobs.manim_mob
+
+.. automodule:: algan.mobs.manim_mob
+
+   
+   
+   .. autoaliasattr:: algan.mobs.manim_mob
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        ManimMob
+      
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

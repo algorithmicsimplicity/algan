@@ -1,0 +1,43 @@
+﻿triangle
+========
+
+.. currentmodule:: algan.rendering.primitives.triangle
+
+.. automodule:: algan.rendering.primitives.triangle
+
+   
+   
+   .. autoaliasattr:: algan.rendering.primitives.triangle
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        PolygonPrimitive
+      
+        TrianglePrimitive
+      
+   
+   
+
+   
+   
+   .. rubric:: Functions
+
+   
+   .. autofunction:: get_bary_coordinates
+   .. autofunction:: get_tangents
+   .. autofunction:: interpolate_triangle_corners
+   
+   
+
+   
+   
+   
+
+
+

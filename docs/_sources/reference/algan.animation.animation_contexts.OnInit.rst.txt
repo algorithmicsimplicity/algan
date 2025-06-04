@@ -1,0 +1,44 @@
+OnInit
+======
+
+Qualified name: ``algan.animation.animation\_contexts.OnInit``
+
+.. currentmodule:: algan.animation.animation_contexts
+
+.. autoclass:: OnInit
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~OnInit.on_init_extra
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~OnInit.combine_rate_func
+     ~OnInit.finished
+     ~OnInit.lag_ratio
+     ~OnInit.new_animation
+     ~OnInit.prev_context
+     ~OnInit.priority_level
+     ~OnInit.rate_func
+     ~OnInit.rate_func_compose
+     ~OnInit.record_attr_modifications
+     ~OnInit.record_funcs
+     ~OnInit.run_time
+     ~OnInit.run_time_unit
+     ~OnInit.same_run_time
+     ~OnInit.spawn_at_end
+     ~OnInit.new_mobs
+     ~OnInit.child_contexts
+     ~OnInit.kwargs
+   

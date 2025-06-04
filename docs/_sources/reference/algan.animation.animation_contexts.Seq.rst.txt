@@ -1,0 +1,43 @@
+Seq
+===
+
+Qualified name: ``algan.animation.animation\_contexts.Seq``
+
+.. currentmodule:: algan.animation.animation_contexts
+
+.. autoclass:: Seq
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Seq.combine_rate_func
+     ~Seq.finished
+     ~Seq.lag_ratio
+     ~Seq.new_animation
+     ~Seq.prev_context
+     ~Seq.priority_level
+     ~Seq.rate_func
+     ~Seq.rate_func_compose
+     ~Seq.record_attr_modifications
+     ~Seq.record_funcs
+     ~Seq.run_time
+     ~Seq.run_time_unit
+     ~Seq.same_run_time
+     ~Seq.spawn_at_end
+     ~Seq.new_mobs
+     ~Seq.child_contexts
+     ~Seq.kwargs
+   

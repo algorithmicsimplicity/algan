@@ -1,0 +1,35 @@
+Rectangle
+=========
+
+Qualified name: ``algan.mobs.shapes\_2d.Rectangle``
+
+.. currentmodule:: algan.mobs.shapes_2d
+
+.. autoclass:: Rectangle
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Rectangle.animation_manager
+     ~Rectangle.basis
+     ~Rectangle.color
+     ~Rectangle.glow
+     ~Rectangle.location
+     ~Rectangle.max_opacity
+     ~Rectangle.normalized_basis
+     ~Rectangle.opacity
+     ~Rectangle.scale_coefficient
+   

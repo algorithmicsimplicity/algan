@@ -1,0 +1,36 @@
+TriangleTriangulated
+====================
+
+Qualified name: ``algan.mobs.shapes\_2d.TriangleTriangulated``
+
+.. currentmodule:: algan.mobs.shapes_2d
+
+.. autoclass:: TriangleTriangulated
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~TriangleTriangulated.get_default_color
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~TriangleTriangulated.animation_manager
+     ~TriangleTriangulated.basis
+     ~TriangleTriangulated.color
+     ~TriangleTriangulated.glow
+     ~TriangleTriangulated.location
+     ~TriangleTriangulated.max_opacity
+     ~TriangleTriangulated.normalized_basis
+     ~TriangleTriangulated.opacity
+     ~TriangleTriangulated.scale_coefficient
+   

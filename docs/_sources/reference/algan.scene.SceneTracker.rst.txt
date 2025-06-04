@@ -1,0 +1,24 @@
+SceneTracker
+============
+
+Qualified name: ``algan.scene.SceneTracker``
+
+.. currentmodule:: algan.scene
+
+.. autoclass:: SceneTracker
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~SceneTracker.instance
+      ~SceneTracker.reset
+
+   
+   

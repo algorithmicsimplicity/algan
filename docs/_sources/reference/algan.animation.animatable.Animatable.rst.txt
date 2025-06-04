@@ -1,0 +1,55 @@
+Animatable
+==========
+
+Qualified name: ``algan.animation.animatable.Animatable``
+
+.. currentmodule:: algan.animation.animatable
+
+.. autoclass:: Animatable
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~Animatable.add_children
+      ~Animatable.clone
+      ~Animatable.delete
+      ~Animatable.despawn
+      ~Animatable.generate_animatable_attr_set_get_methods
+      ~Animatable.get_default_color
+      ~Animatable.getattr_at_time_t
+      ~Animatable.getattribute_animated
+      ~Animatable.getattribute_animated_full
+      ~Animatable.identity
+      ~Animatable.init
+      ~Animatable.is_animating
+      ~Animatable.on_create
+      ~Animatable.on_destroy
+      ~Animatable.on_init
+      ~Animatable.remove_child
+      ~Animatable.reset_state
+      ~Animatable.set_parent_to
+      ~Animatable.set_state_full
+      ~Animatable.set_state_pre_function_applications
+      ~Animatable.set_state_to_time_all
+      ~Animatable.set_state_to_time_t
+      ~Animatable.set_to_current
+      ~Animatable.set_to_retroactive
+      ~Animatable.setattr_and_record_modification
+      ~Animatable.spawn
+      ~Animatable.update_gather_scatter_inds
+      ~Animatable.wait
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Animatable.animation_manager
+   

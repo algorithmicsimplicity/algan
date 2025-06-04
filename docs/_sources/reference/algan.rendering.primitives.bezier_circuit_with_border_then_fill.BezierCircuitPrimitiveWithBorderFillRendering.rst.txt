@@ -1,0 +1,24 @@
+BezierCircuitPrimitiveWithBorderFillRendering
+=============================================
+
+Qualified name: ``algan.rendering.primitives.bezier\_circuit\_with\_border\_then\_fill.BezierCircuitPrimitiveWithBorderFillRendering``
+
+.. currentmodule:: algan.rendering.primitives.bezier_circuit_with_border_then_fill
+
+.. autoclass:: BezierCircuitPrimitiveWithBorderFillRendering
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~BezierCircuitPrimitiveWithBorderFillRendering.get_batch_identifier
+      ~BezierCircuitPrimitiveWithBorderFillRendering.render_
+
+   
+   

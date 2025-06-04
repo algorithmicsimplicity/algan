@@ -1,0 +1,749 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="../">
+  <head><meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Installing Algan locally" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://docs.manim.community/installation/uv.html" />
+<meta property="og:site_name" content="Algan | Documentation" />
+<meta property="og:description" content="The standard way of installing Algan is by using Python’s package manager pip to install the latest release from PyPI. To make it easier for you to follow best practices when it comes to setting up..." />
+<meta property="og:image:width" content="1146" />
+<meta property="og:image:height" content="600" />
+<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_installation_uv_faa0be76.png" />
+<meta property="og:image:alt" content="The standard way of installing Algan is by using Python’s package manager pip to install the latest release from PyPI. To make it easier for you to follow be..." />
+<meta name="description" content="The standard way of installing Algan is by using Python’s package manager pip to install the latest release from PyPI. To make it easier for you to follow best practices when it comes to setting up..." />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Tutorials &amp; Guides" href="../tutorials_guides.html" /><link rel="prev" title="Installation" href="../installation.html" />
+
+    <link rel="shortcut icon" href="../_static/favicon.ico"/><!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 -->
+        <title>Installing Algan locally - Algan v0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=354aac6f" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo-extensions.css?v=302659d7" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=18161cd7" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f8f8f8;
+  --color-code-foreground: black;
+  --color-content-foreground: #000000;
+  --color-background-primary: #ffffff;
+  --color-background-border: #ffffff;
+  --color-sidebar-background: #f8f9fb;
+  --color-brand-content: #1c00e3;
+  --color-brand-primary: #192bd0;
+  --color-link: #c93434;
+  --color-link--hover: #5b0000;
+  --color-inline-code-background: #f6f6f6;;
+  --color-foreground-secondary: #000;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-content-foreground: #ffffffd9;
+  --color-background-primary: #131416;
+  --color-background-border: #303335;
+  --color-sidebar-background: #1a1c1e;
+  --color-brand-content: #2196f3;
+  --color-brand-primary: #007fff;
+  --color-link: #51ba86;
+  --color-link--hover: #9cefc6;
+  --color-inline-code-background: #262626;
+  --color-foreground-secondary: #ffffffd9;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-content-foreground: #ffffffd9;
+  --color-background-primary: #131416;
+  --color-background-border: #303335;
+  --color-sidebar-background: #1a1c1e;
+  --color-brand-content: #2196f3;
+  --color-brand-primary: #007fff;
+  --color-link: #51ba86;
+  --color-link--hover: #9cefc6;
+  --color-inline-code-background: #262626;
+  --color-foreground-secondary: #ffffffd9;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc">
+<label class="overlay sidebar-overlay" for="__navigation">
+  <div class="visually-hidden">Hide navigation sidebar</div>
+</label>
+<label class="overlay toc-overlay" for="__toc">
+  <div class="visually-hidden">Hide table of contents sidebar</div>
+</label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <div class="visually-hidden">Toggle site navigation sidebar</div>
+        <i class="icon"><svg><use href="#svg-menu"></use></svg></i>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="../index.html"><div class="brand">Algan v0.1.0</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle">
+          <div class="visually-hidden">Toggle Light / Dark / Auto color theme</div>
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <div class="visually-hidden">Toggle table of contents sidebar</div>
+        <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="../index.html">
+  
+  <div class="sidebar-logo-container">
+    <img class="sidebar-logo only-light" src="../_static/manim-logo-sidebar.svg" alt="Light Logo"/>
+    <img class="sidebar-logo only-dark" src="../_static/manim-logo-sidebar-dark.svg" alt="Dark Logo"/>
+  </div>
+  
+  <span class="sidebar-brand-text">Algan v0.1.0</span>
+  
+</a><form class="sidebar-search-container" method="get" action="../search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  <ul class="current">
+<li class="toctree-l1 current has-children"><a class="reference internal" href="../installation.html">Installation</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><div class="visually-hidden">Toggle navigation of Installation</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
+<li class="toctree-l2 current"><a class="current reference internal" href="#">Installing Algan locally</a></li>
+</ul>
+</li>
+<li class="toctree-l1 current has-children"><a class="reference internal" href="../tutorials_guides.html">Tutorials &amp; Guides</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" role="switch" type="checkbox"/><label for="toctree-checkbox-2"><div class="visually-hidden">Toggle navigation of Tutorials &amp; Guides</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
+<li class="toctree-l2 current has-children"><a class="reference internal" href="../tutorials/index.html">Tutorials</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" role="switch" type="checkbox"/><label for="toctree-checkbox-3"><div class="visually-hidden">Toggle navigation of Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
+<li class="toctree-l3 current has-children"><a class="reference internal" href="../tutorials/installation.html">Installation</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-4" name="toctree-checkbox-4" role="switch" type="checkbox"/><label for="toctree-checkbox-4"><div class="visually-hidden">Toggle navigation of Installation</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
+<li class="toctree-l4 current current-page"><a class="current reference internal" href="#">Installing Algan locally</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="../tutorials/getting_started.html">Getting Started</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tutorials/basic_animations.html">Basic Animations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tutorials/controlling_animations.html">Controlling Animations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tutorials/nesting_mobs.html">Nesting Mobs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tutorials/importing_from_manim.html">Importing From Manim</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../tutorials/extending_algan.html">Extending Algan</a></li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../manim_user_quickstart/index.html">Manim User Quickstart</a><input class="toctree-checkbox" id="toctree-checkbox-5" name="toctree-checkbox-5" role="switch" type="checkbox"/><label for="toctree-checkbox-5"><div class="visually-hidden">Toggle navigation of Manim User Quickstart</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../manim_user_quickstart/manim_user_quickstart.html">Manim User Quickstart</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../reference.html">Reference Manual</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Reference Manual</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/mobs.html">Mobs</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Mobs</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.mob.html">mob</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of mob</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html">Mob</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.group.html">group</a><input class="toctree-checkbox" id="toctree-checkbox-9" name="toctree-checkbox-9" role="switch" type="checkbox"/><label for="toctree-checkbox-9"><div class="visually-hidden">Toggle navigation of group</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.group.Group.html">Group</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-10" name="toctree-checkbox-10" role="switch" type="checkbox"/><label for="toctree-checkbox-10"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Tex.html">Tex</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Text.html">Text</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.bezier_circuit.html">bezier_circuit</a><input class="toctree-checkbox" id="toctree-checkbox-11" name="toctree-checkbox-11" role="switch" type="checkbox"/><label for="toctree-checkbox-11"><div class="visually-hidden">Toggle navigation of bezier_circuit</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.bezier_circuit.BezierCircuitCubic.html">BezierCircuitCubic</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.bezier_circuit.BezierCurveCubic.html">BezierCurveCubic</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.html">shapes_2d</a><input class="toctree-checkbox" id="toctree-checkbox-12" name="toctree-checkbox-12" role="switch" type="checkbox"/><label for="toctree-checkbox-12"><div class="visually-hidden">Toggle navigation of shapes_2d</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Circle.html">Circle</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Polygon.html">Polygon</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Quad.html">Quad</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.QuadTriangulated.html">QuadTriangulated</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Rectangle.html">Rectangle</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.RegularPolygon.html">RegularPolygon</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Square.html">Square</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Triangle.html">Triangle</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.TriangleTriangulated.html">TriangleTriangulated</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.TriangleVertices.html">TriangleVertices</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.surfaces.surface.html">surface</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of surface</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.surfaces.surface.Surface.html">Surface</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.shapes_3d.html">shapes_3d</a><input class="toctree-checkbox" id="toctree-checkbox-14" name="toctree-checkbox-14" role="switch" type="checkbox"/><label for="toctree-checkbox-14"><div class="visually-hidden">Toggle navigation of shapes_3d</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_3d.Cylinder.html">Cylinder</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_3d.Sphere.html">Sphere</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.manim_mob.html">manim_mob</a><input class="toctree-checkbox" id="toctree-checkbox-15" name="toctree-checkbox-15" role="switch" type="checkbox"/><label for="toctree-checkbox-15"><div class="visually-hidden">Toggle navigation of manim_mob</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.manim_mob.ManimMob.html">ManimMob</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.numeric_display.html">numeric_display</a><input class="toctree-checkbox" id="toctree-checkbox-16" name="toctree-checkbox-16" role="switch" type="checkbox"/><label for="toctree-checkbox-16"><div class="visually-hidden">Toggle navigation of numeric_display</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.numeric_display.NumericDisplay.html">NumericDisplay</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/animation.html">Animation</a><input class="toctree-checkbox" id="toctree-checkbox-17" name="toctree-checkbox-17" role="switch" type="checkbox"/><label for="toctree-checkbox-17"><div class="visually-hidden">Toggle navigation of Animation</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.animation.animatable.html">animatable</a><input class="toctree-checkbox" id="toctree-checkbox-18" name="toctree-checkbox-18" role="switch" type="checkbox"/><label for="toctree-checkbox-18"><div class="visually-hidden">Toggle navigation of animatable</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html">Animatable</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.AnimatableData.html">AnimatableData</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.ModificationHistory.html">ModificationHistory</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.animation.animation_contexts.html">animation_contexts</a><input class="toctree-checkbox" id="toctree-checkbox-19" name="toctree-checkbox-19" role="switch" type="checkbox"/><label for="toctree-checkbox-19"><div class="visually-hidden">Toggle navigation of animation_contexts</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.AnimationContext.html">AnimationContext</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.AnimationManager.html">AnimationManager</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.ComposeRateFunc.html">ComposeRateFunc</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.Lag.html">Lag</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.NoExtra.html">NoExtra</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.Off.html">Off</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.OnInit.html">OnInit</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.RateFuncWrapper.html">RateFuncWrapper</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.Seq.html">Seq</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.SlideShow.html">SlideShow</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.Sync.html">Sync</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/rendering.html">Rendering</a><input class="toctree-checkbox" id="toctree-checkbox-20" name="toctree-checkbox-20" role="switch" type="checkbox"/><label for="toctree-checkbox-20"><div class="visually-hidden">Toggle navigation of Rendering</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.camera.html">camera</a><input class="toctree-checkbox" id="toctree-checkbox-21" name="toctree-checkbox-21" role="switch" type="checkbox"/><label for="toctree-checkbox-21"><div class="visually-hidden">Toggle navigation of camera</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.camera.Camera.html">Camera</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-22" name="toctree-checkbox-22" role="switch" type="checkbox"/><label for="toctree-checkbox-22"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.html">triangle</a><input class="toctree-checkbox" id="toctree-checkbox-23" name="toctree-checkbox-23" role="switch" type="checkbox"/><label for="toctree-checkbox-23"><div class="visually-hidden">Toggle navigation of triangle</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.PolygonPrimitive.html">PolygonPrimitive</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.TrianglePrimitive.html">TrianglePrimitive</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html">bezier_circuit_with_border_then_fill</a><input class="toctree-checkbox" id="toctree-checkbox-24" name="toctree-checkbox-24" role="switch" type="checkbox"/><label for="toctree-checkbox-24"><div class="visually-hidden">Toggle navigation of bezier_circuit_with_border_then_fill</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.BezierCircuitPrimitiveWithBorderFillRendering.html">BezierCircuitPrimitiveWithBorderFillRendering</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-26" name="toctree-checkbox-26" role="switch" type="checkbox"/><label for="toctree-checkbox-26"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.Scene.html">Scene</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/utils.html">Utils</a><input class="toctree-checkbox" id="toctree-checkbox-27" name="toctree-checkbox-27" role="switch" type="checkbox"/><label for="toctree-checkbox-27"><div class="visually-hidden">Toggle navigation of Utils</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.algan_utils.html">algan_utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.animation_utils.html">animation_utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.tensor_utils.html">tensor_utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.python_utils.html">python_utils</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="https://github.com/ManimCommunity/manim/blob/main/docs/source/installation/uv.md?plain=true" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div><div class="edit-this-page">
+  <a class="muted-link" href="https://github.com/ManimCommunity/manim/edit/main/docs/source/installation/uv.md" title="Edit this page">
+    <svg><use href="#svg-pencil"></use></svg>
+    <span class="visually-hidden">Edit this page</span>
+  </a>
+</div><div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle">
+              <div class="visually-hidden">Toggle Light / Dark / Auto color theme</div>
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <div class="visually-hidden">Toggle table of contents sidebar</div>
+            <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="installing-algan-locally">
+<h1>Installing Algan locally<a class="headerlink" href="#installing-algan-locally" title="Link to this heading">¶</a></h1>
+<p>The standard way of installing Algan is by using
+Python’s package manager <code class="docutils literal notranslate"><span class="pre">pip</span></code> to install the latest
+release from <a class="reference external" href="https://pypi.org/project/algan/">PyPI</a>.</p>
+<p>To make it easier for you to follow best practices when it
+comes to setting up a Python project for your Algan animations,
+we strongly recommend using a tool for managing Python environments
+and dependencies. In particular,
+<a class="reference external" href="https://docs.astral.sh/uv/#getting-started">we strongly recommend using <code class="docutils literal notranslate"><span class="pre">uv</span></code></a>.</p>
+<p>For the two main ways of installing Algan described below, we assume
+that <code class="docutils literal notranslate"><span class="pre">uv</span></code> is available; we think it is particularly helpful if you are
+new to Python or programming in general. It is not a hard requirement
+whatsoever; if you know what you are doing you can just use <code class="docutils literal notranslate"><span class="pre">pip</span></code> to
+install Algan directly.</p>
+<div class="seealso admonition">
+<p class="admonition-title">Installing the Python management tool <code class="docutils literal notranslate"><span class="pre">uv</span></code></p>
+<p>One way to install <code class="docutils literal notranslate"><span class="pre">uv</span></code> is via the dedicated console installer supporting
+all large operating systems. Simply paste the following snippet into
+your terminal / PowerShell – or
+<a class="reference external" href="https://docs.astral.sh/uv/#getting-started">consult <code class="docutils literal notranslate"><span class="pre">uv</span></code>’s documentation</a>
+for alternative ways to install the tool.</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-0" name="sd-tab-set-0" type="radio">
+<label class="sd-tab-label" for="sd-tab-item-0">
+MacOS and Linux</label><div class="sd-tab-content docutils">
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-LsSf<span class="w"> </span>https://astral.sh/uv/install.sh<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh
+</pre></div>
+</div>
+</div>
+<input id="sd-tab-item-1" name="sd-tab-set-0" type="radio">
+<label class="sd-tab-label" for="sd-tab-item-1">
+Windows</label><div class="sd-tab-content docutils">
+<div class="highlight-powershell notranslate"><div class="highlight"><pre><span></span><span class="n">powershell</span> <span class="n">-ExecutionPolicy</span> <span class="n">ByPass</span> <span class="n">-c</span> <span class="s2">&quot;irm https://astral.sh/uv/install.ps1 | iex&quot;</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<p>Of course, if you know what you are doing and prefer to setup a virtual
+environment yourself, feel free to do so!</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p>If you run into issues when following our instructions below, do
+not worry: check our <span class="xref myst">installation FAQs</span> to
+see whether the problem is already addressed there – and otherwise go and
+check <span class="xref myst">how to contact our community</span> to get help.</p>
+</div>
+<section id="installation">
+<h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">¶</a></h2>
+<section id="step-1-installing-python">
+<h3>Step 1: Installing Python<a class="headerlink" href="#step-1-installing-python" title="Link to this heading">¶</a></h3>
+<p>We first need to check that an appropriate version of Python is available
+on your machine. Open a terminal to run</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>python<span class="w"> </span>install
+</pre></div>
+</div>
+<p>to install the latest version of Python. If this is successful, continue
+to the next step.</p>
+</section>
+<section id="step-2-optional-installing-latex">
+<span id="installation-optional-latex"></span><h3>Step 2 (optional): Installing LaTeX<a class="headerlink" href="#step-2-optional-installing-latex" title="Link to this heading">¶</a></h3>
+<p><a class="reference external" href="https://en.wikibooks.org/wiki/LaTeX/Mathematics">LaTeX</a> is a very well-known
+and widely used typesetting system allowing you to write formulas like</p>
+<div class="math-wrapper amsmath docutils container">
+<div class="amsmath math notranslate nohighlight">
+\[\begin{equation*}
+\frac{1}{2\pi i} \oint_{\gamma} \frac{f(z)}{(z - z_0)^{n+1}}~dz
+= \frac{f^{(n)}(z_0)}{n!}.
+\end{equation*}\]</div>
+</div>
+<p>If rendering plain text is sufficient for your needs and you don’t want
+to render any typeset formulas, you can technically skip this step. Otherwise
+select your operating system from the tab list below and follow the instructions.</p>
+<div class="sd-tab-set docutils">
+<input checked="checked" id="sd-tab-item-2" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" for="sd-tab-item-2">
+Windows</label><div class="sd-tab-content docutils">
+<p>For Windows we recommend installing LaTeX via the
+<a class="reference external" href="https://miktex.org">MiKTeX distribution</a>. Simply grab
+the Windows installer available from their download page,
+<a class="reference external" href="https://miktex.org/download">https://miktex.org/download</a> and run it.</p>
+</div>
+<input id="sd-tab-item-3" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" for="sd-tab-item-3">
+MacOS</label><div class="sd-tab-content docutils">
+<p>If you are running MacOS, we recommend installing the
+<a class="reference external" href="https://www.tug.org/mactex/">MacTeX distribution</a>. The latest
+available PKG file can be downloaded from
+<a class="reference external" href="https://www.tug.org/mactex/mactex-download.html">https://www.tug.org/mactex/mactex-download.html</a>.
+Get it and follow the standard installation procedure.</p>
+</div>
+<input id="sd-tab-item-4" name="sd-tab-set-1" type="radio">
+<label class="sd-tab-label" for="sd-tab-item-4">
+Linux</label><div class="sd-tab-content docutils">
+<p>Given the large number of Linux distributions with different ways
+of installing packages, we cannot give detailed instructions for
+all package managers.</p>
+<p>In general we recommend to install a <em>TeX Live</em> distribution
+(<a class="reference external" href="https://www.tug.org/texlive/">https://www.tug.org/texlive/</a>). For most Linux distributions,
+TeX Live has already been packaged such that it can be installed
+easily with your system package manager. Search the internet and
+your usual OS resources for detailed instructions.</p>
+<p>For example, on Debian-based systems with the package manager <code class="docutils literal notranslate"><span class="pre">apt</span></code>,
+a full TeX Live distribution can be installed by running</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>apt<span class="w"> </span>install<span class="w"> </span>texlive-full
+</pre></div>
+</div>
+<p>For Fedora (managed via <code class="docutils literal notranslate"><span class="pre">dnf</span></code>), the corresponding command is</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>dnf<span class="w"> </span>install<span class="w"> </span>texlive-scheme-full
+</pre></div>
+</div>
+<p>As soon as LaTeX is installed, continue with actually installing Algan
+itself.</p>
+</div>
+</div>
+<details class="sd-sphinx-override sd-dropdown sd-card sd-mb-3">
+<summary class="sd-summary-title sd-card-header">
+<span class="sd-summary-text">I know what I am doing and I would like to setup a minimal LaTeX installation</span><span class="sd-summary-state-marker sd-summary-chevron-right"><svg version="1.1" width="1.5em" height="1.5em" class="sd-octicon sd-octicon-chevron-right" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.72 18.78a.75.75 0 0 1 0-1.06L14.44 12 8.72 6.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018l6.25 6.25a.75.75 0 0 1 0 1.06l-6.25 6.25a.75.75 0 0 1-1.06 0Z"></path></svg></span></summary><div class="sd-summary-content sd-card-body docutils">
+<p class="sd-card-text">You are welcome to use a smaller, more customizable LaTeX distribution like
+<a class="reference external" href="https://yihui.org/tinytex/">TinyTeX</a>. Manim overall requires the following
+LaTeX packages to be installed in your distribution:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>amsmath babel-english cbfonts-fd cm-super count1to ctex doublestroke dvisvgm everysel
+fontspec frcursive fundus-calligra gnu-freefont jknapltx latex-bin
+mathastext microtype multitoc physics preview prelim2e ragged2e relsize rsfs
+setspace standalone tipa wasy wasysym xcolor xetex xkeyval
+</pre></div>
+</div>
+</div>
+</details></section>
+<section id="step-3-installing-pytorch">
+<h3>Step 3: Installing Pytorch<a class="headerlink" href="#step-3-installing-pytorch" title="Link to this heading">¶</a></h3>
+<p>Algan is built on top of Pytorch, to provide GPU accelerated operations and rendering. The next step is to install
+Pytorch to the uv environment you created previously, which you can do by heading over to
+https://pytorch.org/get-started/locally/ and following the instructions provided for your operating system.
+If you wish to use GPU acceleration in Algan, make sure to select the CUDA (for NVIDIA GPUs) or ROCm (for AMD GPUs)
+option when installing Pytorch.</p>
+</section>
+<section id="step-4-installing-algan">
+<h3>Step 4: Installing Algan<a class="headerlink" href="#step-4-installing-algan" title="Link to this heading">¶</a></h3>
+<p>Finally, we can install Algan itself.</p>
+<p>The following commands will</p>
+<ul class="simple">
+<li><p>create a new directory for a Python project,</p></li>
+<li><p>and add Algan as a dependency, which installs it into the corresponding
+local Python environment.</p></li>
+</ul>
+<p>The name for the Python project is <em>algations</em>, which you can change
+to anything you like.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>init<span class="w"> </span>algamations
+<span class="nb">cd</span><span class="w"> </span>algamations
+uv<span class="w"> </span>add<span class="w"> </span>algan
+</pre></div>
+</div>
+<p>Algan is now installed in your local project environment!</p>
+<div class="docutils">
+<p>To verify that your local Python project is setup correctly
+and that Algan is available, simply run</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>run<span class="w"> </span>algan<span class="w"> </span>checkhealth
+</pre></div>
+</div>
+<p>At this point, you can also open your project folder with the
+IDE of your choice. All modern Python IDEs (for example VS Code
+with the Python extension, or PyCharm) should automatically detect
+the local environment created by <code class="docutils literal notranslate"><span class="pre">uv</span></code> such that if you put</p>
+<div class="highlight-py notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">algan</span>
+</pre></div>
+</div>
+<p>into a new file <code class="docutils literal notranslate"><span class="pre">my-first-animation.py</span></code>, the import is resolved
+correctly and autocompletion is available.</p>
+<p><em>Happy Algamating!</em></p>
+<p class="rubric" id="step-5-optional-installing-manim">Step 5 (optional): Installing Manim</p>
+<p>While Algan provides built-in support for text, latex, and simple geometric shapes, Manim provides a much richer
+library of built-in objects which can imported, especially with regards to mathematical graphs and functions. If you wish
+to use Manim objects in your Algan animations, you will need to install Manim to your Python environment, with
+the following command:</p>
+<div class="highlight-bas notranslate"><div class="highlight"><pre><span></span>uv add manim
+</pre></div>
+</div>
+<details class="sd-sphinx-override sd-dropdown sd-card sd-mb-3">
+<summary class="sd-summary-title sd-card-header">
+<span class="sd-summary-text">Alternative: Installing Manim as a global <code class="docutils literal notranslate"><span class="pre">uv</span></code>-managed tool</span><span class="sd-summary-state-marker sd-summary-chevron-right"><svg version="1.1" width="1.5em" height="1.5em" class="sd-octicon sd-octicon-chevron-right" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.72 18.78a.75.75 0 0 1 0-1.06L14.44 12 8.72 6.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018l6.25 6.25a.75.75 0 0 1 0 1.06l-6.25 6.25a.75.75 0 0 1-1.06 0Z"></path></svg></span></summary><div class="sd-summary-content sd-card-body docutils">
+<p class="sd-card-text">If you have Manim projects in many different directories and you do not
+want to setup a local project environment for each of them, you could
+also install Manim as a <code class="docutils literal notranslate"><span class="pre">uv</span></code>-managed tool.</p>
+<p class="sd-card-text">See <a class="reference external" href="https://docs.astral.sh/uv/concepts/tools/"><code class="docutils literal notranslate"><span class="pre">uv</span></code>’s documentation for more information</a>
+on their tool mechanism.</p>
+<p class="sd-card-text">To install Manim as a global <code class="docutils literal notranslate"><span class="pre">uv</span></code> tool, simply run</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>tool<span class="w"> </span>install<span class="w"> </span>manim
+</pre></div>
+</div>
+<p class="sd-card-text">after which the <code class="docutils literal notranslate"><span class="pre">manim</span></code> executable will be available on your
+global system path, without the need to activate any virtual
+environment or prefixing your commands with <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span></code>.</p>
+<p class="sd-card-text">Note that when using this approach, setting up your code editor
+to properly resolve <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">manim</span></code> requires additional work, as
+the global tool environment is not automatically detected: the
+base path of all tool environments can be determined by running</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">uv</span> <span class="n">tool</span> <span class="nb">dir</span>
+</pre></div>
+</div>
+<p class="sd-card-text">which should now contain a directory <code class="docutils literal notranslate"><span class="pre">manim</span></code> in which the appropriate
+virtual environment is located. Set the Python interpreter of your IDE
+to this environment to make imports properly resolve themselves.</p>
+</div>
+</details><details class="sd-sphinx-override sd-dropdown sd-card sd-mb-3">
+<summary class="sd-summary-title sd-card-header">
+<span class="sd-summary-text">Installing Manim for a different version of Python</span><span class="sd-summary-state-marker sd-summary-chevron-right"><svg version="1.1" width="1.5em" height="1.5em" class="sd-octicon sd-octicon-chevron-right" viewBox="0 0 24 24" aria-hidden="true"><path d="M8.72 18.78a.75.75 0 0 1 0-1.06L14.44 12 8.72 6.28a.751.751 0 0 1 .018-1.042.751.751 0 0 1 1.042-.018l6.25 6.25a.75.75 0 0 1 0 1.06l-6.25 6.25a.75.75 0 0 1-1.06 0Z"></path></svg></span></summary><div class="sd-summary-content sd-card-body docutils">
+<p class="sd-card-text">In case you would like to use a different version of Python
+(for example, due to compatibility issues with other packages),
+then <code class="docutils literal notranslate"><span class="pre">uv</span></code> allows you to do so in a fairly straightforward way.</p>
+<p class="sd-card-text">When initializing the local Python project, simply pass the Python
+version you want to use as an argument to the <code class="docutils literal notranslate"><span class="pre">init</span></code> command:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">uv</span> <span class="n">init</span> <span class="o">--</span><span class="n">python</span> <span class="mf">3.12</span> <span class="n">manimations</span>
+<span class="n">cd</span> <span class="n">manimations</span>
+<span class="n">uv</span> <span class="n">add</span> <span class="n">manim</span>
+</pre></div>
+</div>
+<p class="sd-card-text">To change the version for an existing package, you will need to
+edit the <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> file. If you are downgrading the python version, the
+<code class="docutils literal notranslate"><span class="pre">requires-python</span></code> entry needs to be updated such that your chosen
+version satisfies the requirement. Change the line to, for example
+<code class="docutils literal notranslate"><span class="pre">requires-python</span> <span class="pre">=</span> <span class="pre">&quot;&gt;=3.12&quot;</span></code>. After that, run <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">python</span> <span class="pre">pin</span> <span class="pre">3.12</span></code>
+to pin the python version to <code class="docutils literal notranslate"><span class="pre">3.12</span></code>. Finally, run <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span></code>, and your
+environment is updated!</p>
+</div>
+</details></div>
+</section>
+</section>
+</section>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          <a class="next-page" href="../tutorials_guides.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title">Tutorials &amp; Guides</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="../installation.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title">Installation</div>
+                
+              </div>
+            </a>
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2025-2025, Algorithmic Simplicity
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">Installing Algan locally</a><ul>
+<li><a class="reference internal" href="#installation">Installation</a><ul>
+<li><a class="reference internal" href="#step-1-installing-python">Step 1: Installing Python</a></li>
+<li><a class="reference internal" href="#step-2-optional-installing-latex">Step 2 (optional): Installing LaTeX</a></li>
+<li><a class="reference internal" href="#step-3-installing-pytorch">Step 3: Installing Pytorch</a></li>
+<li><a class="reference internal" href="#step-4-installing-algan">Step 4: Installing Algan</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/scripts/furo.js?v=5fa4622c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/manim-binder.min.js?v=29f72615"></script>
+    <script>window.initManimBinder({branch: "v0.1.0"})</script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script async="async" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="../_static/responsiveSvg.js?v=f1528c9d"></script>
+    </body>
+</html>

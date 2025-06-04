@@ -1,0 +1,36 @@
+﻿text
+====
+
+.. currentmodule:: algan.mobs.text
+
+.. automodule:: algan.mobs.text
+
+   
+   
+   .. autoaliasattr:: algan.mobs.text
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        Tex
+      
+        Text
+      
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

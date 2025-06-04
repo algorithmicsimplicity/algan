@@ -1,0 +1,35 @@
+Quad
+====
+
+Qualified name: ``algan.mobs.shapes\_2d.Quad``
+
+.. currentmodule:: algan.mobs.shapes_2d
+
+.. autoclass:: Quad
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Quad.animation_manager
+     ~Quad.basis
+     ~Quad.color
+     ~Quad.glow
+     ~Quad.location
+     ~Quad.max_opacity
+     ~Quad.normalized_basis
+     ~Quad.opacity
+     ~Quad.scale_coefficient
+   

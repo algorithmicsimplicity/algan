@@ -1,0 +1,25 @@
+AnimationManager
+================
+
+Qualified name: ``algan.animation.animation\_contexts.AnimationManager``
+
+.. currentmodule:: algan.animation.animation_contexts
+
+.. autoclass:: AnimationManager
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~AnimationManager.instance
+      ~AnimationManager.reset
+      ~AnimationManager.wait
+
+   
+   

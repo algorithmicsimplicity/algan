@@ -1,0 +1,43 @@
+Off
+===
+
+Qualified name: ``algan.animation.animation\_contexts.Off``
+
+.. currentmodule:: algan.animation.animation_contexts
+
+.. autoclass:: Off
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Off.combine_rate_func
+     ~Off.finished
+     ~Off.lag_ratio
+     ~Off.new_animation
+     ~Off.prev_context
+     ~Off.priority_level
+     ~Off.rate_func
+     ~Off.rate_func_compose
+     ~Off.record_attr_modifications
+     ~Off.record_funcs
+     ~Off.run_time
+     ~Off.run_time_unit
+     ~Off.same_run_time
+     ~Off.spawn_at_end
+     ~Off.new_mobs
+     ~Off.child_contexts
+     ~Off.kwargs
+   

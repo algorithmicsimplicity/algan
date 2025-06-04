@@ -1,0 +1,36 @@
+Surface
+=======
+
+Qualified name: ``algan.mobs.surfaces.surface.Surface``
+
+.. currentmodule:: algan.mobs.surfaces.surface
+
+.. autoclass:: Surface
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~Surface.get_default_color
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Surface.animation_manager
+     ~Surface.basis
+     ~Surface.color
+     ~Surface.glow
+     ~Surface.location
+     ~Surface.max_opacity
+     ~Surface.normalized_basis
+     ~Surface.opacity
+     ~Surface.scale_coefficient
+   

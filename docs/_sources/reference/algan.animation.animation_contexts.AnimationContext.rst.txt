@@ -1,0 +1,59 @@
+AnimationContext
+================
+
+Qualified name: ``algan.animation.animation\_contexts.AnimationContext``
+
+.. currentmodule:: algan.animation.animation_contexts
+
+.. autoclass:: AnimationContext
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~AnimationContext.add_child_context
+      ~AnimationContext.add_mob
+      ~AnimationContext.get_current_end_time
+      ~AnimationContext.get_current_time
+      ~AnimationContext.get_descendants
+      ~AnimationContext.get_rescaled
+      ~AnimationContext.get_rescaling_time
+      ~AnimationContext.increment_times
+      ~AnimationContext.on_create
+      ~AnimationContext.on_create_extra
+      ~AnimationContext.on_destroy
+      ~AnimationContext.on_destroy_extra
+      ~AnimationContext.on_init
+      ~AnimationContext.on_init_extra
+      ~AnimationContext.rewind
+      ~AnimationContext.wait
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~AnimationContext.combine_rate_func
+     ~AnimationContext.finished
+     ~AnimationContext.lag_ratio
+     ~AnimationContext.new_animation
+     ~AnimationContext.prev_context
+     ~AnimationContext.priority_level
+     ~AnimationContext.rate_func
+     ~AnimationContext.rate_func_compose
+     ~AnimationContext.record_attr_modifications
+     ~AnimationContext.record_funcs
+     ~AnimationContext.run_time
+     ~AnimationContext.run_time_unit
+     ~AnimationContext.same_run_time
+     ~AnimationContext.spawn_at_end
+     ~AnimationContext.new_mobs
+     ~AnimationContext.child_contexts
+     ~AnimationContext.kwargs
+   

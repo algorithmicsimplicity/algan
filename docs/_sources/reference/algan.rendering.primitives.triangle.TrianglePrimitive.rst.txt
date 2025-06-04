@@ -1,0 +1,24 @@
+TrianglePrimitive
+=================
+
+Qualified name: ``algan.rendering.primitives.triangle.TrianglePrimitive``
+
+.. currentmodule:: algan.rendering.primitives.triangle
+
+.. autoclass:: TrianglePrimitive
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~TrianglePrimitive.get_interpolation_coordinates
+      ~TrianglePrimitive.interpolate_property
+
+   
+   

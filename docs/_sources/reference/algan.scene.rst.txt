@@ -1,0 +1,36 @@
+﻿scene
+=====
+
+.. currentmodule:: algan.scene
+
+.. automodule:: algan.scene
+
+   
+   
+   .. autoaliasattr:: algan.scene
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        Scene
+      
+        SceneTracker
+      
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

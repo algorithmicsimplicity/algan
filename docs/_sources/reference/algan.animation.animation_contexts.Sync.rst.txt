@@ -1,0 +1,43 @@
+Sync
+====
+
+Qualified name: ``algan.animation.animation\_contexts.Sync``
+
+.. currentmodule:: algan.animation.animation_contexts
+
+.. autoclass:: Sync
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Sync.combine_rate_func
+     ~Sync.finished
+     ~Sync.lag_ratio
+     ~Sync.new_animation
+     ~Sync.prev_context
+     ~Sync.priority_level
+     ~Sync.rate_func
+     ~Sync.rate_func_compose
+     ~Sync.record_attr_modifications
+     ~Sync.record_funcs
+     ~Sync.run_time
+     ~Sync.run_time_unit
+     ~Sync.same_run_time
+     ~Sync.spawn_at_end
+     ~Sync.new_mobs
+     ~Sync.child_contexts
+     ~Sync.kwargs
+   

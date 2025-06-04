@@ -1,0 +1,42 @@
+Group
+=====
+
+Qualified name: ``algan.mobs.group.Group``
+
+.. currentmodule:: algan.mobs.group
+
+.. autoclass:: Group
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~Group.arrange_between_points
+      ~Group.arrange_in_grid
+      ~Group.arrange_in_line
+      ~Group.get_boundary_edge_point2
+      ~Group.get_parts_as_mobs
+      ~Group.highlight
+      ~Group.highlight_off
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Group.animation_manager
+     ~Group.basis
+     ~Group.color
+     ~Group.glow
+     ~Group.location
+     ~Group.max_opacity
+     ~Group.normalized_basis
+     ~Group.opacity
+     ~Group.scale_coefficient
+   

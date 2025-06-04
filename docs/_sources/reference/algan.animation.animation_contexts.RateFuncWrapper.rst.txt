@@ -1,0 +1,24 @@
+RateFuncWrapper
+===============
+
+Qualified name: ``algan.animation.animation\_contexts.RateFuncWrapper``
+
+.. currentmodule:: algan.animation.animation_contexts
+
+.. autoclass:: RateFuncWrapper
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~RateFuncWrapper.set_full_time
+      ~RateFuncWrapper.set_part_time
+
+   
+   

@@ -1,0 +1,43 @@
+﻿animatable
+==========
+
+.. currentmodule:: algan.animation.animatable
+
+.. automodule:: algan.animation.animatable
+
+   
+   
+   .. autoaliasattr:: algan.animation.animatable
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        Animatable
+      
+        AnimatableData
+      
+        ModificationHistory
+      
+   
+   
+
+   
+   
+   .. rubric:: Functions
+
+   
+   .. autofunction:: animated_function
+   
+   
+
+   
+   
+   
+
+
+

@@ -1,0 +1,32 @@
+﻿python\_utils
+=============
+
+.. currentmodule:: algan.utils.python_utils
+
+.. automodule:: algan.utils.python_utils
+
+   
+   
+   .. autoaliasattr:: algan.utils.python_utils
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Functions
+
+   
+   .. autofunction:: downsample_nested_list
+   .. autofunction:: get_factors
+   .. autofunction:: traverse
+   
+   
+
+   
+   
+   
+
+
+
