@@ -17,7 +17,15 @@ Qualified name: ``algan.mobs.surfaces.surface.Surface``
    .. autosummary::
       :nosignatures:
       
+      ~Surface.coord_function
+      ~Surface.get_base_grid
       ~Surface.get_default_color
+      ~Surface.normal_function
+      ~Surface.set_color_by_function
+      ~Surface.set_color_by_texture
+      ~Surface.set_location_by_function
+      ~Surface.set_normal_by_function
+      ~Surface.set_shape_to
 
    
    .. rubric:: Attributes

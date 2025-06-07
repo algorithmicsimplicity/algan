@@ -898,12 +898,26 @@
                 <span class="n">d</span><span class="o">.</span><span class="n">data_sub_inds</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="k">return</span> <span class="n">c</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">spawn</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">animate</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+<div class="viewcode-block" id="Animatable.spawn">
+<a class="viewcode-back" href="../../../reference/algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable.spawn">[docs]</a>
+    <span class="k">def</span><span class="w"> </span><span class="nf">spawn</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">animate</span><span class="p">:</span><span class="nb">bool</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Spawns the mob, introducing it into the video. Prior to spawning, a Mob will not appear on</span>
+<span class="sd">        screen and any changes made to its animatable attributes will not be animated. After spawning,</span>
+<span class="sd">        changes made to the Mob are animated by default.</span>
+
+<span class="sd">        Parameters</span>
+<span class="sd">        ----------</span>
+<span class="sd">        animate</span>
+<span class="sd">            Whether a spawn-in animation should be played. By default, the spawn-in animation is</span>
+<span class="sd">            a simple fade-in. Defaults to True.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">spawn_time</span><span class="p">()</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">)</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">animation_manager</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">spawn_at_end</span><span class="p">:</span>
             <span class="k">return</span> <span class="bp">self</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_create_recursive</span><span class="p">(</span><span class="n">animate</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">animation_manager</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">on_create</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
-        <span class="k">return</span> <span class="bp">self</span>
+        <span class="k">return</span> <span class="bp">self</span></div>
+
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_create_recursive</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">animate</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
         <span class="k">with</span> <span class="n">Sync</span><span class="p">():</span>

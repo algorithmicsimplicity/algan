@@ -7,12 +7,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://docs.manim.community/tutorials/getting_started.html" />
 <meta property="og:site_name" content="Algan | Documentation" />
-<meta property="og:description" content="Running a Minimal Algan Program: The simplest way to use Algan is to make a new Python file, and run it. Create a new file named my_first_algan.py, copy the below code into it, and then run it with..." />
+<meta property="og:description" content="Running Your First Algan Program: The quickest way to start creating animations with Algan is to write a Python script and execute it. Let’s make a very simple animation. Create a new file named my..." />
 <meta property="og:image:width" content="1146" />
 <meta property="og:image:height" content="600" />
-<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_tutorials_getting_started_c1e7557a.png" />
-<meta property="og:image:alt" content="Running a Minimal Algan Program: The simplest way to use Algan is to make a new Python file, and run it. Create a new file named my_first_algan.py, copy the below code into it, and then run it with..." />
-<meta name="description" content="Running a Minimal Algan Program: The simplest way to use Algan is to make a new Python file, and run it. Create a new file named my_first_algan.py, copy the below code into it, and then run it with..." />
+<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_tutorials_getting_started_f9760754.png" />
+<meta property="og:image:alt" content="Running Your First Algan Program: The quickest way to start creating animations with Algan is to write a Python script and execute it. Let’s make a very simple animation. Create a new file named my..." />
+<meta name="description" content="Running Your First Algan Program: The quickest way to start creating animations with Algan is to write a Python script and execute it. Let’s make a very simple animation. Create a new file named my..." />
 <meta name="twitter:card" content="summary_large_image" />
 <link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Basic Animations" href="basic_animations.html" /><link rel="prev" title="Installation" href="installation.html" />
 
@@ -434,20 +434,18 @@
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Before proceeding, install Algan and make sure it is running properly by
-following the steps in <a class="reference internal" href="installation.html"><span class="doc">Installation</span></a>.</p>
+following the detailed steps in <a class="reference internal" href="installation.html"><span class="doc">Installation</span></a>.</p>
 </div>
 <div class="admonition important">
 <p class="admonition-title">Important</p>
-<p>If you installed Algan in the recommended way, using the
-Python management tool <code class="docutils literal notranslate"><span class="pre">uv</span></code>, then you either need to make sure the corresponding
-virtual environment is activated (follow the instructions printed on running <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">venv</span></code>),
-or you need to remember to prefix the <code class="docutils literal notranslate"><span class="pre">manim</span></code> command in the console with <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span></code>;
-that is, <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span> <span class="pre">manim</span> <span class="pre">...</span></code>.</p>
+<p>If you installed Algan using the recommended Python management tool <code class="docutils literal notranslate"><span class="pre">uv</span></code>,
+it’s crucial to either activate the corresponding virtual environment (by following the
+instructions displayed when running <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">venv</span></code>).</p>
 </div>
-<section id="running-a-minimal-algan-program">
-<h2>Running a Minimal Algan Program<a class="headerlink" href="#running-a-minimal-algan-program" title="Link to this heading">¶</a></h2>
-<p>The simplest way to use Algan is to make a new Python file, and run it.
-Create a new file named my_first_algan.py, copy the below code into it, and then run it with <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">my_first_algan.py</span></code>.</p>
+<section id="running-your-first-algan-program">
+<h2>Running Your First Algan Program<a class="headerlink" href="#running-your-first-algan-program" title="Link to this heading">¶</a></h2>
+<p>The quickest way to start creating animations with Algan is to write a Python script and execute it.</p>
+<p>Let’s make a very simple animation. Create a new file named <code class="docutils literal notranslate"><span class="pre">my_first_algan.py</span></code>, copy the code provided below into it, and then run it from your terminal using <code class="docutils literal notranslate"><span class="pre">python</span> <span class="pre">my_first_algan.py</span></code>.</p>
 <div id="gettingstartedhelloworld" class="admonition admonition-manim-example">
 <p class="admonition-title">Example: GettingStartedHelloWorld <a class="headerlink" href="#gettingstartedhelloworld">¶</a></p><video
     class="manim-video"
@@ -457,7 +455,8 @@ Create a new file named my_first_algan.py, copy the below code into it, and then
     src="./GettingStartedHelloWorld-1.mp4">
 </video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
-<span class="n">Text</span><span class="p">(</span><span class="s1">&#39;Hello World!&#39;</span><span class="p">,</span> <span class="n">font_size</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
+<span class="n">my_first_mob</span> <span class="o">=</span> <span class="n">Text</span><span class="p">(</span><span class="s1">&#39;Hello World!&#39;</span><span class="p">,</span> <span class="n">font_size</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
+<span class="n">my_first_mob</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
 <span class="n">render_to_file</span><span class="p">()</span>
 </pre></div>
@@ -465,25 +464,45 @@ Create a new file named my_first_algan.py, copy the below code into it, and then
 <pre data-manim-binder data-manim-classname="GettingStartedHelloWorld">
 from algan import *
 
-Text('Hello World!', font_size=100).spawn()
+my_first_mob = Text('Hello World!', font_size=100)
+my_first_mob.spawn()
 
 render_to_file()
 
-</pre></div><p>If successful, you should now see a new file named algan_render_output.mp4 in the same directory as the Python file you
-ran. Open that video, and you should see the above animation play.</p>
-<p>There are 3 lines in this program. The first imports the algan library, making all of its tools and functions
-available to use.</p>
-<p>The second creates a <a class="reference internal" href="../reference/algan.mobs.text.Text.html#algan.mobs.text.Text" title="algan.mobs.text.Text"><code class="xref py py-class docutils literal notranslate"><span class="pre">Text</span></code></a> object which will be displayed. In Algan, objects which
-will be displayed on screen are called Mobs (Moveable Objects), and must inherit from the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> base class.
-Algan provides <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s for displaying various simple shapes,
-text, and LaTeX. You can also import Mobs from Manim, or combine mobs together to build up more complex objects.</p>
-<div class="admonition important">
-<p class="admonition-title">Important</p>
-<p>Note that the .spawn() method is called on the Mob, this is necessary to make it appear on screen!</p>
+</pre></div><p>If the execution is successful, you should find a new video file named <cite>algan_render_output.mp4</cite> in the same directory as your Python script. Open this video file, and you will see your first Algan animation playing: “Hello World!” appearing on screen.</p>
+<section id="explanation">
+<h3>Explanation<a class="headerlink" href="#explanation" title="Link to this heading">¶</a></h3>
+<p>Let’s break down this minimal program line-by-line to see what’s going on:</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+</pre></div>
 </div>
-<p>The third and final line tells Algan to render all of the previously specified animations into a video file. By
-default the video will be output in the same directory as the running file, but you can change this behaviour
-by specifying the output_file and output_directory parameters of <a class="reference internal" href="../reference/algan.utils.algan_utils.html#algan.utils.algan_utils.render_to_file" title="algan.utils.algan_utils.render_to_file"><code class="xref py py-func docutils literal notranslate"><span class="pre">render_to_file()</span></code></a>.</p>
+<p>This line imports all of Algan’s functionality, making it available to use in your script.
+All of your Algan scripts will start with this line.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">my_first_mob</span> <span class="o">=</span> <span class="n">Text</span><span class="p">(</span><span class="s1">&#39;Hello World!&#39;</span><span class="p">,</span> <span class="n">font_size</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>This line first creates a visual object. In Algan, any object that can be displayed and animated
+on screen is called a <strong>Mob</strong> (short for Moveable Object). Here, we create a <a class="reference internal" href="../reference/algan.mobs.text.Text.html#algan.mobs.text.Text" title="algan.mobs.text.Text"><code class="xref py py-class docutils literal notranslate"><span class="pre">Text</span></code></a> object,
+which is a type of <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> specifically designed
+to display text. We initialize it with the content “Hello World!” and set its font size
+to 100 to take up most of the screen. This mob is then assigned the name <em>my_first_mob</em> so we can
+refer to it later in the script.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">my_first_mob</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>This line <em>spawns</em> the mob we previously created. This step is crucial as mobs will not appear on screen,
+and will not be animatable, until they have been spawned. By default, a mob will play a simple fade-in animation when it is spawned.
+Without calling <a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable.spawn" title="algan.animation.animatable.Animatable.spawn"><code class="xref py py-meth docutils literal notranslate"><span class="pre">spawn()</span></code></a>, your <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> will not appear in the final video.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">render_to_file</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>This final line instructs Algan to process all of the previously created animations and mobs you’ve defined
+in your script and render them into a video file.
+By default, the video will be saved in the same directory where you ran your Python script
+under the name ‘algan_render_output.mp4’.
+You can change this behavior by specifying the <cite>output_file</cite> and <cite>output_directory</cite> parameters of
+the <a class="reference internal" href="../reference/algan.utils.algan_utils.html#algan.utils.algan_utils.render_to_file" title="algan.utils.algan_utils.render_to_file"><code class="xref py py-func docutils literal notranslate"><span class="pre">render_to_file()</span></code></a> function.</p>
+</section>
 </section>
 </section>
 
@@ -543,7 +562,10 @@ by specifying the output_file and output_directory parameters of <a class="refer
           <div class="toc-tree">
             <ul>
 <li><a class="reference internal" href="#">Getting Started</a><ul>
-<li><a class="reference internal" href="#running-a-minimal-algan-program">Running a Minimal Algan Program</a></li>
+<li><a class="reference internal" href="#running-your-first-algan-program">Running Your First Algan Program</a><ul>
+<li><a class="reference internal" href="#explanation">Explanation</a></li>
+</ul>
+</li>
 </ul>
 </li>
 </ul>

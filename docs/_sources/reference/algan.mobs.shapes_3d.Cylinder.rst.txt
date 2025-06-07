@@ -17,7 +17,9 @@ Qualified name: ``algan.mobs.shapes\_3d.Cylinder``
    .. autosummary::
       :nosignatures:
       
+      ~Cylinder.coord_function
       ~Cylinder.move_between_points
+      ~Cylinder.normal_function
       ~Cylinder.set_start_point
 
    

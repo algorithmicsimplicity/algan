@@ -124,7 +124,7 @@ itself.
 
 :::{dropdown} I know what I am doing and I would like to setup a minimal LaTeX installation
 You are welcome to use a smaller, more customizable LaTeX distribution like
-[TinyTeX](https://yihui.org/tinytex/). Manim overall requires the following
+[TinyTeX](https://yihui.org/tinytex/). Algan overall requires the following
 LaTeX packages to be installed in your distribution:
 ```text
 amsmath babel-english cbfonts-fd cm-super count1to ctex doublestroke dvisvgm everysel
@@ -134,31 +134,85 @@ setspace standalone tipa wasy wasysym xcolor xetex xkeyval
 ```
 :::
 
-### Step 3: Installing Algan
+### Step 3: Installing Pytorch
+
+The first thing we will do is create a new project using uv. Copy-paste
+the following commands into your terminal.
+
+```bash
+uv init alganimations
+cd alganimations
+uv venv
+.venv/Scripts/activate
+```
+
+This creates a new virtual environment where all of our packages will be installed to.
 
 Algan is built on top of Pytorch, to provide GPU accelerated animations and rendering.
 Depending on your operating system and GPU hardware, you will need to install different
-versions of Pytorch. By default Algan is setup to install for NVIDIA GPUs on Windows operating systems.
-If that's you then go ahead and run
+versions of Pytorch.
 
+Head over to [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) and 
+to find the instructions for installing Pytorch.
+
+* For the Pytorch build select `Stable`.
+
+* Select your operating system.
+
+* For the package select `pip`.
+
+* For the language select `Python`.
+
+* For the compute platform, you need to select the right version for your
+ computer's GPU hardware. If you are using an NVIDIA GPU you want to select
+ the latest version of CUDA. If you are using an AMD GPU you will want to
+ select ROCm. Otherwise, select CPU.
+
+In the "Run this command" box there should now be a line of text, something like
+
+"pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128".
+
+Copy-paste the command from the Pytorch website, change pip3 to pip, and prepend uv to it.
+Now run this command (with uv prepended) in your terminal.
+e.g.
 ```bash
-uv init alganimations
-cd alganimations
-uv pip install --extra-index-url https://test.pypi.org/simple/ --extra-index-url https://download.pytorch.org/whl/cu128 --find-links https://data.pyg.org/whl/torch-2.7.0+cu128.html algan==0.0.1 --index-strategy unsafe-best-match
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 ```
 
-If you are using a different setup, or If you get an error when running the above command,
-you will need to first install Pytorch manually. To do so, head over to 
-[https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) and follow the instructions provided for your
-operating system and hardware. If you wish to use GPU acceleration in Algan, 
-make sure to select the CUDA (for NVIDIA GPUs) or ROCm (for AMD GPUs) option when
-installing Pytorch.
+Once uv has finished installing Pytorch, you can check that it was
+successful by running this in your terminal
 
-Once you have installed Pytorch, go ahead and run these commands:
 ```bash
-uv init alganimations
-cd alganimations
-uv pip install --extra-index-url https://test.pypi.org/simple/ algan==0.0.1
+python -c "import torch; print('Success!')"
+```
+
+Finally, we need to install the torch-scatter extension package.
+Take this command
+
+uv pip install torch-scatter -f https://data.pyg.org/whl/torch-2.7.0+{CUDA}.html
+
+and replace {CUDA} with the version of CUDA you installed previously, either cpu, cu118, cu126, or cu128.
+Then run it in your terminal.
+
+e.g.
+
+```bash
+uv pip install torch-scatter -f https://data.pyg.org/whl/torch-2.7.0+cu128.html
+```
+
+Finally, check that installation was successful with this
+
+```bash
+python -c "import torch_scatter; print('Success!')"
+```
+
+### Step 4: Installing Algan
+
+Once Pytorch with torch-scatter has successfully been installed,
+you can proceed to install Algan by running this command in your terminal:
+
+```bash
+uv pip install --extra-index-url https://test.pypi.org/simple/ algan --index-strategy unsafe-best-match
 ```
 
 If it works with no errors, then you are ready to Alganimate!
@@ -174,63 +228,3 @@ into a new file `my-first-animation.py`, the import is resolved
 correctly and autocompletion is available.
 
 *Happy Algamating!*
-
-### Step 4 (optional): Installing Manim
-
-While Algan provides built-in support for text, latex, and simple geometric shapes, Manim provides a much richer
-library of built-in objects which can imported, especially with regards to mathematical graphs and functions. If you wish
-to use Manim objects in your Algan animations, you will need to install Manim to your Python environment, with
-the following command:
-
-```bas
-uv add manim
-```
-
-:::{dropdown} Alternative: Installing Manim as a global `uv`-managed tool
-If you have Manim projects in many different directories and you do not
-want to setup a local project environment for each of them, you could
-also install Manim as a `uv`-managed tool.
-
-See [`uv`'s documentation for more information](https://docs.astral.sh/uv/concepts/tools/)
-on their tool mechanism.
-
-To install Manim as a global `uv` tool, simply run
-```bash
-uv tool install manim
-```
-after which the `manim` executable will be available on your
-global system path, without the need to activate any virtual
-environment or prefixing your commands with `uv run`.
-
-Note that when using this approach, setting up your code editor
-to properly resolve `import manim` requires additional work, as
-the global tool environment is not automatically detected: the
-base path of all tool environments can be determined by running
-```
-uv tool dir
-```
-which should now contain a directory `manim` in which the appropriate
-virtual environment is located. Set the Python interpreter of your IDE
-to this environment to make imports properly resolve themselves.
-:::
-
-:::{dropdown} Installing Manim for a different version of Python
-In case you would like to use a different version of Python
-(for example, due to compatibility issues with other packages),
-then `uv` allows you to do so in a fairly straightforward way.
-
-When initializing the local Python project, simply pass the Python
-version you want to use as an argument to the `init` command:
-```
-uv init --python 3.12 manimations
-cd manimations
-uv add manim
-```
-To change the version for an existing package, you will need to
-edit the `pyproject.toml` file. If you are downgrading the python version, the
-`requires-python` entry needs to be updated such that your chosen
-version satisfies the requirement. Change the line to, for example
-`requires-python = ">=3.12"`. After that, run `uv python pin 3.12`
-to pin the python version to `3.12`. Finally, run `uv sync`, and your
-environment is updated!
-:::

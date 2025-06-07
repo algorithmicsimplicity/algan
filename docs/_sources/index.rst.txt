@@ -1,7 +1,7 @@
 Algan
 =====
 
-Algan (ALGorithmic ANimation) is an animation library inspired by Manim.
+Algan (ALGorithmic ANimation) is an animation library inspired by `Manim <https://docs.manim.community/en/stable/>`_.
 Manim is a popular Python library for animating mathematical concepts, featuring
 a simple and intuitive interface and an expansive collection of built in functionality.
 However, Manim has some key design flaws that make it unsuited for orchestrating
@@ -10,7 +10,7 @@ Algan seeks to improve upon Manim by providing a similarly simple interface, but
 more robust and scalable animation framework.
 
 To this end, Algan features a fully complete animation and rendering backend, built from
-the ground up in Pytorch. Because the entire pipeline is purpose-built for algorithmic animating,
+the ground up in `Pytorch <https://pytorch.org/>`_. Because the entire pipeline is purpose-built for algorithmic animating,
 Algan enjoys several key benefits over Manim:
 
 - Algan does not render animations as they are created in the program, but instead records
@@ -35,7 +35,7 @@ in the right place!
 
 - The :doc:`Installation <installation>` section has the latest and
   up-to-date installation instructions for Windows, macOS, and Linux.
-- In our :doc:`Tutorials <tutorials/index>` section you will find a
+- In our :doc:`Tutorials <new_user_tutorials/index>` section you will find a
   collection of resources that will teach you how to use Algan.
 
 

@@ -7,12 +7,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://docs.manim.community/tutorials/controlling_animations.html" />
 <meta property="og:site_name" content="Algan | Documentation" />
-<meta property="og:description" content="So far we’ve seen how to create basic animations by modifying animatable attributes and using animated_functions. But in all of these examples, the animations play for 1 second each, and take place..." />
+<meta property="og:description" content="So far we’ve seen how to create basic animations by modifying animatable attributes and using animated_function() s. But in all of these examples, the animations play for 1 second each, and take pl..." />
 <meta property="og:image:width" content="1146" />
 <meta property="og:image:height" content="600" />
-<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_tutorials_controlling_animations_d350cf5e.png" />
-<meta property="og:image:alt" content="So far we’ve seen how to create basic animations by modifying animatable attributes and using animated_functions. But in all of these examples, the animations play for 1 second each, and take place..." />
-<meta name="description" content="So far we’ve seen how to create basic animations by modifying animatable attributes and using animated_functions. But in all of these examples, the animations play for 1 second each, and take place..." />
+<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_tutorials_controlling_animations_ffce540d.png" />
+<meta property="og:image:alt" content="So far we’ve seen how to create basic animations by modifying animatable attributes and using animated_function() s. But in all of these examples, the animations play for 1 second each, and take pl..." />
+<meta name="description" content="So far we’ve seen how to create basic animations by modifying animatable attributes and using animated_function() s. But in all of these examples, the animations play for 1 second each, and take pl..." />
 <meta name="twitter:card" content="summary_large_image" />
 <link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Nesting Mobs" href="nesting_mobs.html" /><link rel="prev" title="Basic Animations" href="basic_animations.html" />
 
@@ -431,11 +431,7 @@
         <article role="main" id="furo-main-content">
           <section id="controlling-animations">
 <h1>Controlling Animations<a class="headerlink" href="#controlling-animations" title="Link to this heading">¶</a></h1>
-<p>So far we’ve seen how to create basic animations by modifying animatable attributes and using animated_functions.
-But in all of these examples, the animations play for 1 second each, and take place one after the other.
-What if we want more control over how the animations should happen? Not to worry,
-Algan is specifically designed to make orchestrating complex animations easy, and to this end it provides
-<a class="reference internal" href="../reference/algan.animation.animation_contexts.AnimationContext.html#algan.animation.animation_contexts.AnimationContext" title="algan.animation.animation_contexts.AnimationContext"><code class="xref py py-class docutils literal notranslate"><span class="pre">AnimationContext</span></code></a> s.</p>
+<p>So far we’ve seen how to create basic animations by modifying animatable attributes and using <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a> s. But in all of these examples, the animations play for 1 second each, and take place one after the other. What if we want more control over how the animations should happen? Not to worry, Algan is specifically designed to make orchestrating complex animations easy, and to this end it provides <a class="reference internal" href="../reference/algan.animation.animation_contexts.AnimationContext.html#algan.animation.animation_contexts.AnimationContext" title="algan.animation.animation_contexts.AnimationContext"><code class="xref py py-class docutils literal notranslate"><span class="pre">AnimationContext</span></code></a> s.</p>
 <section id="animation-contexts">
 <h2>Animation Contexts<a class="headerlink" href="#animation-contexts" title="Link to this heading">¶</a></h2>
 <p>In Algan, you can control how animations should be played by placing them within an appropriate context.
@@ -468,9 +464,8 @@ with Sync():
 render_to_file()
 
 </pre></div><p>Here we use the <a class="reference internal" href="../reference/algan.animation.animation_contexts.Sync.html#algan.animation.animation_contexts.Sync" title="algan.animation.animation_contexts.Sync"><code class="xref py py-class docutils literal notranslate"><span class="pre">Sync</span></code></a> context (read as “with animations synchronized”) to specify
-the animations should be synchronized. All animations that take place within the with Sync(): clause will be
-played at the same time.</p>
-<p>In addition to Sync, Algan also provides the <a class="reference internal" href="../reference/algan.animation.animation_contexts.Seq.html#algan.animation.animation_contexts.Seq" title="algan.animation.animation_contexts.Seq"><code class="xref py py-class docutils literal notranslate"><span class="pre">Seq</span></code></a> (“with animations sequenced”), <a class="reference internal" href="../reference/algan.animation.animation_contexts.Lag.html#algan.animation.animation_contexts.Lag" title="algan.animation.animation_contexts.Lag"><code class="xref py py-class docutils literal notranslate"><span class="pre">Lag</span></code></a> (“with animations lagged”),
+the animations should be synchronized. All animations that take place within the <code class="docutils literal notranslate"><span class="pre">with</span> <span class="pre">Sync():</span></code> clause will be
+played at the same time. In addition to Sync, Algan also provides the <a class="reference internal" href="../reference/algan.animation.animation_contexts.Seq.html#algan.animation.animation_contexts.Seq" title="algan.animation.animation_contexts.Seq"><code class="xref py py-class docutils literal notranslate"><span class="pre">Seq</span></code></a> (“with animations sequenced”), <a class="reference internal" href="../reference/algan.animation.animation_contexts.Lag.html#algan.animation.animation_contexts.Lag" title="algan.animation.animation_contexts.Lag"><code class="xref py py-class docutils literal notranslate"><span class="pre">Lag</span></code></a> (“with animations lagged”),
 and <a class="reference internal" href="../reference/algan.animation.animation_contexts.Off.html#algan.animation.animation_contexts.Off" title="algan.animation.animation_contexts.Off"><code class="xref py py-class docutils literal notranslate"><span class="pre">Off</span></code></a> (“with animations off”) contexts.</p>
 <div id="combiningcontextexamples" class="admonition admonition-manim-example">
 <p class="admonition-title">Example: CombiningContextExamples <a class="headerlink" href="#combiningcontextexamples">¶</a></p><video
@@ -528,16 +523,17 @@ with Off():
 render_to_file()
 
 </pre></div><p>Seq() will play animations sequentially one after the other (note that this is the default behaviour when not in any context),
-Lag(lag_ratio=r) will play animations sequentially lagged by a factor of r. e.g. Lag(0.5) will begin the next
+Lag(lag_ratio=r) will play animations sequentially lagged by a factor of r.
+e.g. Lag(0.5) will begin the next
 animation once the current one is 50% finished.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Lag(0) is equivalent to Sync() and Lag(1) is equivalent to Seq().</p>
 </div>
-<p>Finally Off() disables animations that take place within its context, all changes will be instant (1 frame).</p>
-<p><code class="xref py py-class docutils literal notranslate"><span class="pre">AnimationContexts</span></code> s can also be given a number of parameters to change their
+<p>Finally Off() disables animations that take place within its context, all changes will be instant (1 frame).
+<a class="reference internal" href="../reference/algan.animation.animation_contexts.AnimationContext.html#algan.animation.animation_contexts.AnimationContext" title="algan.animation.animation_contexts.AnimationContext"><code class="xref py py-class docutils literal notranslate"><span class="pre">AnimationContext</span></code></a> s can also be given a number of parameters to change their
 behaviour. Most notably, the length of animations that take place within a context can be
-controlled with run_time and run_time_unit.</p>
+controlled with <code class="docutils literal notranslate"><span class="pre">run_time</span></code> and <code class="docutils literal notranslate"><span class="pre">run_time_unit</span></code>.</p>
 <div id="combiningcontextexamples" class="admonition admonition-manim-example">
 <p class="admonition-title">Example: CombiningContextExamples <a class="headerlink" href="#combiningcontextexamples">¶</a></p><video
     class="manim-video"
@@ -579,19 +575,19 @@ with Seq(run_time_unit=5):
 
 render_to_file()
 
-</pre></div><p>The run_time parameter specifies the total amount of time that the context should take place over, individual animations
-will be rescaled (sped up or slowed down) so that their total time is equal run_time.
-The run_time_unit parameter specifies how long each individual animation should be played for.</p>
+</pre></div><p>The <code class="docutils literal notranslate"><span class="pre">run_time</span></code> parameter specifies the total amount of time that the context should take place over, individual animations
+will be rescaled (sped up or slowed down) so that their total time is equal <code class="docutils literal notranslate"><span class="pre">run_time</span></code>.
+The <code class="docutils literal notranslate"><span class="pre">run_time_unit</span></code> parameter specifies how long each individual animation should be played for.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>If both parameters are set, run_time overrides run_time_unit.</p>
+<p>If both parameters are set, <code class="docutils literal notranslate"><span class="pre">run_time</span></code> overrides <code class="docutils literal notranslate"><span class="pre">run_time_unit</span></code>.</p>
 </div>
 </section>
 <section id="nesting-contexts">
 <h2>Nesting Contexts<a class="headerlink" href="#nesting-contexts" title="Link to this heading">¶</a></h2>
-<p>The real power of animation contexts is that they can be nested seamlessly. When one context is created within
-another, the sub-context will be treated as a single cohesive animation by the parent. This way, you can think of
-each context as combining the animations that take place within it into a single new animation.
+<p>The real power of animation contexts is that they can be nested seamlessly.
+When one context is created within another, the sub-context will be treated as a single cohesive animation by the parent.
+This way, you can think of each context as combining the animations that take place within it into a single new animation.
 This makes specifying complex animations and designing modular animation code a breeze.</p>
 <div id="combiningcontextexamples" class="admonition admonition-manim-example">
 <p class="admonition-title">Example: CombiningContextExamples <a class="headerlink" href="#combiningcontextexamples">¶</a></p><video

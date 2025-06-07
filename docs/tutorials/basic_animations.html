@@ -7,12 +7,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://docs.manim.community/tutorials/basic_animations.html" />
 <meta property="og:site_name" content="Algan | Documentation" />
-<meta property="og:description" content="In Algan you create animations by controlling “Mobs”, which are objects that will appear on screen. Algan provides a range of basic mobs covering basic 2-D and 3-D shapes such as circles, rectangle..." />
+<meta property="og:description" content="In Algan you create animations by controlling Mob s, which are objects that will appear on screen. Algan provides a range of basic Mob s covering basic 2-D and 3-D shapes such as circles, rectangle..." />
 <meta property="og:image:width" content="1146" />
 <meta property="og:image:height" content="600" />
-<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_tutorials_basic_animations_25a1a58b.png" />
-<meta property="og:image:alt" content="In Algan you create animations by controlling “Mobs”, which are objects that will appear on screen. Algan provides a range of basic mobs covering basic 2-D and 3-D shapes such as circles, rectangle..." />
-<meta name="description" content="In Algan you create animations by controlling “Mobs”, which are objects that will appear on screen. Algan provides a range of basic mobs covering basic 2-D and 3-D shapes such as circles, rectangle..." />
+<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_tutorials_basic_animations_e67363f8.png" />
+<meta property="og:image:alt" content="In Algan you create animations by controlling Mob s, which are objects that will appear on screen. Algan provides a range of basic Mob s covering basic 2-D and 3-D shapes such as circles, rectangle..." />
+<meta name="description" content="In Algan you create animations by controlling Mob s, which are objects that will appear on screen. Algan provides a range of basic Mob s covering basic 2-D and 3-D shapes such as circles, rectangle..." />
 <meta name="twitter:card" content="summary_large_image" />
 <link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Controlling Animations" href="controlling_animations.html" /><link rel="prev" title="Getting Started" href="getting_started.html" />
 
@@ -431,31 +431,34 @@
         <article role="main" id="furo-main-content">
           <section id="basic-animations">
 <h1>Basic Animations<a class="headerlink" href="#basic-animations" title="Link to this heading">¶</a></h1>
-<p>In Algan you create animations by controlling “Mobs”, which are objects that will appear on screen.
-Algan provides a range of basic mobs covering basic 2-D and 3-D shapes such as circles, rectangles, spheres,
-cubes, as well as Text mobs for displaying text and LaTex. You can also import mobs from Manim.</p>
+<p>In Algan you create animations by controlling <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s,
+which are objects that will appear on screen.
+Algan provides a range of basic <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s covering basic 2-D and 3-D
+shapes such as circles, rectangles, spheres, cubes, as well as
+<a class="reference internal" href="../reference/algan.mobs.text.Text.html#algan.mobs.text.Text" title="algan.mobs.text.Text"><code class="xref py py-class docutils literal notranslate"><span class="pre">Text</span></code></a> <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s for displaying text and LaTex.
+You can also import mobs from Manim.</p>
 <section id="changing-animatable-attributes">
 <h2>Changing Animatable Attributes<a class="headerlink" href="#changing-animatable-attributes" title="Link to this heading">¶</a></h2>
-<p>All <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s have the following animatable attributes: <code class="xref py py-attr docutils literal notranslate"><span class="pre">location</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">basis</span></code>,
+<p>All <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s have the following animatable attributes: <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.location" title="algan.mobs.mob.Mob.location"><code class="xref py py-attr docutils literal notranslate"><span class="pre">location</span></code></a>, <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.basis" title="algan.mobs.mob.Mob.basis"><code class="xref py py-attr docutils literal notranslate"><span class="pre">basis</span></code></a>,
 <code class="xref py py-attr docutils literal notranslate"><span class="pre">color</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">glow</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">opacity</span></code>. These attributes
-are special in that any modifications made to them will automatically be animated. Specifically, when
-a new value is assigned to an animatable attribute, that modification will take place over a 1 second period,
+are special in that any modifications made to them will automatically be animated.
+Specifically, when a new value is assigned to an animatable attribute, that modification will take place over a 1 second period,
 during which the attribute is linearly interpolated from the old value to the new value.</p>
-<p>location is a vector length 3 which specifies where in 3-D space a mob is located. By default, new Mobs are created at the ORIGIN (0, 0, 0).</p>
+<p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.location" title="algan.mobs.mob.Mob.location"><code class="xref py py-attr docutils literal notranslate"><span class="pre">location</span></code></a> is a vector length 3 which specifies where in 3-D space a mob is located. By default, new Mobs are created at the ORIGIN (0, 0, 0).</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>By default the camera is located at (0, 0, 7) and looks towards the ORIGIN.</p>
+<p>By default the camera is located at OUT*7 (0, 0, 7) and looks towards the ORIGIN.</p>
 </div>
-<p>basis is a vector of length 9 that specifies the orientation and scale of a Mob. It is not recommended to modify
-basis directly and instead use the helper methods like rotate and scale.</p>
-<p>color is a <code class="xref py py-class docutils literal notranslate"><span class="pre">constants.color.Color</span></code> object which specifies the main color of the Mob.</p>
+<p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.basis" title="algan.mobs.mob.Mob.basis"><code class="xref py py-attr docutils literal notranslate"><span class="pre">basis</span></code></a> is a vector of length 9 that specifies the orientation and scale of a Mob. It is not recommended to modify
+basis directly and instead use the helper methods like <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.rotate" title="algan.mobs.mob.Mob.rotate"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.rotate()</span></code></a> and <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.scale" title="algan.mobs.mob.Mob.scale"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.scale()</span></code></a>.</p>
+<p><code class="xref py py-attr docutils literal notranslate"><span class="pre">color</span></code> is a <code class="xref py py-class docutils literal notranslate"><span class="pre">Color</span></code> object which specifies the main color of the Mob.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>In Algan colors have red, green, blue components, as well as glow and opacity (and interally are stored
+<p>In Algan colors have red, green, blue components, as well as glow and opacity (and internally are stored
 as a vector of 5 components in that order). Colors with a non-zero glow component will ‘glow’, emitting light
-into nearby pixels.</p>
+into nearby pixels.
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">glow</span></code> and <code class="xref py py-attr docutils literal notranslate"><span class="pre">opacity</span></code> can optionally be set in the <code class="xref py py-class docutils literal notranslate"><span class="pre">Color</span></code> object, or as properties of the Mob itself.</p>
 </div>
-<p>glow and opacity can optionally be set in the Color object, or as properties of the Mob itself.</p>
 <div id="basicchangingattributes" class="admonition admonition-manim-example">
 <p class="admonition-title">Example: BasicChangingAttributes <a class="headerlink" href="#basicchangingattributes">¶</a></p><video
     class="manim-video"
@@ -491,7 +494,7 @@ render_to_file()
 
 </pre></div><div class="admonition important">
 <p class="admonition-title">Important</p>
-<p>Only non-inplace assignments are animated! That means that, for example, circle.location += UP * 0.5 will
+<p>Only non-inplace assignments are animated! That means that, for example, <code class="docutils literal notranslate"><span class="pre">circle.location</span> <span class="pre">+=</span> <span class="pre">UP</span> <span class="pre">*</span> <span class="pre">0.5</span></code> will
 not be animated. You should NEVER assign animated attributes inplace!</p>
 </div>
 </section>
@@ -499,7 +502,7 @@ not be animated. You should NEVER assign animated attributes inplace!</p>
 <h2>Animated Functions<a class="headerlink" href="#animated-functions" title="Link to this heading">¶</a></h2>
 <p>You will be able to get pretty far just modifying the animatable attributes, but there are some cases were linear
 interpolation just isn’t enough. For example, you may wish to move a Mob along a curved path. This animation
-cannot be expressed by linearly interpolating the Mob’s location. For such a case, you can create an animated_function.</p>
+cannot be expressed by linearly interpolating the Mob’s location. For such a case, you can create an <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a>.</p>
 <div id="basicanimatedfunction" class="admonition admonition-manim-example">
 <p class="admonition-title">Example: BasicAnimatedFunction <a class="headerlink" href="#basicanimatedfunction">¶</a></p><video
     class="manim-video"
@@ -545,26 +548,25 @@ move_along_path(square, 2*PI)
 
 render_to_file()
 
-</pre></div><p>The &#64;animated_function decorator specifies that a function should be animated. This decorator accepts a parameter
-animated_args, which must be a dictionary mapping the names of animated arguments to their initial values when the animation
-begins. Like with attribute modification, the animation will take place over a 1 second period.
-The animation is created by linearly interpolating the animated_args from their initial values given in the dict,
-to the value the function is called with. In this example, we specify that parameter t has an initial value
-of 0, and we call the function with t=2*PI, so the animation will range from t=0 to t=2*PI.</p>
+</pre></div><p>The <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a> decorator specifies that a function should be animated. This decorator accepts a parameter
+<code class="docutils literal notranslate"><span class="pre">animated_args</span></code>, which must be a dictionary mapping the names of animated arguments to their initial values when the animation
+begins. Like with attribute modification, the animation will take place over a 1 second period. The animation is created by linearly interpolating the <code class="docutils literal notranslate"><span class="pre">animated_args</span></code> from their initial values given in the dict,
+to the value the function is called with. In this example, we specify that parameter <code class="docutils literal notranslate"><span class="pre">t</span></code> has an initial value
+of 0, and we call the function with <code class="docutils literal notranslate"><span class="pre">t=2*PI</span></code>, so the animation will range from <code class="docutils literal notranslate"><span class="pre">t=0</span></code> to <code class="docutils literal notranslate"><span class="pre">t=2*PI</span></code>.</p>
 <div class="admonition important">
 <p class="admonition-title">Important</p>
-<p>An animated_function must accept at least one argument, and the first argument must be a Mob. Any arguments
-marked as animated_args must be floats.</p>
+<p>An <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a> must accept at least one argument, and the first argument must be a <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a>. Any arguments
+marked as <code class="docutils literal notranslate"><span class="pre">animated_args</span></code> must be floats.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Inside of an animated_function, the default animations created by modifying animatable attributes are disabled.</p>
+<p>Inside of an <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a>, the default animations created by modifying animatable attributes are disabled.</p>
 </div>
 </section>
 <section id="mob-methods">
 <h2>Mob Methods<a class="headerlink" href="#mob-methods" title="Link to this heading">¶</a></h2>
-<p>Finally, the mob class comes with a bunch of animated_functions built in as methods, for common use cases. Here
-are some examples:</p>
+<p>Finally, the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> class comes with a bunch of animated functions built in as methods, which should serve
+most of your common needs. Here are some examples:</p>
 <div id="basicmobmethods" class="admonition admonition-manim-example">
 <p class="admonition-title">Example: BasicMobMethods <a class="headerlink" href="#basicmobmethods">¶</a></p><video
     class="manim-video"
@@ -596,7 +598,15 @@ mob = mob.become(Circle())
 
 render_to_file()
 
-</pre></div></section>
+</pre></div><p>Here’s a brief explanation of the methods shown in the example:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.move" title="algan.mobs.mob.Mob.move"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.move()</span></code></a>: This method is used to translate (move) the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> by a specified vector. For example,
+<cite>mob.move(RIGHT)</cite> moves the object to the right one unit.</p></li>
+<li><p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.rotate" title="algan.mobs.mob.Mob.rotate"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.rotate()</span></code></a>: This method rotates the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> by a given angle around a specified axis. For instance, <cite>mob.rotate(360, OUT)</cite> rotates the object 360 degrees around the outward-pointing Z-axis.</p></li>
+<li><p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.rotate_around_point" title="algan.mobs.mob.Mob.rotate_around_point"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.rotate_around_point()</span></code></a>: This method rotates the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> around a specific point in space. <cite>mob.rotate_around_point(ORIGIN, 180, OUT)</cite> rotates the object 180 degrees around the origin (0,0,0) along the Z-axis.</p></li>
+<li><p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.become" title="algan.mobs.mob.Mob.become"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.become()</span></code></a>: This method smoothly transforms the current <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> into the shape of another <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> provided as an argument. For example, <cite>mob = mob.become(Circle())</cite> transforms the existing mob into a circle.</p></li>
+</ul>
+</section>
 </section>
 
         </article>

@@ -24,6 +24,11 @@
 
    
    
+   .. rubric:: Functions
+
+   
+   .. autofunction:: grid_to_triangle_vertices
+   
    
 
    
