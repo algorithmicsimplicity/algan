@@ -1,0 +1,19 @@
+========
+Textures
+========
+
+TODO.
+
+
+Texturing Surfaces
+------------------
+
+.. algan:: TexturesSurfaces
+
+    from algan import *
+
+    mob = Surface().spawn()
+    #mob.set_color_by_texture('my_image.png')
+
+    render_to_file()
+

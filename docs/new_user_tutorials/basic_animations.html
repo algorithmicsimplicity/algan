@@ -1,0 +1,702 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="../">
+  <head><meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta property="og:title" content="Basic Animations" />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://docs.manim.community/new_user_tutorials/basic_animations.html" />
+<meta property="og:site_name" content="Algan | Documentation" />
+<meta property="og:description" content="In Algan you create animations by controlling Mob s, which are objects that will appear on screen. Algan provides a range of basic Mob s covering basic 2-D and 3-D shapes such as circles, rectangle..." />
+<meta property="og:image:width" content="1146" />
+<meta property="og:image:height" content="600" />
+<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_new_user_tutorials_basic_animations_e67363f8.png" />
+<meta property="og:image:alt" content="In Algan you create animations by controlling Mob s, which are objects that will appear on screen. Algan provides a range of basic Mob s covering basic 2-D and 3-D shapes such as circles, rectangle..." />
+<meta name="description" content="In Algan you create animations by controlling Mob s, which are objects that will appear on screen. Algan provides a range of basic Mob s covering basic 2-D and 3-D shapes such as circles, rectangle..." />
+<meta name="twitter:card" content="summary_large_image" />
+<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Controlling Animations" href="controlling_animations.html" /><link rel="prev" title="Getting Started" href="getting_started.html" />
+
+    <link rel="shortcut icon" href="../_static/favicon.ico"/><!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 -->
+        <title>Basic Animations - Algan v0.1.0</title>
+      <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=354aac6f" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/graphviz.css?v=4ae1632d" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/furo-extensions.css?v=302659d7" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=18161cd7" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f8f8f8;
+  --color-code-foreground: black;
+  --color-content-foreground: #000000;
+  --color-background-primary: #ffffff;
+  --color-background-border: #ffffff;
+  --color-sidebar-background: #f8f9fb;
+  --color-brand-content: #1c00e3;
+  --color-brand-primary: #192bd0;
+  --color-link: #c93434;
+  --color-link--hover: #5b0000;
+  --color-inline-code-background: #f6f6f6;;
+  --color-foreground-secondary: #000;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-content-foreground: #ffffffd9;
+  --color-background-primary: #131416;
+  --color-background-border: #303335;
+  --color-sidebar-background: #1a1c1e;
+  --color-brand-content: #2196f3;
+  --color-brand-primary: #007fff;
+  --color-link: #51ba86;
+  --color-link--hover: #9cefc6;
+  --color-inline-code-background: #262626;
+  --color-foreground-secondary: #ffffffd9;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-content-foreground: #ffffffd9;
+  --color-background-primary: #131416;
+  --color-background-border: #303335;
+  --color-sidebar-background: #1a1c1e;
+  --color-brand-content: #2196f3;
+  --color-brand-primary: #007fff;
+  --color-link: #51ba86;
+  --color-link--hover: #9cefc6;
+  --color-inline-code-background: #262626;
+  --color-foreground-secondary: #ffffffd9;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc">
+<label class="overlay sidebar-overlay" for="__navigation">
+  <div class="visually-hidden">Hide navigation sidebar</div>
+</label>
+<label class="overlay toc-overlay" for="__toc">
+  <div class="visually-hidden">Hide table of contents sidebar</div>
+</label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <div class="visually-hidden">Toggle site navigation sidebar</div>
+        <i class="icon"><svg><use href="#svg-menu"></use></svg></i>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="../index.html"><div class="brand">Algan v0.1.0</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle">
+          <div class="visually-hidden">Toggle Light / Dark / Auto color theme</div>
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <div class="visually-hidden">Toggle table of contents sidebar</div>
+        <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="../index.html">
+  
+  <div class="sidebar-logo-container">
+    <img class="sidebar-logo only-light" src="../_static/manim-logo-sidebar.svg" alt="Light Logo"/>
+    <img class="sidebar-logo only-dark" src="../_static/manim-logo-sidebar-dark.svg" alt="Dark Logo"/>
+  </div>
+  
+  <span class="sidebar-brand-text">Algan v0.1.0</span>
+  
+</a><form class="sidebar-search-container" method="get" action="../search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  <ul class="current">
+<li class="toctree-l1 has-children"><a class="reference internal" href="../installation.html">Installation</a><input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><div class="visually-hidden">Toggle navigation of Installation</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l2"><a class="reference internal" href="../installation/uv.html">Installing Algan locally</a></li>
+</ul>
+</li>
+<li class="toctree-l1 current has-children"><a class="reference internal" href="../tutorials_guides.html">Tutorials &amp; Guides</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" role="switch" type="checkbox"/><label for="toctree-checkbox-2"><div class="visually-hidden">Toggle navigation of Tutorials &amp; Guides</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
+<li class="toctree-l2 current has-children"><a class="reference internal" href="index.html">New User Tutorials</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" role="switch" type="checkbox"/><label for="toctree-checkbox-3"><div class="visually-hidden">Toggle navigation of New User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
+<li class="toctree-l3 has-children"><a class="reference internal" href="installation.html">Installation</a><input class="toctree-checkbox" id="toctree-checkbox-4" name="toctree-checkbox-4" role="switch" type="checkbox"/><label for="toctree-checkbox-4"><div class="visually-hidden">Toggle navigation of Installation</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../installation/uv.html">Installing Algan locally</a></li>
+</ul>
+</li>
+<li class="toctree-l3"><a class="reference internal" href="getting_started.html">Getting Started</a></li>
+<li class="toctree-l3 current current-page"><a class="current reference internal" href="#">Basic Animations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="controlling_animations.html">Controlling Animations</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nesting_mobs.html">Nesting Mobs</a></li>
+<li class="toctree-l3"><a class="reference internal" href="images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="importing_from_manim.html">Importing From Manim</a></li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../manim_user_quickstart/index.html">Manim User Quickstart</a><input class="toctree-checkbox" id="toctree-checkbox-5" name="toctree-checkbox-5" role="switch" type="checkbox"/><label for="toctree-checkbox-5"><div class="visually-hidden">Toggle navigation of Manim User Quickstart</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../manim_user_quickstart/manim_user_quickstart.html">Manim User Quickstart</a></li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../developer_tutorials/overview_internals.html">An Overview of Algan’s Internals</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../reference.html">Reference Manual</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Reference Manual</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/mobs.html">Mobs</a><input class="toctree-checkbox" id="toctree-checkbox-9" name="toctree-checkbox-9" role="switch" type="checkbox"/><label for="toctree-checkbox-9"><div class="visually-hidden">Toggle navigation of Mobs</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.mob.html">mob</a><input class="toctree-checkbox" id="toctree-checkbox-10" name="toctree-checkbox-10" role="switch" type="checkbox"/><label for="toctree-checkbox-10"><div class="visually-hidden">Toggle navigation of mob</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html">Mob</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.group.html">group</a><input class="toctree-checkbox" id="toctree-checkbox-11" name="toctree-checkbox-11" role="switch" type="checkbox"/><label for="toctree-checkbox-11"><div class="visually-hidden">Toggle navigation of group</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.group.Group.html">Group</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-12" name="toctree-checkbox-12" role="switch" type="checkbox"/><label for="toctree-checkbox-12"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Tex.html">Tex</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Text.html">Text</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.bezier_circuit.html">bezier_circuit</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of bezier_circuit</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.bezier_circuit.BezierCircuitCubic.html">BezierCircuitCubic</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.bezier_circuit.BezierCurveCubic.html">BezierCurveCubic</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.html">shapes_2d</a><input class="toctree-checkbox" id="toctree-checkbox-14" name="toctree-checkbox-14" role="switch" type="checkbox"/><label for="toctree-checkbox-14"><div class="visually-hidden">Toggle navigation of shapes_2d</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Circle.html">Circle</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Polygon.html">Polygon</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Quad.html">Quad</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.QuadTriangulated.html">QuadTriangulated</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Rectangle.html">Rectangle</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.RegularPolygon.html">RegularPolygon</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Square.html">Square</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.Triangle.html">Triangle</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.TriangleTriangulated.html">TriangleTriangulated</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_2d.TriangleVertices.html">TriangleVertices</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.surfaces.surface.html">surface</a><input class="toctree-checkbox" id="toctree-checkbox-15" name="toctree-checkbox-15" role="switch" type="checkbox"/><label for="toctree-checkbox-15"><div class="visually-hidden">Toggle navigation of surface</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.surfaces.surface.Surface.html">Surface</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.shapes_3d.html">shapes_3d</a><input class="toctree-checkbox" id="toctree-checkbox-16" name="toctree-checkbox-16" role="switch" type="checkbox"/><label for="toctree-checkbox-16"><div class="visually-hidden">Toggle navigation of shapes_3d</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_3d.Cylinder.html">Cylinder</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.shapes_3d.Sphere.html">Sphere</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.manim_mob.html">manim_mob</a><input class="toctree-checkbox" id="toctree-checkbox-17" name="toctree-checkbox-17" role="switch" type="checkbox"/><label for="toctree-checkbox-17"><div class="visually-hidden">Toggle navigation of manim_mob</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.manim_mob.ManimMob.html">ManimMob</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.numeric_display.html">numeric_display</a><input class="toctree-checkbox" id="toctree-checkbox-18" name="toctree-checkbox-18" role="switch" type="checkbox"/><label for="toctree-checkbox-18"><div class="visually-hidden">Toggle navigation of numeric_display</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.numeric_display.NumericDisplay.html">NumericDisplay</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/animation.html">Animation</a><input class="toctree-checkbox" id="toctree-checkbox-19" name="toctree-checkbox-19" role="switch" type="checkbox"/><label for="toctree-checkbox-19"><div class="visually-hidden">Toggle navigation of Animation</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.animation.animatable.html">animatable</a><input class="toctree-checkbox" id="toctree-checkbox-20" name="toctree-checkbox-20" role="switch" type="checkbox"/><label for="toctree-checkbox-20"><div class="visually-hidden">Toggle navigation of animatable</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html">Animatable</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.AnimatableData.html">AnimatableData</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.ModificationHistory.html">ModificationHistory</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.animation.animation_contexts.html">animation_contexts</a><input class="toctree-checkbox" id="toctree-checkbox-21" name="toctree-checkbox-21" role="switch" type="checkbox"/><label for="toctree-checkbox-21"><div class="visually-hidden">Toggle navigation of animation_contexts</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.AnimationContext.html">AnimationContext</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.AnimationManager.html">AnimationManager</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.ComposeRateFunc.html">ComposeRateFunc</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.Lag.html">Lag</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.NoExtra.html">NoExtra</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.Off.html">Off</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.OnInit.html">OnInit</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.RateFuncWrapper.html">RateFuncWrapper</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.Seq.html">Seq</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.SlideShow.html">SlideShow</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animation_contexts.Sync.html">Sync</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/rendering.html">Rendering</a><input class="toctree-checkbox" id="toctree-checkbox-22" name="toctree-checkbox-22" role="switch" type="checkbox"/><label for="toctree-checkbox-22"><div class="visually-hidden">Toggle navigation of Rendering</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.camera.html">camera</a><input class="toctree-checkbox" id="toctree-checkbox-23" name="toctree-checkbox-23" role="switch" type="checkbox"/><label for="toctree-checkbox-23"><div class="visually-hidden">Toggle navigation of camera</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.camera.Camera.html">Camera</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-24" name="toctree-checkbox-24" role="switch" type="checkbox"/><label for="toctree-checkbox-24"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.html">triangle</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of triangle</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.PolygonPrimitive.html">PolygonPrimitive</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.TrianglePrimitive.html">TrianglePrimitive</a></li>
+</ul>
+</li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html">bezier_circuit_with_border_then_fill</a><input class="toctree-checkbox" id="toctree-checkbox-26" name="toctree-checkbox-26" role="switch" type="checkbox"/><label for="toctree-checkbox-26"><div class="visually-hidden">Toggle navigation of bezier_circuit_with_border_then_fill</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.BezierCircuitPrimitiveWithBorderFillRendering.html">BezierCircuitPrimitiveWithBorderFillRendering</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-27" name="toctree-checkbox-27" role="switch" type="checkbox"/><label for="toctree-checkbox-27"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.Scene.html">Scene</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/utils.html">Utils</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of Utils</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.algan_utils.html">algan_utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.animation_utils.html">animation_utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.tensor_utils.html">tensor_utils</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.python_utils.html">python_utils</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="https://github.com/ManimCommunity/manim/blob/main/docs/source/new_user_tutorials/basic_animations.rst?plain=true" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div><div class="edit-this-page">
+  <a class="muted-link" href="https://github.com/ManimCommunity/manim/edit/main/docs/source/new_user_tutorials/basic_animations.rst" title="Edit this page">
+    <svg><use href="#svg-pencil"></use></svg>
+    <span class="visually-hidden">Edit this page</span>
+  </a>
+</div><div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle">
+              <div class="visually-hidden">Toggle Light / Dark / Auto color theme</div>
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <div class="visually-hidden">Toggle table of contents sidebar</div>
+            <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="basic-animations">
+<h1>Basic Animations<a class="headerlink" href="#basic-animations" title="Link to this heading">¶</a></h1>
+<p>In Algan you create animations by controlling <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s,
+which are objects that will appear on screen.
+Algan provides a range of basic <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s covering basic 2-D and 3-D
+shapes such as circles, rectangles, spheres, cubes, as well as
+<a class="reference internal" href="../reference/algan.mobs.text.Text.html#algan.mobs.text.Text" title="algan.mobs.text.Text"><code class="xref py py-class docutils literal notranslate"><span class="pre">Text</span></code></a> <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s for displaying text and LaTex.
+You can also import mobs from Manim.</p>
+<section id="changing-animatable-attributes">
+<h2>Changing Animatable Attributes<a class="headerlink" href="#changing-animatable-attributes" title="Link to this heading">¶</a></h2>
+<p>All <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s have the following animatable attributes: <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.location" title="algan.mobs.mob.Mob.location"><code class="xref py py-attr docutils literal notranslate"><span class="pre">location</span></code></a>, <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.basis" title="algan.mobs.mob.Mob.basis"><code class="xref py py-attr docutils literal notranslate"><span class="pre">basis</span></code></a>,
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">color</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">glow</span></code>, <code class="xref py py-attr docutils literal notranslate"><span class="pre">opacity</span></code>. These attributes
+are special in that any modifications made to them will automatically be animated.
+Specifically, when a new value is assigned to an animatable attribute, that modification will take place over a 1 second period,
+during which the attribute is linearly interpolated from the old value to the new value.</p>
+<p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.location" title="algan.mobs.mob.Mob.location"><code class="xref py py-attr docutils literal notranslate"><span class="pre">location</span></code></a> is a vector length 3 which specifies where in 3-D space a mob is located. By default, new Mobs are created at the ORIGIN (0, 0, 0).</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>By default the camera is located at OUT*7 (0, 0, 7) and looks towards the ORIGIN.</p>
+</div>
+<p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.basis" title="algan.mobs.mob.Mob.basis"><code class="xref py py-attr docutils literal notranslate"><span class="pre">basis</span></code></a> is a vector of length 9 that specifies the orientation and scale of a Mob. It is not recommended to modify
+basis directly and instead use the helper methods like <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.rotate" title="algan.mobs.mob.Mob.rotate"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.rotate()</span></code></a> and <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.scale" title="algan.mobs.mob.Mob.scale"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.scale()</span></code></a>.</p>
+<p><code class="xref py py-attr docutils literal notranslate"><span class="pre">color</span></code> is a <code class="xref py py-class docutils literal notranslate"><span class="pre">Color</span></code> object which specifies the main color of the Mob.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>In Algan colors have red, green, blue components, as well as glow and opacity (and internally are stored
+as a vector of 5 components in that order). Colors with a non-zero glow component will ‘glow’, emitting light
+into nearby pixels.
+<code class="xref py py-attr docutils literal notranslate"><span class="pre">glow</span></code> and <code class="xref py py-attr docutils literal notranslate"><span class="pre">opacity</span></code> can optionally be set in the <code class="xref py py-class docutils literal notranslate"><span class="pre">Color</span></code> object, or as properties of the Mob itself.</p>
+</div>
+<div id="basicchangingattributes" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: BasicChangingAttributes <a class="headerlink" href="#basicchangingattributes">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./BasicChangingAttributes-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+
+<span class="n">circle</span> <span class="o">=</span> <span class="n">Circle</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
+
+<span class="n">circle</span><span class="o">.</span><span class="n">location</span> <span class="o">=</span> <span class="n">circle</span><span class="o">.</span><span class="n">location</span> <span class="o">+</span> <span class="n">UP</span>
+<span class="n">circle</span><span class="o">.</span><span class="n">location</span> <span class="o">=</span> <span class="n">circle</span><span class="o">.</span><span class="n">location</span> <span class="o">+</span> <span class="n">DOWN</span> <span class="o">+</span> <span class="n">RIGHT</span>
+<span class="n">circle</span><span class="o">.</span><span class="n">color</span> <span class="o">=</span> <span class="n">GREEN</span>
+<span class="n">circle</span><span class="o">.</span><span class="n">glow</span> <span class="o">=</span> <span class="mf">0.5</span>
+<span class="n">circle</span><span class="o">.</span><span class="n">opacity</span> <span class="o">=</span> <span class="mf">0.5</span>
+
+<span class="n">render_to_file</span><span class="p">()</span>
+</pre></div>
+</div>
+<pre data-manim-binder data-manim-classname="BasicChangingAttributes">
+from algan import *
+
+circle = Circle().spawn()
+
+circle.location = circle.location + UP
+circle.location = circle.location + DOWN + RIGHT
+circle.color = GREEN
+circle.glow = 0.5
+circle.opacity = 0.5
+
+render_to_file()
+
+</pre></div><div class="admonition important">
+<p class="admonition-title">Important</p>
+<p>Only non-inplace assignments are animated! That means that, for example, <code class="docutils literal notranslate"><span class="pre">circle.location</span> <span class="pre">+=</span> <span class="pre">UP</span> <span class="pre">*</span> <span class="pre">0.5</span></code> will
+not be animated. You should NEVER assign animated attributes inplace!</p>
+</div>
+</section>
+<section id="animated-functions">
+<h2>Animated Functions<a class="headerlink" href="#animated-functions" title="Link to this heading">¶</a></h2>
+<p>You will be able to get pretty far just modifying the animatable attributes, but there are some cases were linear
+interpolation just isn’t enough. For example, you may wish to move a Mob along a curved path. This animation
+cannot be expressed by linearly interpolating the Mob’s location. For such a case, you can create an <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a>.</p>
+<div id="basicanimatedfunction" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: BasicAnimatedFunction <a class="headerlink" href="#basicanimatedfunction">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./BasicAnimatedFunction-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+
+<span class="c1"># Define a function mapping a scalar parameter t to a point on the circle.</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">path_func</span><span class="p">(</span><span class="n">t</span><span class="p">):</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">UP</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="n">t</span><span class="p">)</span> <span class="o">+</span> <span class="n">RIGHT</span> <span class="o">*</span> <span class="n">np</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">t</span><span class="p">))</span>
+
+<span class="c1"># Create an animated_function which will move our mob along this path.</span>
+<span class="nd">@animated_function</span><span class="p">(</span><span class="n">animated_args</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;t&#39;</span><span class="p">:</span> <span class="mi">0</span><span class="p">})</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">move_along_path</span><span class="p">(</span><span class="n">mob</span><span class="p">,</span> <span class="n">t</span><span class="p">):</span>
+    <span class="n">mob</span><span class="o">.</span><span class="n">location</span> <span class="o">=</span> <span class="n">path_func</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
+
+<span class="n">square</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
+<span class="n">square</span><span class="o">.</span><span class="n">location</span> <span class="o">=</span> <span class="n">path_func</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span> <span class="c1"># Move to starting point.</span>
+<span class="n">move_along_path</span><span class="p">(</span><span class="n">square</span><span class="p">,</span> <span class="mi">2</span><span class="o">*</span><span class="n">PI</span><span class="p">)</span>
+
+<span class="n">render_to_file</span><span class="p">()</span>
+</pre></div>
+</div>
+<pre data-manim-binder data-manim-classname="BasicAnimatedFunction">
+from algan import *
+import numpy as np
+
+# Define a function mapping a scalar parameter t to a point on the circle.
+def path_func(t):
+    return (UP * np.sin(t) + RIGHT * np.cos(t))
+
+# Create an animated_function which will move our mob along this path.
+@animated_function(animated_args={'t': 0})
+def move_along_path(mob, t):
+    mob.location = path_func(t)
+
+square = Square().spawn()
+square.location = path_func(0) # Move to starting point.
+move_along_path(square, 2*PI)
+
+render_to_file()
+
+</pre></div><p>The <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a> decorator specifies that a function should be animated. This decorator accepts a parameter
+<code class="docutils literal notranslate"><span class="pre">animated_args</span></code>, which must be a dictionary mapping the names of animated arguments to their initial values when the animation
+begins. Like with attribute modification, the animation will take place over a 1 second period. The animation is created by linearly interpolating the <code class="docutils literal notranslate"><span class="pre">animated_args</span></code> from their initial values given in the dict,
+to the value the function is called with. In this example, we specify that parameter <code class="docutils literal notranslate"><span class="pre">t</span></code> has an initial value
+of 0, and we call the function with <code class="docutils literal notranslate"><span class="pre">t=2*PI</span></code>, so the animation will range from <code class="docutils literal notranslate"><span class="pre">t=0</span></code> to <code class="docutils literal notranslate"><span class="pre">t=2*PI</span></code>.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p>An <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a> must accept at least one argument, and the first argument must be a <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a>. Any arguments
+marked as <code class="docutils literal notranslate"><span class="pre">animated_args</span></code> must be floats.</p>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Inside of an <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a>, the default animations created by modifying animatable attributes are disabled.</p>
+</div>
+</section>
+<section id="mob-methods">
+<h2>Mob Methods<a class="headerlink" href="#mob-methods" title="Link to this heading">¶</a></h2>
+<p>Finally, the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> class comes with a bunch of animated functions built in as methods, which should serve
+most of your common needs. Here are some examples:</p>
+<div id="basicmobmethods" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: BasicMobMethods <a class="headerlink" href="#basicmobmethods">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./BasicMobMethods-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+
+<span class="n">mob</span> <span class="o">=</span> <span class="n">RegularPolygon</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
+<span class="n">mob</span><span class="o">.</span><span class="n">move</span><span class="p">(</span><span class="n">RIGHT</span><span class="p">)</span>
+<span class="n">mob</span><span class="o">.</span><span class="n">rotate</span><span class="p">(</span><span class="mi">360</span><span class="p">,</span> <span class="n">OUT</span><span class="p">)</span>
+<span class="n">mob</span><span class="o">.</span><span class="n">rotate</span><span class="p">(</span><span class="mi">360</span><span class="p">,</span> <span class="n">UP</span><span class="p">)</span>
+<span class="n">mob</span><span class="o">.</span><span class="n">rotate_around_point</span><span class="p">(</span><span class="n">ORIGIN</span><span class="p">,</span> <span class="mi">180</span><span class="p">,</span> <span class="n">OUT</span><span class="p">)</span>
+<span class="n">mob</span> <span class="o">=</span> <span class="n">mob</span><span class="o">.</span><span class="n">become</span><span class="p">(</span><span class="n">Circle</span><span class="p">())</span>
+
+<span class="n">render_to_file</span><span class="p">()</span>
+</pre></div>
+</div>
+<pre data-manim-binder data-manim-classname="BasicMobMethods">
+from algan import *
+
+mob = RegularPolygon(5).spawn()
+mob.move(RIGHT)
+mob.rotate(360, OUT)
+mob.rotate(360, UP)
+mob.rotate_around_point(ORIGIN, 180, OUT)
+mob = mob.become(Circle())
+
+render_to_file()
+
+</pre></div><p>Here’s a brief explanation of the methods shown in the example:</p>
+<ul class="simple">
+<li><p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.move" title="algan.mobs.mob.Mob.move"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.move()</span></code></a>: This method is used to translate (move) the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> by a specified vector. For example,
+<cite>mob.move(RIGHT)</cite> moves the object to the right one unit.</p></li>
+<li><p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.rotate" title="algan.mobs.mob.Mob.rotate"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.rotate()</span></code></a>: This method rotates the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> by a given angle around a specified axis. For instance, <cite>mob.rotate(360, OUT)</cite> rotates the object 360 degrees around the outward-pointing Z-axis.</p></li>
+<li><p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.rotate_around_point" title="algan.mobs.mob.Mob.rotate_around_point"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.rotate_around_point()</span></code></a>: This method rotates the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> around a specific point in space. <cite>mob.rotate_around_point(ORIGIN, 180, OUT)</cite> rotates the object 180 degrees around the origin (0,0,0) along the Z-axis.</p></li>
+<li><p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.become" title="algan.mobs.mob.Mob.become"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.become()</span></code></a>: This method smoothly transforms the current <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> into the shape of another <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> provided as an argument. For example, <cite>mob = mob.become(Circle())</cite> transforms the existing mob into a circle.</p></li>
+</ul>
+</section>
+</section>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          <a class="next-page" href="controlling_animations.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title">Controlling Animations</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="getting_started.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title">Getting Started</div>
+                
+              </div>
+            </a>
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2025-2025, Algorithmic Simplicity
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">Basic Animations</a><ul>
+<li><a class="reference internal" href="#changing-animatable-attributes">Changing Animatable Attributes</a></li>
+<li><a class="reference internal" href="#animated-functions">Animated Functions</a></li>
+<li><a class="reference internal" href="#mob-methods">Mob Methods</a></li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/scripts/furo.js?v=5fa4622c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/manim-binder.min.js?v=29f72615"></script>
+    <script>window.initManimBinder({branch: "v0.0.1"})</script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script src="../_static/responsiveSvg.js?v=f1528c9d"></script>
+    </body>
+</html>
