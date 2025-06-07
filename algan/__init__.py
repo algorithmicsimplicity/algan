@@ -2,6 +2,10 @@ import os
 import shutil
 import torch
 
+torch.set_grad_enabled(False)
+c = torch.inference_mode()
+c.__enter__()
+
 from algan.defaults.device_defaults import *
 from algan.defaults.style_defaults import *
 from algan.defaults.render_defaults import *
@@ -14,9 +18,10 @@ from algan.mobs.mob import *
 from algan.mobs.manim_mob import *
 from algan.mobs.group import *
 from algan.mobs.text import *
-from algan.mobs.shapes_2d import *
-from algan.mobs.shapes_3d import *
+from algan.mobs.image_mob import *
 from algan.mobs.surfaces.surface import *
+from algan.mobs.shapes_3d import *
+from algan.mobs.shapes_2d import *
 from algan.mobs.bezier_circuit import *
 
 from algan.animation.animation_contexts import *

@@ -474,7 +474,18 @@ class Animatable:
                 d.data_sub_inds = None
         return c
 
-    def spawn(self, animate=True):
+    def spawn(self, animate:bool=True):
+        """Spawns the mob, introducing it into the video. Prior to spawning, a Mob will not appear on
+        screen and any changes made to its animatable attributes will not be animated. After spawning,
+        changes made to the Mob are animated by default.
+
+        Parameters
+        ----------
+        animate
+            Whether a spawn-in animation should be played. By default, the spawn-in animation is
+            a simple fade-in. Defaults to True.
+
+        """
         if (self.data.spawn_time() >= 0) or self.animation_manager.context.spawn_at_end:
             return self
         self._create_recursive(animate)

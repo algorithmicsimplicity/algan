@@ -1,4 +1,4 @@
-Tutorials
+New User Tutorials
 =========
 
 .. toctree::
@@ -10,5 +10,5 @@ Tutorials
    basic_animations
    controlling_animations
    nesting_mobs
+   images_and_textures
    importing_from_manim
-   extending_algan

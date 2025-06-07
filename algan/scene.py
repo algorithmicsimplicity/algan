@@ -236,7 +236,7 @@ class Scene:
                 os.remove(file_path_out)
             os.rename(file_path, file_path_out)
             return save_image
-        #TODO fix this so we can write audio to the fiile as well.
+        #TODO fix this so we can write audio to the fiie as well.
         videoclip = VideoFileClip(file_path)
         try:
             #audioclip = AudioFileClip("audioname.mp3")

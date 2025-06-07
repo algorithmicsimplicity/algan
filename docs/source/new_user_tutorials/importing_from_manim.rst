@@ -2,9 +2,9 @@
 Importing From Manim
 ====================
 
-Algan provides a bunch of built-in Mobs, but our collection is nowhere as extensive as Manim's. So we provide
-functionality to import Mobs directly from Manim. This way you can make use of the vast collection of Mobs defined
-by Manim.
+Algan provides a bunch of built-in Mobs, but our collection is nowhere as extensive
+as `Manim's <https://docs.manim.community/en/stable/>>`_. So we provide functionality to import Mobs directly from Manim.
+This way you can make use of the vast collection of Mobs defined by Manim.
 
 .. note::
 

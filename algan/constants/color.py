@@ -3,6 +3,8 @@ from typing import overload, Tuple
 import torch
 import re
 
+from algan import DEFAULT_DEVICE
+
 re_hex = re.compile("((?<=#)|(?<=0x))[A-F0-9]{6,8}", re.IGNORECASE)
 
 class Color(torch.Tensor):
@@ -15,7 +17,7 @@ class Color(torch.Tensor):
             rgb = (((tmp >> 24) & 0xFF) / 255,
                    ((tmp >> 16) & 0xFF) / 255,
                    ((tmp >> 8) & 0xFF) / 255)
-        return super().__new__(cls, (*rgb, glow, opacity), *args, **kwargs)
+        return super().__new__(cls, (*rgb, glow, opacity), *args, **kwargs).to(DEFAULT_DEVICE)
 
     def __init__(self, rgb, glow=0, opacity=1, *args, **kwargs):
         pass#super().__init__((red, green, blue, glow, opacity))
@@ -40,6 +42,14 @@ class Color(torch.Tensor):
 
     def new_empty(self, *args, **kwargs):
         return Color((0,0,0), **kwargs)
+
+    @staticmethod
+    def add_defaults(color):
+        if color.shape[-1] < 4:
+            color = torch.cat((color, torch.ones_like(color[...,:1])), -1)
+        if color.shape[-1] < 5:
+            color = torch.cat((color[...,:-1], torch.zeros_like(color[...,:1]), color[...,-1:]), -1)
+        return color
 
 
 def color_to_texture_map(color):

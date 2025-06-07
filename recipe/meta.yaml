@@ -1,0 +1,64 @@
+{% set name = "algan" %}
+{% set version = "0.0.2" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  # After you upload to PyPI, get the sha256 by downloading the .tar.gz and running:
+  # sha256sum algan-0.0.2.tar.gz (Linux/macOS) or certutil -hashfile algan-0.0.2.tar.gz SHA256 (Windows)
+  sha256: <YOUR_SHA256_HASH_HERE> # IMPORTANT: Replace this placeholder
+
+build:
+  number: 0
+  noarch: python # Assuming algan itself is pure Python
+  script: "{{ PYTHON }} -m pip install . -vv --no-deps --ignore-installed"
+  # If you find issues with noarch: python due to dependencies, remove it.
+  # But typically, if algan itself is pure Python, noarch: python is fine,
+  # and Conda will handle architecture-specific dependencies like PyTorch correctly.
+
+requirements:
+  host:
+    - python >=3.10,<3.13 # Conda uses <major.minor+1 for upper bounds typically
+    - pip
+    - hatchling # From your [build-system]
+  run:
+    - python >=3.10,<3.13
+    - dendroid >=1.6.0
+    - prioq >=0.6.0
+    - reprit >=0.9.0
+    - decision >=0.3.0
+    - numpy >=1.20.0
+    - opencv >=4.0.0      # opencv-python is usually just 'opencv' in conda
+    - scipy >=1.8.0
+    - svgelements >=1.0.0
+    - pytorch::pytorch >=2.0.0     # Explicitly from pytorch channel
+    - pytorch::torchvision >=0.15.0 # Explicitly from pytorch channel
+    - conda-forge::pytorch-scatter >=2.0.0 # Explicitly from conda-forge
+    - manim >=0.18.0
+
+test:
+  imports:
+    - algan
+  # If you have tests that can be run from the installed package:
+  # commands:
+  #   - pytest # You'd need to add pytest to requirements:build or requirements:test if using this
+
+about:
+  home: https://github.com/algorithmicsimplicity/algan
+  license: MIT
+  license_file: LICENSE.md # Assuming your README.md mentions license and you have a LICENSE.md or LICENSE file in sdist
+  summary: The simplest animation engine for 3D graphics.
+  description: |
+    Algan is a Python library designed to be the simplest animation engine
+    for 3D graphics, built with ease of use and extensibility in mind.
+    It leverages powerful libraries like PyTorch, Manim, and OpenCV.
+  doc_url: https://algorithmicsimplicity.github.io/algan
+  dev_url: https://github.com/algorithmicsimplicity/algan
+
+# Extra metadata (optional but good practice)
+extra:
+  recipe-maintainers:
+    - algorithmicsimplicity # Your GitHub username or org

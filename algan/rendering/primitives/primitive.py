@@ -72,7 +72,7 @@ class RenderPrimitive:
                 frames = (next(scene.get_frames_from_fragments(None, window, out, anti_alias_level=kwargs['anti_alias_level'])) for _ in range(time_end - time_start))
             else:
                 colors, dists, inds = [torch.cat(_) for _ in zip(*chunks)]
-                frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['scren_height'])
+                frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['screen_height'])
                 frames = scene.get_frames_from_fragments(frags, window, out, anti_alias_level=kwargs['anti_alias_level'])
 
             self.save_frames(frames, save_image, scene)
@@ -300,6 +300,8 @@ class RenderPrimitive:
 
             def get_colors():
                 colors = interpolate(self_colors)
+                if colors[...,-2].amax() > 0:
+                    print('errror')
                 colors[..., -1:] *= (ws.amin(-2) >= self.min_interpolation_coord)
                 colors = colors.reshape(-1, colors.shape[-1])
                 colors = colors[m]

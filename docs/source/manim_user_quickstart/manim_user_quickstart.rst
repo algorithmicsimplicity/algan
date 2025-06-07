@@ -35,7 +35,7 @@ Basic Mobs
     square.scale(0.5)
     square.move_to(LEFT+UP*2)
 
-    # text = Text("I am a Text Mob.").spawn()
+    text = Text("I am a Text Mob.").spawn()
 
     render_to_file()
 

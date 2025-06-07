@@ -2,7 +2,7 @@
 Nesting Mobs
 ============
 
-So far we have been using simple mobs. To make more complex mobs we can combine together multiple mobs into one.
+So far we have been using simple :class:`.Mob` s. To make more complex :class:`.Mob` s we can combine together multiple mobs into one.
 This is done by adding other mobs as children to one another.
 
 .. algan:: NMBasic

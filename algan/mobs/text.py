@@ -101,7 +101,7 @@ class Text(Mob):
     def create_character_mobs(self, text, **kwargs):
         pathlib.Path('media/tex').mkdir(exist_ok=True, parents=True)
         #s = 0.105 * self.size / 100
-        s = 0.02 * 90 / 100
+        s = 0.02 * 45 / 100
         self.convert_ratio = (0.105 * self.font_size / 100) / s
         if self.latex:
             manim_kwargs = {k: v for k, v in kwargs.items()}

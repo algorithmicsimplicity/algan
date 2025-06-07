@@ -103,11 +103,11 @@ class Group(Mob):
                 mob.location = start + dif * ((i+1) / (len(self.mobs)+1))
         return self
 
-    def arrange_in_grid(self, direction1=RIGHT, direction2=DOWN, num_rows=2, buffer=DEFAULT_BUFFER, buffer2=None):
+    def arrange_in_grid(self, num_rows=2, direction1=RIGHT, direction2=DOWN, buffer1=DEFAULT_BUFFER, buffer2=None):
         if buffer2 is None:
-            buffer2 = buffer
-        buf_dist1 = max([(m.get_boundary_edge_point(direction1) - m.get_boundary_edge_point(-direction1)).norm(p=2,dim=-1, keepdim=True) for m in self.mobs]) + buffer
-        buf_dist2 = max([(m.get_boundary_edge_point(direction2) - m.get_boundary_edge_point(-direction2)).norm(p=2,dim=-1, keepdim=True) for m in self.mobs]) + buffer2
+            buffer2 = buffer1
+        buf_dist1 = max([m.get_length_in_direction(direction1) for m in self.mobs]) + buffer1
+        buf_dist2 = max([m.get_length_in_direction(direction2) for m in self.mobs]) + buffer2
         num_cols = len(self.mobs) // num_rows
         start = self.location - (direction1 * buf_dist1 * (num_cols-1)/2 + direction2 * buf_dist2 * (num_rows-1)/2)
         with Sync():

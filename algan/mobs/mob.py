@@ -1,24 +1,29 @@
+from __future__ import annotations
+
 import math
 from collections import defaultdict
 
-from scipy.optimize import linear_sum_assignment
+#from scipy.optimize import linear_sum_assignment
 import torch
 import torch.nn.functional as F
+from torch import Tensor, TensorType
 
 from algan.animation.animatable import Animatable, animated_function, ModificationHistory
 from algan.animation.animation_contexts import Seq, Off, Sync, AnimationContext, NoExtra
 from algan.constants.spatial import *
-from algan.geometry.geometry import rotate_vector_around_axis, get_rotation_between_3d_vectors, project_point_onto_line, get_rotation_around_axis, map_global_to_local_coords, map_local_to_global_coords, \
+from algan.geometry.geometry import rotate_vector_around_axis, get_rotation_between_3d_vectors, project_point_onto_line, \
+    get_rotation_around_axis, map_global_to_local_coords, map_local_to_global_coords, \
     get_rotation_between_bases
 from algan.constants.rate_funcs import ease_out_exp, inversed, identity
 from algan.defaults.style_defaults import DEFAULT_BUFFER
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
-from algan.utils.tensor_utils import dot_product, broadcast_gather, unsqueeze_right, unsquish, squish, broadcast_cross_product, cast_to_tensor
+from algan.utils.tensor_utils import dot_product, broadcast_gather, unsqueeze_right, unsquish, squish, \
+    broadcast_cross_product, cast_to_tensor
 
 
 class Mob(Animatable):
-    """Base class for all objects that have a location and orientation in 3d space.
+    """Base class for all objects that have a location and orientation in 3D space.
 
     A Mob is an Animatable that exists in a 3D scene,
     possessing properties like location, orientation (basis), and color.
@@ -27,25 +32,32 @@ class Mob(Animatable):
 
     Parameters
     ----------
-    location: Tensor[*,3]
-        Location in 3D world space.
-    basis: Tensor[*,9]
-        Flattened 3x3 matrix in which the rows specify the
-        right, upwards, and forwards directions for this mob's orientation, and the row norms
-        represent the mob's scale in those directions. Defaults to identify matrix.
-    color
-        The color of the Mob. If None, uses `get_default_color()`. Defaults to None.
-    opacity
-        The maximum opacity of the Mob (0.0 to 1.0). Defaults to 1.
-    glow
-        The glow intensity of the Mob. Defaults to 0.
+    location : torch.Tensor, optional
+        Initial location in 3D world space. Defaults to `ORIGIN` (0,0,0).
+        Shape: `(*, 3)` where `*` denotes any number of batch dimensions.
+    basis : torch.Tensor, optional
+        Flattened 3x3 matrix specifying the Mob's orientation and scale.
+        The rows represent the right, upwards, and forwards directions,
+        and their norms represent the scale in those directions.
+        Defaults to an identity matrix (no rotation, unit scale).
+        Shape: `(*, 9)` representing `(*, 3, 3)` flattened.
+    color : Color or None, optional
+        The color of the Mob. If None, it uses the default color defined
+        by `get_default_color()`. Defaults to None.
+    opacity : float, optional
+        The maximum opacity of the Mob (0.0 for fully transparent to 1.0 for fully opaque).
+        Defaults to 1.0.
+    glow : float, optional
+        The glow intensity of the Mob. Defaults to 0.0.
     *args
-        Additional arguments for the Animatable base class.
+        Additional arguments passed to the `Animatable` base class.
     **kwargs
-        Additional keyword arguments for the Animatable base class.
+        Additional keyword arguments passed to the `Animatable` base class.
 
     Examples
     --------
+    Create a square and move it to the left:
+
     .. algan:: Example1Mob
 
         from algan import *
@@ -55,50 +67,72 @@ class Mob(Animatable):
 
         render_to_file()
 
+    Create a mob with a specific color and scale:
+
+    .. algan:: Example2Mob
+
+        from algan import *
+
+        circle = Circle(color=BLUE).scale(2).spawn()
+
+        render_to_file()
     """
-    def __init__(self, location:torch.Tensor=ORIGIN, basis:torch.Tensor=squish(torch.eye(3)), color:Color|None=None, opacity:float=1, glow:float=0, *args, **kwargs):
-        self.register_attrs_as_animatable({'location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow'}, Mob)
+
+    def __init__(self, location: torch.Tensor = ORIGIN, basis: torch.Tensor = squish(torch.eye(3)),
+                 color: Color | None = None, opacity: float = 1, glow: float = 0, *args, **kwargs):
+        self.register_attrs_as_animatable(
+            {'location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow'}, Mob)
         self.recursing = True
         super().__init__(*args, **kwargs)
+        # Defines how attributes changes are inherited by children Mobs (e.g., additive for location, multiplicative for scale)
         self.attr_to_relations = defaultdict(lambda: (lambda x, y: y, lambda x, y: y))
-        additive = (lambda x, y: x+y, lambda x, y: y-x)
-        self.attr_to_relations.update({'location': additive,
-                                       #'glow': additive,
-                                  'basis': (lambda x, y: squish(unsquish(x, -1, 3) @ unsquish(y, -1, 3), -2, -1),
-                                            lambda x, y: squish(get_rotation_between_bases(unsquish(x, -1, 3), unsquish(y, -1, 3)), -2, -1)),
-                                       'scale_coefficient': (lambda x, y: (x*y),
-                                                             lambda x, y: squish((unsquish(y,-1,3).norm(p=2,dim=-1,keepdim=True)/
-                                                                                  unsquish(x,-1,3).norm(p=2,dim=-1,keepdim=True)).expand(*([-1] * (x.dim())), 3),-2,-1))})
+        additive_relation = (lambda x, y: x + y, lambda x, y: y - x)
+        self.attr_to_relations.update({'location': additive_relation,
+                                       # 'glow': additive_relation, # Currently commented out, but could be additive.
+                                       'basis': (lambda x, y: squish(unsquish(x, -1, 3) @ unsquish(y, -1, 3), -2, -1),
+                                                 lambda x, y: squish(
+                                                     get_rotation_between_bases(unsquish(x, -1, 3), unsquish(y, -1, 3)),
+                                                     -2, -1)),
+                                       'scale_coefficient': (lambda x, y: (x * y),
+                                                             lambda x, y: squish(
+                                                                 (unsquish(y, -1, 3).norm(p=2, dim=-1, keepdim=True) /
+                                                                  unsquish(x, -1, 3).norm(p=2, dim=-1,
+                                                                                          keepdim=True)).expand(
+                                                                     *([-1] * (x.dim())), 3), -2, -1))})
         self.location = cast_to_tensor(location)
         self.basis = cast_to_tensor(basis)
+
         if color is None:
             color = self.get_default_color()
         self.color = color
         self.max_opacity = cast_to_tensor(opacity)
-        self.opacity = cast_to_tensor(1)
+        self.opacity = cast_to_tensor(1)  # Current opacity, can be animated
         self.glow = cast_to_tensor(glow)
         self.num_points_per_object = 1
+        #self.scale(scale)
 
     def reset_basis(self):
         """Resets the Mob's basis to the identity matrix (no rotation, unit scale)."""
         self.basis = cast_to_tensor(cast_to_tensor(squish(torch.eye(3))))
 
-    def register_attrs_as_animatable(self, attrs, my_class=None):
+    def register_attrs_as_animatable(self, attrs: set[str], my_class=None):
         """
         Registers attributes as animatable, meaning their changes can be tracked
-        and interpolated over time.
+        and interpolated over time for animation.
 
         This method dynamically creates property getters and setters for the
-        specified attributes if they don't already exist.
+        specified attributes if they don't already exist, allowing them to be
+        controlled by the animation system. When an animatable attribute is
+        modified, the change is recorded in the mob's `ModificationHistory`.
 
         Args:
-            attrs (iterable[str] or str): A collection of attribute names (or a single
+            attrs (set[str] or str): A collection of attribute names (or a single
                 attribute name) to register as animatable.
             my_class (type, optional): The class to which the property getters
                 and setters should be attached. Defaults to the current Mob's class.
         """
         if isinstance(attrs, str):
-            attrs = {attrs,}
+            attrs = {attrs, }
         if not isinstance(attrs, set):
             attrs = set(attrs)
         if not hasattr(self, 'animatable_attrs'):
@@ -109,18 +143,19 @@ class Mob(Animatable):
             self.add_property_getter_and_setter(attr, my_class)
         self.animatable_attrs.update(attrs)
 
-    def add_property_getter_and_setter(self, property_name, class_to_attach_to=None):
-        """
-        Dynamically adds a property with a getter and setter for a given attribute name.
+    def add_property_getter_and_setter(self, property_name: str, class_to_attach_to=None):
+        """Dynamically adds a property with a getter and setter for a given attribute name.
 
-        The getter will retrieve the animated value of the attribute.
-        The setter will set the absolute value of the attribute, recording the change
-        for animation.
+        The getter will retrieve the current (potentially animated) value of the attribute
+        from the `AnimatableData` dict. The setter will set the value of the
+        attribute in the `AnimatableData` dict, recording the change in the
+         `ModificationHistory` for animation.
 
         Args:
-            property_name (str): The name of the property to create.
+            property_name (str): The name of the property to create (e.g., 'location', 'color').
             class_to_attach_to (type, optional): The class to which this property
                 will be added. Defaults to the current Mob's class.
+
         """
         if class_to_attach_to is None:
             class_to_attach_to = self.__class__
@@ -137,64 +172,80 @@ class Mob(Animatable):
 
         setattr(class_to_attach_to, property_name, prop)
 
-    def get_descendants(self, include_self=True):
-        """
-        Retrieves all descendant Mobs in the hierarchy, optionally including self.
+    def get_descendants(self, include_self: bool = True) -> list['Mob']:
+        """Retrieves all descendant Mobs in the hierarchy, optionally including itself.
 
         Args:
-            include_self (bool, optional): Whether to include the current Mob
-                in the returned list. Defaults to True.
+            include_self (bool, optional): If True, the current Mob instance
+                is included in the returned list. Defaults to True.
 
         Returns:
-            list[Mob]: A flat list of descendant Mobs.
-        """
-        return list(traverse([*([self] if include_self else []), [c.get_descendants() for c in self.children] if hasattr(self, 'children') else []]))
+            list[Mob]: A flat list containing the Mob and all its children,
+                grandchildren, and so on.
 
-    def set_time_inds_to(self, mob):
         """
-        Synchronizes the animation time indices of this Mob with another Mob.
+        return list(traverse([*([self] if include_self else []),
+                              [c.get_descendants() for c in self.children] if hasattr(self, 'children') else []]))
+
+    def set_time_inds_to(self, mob: 'Mob'):
+        """Synchronizes the animation time indices of this Mob with another Mob.
 
         This is used internally to ensure consistent animation states between
-        mobs in a hierarchy.
+        mobs at animation time.
 
         Args:
             mob (Mob): The Mob whose time indices will be copied.
+
         """
         time_inds = mob.data
         if self.data.time_inds_materialized is None and time_inds.time_inds_materialized is not None:
-            self.data.animatable.set_state_pre_function_applications(time_inds.time_inds_materialized.amin(), time_inds.time_inds_materialized.amax() + 1)
+            self.data.animatable.set_state_pre_function_applications(time_inds.time_inds_materialized.amin(),
+                                                                     time_inds.time_inds_materialized.amax() + 1)
         self.data.time_inds_active = time_inds.time_inds_active
 
-    @animated_function(animated_args={'interpolation': 0.0}, unique_args=['key', 'recursive'])
-    def apply_absolute_change_two(self, key, change1, change2, interpolation=1.0, recursive='True'):
+    def _expand_batch_if_necessary(self, value: torch.Tensor) -> torch.Tensor:
+        """ Internal helper to expand a tensor's batch dimension if it's a singleton
+        and the parent has a larger batch size.
         """
-        Applies an animated change to an attribute, interpolating between two target values.
+        if value.shape[-2] == 1 and self.parent_batch_sizes is not None:
+            return value.expand(*([-1 for _ in range(value.dim() - 2)]), len(self.parent_batch_sizes), -1).contiguous()
+        return value
 
-        The interpolation first moves from the current value towards `change1`,
-        and if `interpolation` goes beyond 1.0, it then moves from `change1`
-        towards `change2`.
+    @animated_function(animated_args={'interpolation': 0.0}, unique_args=['key', 'recursive'])
+    def apply_absolute_change_two(self, key: str, change1: any, change2: any, interpolation: float = 1.0,
+                                  recursive: str = 'True'):
+        """Applies an animated change to an attribute, interpolating between two target values.
+
+        The interpolation first moves from the current value towards `change1` from
+        t=0 to 0.5, then moves from `change1` to `change2` from t=0.5 to 1.
 
         Args:
-            key (str): The name of the attribute to change.
+            key (str): The name of the attribute to change (e.g., 'location', 'color').
             change1 (Any): The first target value for the attribute.
             change2 (Any): The second target value for the attribute.
-            interpolation (float, optional): The interpolation factor.
-            recursive (str, optional): If 'True', applies the change recursively
-                to child Mobs. Defaults to 'True'.
+            interpolation (float, optional): The interpolation factor used for animation.
+            recursive (str, optional): If equal to "True", applies the change recursively
+                to all child Mobs. Defaults to "True".
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
-        relation = self.attr_to_relations[key][0]
+        relation_func = self.attr_to_relations[key][0]
         current_value = self.__getattribute__(key)
-        interpolation = cast_to_tensor(interpolation) * 2
-        m = (interpolation > 1).float()
-        change = (current_value * (1 - interpolation) + interpolation * change1) * (1-m) + m * (change1 * (2 - (interpolation)) + (interpolation-1) * change2)
-        self.setattr_and_record_modification(key, relation(current_value, change))
+        interpolation = cast_to_tensor(interpolation) * 2  # Double interpolation for 2-stage animation
+
+        # Calculate the interpolated value based on the two changes
+        # m is a mask for when interpolation goes beyond 1.0
+        mask_interp_gt_1 = (interpolation > 1).float()
+        interpolated_value = (current_value * (1 - interpolation) + interpolation * change1) * (1 - mask_interp_gt_1) + \
+                             mask_interp_gt_1 * (change1 * (2 - interpolation) + (interpolation - 1) * change2)
+
+        self.setattr_and_record_modification(key, relation_func(current_value, interpolated_value))
+
         if recursive == 'True':
             for c in self.children:
                 c.set_time_inds_to(self)
-                change3 = change
                 if c.parent_batch_sizes is not None:
                     def expand(x):
                         if x.shape[-2] == 1:
@@ -202,24 +253,25 @@ class Mob(Animatable):
                                          -1).contiguous()
                         return x
 
-                    change3 = torch.repeat_interleave(expand(change3), c.parent_batch_sizes, -2)
-                c.apply_relative_change(key, change3, interpolation=1, recursive=recursive)
+                    interpolated_value = torch.repeat_interleave(expand(interpolated_value), c.parent_batch_sizes, -2)
+                c.apply_relative_change(key, interpolated_value, interpolation=1, recursive=recursive)
         return self
 
-    def pulse_color(self, color, set_opaque=False):
-        """
-        Animates a color pulse effect.
+    def pulse_color(self, color: torch.Tensor, set_opaque: bool = False) -> 'Mob':
+        """Animates a color pulse effect.
 
-        The Mob's color changes to the target `color` and then back to its
-        original color.
+        The Mob's color changes to the target `color` and then animates back to its
+        original color. This uses `apply_absolute_change_two` internally for the two-stage
+        color change.
 
         Args:
             color (torch.Tensor): The color to pulse to.
-            set_opaque (bool, optional): If True, also animates opacity to 1
+            set_opaque (bool, optional): If True, also animates opacity to 1.0
                 during the pulse. Defaults to False.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
         with Sync():
             self.apply_absolute_change_two('color', color, self.color)
@@ -227,15 +279,16 @@ class Mob(Animatable):
                 self.apply_absolute_change_two('opacity', 1, 1)
         return self
 
-    def wave_color(self, color, wave_length=1, reverse=False, direction=None, **kwargs):
-        """
-        Applies a color wave effect across the Mob and its descendants.
+    def wave_color(self, color: torch.Tensor, wave_length: float = 1, reverse: bool = False,
+                   direction: torch.Tensor | None = None, **kwargs) -> 'Mob':
+        """Applies a color wave effect across the Mob and its descendants.
 
-        The color change propagates spatially.
+        The color change propagates spatially across the mob's constituent parts.
 
         Args:
             color (torch.Tensor): The target color for the wave.
-            wave_length (float, optional): Controls the spatial extent of the wave.
+            wave_length (float, optional): Controls the spatial extent (length) of the wave.
+                A smaller value means a faster-propagating or more compressed wave.
                 Defaults to 1.
             reverse (bool, optional): If True, the wave propagates in the
                 opposite direction. Defaults to False.
@@ -243,38 +296,46 @@ class Mob(Animatable):
                 direction of wave propagation. If None, uses the Mob's
                 upwards direction. Defaults to None.
             **kwargs: Additional keyword arguments passed to `pulse_color`
-                for each part of the wave.
+                for each individual part of the wave animation.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
         if direction is None:
             direction = self.get_upwards_direction()
         with AnimationContext(run_time_unit=3, rate_func=identity):
-            animate_lagged_by_location([_ for _ in self.get_descendants() if _.is_primitive], lambda x: x.pulse_color(color, **kwargs), direction * (-1 if reverse else 1), 1.5)
+            # Filters for primitive parts to ensure the wave animates on individual rendering elements
+            #TODO change this to use non_recursive set
+            primitive_mobs = [_ for _ in self.get_descendants() if _.is_primitive]
+            animate_lagged_by_location(primitive_mobs, lambda x: x.pulse_color(color, **kwargs),
+                                       direction * (-1 if reverse else 1), 1.5)
+        return self
 
     @animated_function(animated_args={'interpolation': 0.0}, unique_args=['key', 'recursive', 'relation_key'])
-    def apply_relative_change(self, key, change, interpolation=1.0, recursive='True', relation_key="None"):
-        """
-        Applies an animated relative change to an attribute.
+    def apply_relative_change(self, key: str, change: any, interpolation: float = 1.0, recursive: str = "True",
+                              relation_key: str = "None") -> 'Mob':
+        """Applies an animated relative change to an attribute.
 
-        The `change` is scaled by `interpolation` and then applied to the
+        The `change` is scaled by `interpolation` and then combined with the
         current attribute value using a predefined relation (e.g., addition
         for location, multiplication for scale).
 
         Args:
             key (str): The name of the attribute to change.
-            change (Any): The relative change to apply.
+            change (Any): The relative change to apply (e.g., a displacement vector, a scaling factor).
             interpolation (float, optional): The interpolation factor for the change.
+                A value of 0.0 means no change; 1.0 applies the full `change`.
                 Defaults to 1.0.
-            recursive (str, optional): If 'True', applies the change recursively
-                to child Mobs. Defaults to 'True'.
-            relation_key (str, optional): The key to look up the relation function
-                (how the change is combined with the current value). Defaults to "None",
-                which means it uses `key`.
+            recursive (str, optional): If equal to "True", applies the change recursively
+                to all child Mobs. Defaults to "True".
+            relation_key (str, optional): The key to look up the specific relation function
+                (how the `change` is combined with the current value). If "None",
+                `key` is used as the relation key. Defaults to "None".
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
         change = change * interpolation
         relation = self.attr_to_relations[relation_key][0]
@@ -295,59 +356,73 @@ class Mob(Animatable):
         return self
 
     @animated_function(animated_args={'interpolation': 0.0}, unique_args=['key'])
-    def apply_set_value(self, key, change, interpolation=1.0):
-        """
-        Sets an attribute's value, interpolating from its current value to the target `change`.
+    def apply_set_value(self, key: str, change: any, interpolation: float = 1.0) -> 'Mob':
+        """Sets an attribute's value, interpolating from its current value to the target `change`.
 
-        This is a direct interpolation rather than a relative one.
+        This is a direct linear interpolation (lerp) from the current value to the target,
+        rather than applying a relative change.
 
         Args:
             key (str): The name of the attribute to set.
-            change (Any): The target value for the attribute.
+            change (Any): The target value for the attribute (e.g., a specific location, a final color).
             interpolation (float, optional): The interpolation factor.
-                0.0 means no change, 1.0 means the attribute becomes `change`.
+                0.0 means the attribute remains its current value; 1.0 means it becomes `change`.
                 Defaults to 1.0.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
         current_value = self.__getattribute__(key)
         try:
-            change = current_value * (1 - interpolation) + interpolation * change
+            # Direct linear interpolation
+            interpolated_value = current_value * (1 - interpolation) + interpolation * change
         except RuntimeError:
-            interpolation = torch.cat((interpolation, torch.zeros_like(current_value[..., -(current_value.shape[-2] - interpolation.shape[-2]):, :])), -2)
-            change = current_value * (1 - interpolation) + interpolation * change
-        self.setattr_and_record_modification(key, change)
+            # Handle cases where interpolation tensor dimensions don't match exactly,
+            # typically for batched values where interpolation might need expansion.
+            # This logic ensures the interpolation tensor matches the batch dimensions of the value.
+            interpolation = torch.cat((interpolation, torch.zeros_like(
+                current_value[..., -(current_value.shape[-2] - interpolation.shape[-2]):, :])), -2)
+            interpolated_value = current_value * (1 - interpolation) + interpolation * change
+        self.setattr_and_record_modification(key, interpolated_value)
+        return self
 
     @animated_function(animated_args={'interpolation': 0.0}, unique_args=['key', 'recursive'])
-    def apply_absolute_change(self, key, change, interpolation=1.0, recursive='True'):
-        """
-        Applies an animated absolute change to an attribute, interpolating to a target value.
+    def apply_absolute_change(self, key: str, change: any, interpolation: float = 1.0, recursive: str = "True") -> 'Mob':
+        """Applies an animated absolute change to an attribute, interpolating to a target value.
+
+        This method smoothly transitions the attribute's value from its current state
+        to the specified `change` value over time, according to the `interpolation` factor.
 
         Args:
-            key (str): The name of the attribute to change.
+            key (str): The name of the attribute to change (e.g., 'location', 'opacity').
             change (Any): The target absolute value for the attribute.
             interpolation (float, optional): The interpolation factor.
-                0.0 means no change from current, 1.0 means attribute becomes `change`.
+                0.0 means no change from the current value; 1.0 means the attribute becomes `change`.
                 Defaults to 1.0.
-            recursive (str, optional): If 'True', applies the change recursively
-                to child Mobs. Defaults to 'True'.
+            recursive (str, optional): If equal to "True", applies the change recursively
+                to all child Mobs. Defaults to "True".
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
-        orig_value = change
+        original_change_value = change  # Store original to propagate to children
         if hasattr(self, key):
-            relation = self.attr_to_relations[key][0]
+            relation_func = self.attr_to_relations[key][0]
             current_value = self.__getattribute__(key)
             try:
-                change = current_value * (1-interpolation) + interpolation * change
+                # Direct linear interpolation
+                interpolated_value = current_value * (1 - interpolation) + interpolation * change
             except RuntimeError:
-                interpolation = torch.cat((interpolation, torch.zeros_like(current_value[...,-(current_value.shape[-2]-interpolation.shape[-2]):,:])), -2)
-                change = current_value * (1 - interpolation) + interpolation * change
-            self.setattr_and_record_modification(key, relation(current_value, change))
+                # Adjust interpolation tensor dimensions if necessary for batching
+                interpolation = torch.cat((interpolation, torch.zeros_like(
+                    current_value[..., -(current_value.shape[-2] - interpolation.shape[-2]):, :])), -2)
+                interpolated_value = current_value * (1 - interpolation) + interpolation * change
+            self.setattr_and_record_modification(key, relation_func(current_value, interpolated_value))
+
         if recursive == 'True':
-            change = orig_value
+            change = original_change_value
             for c in self.children:
                 c.set_time_inds_to(self)
                 change2 = change
@@ -365,47 +440,52 @@ class Mob(Animatable):
                 c.apply_absolute_change(key, change2, interpolation=interpolation2, recursive=recursive)
         return self
 
-    def setattr_basic(self, key, value):
-        """
-        Sets an attribute's value directly without complex animation logic.
+    def setattr_basic(self, key: str, value: any) -> 'Mob':
+        """Sets an attribute's value directly without complex animation logic.
 
         If the attribute is animatable and an animation context is active,
-        this will still record the change as a step-change.
+        this will still record the change as a step-change (instantaneous transition).
+        This method does not support recursive application to children. For animated or
+        recursive changes, use `setattr_absolute` or `setattr_relative`.
 
         Args:
             key (str): The name of the attribute to set.
             value (Any): The new value for the attribute.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
         value = cast_to_tensor(value)
         if not hasattr(self, 'data'):
+            # If data is not initialized, set attribute directly
             self.__setattr__(f'_{key}', value)
             return self
         if not hasattr(self, key):
+            # If attribute doesn't exist yet as a property, store in data_dict_active
             self.data.data_dict_active[key] = value
             return self
 
+        # For existing animatable attributes, record as an instantaneous "set value"
         self.apply_set_value(key, value)
         return self
 
-    def setattr_relative(self, key, value, relation_key=None):
-        """
-        Sets an attribute by applying a relative change.
+    def setattr_relative(self, key: str, value: any, relation_key: str | None = None) -> 'Mob':
+        """Sets an attribute by applying a relative change.
 
-        This calculates the difference (`change`) needed to get from the current
-        value to the target `value` based on the inverse relation, then
-        applies that `change` relatively.
+        This method calculates the `change` needed to transition from the current
+        value to the target `value` based on the inverse of the predefined relation.
+        It then applies this `change` relatively to all children.
 
         Args:
             key (str): The name of the attribute to set.
             value (Any): The target value for the attribute.
-            relation_key (str, optional): The key for the relation functions.
-                Defaults to `key`.
+            relation_key (str, optional): The key to use for looking up the relation functions.
+                If None, `key` itself is used. Defaults to None.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
         value = cast_to_tensor(value)
         if not hasattr(self, 'data'):
@@ -415,23 +495,28 @@ class Mob(Animatable):
             self.data.data_dict_active[key] = value
             return self
 
-        if relation_key is None:
-            relation_key = key
-        rel, rel_inv = self.attr_to_relations[relation_key]
+        resolved_relation_key = key if relation_key is None else relation_key
+        # Get the relative and inverse relative functions for the attribute
+        _, inverse_relation_func = self.attr_to_relations[resolved_relation_key]
         current_value = self.__getattribute__(key)
-        change = rel_inv(current_value, value)
-        return self.apply_relative_change(key, change, recursive="True" if self.recursing else "False", relation_key=relation_key)
+        # Calculate the 'change' that, when applied relatively, results in 'value'
+        change = inverse_relation_func(current_value, value)
+        # Apply the calculated relative change, respecting recursion flag
+        return self.apply_relative_change(key, change, recursive="True" if self.recursing else "False", relation_key=resolved_relation_key)
 
-    def setattr_absolute(self, key, value):
-        """
-        Sets an attribute to an absolute value, animating the transition.
+    def setattr_absolute(self, key: str, value: any) -> 'Mob':
+        """Sets an attribute to a value absolutely, animating the transition.
+
+        This method directly interpolates the attribute's value from its current
+        state to the specified `value`.
 
         Args:
             key (str): The name of the attribute to set.
             value (Any): The target absolute value.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
         value = cast_to_tensor(value)
         if not hasattr(self, 'data'):
@@ -444,87 +529,141 @@ class Mob(Animatable):
         return self.apply_absolute_change(key, value, recursive="True" if self.recursing else "False")
 
     @property
-    def location(self):
+    def location(self) -> torch.Tensor:
+        """The 3D location of the Mob in world space.
+
+        When set, it triggers an animated change to the new location,
+        maintaining child Mob positions relative to the parent..
+
+        """
         return self.getattribute_animated('location')
 
     @location.setter
-    def location(self, location):
+    def location(self, location: torch.Tensor):
         self.setattr_relative('location', location)
 
     @property
-    def basis(self):
+    def basis(self) -> torch.Tensor:
+        """The flattened 3x3 matrix representing the Mob's orientation and scale.
+
+        The rows of the unflattened matrix correspond to the right, upwards,
+        and forwards directions of the Mob's local coordinate system.
+        Their norms indicate the scaling along those axes.
+        When accessed,
+        When set, it triggers an animated interpolation to the new basis,
+        maintaining child Mob positions relative to the parent.
+
+        """
         return self.getattribute_animated('basis')
 
     @property
-    def normalized_basis(self):
+    def normalized_basis(self) -> torch.Tensor:
+        """The Mob's basis matrix with all its row vectors normalized to unit length.
+        This represents only the orientation (rotation) without any scaling.
+
+        """
         return squish(unsquish(self.basis, -1, 3) / self.scale_coefficient.unsqueeze(-1), -2, -1)
 
-    def set_basis_inner(self, parent_location, old_basis, new_basis):
+    def set_basis_inner(self, parent_location: torch.Tensor, old_basis: torch.Tensor, new_basis: torch.Tensor) -> 'Mob':
+        """Internal method to set the basis of a child Mob relative to its parent,
+        ensuring its global position is maintained despite parent's basis change.
+
+        """
         if self.parent_batch_sizes is not None:
-            def expand(x):
-                return x.expand(-1,self.parent_batch_sizes.shape[0], -1)
-            parent_location, old_basis, new_basis = [torch.repeat_interleave(expand(_), self.parent_batch_sizes, -2) for _ in [parent_location, old_basis, new_basis]]
+            # Expand parent data to match child's batch size for batched operations
+            def expand_for_child(x: torch.Tensor) -> torch.Tensor:
+                return x.expand(-1, self.parent_batch_sizes.shape[0], -1)
+
+            parent_location, old_basis, new_basis = [
+                torch.repeat_interleave(expand_for_child(val), self.parent_batch_sizes, -2) for val in
+                [parent_location, old_basis, new_basis]]
+
         local_coords = map_global_to_local_coords(parent_location, old_basis, self.location)
-        self.setattr_and_record_modification('location', map_local_to_global_coords(parent_location, new_basis, local_coords))
+        new_global_location = map_local_to_global_coords(parent_location, new_basis, local_coords)
+        self.setattr_and_record_modification('location', new_global_location)
+
         if self.recursing:
-            for c in self.children:
-                c.set_basis_inner(parent_location, old_basis, new_basis)
+            for child in self.children:
+                child.set_basis_inner(parent_location, old_basis, new_basis)
         return self
 
-    def set_basis_interpolated(self, *args, **kwargs):
+    def set_basis_interpolated(self, *args, **kwargs) -> 'Mob':
+        """Wrapper around `_set_basis_interpolated` to handle recursive flag.
+        Sets the Mob's basis, interpolating from the current basis to the target.
+
+        """
         return self._set_basis_interpolated(*args, **kwargs, recursive='True' if self.recursing else 'False')
 
     @animated_function(animated_args={'interpolation': 0}, unique_args=['relation_key', 'recursive'])
-    def _set_basis_interpolated(self, basis, interpolation=1, relation_key='basis', recursive='True'):
-        """
-        Sets the Mob's basis, interpolating from the current basis to the target.
+    def _set_basis_interpolated(self, basis: torch.Tensor, interpolation: float = 1, relation_key: str = 'basis',
+                                recursive: str = "True") -> 'Mob':
+        """Internal method to set the Mob's basis, interpolating from the current basis to the target.
 
         This method also ensures that child Mobs maintain their positions
-        relative to this Mob during the basis change.
+        relative to this Mob during the basis change by adjusting their locations.
 
         Args:
-            basis (torch.Tensor): The target 3x3 basis matrix.
-            interpolation (float, optional): Interpolation factor (0 to 1).
-                Defaults to 1.
+            basis (torch.Tensor): The target 3x3 basis matrix (flattened to 9 elements).
+            interpolation (float, optional): Interpolation factor (0.0 to 1.0).
+                0.0 means current basis, 1.0 means target `basis`. Defaults to 1.
             relation_key (str, optional): Key for the relation function,
                 typically 'basis' or 'scale_coefficient'. Defaults to 'basis'.
+            recursive (str, optional): If "True", applies the rotation recursively
+                to children, maintaining their relative positions. Defaults to "True".
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
         if recursive == 'True':
             ds = (self.get_descendants(include_self=False))
             [d.set_time_inds_to(self) for d in ds]
         old_basis = self.basis if hasattr(self, 'basis') else basis
-        basis = old_basis * (1-interpolation) + interpolation * basis
-        recursing = self.recursing
-        self.recursing = recursive == 'True'
-        self.setattr_relative('basis', basis, relation_key)
-        self.recursing = recursing
+        interpolated_basis = old_basis * (1 - interpolation) + interpolation * basis
+
+        # Temporarily set recursing flag to control setattr_relative behavior
+        original_recursing_state = self.recursing
+        self.recursing = recursive
+        self.setattr_relative('basis', interpolated_basis, relation_key)
+        self.recursing = original_recursing_state  # Restore original state
+
         if recursive == 'True':
-            for c in self.children:
-                c.set_basis_inner(self.location, old_basis, basis)
+            # Adjust children's locations to maintain relative positions after basis change
+            for child in self.children:
+                child.set_basis_inner(self.location, old_basis, interpolated_basis)
         return self
 
     @basis.setter
-    def basis(self, basis):
+    def basis(self, basis: torch.Tensor):
         self.set_basis_interpolated(basis)
 
     @property
-    def scale_coefficient(self):
+    def scale_coefficient(self) -> torch.Tensor:
+        """The scaling factor of the Mob along its local axes, derived from the basis.
+        It is the norm of the basis vectors.
+
+        """
         return unsquish(self.basis, -1, 3).norm(p=2, dim=-1, keepdim=False)
 
     @scale_coefficient.setter
-    def scale_coefficient(self, scale_coefficient):
+    def scale_coefficient(self, scale_coefficient: torch.Tensor):
+        """Sets the scaling factor of the Mob, re-normalizing the basis vectors.
+
+        This ensures that setting a new scale coefficient only changes the size
+        of the Mob, preserving its orientation.
+
+        """
         scale_coefficient = cast_to_tensor(scale_coefficient)
-        self.set_basis_interpolated(squish(F.normalize(unsquish(self.basis, -1, 3), p=2, dim=-1) * scale_coefficient.unsqueeze(-1), -2, -1), relation_key='scale_coefficient')
+        new_basis = squish(F.normalize(unsquish(self.basis, -1, 3), p=2, dim=-1) * scale_coefficient.unsqueeze(-1), -2,
+                           -1)
+        self.set_basis_interpolated(new_basis, relation_key='scale_coefficient')
         return self
 
     def clear_cache(self):
-        """
-        Clears cached animation data.
+        """Clears cached animation data.
 
-        This is typically used internally when animation states are reset or recalculated.
+        This is typically used internally when animation states are reset or recalculated,
+        ensuring that subsequent rendering uses fresh data.
+
         """
         if self.free_cache:
             self.attr_to_values_full = dict()
@@ -534,580 +673,924 @@ class Mob(Animatable):
             self.time_inds_full = None
             self.time_inds = None
 
-    def get_normal(self):
-        """
-        Alias for get_forward_direction()
+    def get_normal(self) -> torch.Tensor:
+        """Alias for `get_forward_direction()`.
+        Returns the normalized forward direction vector of the Mob.
+
         """
         return self.get_forward_direction()
 
-    def get_center(self):
-        #TODO make this get mid point of bounding box surrounding self + children.
+    def get_center(self) -> torch.Tensor:
+        """Gets the logical center of the Mob.
+        Currently, this is simply the `location` attribute.
+
+        """
+        # TODO: Make this get mid point of bounding box surrounding self + children.
         return self.location
 
-    def set_location(self, location, recursive=True):
+    def set_location(self, location: torch.Tensor, recursive: bool = True) -> 'Mob':
+        """Sets the location of the Mob.
+
+        Args:
+            location (torch.Tensor): The target 3D location.
+            recursive (bool, optional): If True, also affects the locations of child Mobs
+                to maintain their relative positions. Defaults to True.
+
+        Returns:
+            Mob: The Mob instance itself, allowing for method chaining.
+
+        """
         if recursive:
             self.location = location
         else:
             self.setattr_non_recursive('location', location)
         return self
 
-    def setattr_non_recursive(self, key, value):
-        """
-        Sets an attribute's value without applying the change to child Mobs.
+    def setattr_non_recursive(self, key: str, value: any):
+        """Sets an attribute's value without applying the change to child Mobs.
 
-        This temporarily disables the recursive behavior of attribute setting.
+        This temporarily disables the recursive behavior of attribute setting
+        for the duration of this specific attribute modification.
 
         Args:
             key (str): The name of the attribute to set.
             value (Any): The new value for the attribute.
+
         """
-        recursing = self.recursing
+        original_recursing_state = self.recursing
         self.recursing = False
-        self.__setattr__(key, value)
-        self.recursing = recursing
+        self.__setattr__(key, value)  # Calls the property setter, which then calls apply_absolute_change/set_relative
+        self.recursing = original_recursing_state  # Restore original state
 
-    def move_to(self, location, path_arc_angle=None, **kwargs):
-        """
-        Moves the Mob to a specified location.
+    def move_to(self, location: torch.Tensor, path_arc_angle: float | None = None, **kwargs) -> 'Mob':
+        """Moves the Mob to a specified location.
 
-        If `path_arc_angle` is provided, the Mob moves along an arc.
+        If `path_arc_angle` is provided, the Mob moves along a circular arc.
         Otherwise, it moves in a straight line.
 
         Args:
             location (torch.Tensor): The target 3D location.
             path_arc_angle (float, optional): The angle of the arc in degrees
                 for curved movement. If None, movement is linear. Defaults to None.
-            **kwargs: Additional arguments passed to `set_location` or
-                `move_to_point_along_arc`.
+            **kwargs: Additional arguments passed to `set_location` for linear
+                movement or `move_to_point_along_arc` for curved movement.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
         if path_arc_angle is None:
             return self.set_location(location, **kwargs)
         return self.move_to_point_along_arc(location, path_arc_angle, **kwargs)
 
-    def move(self, displacement, **kwargs):
-        """
-        Moves the Mob by a given displacement vector.
+    def move(self, displacement: torch.Tensor, **kwargs) -> 'Mob':
+        """Moves the Mob by a given displacement vector from its current location.
 
         Args:
             displacement (torch.Tensor): The 3D vector by which to move the Mob.
-            **kwargs: Additional arguments passed to `move_to`.
+            **kwargs: Additional arguments passed to `move_to` (e.g., `path_arc_angle`).
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
         self.move_to(self.location + displacement, **kwargs)
         return self
 
-    def get_boundary_points(self):
+    def get_boundary_points(self) -> torch.Tensor:
+        """Returns the current location of the Mob, serving as its boundary point.
+        For more complex Mobs, this should be overridden to provide actual boundary points.
+        """
         return self.location
 
-    def get_boundary_points_recursive(self):
-        num_c = len(self.children)
-        if num_c == 0:
-            return self.get_boundary_points()
-        elif num_c == 1:
-            return self.children[0].get_boundary_points_recursive()
-        return torch.cat([c.get_boundary_points_recursive() for c in self.children], -2)
+    def get_boundary_points_recursive(self) -> torch.Tensor:
+        """Recursively collects boundary points from this Mob and all its descendants.
 
-    def get_boundary_edge_point(self, direction):
-        bp = self.get_boundary_points_recursive()
-        best_ind = dot_product(bp, direction, dim=-1, keepdim=True).argmax(-2, keepdim=True)
-        return broadcast_gather(bp, -2, best_ind, keepdim=True)
+        Returns:
+            torch.Tensor: A concatenated tensor of boundary points from all
+                relevant Mobs in the hierarchy.
 
-    def get_boundary_in_direction(self, direction):
-        edge_point = self.get_boundary_edge_point(direction)
-
-        def med(x):
-            mx = x.amax(-2, keepdim=True)
-            mn = x.amin(-2, keepdim=True)
-            return (mx + mn)*0.5
-        loc = med(self.location)
-        return project_point_onto_line(edge_point - loc, direction, dim=-1) + loc
-
-    def set_x_coord(self, loc):
-        new_loc = self.location.clone()
-        new_loc[...,-1] = loc[...,-1]
-        self.location = new_loc
-
-    def set_y_coord(self, loc):
-        new_loc = self.location.clone()
-        new_loc[...,-2] = loc[...,-2]
-        self.location = new_loc
-
-    def set_x_y_coord(self, loc):
-        new_loc = self.location.clone()
-        new_loc[..., -2:] = loc[..., -2:]
-        self.location = new_loc
-
-    def move_next_to(self, mob, direction, buffer=DEFAULT_BUFFER, **kwargs):
         """
-        Moves this Mob to be adjacent to another Mob (or a point) in a given direction.
+        num_children = len(self.children)
+        if num_children == 0:
+            return self.get_boundary_points()
+        elif num_children == 1:
+            return self.children[0].get_boundary_points_recursive()
+        return torch.cat([child.get_boundary_points_recursive() for child in self.children], -2)
+
+    def get_boundary_edge_point(self, direction: torch.Tensor) -> torch.Tensor:
+        """Finds the point on the Mob's recursive boundary that is furthest in a given direction.
 
         Args:
-            mob (Mob or torch.Tensor): The target Mob or 3D point to move next to.
             direction (torch.Tensor): The 3D vector indicating the direction
-                from `mob` to this Mob.
-            buffer (float, optional): The distance to maintain between the Mobs.
-                Defaults to DEFAULT_BUFFER.
+                along which to find the extreme boundary point.
+
+        Returns:
+            torch.Tensor: The 3D coordinate of the boundary point furthest in `direction`.
+
+        """
+        all_boundary_points = self.get_boundary_points_recursive()
+        # Project all boundary points onto the direction vector and find the one with max projection
+        best_index = dot_product(all_boundary_points, direction, dim=-1, keepdim=True).argmax(-2, keepdim=True)
+        # Use broadcast_gather to retrieve the actual point
+        return broadcast_gather(all_boundary_points, -2, best_index, keepdim=True)
+
+    def get_boundary_in_direction(self, direction: torch.Tensor) -> torch.Tensor:
+        """Gets the point on the Mob's boundary (including children) that lies along
+        the given direction from its center, and is furthest in that direction.
+
+        Args:
+            direction (torch.Tensor): The 3D vector defining the direction.
+
+        Returns:
+            torch.Tensor: The 3D coordinate of the boundary point.
+
+        """
+        edge_point = self.get_boundary_edge_point(direction)
+
+        def get_median_location(tensor_values: torch.Tensor) -> torch.Tensor:
+            """Calculates the median (midpoint of min/max) of a tensor's values."""
+            max_val = tensor_values.amax(-2, keepdim=True)
+            min_val = tensor_values.amin(-2, keepdim=True)
+            return (max_val + min_val) * 0.5
+
+        # Get the logical center of the Mob (or its current location if no complex center is defined)
+        mob_center = get_median_location(self.location)
+        # Project the offset from the center to the edge point onto the direction
+        # and add it back to the center to get the boundary point in that direction.
+        return project_point_onto_line(edge_point - mob_center, direction, dim=-1) + mob_center
+
+    def set_x_coord(self, x_coord: torch.Tensor):
+        """Sets the x-coordinate of the Mob's location, preserving y and z."""
+        new_location = self.location.clone()
+        new_location[..., 0] = x_coord[..., 0]
+        self.location = new_location
+
+    def set_y_coord(self, y_coord: torch.Tensor):
+        """Sets the y-coordinate of the Mob's location, preserving x and z."""
+        new_location = self.location.clone()
+        new_location[..., 1] = y_coord[..., 0]
+        self.location = new_location
+
+    def set_x_y_coord(self, xy_coords: torch.Tensor):
+        """Sets the x and y coordinates of the Mob's location, preserving z."""
+        new_location = self.location.clone()
+        new_location[..., :2] = xy_coords[..., :2]
+        self.location = new_location
+
+    def move_next_to(self, target_mob: 'Mob' | torch.Tensor, direction: torch.Tensor, buffer: float = DEFAULT_BUFFER,
+                     **kwargs) -> 'Mob':
+        """Moves this Mob to be adjacent to another Mob (or a point) in a given direction.
+
+        Args:
+            target_mob (Mob or torch.Tensor): The target Mob or a 3D point (torch.Tensor)
+                to move next to.
+            direction (torch.Tensor): The 3D vector indicating the direction
+                from `target_mob` towards where this Mob should be placed.
+                This vector does not need to be normalized.
+            buffer (float, optional): The minimum distance to maintain between
+                the closest edges of the two Mobs. Defaults to `DEFAULT_BUFFER`.
             **kwargs: Additional arguments passed to `move_to`.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
-        direction = F.normalize(direction, p=2, dim=-1)
-        mob_edge = mob.get_boundary_in_direction(direction) if not isinstance(mob, torch.Tensor) else mob
-        my_edge = self.get_boundary_in_direction(-direction)
-        self.move_to(mob_edge + direction * buffer + (self.location-my_edge), **kwargs)
+        normalized_direction = F.normalize(direction, p=2, dim=-1)
+        # Get the boundary point of the target_mob along the given direction
+        target_edge_point = target_mob.get_boundary_in_direction(normalized_direction) if not isinstance(target_mob,
+                                                                                                         torch.Tensor) else target_mob
+        # Get the boundary point of this mob in the opposite direction
+        my_edge_point = self.get_boundary_in_direction(-normalized_direction)
+
+        # Calculate the required displacement to move 'my_edge_point' to 'target_edge_point'
+        # plus the buffer distance, and then apply it to the Mob's current location.
+        displacement_to_align_edges = target_edge_point + normalized_direction * buffer - my_edge_point
+        self.move_to(self.location + displacement_to_align_edges, **kwargs)
         return self
 
-    def get_length_in_direction(self, direction):
-        return (self.get_boundary_in_direction(direction) - self.get_boundary_in_direction(-direction)).norm(p=2,dim=-1,keepdim=True)
+    def get_length_in_direction(self, direction: torch.Tensor) -> torch.Tensor:
+        """Calculates the spatial extent of the Mob along a given direction.
+        This is the distance between the furthest points on its boundary
+        in that direction and its opposite.
 
-    def move_inline_with_edge(self, mob, direction, edge=None, buffer=DEFAULT_BUFFER, **kwargs):
+        Args:
+            direction (torch.Tensor): The 3D vector defining the direction.
+
+        Returns:
+            torch.Tensor: The length of the Mob along the specified direction.
+
         """
-        Moves this Mob so its edge is aligned with another Mob's edge along a direction.
+        # Get the boundary points in the positive and negative directions and calculate their distance
+        return (self.get_boundary_in_direction(direction) - self.get_boundary_in_direction(-direction)).norm(p=2,
+                                                                                                             dim=-1,
+                                                                                                             keepdim=True)
+
+    def move_inline_with_edge(self, mob: 'Mob', direction: torch.Tensor, edge: torch.Tensor | None = None,
+                              buffer: float = DEFAULT_BUFFER, **kwargs) -> 'Mob':
+        """Moves this Mob so its specified edge is aligned with another Mob's edge
+        along a given direction, while maintaining a buffer.
 
         Args:
             mob (Mob): The target Mob to align with.
-            direction (torch.Tensor): The primary direction for alignment.
+            direction (torch.Tensor): The primary direction along which the alignment
+                should occur (e.g., `RIGHT`, `UP`).
             edge (torch.Tensor, optional): If specified, this direction is used
-                to determine "which side" of this Mob to use for alignment.
-                If None, `direction` is used. Defaults to None.
-            buffer (float, optional): Buffer distance. Defaults to DEFAULT_BUFFER.
+                to determine "which side" of *this* Mob to use for alignment.
+                If None, `direction` is used for both. Defaults to None.
+            buffer (float, optional): The buffer distance to maintain between the edges.
+                Defaults to `DEFAULT_BUFFER`.
             **kwargs: Additional arguments for `move`.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
-        old_loc = Mob(add_to_scene=False).move_next_to(self, direction if edge is None else edge, buffer).location
-        new_loc = Mob(add_to_scene=False).move_next_to(mob, direction, buffer).location
-        self.move(project_point_onto_line(new_loc - old_loc, direction), **kwargs)
+        # Calculate the target location for this Mob if it were moved next to itself
+        # using the specified `edge` direction and `buffer`. This acts as a reference point.
+        old_location_reference = Mob(add_to_scene=False).move_next_to(self, direction if edge is None else edge,
+                                                                      buffer).location
+        # Calculate the target location for this Mob if it were moved next to the `mob`
+        # using the primary `direction` and `buffer`.
+        new_location_target = Mob(add_to_scene=False).move_next_to(mob, direction, buffer).location
+        # Calculate the displacement needed to move from the reference point to the target point,
+        # projected onto the `direction` to ensure alignment only along that axis.
+        displacement = project_point_onto_line(new_location_target - old_location_reference, direction)
+        self.move(displacement, **kwargs)
         return self
 
-    def move_inline_with_center(self, mob, direction, buffer=DEFAULT_BUFFER):
-        """
-        Moves this Mob so its center is aligned with another Mob's center
+    def move_inline_with_center(self, mob: 'Mob', direction: torch.Tensor, buffer: float = DEFAULT_BUFFER) -> 'Mob':
+        """Moves this Mob so its center is aligned with another Mob's center
         along a given direction.
 
         Args:
-            mob (Mob): The target Mob.
-            direction (torch.Tensor): The alignment direction.
-            buffer (float, optional): Buffer distance (seems unused in current impl).
-                                      Defaults to DEFAULT_BUFFER.
+            mob (Mob): The target Mob whose center will be aligned with.
+            direction (torch.Tensor): The 3D vector specifying the alignment direction.
+            buffer (float, optional): Buffer distance (currently seems unused in this specific
+                implementation, as it aligns centers, not edges). Defaults to `DEFAULT_BUFFER`.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
-        old_loc = self.location
-        self.location = old_loc + project_point_onto_line(mob.location-old_loc, direction)
+        # Calculate the displacement vector from this Mob's center to the target Mob's center.
+        displacement_to_target_center = mob.location - self.location
+        # Project this displacement onto the `direction` to get the movement needed for alignment.
+        alignment_displacement = project_point_onto_line(displacement_to_target_center, direction)
+        self.location = self.location + alignment_displacement
         return self
 
-    def move_inline_with_mob(self, mob, align_direction, center=False, from_mob=None, buffer=DEFAULT_BUFFER):
-        mob_edge = mob.get_boundary_in_direction(align_direction) if not center else mob.location
-        if from_mob is None:
-            from_mob = self
-        from_edge = from_mob.get_boundary_in_direction(-align_direction) if not center else from_mob.location
-        displacement = mob_edge - from_edge
-        align_direction = F.normalize(align_direction, p=2, dim=-1)
-        return self.move(dot_product(displacement, align_direction) * align_direction)
+    def move_inline_with_mob(self, mob: 'Mob', align_direction: torch.Tensor, center: bool = False,
+                             from_mob: 'Mob' | None = None, buffer: float = DEFAULT_BUFFER) -> 'Mob':
+        """
+        Moves this Mob to align with another Mob along a specific direction,
+        either by their edges or by their centers.
 
-    def get_displacement_to_boundary(self, mob, direction):
+        Args:
+            mob (Mob): The target Mob to align with.
+            align_direction (torch.Tensor): The 3D vector defining the direction
+                along which alignment should occur.
+            center (bool, optional): If True, aligns the centers of the Mobs.
+                If False, aligns their edges. Defaults to False.
+            from_mob (Mob, optional): The Mob whose edge/center is considered
+                the starting point for calculating displacement. If None,
+                this Mob itself is used. Defaults to None.
+            buffer (float, optional): Buffer distance between aligned edges (only relevant
+                if `center` is False). Defaults to `DEFAULT_BUFFER`.
+
+        Returns:
+            Mob: The Mob instance itself, allowing for method chaining.
+        """
+        if center:
+            # Align centers
+            mob_reference_point = mob.location
+            from_mob_reference_point = self.location if from_mob is None else from_mob.location
+        else:
+            # Align edges
+            mob_reference_point = mob.get_boundary_in_direction(align_direction)
+            from_mob_reference_point = (self.get_boundary_in_direction(-align_direction)
+                                        if from_mob is None else from_mob.get_boundary_in_direction(-align_direction))
+
+        # Calculate the overall displacement needed for alignment
+        displacement = mob_reference_point - from_mob_reference_point
+        # Normalize the alignment direction
+        normalized_align_direction = F.normalize(align_direction, p=2, dim=-1)
+        # Project the displacement onto the normalized direction to ensure movement only along that axis
+        return self.move(dot_product(displacement, normalized_align_direction) * normalized_align_direction)
+
+    def get_displacement_to_boundary(self, mob: 'Mob', direction: torch.Tensor) -> torch.Tensor:
+        """
+        Calculates the vector displacement required to move this Mob's boundary
+        to match another Mob's boundary along a given direction.
+
+        Args:
+            mob (Mob): The target Mob.
+            direction (torch.Tensor): The direction along which to calculate the displacement.
+
+        Returns:
+            torch.Tensor: The displacement vector.
+        """
         my_boundary = self.get_boundary_in_direction(direction)
         other_boundary = mob.get_boundary_in_direction(direction)
         return other_boundary - my_boundary
 
-    def move_inline_with_boundary(self, mob, direction):
-        return self.move(self.get_displacement_to_boundary(mob, direction))
-
-    def move_to_edge(self, edge, buffer=DEFAULT_BUFFER):
+    def move_inline_with_boundary(self, mob: 'Mob', direction: torch.Tensor) -> 'Mob':
         """
-        Moves the Mob to the edge of the screen.
+        Moves this Mob so its boundary aligns with another Mob's boundary
+        along a specific direction.
 
         Args:
-            edge (torch.Tensor): A 3D vector indicating the screen edge
-                (e.g., RIGHT, LEFT, UP, DOWN).
-            buffer (float, optional): Distance to maintain from the screen border.
-                Defaults to DEFAULT_BUFFER.
+            mob (Mob): The target Mob whose boundary will be aligned with.
+            direction (torch.Tensor): The direction along which to align the boundaries.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
-        edge = F.normalize(edge, p=2, dim=-1)
-        bp = self.get_boundary_in_direction(edge)
-        edge_point = self.scene.camera.project_point_onto_screen_border(bp, edge)
-        target_location = edge_point + F.normalize(bp - edge_point, p=2, dim=-1) * buffer
-        displacement = target_location - bp
+        return self.move(self.get_displacement_to_boundary(mob, direction))
+
+    def move_to_edge(self, edge: torch.Tensor, buffer: float = DEFAULT_BUFFER) -> 'Mob':
+        """Moves the Mob to an edge of the screen.
+
+        Args:
+            edge (torch.Tensor): A 3D vector indicating the screen edge direction
+                (e.g., `RIGHT`, `LEFT`, `UP`, `DOWN`).
+            buffer (float, optional): Distance to maintain from the screen border
+                after moving. Defaults to `DEFAULT_BUFFER`.
+
+        Returns:
+            Mob: The Mob instance itself, allowing for method chaining.
+        """
+        normalized_edge = F.normalize(edge, p=2, dim=-1)
+        # Get the boundary point of this Mob that is furthest towards the 'edge' direction
+        mob_boundary_point = self.get_boundary_in_direction(normalized_edge)
+        # Project this point onto the screen border to find the target point on the border
+        edge_point_on_screen = self.scene.camera.project_point_onto_screen_border(mob_boundary_point, normalized_edge)
+        # Calculate the final target location for the Mob, accounting for the buffer
+        target_location = edge_point_on_screen + F.normalize(mob_boundary_point - edge_point_on_screen, p=2,
+                                                             dim=-1) * buffer
+        # Calculate the displacement needed and move the Mob
+        displacement = target_location - mob_boundary_point
         self.move(displacement)
         return self
 
-    def move_to_corner(self, edge1, edge2, buffer=DEFAULT_BUFFER):
-        """
-        Moves the Mob to a corner of the screen, defined by two edge directions.
+    def move_to_corner(self, edge1: torch.Tensor, edge2: torch.Tensor, buffer: float = DEFAULT_BUFFER) -> 'Mob':
+        """Moves the Mob to a corner of the screen, defined by two intersecting edge directions.
 
         Args:
             edge1 (torch.Tensor): Vector for the first screen edge.
             edge2 (torch.Tensor): Vector for the second screen edge.
-            buffer (float, optional): Distance from the screen borders.
-                Defaults to DEFAULT_BUFFER.
+            buffer (float, optional): Distance to maintain from both screen borders.
+                Defaults to `DEFAULT_BUFFER`.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
+        # Chain two calls to move_to_edge to reach the corner
         return self.move_to_edge(edge1, buffer=buffer).move_to_edge(edge2, buffer=buffer)
 
-    def move_out_of_screen(self, edge, buffer=DEFAULT_BUFFER, despawn=True):
-        """
-        Animates the Mob moving off-screen in a given edge direction and then despawns it.
+    def move_out_of_screen(self, edge: torch.Tensor, buffer: float = DEFAULT_BUFFER, despawn: bool = True) -> 'Mob':
+        """Animates the Mob moving off-screen in a given edge direction and then optionally despawns it.
 
         Args:
             edge (torch.Tensor): Vector indicating the direction to move off-screen.
-            buffer (float, optional): Additional distance beyond the screen edge.
-                Defaults to DEFAULT_BUFFER.
-            despawn (bool, optional): If True, despawns the Mob after
-                moving it. Defaults to True.
+            buffer (float, optional): Additional distance beyond the screen edge
+                to move the Mob. Defaults to `DEFAULT_BUFFER`.
+            despawn (bool, optional): If True, the Mob is despawned immediately
+                after moving off-screen (i.e., it is removed from the scene and
+                its history is frozen). Defaults to True.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
-        bp = self.get_boundary_edge_point(-edge)
-        edge_point = self.scene.camera.project_point_onto_screen_border(bp, edge)
-        target_location = edge_point - F.normalize(bp - edge_point, p=2, dim=-1) * buffer
-        displacement = target_location - bp
-        with Seq():
-            self.location = self.location + displacement
+        # Find the point on the Mob's boundary closest to the 'edge' direction
+        mob_boundary_point = self.get_boundary_edge_point(-edge)  # Closest edge to moving OFF screen
+        # Project this point onto the screen border *opposite* the direction of travel
+        # (i.e., the border it will cross).
+        edge_point_on_screen = self.scene.camera.project_point_onto_screen_border(mob_boundary_point, edge)
+        # Calculate the target location: just beyond the screen edge plus buffer
+        target_location = edge_point_on_screen - F.normalize(mob_boundary_point - edge_point_on_screen, p=2,
+                                                             dim=-1) * buffer
+        # Calculate the total displacement needed
+        displacement = target_location - mob_boundary_point
+
+        with Seq():  # Ensure movement and despawn happen sequentially
+            self.location = self.location + displacement  # Animate the movement
             if despawn:
-                self.despawn(animate=False)
+                self.despawn(animate=False)  # Despawn without additional animation
         return self
 
-    def move_to_point_along_square(self, destination, displacement):
-        """
-        Moves the Mob to a destination in a two-step "square" path.
-        First moves by `displacement`, then moves orthogonally to be in line with destination,
-        then moves by `-destination`.
+    def move_to_point_along_square(self, destination: torch.Tensor, displacement: torch.Tensor) -> 'Mob':
+        """Moves the Mob to a destination in a two-step "square" path.
+        First, it moves by the `displacement` vector. Then, it moves orthogonally
+        to align with the `destination` point, and finally reaches the `destination`.
+        This creates an L-shaped or Z-shaped path.
 
         Args:
             destination (torch.Tensor): The final target 3D location.
-            displacement (torch.Tensor): The initial 3D displacement vector.
+            displacement (torch.Tensor): The initial 3D displacement vector for the
+                first segment of the path.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
-        dest_disp = destination - self.location
-        dn = F.normalize(displacement, p=2, dim=-1)
-        orth_disp = dest_disp - dot_product(dest_disp, dn) * dn
-        with Seq(run_time=1):
-            self.move(displacement)
-            self.move(orth_disp)
-            self.location = destination
+        # Vector from current location to destination
+        destination_displacement = destination - self.location
+        # Normalize the initial displacement direction
+        normalized_displacement_direction = F.normalize(displacement, p=2, dim=-1)
+        # Calculate the orthogonal component of the destination displacement relative to the initial displacement
+        orthogonal_displacement = destination_displacement - dot_product(destination_displacement,
+                                                                         normalized_displacement_direction) * normalized_displacement_direction
+
+        with Seq(run_time=1):  # Perform steps sequentially over the same runtime
+            self.move(displacement)  # First step: move by initial displacement
+            self.move(orthogonal_displacement)  # Second step: move orthogonally
+            self.location = destination  # Final step: snap to destination (or animate if runtime allows)
         return self
 
-    def get_length_along_direction(self, direction):
-        all_boundary_points = torch.cat([c.get_boundary_points() for c in self.children], -2)
-        all_boundary_points -= self.location.unsqueeze(-2)
-        dots = dot_product(all_boundary_points, direction.unsqueeze(-2))
-        return dots.amax(-2) - dots.amin(-2)
+    def get_length_along_direction(self, direction: torch.Tensor) -> torch.Tensor:
+        """Calculates the total length of the Mob (and its children) when projected
+        onto a given direction.
 
-    def get_parts_as_mobs(self):
+        Args:
+            direction (torch.Tensor): The 3D direction vector.
+
+        Returns:
+            torch.Tensor: The length of the Mob along the specified direction.
+
+        """
+        # Collect all boundary points from self and children
+        all_boundary_points = torch.cat([c.get_boundary_points() for c in self.children], -2)
+        # Translate points relative to the Mob's location for projection
+        all_boundary_points -= self.location.unsqueeze(-2)
+        # Project points onto the direction vector
+        projections = dot_product(all_boundary_points, direction.unsqueeze(-2))
+        # The length is the difference between the max and min projections
+        return projections.amax(-2) - projections.amin(-2)
+
+    def get_parts_as_mobs(self) -> list['Mob']:
+        """
+        Recursively flattens the Mob and its children into a list of individual Mobs.
+
+        Returns:
+            list[Mob]: A list containing this Mob and all its descendant Mobs.
+        """
         parts = [self]
-        for c in self.children:
-            parts.extend(c.get_parts_as_mobs())
+        for child in self.children:
+            parts.extend(child.get_parts_as_mobs())
         return parts
 
-    def scale(self, scale_factor, recursive=True):
-        """
-        Scales the Mob by a factor `scale_factor` relative to its current scale.
+    def scale(self, scale_factor: float | torch.Tensor, recursive: bool = True) -> 'Mob':
+        """Scales the Mob by a factor `scale_factor` relative to its current scale.
 
         Args:
             scale_factor (float or torch.Tensor): The scaling factor. Can be a scalar or
-                a tensor for per-axis/per-batch scaling.
-            recursive (bool, optional): If True, applies scaling recursively.
-                Defaults to True.
+                a tensor for per-axis/per-batch scaling. For example, `2` for double size,
+                `0.5` for half size.
+            recursive (bool, optional): If True, applies scaling recursively
+                to all child Mobs. Defaults to True.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
-        s = scale_factor * self.scale_coefficient
-        return self.set(scale_coefficient=s) if recursive else self.set_non_recursive(scale_coefficient=s)
+        # Calculate the new absolute scale coefficient
+        new_scale = scale_factor * self.scale_coefficient
+        # Use the 'set' method to apply the new scale coefficient, which handles animation and recursion
+        return self.set(scale_coefficient=new_scale) if recursive else self.set_non_recursive(
+            scale_coefficient=new_scale)
 
-    def set_scale(self, s, recursive=True):
-        return self.set(scale_coefficient=s) if recursive else self.set_non_recursive(scale_coefficient=s)
+    def set_scale(self, scale: float | torch.Tensor, recursive: bool = True) -> 'Mob':
+        """Sets the absolute scale of the Mob to a specific value.
 
-    '''def set_scale(self, s):
-        with Synchronized():
-            for c in self.children:
-                """c.anchors_enabled = False
-                c.local_coord_update_enabled = False
-                disp = (self.location - (c.location + displacement))*s + displacement
-                c.move(disp)
-                c.scale(s, disp)
-                c.local_coord_update_enabled = True
-                c.anchors_enabled = True"""
-                c.set_scale(s)
-            self.scale_coefficient = s
-        return self'''
+        Args:
+            scale (float or torch.Tensor): The target absolute scaling factor.
+            recursive (bool, optional): If True, applies scaling recursively
+                to all child Mobs. Defaults to True.
+
+        Returns:
+            Mob: The Mob instance itself, allowing for method chaining.
+
+        """
+        return self.set(scale_coefficient=scale) if recursive else self.set_non_recursive(scale_coefficient=scale)
 
     @animated_function(animated_args={'num_degrees': 0}, unique_args=['axis'])
-    def rotate(self, num_degrees, axis=OUT):
-        """
-        Rotates the Mob by a number of degrees around a given axis.
+    def rotate(self, num_degrees: float | torch.Tensor, axis: torch.Tensor = OUT) -> 'Mob':
+        """Rotates the Mob by a number of degrees around a given axis passing through the mob's center.
 
         Args:
             num_degrees (float or torch.Tensor): The angle of rotation in degrees.
-            axis (torch.Tensor): The 3D axis of rotation.
+                Can be a scalar or a tensor for batched rotations.
+            axis (torch.Tensor, optional): The 3D axis of rotation (e.g., `OUT` for Z-axis, `UP` for Y-axis).
+                This vector does not need to be normalized. Defaults to `OUT`.
 
         Returns:
-            Mob: The Mob instance itself.
-        """
-        axis = F.normalize(axis, p=2, dim=-1)
-        R = get_rotation_around_axis(num_degrees, axis, dim=-1)
-        self.basis = squish(unsquish(self.basis, -1, 3) @ R, -2, -1)
-        return self
+            Mob: The Mob instance itself, allowing for method chaining.
 
-    @animated_function(animated_args={'interpolation': 0}, unique_args=['axis'])
-    def rotate_and_scale(self, num_degrees, axis, scale, interpolation=1):
-        num_degrees = num_degrees * interpolation
-        self.rotate(num_degrees, axis)
-        scale = cast_to_tensor(scale)
-        scale = self.scale_coefficient * (1 - interpolation) + interpolation * scale * self.scale_coefficient
-        self.set_scale(scale)
+        """
+        normalized_axis = F.normalize(axis, p=2, dim=-1)
+        # Get the rotation matrix for the specified degrees and axis
+        rotation_matrix = get_rotation_around_axis(num_degrees, normalized_axis, dim=-1)
+        # Apply the rotation to the Mob's basis matrix
+        self.basis = squish(unsquish(self.basis, -1, 3) @ rotation_matrix, -2, -1)
         return self
 
     @animated_function(animated_args={'num_degrees': 0}, unique_args=['axis'])
-    def rotate_around_point(self, point, num_degrees, axis=OUT):
+    def rotate_and_scale(self, num_degrees: float | torch.Tensor, axis: torch.Tensor, scale: float | torch.Tensor,
+                         interpolation: float = 1) -> 'Mob':
+        """Performs both rotation and scaling simultaneously.
+
+        Args:
+            num_degrees (float or torch.Tensor): The total angle of rotation in degrees.
+            axis (torch.Tensor): The 3D axis of rotation.
+            scale (float or torch.Tensor): The target absolute scale factor.
+            interpolation (float, optional): The interpolation factor for the animation.
+                Defaults to 1.
+
+        Returns:
+            Mob: The Mob instance itself, allowing for method chaining.
         """
-        Rotates the Mob around an arbitrary point in space.
+        # Apply interpolated rotation
+        interpolated_degrees = num_degrees * interpolation
+        self.rotate(interpolated_degrees, axis)
+
+        # Apply interpolated scale
+        target_scale = cast_to_tensor(scale)
+        interpolated_scale = self.scale_coefficient * (
+                    1 - interpolation) + interpolation * target_scale * self.scale_coefficient
+        self.set_scale(interpolated_scale)
+        return self
+
+    @animated_function(animated_args={'num_degrees': 0}, unique_args=['axis'])
+    def rotate_around_point(self, point: torch.Tensor, num_degrees: float | torch.Tensor,
+                            axis: torch.Tensor = OUT) -> 'Mob':
+        """Rotates the Mob around an arbitrary point in space.
 
         Args:
             point (torch.Tensor): The 3D point to rotate around.
             num_degrees (float or torch.Tensor): The angle of rotation in degrees.
-            axis (torch.Tensor): The 3D axis of rotation (passing through `point`).
+            axis (torch.Tensor, optional): The 3D axis of rotation (passing through `point`).
+                This vector does not need to be normalized. Defaults to `OUT`.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
-        displacement = self.location - point
-        t = rotate_vector_around_axis(displacement, num_degrees, axis, dim=-1) + point
-        self.location = t
+        # Calculate displacement from the rotation point to the Mob's current location
+        displacement_from_point = self.location - point
+        # Rotate this displacement vector
+        rotated_displacement = rotate_vector_around_axis(displacement_from_point, num_degrees, axis, dim=-1)
+        # Calculate the new location by adding the rotated displacement back to the point
+        new_location = rotated_displacement + point
+        self.location = new_location  # This setter handles recursive rotation and updates
         return self
 
     @animated_function(animated_args={'num_degrees': 0}, unique_args=['axis'])
-    def rotate_around_point_non_recursive(self, point, num_degrees, axis=OUT):
-        displacement = self.location - point
-        t = rotate_vector_around_axis(displacement, num_degrees, axis, dim=-1) + point
-        self.setattr_non_recursive('location', t)
+    def rotate_around_point_non_recursive(self, point: torch.Tensor, num_degrees: float | torch.Tensor,
+                                          axis: torch.Tensor = OUT) -> 'Mob':
+        """Rotates the Mob around an arbitrary point in space without affecting its children.
+
+        Args:
+            point (torch.Tensor): The 3D point to rotate around.
+            num_degrees (float or torch.Tensor): The angle of rotation in degrees.
+            axis (torch.Tensor, optional): The 3D axis of rotation (passing through `point`).
+                Defaults to `OUT`.
+
+        Returns:
+            Mob: The Mob instance itself, allowing for method chaining.
+
+        """
+        displacement_from_point = self.location - point
+        rotated_displacement = rotate_vector_around_axis(displacement_from_point, num_degrees, axis, dim=-1)
+        new_location = rotated_displacement + point
+        # Use setattr_non_recursive to ensure only this Mob's location is changed
+        self.setattr_non_recursive('location', new_location)
         return self
 
-    def move_to_point_along_arc(self, point, arc_angle_degrees, arc_normal=OUT, recursive=True):
-        #TODO this is bugged
-        """
-        Moves the Mob to a target point along a circular arc. ***Currently bugged***
+    def move_to_point_along_arc(self, point: torch.Tensor, arc_angle_degrees: float | torch.Tensor,
+                                arc_normal: torch.Tensor = OUT, recursive: bool = True) -> 'Mob':
+        # TODO: This is bugged and needs to be fixed. The mathematical implementation for arc center calculation might be unstable or incorrect for all cases.
+        """Moves the Mob to a target point along a circular arc. ***Currently bugged***
 
         Args:
             point (torch.Tensor): The target 3D location.
             arc_angle_degrees (float or torch.Tensor): The angle subtended by the arc, in degrees.
-                The sign determines the direction of rotation along the arc.
+                The sign determines the direction of rotation along the arc (clockwise/counter-clockwise).
             arc_normal (torch.Tensor, optional): The normal vector to the plane
-                of the arc. Defaults to OUT.
+                of the arc. Defaults to `OUT` (positive Z-axis).
             recursive (bool, optional): If True, applies the rotation recursively
-                to children. Defaults to True.
+                to children, maintaining their relative positions. Defaults to True.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
-        my_loc = self.location
-        disp_unnnorm = point - my_loc
-        disp = disp_unnnorm#F.normalize(disp_unnnorm, p=2, dim=-1)
-        disp_normal = F.normalize(broadcast_cross_product(disp, arc_normal), p=2, dim=-1)
+        my_location = self.location
+        displacement_unnormalized = point - my_location
+        # Normalize the displacement for consistent direction calculations
+        displacement_normalized = F.normalize(displacement_unnormalized, p=2, dim=-1)
+
+        # Calculate a vector orthogonal to both displacement and arc_normal, which will define one axis for arc plane
+        displacement_normal_orthogonal = F.normalize(broadcast_cross_product(displacement_normalized, arc_normal), p=2,
+                                                     dim=-1)
+
         angle_sign = cast_to_tensor(arc_angle_degrees).sign()
-        arc_angle_degrees = abs(arc_angle_degrees) if not isinstance(arc_angle_degrees, torch.Tensor) else arc_angle_degrees.abs()
-        in1 = F.normalize(rotate_vector_around_axis(disp, arc_angle_degrees-90, arc_normal, -1), p=2, dim=-1)
-        in2 = F.normalize(rotate_vector_around_axis(disp, -(arc_angle_degrees + 90), arc_normal, -1), p=2, dim=-1)
-        arc_circumference = dot_product(-in1, -in2).clamp_(min=-1, max=1).arccos_()
-        m = (((math.pi - arc_circumference).abs() <= 1e-5) | (disp_unnnorm.norm(p=2,dim=-1,keepdim=True) <= 1e-5)).float()
-        #if angle is exactly 180 then below formulas divide by 0, so handle edge case here.
-        arc_center1 = (my_loc + point) * 0.5
-        x1, y1 = 0, 0
-        x2, y2 = dot_product(in1, disp_normal), dot_product(in1, disp)
-        x3, y3 = dot_product(disp, disp_normal), dot_product(disp, disp)
-        x4, y4 = dot_product(in2, disp_normal), dot_product(in2, disp)
-        intersect_x = ((x1*y2-y1*x2)*(x3-x4) - (x1-x2)*(x3*y4-y3*x4)) / ((x1-x2)*(y3-y4)-(y1-y2)*(x3-x4))
-        intersect_y = ((x1*y2-y1*x2)*(y3-y4) - (y1-y2)*(x3*y4-y3*x4)) / ((x1-x2)*(y3-y4)-(y1-y2)*(x3-x4))
-        arc_center2 = my_loc + intersect_x * disp_normal + intersect_y * disp
-        arc_center2 = arc_center2.nan_to_num_(0, 0, 0)
-        arc_center = arc_center1 * (m) + (1-m) * arc_center2
+        abs_arc_angle_degrees = abs(arc_angle_degrees) if not isinstance(arc_angle_degrees,
+                                                                         torch.Tensor) else arc_angle_degrees.abs()
+
+        # Calculate two vectors `in1` and `in2` that define the tangents or radii for arc center calculation.
+        # These are rotated versions of the normalized displacement, used to form a geometric intersection.
+        in1 = F.normalize(
+            rotate_vector_around_axis(displacement_normalized, abs_arc_angle_degrees - 90, arc_normal, -1), p=2, dim=-1)
+        in2 = F.normalize(
+            rotate_vector_around_axis(displacement_normalized, -(abs_arc_angle_degrees + 90), arc_normal, -1), p=2,
+            dim=-1)
+
+        # Calculate the angle of the full circumference based on the dot product of in1 and in2
+        arc_circumference_angle = dot_product(-in1, -in2).clamp_(min=-1, max=1).arccos_()
+
+        # Handle edge cases where angle is exactly 180 degrees or displacement is zero,
+        # which can lead to division by zero or ambiguous arc centers.
+        # In such cases, a simple midpoint is used as the arc center.
+        zero_displacement_mask = (((math.pi - arc_circumference_angle).abs() <= 1e-5) | (
+                    displacement_unnormalized.norm(p=2, dim=-1, keepdim=True) <= 1e-5)).float()
+
+        # Calculate arc center candidates using geometric intersection formulas.
+        # These involve solving linear equations based on the dot products of vectors.
+        arc_center1 = (my_location + point) * 0.5  # Midpoint for 180-degree or zero-displacement cases
+
+        x1, y1 = 0.0, 0.0
+        x2, y2 = dot_product(in1, displacement_normal_orthogonal), dot_product(in1, displacement_normalized)
+        x3, y3 = dot_product(displacement_normalized, displacement_normal_orthogonal), dot_product(
+            displacement_normalized, displacement_normalized)
+        x4, y4 = dot_product(in2, displacement_normal_orthogonal), dot_product(in2, displacement_normalized)
+
+        # Solving for intersection point in a 2D plane defined by displacement_normal_orthogonal and displacement_normalized
+        # These are standard formulas for line-line intersection, adapted for vector components.
+        intersect_x = ((x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)) / (
+                    (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4))
+        intersect_y = ((x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)) / (
+                    (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4))
+
+        # Reconstruct the arc center from the intersection point and the initial location
+        arc_center2 = my_location + intersect_x * displacement_normal_orthogonal + intersect_y * displacement_normalized
+        arc_center2 = arc_center2.nan_to_num_(0, 0, 0)  # Handle potential NaNs from division by zero
+
+        # Select the appropriate arc center based on the edge case mask
+        final_arc_center = arc_center1 * (zero_displacement_mask) + (1 - zero_displacement_mask) * arc_center2
+
+        # Perform the rotation around the calculated arc center
         if recursive:
-            return self.rotate_around_point(arc_center, arc_circumference * RADIANS_TO_DEGREES * angle_sign, arc_normal)
+            return self.rotate_around_point(final_arc_center, arc_circumference_angle * RADIANS_TO_DEGREES * angle_sign,
+                                            arc_normal)
         else:
-            return self.rotate_around_point_non_recursive(arc_center, arc_circumference * RADIANS_TO_DEGREES * angle_sign, arc_normal)
+            return self.rotate_around_point_non_recursive(final_arc_center,
+                                                          arc_circumference_angle * RADIANS_TO_DEGREES * angle_sign,
+                                                          arc_normal)
 
     def refresh_history(self):
-        for _ in self.get_descendants():
-            _.data.history = ModificationHistory()
-            _.data.spawn_time = lambda: -1
+        """Resets the modification history and spawn time for this Mob and all its descendants.
+        This effectively clears all animation data and makes them behave as if newly created.
+        """
+        for mob in self.get_descendants():
+            mob.data.history = ModificationHistory()
+            mob.data.spawn_time = lambda: -1
 
     def detach_history(self):
+        """"Detaches" the Mob's current state into a new, independent animation history.
+        This is useful when you want to take a snapshot of a Mob's state and start
+        animating it independently, without its previous history affecting new animations.
+        The original history is effectively "frozen" and the new Mob begins a fresh history.
+        #TODO explain why we use this (changing tensor dimensions isn't inerpolable).
+        """
         with Off():
             with NoExtra(priority_level=1):
                 if self.data.spawn_time() >= 0:
+                    # If the mob has a history, clone its current state
                     old_self = self.clone(reset_history=False)
+                    # Advance its time slightly to ensure it's "past" the current point
                     old_self.wait((1 / self.scene.frames_per_second) + 1e-5)
-                    old_self.despawn(animate=False)
-                self.refresh_history()
-                self.spawn(animate=False)
+                    old_self.despawn(animate=False)  # Despawn the old clone without animation
+                self.refresh_history()  # Reset current mob's history
+                self.spawn(animate=False)  # Re-spawn current mob without animation to start new history
                 return self
 
-    def expand_n_children(self, n):
-        curr = len(self.children)
-        target = curr + n
-        repeat_indices = (torch.arange(target) * curr) // target
-        split_factors = [(repeat_indices == i).sum() for i in range(curr)]
-        new_submobs = []
-        for submob, sf in zip(self.children, split_factors):
-            new_submobs.append(submob)
-            for _ in range(1, sf):
-                new_submobs.append(submob.clone())
+    def expand_n_children(self, n: int):
+        """Expands the number of children by cloning existing ones to reach `n` additional children.
+        This is used internally by `become` for smooth transformations between Mobs with different
+        numbers of sub-parts.
 
+        Args:
+            n (int): The number of additional children to add.
+        """
+        current_children_count = len(self.children)
+        target_children_count = current_children_count + n
+        # Determine how many times each existing child needs to be repeated/cloned
+        repeat_indices = (torch.arange(target_children_count) * current_children_count) // target_children_count
+        split_factors = [(repeat_indices == i).sum() for i in range(current_children_count)]
+
+        new_submobs = []
+        for submob, factor in zip(self.children, split_factors):
+            new_submobs.append(submob)  # Add the original child
+            for _ in range(1, factor):
+                new_submobs.append(submob.clone())  # Add clones
         self.children = new_submobs
         return self
 
-    def expand_n_batch(self, n):
-        curr = self.location.shape[-2] // self.num_points_per_object
-        target = curr + n
-        repeat_indices = (torch.arange(target) * curr) // target
-        split_factors = [(repeat_indices == i).sum() for i in range(curr)]
-        for attr in ['location', 'opacity', 'color', 'basis', 'glow']:
-            value = self.__getattribute__(attr)[0]
-            if value.shape[-2] == 1:
-                continue
-            value = unsquish(value, -2, self.num_points_per_object)
-            new_submobs = []
-            for submob, sf in zip(value, split_factors):
-                new_submobs.append(submob)
-                for _ in range(1, sf):
-                    new_submobs.append(submob[...,-1:,:].expand(*[-1 for _ in range(submob.dim()-2)], self.num_points_per_object, -1))
-            self.data.data_dict[attr] = squish(torch.stack(new_submobs,-3), -3, -2).unsqueeze(0)
-        return self
-
-    def become(self, other_mob, move_to=False, detach_history=True):
-        """
-        Transforms this Mob into another Mob (`other_mob`).
-
-        This involves animating changes in location, opacity, color, basis, etc.,
-        to match `other_mob`. It attempts to match parts of this Mob to parts
-        of `other_mob` for a smoother transition, especially for complex Mobs.
+    def expand_n_batch(self, n: int):
+        """Expands the batch size of the Mob's attributes by cloning existing batch elements.
+        This is used internally by `become` to match the batch dimensions when transforming
+        between Mobs with different numbers of primitive points.
 
         Args:
-            other_mob (Mob): The Mob to transform into.
-            move_to (bool, optional): If True, explicitly moves this Mob to
-                `other_mob`'s location as part of the transformation.
-                (The current implementation seems to always align attributes
-                including location). Defaults to False.
+            n (int): The number of additional batch elements to add.
+        """
+        # Current number of logical objects in the batch (points / points_per_object)
+        current_batch_size = self.location.shape[-2] // self.num_points_per_object
+        target_batch_size = current_batch_size + n
+        # Determine how many times each existing batch element needs to be repeated
+        repeat_indices = (torch.arange(target_batch_size) * current_batch_size) // target_batch_size
+        split_factors = [(repeat_indices == i).sum() for i in range(current_batch_size)]
+
+        # Iterate over animatable attributes and expand their batch dimensions
+        for attr in ['location', 'opacity', 'color', 'basis', 'glow']:
+            value = self.__getattribute__(attr)[0]  # Get the current value (first time step)
+            if value.shape[-2] == 1:  # If already a singleton batch, no expansion needed
+                continue
+
+            # Unsquish to separate individual objects in the batch if needed
+            value_per_object = unsquish(value, -2, self.num_points_per_object)
+            new_batched_values = []
+            for sub_object_data, factor in zip(value_per_object, split_factors):
+                new_batched_values.append(sub_object_data)  # Add original sub-object data
+                for _ in range(1, factor):
+                    # Clone the last point of the sub-object data to expand
+                    new_batched_values.append(
+                        sub_object_data[..., -1:, :].expand(*([-1 for _ in range(sub_object_data.dim() - 2)]),
+                                                            self.num_points_per_object, -1))
+            # Stack the new batched values and squish back to original shape for storage
+            self.data.data_dict[attr] = squish(torch.stack(new_batched_values, -3), -3, -2).unsqueeze(0)
+        return self
+
+    def become(self, other_mob: 'Mob', move_to: bool = False, detach_history: bool = True) -> 'Mob':
+        """Transforms this Mob into another Mob (`other_mob`).
+
+        This involves animating changes in location, opacity, color, basis, etc.,
+        to match `other_mob`. It intelligently attempts to match parts of this Mob
+        to parts of `other_mob` for a smoother transition, especially for complex Mobs
+        with multiple children or batched primitive points.
+
+        Args:
+            other_mob (Mob): The Mob to transform into. The type of this Mob must be
+                compatible with the current Mob (e.g., both should be `Mob` or derived
+                from it, and have the same `num_points_per_object` if applicable).
+            move_to (bool, optional): If True, the transformation explicitly includes
+                a movement animation to `other_mob`'s final location. Note that
+                attribute alignment typically includes location changes anyway.
+                Defaults to False.
+            detach_history (bool, optional): If True, the original Mob's animation
+                history is "detached" and this Mob starts a fresh animation history
+                from its transformed state. If False, the transformation is recorded
+                within the existing history. Defaults to True.
 
         Returns:
-            Mob: The (transformed) Mob instance itself.
-        """
-        #TODO When doing become multiple times into Text despawn, the triangles are fadedout out in the wrong order
+            Mob: The (transformed) Mob instance itself, or the `other_mob_original`
+            if `detach_history` is True (as it will be the "new" main mob).
 
+        Raises:
+            NotImplementedError: If attempting to transform between mobs with
+                different underlying primitive types (e.g., changing a triangle-based
+                mob to a bezier-circuit-based mob).
+        """
+        # Temporarily turn off animation recording for setup steps
         with Off():
             if detach_history:
-                self.detach_history()
-                other_mob_original = other_mob
-                other_mob = other_mob.clone(add_to_scene=False)#.detatch_history()
+                self.detach_history()  # Detach current mob's history
+                other_mob_original = other_mob  # Keep a reference to the original target mob
+                other_mob = other_mob.clone(add_to_scene=False)  # Clone target to avoid modifying it directly
 
-            child_diff = len(other_mob.children) - len(self.children)
-            if child_diff > 0:
-                self.expand_n_children(child_diff)
-            elif child_diff < 0:
-                other_mob.expand_n_children(-child_diff)
+            # Adjust child counts to match for smooth transitions
+            child_difference = len(other_mob.children) - len(self.children)
+            if child_difference > 0:
+                self.expand_n_children(child_difference)
+            elif child_difference < 0:
+                other_mob.expand_n_children(-child_difference)
 
         with Seq():
             with Sync():
-                for my_c, other_c in zip(self.children, other_mob.children):
-                    my_c.become(other_c, detach_history=False)
+                # Recursively apply 'become' to children to handle nested transformations
+                for my_child, other_child in zip(self.children, other_mob.children):
+                    my_child.become(other_child, detach_history=False)  # Children do not detach their history
 
+                # Check for compatibility of primitive types
                 if other_mob.num_points_per_object != self.num_points_per_object:
-                    raise NotImplementedError("You are trying to change an object of one primitive type (e.g. triangle) to another type (e.g. cubic bezier circuit), this it not supported. When using become() the target mob must be of the same type as the original.")
-                batch_diff = (other_mob.location.shape[-2] - self.location.shape[-2]) // self.num_points_per_object
-                if batch_diff > 0:
-                    self.expand_n_batch(batch_diff)
-                elif batch_diff < 0:
-                    other_mob.expand_n_batch(-batch_diff)
+                    raise NotImplementedError(
+                        "You are trying to change an object of one primitive type (e.g., triangle) "
+                        "to another type (e.g., cubic bezier circuit). This is not supported. "
+                        "When using become(), the target mob must be of the same primitive type as the original."
+                    )
 
-                for attr in ['location', 'opacity', 'color', 'basis', 'glow']:
-                    self.setattr_non_recursive(attr, getattr(other_mob, attr))
+                # Adjust batch size (number of points per object) for smooth transitions
+                batch_difference = (other_mob.location.shape[-2] - self.location.shape[
+                    -2]) // self.num_points_per_object
+                if batch_difference > 0:
+                    self.expand_n_batch(batch_difference)
+                elif batch_difference < 0:
+                    other_mob.expand_n_batch(-batch_difference)
+
+                # Set all animatable attributes non-recursively to match the target mob's values
+                for attr_name in ['location', 'opacity', 'color', 'basis', 'glow']:
+                    # Use getattr to safely access attributes, as not all mobs may have all listed attributes
+                    self.setattr_non_recursive(attr_name, getattr(other_mob, attr_name))
 
             if detach_history:
+                # If history was detached, despawn the transforming mob and spawn the original target mob
                 with Off():
                     self.despawn(animate=False)
-                    return other_mob_original.spawn(animate=False)#self.detach_history()
+                    return other_mob_original.spawn(animate=False)
             return self
-        #with Off():
-        #    self.despawn(animate=False)
-        #    return other_mob_original.detach_history()
 
-    def _become_recursive(self, other_mob, move_to=False):
-        other_c = list(other_mob.children)
-        my_c = list(self.children)
+    def _become_recursive(self, other_mob: 'Mob', move_to: bool = False):
+        """
+        Internal recursive helper for the `become` method.
+        Handles the transformation logic for children mobs.
+        """
+        other_children = list(other_mob.children)
+        my_children = list(self.children)
+
         with Sync():
-            if len(other_c) > 0:
-                if len(my_c) < len(other_c):
-                    with Off():
-                        new_c = [c.clone(animate_creation=False, recursive=True) for c in other_c[len(my_c):]]
-                        my_c.extend(new_c)
-                        self.add_children(new_c)
-                        [c.set_recursive(local_coords=ORIGIN) for c in new_c]
-                elif len(other_c) < len(my_c):
-                    my_c = my_c[:len(other_c)]
-                [my_c[i]._become_recursive(other_c[i], move_to=True) for i in reversed(range(len(my_c)))]
-            if not move_to:
+            if len(other_children) > 0:
+                if len(my_children) < len(other_children):
+                    with Off():  # Avoid recording intermediate clones
+                        # Clone additional children from the target mob
+                        new_children = [c.clone(animate_creation=False, recursive=True) for c in
+                                        other_children[len(my_children):]]
+                        my_children.extend(new_children)
+                        self.add_children(new_children)
+                        # Initialize new children's local coordinates to origin
+                        [c.set_recursive(local_coords=ORIGIN) for c in new_children]
+                elif len(other_children) < len(my_children):
+                    # Trim excess children if current mob has more than target
+                    my_children = my_children[:len(other_children)]
+
+                # Recursively call _become_recursive for matched children
+                for i in reversed(range(len(my_children))):  # Iterate in reverse for stable child list modification
+                    my_children[i]._become_recursive(other_children[i], move_to=True)
+
+            if not move_to:  # Only apply location change if explicitly requested
                 return self
 
-            other_loc = other_mob.location
-            my_loc = self.location
-            my_n = my_loc.shape[-2]
-            other_n = other_loc.shape[-2]
+            # Handle location transformation for the current mob (parent in this recursive context)
+            other_location = other_mob.location
+            my_location = self.location
+            my_batch_size = my_location.shape[-2]
+            other_batch_size = other_location.shape[-2]
 
-            if other_n > my_n:
+            if other_batch_size > my_batch_size:
                 with Off(record_funcs=False, record_attr_modifications=False):
-                    self.setattr_regular('_location', torch.cat([my_loc, my_loc[..., -1:, :].expand(-1, other_n - my_n, -1)], -2))
+                    # Expand current location to match target batch size if smaller
+                    expanded_location = torch.cat(
+                        [my_location, my_location[..., -1:, :].expand(-1, other_batch_size - my_batch_size, -1)], -2)
+                    self.setattr_regular('_location', expanded_location)  # Direct set to avoid recursion issues here
                     self.batch_size = max(self.batch_size, self.location.shape[-2])
                     self.parent_batch_sizes = other_mob.parent_batch_sizes
-            elif other_n < my_n:
-                other_loc = torch.cat((other_loc, torch.zeros((other_loc.shape[0], my_n-other_n, other_loc.shape[2]))), -2)
-            self.location = other_loc
+            elif other_batch_size < my_batch_size:
+                # Pad target location with zeros if it's smaller
+                other_location = torch.cat((other_location, torch.zeros(
+                    (other_location.shape[0], my_batch_size - other_batch_size, other_location.shape[2]))), -2)
+            self.location = other_location  # Set location, triggering animation if needed
         return self
 
-    def set_non_recursive(self, **kwargs):
-        """Sets multiple attributes non-recursively (i.e., only for this Mob, not children).
+    def set_non_recursive(self, **kwargs) -> 'Mob':
+        """Sets multiple attributes non-recursively (i.e., only for this Mob, not its children).
+        This is useful for applying changes that should not propagate down the hierarchy.
 
         Args:
-            **kwargs: Keyword arguments where keys are attribute names and
-                values are the new values for those attributes.
+            **kwargs: Keyword arguments where keys are attribute names (e.g., 'color', 'opacity')
+                and values are the new values for those attributes.
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
         """
-        with Sync():
-            for k, v in kwargs.items():
-                self.setattr_non_recursive(k, v)
+        with Sync():  # Ensure all these attribute sets happen in one synchronized animation step
+            for key, value in kwargs.items():
+                self.setattr_non_recursive(key, value)
         return self
 
-    def set(self, **kwargs):
+    def set(self, **kwargs) -> 'Mob':
         """Sets multiple attributes, applying changes recursively to children by default.
+        This is the primary method for changing a Mob's properties and
+        triggering animations for those changes.
 
         Parameters
         ----------
         **kwargs
-            Keyword arguments where keys are attribute names and values are the new values.
+            Keyword arguments where keys are attribute names (e.g., 'location', 'color')
+            and values are the new values for those attributes. These changes will
+            be animated and propagated to children unless `recursing` is set to False
+            (via `setattr_non_recursive` or `_set_recursing_state`).
 
         Returns
         -------
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         Examples
         ---------
+        Move a square to the right and change its color to blue:
 
         .. algan:: Example1MobSet
 
@@ -1119,156 +1602,265 @@ class Mob(Animatable):
             render_to_file()
         """
         with Sync():
-            for k, v in kwargs.items():
-                self.__setattr__(k, v)
+            for key, value in kwargs.items():
+                self.__setattr__(key, value)  # Calls the property setters, which handle animation and recursion
         return self
 
-    def set_recursive_from_parent(self, parent, **kwargs):
-        if self.parent_batch_sizes is not None:
-            def cast_to_tensor(x):
-                if isinstance(x, torch.Tensor):
-                    return x
-                return torch.tensor((x,)).view(1,1,1).expand(len(self.parent_batch_sizes),-1, -1)
-            if self.time_inds_materialized is None and parent.time_inds_materialized is not None:
-                self.set_state_full(parent.time_inds_materialized.amin(), parent.time_inds_materialized.amax()+1)
-            self.time_inds_active = parent.time_inds_active
-            kwargs = {k: torch.repeat_interleave(cast_to_tensor(v), self.parent_batch_sizes, 0) for k, v in kwargs.items()}
-        with AnimationContext(dont_record_funcs=True):
-            return self.set_recursive(**kwargs)
-
-    def set_recursive(self, **kwargs):
-        self.set(**kwargs)
-        for c in self.children:
-            c.set_recursive_from_parent(self, **kwargs)
-        return self
-
-    def get_forward_direction(self):
-        """
-        Gets the Mob's current forward direction vector (normalized).
-        This is the third column of its normalized basis matrix.
-
-        Returns:
-            torch.Tensor: The 3D forward vector.
-        """
-        return F.normalize(unsquish(self.basis, -1, 3)[...,2,:], p=2, dim=-1)
-
-    def get_right_direction(self):
-        """
-        Gets the Mob's current right direction vector (normalized).
-        This is the first column of its normalized basis matrix.
-
-        Returns:
-            torch.Tensor: The 3D right vector.
-        """
-        return F.normalize(unsquish(self.basis, -1, 3)[...,0,:], p=2, dim=-1)
-
-    def get_upwards_direction(self):
-        """
-        Gets the Mob's current upwards direction vector (normalized).
-        This is the second column of its normalized basis matrix.
-
-        Returns:
-            torch.Tensor: The 3D upwards vector.
-        """
-        return F.normalize(unsquish(self.basis, -1, 3)[...,1,:], p=2, dim=-1)
-
-    def look(self, direction, axis=2):
-        """
-        Rotates the Mob so that one of its local axes points in the given direction.
+    def set_recursive_from_parent(self, parent: 'Mob', **kwargs):
+        """Sets attributes recursively for this Mob based on a parent Mob's attributes,
+        handling batching and time synchronization. This is used internally for
+        propagating changes down a hierarchy.
 
         Args:
-            direction (torch.Tensor): The target 3D direction vector.
+            parent (Mob): The parent Mob from which attribute values might be derived or synced.
+            **kwargs: Attributes to set, typically passed from the parent.
+
+        """
+        if self.parent_batch_sizes is not None:
+            # Helper to cast values to tensor and expand if necessary for child's batching
+            def cast_and_expand(value_to_cast: any) -> torch.Tensor:
+                if isinstance(value_to_cast, torch.Tensor):
+                    return value_to_cast
+                # Convert scalar to tensor and expand for batch dimensions
+                return torch.tensor((value_to_cast,)).view(1, 1, 1).expand(len(self.parent_batch_sizes), -1, -1)
+
+            # Synchronize time indices with parent if parent has materialized times
+            if self.data.time_inds_materialized is None and parent.data.time_inds_materialized is not None:
+                self.set_state_full(parent.data.time_inds_materialized.amin(),
+                                    parent.data.time_inds_materialized.amax() + 1)
+            self.data.time_inds_active = parent.data.time_inds_active
+
+            # Expand kwargs values to match child's batch dimensions
+            kwargs = {key: torch.repeat_interleave(cast_and_expand(value), self.parent_batch_sizes, 0) for key, value in
+                      kwargs.items()}
+
+        with AnimationContext(dont_record_funcs=True):  # Do not record function applications during this recursive set
+            return self.set_recursive(**kwargs)  # Recursively set attributes
+
+    def set_recursive(self, **kwargs) -> 'Mob':
+        """Sets multiple attributes for this Mob and then recursively propagates
+        the changes to all its children.
+
+        Args:
+            **kwargs: Keyword arguments for attributes to set.
+
+        Returns:
+            Mob: The Mob instance itself, allowing for method chaining.
+
+        """
+        self.set(**kwargs)  # Set attributes for the current mob
+        for child in self.children:
+            child.set_recursive_from_parent(self, **kwargs)  # Propagate to children
+        return self
+
+    def get_forward_direction(self) -> torch.Tensor:
+        """Gets the Mob's current forward direction vector (normalized).
+        This corresponds to the third column of its normalized basis matrix.
+
+        Returns:
+            torch.Tensor: A 3D vector representing the forward direction.
+
+        """
+        return F.normalize(unsquish(self.basis, -1, 3)[..., 2, :], p=2, dim=-1)
+
+    def get_right_direction(self) -> torch.Tensor:
+        """Gets the Mob's current right direction vector (normalized).
+        This corresponds to the first column of its normalized basis matrix.
+
+        Returns:
+            torch.Tensor: A 3D vector representing the right direction.
+
+        """
+        return F.normalize(unsquish(self.basis, -1, 3)[..., 0, :], p=2, dim=-1)
+
+    def get_upwards_direction(self) -> torch.Tensor:
+        """Gets the Mob's current upwards direction vector (normalized).
+        This corresponds to the second column of its normalized basis matrix.
+
+        Returns:
+            torch.Tensor: A 3D vector representing the upwards direction.
+
+        """
+        return F.normalize(unsquish(self.basis, -1, 3)[..., 1, :], p=2, dim=-1)
+
+    def look(self, direction: torch.Tensor, axis: int = 2) -> 'Mob':
+        """Rotates the Mob so that one of its local axes points in the given direction.
+
+        Args:
+            direction (torch.Tensor): The target 3D direction vector that the specified
+                local axis should point towards. This vector does not need to be normalized.
             axis (int, optional): The index of the local axis to align.
-                0 for right, 1 for up, 2 for forward.
+                0 for right (X-axis), 1 for up (Y-axis), 2 for forward (Z-axis).
                 Defaults to 2 (forward vector).
 
         Returns:
-            Mob: The Mob instance itself.
-        """
-        return self.rotate(*get_rotation_between_3d_vectors(unsquish(self.normalized_basis, -1, 3)[..., axis,:], F.normalize(direction, p=2,dim=-1), dim=-1))
+            Mob: The Mob instance itself, allowing for method chaining.
 
-    def look_and_scale(self, direction, scale, axis=2):
-        return self.rotate_and_scale(*get_rotation_between_3d_vectors(unsquish(self.normalized_basis, -1, 3)[..., axis,:], F.normalize(direction, p=2,dim=-1), dim=-1), scale)
-
-    def look_at(self, point, axis=2):
         """
-        Looks in the direction from this mobs location to the given point.
-        The Mob's "forward" direction ok`'s default axis)
-        will be oriented towards the point.
+        # Get the rotation parameters (angle and axis) needed to align the current local axis
+        # with the target direction.
+        rotation_angle_degrees, rotation_axis = get_rotation_between_3d_vectors(
+            unsquish(self.normalized_basis, -1, 3)[..., axis, :],  # Current orientation of specified axis
+            F.normalize(direction, p=2, dim=-1),  # Normalized target direction
+            dim=-1
+        )
+        # Apply the rotation
+        return self.rotate(rotation_angle_degrees, rotation_axis)
+
+    def look_and_scale(self, direction: torch.Tensor, scale: float | torch.Tensor, axis: int = 2) -> 'Mob':
+        """Rotates the Mob to look in a specific direction and simultaneously scales it.
+
+        Args:
+            direction (torch.Tensor): The target 3D direction vector to look at.
+            scale (float or torch.Tensor): The target absolute scale factor.
+            axis (int, optional): The index of the local axis to align (0: right, 1: up, 2: forward).
+                Defaults to 2 (forward).
+
+        Returns:
+            Mob: The Mob instance itself, allowing for method chaining.
+
+        """
+        # Get rotation parameters from the 'look' logic
+        rotation_angle_degrees, rotation_axis = get_rotation_between_3d_vectors(
+            unsquish(self.normalized_basis, -1, 3)[..., axis, :],
+            F.normalize(direction, p=2, dim=-1),
+            dim=-1
+        )
+        # Apply both rotation and scale using the combined animated function
+        return self.rotate_and_scale(rotation_angle_degrees, rotation_axis, scale)
+
+    def look_at(self, point: torch.Tensor, axis: int = 2) -> 'Mob':
+        """Rotates the Mob to face a specific 3D point.
+        The Mob's "forward" direction (or the specified `axis`) will be oriented towards the point.
 
         Args:
             point (torch.Tensor): The 3D point to look at.
-            axis (int, optional): The index of the local axis to align.
-                0 for right, 1 for up, 2 for forward.
+            axis (int, optional): The index of the local axis to align (0: right, 1: up, 2: forward).
                 Defaults to 2 (forward vector).
 
         Returns:
-            Mob: The Mob instance itself.
+            Mob: The Mob instance itself, allowing for method chaining.
+
         """
-        direction = point - self.location
-        return self.look(direction, axis=axis)
+        # Calculate the direction vector from the Mob's current location to the target point
+        direction_to_point = point - self.location
+        return self.look(direction_to_point, axis=axis)
 
     def spawn_tilewise_recursive(self):
-        tiles = [_.tiles for _ in traverse(self.get_descendants()) if hasattr(_, 'tiles') and not (_.tiles.time_inds.created)]
+        """
+        Animates the spawning of the Mob and its primitive children in a lagged, "tile-wise" manner.
+        Each tile/primitive appears from a random direction with an ease-out-exponential effect.
+        """
+        # Collect all primitive tiles from the Mob and its descendants
+        tiles = [mob.tiles for mob in traverse(self.get_descendants()) if
+                 hasattr(mob, 'tiles') and not mob.tiles.time_inds.created]
         with AnimationContext(run_time=3):
-            animate_lagged_by_location(tiles, lambda m: m.spawn_from_random_direction(), F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1))
+            # Animate each tile/primitive appearing from a random direction
+            animate_lagged_by_location(tiles, lambda m: m.spawn_from_random_direction(),
+                                       F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1))
         return self
 
     def despawn_tilewise_recursive(self):
-        tiles = [_.tiles for _ in traverse(self.get_descendants()) if hasattr(_, 'tiles')]
+        """
+        Animates the despawning of the Mob and its primitive children in a lagged, "tile-wise" manner.
+        Each tile/primitive disappears into a random direction with an ease-out-exponential effect.
+        """
+        # Collect all primitive tiles from the Mob and its descendants
+        tiles = [mob.tiles for mob in traverse(self.get_descendants()) if hasattr(mob, 'tiles')]
         with AnimationContext(run_time=3):
-            animate_lagged_by_location(tiles, lambda m: m.despawn_from_random_direction(), F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1))
+            # Animate each tile/primitive disappearing into a random direction
+            animate_lagged_by_location(tiles, lambda m: m.despawn_from_random_direction(),
+                                       F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1))
         return self
 
-    def spawn_from_random_direction(self, travel_distance=0.1):
-        with Off():
+    def spawn_from_random_direction(self, travel_distance: float = 0.1):
+        """
+        Animates the Mob appearing from a random direction, fading in and optionally rotating.
+        This sets the initial opacity to 0 and then animates it to 1.
+        """
+        with Off():  # Ensure initial state setting is not recorded as an animation
             self.opacity = 0
-        self._create_recursive(animate=False)
-        with Sync(run_time=None, rate_func=ease_out_exp):
-            #self.location = loc
-            #self.rotate(720, F.normalize(torch.randn_like(self.location), p=2, dim=-1))
-            self.opacity = 1#set_recursive(opacity=1)
-            #with Synchronized(run_time=2, rate_func=tan):
+        self._create_recursive(animate=False)  # Mark as created without immediate animation
+        with Sync(run_time=None, rate_func=ease_out_exp):  # Synchronized animation with ease-out
+            # Example of potential animated properties (currently commented out)
+            # self.location = loc
+            # self.rotate(720, F.normalize(torch.randn_like(self.location), p=2, dim=-1))
+            self.opacity = 1  # Animate opacity to full
+            # with Synchronized(run_time=2, rate_func=tan):
+        return self
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Returns the batch size of the Mob, typically derived from its location tensor.
+        This allows Mobs to behave somewhat like batched data structures.
+
+        """
         return self.location.shape[-2] if hasattr(self, 'location') else 1
 
-    def despawn_from_random_direction(self, travel_distance=0.1):
-        with Sync(run_time=None, rate_func=inversed(ease_out_exp)):
-            loc = self.location
-            #self.location = loc + torch.randn_like(loc) * travel_distance
-            #self.rotate(720, F.normalize(torch.randn_like(self.location), p=2, dim=-1))
-            self.opacity = 0#set_recursive(opacity=0)
-            self._destroy_recursive(animate=False)
-            # with Synchronized(run_time=2, rate_func=tan):
-            #self.destroy()
+    def despawn_from_random_direction(self, travel_distance: float = 0.1):
+        """Animates the Mob disappearing into a random direction, fading out and optionally rotating.
+        This animates the opacity to 0 and then marks the Mob as destroyed.
 
-    def set_data_sub_inds(self, data_sub_inds):
-        self.batch_size = max(self.batch_size, self.location.shape[1])
-        if self.parent_batch_sizes is not None:
-            sub_pbs = self.parent_batch_sizes[data_sub_inds]
-            inds = torch.arange(self.batch_size).split([_.item() for _ in self.parent_batch_sizes])
-            data_sub_inds = torch.cat([inds[d] for d in data_sub_inds] if not isinstance(data_sub_inds, slice) else inds[data_sub_inds])
-        else:
-            sub_pbs = self.parent_batch_sizes
-        self.data_sub_inds = data_sub_inds
-        self.parent_batch_sizes = sub_pbs
-        for c in self.children:
-            c.set_data_sub_inds(data_sub_inds)
-
-    def __getitem__(self, item):
         """
-        Allows accessing a part of a batched Mob using slice notation.
+        with Sync(run_time=None, rate_func=inversed(ease_out_exp)):  # Synchronized animation with inversed ease-out
+            current_location = self.location
+            # Example of potential animated properties (currently commented out)
+            # self.location = current_location + torch.randn_like(current_location) * travel_distance
+            # self.rotate(720, F.normalize(torch.randn_like(self.location), p=2, dim=-1))
+            self.opacity = 0  # Animate opacity to zero
+            self._destroy_recursive(animate=False)  # Mark as destroyed without immediate animation
+            # with Synchronized(run_time=2, rate_func=tan):
+            # self.destroy()
+        return self
 
-        Returns a new Mob instance that represents the specified sub-part(s),
-        sharing animation data but with `data_sub_inds` set appropriately.
+    def set_data_sub_inds(self, data_sub_inds: list[int] | slice):
+        """Sets the sub-indices that this Mob will use when reading and writing from
+        the shared data dictionaries (`data.data_dict_active`, `data.data_dict_materialized`).
+        This is used for implementing indexing of batched mobs to retrieve sub-mobs that share
+        the sameunderlying data.
 
         Args:
-            item (int or slice): The index or slice for the batch dimension.
+            data_sub_inds (list[int] or slice): The indices or slice to apply to the
+                batch dimension of the shared data tensors.
+
+        """
+        self.batch_size = max(self.batch_size, self.location.shape[1])
+        if self.parent_batch_sizes is not None:
+            # Adjust parent batch sizes for the selected sub-indices
+            sub_parent_batch_sizes = self.parent_batch_sizes[data_sub_inds]
+            # Split the full range of batch indices based on parent batch sizes
+            all_batch_indices = torch.arange(self.batch_size).split([_.item() for _ in self.parent_batch_sizes])
+            # Concatenate the relevant sub-indices from the split batches
+            if isinstance(data_sub_inds, slice):
+                final_data_sub_inds = torch.cat(list(all_batch_indices)[data_sub_inds])
+            else:
+                final_data_sub_inds = torch.cat([all_batch_indices[d] for d in data_sub_inds])
+        else:
+            final_data_sub_inds = data_sub_inds  # If no parent batching, use indices directly
+            sub_parent_batch_sizes = self.parent_batch_sizes  # Keep parent_batch_sizes as is
+
+        self.data_sub_inds = final_data_sub_inds
+        self.parent_batch_sizes = sub_parent_batch_sizes
+        # Recursively apply to children
+        for child in self.children:
+            child.set_data_sub_inds(data_sub_inds)
+
+    def __getitem__(self, item: int | slice) -> 'Mob':
+        """Allows accessing a part of a batched Mob using slice notation (e.g., `my_mob[0]`, `my_mob[1:3]`).
+
+        Returns a new Mob instance that represents the specified sub-part(s).
+        This new Mob shares the underlying animation data with the original,
+        but its `data_sub_inds` are set appropriately to only operate on the
+        selected batch elements. This is efficient as it avoids data duplication.
+
+        Args:
+            item (int or slice): The index or slice for selecting elements from the
+                batch dimension.
 
         Returns:
-            Mob: A new Mob representing the selected part(s).
+            Mob: A new Mob instance representing the selected sub-part(s) of the original Mob.
         """
-        m = self.clone(add_to_scene=False, clone_data=False, recursive=True, animate_creation=False)
-        m.set_data_sub_inds([item] if isinstance(item, int) else item)
-        return m
+        # Clone the mob without cloning its data, but recursively for children structure
+        cloned_mob = self.clone(add_to_scene=False, clone_data=False, recursive=True, animate_creation=False)
+        # Set the data sub-indices for the cloned mob to point to the desired batch elements
+        cloned_mob.set_data_sub_inds([item] if isinstance(item, int) else item)
+        return cloned_mob

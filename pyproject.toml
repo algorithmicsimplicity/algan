@@ -1,6 +1,6 @@
 [project]
 name = "algan"
-version = "0.0.1"
+version = "0.0.2"
 description = "The simplest animation engine for 3D graphics."
 authors = [
   {name = "Algorithmic Simplicity", email = "algorithmicsimplicity@gmail.com"},
@@ -26,75 +26,31 @@ requires-python = ">=3.10,<=3.12"
 dependencies = [
     "dendroid>=1.6.0",
     "prioq>=0.6.0",
-    "cfractions>=2.0.0",
     "reprit>=0.9.0",
     "decision>=0.3.0",
     "numpy>=1.20.0",
     "opencv-python>=4.0.0",
     "scipy>=1.8.0",
     "svgelements>=1.0.0",
-    "torch>=2.7.0",
-    "torchvision>=0.16.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
     # "torch-scatter==2.1.2 ; sys_platform == 'darwin'", # ; sys_platform == 'linux'",
-    "torch-scatter==2.1.2+pt27cu128",
+    "torch-scatter>=2.0.0",#+pt27cu128",
     "manim>=0.18.0",
 ]
-
-[tool.uv.sources]
-torch = [{ index = "torch-cu128"}]#, marker = "sys_platform == 'linux'" }]
-torchvision = [{ index = "torch-cu128"}]#, marker = "sys_platform == 'linux'" }]
-algan = { workspace = true }
-
-[[tool.uv.index]]
-name = "torch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[tool.uv.workspace]
-members = [
-    "algamations",
-]
-
-[tool.uv]
-#environments = ["sys_platform == 'darwin'", "sys_platform == 'linux'"]
-find-links = [
-  # "https://data.pyg.org/whl/torch-2.1.0+cpu.html",
-  "https://data.pyg.org/whl/torch-2.7.0+cu128.html",
-]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 [project.urls]
 repository = "https://github.com/algorithmicsimplicity/algan"
-documentation = "https://docs.manim.community/"
+documentation = "https://algorithmicsimplicity.github.io/algan"
 homepage = "https://github.com/algorithmicsimplicity/algan"
 "Bug Tracker" = "https://github.com/algorithmicsimplicity/algan/issues"
 "X / Twitter" = "https://x.com/algorithmicsimplicity"
-"Discord" = "https://www.manim.community/discord/"
+"Discord" = "https://discord.gg/NvarFmvXKm"
 
-[project.optional-dependencies]
-manim = [
-    "manim>=0.18.0",
-]
 [dependency-groups]
 dev = [
     'parameterized>=0.9.0',
-    "manim>=0.19.0",
     "furo>=2024.8.6",
     "gitpython>=3.1.44",
     "matplotlib>=3.9.4",
