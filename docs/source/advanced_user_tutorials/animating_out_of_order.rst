@@ -17,7 +17,7 @@ all of the Mobs animation timelines and actually performs the interpolations
 to compute animated states.
 
 Most of the time, you do not need to worry about this and you can just let the
-animation contexts handle the writing of animations to the timeline. But if you need to
+animation contexts handle the writing of animations to the timeline. But if you want to
 you can take manual control of the animation writing, to write animations anywhere
 in the timeline, at any point in the code. And in some situations,
 this makes animation code much simpler.

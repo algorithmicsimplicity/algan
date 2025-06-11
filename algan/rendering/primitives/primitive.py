@@ -5,6 +5,8 @@ from torch_scatter import scatter_max
 
 from algan.constants.color import BLUE, BLACK
 from algan.geometry.geometry import intersect_line_with_plane
+from algan.rendering.post_processing import bloom_filter
+from algan.utils.plotting_utils import plot_tensor
 from algan.utils.memory_utils import InsufficientMemoryException
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, unsquish, unsqueeze_right
 
@@ -26,7 +28,14 @@ class RenderPrimitive:
         kwargs['screen_height'] = screen_height
         frames = self.render_window(primitives, scene, window, save_image, 0, self.corners.shape[0], 0, 1, background_color, False, *args, **kwargs)
 
-    def save_frames(self, frames, save_image, scene):
+    def post_process_frames(self, frames, anti_alias_level):
+        frame_out = frames
+        frame_out = F.avg_pool2d(frame_out.float().permute(2, 0, 1), anti_alias_level).permute(1, 2, 0).to(torch.uint8)
+        frame_out = bloom_filter(frame_out, anti_alias_level)
+        return frame_out.cpu().flip((-3, -1)).numpy()
+
+    def save_frames(self, frames, save_image, scene, **kwargs):
+        frames = (self.post_process_frames(frame, **kwargs) for frame in frames)
         if not save_image:
             for frame in frames:
                 scene.file_writer.write(frame)
@@ -43,6 +52,7 @@ class RenderPrimitive:
             if return_frags:
                 return chunks
             out = self.get_tensor_from_memory((((window[2]-window[0])*(window[3]-window[1])), 4), torch.uint8)
+            out = out.clone()
             if len(chunks) == 0:
                 frames = (next(scene.get_frames_from_fragments(None, window, out, anti_alias_level=kwargs['anti_alias_level'])) for _ in range(time_end - time_start))
             else:
@@ -50,8 +60,8 @@ class RenderPrimitive:
                 frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['screen_height'])
                 frames = scene.get_frames_from_fragments(frags, window, out, anti_alias_level=kwargs['anti_alias_level'])
             if (window[2]-window[0]) == kwargs['screen_width'] and (window[3]-window[1]) == kwargs['screen_height']:
-                self.save_frames(frames, save_image, scene)
-        except (InsufficientMemoryException, torch.cuda.OutOfMemoryError):
+                self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'])
+        except (InsufficientMemoryException, torch.OutOfMemoryError):
             self.memory.current_pointer = original_pointer
             torch.cuda.empty_cache()
             if (time_end - time_start) > 1:
@@ -59,11 +69,34 @@ class RenderPrimitive:
                 self.render_window(primitives, scene, window, save_image, time_start, m, object_start, object_end, background_color, False, *args, **kwargs)
                 self.render_window(primitives, scene, window, save_image, m, time_end, object_start, object_end, background_color, False, *args, **kwargs)
                 return
+            else:
+                xm = (window[0] + window[2]) // 2
+                ym = (window[1] + window[3]) // 2
+
+                frames = [next(
+                    self.render_window(primitives, scene, w, save_image, time_start, time_end, object_start, object_end,
+                                       background_color, False, *args,
+                                       **kwargs)) for w in [(window[0], window[1], xm, ym),
+                                                            (xm, window[1], window[2], ym),
+                                                            (window[0], ym, xm, window[3]),
+                                                            (xm, ym, window[2], window[3])]]
+
+                frames = torch.cat((torch.cat((frames[0], frames[1]), 1), torch.cat((frames[2], frames[3]), 1)), 0)
+                frame_shape = frames.shape
+                frames = (_ for _ in [frames])
+                if frame_shape[1] == kwargs['screen_width'] and frame_shape[0] == kwargs['screen_height']:
+                    self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'])
+                return frames
+            # old code for splittin based on scene objects, not used anymore as we split on window size.
 
             m = object_start + (object_end - object_start)/2
             chunks1 = self.render_window(primitives, scene, window, save_image, time_start, time_end, object_start, m, background_color, True, *args, **kwargs)
+            chunks1 = [[__.clone() for __ in _] for _ in chunks1]
+            self.memory.current_pointer = original_pointer
             chunks2 = self.render_window(primitives, scene, window, save_image, time_start, time_end, m, object_end, background_color, True, *args, **kwargs)
+            chunks2 = [[__.clone() for __ in _] for _ in chunks2]
             chunks = chunks1 + chunks2
+            self.memory.current_pointer = original_pointer
             if return_frags:
                 return chunks
 
@@ -75,7 +108,7 @@ class RenderPrimitive:
                 frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['screen_height'])
                 frames = scene.get_frames_from_fragments(frags, window, out, anti_alias_level=kwargs['anti_alias_level'])
 
-            self.save_frames(frames, save_image, scene)
+            self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'])
         finally:
             self.memory.current_pointer = original_pointer
         return frames
@@ -300,8 +333,6 @@ class RenderPrimitive:
 
             def get_colors():
                 colors = interpolate(self_colors)
-                if colors[...,-2].amax() > 0:
-                    print('errror')
                 colors[..., -1:] *= (ws.amin(-2) >= self.min_interpolation_coord)
                 colors = colors.reshape(-1, colors.shape[-1])
                 colors = colors[m]

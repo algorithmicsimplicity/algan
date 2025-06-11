@@ -197,7 +197,7 @@ class Camera(Mob):
         peak_2 = torch.cuda.max_memory_allocated()
         mem_per_pixel = max((peak_2 - peak_1), 1) / (j-1)
         batch_size = int(max((total_mem - torch.cuda.max_memory_reserved()) / max(mem_per_pixel, 1), 1))
-        print(f'p1: {peak_1 / 1e9}, p2: {peak_2 / 1e9}, mpp: {mem_per_pixel / 1e9}, bs: {batch_size}')
+        #print(f'p1: {peak_1 / 1e9}, p2: {peak_2 / 1e9}, mpp: {mem_per_pixel / 1e9}, bs: {batch_size}')
         current_ind = j+2
         b = batch_size
         while current_ind < len(self.inds):
@@ -207,8 +207,8 @@ class Camera(Mob):
             peak_3 = torch.cuda.max_memory_reserved()
             current_ind = current_ind + b
             b = max(b + int((total_mem - torch.cuda.max_memory_reserved()) / mem_per_pixel), 1)
-            print(f'b: {b}')
-            print(peak_3 / 1e9)
+            #print(f'b: {b}')
+            #print(peak_3 / 1e9)
 
     def get_subframe(self, frame, depths, inds, transpose=True):
         if frame is None:# or not self.in_subview_mode:
@@ -275,6 +275,7 @@ class Camera(Mob):
 
     def get_corner_pixels(self):
         b = unsquish(self.screen.basis, -1, 3)
+        b = b / b.norm(p=2,dim=-1,keepdim=True).square().clamp_min(1e-6)
         return self.screen.location + b[..., 0, :] * self.corner_x_coords + b[..., 1, :] * self.corner_y_coords
         self.location, camera.screen.location, camera.screen.basis
         return self.corner_pixels + self.location + self.get_forward_direction() * self.screen_distance

@@ -9,7 +9,7 @@ from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.mob import Mob
 from algan.mobs.renderable import Renderable
-from algan.rendering.primitives.triangle import TrianglePrimitive
+from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.defaults.style_defaults import *
 from algan.utils.tensor_utils import unsqueeze_left, broadcast_all, cast_to_tensor
 from algan.utils.tensor_utils import mean
@@ -78,7 +78,7 @@ class TriangleVertices(Renderable):
         return PURE_RED
 
     def get_render_primitives(self):
-        l, c, o, n, g = broadcast_all([self.location, self.color, self.opacity * self.max_opacity, self.normals, self.glow], ignore_dims=[-1])
+        l, c, o, n, g = broadcast_all([self.location, self.color, self.opacity * self.max_opacity, self.normals, self.glow], ignored_dims=[-1])
         if n is None:
             n = torch.zeros_like(l)
         return TrianglePrimitive(l, c, o, F.normalize(map_local_to_global_coords(self.location, self.basis, n) - self.location, p=2, dim=-1), glow=g)
@@ -119,7 +119,7 @@ class Polygon(BezierCircuitCubic):
 
 class RegularPolygon(Polygon):
     def __init__(self, num_vertices, *args, **kwargs):
-        vertices = torch.stack([UP * torch.sin(a) + RIGHT * torch.cos(a) for a in torch.linspace(math.pi/2, -math.pi * 1.5, num_vertices+1)[:-1]], -2)
+        vertices = torch.stack([UP * torch.sin(a) + RIGHT * torch.cos(a) for a in torch.linspace(math.pi/2, -math.pi * 1.5, num_vertices+1)], -2)
         super().__init__(vertices, *args, **kwargs)
 
 

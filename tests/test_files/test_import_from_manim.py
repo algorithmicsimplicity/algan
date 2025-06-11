@@ -1,6 +1,6 @@
 import manim as mn
 
-from algan.animation.animation_contexts import Sync, Off
+from algan.animation.animation_contexts import Sync, Off, Seq
 from algan.constants.spatial import *#RIGHT, LEFT, IN, OUT, ORIGIN, UP
 from algan.mobs.manim_mob import ManimMob
 from algan.utils.algan_utils import render_all_funcs
@@ -31,11 +31,10 @@ def test_manim_text():
 def test_manim_tex():
     def Vector(elements):
         with Off():
-            return ManimMob(mn.Tex('2')).set(border_width=0, border_color=PURE_GREEN).move(RIGHT*1.3)
             return ManimMob(mn.DecimalMatrix([[_] for _ in elements])).set(border_width=0).move(RIGHT*1.3)
     x = Vector(elements=[0.2, 0.2, 0.2]).spawn()
-    #with Sequenced(run_time=3):
-    #    x.move(UP*0.9)
+    with Seq(run_time=3):
+        x.move(UP*0.9)
     x.wait()
 
 

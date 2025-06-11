@@ -6,7 +6,6 @@ import torch.nn.functional as F
 
 from algan.constants.spatial import DEGREES_TO_RADIANS, RADIANS_TO_DEGREES
 from algan.utils.tensor_utils import expand_as_left, squish
-from algan.utils.plotting_utils import plot_tensor
 from algan.utils.tensor_utils import broadcast_cross_product, dot_product, unsqueeze_left, broadcast_gather, unsquish
 
 
@@ -27,13 +26,13 @@ def intersect_line_with_plane_colinear(line_direction, plane_point, plane_co1, p
     return intersect_line_with_plane(line_direction, plane_point, plane_normal, line_point)
 
 
-def intersect_line_with_line(line_point1, line_direction1, line_point2, line_direction2, dim=-1):
+'''def intersect_line_with_line(line_point1, line_direction1, line_point2, line_direction2, dim=-1):
     lp = line_point - plane_point
     plane_normal = F.normalize(plane_normal, p=2, dim=dim)
     intersection_distances = -(dot_product(lp, plane_normal, dim) /
                               dot_product(line_direction, plane_normal, dim))
     intersection_points = line_point + line_direction * intersection_distances
-    return intersection_points, intersection_distances
+    return intersection_points, intersection_distances'''
 
 
 def get_rotation_around_axis(num_degrees, axis, dim=0):
@@ -137,6 +136,15 @@ def project_point_onto_line(point, line_direction, line_start=0, dim=-1):
     """
     line_direction = F.normalize(line_direction, p=2, dim=dim)
     return line_start + line_direction * dot_product(point - line_start, line_direction, dim=dim)
+
+
+def project_point_onto_line_segment(point, line_start, line_end, dim=-1):
+    """
+    Projects point x to the closest point on a line segment defined by its start and end points.
+    """
+    line_direction = F.normalize(line_end-line_start, p=2, dim=dim)
+    line_lengths = (line_end - line_start).norm(p=2,dim=-1, keepdim=True)
+    return line_start + line_direction * dot_product(point - line_start, line_direction, dim=dim).clamp(min=torch.zeros_like(line_lengths), max=line_lengths)
 
 
 def project_point_onto_plane(point, plane_normal, plane_point=0, dim=-1):
@@ -326,10 +334,6 @@ def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):
 
     def rs(x):
         return x[0,0].view(107,96,-1)
-
-    def show_perim(p):
-        x = (grid_points.unsqueeze(-2) - p.unsqueeze(-3)).norm(p=2,dim=-1).amin(-1)
-        plot_tensor(x[0,0].view(1, 107, 96))
 
     return (m2).float()#.squeeze(-1)
     ##plot_tensor((broadcast_gather(i, -1, ((i == 2).float().argmax(-1, keepdim=True)+1)%3, keepdim=False) != 1)[-1].view(1, 251, 205).float())

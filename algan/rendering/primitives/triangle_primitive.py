@@ -66,7 +66,7 @@ class TrianglePrimitive(RenderPrimitive):
         self.corners = corners
         if normals is None:
             normals = torch.zeros_like(corners)
-        colors, opacity, glow = broadcast_all([colors, opacity, glow], ignore_dims=[-1])
+        colors, opacity, glow = broadcast_all([colors, opacity, glow], ignored_dims=[-1])
         self.colors = colors.clone()
         self.colors[...,-2:-1] += glow
         self.colors[..., -1:] *= opacity
@@ -110,7 +110,7 @@ class PolygonPrimitive(RenderPrimitive):
         self.corners = corners
         if normals is None:
             normals = torch.zeros_like(corners)
-        colors, opacity, glow = broadcast_all([colors, opacity, glow], ignore_dims=[-1])
+        colors, opacity, glow = broadcast_all([colors, opacity, glow], ignored_dims=[-1])
         self.colors = torch.cat((colors, glow, opacity), -1)[...,:1,:]
         self.normals = normals
 

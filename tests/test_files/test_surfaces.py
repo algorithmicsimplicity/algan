@@ -15,7 +15,7 @@ get_mob = lambda r=0: TriangleTriangulated(torch.stack((UP * 0.5,
 
 
 def test_cylinder():
-    xs = Group([Cylinder(num_grid_pieces=80).scale(0.1) for _ in range(3)]).arrange_in_line(RIGHT).spawn()
+    xs = Group([Cylinder(grid_height=80).scale(0.1) for _ in range(3)]).arrange_in_line(RIGHT).spawn()
     #x = get_mob()
     #with Sequenced(run_time=4):
     #x.scale(torch.tensor((1,2,1)))
@@ -29,7 +29,7 @@ def test_cylinder():
 
 
 def test_sphere():
-    x = Sphere(num_grid_pieces=80).spawn()
+    x = Sphere(grid_height=80).spawn()
     #x = get_mob()
     #with Sequenced(run_time=4):
     x.rotate(180, RIGHT)

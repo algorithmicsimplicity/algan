@@ -1,3 +1,9 @@
+# Algan videos
+**/algan_outputs/
+algan_outputs/
+algan_outputs
+algan_cache
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -8,12 +8,10 @@ import torch
 import torch.nn.functional as F
 import svgelements
 
-from algan.animation.animation_contexts import Off, Sync
-from algan.constants.rate_funcs import ease_out_exp
 from algan.constants.color import RED, WHITE, GREEN, RED_A
 from algan.constants.spatial import RIGHT, DOWN
 from algan.defaults.device_defaults import DEFAULT_DEVICE
-from algan.defaults.directory_defaults import DEFAULT_DIR
+from algan.defaults.directory_defaults import DEFAULT_DIRECTORY
 from algan.geometry.geometry import get_roots_of_cubic, get_roots_of_quadratic, \
     get_2d_polygon_mask
 from algan.mobs.mob import Mob

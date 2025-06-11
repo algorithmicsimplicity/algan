@@ -3,7 +3,7 @@ Installation
 
 .. _local-installation:
 
-Installing Manim locally via pip
+Installing Algan locally via pip
 ********************************
 
 See :doc:`local installation guide <installation/uv>`

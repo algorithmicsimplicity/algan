@@ -138,7 +138,7 @@ class Scene:
         # Return the values (the lists of grouped items) from the dictionary.
         primitive_collections = []
         for _, (primitive_class, primitives) in grouped_primitives.items():
-            primitive_collections.append(primitive_class(triangle_collection=primitives, reverse_perimeter=any([_.reverse_perimeter for _ in primitives])))
+            primitive_collections.append(primitive_class(triangle_collection=primitives))
             primitive_collections[-1].memory = self.memory
             primitive_collections[-1].scene = self
         self.memory.reset()
@@ -170,7 +170,7 @@ class Scene:
 
     def render_to_video(self, file_writer, file_path, file_path_out, audio_file_path,
                         batch_size_actors=DEFAULT_BATCH_SIZE_ACTORS, batch_size_frames=DEFAULT_BATCH_SIZE_FRAMES):
-        self.scene_times.append((self.scene_times[-1][1], (math.ceil(AnimationManager.instance().context.end_time * self.frames_per_second))))
+        self.scene_times.append((self.scene_times[-1][1], (math.ceil(AnimationManager.instance().context.end_time * self.frames_per_second)+1)))
         self.initialize_frames()
 
         self.camera.despawn(animate=False)
@@ -264,6 +264,8 @@ class Scene:
         if fragments is None:
             frame[:] = bgf[...,:frame.shape[-1]]
             frame_out = unsquish(frame, 0, -window_height)
+            yield frame_out
+            return
             frame_out = F.avg_pool2d(frame_out.float().permute(2,0,1), anti_alias_level).permute(1,2,0).to(torch.uint8)
             frame_out = bloom_filter(frame_out)
             yield frame_out.cpu().flip((-3, -1)).numpy()
@@ -290,9 +292,7 @@ class Scene:
             frame.scatter_(0, inds[ind_begin:ind_end], frames[ind_begin:ind_end])
 
             frame_out = unsquish(frame, 0, -window_height)
-            frame_out = F.avg_pool2d(frame_out.float().permute(2,0,1), anti_alias_level).permute(1,2,0).to(torch.uint8)
-            frame_out = bloom_filter(frame_out, anti_alias_level)
-            yield frame_out.cpu().flip((-3, -1)).numpy()
+            yield frame_out
 
     def get_current_frame(self):
         return self.background_frame

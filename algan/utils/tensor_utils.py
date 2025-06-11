@@ -144,11 +144,11 @@ def unsqueeze_until_dim(x, dim, insert_dim=0):
         x = x.unsqueeze(insert_dim)
     return x
 
-def broadcast_all(xs, ignore_dims=[]):
+def broadcast_all(xs, ignored_dims=[]):
     max_dim = max([_.dim() if hasattr(_, 'dim') else 0 for _ in xs])
-    ignore_dims = [_ if _ >= 0 else _ + max_dim for _ in ignore_dims]
+    ignored_dims = [_ if _ >= 0 else _ + max_dim for _ in ignored_dims]
     xs = [unsqueeze_until_dim(x, max_dim) if isinstance(x, torch.Tensor) else x for x in xs]
-    max_shapes = [max([x.shape[i] if isinstance(x, torch.Tensor) else 0 for x in xs]) if i not in ignore_dims else -1 for i in range(max_dim)]
+    max_shapes = [max([x.shape[i] if isinstance(x, torch.Tensor) else 0 for x in xs]) if i not in ignored_dims else -1 for i in range(max_dim)]
     return [x.expand(*max_shapes) if isinstance(x, torch.Tensor) else x for x in xs]
 
 def broadcast_gather(src, dim:int, ind, keepdim=False, **kwargs):
@@ -159,11 +159,9 @@ def broadcast_gather(src, dim:int, ind, keepdim=False, **kwargs):
     return out
 
 
-def broadcast_scatter(src, dim, ind, out=None):
-    ind, src = broadcast_both(ind, src, ignored_dims=[dim if dim >= 0 else len(src.shape)+dim])
-    if out is None:
-        out = src
-    return out.scatter(dim, ind, src)
+def broadcast_scatter(input, dim, ind, src, **kwargs):
+    input, ind, src = broadcast_all([input, ind, src], ignored_dims=[dim if dim >= 0 else len(src.shape)+dim])
+    return input.scatter_reduce(dim, ind, src, **kwargs)
 
 
 def offset(x):

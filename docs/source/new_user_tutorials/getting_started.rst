@@ -42,15 +42,16 @@ Let's break down this minimal program line-by-line to see what's going on:
    from algan import *
 
 This line imports all of Algan's functionality, making it available to use in your script.
-All of your Algan scripts will start with this line.
+All of your Algan scripts will start with this.
 
+The next line
 
 .. code-block:: python
 
     my_first_mob = Text('Hello World!', font_size=100)
 
 
-This line first creates a visual object. In Algan, any object that can be displayed and animated
+creates a visual object. In Algan, any object that can be displayed and animated
 on screen is called a **Mob** (short for Moveable Object). Here, we create a :class:`.Text` object,
 which is a type of :class:`.Mob` specifically designed
 to display text. We initialize it with the content "Hello World!" and set its font size

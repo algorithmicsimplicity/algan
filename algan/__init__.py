@@ -9,6 +9,9 @@ c.__enter__()
 from algan.defaults.device_defaults import *
 from algan.defaults.style_defaults import *
 from algan.defaults.render_defaults import *
+
+from algan.settings.render_settings import *
+
 from algan.constants.spatial import *
 from algan.constants.color import *
 from algan.constants.math import *

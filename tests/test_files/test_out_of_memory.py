@@ -14,7 +14,6 @@ get_mob = lambda a=0: TriangleTriangulated(torch.stack((UP * 10,
 def test_OOM():
     with Sync():
         ts = [get_mob() for _ in range(5)]
-    print('l')
 
 
 render_all_funcs(__name__, start_index=0, max_rendered=1)

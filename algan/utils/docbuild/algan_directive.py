@@ -303,8 +303,6 @@ class AlganDirective(Directive):
         ]
         try:
             with tempconfig(example_config):
-                print('HERE!!')
-                print(os.getcwd())
                 video_dir = config.get_dir("video_dir")
                 algan.defaults.directory_defaults.DEFAULT_OUTPUT_FILENAME = f'{output_file}'
                 algan.defaults.directory_defaults.DEFAULT_OUTPUT_DIRECTORY = video_dir

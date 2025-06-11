@@ -9,7 +9,7 @@ inheriting from :class:`.Surface` .
 Texturing Surfaces
 ******************
 
-The :class:`.Surface` is used to make arbitrary curved surfaces, both
+The :class:`.Surface` class is used to make arbitrary curved surfaces, both
 :class:`.Sphere` and :class:`.Cylinder` are created by inheriting from it.
 Surfaces can be shaped by providing a function which maps intrinsic (UV) coordinates
 to world coordinates.

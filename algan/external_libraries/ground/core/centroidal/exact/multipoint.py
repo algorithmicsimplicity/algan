@@ -1,7 +1,7 @@
 from typing import (Callable,
                     Type)
 
-from cfractions import Fraction
+from fractions import Fraction
 
 from algan.external_libraries.ground.core.hints import (Multipoint,
                                Point)

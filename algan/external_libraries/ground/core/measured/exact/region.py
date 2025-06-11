@@ -1,6 +1,5 @@
-from cfractions import Fraction
+from fractions import Fraction
 
-from algan.external_libraries.ground.core.hints import (Contour,)
 from algan.external_libraries.ground.core.primitive import rationalize
 
 

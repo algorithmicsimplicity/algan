@@ -64,7 +64,7 @@ class Surface(Mob):
         self.grid_height, self.grid_width = grid_height, grid_width
         base_grid = self.get_base_grid()
         triangle_corners = coord_function(base_grid)
-        triangle_normals = grid_to_triangle_vertices(normal_function(triangle_corners)) if not ignore_normals else None
+        triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
         if 'location' in kwargs:
             triangle_corners = triangle_corners + kwargs['location']
         triangle_corners = grid_to_triangle_vertices(triangle_corners)
