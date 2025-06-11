@@ -17,7 +17,7 @@ class Camera(Mob):
             self.location = CAMERA_ORIGIN
             #self.rotate(180, UP)
             self.screen = Mob(location=self.location + screen_distance * self.get_forward_direction(), add_to_scene=False, init=False)
-            self.screen.scale(1/screen_scale)
+            self.screen.scale(torch.tensor((1/screen_scale, 1/screen_scale, 1)))
             self.screen.is_primitive = True
             self.is_primitive = True
             self.add_children(self.screen)

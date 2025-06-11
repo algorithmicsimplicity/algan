@@ -54,7 +54,7 @@ class BezierCircuitCubic(Renderable):
         super().__init__(**kwargs2)
         self.filled = filled
 
-
+        texture_triangle_vertices = self.location.squeeze(0)
         if add_texture_grid:
             aspect_ratio = second_basis.norm(p=2, dim=-1) / first_basis.norm(p=2, dim=-1)
 
@@ -67,8 +67,13 @@ class BezierCircuitCubic(Renderable):
             texture_triangle_vertices = texture_triangle_vertices.reshape(-1, texture_triangle_vertices.shape[-1])
             self.num_texture_points = texture_triangle_vertices.shape[-2]
 
-            control_points = torch.cat((control_points, texture_triangle_vertices), -2)
-
+            #control_points = torch.cat((control_points, texture_triangle_vertices), -2)
+        kwargs['color'] = self.color
+        with Off():
+            self.texture_points = Mob(texture_triangle_vertices, **kwargs)
+            self.texture_points.exclude_from_boundary = True
+            self.texture_points.is_primitive = True
+            self.add_children(self.texture_points)
 
         with Off():
             self.control_points = Mob(control_points, **kwargs)
@@ -91,7 +96,7 @@ class BezierCircuitCubic(Renderable):
 
     def get_render_primitives(self):
 
-        c, o, n, g, bw, bc, pc = broadcast_all([self.color, self.opacity * self.max_opacity, self.basis, self.glow, self.border_width, self.border_color, self.portion_of_curve_drawn], ignored_dims=[-1])
+        o, n, g, bw, bc, pc = broadcast_all([self.opacity * self.max_opacity, self.basis, self.glow, self.border_width, self.border_color, self.portion_of_curve_drawn], ignored_dims=[-1])
 
         num_control_points = 4 # cubic beziers
         x = unsquish(self.control_points.location, -2, num_control_points)
@@ -119,6 +124,10 @@ class BezierCircuitCubic(Renderable):
 
         starting_inds = circuit_start_mask[0,:,0,0].nonzero()[:,0]
         num_segments_per_circuit = torch.cat((starting_inds, torch.tensor((len(inds)-(starting_inds.amax() if len(starting_inds) > 0 else 0),), device=x.device)), -1)
+
+        c = self.texture_points.color.unsqueeze(-3)
+        if self.num_texture_points > c.shape[-2]:
+            c = c.expand(-1,-1,self.num_texture_points,-1)
 
         prim = self.render_primitive(x, next_segment_inds_offset, num_segments_per_circuit, c, o, self.basis[..., -3:],
                                      bw, bc, pc, self.location, cast_to_tensor(self.grid_width),

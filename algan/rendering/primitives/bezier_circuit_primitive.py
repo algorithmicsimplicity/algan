@@ -8,6 +8,7 @@ from algan.constants.color import BLUE, BLACK
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
 from algan.geometry.geometry import intersect_line_with_plane, project_point_onto_line, project_point_onto_line_segment
 from algan.rendering.primitives.primitive import InsufficientMemoryException, RenderPrimitive2D
+from algan.utils.plotting_utils import plot_tensor
 from algan.utils.tensor_utils import broadcast_all, broadcast_scatter
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, expand_as_left, unsquish, unsqueeze_right
 
@@ -163,13 +164,16 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             self.num_texture_points = triangle_collection[0].num_texture_points
             self.filled = triangle_collection[0].filled
             self.corners = torch.cat([_.corners for _ in triangle_collection], -3).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
+            self.colors = torch.cat([_.colors for _ in triangle_collection], -3).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
+            if self.num_texture_points == 0:
+                self.colors = self.colors.squeeze(-2)
             self.next_segment_inds = torch.cat([_.next_segment_inds for _ in triangle_collection], -3).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
             self.next_segment_inds = self.next_segment_inds + torch.arange(self.next_segment_inds.shape[-3], device=self.next_segment_inds.device).view(-1,1,1)
 
-            self.colors, self.normals, self.border_width, self.border_color, self.portion_of_curve_drawn = (
+            self.normals, self.border_width, self.border_color, self.portion_of_curve_drawn = (
                 ((torch.cat([(__) for __ in _], -2))).to(DEFAULT_RENDER_DEVICE, non_blocking=True) for _ in
                 zip(*((
-                    triangle.colors, triangle.normals, triangle.border_width, triangle.border_color, triangle.portion_of_curve_drawn)
+                    triangle.normals, triangle.border_width, triangle.border_color, triangle.portion_of_curve_drawn)
                     for triangle in triangle_collection)))
 
             self.mob_center, self.grid_width, self.grid_height, self.basis1, self.basis2 = (
@@ -194,8 +198,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         self.num_segments_per_circuit = num_segments_per_circuit
         border_color, opacity, glow = broadcast_all([border_color, opacity, glow], ignored_dims=[-1])
         self.colors = colors.clone()
-        self.colors[..., -2:-1] += glow
-        self.colors[..., -1:] *= opacity
+        self.colors[..., -2:-1] += glow.unsqueeze(-2)
+        self.colors[..., -1:] *= opacity.unsqueeze(-2)
         self.normals = normals
         self.border_width, self.border_color, self.portion_of_curve_drawn = border_width, border_color, portion_of_curve_drawn
         self.border_color[..., -2:-1] += glow
@@ -316,8 +320,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         if fragment_x.numel() == 0:
             return None
         control_points = corners_locs
-        if self.num_texture_points > 0:
-            control_points = control_points[..., :(-self.num_texture_points), :]
 
         control_net_lengths = (control_points[...,1:,:] - control_points[...,:-1,:]).norm(p=2, dim=-1).sum(-1)
         maximum_net_length = control_net_lengths.amax()
@@ -462,17 +464,15 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         mob_center_for_frags = self.expand_verts_to_frags(squish(mob_center, 0, 1).squeeze(-2), object_to_fragment_gather_inds)
         normals_for_frags = self.expand_verts_to_frags(squish(normals,0,1), object_to_fragment_gather_inds)
 
-        def expo(x, select_time=False, squeeze=False):
-            if select_time:
-                x = select_time(x)
-            if squeeze:
-                x = x.squeeze(-2)
-            return self.expand_verts_to_frags(x, frame_to_fragment_gather_inds)
+        def expo(x, gather_inds=object_to_fragment_gather_inds):
+            x = select_time(x)
+            x = x.view(-1,x.shape[-1])
+            return self.expand_verts_to_frags(x, gather_inds)
 
-        screen_basis = unsquish(expo(screen_basis.view(-1,9)), -1, 3)
-        screen_point = expo(screen_point.view(-1,3))
-        ray_origin = expo(ray_origin.view(-1,3))
-
+        screen_basis = unsquish(expo(squish(screen_basis,-2,-1), gather_inds=frame_to_fragment_gather_inds), -1, 3)
+        screen_point = expo(screen_point, gather_inds=frame_to_fragment_gather_inds)
+        ray_origin = expo(ray_origin, gather_inds=frame_to_fragment_gather_inds)
+        screen_basis = screen_basis / screen_basis.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-6)
         ray_direction = F.normalize(
             (screen_point + (((fragment_coords[..., :1] - screen_width * 0.5) /
                               (screen_height * 0.5))) * screen_basis[..., 0, :] +
@@ -481,14 +481,14 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         dists = (self.raycast_onto_plane(ray_origin, ray_direction,
                                         mob_center_for_frags, normals_for_frags))
         if self.num_texture_points > 0:
-            proj_onto_mobs = ray_origin.squeeze(-2) + dists * ray_direction
+            proj_onto_mobs = ray_origin + dists * ray_direction
             mob_centers = expo(self.mob_center)
             mob_basis1 = expo(self.basis1)
             mob_basis2 = expo(self.basis2)
             grid_width = expo(self.grid_width).long()
             grid_height = expo(self.grid_height).long()
             disps_from_mobs = proj_onto_mobs - mob_centers
-            offsets = expo((torch.arange(self.colors.shape[1], device=self.colors.device)*self.colors.shape[2]).view(1,-1,1,1))
+            offsets = expo((torch.arange(self.mob_center.shape[1]*(time_end - time_start), device=self.colors.device)*self.colors.shape[-2]).view(1,-1,1,1))
             def get_c(b):
                 c = dot_product(F.normalize(b, p=2, dim=-1), disps_from_mobs) / b.norm(p=2, dim=-1, keepdim=True)
                 return (c * 0.5 + 0.5)
@@ -506,7 +506,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             y_floor = (y).floor().long()
             y_ciel = (y).ceil().long()
 
-            colos = squish(select_time(self.colors), 1, 2)
+            colos = squish(select_time(self.colors), 0, 2)
             interpolated_colors = 0
             sum_w = 0
             for w, x, y in [(w1, x_floor, y_floor), (w2, x_ciel, y_floor), (w3, x_floor, y_ciel), (w4, x_ciel, y_ciel)]:
