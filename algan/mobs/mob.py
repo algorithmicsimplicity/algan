@@ -81,6 +81,7 @@ class Mob(Animatable):
         self.register_attrs_as_animatable(
             {'location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow'}, Mob)
         self.recursing = True
+        self.exclude_from_boundary = False
         super().__init__(*args, **kwargs)
         # Defines how attributes changes are inherited by children Mobs (e.g., additive for location, multiplicative for scale)
         self.attr_to_relations = defaultdict(lambda: (lambda x, y: y, lambda x, y: y))
@@ -787,6 +788,30 @@ class Mob(Animatable):
         self.move_to(self.location + displacement, **kwargs)
         return self
 
+    def get_axis_aligned_lower_corner(self):
+        return self.location.amin(-2, keepdim=True)
+
+    def get_axis_aligned_upper_corner(self):
+        return self.location.amax(-2, keepdim=True)
+
+    def _get_bounding_box_recursive(self, lower_corner, upper_corner):
+        if not self.exclude_from_boundary:
+            lower_corner = torch.minimum(lower_corner, self.get_axis_aligned_lower_corner())
+            upper_corner = torch.maximum(upper_corner, self.get_axis_aligned_upper_corner())
+        for c in self.children:
+            lower_corner, upper_corner = c._get_bounding_box_recursive(lower_corner, upper_corner)
+        return lower_corner, upper_corner
+
+    def get_bounding_box(self):
+        lower_corner, upper_corner = self._get_bounding_box_recursive(self.location.amin(-2, keepdim=True), self.location.amax(-2, keepdim=True))
+        out = torch.empty(*lower_corner.shape[:-2], 8, 3)
+        for i in range(2):
+            for j in range(2):
+                for k in range(2):
+                    a = torch.tensor((i,j,k), device=lower_corner.device)
+                    out[..., i*4+j*2+k,:] = lower_corner * (1-a) + (a) * upper_corner
+        return out
+
     def get_boundary_points(self) -> torch.Tensor:
         """Returns the current location of the Mob, serving as its boundary point.
         For more complex Mobs, this should be overridden to provide actual boundary points.
@@ -1115,21 +1140,17 @@ class Mob(Animatable):
             Mob: The Mob instance itself, allowing for method chaining.
 
         """
-        # Find the point on the Mob's boundary closest to the 'edge' direction
-        mob_boundary_point = self.get_boundary_edge_point(-edge)  # Closest edge to moving OFF screen
-        # Project this point onto the screen border *opposite* the direction of travel
-        # (i.e., the border it will cross).
-        edge_point_on_screen = self.scene.camera.project_point_onto_screen_border(mob_boundary_point, edge)
-        # Calculate the target location: just beyond the screen edge plus buffer
-        target_location = edge_point_on_screen + F.normalize(edge_point_on_screen - mob_boundary_point, p=2,
-                                                             dim=-1) * buffer
-        # Calculate the total displacement needed
-        displacement = target_location - mob_boundary_point
+        bbox = self.get_bounding_box()
+
+        points_on_screen_edge = self.scene.camera.project_point_onto_screen_border(bbox, edge)
+
+        disps = points_on_screen_edge - bbox
+        largest_disp = broadcast_gather(disps, -2, disps.norm(p=2, dim=-1, keepdim=True).argmax(-2, keepdim=True), keepdim=True)
 
         with Seq():  # Ensure movement and despawn happen sequentially
-            self.location = self.location + displacement  # Animate the movement
+            self.move(largest_disp + buffer * F.normalize(edge, p=2,dim=-1))
             if despawn:
-                self.despawn(animate=False)  # Despawn without additional animation
+                self.despawn(animate=False)
         return self
 
     def move_to_point_along_square(self, destination: torch.Tensor, displacement: torch.Tensor) -> 'Mob':

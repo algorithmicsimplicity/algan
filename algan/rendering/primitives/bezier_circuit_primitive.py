@@ -319,7 +319,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         if self.num_texture_points > 0:
             control_points = control_points[..., :(-self.num_texture_points), :]
 
-        num_sampled_points = 300
+        control_net_lengths = (control_points[...,1:,:] - control_points[...,:-1,:]).norm(p=2, dim=-1).sum(-1)
+        maximum_net_length = control_net_lengths.amax()
+        num_sampled_points = (maximum_net_length).ceil().long() # 1 sample per 2 pixel widths.
         t = torch.linspace(0, 1, num_sampled_points, device=control_points.device)
         ##polygon_vertices = self.get_tensor((*control_points.shape[:3], num_sampled_points, 2))
         polygon_vertices = evaluate_cubic_bezier_old3(control_points, t.unsqueeze(-1))#, polygon_vertices, self.memory)
@@ -345,10 +347,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         # We need to ensure that the local window is large enough to completely cover the largest line segment,
         # otherwise there will be holes in the border.
         if self.filled:
-            half_local_window_size = border_width.amax().ceil().long() + line_segment_lengths.amax().ceil().long() + 1
+            half_local_window_size = max(border_width.amax().ceil().long(), line_segment_lengths.amax().ceil().long())
         else:
             half_local_window_size = border_width.amax().ceil().long()
-        local_window_size = half_local_window_size * 2 + 1
+        local_window_size = half_local_window_size * 2 + 1 + 1
         local_window_inds = torch.arange(local_window_size * local_window_size, device=control_points.device)
 
         # we subtract half_local_window_size so that in local coord (0,0) is the center (i.e. line start).
