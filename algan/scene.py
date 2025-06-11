@@ -3,6 +3,7 @@ import math
 import os
 import time
 import wave
+import warnings
 
 import torch
 import torch.nn.functional as F
@@ -18,6 +19,10 @@ import numpy as np
 from algan.rendering.post_processing import bloom_filter
 from algan.utils.memory_utils import ManualMemory
 from algan.utils.tensor_utils import unsquish
+
+
+class EmptySceneWarning(Warning):
+    pass
 
 
 class Scene:
@@ -124,6 +129,7 @@ class Scene:
         active_actors = [a for a in active_actors if hasattr(a, 'get_render_primitives')]
         if len(active_actors) == 0:
             return torch.empty((nt,)), None, None
+        self.has_any_active_actors = True
         camera.set_state_to_time_t(time_inds)
         camera.screen.set_state_to_time_t(time_inds)
 
@@ -177,6 +183,7 @@ class Scene:
         self.actors = [[self.camera, self.camera.screen, *self.actors[-1]]]
         save_image = False
 
+        self.has_any_active_actors = False
         with Off(record_attr_modifications=False, record_funcs=False, priority_level=math.inf), wave.open(audio_file_path, 'wb') as wav_file:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(1)
@@ -235,6 +242,8 @@ class Scene:
             if os.path.exists(file_path_out):
                 os.remove(file_path_out)
             os.rename(file_path, file_path_out)
+            if not self.has_any_active_actors:
+                 warnings.warn("You rendered an empty scene! Did you forget to spawn() your Mobs?", EmptySceneWarning)
             return save_image
         #TODO fix this so we can write audio to the fiie as well.
         videoclip = VideoFileClip(file_path)
