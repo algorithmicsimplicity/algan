@@ -102,7 +102,7 @@ from algan.settings.render_settings import QUALITIES
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
 
-from algan import algan_version
+from algan import __version__ as algan_version
 
 __all__ = ["AlganDirective"]
 

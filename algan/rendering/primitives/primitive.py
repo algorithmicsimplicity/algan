@@ -11,6 +11,10 @@ from algan.utils.memory_utils import InsufficientMemoryException
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, unsquish, unsqueeze_right
 
 
+class OutOfRenderMemory(Exception):
+    pass
+
+
 class RenderPrimitive:
     def __init__(self, corners=None, colors=BLUE, opacity=0, normals=None, perimeter_points=None, reverse_perimeter=False, triangle_collection=None, glow=0):
         self.corners = corners
@@ -70,6 +74,9 @@ class RenderPrimitive:
                 self.render_window(primitives, scene, window, save_image, m, time_end, object_start, object_end, background_color, False, *args, **kwargs)
                 return
             else:
+                window_size = (window[2]-window[0]) * (window[3]-window[1])
+                if window_size < 50:
+                    raise OutOfRenderMemory('Rendering process ran out of memory. Please reduce the number of objects in the scene.')
                 xm = (window[0] + window[2]) // 2
                 ym = (window[1] + window[3]) // 2
 
@@ -253,8 +260,6 @@ class RenderPrimitive:
             corners_inds = corners_locs.long()
             return corners_locs, corners_inds, projected_distances
 
-
-
         corners_locs, corners_inds, projected_distances = project_onto_screen(corners)
         bounding_corners = torch.stack(((corners_inds.amin(-2)-1), (corners_inds.amax(-2)+1)), -2).clamp_(min=torch.tensor((start_x, start_y), device=corners_locs.device), max=torch.tensor((end_x, end_y), device=corners_locs.device))
 
@@ -263,7 +268,7 @@ class RenderPrimitive:
         bbss = bounding_box_sizes.prod(-1, keepdim=True)
         bounding_box_num_pixels = bbss.amax(0)
         num_fragments = bounding_box_num_pixels.sum() * bbss.shape[0]
-        mem_per_fragment = 256
+        mem_per_fragment = 128
         total_mem_required = num_fragments * mem_per_fragment
 
         free_mem = memory.get_num_bytes_remaining()
@@ -319,7 +324,7 @@ class RenderPrimitive:
 
         output_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
         output_frags[:] = 0
-        current_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
+        ##current_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
 
         if unique_counts.numel() == 0:
             max_buffer_depth = 1

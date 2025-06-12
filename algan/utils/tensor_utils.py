@@ -12,6 +12,11 @@ import torch.nn as nn
 
 from algan.defaults.device_defaults import DEFAULT_DEVICE
 
+try:
+    from torch_scatter import scatter_max as scatter_max_op
+except ModuleNotFoundError:
+    scatter_max_op = None
+
 
 def packed_reorder(x, counts, ids):
     #packed_counts = scatter_add(counts, ids, 0)
@@ -374,3 +379,21 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     func_name = f'{func.__name__}_{"_".join([str(kwargs[a]) for a in unique_args])}_{id(self)}'
     self.data.history.insert_function_application(func_name, (func, self), initial_args, kwargs, self.animation_manager.context)
     return kwargs
+
+
+def scatter_arg_max(x, inds, dim=-1, dim_size=None):
+    if scatter_max_op is not None:
+        return scatter_max_op(x, inds, -1, dim_size=dim_size)
+    x = x.view(-1)
+    out_dims = [*x.shape]
+    out_dims[dim] = dim_size if dim_size is not None else inds.amax()
+    out = torch.zeros(out_dims, device=x.device)
+    max_vals = torch.scatter_reduce(out, dim, inds, x, 'amax', include_self=False)
+    max_vals_gathered = broadcast_gather(max_vals, dim, inds)
+    m = (x == max_vals_gathered)
+    inds[~m] = 0
+    prev_inds = inds.cummax(-1)[0].roll(1,-1)
+    prev_inds[...,0] = -1
+    argmax_inds = ((inds != prev_inds) & m).nonzero()
+    max_vals = broadcast_gather(x, -1, argmax_inds)
+    return max_vals, argmax_inds

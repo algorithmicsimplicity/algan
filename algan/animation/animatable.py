@@ -9,12 +9,21 @@ import torch
 import torch.nn.functional as F
 
 from algan.scene import Scene
-from algan.animation.animation_contexts import Sync, AnimationManager, AnimationContext
+from algan.animation.animation_contexts import Sync, AnimationManager, AnimationContext, Off
 from algan.constants.color import BLACK
 from algan.utils.tensor_utils import broadcast_all, robust_concat, concat_dicts, prepare_kwargs, HANDLED_FUNCTIONS
 from algan.scene_tracker import SceneTracker
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, cast_to_tensor_single, unsqueeze_dims
+
+
+TIME_PARAMETER_NAME = 'time_elapsed'
+
+
+class TimeInterval:
+    def __init__(self, start, end):
+        self.start = start
+        self.end = end
 
 
 class ModificationHistory:
@@ -26,6 +35,7 @@ class ModificationHistory:
         self.function_applications = dict() # contains all animated_functions applied to the mob.
         self.attribute_modifications = defaultdict(list) # contains every instance that one of the mob's animatable attributes is changed.
         self.attribute_overwrites = dict() # overwrites are not supported at the moment.
+        self.most_recent_function_added = None
 
     def overwrite_attr_history(self, attr, end_time):
         if attr not in self.attribute_overwrites:
@@ -52,6 +62,7 @@ class ModificationHistory:
         if func_name not in self.function_applications:
             self.function_applications[func_name] = (func, [], [])
         self.function_applications[func_name][-1].append([animated_args, kwargs, start_time, end_time, (rate_func, rate_func_compose)])
+        self.most_recent_function_added = self.function_applications[func_name][-1][-1]
 
     def get_history(self, animatable):
         attrs = []
@@ -88,7 +99,7 @@ class ModificationHistory:
         return attrs, funcs
 
 
-def animated_function(function=None, *, animated_args:Dict[str, float]={'t': 0}, unique_args=list()):
+def animated_function(function=None, *, animated_args:Dict[str, float]=dict(), unique_args=list()):
     """Decorator that turns a function into an animated function. The animation is created by interpolating
     all args named in the animated_args dict from the value provided in this dict the value passed as an actual argument
     when the function is called. Most commonly, animated_args will just be {'t': 0}, and the function
@@ -113,6 +124,8 @@ def animated_function(function=None, *, animated_args:Dict[str, float]={'t': 0},
     def _decorate(func):
         @wraps(func)
         def wrapper_func(self, *args, **kwargs):
+            if self.animation_manager.context.trace_mode:
+                return func(self, *args, **kwargs)
             if not self.is_animating():
                 with AnimationContext(record_funcs=False):
                     return func(self, *args, **kwargs)
@@ -259,9 +272,119 @@ class Animatable:
         #setup_getters(self)
         self.previous_retroactive_time = 0
         self.reset_state()
+        self.passive_animations = []
+        self._passive_animation_functions = []
 
         if init:
             self.init()
+
+    def _set_dependant_mobs_time_inds_to_self_then_run_function(self, function):
+        with AnimationContext(trace_mode=True) as context:
+            function()
+            for mob in context.traced_mobs:
+                mob.anchor_priority = max(mob.anchor_priority, self.anchor_priority + 1)
+                mob.set_time_inds_to(self)
+        function()
+
+    @animated_function(animated_args={'t': 0}, unique_args=['function'])
+    def animate_function(self, function, t=1, *args, **kwargs):
+        """Animates the application of function, interpolating its animated parameter from 0 to t.
+
+        Parameters
+        ----------
+        function
+            The function to animate. It must accept a mob as its first parameter, and a float as its second parameter.
+            During the animation, the second parameter will be interpolated from 0 to t.
+        t
+            The final value that the animated parameter will have at the end of the animation.
+        *args, **kwargs
+            Passed to function.
+
+        """
+        self._set_dependant_mobs_time_inds_to_self_then_run_function(lambda: function(self, t, *args, **kwargs))
+        return self
+
+    @animated_function(unique_args=['function'])
+    def animate_function_of_time(self, function, time_elapsed=0, *args, **kwargs):
+        """Same as :func:`~.Animatable.animate_function` but the animation parameter is equal
+        to time elapsed since starting the animation, instead of interpolating 0 to t over the animation duration.
+        This formulation can be useful when you don't know how long an animation will play for,
+        and you want it to play indefinitely.
+
+        Parameters
+        ----------
+        function
+            The function to animate. It must accept a mob as its first parameter, and a float as its second parameter.
+            During the animation, the second parameter will range from 0 to the duration
+            of the animation (in seconds).
+        time_elapsed
+            Dummy parameter. No matter what value you give it, it will be overwritten with
+            the time elapsed since the animation beginning.
+        *args, **kwargs
+            Passed to function.
+
+        """
+        start_time = self.animation_manager.context.current_time
+        end_time = self.animation_manager.context.end_time
+        self._set_dependant_mobs_time_inds_to_self_then_run_function(lambda: function(self, time_elapsed, *args, **kwargs))
+        self.animation_manager.context.current_time = start_time
+        self.animation_manager.context.end_time = end_time
+        return self
+
+    def add_updater(self, update_function, *args, **kwargs):
+        """Adds a function to this Mob's collection of updaters. During animation, at every
+        frame all of the updaters are executed, with the time elapsed since being added (in seconds)
+        passed as the second parameter. Useful for implementing permamnent or 'idle' animations.
+
+        Parameters
+        ----------
+        update_function
+            The function which will be called every frame. It must accept a Mob as its first parameter and
+            a float as its second parameter. During animation it will be called with this mob
+            as the first parameter and the time elapsed (in seconds) as the second parameter.
+        *args, **kwargs
+            Passed to update_function.
+
+        Returns
+        -------
+            An integer ID identifying the updater that was added. This ID can be used to remove
+            the updater at a later time, using :func:`~.Animatable.remove_updater`.
+             If it is never ignored, the updater will continue forever.
+
+        """
+        start_pointer = self.animation_manager.context.get_current_time()
+        with AnimationContext(record_funcs=True):
+            self.animate_function_of_time(update_function, *args, **kwargs)
+        self.passive_animations.append(self.data.history.most_recent_function_added)
+        self._passive_animation_functions.append(lambda mob, t: update_function(mob, t, *args, **kwargs))
+        self.passive_animations[-1][2] = start_pointer
+        self.passive_animations[-1][3] = lambda: 1e13+1 # last forever, unless remove_updater is called to set it to an earlier time.
+        return len(self.passive_animations)-1
+
+    def remove_updater(self, updater_id):
+        """Removes the specified updater from this mobs updater, leaving the mob with whatever state the updater left
+        it with at the time-stamp when it was removed.
+
+        Parameters
+        ----------
+        updater_id
+            The identifier of the updater to be removed. Can be given a value of -1 to remove the most
+            recently added updater.
+
+        """
+        i = updater_id
+        if self.passive_animations[i][3]() < 1e13:
+            # Make sure that we only remove it the first time.
+            return
+        self.passive_animations[i][3] = self.animation_manager.context.get_current_time()
+        #self.set_state_to_time_t(self.passive_animations[i][3])
+        with Off(record_funcs=False):
+            self._passive_animation_functions[i](self, self.passive_animations[i][3]() - self.passive_animations[i][2]())
+
+
+    def remove_all_passive_animations(self):
+        for i in range(len(self.passive_animations)-1, -1, -1):
+            self.remove_passive_animation(i)
 
     def set_to_retroactive(self):
         prt = self.animation_manager.context.current_time
@@ -298,6 +421,9 @@ class Animatable:
             super().__setattr__(f'get_{attr}', lambda attr=attr: self.__getattribute__(attr))
 
     def setattr_and_record_modification(self, key, value):
+        if self.animation_manager.context.trace_mode:
+            self.animation_manager.context.traced_mobs.add(self)
+            return
         dd = self.data.data_dict
         self.batch_size = max(self.batch_size, value.shape[-2])
         n1, n2 = 1 if self.data.time_inds_materialized is None else len(self.data.time_inds_materialized), self.batch_size
@@ -340,6 +466,8 @@ class Animatable:
         return self.data.data_dict[key]
 
     def getattribute_animated(self, key):
+        if self.animation_manager.context.trace_mode:
+            self.animation_manager.context.traced_mobs.add(self)
         if key not in self.data.data_dict:
             if key not in self.data.data_dict_active:
                 raise AttributeError
@@ -507,6 +635,7 @@ class Animatable:
             return self
         self._destroy_recursive(animate)
         self.animation_manager.context.on_destroy(self)
+
         return self
 
     def _destroy_recursive(self, animate=True):
@@ -515,6 +644,7 @@ class Animatable:
                 if animate:
                     self.on_destroy()
                 self.data.despawn_time = self.animation_manager.context.get_current_end_time()
+                #self.remove_all_passive_animations()
             for c in self.children:
                 c._destroy_recursive(animate)
         return self
@@ -603,7 +733,8 @@ class Animatable:
 
             fa = (found[found_inds] + (torch.arange(found.shape[-1]) / (2*found.shape[-1]))).argmax(-1, keepdim=True)
             s, e = (broadcast_gather(_.unsqueeze(0), 1, fa, keepdim=True) for _ in (start_times, end_times))
-            a = (t[found_inds] - s) / (e - s)
+            elapsed_time = (t[found_inds] - s)
+            a = elapsed_time / (e - s)
 
             a = a.unsqueeze(-2)
             ar = torch.stack(broadcast_all([rf(rfc(a)) if rfc is not None else rf(a) for rf, rfc in rate_funcs]), -1)
@@ -618,6 +749,9 @@ class Animatable:
             animated_args = select_kwargs(animated_args)
             caller.data.time_inds_active = torch.arange(len(caller.data.time_inds_materialized))[found_inds]
             kwargs2 = {key: (animated_args[key] * (1 - z) + z * value) if key in animated_args else value for key, value in select_kwargs(kwargs).items()}
+
+            if TIME_PARAMETER_NAME in kwargs2:
+                kwargs2[TIME_PARAMETER_NAME] = elapsed_time.view(-1,1,1)
 
             func(caller, **kwargs2)
 

@@ -24,6 +24,8 @@ class ManimMob(BezierCircuitCubic):
                 c[-1] *= opacity
             return torch.cat((c[:-1], torch.tensor((0,)), c[-1:]))
         super().__init__(control_points * manim_scale_factor, color=convert_manim_color(manim_mob.fill_color, opacity=manim_mob.fill_opacity),
-                         border_color=convert_manim_color(manim_mob.stroke_color, manim_mob.stroke_opacity), border_width=manim_mob.stroke_width, **kwargs)
+                         border_color=convert_manim_color(manim_mob.stroke_color, manim_mob.stroke_opacity),
+                         border_width=manim_mob.stroke_width,
+                         filled=not hasattr(manim_mob, 'end'), **kwargs)
         self.add_children(children)
         self.submobjects = children

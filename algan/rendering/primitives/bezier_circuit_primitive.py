@@ -237,13 +237,16 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         screen_point = select_time(screen_point)
         screen_basis = select_time(screen_basis)
         ray_origin = select_time(ray_origin)
+        next_segment_inds = select_time(self.next_segment_inds)
+        num_segments_per_object = (self.num_segments_per_object)
+        #num_segments_per_circuit = select_time(self.num_segments_per_circuit)
 
-        num_objects = len(self.num_segments_per_object)#
+        num_objects = len(num_segments_per_object)#
 
         if window_coords is None:
             window_coords = 0, 0, screen_width, screen_height
-        window_height = window_coords[-1] - window_coords[1]
-        window_width = window_coords[-2] - window_coords[0]
+        #window_height = window_coords[-1] - window_coords[1]
+        #window_width = window_coords[-2] - window_coords[0]
         start_x, start_y, end_x, end_y = window_coords
         end_x = end_x - 1
         end_y = end_y - 1
@@ -267,9 +270,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         padding = max(20, border_width.amax().ceil().long()+1)
 
         def get_bounding_box_fragment_coords(x):
-            arange_num_segments_per_oject = torch.arange(len(self.num_segments_per_object), device=x.device)
+            arange_num_segments_per_oject = torch.arange(len(num_segments_per_object), device=x.device)
             segment_to_object_scatter_inds = torch.repeat_interleave(arange_num_segments_per_oject,
-                                                             self.num_segments_per_object*self.num_bezier_parameters, -1).view(1,-1,1)
+                                                             num_segments_per_object*self.num_bezier_parameters, -1).view(1,-1,1)
 
             arange_num_segments_per_oject = arange_num_segments_per_oject.view(1,-1,1)
             object_bounding_corners_bottom_left = (broadcast_scatter(arange_num_segments_per_oject, -2,
@@ -301,10 +304,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             object_fragment_inds = torch.arange(num_fragments, device=x.device).view(-1,1)
 
             object_offsets = (object_bounding_box_num_pixels.view(-1).cumsum(-1) - object_bounding_box_num_pixels.view(-1)).view(-1,1)
-            object_fragment_inds = object_fragment_inds - broadcast_gather(object_offsets, -2, object_to_fragment_gather_inds)
+            object_fragment_inds = object_fragment_inds - broadcast_gather(object_offsets, -2, object_to_fragment_gather_inds, keepdim=True)
 
-            object_bounding_box_dimensions_for_frags = broadcast_gather(squish(object_bounding_box_dimensions,0,1), -2, object_to_fragment_gather_inds)
-            object_bounding_corners_bottom_left_for_frags = broadcast_gather(squish(object_bounding_corners_bottom_left,0,1), -2, object_to_fragment_gather_inds)
+            object_bounding_box_dimensions_for_frags = broadcast_gather(squish(object_bounding_box_dimensions,0,1), -2, object_to_fragment_gather_inds, keepdim=True)
+            object_bounding_corners_bottom_left_for_frags = broadcast_gather(squish(object_bounding_corners_bottom_left,0,1), -2, object_to_fragment_gather_inds, keepdim=True)
             object_fragment_x = (object_fragment_inds % object_bounding_box_dimensions_for_frags[...,:1]) + object_bounding_corners_bottom_left_for_frags[...,:1]
             object_fragment_y_bbox = (object_fragment_inds // object_bounding_box_dimensions_for_frags[..., :1])
             object_fragment_y = object_fragment_y_bbox + object_bounding_corners_bottom_left_for_frags[...,1:]
@@ -323,7 +326,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         control_net_lengths = (control_points[...,1:,:] - control_points[...,:-1,:]).norm(p=2, dim=-1).sum(-1)
         maximum_net_length = control_net_lengths.amax()
-        num_sampled_points = (maximum_net_length).ceil().long() # 1 sample per 2 pixel widths.
+        num_sampled_points = (maximum_net_length*0.25).ceil().long().clamp_min_(1) # 1 sample per 4 pixel widths.
         t = torch.linspace(0, 1, num_sampled_points, device=control_points.device)
         ##polygon_vertices = self.get_tensor((*control_points.shape[:3], num_sampled_points, 2))
         polygon_vertices = evaluate_cubic_bezier_old3(control_points, t.unsqueeze(-1))#, polygon_vertices, self.memory)
@@ -332,7 +335,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         next_polygon_vertices = polygon_vertices.roll(shifts=-1, dims=-2)
 
         # Change the last next_vertice from the start of this segment to the start of the next segment.
-        next_segments = broadcast_gather(polygon_vertices, -3, self.next_segment_inds)
+        next_segments = broadcast_gather(polygon_vertices, -3, next_segment_inds, keepdim=True)
         next_polygon_vertices[...,-1,:] = next_segments[...,0,:]
 
         line_segments = next_polygon_vertices - polygon_vertices
@@ -363,7 +366,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         line_start_y = polygon_vertices[...,1:]# % 1
 
         # Note all line segments are centered, so they start at (0, 0)
-        line_end_x = next_polygon_vertices[...,:1]#line_segments[..., :1] + line_start_x
+        #line_end_x = next_polygon_vertices[...,:1]#line_segments[..., :1] + line_start_x
         line_end_y = next_polygon_vertices[...,1:]#line_segments[..., 1:] + line_start_y
 
         local_window_x = local_window_x + line_start_x.floor().long()
@@ -391,8 +394,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         '''local_to_global_inds = ((polygon_vertices_int[...,:1] + local_window_x).clamp_min(1) +
                                 (polygon_vertices_int[...,1:] + local_window_y) * bounding_box_widths.unsqueeze(-1)
                                 ).clamp_(min=torch.zeros_like(bounding_box_num_pixels.unsqueeze(-1)), max=bounding_box_num_pixels.unsqueeze(-1)-1)'''
-        object_bounding_box_dimensions_for_segments = torch.repeat_interleave(object_bounding_box_dimensions, self.num_segments_per_object, -2).unsqueeze(-1)
-        object_bounding_corners_bottom_left_for_segments = torch.repeat_interleave(object_bounding_corners_bottom_left, self.num_segments_per_object, -2).unsqueeze(-1)
+        object_bounding_box_dimensions_for_segments = torch.repeat_interleave(object_bounding_box_dimensions, num_segments_per_object, -2).unsqueeze(-1)
+        object_bounding_corners_bottom_left_for_segments = torch.repeat_interleave(object_bounding_corners_bottom_left, num_segments_per_object, -2).unsqueeze(-1)
         bbox_x = local_window_x - object_bounding_corners_bottom_left_for_segments[...,:1,:]
         bbox_y = local_window_y - object_bounding_corners_bottom_left_for_segments[...,1:,:]
         bbox_num_pixels = object_bounding_box_dimensions_for_segments.prod(-2, keepdim=True)
@@ -404,7 +407,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         # Now we need to add offsets so that inds from different objects end up in different output frames.
         offsets = object_bounding_box_dimensions.prod(-1, keepdims=True).view(-1,1)
         offsets = offsets.cumsum(-2)  - offsets
-        offsets_for_segments = squish(torch.repeat_interleave(unsquish(offsets, 0, -corners.shape[0]), self.num_segments_per_object, -2).unsqueeze(-1), 0, 1)
+        offsets_for_segments = squish(torch.repeat_interleave(unsquish(offsets, 0, -corners.shape[0]), num_segments_per_object, -2).unsqueeze(-1), 0, 1)
         local_to_global_inds = (squish(local_to_bbox_inds, 0, 1) + offsets_for_segments.view(-1,1,1)).view(-1)
 
         #invalid_mask = ((bbox_x < 0) | (bbox_x > bounding_box_widths.unsqueeze(-2))) | (((bbox_y < 0) | (bbox_y > bounding_box_heights.unsqueeze(-2))))
@@ -439,7 +442,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                          (fragment_y_bbox)*self.expand_verts_to_frags(object_bounding_box_dimensions[...,:1].view(-1,1), object_to_fragment_gather_inds)).view(-1)
         row_start_ind = (row_start_ind-1).clamp_min(0)
 
-        left_intersection_counts = left_intersection_counts - broadcast_gather(left_intersection_counts, -1, row_start_ind)
+        left_intersection_counts = left_intersection_counts - broadcast_gather(left_intersection_counts, -1, row_start_ind, keepdim=True)
 
         interior_mask = ((left_intersection_counts % 2) == 1).float().unsqueeze(-1)
 
@@ -464,14 +467,15 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         mob_center_for_frags = self.expand_verts_to_frags(squish(mob_center, 0, 1).squeeze(-2), object_to_fragment_gather_inds)
         normals_for_frags = self.expand_verts_to_frags(squish(normals,0,1), object_to_fragment_gather_inds)
 
-        def expo(x, gather_inds=object_to_fragment_gather_inds):
-            x = select_time(x)
+        def expo(x, select=True, gather_inds=object_to_fragment_gather_inds):
+            if select:
+                x = select_time(x)
             x = x.view(-1,x.shape[-1])
             return self.expand_verts_to_frags(x, gather_inds)
 
-        screen_basis = unsquish(expo(squish(screen_basis,-2,-1), gather_inds=frame_to_fragment_gather_inds), -1, 3)
-        screen_point = expo(screen_point, gather_inds=frame_to_fragment_gather_inds)
-        ray_origin = expo(ray_origin, gather_inds=frame_to_fragment_gather_inds)
+        screen_basis = unsquish(expo(squish(screen_basis,-2,-1), False, gather_inds=frame_to_fragment_gather_inds), -1, 3)
+        screen_point = expo(screen_point, False, gather_inds=frame_to_fragment_gather_inds)
+        ray_origin = expo(ray_origin, False, gather_inds=frame_to_fragment_gather_inds)
         screen_basis = screen_basis / screen_basis.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-6)
         ray_direction = F.normalize(
             (screen_point + (((fragment_coords[..., :1] - screen_width * 0.5) /

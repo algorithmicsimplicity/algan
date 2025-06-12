@@ -21,7 +21,7 @@ Importing is straightforward, just create a ManimMob object and pass in a Manim 
     import manim as mn
 
     # Let's grab a number line from the manim library.
-    mob = ManimMob(mn.NumberLine()).spawn()
+    mob = ManimMob(mn.NumberLine()).scale(0.5).spawn()
 
     # Now we have a mob that we can animate using Algan!
     with Seq(run_time=5):

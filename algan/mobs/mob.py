@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, TensorType
 
-from algan.animation.animatable import Animatable, animated_function, ModificationHistory
+from algan.animation.animatable import Animatable, animated_function, ModificationHistory, TimeInterval
 from algan.animation.animation_contexts import Seq, Off, Sync, AnimationContext, NoExtra
 from algan.constants.spatial import *
 from algan.geometry.geometry import rotate_vector_around_axis, get_rotation_between_3d_vectors, project_point_onto_line, get_rotation_around_axis, map_global_to_local_coords, map_local_to_global_coords, \
@@ -506,6 +506,9 @@ class Mob(Animatable):
             Mob: The Mob instance itself, allowing for method chaining.
 
         """
+        if self.animation_manager.context.trace_mode:
+            self.animation_manager.context.traced_mobs = self.animation_manager.context.traced_mobs.union(set(self.get_descendants()))
+            return self
         value = cast_to_tensor(value)
         if not hasattr(self, 'data'):
             self.__setattr__(f'_{key}', value)
@@ -539,6 +542,9 @@ class Mob(Animatable):
             Mob: The Mob instance itself, allowing for method chaining.
 
         """
+        if self.animation_manager.context.trace_mode:
+            self.animation_manager.context.traced_mobs = self.animation_manager.context.traced_mobs.union(set(self.get_descendants()))
+            return self
         value = cast_to_tensor(value)
         if not hasattr(self, 'data'):
             self.__setattr__(f'_{key}', value)
@@ -613,6 +619,9 @@ class Mob(Animatable):
         Sets the Mob's basis, interpolating from the current basis to the target.
 
         """
+        if self.animation_manager.context.trace_mode:
+            self.animation_manager.context.traced_mobs = self.animation_manager.context.traced_mobs.union(set(self.get_descendants()))
+            return self
         return self._set_basis_interpolated(*args, **kwargs, recursive='True' if self.recursing else 'False')
 
     @animated_function(animated_args={'interpolation': 0}, unique_args=['relation_key', 'recursive'])
@@ -746,6 +755,9 @@ class Mob(Animatable):
             value (Any): The new value for the attribute.
 
         """
+        if self.animation_manager.context.trace_mode:
+            self.animation_manager.context.traced_mobs.add(self)
+            return self
         original_recursing_state = self.recursing
         self.recursing = False
         self.__setattr__(key, value)  # Calls the property setter, which then calls apply_absolute_change/set_relative

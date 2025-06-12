@@ -1,3 +1,7 @@
+from importlib.metadata import version
+
+__version__ = version(__name__)
+
 import os
 import shutil
 import torch
@@ -36,6 +40,3 @@ def clear_cache():
     f = os.path.join(algan.defaults.directory_defaults.DEFAULT_DIR, 'algan_cache')
     if os.path.exists(f):
         shutil.rmtree(f)
-
-
-algan_version = '0.0.1'

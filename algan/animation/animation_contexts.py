@@ -113,6 +113,8 @@ class AnimationContext:
     spawn_at_end: bool|None = None
     new_animation: bool|None = False
     finished: bool = False
+    trace_mode: bool|None = None
+    traced_mobs: set = field(default_factory=set)
     new_mobs: list = field(default_factory=list)
     child_contexts: list = field(default_factory=list)
     kwargs: Any = field(default_factory=dict)
@@ -123,7 +125,7 @@ class AnimationContext:
             self.priority_level = am.context.priority_level
         if am.context.priority_level > self.priority_level:
             self.ignored = True
-            return
+            return am.context
 
         self.ignored = False
         self.prev_context = am.context
@@ -136,7 +138,7 @@ class AnimationContext:
 
         [inherit_missing_value(attr) for attr in ['run_time_unit', 'lag_ratio',
                                                   'priority_level', 'rate_func', 'rate_func_compose', 'record_funcs', 'record_attr_modifications',
-                                                  'spawn_at_end']]
+                                                  'spawn_at_end', 'trace_mode']]
 
         if self.rate_func is not None and not isinstance(self.rate_func, RateFuncWrapper):
             self.rate_func = RateFuncWrapper(self.rate_func)
@@ -151,6 +153,7 @@ class AnimationContext:
         self.current_time = self.begin_time
         self.end_time = self.begin_time
         self.rescaler = lambda x: x
+        return self
 
     def add_child_context(self, c):
         self.child_contexts.append(c)
@@ -160,6 +163,9 @@ class AnimationContext:
 
     def get_current_time(self):
         return self.get_rescaling_time(self.current_time)
+
+    def get_end_time(self):
+        return self.get_rescaling_time(self.end_time)
 
     def get_current_end_time(self):
         return self.get_rescaling_time(self.current_time + self.run_time_unit)
@@ -184,10 +190,13 @@ class AnimationContext:
         self.current_time = self.current_time - num_frames
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
+        for c in self.child_contexts:
+            self.traced_mobs = self.traced_mobs.union(c.traced_mobs)
         if exc_type is not None:
-            raise exc_value
+            return False
+            #raise exc_value
         if self.ignored:
-            return
+            return False
 
         def rescale(x, b=self.begin_time, s=1):
             return (x - b) * s + b
@@ -196,7 +205,7 @@ class AnimationContext:
             for c in context.get_descendants(include_self=True):
                 c.begin_time_r = rescale(c.begin_time_r, s=s)
                 c.end_time_r = rescale(c.end_time_r, s=s)
-            return
+            return False
 
         if self.same_run_time:
             max_run_time = 0
@@ -238,10 +247,11 @@ class AnimationContext:
             am.context.current_time = self.current_time
 
         if not (self.spawn_at_end and not am.context.spawn_at_end):
-            return
+            return False
         with Sync():
             for mob in self.new_mobs:
                 mob.spawn()
+        return False
 
     def increment_times(self):
         self.end_time = max(self.end_time, self.current_time + self.run_time_unit)
