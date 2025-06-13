@@ -37,6 +37,8 @@ Qualified name: ``algan.animation.animation\_contexts.Seq``
      ~Seq.run_time_unit
      ~Seq.same_run_time
      ~Seq.spawn_at_end
+     ~Seq.trace_mode
+     ~Seq.traced_mobs
      ~Seq.new_mobs
      ~Seq.child_contexts
      ~Seq.kwargs

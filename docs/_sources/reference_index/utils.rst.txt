@@ -3,7 +3,7 @@ Utils
 
 .. currentmodule:: algan
 
-.. autofunction:: utils.algan_utils.render_to_file
+.. autofunction:: algan.utils.algan_utils.render_to_file
 
 .. autosummary::
    :toctree: ../reference

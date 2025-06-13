@@ -1,6 +1,6 @@
-====================
+======================
 Controlling Animations
-====================
+======================
 
 So far we've seen how to create basic animations by modifying animatable attributes and using :func:`.animated_function` s. But in all of these examples, the animations play for 1 second each, and take place one after the other. What if we want more control over how the animations should happen? Not to worry, Algan is specifically designed to make orchestrating complex animations easy, and to this end it provides :class:`.AnimationContext` s.
 
@@ -59,8 +59,9 @@ animation once the current one is 50% finished.
 .. note::
 
     Lag(0) is equivalent to Sync() and Lag(1) is equivalent to Seq().
+
 Finally Off() disables animations that take place within its context, all changes will be instant (1 frame).
-:class:`.AnimationContext` s can also be given a number of parameters to change their
+:class:`~.AnimationContext` s can also be given a number of parameters to change their
 behaviour. Most notably, the length of animations that take place within a context can be
 controlled with ``run_time`` and ``run_time_unit``.
 
@@ -89,6 +90,7 @@ The ``run_time_unit`` parameter specifies how long each individual animation sho
 .. note::
 
     If both parameters are set, ``run_time`` overrides ``run_time_unit``.
+
 Nesting Contexts
 ----------------
 

@@ -1,5 +1,5 @@
 New User Tutorials
-=========
+==================
 
 .. toctree::
    :caption: Table of Contents
@@ -11,4 +11,5 @@ New User Tutorials
    controlling_animations
    nesting_mobs
    images_and_textures
+   updaters
    importing_from_manim

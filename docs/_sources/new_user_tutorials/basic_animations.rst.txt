@@ -4,10 +4,10 @@ Basic Animations
 
 In Algan you create animations by controlling :class:`.Mob` s,
 which are objects that will appear on screen.
-Algan provides a range of basic :class:`.Mob` s covering basic 2-D and 3-D
-shapes such as circles, rectangles, spheres, cubes, as well as
-:class:`.Text` :class:`.Mob` s for displaying text and LaTex.
-You can also import mobs from Manim.
+Algan provides a range of :class:`.Mob` s covering basic 2-D and 3-D
+shapes such as :class:`.Circle`, :class:`.Rectangle` :class:`.Sphere`, :class:`.Cylinder`, as well as
+:class:`.Text` :class:`.Mob` s for displaying text and :class:`.Tex` for LaTex.
+You can also import mobs from Manim using :class:`~.ManimMob`.
 
 Changing Animatable Attributes
 ------------------------------
@@ -25,7 +25,7 @@ during which the attribute is linearly interpolated from the old value to the ne
     By default the camera is located at OUT*7 (0, 0, 7) and looks towards the ORIGIN.
 
 :attr:`~.Mob.basis` is a vector of length 9 that specifies the orientation and scale of a Mob. It is not recommended to modify
-basis directly and instead use the helper methods like :meth:`.Mob.rotate` and :meth:`.Mob.scale`.
+basis directly and instead use the helper methods like :meth:`~.Mob.rotate` and :meth:`~.Mob.scale`.
 
 :attr:`~.Mob.color` is a :class:`~.Color` object which specifies the main color of the Mob.
 
@@ -43,10 +43,10 @@ basis directly and instead use the helper methods like :meth:`.Mob.rotate` and :
     circle = Circle().spawn()
 
     circle.location = circle.location + UP
-    circle.location = circle.location + DOWN + RIGHT
-    circle.color = GREEN
-    circle.glow = 0.5
     circle.opacity = 0.5
+    circle.location = circle.location + DOWN + RIGHT
+    circle.glow = 0.5
+    circle.color = GREEN
 
     render_to_file()
 
@@ -123,4 +123,4 @@ Here's a brief explanation of the methods shown in the example:
   `mob.move(RIGHT)` moves the object to the right one unit.
 * :meth:`.Mob.rotate`: This method rotates the :class:`.Mob` by a given angle around a specified axis. For instance, `mob.rotate(360, OUT)` rotates the object 360 degrees around the outward-pointing Z-axis.
 * :meth:`.Mob.rotate_around_point`: This method rotates the :class:`.Mob` around a specific point in space. `mob.rotate_around_point(ORIGIN, 180, OUT)` rotates the object 180 degrees around the origin (0,0,0) along the Z-axis.
-* :meth:`.Mob.become`: This method smoothly transforms the current :class:`.Mob` into the shape of another :class:`.Mob` provided as an argument. For example, `mob = mob.become(Circle())` transforms the existing mob into a circle.
+* :meth:`.Mob.become`: This method smoothly transforms the current :class:`.Mob` into another :class:`.Mob` provided as an argument. For example, `mob = mob.become(Circle())` transforms the existing mob into a circle.

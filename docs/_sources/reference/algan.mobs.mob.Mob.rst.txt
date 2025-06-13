@@ -29,10 +29,13 @@ Qualified name: ``algan.mobs.mob.Mob``
       ~Mob.detach_history
       ~Mob.expand_n_batch
       ~Mob.expand_n_children
+      ~Mob.get_axis_aligned_lower_corner
+      ~Mob.get_axis_aligned_upper_corner
       ~Mob.get_boundary_edge_point
       ~Mob.get_boundary_in_direction
       ~Mob.get_boundary_points
       ~Mob.get_boundary_points_recursive
+      ~Mob.get_bounding_box
       ~Mob.get_center
       ~Mob.get_descendants
       ~Mob.get_displacement_to_boundary

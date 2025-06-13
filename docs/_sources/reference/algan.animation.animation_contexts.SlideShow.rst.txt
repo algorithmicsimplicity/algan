@@ -39,6 +39,8 @@ Qualified name: ``algan.animation.animation\_contexts.SlideShow``
      ~SlideShow.run_time_unit
      ~SlideShow.same_run_time
      ~SlideShow.spawn_at_end
+     ~SlideShow.trace_mode
+     ~SlideShow.traced_mobs
      ~SlideShow.new_mobs
      ~SlideShow.child_contexts
      ~SlideShow.kwargs

@@ -7,12 +7,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://docs.manim.community/reference.html" />
 <meta property="og:site_name" content="Algan | Documentation" />
-<meta property="og:description" content="This reference manual details modules, functions, and variables included in Algan, describing what they are and what they do. For learning how to use Algan, see tutorials/index. For a list of chang..." />
+<meta property="og:description" content="This reference manual details modules, functions, and variables included in Algan, describing what they are and what they do. For learning how to use Algan, see New User Tutorials. Inheritance Grap..." />
 <meta property="og:image:width" content="1146" />
 <meta property="og:image:height" content="600" />
 <meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_reference_14fe852e.png" />
-<meta property="og:image:alt" content="This reference manual details modules, functions, and variables included in Algan, describing what they are and what they do. For learning how to use Algan, see tutorials/index. For a list of chang..." />
-<meta name="description" content="This reference manual details modules, functions, and variables included in Algan, describing what they are and what they do. For learning how to use Algan, see tutorials/index. For a list of chang..." />
+<meta property="og:image:alt" content="This reference manual details modules, functions, and variables included in Algan, describing what they are and what they do. For learning how to use Algan, see New User Tutorials. Inheritance Grap..." />
+<meta name="description" content="This reference manual details modules, functions, and variables included in Algan, describing what they are and what they do. For learning how to use Algan, see New User Tutorials. Inheritance Grap..." />
 <meta name="twitter:card" content="summary_large_image" />
 <link rel="index" title="Index" href="genindex.html" /><link rel="search" title="Search" href="search.html" /><link rel="next" title="Mobs" href="reference_index/mobs.html" /><link rel="prev" title="An Overview of Algan’s Internals" href="developer_tutorials/overview_internals.html" />
 
@@ -263,6 +263,7 @@
 <li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
 <li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -338,6 +339,7 @@
 <li class="toctree-l4"><a class="reference internal" href="reference/algan.animation.animatable.Animatable.html">Animatable</a></li>
 <li class="toctree-l4"><a class="reference internal" href="reference/algan.animation.animatable.AnimatableData.html">AnimatableData</a></li>
 <li class="toctree-l4"><a class="reference internal" href="reference/algan.animation.animatable.ModificationHistory.html">ModificationHistory</a></li>
+<li class="toctree-l4"><a class="reference internal" href="reference/algan.animation.animatable.TimeInterval.html">TimeInterval</a></li>
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="reference/algan.animation.animation_contexts.html">animation_contexts</a><input class="toctree-checkbox" id="toctree-checkbox-21" name="toctree-checkbox-21" role="switch" type="checkbox"/><label for="toctree-checkbox-21"><div class="visually-hidden">Toggle navigation of animation_contexts</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -366,13 +368,12 @@
 <li class="toctree-l4"><a class="reference internal" href="reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
 </ul>
 </li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="reference/algan.rendering.primitives.triangle.html">triangle</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of triangle</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
-<li class="toctree-l4"><a class="reference internal" href="reference/algan.rendering.primitives.triangle.PolygonPrimitive.html">PolygonPrimitive</a></li>
-<li class="toctree-l4"><a class="reference internal" href="reference/algan.rendering.primitives.triangle.TrianglePrimitive.html">TrianglePrimitive</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="reference/algan.rendering.primitives.triangle_primitive.html">triangle_primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of triangle_primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="reference/algan.rendering.primitives.triangle_primitive.TrianglePrimitive.html">TrianglePrimitive</a></li>
 </ul>
 </li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html">bezier_circuit_with_border_then_fill</a><input class="toctree-checkbox" id="toctree-checkbox-26" name="toctree-checkbox-26" role="switch" type="checkbox"/><label for="toctree-checkbox-26"><div class="visually-hidden">Toggle navigation of bezier_circuit_with_border_then_fill</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
-<li class="toctree-l4"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.BezierCircuitPrimitiveWithBorderFillRendering.html">BezierCircuitPrimitiveWithBorderFillRendering</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html">bezier_circuit_primitive</a><input class="toctree-checkbox" id="toctree-checkbox-26" name="toctree-checkbox-26" role="switch" type="checkbox"/><label for="toctree-checkbox-26"><div class="visually-hidden">Toggle navigation of bezier_circuit_primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.BezierCircuitPrimitive.html">BezierCircuitPrimitive</a></li>
 </ul>
 </li>
 </ul>
@@ -385,7 +386,14 @@
 </li>
 </ul>
 </li>
-<li class="toctree-l2 has-children"><a class="reference internal" href="reference_index/utils.html">Utils</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of Utils</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="reference_index/settings.html">Settings</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of Settings</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="reference/algan.settings.render_settings.html">render_settings</a><input class="toctree-checkbox" id="toctree-checkbox-30" name="toctree-checkbox-30" role="switch" type="checkbox"/><label for="toctree-checkbox-30"><div class="visually-hidden">Toggle navigation of render_settings</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="reference/algan.settings.render_settings.RenderSettings.html">RenderSettings</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="reference_index/utils.html">Utils</a><input class="toctree-checkbox" id="toctree-checkbox-31" name="toctree-checkbox-31" role="switch" type="checkbox"/><label for="toctree-checkbox-31"><div class="visually-hidden">Toggle navigation of Utils</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.algan_utils.html">algan_utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.animation_utils.html">animation_utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.tensor_utils.html">tensor_utils</a></li>
@@ -442,8 +450,7 @@
 <h1>Reference Manual<a class="headerlink" href="#reference-manual" title="Link to this heading">¶</a></h1>
 <p>This reference manual details modules, functions, and variables included in
 Algan, describing what they are and what they do.  For learning how to use
-Algan, see <span class="xref std std-doc">tutorials/index</span>.  For a list of changes since the last release, see
-the <a class="reference internal" href="changelog.html"><span class="doc">Changelog</span></a>.</p>
+Algan, see <a class="reference internal" href="new_user_tutorials/index.html"><span class="doc">New User Tutorials</span></a>.</p>
 <div class="admonition warning">
 <p class="admonition-title">Warning</p>
 <p>The pages linked to here are currently a work in progress.</p>
@@ -465,9 +472,10 @@ size=&quot;&quot;;
 splines=ortho;
   &quot;Animatable&quot; [URL=&quot;reference/algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Base class for anything that needs animation.&quot;,width=0.05];
   &quot;AnimatableData&quot; [URL=&quot;reference/algan.animation.animatable.AnimatableData.html#algan.animation.animatable.AnimatableData&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A container for all of the animation-relevant data for a mob, including its ModificationHistory.&quot;,width=0.05];
-  &quot;Mob&quot; [URL=&quot;reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Base class for all objects that have a location and orientation in 3D space.&quot;,width=0.05];
+  &quot;Mob&quot; [URL=&quot;reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Base class for all objects that have a location and orientation in 3-D space.&quot;,width=0.05];
   &quot;Animatable&quot; -&gt; &quot;Mob&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;ModificationHistory&quot; [URL=&quot;reference/algan.animation.animatable.ModificationHistory.html#algan.animation.animatable.ModificationHistory&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A complete record of every change applied to a particular Mob, and the timestamps those changes occur over.&quot;,width=0.05];
+  &quot;TimeInterval&quot; [URL=&quot;reference/algan.animation.animatable.TimeInterval.html#algan.animation.animatable.TimeInterval&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
 }
 </section>
 <section id="cameras">
@@ -497,26 +505,26 @@ splines=ortho;
   &quot;Renderable&quot; -&gt; &quot;BezierCircuitCubic&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;BezierCurveCubic&quot; [URL=&quot;reference/algan.mobs.bezier_circuit.BezierCurveCubic.html#algan.mobs.bezier_circuit.BezierCurveCubic&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
   &quot;BezierCircuitCubic&quot; -&gt; &quot;BezierCurveCubic&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
-  &quot;Circle&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Circle.html#algan.mobs.shapes_2d.Circle&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
+  &quot;Circle&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Circle.html#algan.mobs.shapes_2d.Circle&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A circle.&quot;,width=0.05];
   &quot;BezierCircuitCubic&quot; -&gt; &quot;Circle&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
-  &quot;Mob&quot; [URL=&quot;reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Base class for all objects that have a location and orientation in 3D space.&quot;,width=0.05];
+  &quot;Mob&quot; [URL=&quot;reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Base class for all objects that have a location and orientation in 3-D space.&quot;,width=0.05];
   &quot;Polygon&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Polygon.html#algan.mobs.shapes_2d.Polygon&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A 2-D planar polygon with N vertices.&quot;,width=0.05];
   &quot;BezierCircuitCubic&quot; -&gt; &quot;Polygon&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;Quad&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Quad.html#algan.mobs.shapes_2d.Quad&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
   &quot;Polygon&quot; -&gt; &quot;Quad&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;QuadTriangulated&quot; [URL=&quot;reference/algan.mobs.shapes_2d.QuadTriangulated.html#algan.mobs.shapes_2d.QuadTriangulated&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
   &quot;Mob&quot; -&gt; &quot;QuadTriangulated&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
-  &quot;Rectangle&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Rectangle.html#algan.mobs.shapes_2d.Rectangle&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
+  &quot;Rectangle&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Rectangle.html#algan.mobs.shapes_2d.Rectangle&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A rectangle.&quot;,width=0.05];
   &quot;Quad&quot; -&gt; &quot;Rectangle&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
-  &quot;RegularPolygon&quot; [URL=&quot;reference/algan.mobs.shapes_2d.RegularPolygon.html#algan.mobs.shapes_2d.RegularPolygon&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
+  &quot;RegularPolygon&quot; [URL=&quot;reference/algan.mobs.shapes_2d.RegularPolygon.html#algan.mobs.shapes_2d.RegularPolygon&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A 2-D planar polygon with the given number of vertices spaced evenly around&quot;,width=0.05];
   &quot;Polygon&quot; -&gt; &quot;RegularPolygon&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;Renderable&quot; [fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,tooltip=&quot;Base class for all objects that appear on screen.&quot;,width=0.05];
   &quot;Mob&quot; -&gt; &quot;Renderable&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
-  &quot;Square&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Square.html#algan.mobs.shapes_2d.Square&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
+  &quot;Square&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Square.html#algan.mobs.shapes_2d.Square&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A square.&quot;,width=0.05];
   &quot;Rectangle&quot; -&gt; &quot;Square&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
-  &quot;Tex&quot; [URL=&quot;reference/algan.mobs.text.Tex.html#algan.mobs.text.Tex&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
+  &quot;Tex&quot; [URL=&quot;reference/algan.mobs.text.Tex.html#algan.mobs.text.Tex&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Mob for displaying 2-D LaTeX.&quot;,width=0.05];
   &quot;Text&quot; -&gt; &quot;Tex&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
-  &quot;Text&quot; [URL=&quot;reference/algan.mobs.text.Text.html#algan.mobs.text.Text&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
+  &quot;Text&quot; [URL=&quot;reference/algan.mobs.text.Text.html#algan.mobs.text.Text&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Mob for displaying 2-D text.&quot;,width=0.05];
   &quot;Mob&quot; -&gt; &quot;Text&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;Triangle&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Triangle.html#algan.mobs.shapes_2d.Triangle&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
   &quot;Polygon&quot; -&gt; &quot;Triangle&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
@@ -536,6 +544,7 @@ rankdir=LR;
 ranksep=0.2;
 size=&quot;&quot;;
 splines=ortho;
+  &quot;EmptySceneWarning&quot; [fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,width=0.05];
   &quot;Scene&quot; [URL=&quot;reference/algan.scene.Scene.html#algan.scene.Scene&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
   &quot;SceneTracker&quot; [URL=&quot;reference/algan.scene.SceneTracker.html#algan.scene.SceneTracker&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
 }
@@ -602,6 +611,7 @@ splines=ortho;
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.animation.animatable.Animatable.html">Animatable</a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.animation.animatable.AnimatableData.html">AnimatableData</a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.animation.animatable.ModificationHistory.html">ModificationHistory</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.animation.animatable.TimeInterval.html">TimeInterval</a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.animation.animatable.html#algan.animation.animatable.animated_function"><code class="docutils literal notranslate"><span class="pre">animated_function()</span></code></a></li>
 </ul>
 </li>
@@ -631,24 +641,24 @@ splines=ortho;
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="reference/algan.rendering.primitives.triangle.html">triangle</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.triangle.PolygonPrimitive.html">PolygonPrimitive</a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.triangle.TrianglePrimitive.html">TrianglePrimitive</a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.triangle.html#algan.rendering.primitives.triangle.get_bary_coordinates"><code class="docutils literal notranslate"><span class="pre">get_bary_coordinates()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.triangle.html#algan.rendering.primitives.triangle.get_tangents"><code class="docutils literal notranslate"><span class="pre">get_tangents()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.triangle.html#algan.rendering.primitives.triangle.interpolate_triangle_corners"><code class="docutils literal notranslate"><span class="pre">interpolate_triangle_corners()</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="reference/algan.rendering.primitives.triangle_primitive.html">triangle_primitive</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.triangle_primitive.TrianglePrimitive.html">TrianglePrimitive</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.triangle_primitive.html#algan.rendering.primitives.triangle_primitive.get_bary_coordinates"><code class="docutils literal notranslate"><span class="pre">get_bary_coordinates()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.triangle_primitive.html#algan.rendering.primitives.triangle_primitive.get_tangents"><code class="docutils literal notranslate"><span class="pre">get_tangents()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.triangle_primitive.html#algan.rendering.primitives.triangle_primitive.interpolate_triangle_corners"><code class="docutils literal notranslate"><span class="pre">interpolate_triangle_corners()</span></code></a></li>
 </ul>
 </li>
-<li class="toctree-l2"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html">bezier_circuit_with_border_then_fill</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.BezierCircuitPrimitiveWithBorderFillRendering.html">BezierCircuitPrimitiveWithBorderFillRendering</a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html#algan.rendering.primitives.bezier_circuit_with_border_then_fill.evaluate_cubic_bezier"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html#algan.rendering.primitives.bezier_circuit_with_border_then_fill.evaluate_cubic_bezier_derivative"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_derivative()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html#algan.rendering.primitives.bezier_circuit_with_border_then_fill.evaluate_cubic_bezier_derivative_old"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_derivative_old()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html#algan.rendering.primitives.bezier_circuit_with_border_then_fill.evaluate_cubic_bezier_derivative_with_end"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_derivative_with_end()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html#algan.rendering.primitives.bezier_circuit_with_border_then_fill.evaluate_cubic_bezier_old"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_old()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html#algan.rendering.primitives.bezier_circuit_with_border_then_fill.evaluate_cubic_bezier_old2"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_old2()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html#algan.rendering.primitives.bezier_circuit_with_border_then_fill.evaluate_cubic_bezier_second_derivative"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_second_derivative()</span></code></a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html#algan.rendering.primitives.bezier_circuit_with_border_then_fill.solve_cubic_bezier_second_derivative_equal_to_0"><code class="docutils literal notranslate"><span class="pre">solve_cubic_bezier_second_derivative_equal_to_0()</span></code></a></li>
+<li class="toctree-l2"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html">bezier_circuit_primitive</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.BezierCircuitPrimitive.html">BezierCircuitPrimitive</a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html#algan.rendering.primitives.bezier_circuit_primitive.evaluate_cubic_bezier"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html#algan.rendering.primitives.bezier_circuit_primitive.evaluate_cubic_bezier_derivative"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_derivative()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html#algan.rendering.primitives.bezier_circuit_primitive.evaluate_cubic_bezier_derivative_old"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_derivative_old()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html#algan.rendering.primitives.bezier_circuit_primitive.evaluate_cubic_bezier_derivative_with_end"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_derivative_with_end()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html#algan.rendering.primitives.bezier_circuit_primitive.evaluate_cubic_bezier_old"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_old()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html#algan.rendering.primitives.bezier_circuit_primitive.evaluate_cubic_bezier_old2"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_old2()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html#algan.rendering.primitives.bezier_circuit_primitive.evaluate_cubic_bezier_old3"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_old3()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html#algan.rendering.primitives.bezier_circuit_primitive.evaluate_cubic_bezier_second_derivative"><code class="docutils literal notranslate"><span class="pre">evaluate_cubic_bezier_second_derivative()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.primitives.bezier_circuit_primitive.html#algan.rendering.primitives.bezier_circuit_primitive.solve_cubic_bezier_second_derivative_equal_to_0"><code class="docutils literal notranslate"><span class="pre">solve_cubic_bezier_second_derivative_equal_to_0()</span></code></a></li>
 </ul>
 </li>
 </ul>
@@ -661,7 +671,15 @@ splines=ortho;
 </li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="reference_index/settings.html">Settings</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="reference/algan.settings.render_settings.html">render_settings</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.settings.render_settings.RenderSettings.html">RenderSettings</a></li>
+</ul>
+</li>
+</ul>
+</li>
 <li class="toctree-l1"><a class="reference internal" href="reference_index/utils.html">Utils</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="reference_index/utils.html#algan.utils.algan_utils.render_to_file"><code class="docutils literal notranslate"><span class="pre">render_to_file()</span></code></a></li>
 <li class="toctree-l2"><a class="reference internal" href="reference/algan.utils.algan_utils.html">algan_utils</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.algan_utils.html#algan.utils.algan_utils.render_all_funcs"><code class="docutils literal notranslate"><span class="pre">render_all_funcs()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.algan_utils.html#algan.utils.algan_utils.render_to_file"><code class="docutils literal notranslate"><span class="pre">render_to_file()</span></code></a></li>
@@ -704,6 +722,7 @@ splines=ortho;
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.tensor_utils.html#algan.utils.tensor_utils.prepare_kwargs"><code class="docutils literal notranslate"><span class="pre">prepare_kwargs()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.tensor_utils.html#algan.utils.tensor_utils.reduce_max_score"><code class="docutils literal notranslate"><span class="pre">reduce_max_score()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.tensor_utils.html#algan.utils.tensor_utils.robust_concat"><code class="docutils literal notranslate"><span class="pre">robust_concat()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.tensor_utils.html#algan.utils.tensor_utils.scatter_arg_max"><code class="docutils literal notranslate"><span class="pre">scatter_arg_max()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.tensor_utils.html#algan.utils.tensor_utils.shuffle"><code class="docutils literal notranslate"><span class="pre">shuffle()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.tensor_utils.html#algan.utils.tensor_utils.squish"><code class="docutils literal notranslate"><span class="pre">squish()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.utils.tensor_utils.html#algan.utils.tensor_utils.unpack_tensor"><code class="docutils literal notranslate"><span class="pre">unpack_tensor()</span></code></a></li>
@@ -811,7 +830,7 @@ splines=ortho;
     <script src="_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="_static/copybutton.js?v=f281be69"></script>
     <script src="_static/manim-binder.min.js?v=29f72615"></script>
-    <script>window.initManimBinder({branch: "v0.0.1"})</script>
+    <script>window.initManimBinder({branch: "v0.0.0"})</script>
     <script src="_static/design-tabs.js?v=f930bc37"></script>
     <script src="_static/responsiveSvg.js?v=f1528c9d"></script>
     </body>

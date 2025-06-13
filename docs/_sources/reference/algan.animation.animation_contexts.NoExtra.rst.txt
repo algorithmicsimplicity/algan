@@ -39,6 +39,8 @@ Qualified name: ``algan.animation.animation\_contexts.NoExtra``
      ~NoExtra.run_time_unit
      ~NoExtra.same_run_time
      ~NoExtra.spawn_at_end
+     ~NoExtra.trace_mode
+     ~NoExtra.traced_mobs
      ~NoExtra.new_mobs
      ~NoExtra.child_contexts
      ~NoExtra.kwargs

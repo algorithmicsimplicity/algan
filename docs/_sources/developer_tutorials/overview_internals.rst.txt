@@ -1,6 +1,6 @@
-==========
+================================
 An Overview of Algan's Internals
-==========
+================================
 
 Algan consists of two main systems: the animation system and the rendering system.
 

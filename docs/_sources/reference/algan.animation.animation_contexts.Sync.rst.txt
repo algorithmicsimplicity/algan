@@ -37,6 +37,8 @@ Qualified name: ``algan.animation.animation\_contexts.Sync``
      ~Sync.run_time_unit
      ~Sync.same_run_time
      ~Sync.spawn_at_end
+     ~Sync.trace_mode
+     ~Sync.traced_mobs
      ~Sync.new_mobs
      ~Sync.child_contexts
      ~Sync.kwargs

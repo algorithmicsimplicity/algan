@@ -22,6 +22,7 @@ Qualified name: ``algan.animation.animation\_contexts.AnimationContext``
       ~AnimationContext.get_current_end_time
       ~AnimationContext.get_current_time
       ~AnimationContext.get_descendants
+      ~AnimationContext.get_end_time
       ~AnimationContext.get_rescaled
       ~AnimationContext.get_rescaling_time
       ~AnimationContext.increment_times
@@ -53,6 +54,8 @@ Qualified name: ``algan.animation.animation\_contexts.AnimationContext``
      ~AnimationContext.run_time_unit
      ~AnimationContext.same_run_time
      ~AnimationContext.spawn_at_end
+     ~AnimationContext.trace_mode
+     ~AnimationContext.traced_mobs
      ~AnimationContext.new_mobs
      ~AnimationContext.child_contexts
      ~AnimationContext.kwargs

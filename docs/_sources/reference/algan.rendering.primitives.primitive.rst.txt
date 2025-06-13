@@ -30,6 +30,12 @@
 
    
    
+   .. rubric:: Exceptions
+
+   .. autosummary::
+   
+      OutOfRenderMemory
+   
    
 
 

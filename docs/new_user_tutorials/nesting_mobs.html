@@ -7,12 +7,12 @@
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://docs.manim.community/new_user_tutorials/nesting_mobs.html" />
 <meta property="og:site_name" content="Algan | Documentation" />
-<meta property="og:description" content="So far we have been using simple Mob s. To make more complex Mob s we can combine together multiple mobs into one. This is done by adding other mobs as children to one another." />
+<meta property="og:description" content="So far we have been using simple Mob s. To make more complex Mob s we can combine together multiple mobs into one. This is done by adding other mobs as children to one another with add_children(). ..." />
 <meta property="og:image:width" content="1146" />
 <meta property="og:image:height" content="600" />
 <meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_new_user_tutorials_nesting_mobs_81bd23cd.png" />
-<meta property="og:image:alt" content="So far we have been using simple Mob s. To make more complex Mob s we can combine together multiple mobs into one. This is done by adding other mobs as children to one another." />
-<meta name="description" content="So far we have been using simple Mob s. To make more complex Mob s we can combine together multiple mobs into one. This is done by adding other mobs as children to one another." />
+<meta property="og:image:alt" content="So far we have been using simple Mob s. To make more complex Mob s we can combine together multiple mobs into one. This is done by adding other mobs as children to one another with add_children(). ..." />
+<meta name="description" content="So far we have been using simple Mob s. To make more complex Mob s we can combine together multiple mobs into one. This is done by adding other mobs as children to one another with add_children(). ..." />
 <meta name="twitter:card" content="summary_large_image" />
 <link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Images and Textures" href="images_and_textures.html" /><link rel="prev" title="Controlling Animations" href="controlling_animations.html" />
 
@@ -223,7 +223,7 @@
           <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
         </button>
       </div>
-      <label class="toc-overlay-icon toc-header-icon no-toc" for="__toc">
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
         <div class="visually-hidden">Toggle table of contents sidebar</div>
         <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
       </label>
@@ -263,6 +263,7 @@
 <li class="toctree-l3"><a class="reference internal" href="controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3 current current-page"><a class="current reference internal" href="#">Nesting Mobs</a></li>
 <li class="toctree-l3"><a class="reference internal" href="images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -338,6 +339,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html">Animatable</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.AnimatableData.html">AnimatableData</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.ModificationHistory.html">ModificationHistory</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.TimeInterval.html">TimeInterval</a></li>
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.animation.animation_contexts.html">animation_contexts</a><input class="toctree-checkbox" id="toctree-checkbox-21" name="toctree-checkbox-21" role="switch" type="checkbox"/><label for="toctree-checkbox-21"><div class="visually-hidden">Toggle navigation of animation_contexts</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -366,13 +368,12 @@
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
 </ul>
 </li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.html">triangle</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of triangle</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.PolygonPrimitive.html">PolygonPrimitive</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.TrianglePrimitive.html">TrianglePrimitive</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle_primitive.html">triangle_primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of triangle_primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle_primitive.TrianglePrimitive.html">TrianglePrimitive</a></li>
 </ul>
 </li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html">bezier_circuit_with_border_then_fill</a><input class="toctree-checkbox" id="toctree-checkbox-26" name="toctree-checkbox-26" role="switch" type="checkbox"/><label for="toctree-checkbox-26"><div class="visually-hidden">Toggle navigation of bezier_circuit_with_border_then_fill</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.BezierCircuitPrimitiveWithBorderFillRendering.html">BezierCircuitPrimitiveWithBorderFillRendering</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_primitive.html">bezier_circuit_primitive</a><input class="toctree-checkbox" id="toctree-checkbox-26" name="toctree-checkbox-26" role="switch" type="checkbox"/><label for="toctree-checkbox-26"><div class="visually-hidden">Toggle navigation of bezier_circuit_primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_primitive.BezierCircuitPrimitive.html">BezierCircuitPrimitive</a></li>
 </ul>
 </li>
 </ul>
@@ -385,7 +386,14 @@
 </li>
 </ul>
 </li>
-<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/utils.html">Utils</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of Utils</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/settings.html">Settings</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of Settings</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.settings.render_settings.html">render_settings</a><input class="toctree-checkbox" id="toctree-checkbox-30" name="toctree-checkbox-30" role="switch" type="checkbox"/><label for="toctree-checkbox-30"><div class="visually-hidden">Toggle navigation of render_settings</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.settings.render_settings.RenderSettings.html">RenderSettings</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/utils.html">Utils</a><input class="toctree-checkbox" id="toctree-checkbox-31" name="toctree-checkbox-31" role="switch" type="checkbox"/><label for="toctree-checkbox-31"><div class="visually-hidden">Toggle navigation of Utils</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.algan_utils.html">algan_utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.animation_utils.html">animation_utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.tensor_utils.html">tensor_utils</a></li>
@@ -432,7 +440,7 @@
               <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
             </button>
           </div>
-          <label class="toc-overlay-icon toc-content-icon no-toc" for="__toc">
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
             <div class="visually-hidden">Toggle table of contents sidebar</div>
             <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
           </label>
@@ -441,7 +449,7 @@
           <section id="nesting-mobs">
 <h1>Nesting Mobs<a class="headerlink" href="#nesting-mobs" title="Link to this heading">¶</a></h1>
 <p>So far we have been using simple <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s. To make more complex <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s we can combine together multiple mobs into one.
-This is done by adding other mobs as children to one another.</p>
+This is done by adding other mobs as children to one another with <a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable.add_children" title="algan.animation.animatable.Animatable.add_children"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_children()</span></code></a> .</p>
 <div id="nmbasic" class="admonition admonition-manim-example">
 <p class="admonition-title">Example: NMBasic <a class="headerlink" href="#nmbasic">¶</a></p><video
     class="manim-video"
@@ -495,7 +503,69 @@ with Sync(run_time=5):
 
 render_to_file()
 
-</pre></div></section>
+</pre></div><p>Once mobs are added as a child to another, any changes applied to the parent will be propagated
+to the child mobs. The way that the change is propagated depends on the attribute changed.
+When a parent’s location is changed, the child mob’s location is moved by the same amount.
+When a parent’s basis is rotated, the child’s basis is rotated by the same amount and the child’s
+relative location to the parent is preserved. Specifically, the child’s location expressed in coordinates
+of the parent’s basis is unchanged.
+The result of this is that the child behaves as if it is attached to the parent by a solid pole.</p>
+<p>Changes made directly to a child will ignore the parent relation.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>You can get a list of all of a mob’s children with <code class="xref py py-attr docutils literal notranslate"><span class="pre">children</span></code> , but this variable
+is read only! You should always use <a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable.add_children" title="algan.animation.animatable.Animatable.add_children"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_children()</span></code></a> for adding children.
+You can also get a list of all descendent mobs (children, and grand-children, and so-on) with <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.get_descendants" title="algan.mobs.mob.Mob.get_descendants"><code class="xref py py-meth docutils literal notranslate"><span class="pre">get_descendants()</span></code></a></p>
+</div>
+<section id="grouping-mobs">
+<h2>Grouping Mobs<a class="headerlink" href="#grouping-mobs" title="Link to this heading">¶</a></h2>
+<p>Mobs can also be grouped together into one <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> using <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group" title="algan.mobs.group.Group"><code class="xref py py-class docutils literal notranslate"><span class="pre">Group</span></code></a> . The <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group" title="algan.mobs.group.Group"><code class="xref py py-class docutils literal notranslate"><span class="pre">Group</span></code></a>
+class provides the <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group.arrange_in_line" title="algan.mobs.group.Group.arrange_in_line"><code class="xref py py-meth docutils literal notranslate"><span class="pre">arrange_in_line()</span></code></a> and <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group.arrange_in_grid" title="algan.mobs.group.Group.arrange_in_grid"><code class="xref py py-meth docutils literal notranslate"><span class="pre">arrange_in_grid()</span></code></a> methods
+which are useful for arranging Mobs.</p>
+<div id="nmgroup" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: NMGroup <a class="headerlink" href="#nmgroup">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./NMGroup-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+
+<span class="n">mobs</span> <span class="o">=</span> <span class="p">[</span><span class="n">Square</span><span class="p">()</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">9</span><span class="p">)]</span>
+<span class="n">group</span> <span class="o">=</span> <span class="n">Group</span><span class="p">(</span><span class="n">mobs</span><span class="p">)</span>
+<span class="n">group</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mi">1</span><span class="o">/</span><span class="mi">3</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
+<span class="n">group</span><span class="o">.</span><span class="n">arrange_in_line</span><span class="p">(</span><span class="n">RIGHT</span><span class="p">)</span>
+<span class="n">group</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+<span class="k">with</span> <span class="n">Sync</span><span class="p">():</span>
+    <span class="n">group</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span>
+    <span class="n">group</span><span class="o">.</span><span class="n">arrange_in_grid</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span>
+<span class="n">group</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+
+<span class="n">render_to_file</span><span class="p">()</span>
+</pre></div>
+</div>
+<pre data-manim-binder data-manim-classname="NMGroup">
+from algan import *
+
+mobs = [Square() for _ in range(9)]
+group = Group(mobs)
+group.scale(1/3).spawn()
+group.arrange_in_line(RIGHT)
+group.wait()
+with Sync():
+    group.scale(3)
+    group.arrange_in_grid(3)
+group.wait()
+
+render_to_file()
+
+</pre></div><div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Internally, the way that <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group" title="algan.mobs.group.Group"><code class="xref py py-class docutils literal notranslate"><span class="pre">Group</span></code></a> works is by creating a new empty mob
+at the center of the provided mobs, then adding all of the provided mobs as children to it.</p>
+</div>
+</section>
+</section>
 
         </article>
       </div>
@@ -540,8 +610,27 @@ render_to_file()
         
       </footer>
     </div>
-    <aside class="toc-drawer no-toc">
+    <aside class="toc-drawer">
       
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">Nesting Mobs</a><ul>
+<li><a class="reference internal" href="#grouping-mobs">Grouping Mobs</a></li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
       
       
     </aside>
@@ -553,7 +642,7 @@ render_to_file()
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../_static/copybutton.js?v=f281be69"></script>
     <script src="../_static/manim-binder.min.js?v=29f72615"></script>
-    <script>window.initManimBinder({branch: "v0.0.1"})</script>
+    <script>window.initManimBinder({branch: "v0.0.0"})</script>
     <script src="../_static/design-tabs.js?v=f930bc37"></script>
     <script src="../_static/responsiveSvg.js?v=f1528c9d"></script>
     </body>

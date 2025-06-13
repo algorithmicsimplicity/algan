@@ -12,7 +12,7 @@
 <meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_reference_index_utils_5b05a374.png" />
 <meta property="og:image:alt" content="" />
 <meta name="twitter:card" content="summary_large_image" />
-<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="algan_utils" href="../reference/algan.utils.algan_utils.html" /><link rel="prev" title="SceneTracker" href="../reference/algan.scene.SceneTracker.html" />
+<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="algan_utils" href="../reference/algan.utils.algan_utils.html" /><link rel="prev" title="RenderSettings" href="../reference/algan.settings.render_settings.RenderSettings.html" />
 
     <link rel="shortcut icon" href="../_static/favicon.ico"/><!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 -->
         <title>Utils - Algan v0.1.0</title>
@@ -221,7 +221,7 @@
           <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
         </button>
       </div>
-      <label class="toc-overlay-icon toc-header-icon no-toc" for="__toc">
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
         <div class="visually-hidden">Toggle table of contents sidebar</div>
         <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
       </label>
@@ -261,6 +261,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -336,6 +337,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html">Animatable</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.AnimatableData.html">AnimatableData</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.ModificationHistory.html">ModificationHistory</a></li>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.animation.animatable.TimeInterval.html">TimeInterval</a></li>
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.animation.animation_contexts.html">animation_contexts</a><input class="toctree-checkbox" id="toctree-checkbox-21" name="toctree-checkbox-21" role="switch" type="checkbox"/><label for="toctree-checkbox-21"><div class="visually-hidden">Toggle navigation of animation_contexts</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -364,13 +366,12 @@
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
 </ul>
 </li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.html">triangle</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of triangle</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.PolygonPrimitive.html">PolygonPrimitive</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle.TrianglePrimitive.html">TrianglePrimitive</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle_primitive.html">triangle_primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of triangle_primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.triangle_primitive.TrianglePrimitive.html">TrianglePrimitive</a></li>
 </ul>
 </li>
-<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.html">bezier_circuit_with_border_then_fill</a><input class="toctree-checkbox" id="toctree-checkbox-26" name="toctree-checkbox-26" role="switch" type="checkbox"/><label for="toctree-checkbox-26"><div class="visually-hidden">Toggle navigation of bezier_circuit_with_border_then_fill</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_with_border_then_fill.BezierCircuitPrimitiveWithBorderFillRendering.html">BezierCircuitPrimitiveWithBorderFillRendering</a></li>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_primitive.html">bezier_circuit_primitive</a><input class="toctree-checkbox" id="toctree-checkbox-26" name="toctree-checkbox-26" role="switch" type="checkbox"/><label for="toctree-checkbox-26"><div class="visually-hidden">Toggle navigation of bezier_circuit_primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.bezier_circuit_primitive.BezierCircuitPrimitive.html">BezierCircuitPrimitive</a></li>
 </ul>
 </li>
 </ul>
@@ -383,7 +384,14 @@
 </li>
 </ul>
 </li>
-<li class="toctree-l2 current has-children current-page"><a class="current reference internal" href="#">Utils</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of Utils</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l2 has-children"><a class="reference internal" href="settings.html">Settings</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of Settings</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.settings.render_settings.html">render_settings</a><input class="toctree-checkbox" id="toctree-checkbox-30" name="toctree-checkbox-30" role="switch" type="checkbox"/><label for="toctree-checkbox-30"><div class="visually-hidden">Toggle navigation of render_settings</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.settings.render_settings.RenderSettings.html">RenderSettings</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toctree-l2 current has-children current-page"><a class="current reference internal" href="#">Utils</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-31" name="toctree-checkbox-31" role="switch" type="checkbox"/><label for="toctree-checkbox-31"><div class="visually-hidden">Toggle navigation of Utils</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.algan_utils.html">algan_utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.animation_utils.html">animation_utils</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../reference/algan.utils.tensor_utils.html">tensor_utils</a></li>
@@ -430,7 +438,7 @@
               <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
             </button>
           </div>
-          <label class="toc-overlay-icon toc-content-icon no-toc" for="__toc">
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
             <div class="visually-hidden">Toggle table of contents sidebar</div>
             <i class="icon"><svg><use href="#svg-toc"></use></svg></i>
           </label>
@@ -438,6 +446,24 @@
         <article role="main" id="furo-main-content">
           <section id="utils">
 <h1>Utils<a class="headerlink" href="#utils" title="Link to this heading">¶</a></h1>
+<dl class="py function">
+<dt class="sig sig-object py" id="algan.utils.algan_utils.render_to_file">
+<span class="sig-name descname"><span class="pre">render_to_file</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">file_name</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">render_settings</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">overwrite</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">codec</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'h264'</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/utils/algan_utils.html#render_to_file"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.utils.algan_utils.render_to_file" title="Link to this definition">¶</a></dt>
+<dd><p>Runs all of the animations specified in the active <a class="reference internal" href="../reference/algan.scene.Scene.html#algan.scene.Scene" title="algan.scene.Scene"><code class="xref py py-class docutils literal notranslate"><span class="pre">Scene</span></code></a>, then renders the animations to video
+as captured by the active <a class="reference internal" href="../reference/algan.rendering.camera.Camera.html#algan.rendering.camera.Camera" title="algan.rendering.camera.Camera"><code class="xref py py-class docutils literal notranslate"><span class="pre">Camera</span></code></a>, and saves the video to a file.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>file_name</strong> – Name of the output file (without extension). If None will use <cite>DEFAULT_OUTPUT_FILENAME</cite>.</p></li>
+<li><p><strong>output_dir</strong> – Directory where to save the video. If None will use the directory of the running script.</p></li>
+<li><p><strong>render_settings</strong> – The <a class="reference internal" href="../reference/algan.settings.render_settings.RenderSettings.html#algan.settings.render_settings.RenderSettings" title="algan.settings.render_settings.RenderSettings"><code class="xref py py-class docutils literal notranslate"><span class="pre">RenderSettings</span></code></a> object to use to specify video properties. If None will use <cite>DEFAULT_RENDER_SETTINGS</cite>.</p></li>
+<li><p><strong>overwrite</strong> – Whether the existing file at the output destination should be overwritten if one exists.</p></li>
+<li><p><strong>codec</strong> – The codec to use to encode the video frames.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
 <div class="table-wrapper autosummary longtable docutils container">
 <table class="autosummary longtable docutils align-default">
 <tbody>
@@ -472,14 +498,14 @@
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
-          <a class="prev-page" href="../reference/algan.scene.SceneTracker.html">
+          <a class="prev-page" href="../reference/algan.settings.render_settings.RenderSettings.html">
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
               <div class="page-info">
                 <div class="context">
                   <span>Previous</span>
                 </div>
                 
-                <div class="title">SceneTracker</div>
+                <div class="title">RenderSettings</div>
                 
               </div>
             </a>
@@ -501,8 +527,27 @@
         
       </footer>
     </div>
-    <aside class="toc-drawer no-toc">
+    <aside class="toc-drawer">
       
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">Utils</a><ul>
+<li><a class="reference internal" href="#algan.utils.algan_utils.render_to_file"><code class="docutils literal notranslate"><span class="pre">render_to_file()</span></code></a></li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
       
       
     </aside>
@@ -514,7 +559,7 @@
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../_static/copybutton.js?v=f281be69"></script>
     <script src="../_static/manim-binder.min.js?v=29f72615"></script>
-    <script>window.initManimBinder({branch: "v0.0.1"})</script>
+    <script>window.initManimBinder({branch: "v0.0.0"})</script>
     <script src="../_static/design-tabs.js?v=f930bc37"></script>
     <script src="../_static/responsiveSvg.js?v=f1528c9d"></script>
     </body>

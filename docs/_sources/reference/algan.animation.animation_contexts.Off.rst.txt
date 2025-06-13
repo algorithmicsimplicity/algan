@@ -37,6 +37,8 @@ Qualified name: ``algan.animation.animation\_contexts.Off``
      ~Off.run_time_unit
      ~Off.same_run_time
      ~Off.spawn_at_end
+     ~Off.trace_mode
+     ~Off.traced_mobs
      ~Off.new_mobs
      ~Off.child_contexts
      ~Off.kwargs

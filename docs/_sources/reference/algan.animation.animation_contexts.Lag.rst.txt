@@ -37,6 +37,8 @@ Qualified name: ``algan.animation.animation\_contexts.Lag``
      ~Lag.run_time_unit
      ~Lag.same_run_time
      ~Lag.spawn_at_end
+     ~Lag.trace_mode
+     ~Lag.traced_mobs
      ~Lag.new_mobs
      ~Lag.child_contexts
      ~Lag.kwargs

@@ -22,6 +22,7 @@ Qualified name: ``algan.rendering.primitives.primitive.RenderPrimitive``
       ~RenderPrimitive.get_batch_identifier
       ~RenderPrimitive.get_tensor
       ~RenderPrimitive.get_tensor_from_memory
+      ~RenderPrimitive.post_process_frames
       ~RenderPrimitive.render
       ~RenderPrimitive.render_
       ~RenderPrimitive.render_window

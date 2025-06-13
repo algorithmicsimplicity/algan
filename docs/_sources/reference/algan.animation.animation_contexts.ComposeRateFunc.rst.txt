@@ -37,6 +37,8 @@ Qualified name: ``algan.animation.animation\_contexts.ComposeRateFunc``
      ~ComposeRateFunc.run_time_unit
      ~ComposeRateFunc.same_run_time
      ~ComposeRateFunc.spawn_at_end
+     ~ComposeRateFunc.trace_mode
+     ~ComposeRateFunc.traced_mobs
      ~ComposeRateFunc.new_mobs
      ~ComposeRateFunc.child_contexts
      ~ComposeRateFunc.kwargs

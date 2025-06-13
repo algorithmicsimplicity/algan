@@ -48,6 +48,7 @@
    .. autofunction:: prepare_kwargs
    .. autofunction:: reduce_max_score
    .. autofunction:: robust_concat
+   .. autofunction:: scatter_arg_max
    .. autofunction:: shuffle
    .. autofunction:: squish
    .. autofunction:: unpack_tensor

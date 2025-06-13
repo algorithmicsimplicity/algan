@@ -18,6 +18,9 @@ Qualified name: ``algan.animation.animatable.Animatable``
       :nosignatures:
       
       ~Animatable.add_children
+      ~Animatable.add_updater
+      ~Animatable.animate_function
+      ~Animatable.animate_function_of_time
       ~Animatable.clone
       ~Animatable.delete
       ~Animatable.despawn
@@ -32,7 +35,9 @@ Qualified name: ``algan.animation.animatable.Animatable``
       ~Animatable.on_create
       ~Animatable.on_destroy
       ~Animatable.on_init
+      ~Animatable.remove_all_passive_animations
       ~Animatable.remove_child
+      ~Animatable.remove_updater
       ~Animatable.reset_state
       ~Animatable.set_parent_to
       ~Animatable.set_state_full
