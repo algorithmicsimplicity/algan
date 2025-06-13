@@ -1,6 +1,6 @@
-==========
+===============
 Getting Started
-==========
+===============
 
 .. note::
 
@@ -74,6 +74,27 @@ This final line instructs Algan to process all of the previously created animati
 in your script and render them into a video file.
 By default, the video will be saved in the same directory where you ran your Python script
 under the name 'algan_render_output.mp4'.
-You can change this behavior by specifying the `output_file` and `output_directory` parameters of
-the :func:`.render_to_file` function.
 
+Rendering Settings
+******************
+
+The :func:`~.render_to_file` function is used to render your animations to video. By default, it will
+render in 480p at 30 frames per second, and output to the same directory as your script, but you can change this behavior
+by giving parameters to it. Here are some examples:
+
+.. code-block:: python
+
+    # Name the output file My_Algan_Video.mp4
+    render_to_file(file_name='My_Algan_Video')
+
+    # Place the output file named My_Algan_Video.mp4 as path 'C://Users/Me/Videos
+    render_to_file(file_name='MY_Algan_Video', output_path='C://Users/Me/Videos')
+
+    # Render video in Ultra-High Definition (4k) 60 frames per second.
+    render_to_file(file_name='MY_Algan_Video', render_settings=UHD)
+
+    # Render video with custom settings, (1000,1000) resolution (width, height) at 100 frames per second.
+    render_to_file(file_name='MY_Algan_Video', render_settings=RenderSettings((1000,1000), 100))
+
+See :func:`~.render_to_file` for a description of the available parameters, and see :class:`~.RenderSettings`
+for changing render settings. Algan provides the following built in render settings: PREVIEW, LD, MD, HD, PRODUCTION, UHD.

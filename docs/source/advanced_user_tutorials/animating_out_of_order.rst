@@ -1,6 +1,6 @@
-==========
+======================
 Animating Out of Order
-==========
+======================
 
 In Algan, when you change an animatable attribute, or run an animated function, Algan
 does not actually perform that animation immediately. Instead, Algan makes a record
@@ -13,11 +13,11 @@ to the current time, then increment the current time by 1. So the next animation
 will be written to one second later on the timeline, and so on.
 
 Once a command to render is given, as in :func:`.render_to_file`, Algan reads through
-all of the Mobs animation timelines and actually performs the interpolations
+all of the Mob's animation timelines and actually performs the interpolations
 to compute animated states.
 
 Most of the time, you do not need to worry about this and you can just let the
-animation contexts handle the writing of animations to the timeline. But if you want to
+animation contexts handle the writing of animations to the timeline. But if you want to,
 you can take manual control of the animation writing, to write animations anywhere
 in the timeline, at any point in the code. And in some situations,
 this makes animation code much simpler.
@@ -61,21 +61,22 @@ its animation. And we can use out of order animation to implement the animations
     min_dot = min(mob_dots)
     max_dot = max(mob_dots)
 
-    with Seq():
+    with Seq() as context:
         # Get the current point in the timeline which this context is writing to.
-        animation_start_time = mobs.animation_manager.context.current_time
+        animation_start_time = context.current_time
         for i in range(len(mobs)):
             # rescale to [0, 2], so the wave takes 2 seconds to propagate.
             mob_start_time = 2 * (mob_dots[i] - min_dot) / (max_dot - min_dot)
 
             # Set the current time we write animations to, to the point in time when this mob should start
-            mobs.animation_manager.context.current_time = animation_start_time+mob_start_time
+            context.current_time = animation_start_time+mob_start_time
 
             # Write the animation to this point on the timeline.
             with Seq(run_time=5):
                 mobs[i].color = RED
 
-        # Now that we are done writing the animations, jump to the end of the animation to continue animating in order.
-        mobs.animation_manager.context.current_time = animation_start_time+1
+        # Now that we are done writing the animations, jump to the end of the animation to
+        # continue animating in order.
+        context.current_time = animation_start_time+1
 
     render_to_file()

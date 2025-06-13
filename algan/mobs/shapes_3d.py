@@ -4,9 +4,19 @@ from algan.mobs.surfaces.surface import Surface
 
 
 class Sphere(Surface):
-    def __init__(self, radius=1, **kwargs):
+    """A 3-D sphere.
+
+    Parameters
+    ----------
+    radius
+        Sphere radius.
+    *args, **kwargs
+        Passed to :class:`~.Surface`
+
+    """
+    def __init__(self, radius=1, *args, **kwargs):
         self.radius = radius
-        super().__init__(**kwargs)
+        super().__init__(*args, **kwargs)
 
     def coord_function(self, coords_2d):
         x = coords_2d[..., 0]
@@ -27,10 +37,22 @@ class Sphere(Surface):
 
 
 class Cylinder(Surface):
-    def __init__(self, radius=1, height=1, **kwargs):
+    """A 3-D cylinder.
+
+    Parameters
+    ----------
+    radius
+        Cylinder radius.
+    height
+        Cylinder height.
+    *args, **kwargs
+        Passed to :class:`~.Surface`
+
+    """
+    def __init__(self, radius=1, height=1, *args, **kwargs):
         self.radius = radius
         self.height = height
-        super().__init__(grid_aspect_ratio=1/PI, **kwargs)
+        super().__init__(grid_aspect_ratio=1/PI, *args, **kwargs)
 
     def coord_function(self, uv):
         uv[..., 1:] /= uv[..., 1:].amax()

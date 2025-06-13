@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 from algan.animation.animation_contexts import Sync
 from algan.constants.spatial import RIGHT, DOWN
@@ -12,30 +13,31 @@ class Group(Mob):
     r"""Combine a collection of Mobs into a single Mob.
 
     Specifically, creates an empty mob at the mid-point of the bounding box of the
-    given mob collection and adds all of the mobs as children.
+    given mob collection and adds the mobs as children.
 
     Parameters
     ----------
-    mobs
+    mobs : Iterable[ :class:`~.Mob` ]
         The collection of mobs to group.
-    args
-        args for :class:`Mob`.
-    kwargs
-        kwargs for :class:`Mob`.
+    *args, **kwargs
+        Passed to :class:`~.Mob` .
 
     Returns
     -------
-    :class:`Group`
+    :class:`~.Group`
         The new mob which parents the provided mob collection.
 
     Examples
     --------
+    Arrange 3 mobs horizontally in a line, left to right.
+
     .. algan:: Example1Group
 
         group = Group([Square() for _ in range(3)]).arrange_in_line(RIGHT).spawn()
         group.rotate(90, OUT)
 
         render_to_file()
+
     """
     def __init__(self, mobs, *args, **kwargs):
         def mean(x):
@@ -74,7 +76,32 @@ class Group(Mob):
         furthest_ind = dots.argmax(0, keepdim=True)
         return broadcast_gather(points, 0, furthest_ind, keepdim=False)
 
-    def arrange_in_line(self, direction=RIGHT, buffer=DEFAULT_BUFFER, start_at_first=False, equal_displacement=False, alignment_direction=None):
+    def arrange_in_line(self, direction:torch.Tensor=RIGHT, buffer:float=DEFAULT_BUFFER, start_at_first:bool=False,
+                        equal_displacement:bool=False, alignment_direction:torch.Tensor|None=None):
+        """Moves the grouped mobs so that they lie along a given line.
+
+        Parameters
+        ----------
+        direction
+            Vector in 3-D specifying the direction of the line. Defaults to RIGHT.
+        buffer
+            The amount of extra space added between the mobs. If 0, the mobs will be arranged edge-to-edge.
+        start_at_first
+            if True, the first mob's position will be unchanged, and the subsequent mobs will
+            be arranged starting from the first mob's position.
+            If False, the mobs will be arranged so that their center is equal to this Group's location.
+        equal_displacement
+            If True, the mobs will be arranged at evenly spaced intervals.
+        alignment_direction
+            If not None, the mobs will additionally be aligned on this direction.
+
+        Returns
+        -------
+        :class:`~.Group`
+            The Group instance itself, allowing for method chaining.
+
+        """
+
         mob_sizes = [(m.get_boundary_in_direction(direction) - m.get_boundary_in_direction(-direction)).norm(p=2,dim=-1, keepdim=True) for m in self.mobs]
         if alignment_direction is not None:
             alignment_dists = [(m.get_boundary_in_direction(alignment_direction) - m.get_center()).norm(p=2,dim=-1) for m in self.mobs]
@@ -103,16 +130,55 @@ class Group(Mob):
                 mob.location = start + dif * ((i+1) / (len(self.mobs)+1))
         return self
 
-    def arrange_in_grid(self, num_rows=2, direction1=RIGHT, direction2=DOWN, buffer1=DEFAULT_BUFFER, buffer2=None):
-        if buffer2 is None:
-            buffer2 = buffer1
-        buf_dist1 = max([m.get_length_in_direction(direction1) for m in self.mobs]) + buffer1
-        buf_dist2 = max([m.get_length_in_direction(direction2) for m in self.mobs]) + buffer2
+    def arrange_in_grid(self, num_rows:int=2, row_direction:torch.Tensor=RIGHT, column_direction:torch.Tensor=DOWN,
+                        row_buffer=DEFAULT_BUFFER, column_buffer=None):
+        """Moves the grouped mobs so that they in a given grid.
+
+        Parameters
+        ----------
+        num_rows
+            The number of rows in the grid. The number of columns id then derived as len(mobs) // num_rows.
+        row_direction
+            Vector in 3-D specifying the direction along which rows are aligned.
+            Defaults to RIGHT.
+        column_direction
+            Vector in 3-D specifying the direction along which columns are aligned.
+            Defaults to DOWN.
+        row_buffer
+            The amount of extra space added between the mobs in the row direction.
+        column_buffer
+            The amount of extra space added between the mobs in the column direction. If None then
+            it is set to `row_buffer`.
+
+        Returns
+        -------
+        :class:`~.Group`
+            The Group instance itself, allowing for method chaining.
+
+        Examples
+        --------
+
+        Arrange mobs in a 3x3 grid slanted at a 45 degrees angle.
+
+        .. algan:: Example1ArrangeInGrid
+
+            group = Group([Square() for _ in range(9)]).scale(1/3).arrange_in_grid(3, RIGHT+UP, RIGHT+DOWN).spawn()
+            group.rotate(90, OUT)
+
+            render_to_file()
+
+        """
+        if column_buffer is None:
+            column_buffer = row_buffer
+        row_direction = F.normalize(row_direction, p=2, dim=-1)
+        column_direction = F.normalize(column_direction, p=2, dim=-1)
+        buf_dist1 = max([m.get_length_in_direction(row_direction) for m in self.mobs]) + row_buffer
+        buf_dist2 = max([m.get_length_in_direction(column_direction) for m in self.mobs]) + column_buffer
         num_cols = len(self.mobs) // num_rows
-        start = self.location - (direction1 * buf_dist1 * (num_cols-1)/2 + direction2 * buf_dist2 * (num_rows-1)/2)
+        start = self.location - (row_direction * buf_dist1 * (num_cols-1)/2 + column_direction * buf_dist2 * (num_rows-1)/2)
         with Sync():
             for i, mob in enumerate(self.mobs):
-                mob.location = start + direction1 * buf_dist1 * (i%num_cols) + direction2 * buf_dist2 * (i//num_cols)
+                mob.location = start + row_direction * buf_dist1 * (i%num_cols) + column_direction * buf_dist2 * (i//num_cols)
         return self
 
     def highlight(self):

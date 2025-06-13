@@ -3,8 +3,7 @@ Reference Manual
 
 This reference manual details modules, functions, and variables included in
 Algan, describing what they are and what they do.  For learning how to use
-Algan, see :doc:`tutorials/index`.  For a list of changes since the last release, see
-the :doc:`changelog`.
+Algan, see :doc:`new_user_tutorials/index`.
 
 .. warning:: The pages linked to here are currently a work in progress.
 
@@ -32,7 +31,7 @@ Cameras
    :top-classes: algan.rendering.camera.Camera
 
 Mobs
-********
+****
 
 .. inheritance-diagram::
    algan.mobs.surfaces
@@ -61,4 +60,5 @@ Module Index
    reference_index/animation
    reference_index/rendering
    reference_index/scenes
+   reference_index/settings
    reference_index/utils

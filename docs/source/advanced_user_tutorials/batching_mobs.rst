@@ -16,7 +16,7 @@ you will want to batch your mobs to reduce overhead.
     Batching Mobs has no effect on rendering time, only animation time.
 
 Example Mob Batching
-----------------
+--------------------
 
 You can batch mobs by simply passing a list of locations to a Mob's constructor. Here's an example
 

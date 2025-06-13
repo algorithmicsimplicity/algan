@@ -49,9 +49,12 @@ class Surface(Mob):
         Width of the grid from which internal coordinates are sampled.
     grid_aspect_radio
         If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio
+    *args, **kwargs
+        Passed to :class:`~.Mob`
 
     """
-    def __init__(self, coord_function=None, normal_function=None, grid_height=50, grid_width=None, grid_aspect_ratio = None, checkered_color=None, color_texture=None, ignore_normals=False, **kwargs):
+    def __init__(self, coord_function=None, normal_function=None, grid_height=50, grid_width=None,
+                 grid_aspect_ratio = None, checkered_color=None, color_texture=None, ignore_normals=False, *args, **kwargs):
         if coord_function is None:
             coord_function = self.coord_function
         if normal_function is None:
@@ -84,15 +87,33 @@ class Surface(Mob):
             color_grid = color_grid.view(self.grid_height, self.grid_width, 5)
             color = color_grid
         color = grid_to_triangle_vertices(color)
-        super().__init__(**kwargs)
+        super().__init__(*args, **kwargs)
         kwargs['color'] = color
         self.triangles = TriangleTriangulated(triangle_corners, normals=triangle_normals, **kwargs)
         self.add_children(self.triangles)
 
-    def coord_function(self, uv):
+    def coord_function(self, uv:torch.Tensor):
+        """Default function used to map intrinsic coordinates to world space to define
+        manifold shape. This method is overwritten by subclasses to define new shapes.
+
+        Parameters
+        ----------
+        uv : torch.Tensor[*, 2]
+            Collection of 2-D coordinates to be mapped.
+
+        """
         return torch.cat(((uv - 0.5)*2, torch.zeros_like(uv[..., :1])), -1)
 
     def normal_function(self, uv):
+        """Default function used to map intrinsic coordinates to world space normals to define
+        manifold normal directions. This method is overwritten by subclasses to define new shapes.
+
+        Parameters
+        ----------
+        uv : torch.Tensor[*, 2]
+            Collection of 2-D coordinates to be mapped.
+
+        """
         return OUT
 
     def get_base_grid(self):
@@ -100,7 +121,15 @@ class Surface(Mob):
                                  torch.linspace(0, 1, self.grid_height).view(1, -1).expand(self.grid_width, -1)), -1)
         return grid
 
-    def set_shape_to(self, other_surface):
+    def set_shape_to(self, other_surface:'Surface'):
+        """Changes this surface's shape to the shape defined by another surface's :meth:`~.Surface.coord_function` .
+
+        Parameters
+        ----------
+        other_surface
+            The surface from which to get coord_function.
+
+        """
         with Sync():
             self.set_location_by_function(other_surface.coord_function)
             #TODO setting normals currently doesn't work, implement it.

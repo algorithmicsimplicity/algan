@@ -108,8 +108,8 @@ def animated_function(function=None, *, animated_args:Dict[str, float]=dict(), u
     Parameters
     ----------
     function
-        The function to be decorated. It MUST accept a Mob as its first argument, and any arguments
-        given in animated_args or unique_args must also be arguments of this function.
+        The function to be decorated. It MUST accept a :class:`~.Mob` as its first argument, and any arguments
+        given in `animated_args` or `unique_args` must also be arguments of this function.
 
     animated_args
         A dictionary with strings as keys and floats as values. The strings are names of arguments which will
@@ -118,7 +118,7 @@ def animated_function(function=None, *, animated_args:Dict[str, float]=dict(), u
         
     unique_args
         A list of strings. This is only for batching, when the function is called with different values for a unique
-        argument, they will be batched as two entirely separate functions. Any arguments named in unique_args MUST
+        argument, they will be batched as two entirely separate functions. Any arguments named in `unique_args` MUST
         only accept string values.
     """
     def _decorate(func):
@@ -306,7 +306,7 @@ class Animatable:
 
     @animated_function(unique_args=['function'])
     def animate_function_of_time(self, function, time_elapsed=0, *args, **kwargs):
-        """Same as :func:`~.Animatable.animate_function` but the animation parameter is equal
+        """Same as :meth:`~.Animatable.animate_function` but the animation parameter is equal
         to time elapsed since starting the animation, instead of interpolating 0 to t over the animation duration.
         This formulation can be useful when you don't know how long an animation will play for,
         and you want it to play indefinitely.
@@ -333,8 +333,8 @@ class Animatable:
 
     def add_updater(self, update_function, *args, **kwargs):
         """Adds a function to this Mob's collection of updaters. During animation, at every
-        frame all of the updaters are executed, with the time elapsed since being added (in seconds)
-        passed as the second parameter. Useful for implementing permamnent or 'idle' animations.
+        frame all of the Mob's updaters are executed, with the time elapsed since being added (in seconds)
+        passed as the second parameter to each updater. Useful for implementing permanent or 'idle' animations.
 
         Parameters
         ----------
@@ -348,7 +348,7 @@ class Animatable:
         Returns
         -------
             An integer ID identifying the updater that was added. This ID can be used to remove
-            the updater at a later time, using :func:`~.Animatable.remove_updater`.
+            the updater at a later time, using :meth:`~.Animatable.remove_updater` .
              If it is never ignored, the updater will continue forever.
 
         """
@@ -786,6 +786,20 @@ class Animatable:
         return self
 
     def add_children(self, *mobs):
+        """Adds a collection of mobs to this mob's list of children, thereby
+        propagating attribute changes made to the parent to the children.
+
+        Parameters
+        ----------
+        *mobs : Iterable[:class:`~.Mob`}
+            A (possibly nested) iterable of :class:`~.Mob` s to be added as children.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            The Animatable instance itself, allowing for method chaining.
+
+        """
         for mob in traverse(mobs):
             self.children.append(mob)
             mob.set_parent_to(self)

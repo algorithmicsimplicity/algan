@@ -5,9 +5,9 @@ Basic Animations
 In Algan you create animations by controlling :class:`.Mob` s,
 which are objects that will appear on screen.
 Algan provides a range of :class:`.Mob` s covering basic 2-D and 3-D
-shapes such as circles, rectangles, spheres, cubes, as well as
-:class:`.Text` :class:`.Mob` s for displaying text and LaTex.
-You can also import mobs from Manim.
+shapes such as :class:`.Circle`, :class:`.Rectangle` :class:`.Sphere`, :class:`.Cylinder`, as well as
+:class:`.Text` :class:`.Mob` s for displaying text and :class:`.Tex` for LaTex.
+You can also import mobs from Manim using :class:`~.ManimMob`.
 
 Changing Animatable Attributes
 ------------------------------

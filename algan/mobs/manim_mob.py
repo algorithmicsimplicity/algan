@@ -1,10 +1,23 @@
 import torch
+from manim import Mobject
+
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.utils.tensor_utils import unsquish
 
 
 class ManimMob(BezierCircuitCubic):
-    def __init__(self, manim_mob, **kwargs):
+    """Constructs an equivalent Algan Mob from a given Manim Mobject.
+
+    Parameters
+    ----------
+    manim_mob
+        The Manim Mobject which will be converted into an Algan Mob. It must be
+        a bezier-circuit based object.
+    **kwargs
+        Passed to :class:`~.BezierCircuitCubic` .
+
+    """
+    def __init__(self, manim_mob:Mobject, **kwargs):
         manim_scale_factor = 1
         children = []
         for submob in manim_mob.submobjects:

@@ -6,7 +6,7 @@ Installation
 Installing Algan locally via pip
 ********************************
 
-See :doc:`local installation guide <installation/uv>`
+See :doc:`local installation guide <uv>`
 
 .. toctree::
    :hidden:

@@ -14,7 +14,7 @@ You can create animations by modifying mob attributes such as location, scale,
 orientation, color using the "set" method, or with specialized methods such as rotate and move.
 
 Basic Mobs
----------------------
+----------
 
 .. algan:: MQSBasicMobs
 
@@ -103,7 +103,8 @@ AnimationContexts control how all changes made within its contexts should be ani
 
 
 Nested Animation Contexts
-----------------
+-------------------------
+
 The real power of AnimationContexts is that they can be nested seamlessly. This makes orchestrating
 complex animations involving many Mobs straightforward. When nesting contexts, each sub-context
 is treated as a single animation for rules of the parent context.

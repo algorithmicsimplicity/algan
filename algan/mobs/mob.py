@@ -143,15 +143,17 @@ class Mob(Animatable):
         """Dynamically adds a property with a getter and setter for a given attribute name.
 
         The getter will retrieve the current (potentially animated) value of the attribute
-        from the `AnimatableData` dict. The setter will set the value of the
+        from the :class:`~.AnimatableData` dict. The setter will set the value of the
         attribute in the `AnimatableData` dict, recording the change in the
-         `ModificationHistory` for animation.
+        :class:`~.ModificationHistory` for animation.
 
         Parameters
         ----------
-            property_name (str): The name of the property to create (e.g., 'location', 'color').
-            class_to_attach_to (type, optional): The class to which this property
-                will be added. Defaults to the current Mob's class.
+        property_name
+            The name of the property to create (e.g., 'location', 'color').
+        class_to_attach_to : (type, optional)
+            The class to which this property
+            will be added. Defaults to the instance's own class.
 
         """
         if class_to_attach_to is None:
@@ -170,17 +172,19 @@ class Mob(Animatable):
         setattr(class_to_attach_to, property_name, prop)
 
     def get_descendants(self, include_self: bool = True) -> list['Mob']:
-        """Retrieves all descendant Mobs in the hierarchy, optionally including itself.
+        """Retrieves a list all descendant Mobs in the hierarchy, optionally including itself.
 
         Parameters
         ----------
-            include_self (bool, optional): If True, the current Mob instance
-                is included in the returned list. Defaults to True.
+        include_self
+            If True, the current Mob instance
+            is included in the returned list.
 
         Returns
         -------
-            list[Mob]: A flat list containing the Mob and all its children,
-                grandchildren, and so on.
+        list[Mob]
+            A flat list containing the Mob and all its children,
+            grandchildren, and so on.
 
         """
         return list(traverse([*([self] if include_self else []),
@@ -297,7 +301,7 @@ class Mob(Animatable):
                 Defaults to 1.
             reverse (bool, optional): If True, the wave propagates in the
                 opposite direction. Defaults to False.
-            direction (torch.Tensor, optional): The 3D vector defining the
+            direction (torch.Tensor, optional): The 3-D vector defining the
                 direction of wave propagation. If None, uses the Mob's
                 upwards direction. Defaults to None.
             **kwargs: Additional keyword arguments passed to `pulse_color`
@@ -493,14 +497,16 @@ class Mob(Animatable):
 
         parameters
         ----------
-            key (str): The name of the attribute to set.
-            value (Any): The target value for the attribute.
-            relation_key (str, optional): The key to use for looking up the relation functions.
-                If None, `key` itself is used. Defaults to None.
+        key
+            The name of the attribute to set.
+        value
+            The target value for the attribute.
+        relation_key
+            The key to use for looking up the relation functions. If None, `key` itself is used.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        Mob: The Mob instance itself, allowing for method chaining.
 
         """
         if self.animation_manager.context.trace_mode:
@@ -531,12 +537,14 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            key (str): The name of the attribute to set.
-            value (Any): The target absolute value.
+        key
+            The name of the attribute to set.
+        value
+            The target absolute value.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        Mob: The Mob instance itself, allowing for method chaining.
 
         """
         if self.animation_manager.context.trace_mode:
@@ -554,7 +562,7 @@ class Mob(Animatable):
 
     @property
     def location(self) -> torch.Tensor:
-        """The 3D location of the Mob in world space.
+        """The 3-D location of the Mob in world space.
 
         When set, it triggers an animated change to the new location,
         maintaining child Mob positions relative to the parent..
@@ -629,19 +637,21 @@ class Mob(Animatable):
         This method also ensures that child Mobs maintain their positions
         relative to this Mob during the basis change by adjusting their locations.
 
-        parameters
-        -----------
-            basis (torch.Tensor): The target 3x3 basis matrix (flattened to 9 elements).
-            interpolation (float, optional): Interpolation factor (0.0 to 1.0).
-                0.0 means current basis, 1.0 means target `basis`. Defaults to 1.
-            relation_key (str, optional): Key for the relation function,
-                typically 'basis' or 'scale_coefficient'. Defaults to 'basis'.
-            recursive (str, optional): If "True", applies the rotation recursively
-                to children, maintaining their relative positions. Defaults to "True".
+        Parameters
+        ----------
+        basis
+            The target 3x3 basis matrix (flattened to 9 elements).
+        interpolation
+            Interpolation factor (0.0 to 1.0). 0.0 means current basis, 1.0 means target `basis`.
+        relation_key
+            Key for the relation function, typically 'basis' or 'scale_coefficient'.
+        recursive
+            If "True", applies the rotation recursively to children, maintaining their relative positions.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        Mob: The Mob instance itself, allowing for method chaining.
+
         """
         if recursive == 'True':
             ds = (self.get_descendants(include_self=False))
@@ -703,7 +713,7 @@ class Mob(Animatable):
             self.time_inds = None
 
     def get_normal(self) -> torch.Tensor:
-        """Alias for `get_forward_direction()`.
+        """Alias for :meth:`~.Mob.get_forward_direction()` .
 
         Returns
         -------
@@ -725,7 +735,7 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            location (torch.Tensor): The target 3D location.
+            location (torch.Tensor): The target 3-D location.
             recursive (bool, optional): If True, also affects the locations of child Mobs
                 to maintain their relative positions. Defaults to True.
 
@@ -768,7 +778,7 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            location (torch.Tensor): The target 3D location.
+            location (torch.Tensor): The target 3-D location.
             path_arc_angle (float, optional): The angle of the arc in degrees
                 for curved movement. If None, movement is linear. Defaults to None.
             **kwargs: Additional arguments passed to `set_location` or
@@ -787,7 +797,7 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            displacement (torch.Tensor): The 3D vector by which to move the Mob.
+            displacement (torch.Tensor): The 3-D vector by which to move the Mob.
             **kwargs: Additional arguments passed to `move_to` (e.g., `path_arc_angle`).
 
         Returns
@@ -848,12 +858,14 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            direction (torch.Tensor): The 3D vector indicating the direction
-                along which to find the extreme boundary point.
+        direction
+            The 3-D vector indicating the direction
+            along which to find the extreme boundary point.
 
         Returns
         -------
-            torch.Tensor: The 3D coordinate of the boundary point furthest in `direction`.
+        torch.Tensor
+            The 3-D coordinate of the boundary point furthest in `direction`.
 
         """
         all_boundary_points = self.get_boundary_points_recursive()
@@ -868,11 +880,11 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            direction (torch.Tensor): The 3D vector defining the direction.
+            direction (torch.Tensor): The 3-D vector defining the direction.
 
         Returns
         -------
-            torch.Tensor: The 3D coordinate of the boundary point.
+            torch.Tensor: The 3-D coordinate of the boundary point.
 
         """
         edge_point = self.get_boundary_edge_point(direction)
@@ -913,18 +925,22 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            target_mob (Mob or torch.Tensor): The target Mob or a 3D point (torch.Tensor)
-                to move next to.
-            direction (torch.Tensor): The 3D vector indicating the direction
-                from `target_mob` towards where this Mob should be placed.
-                This vector does not need to be normalized.
-            buffer (float, optional): The minimum distance to maintain between
-                the closest edges of the two Mobs. Defaults to `DEFAULT_BUFFER`.
-            **kwargs: Additional arguments passed to `move_to`.
+        target_mob
+            The target Mob or a 3-D point (torch.Tensor) to move next to.
+        direction
+            The 3-D vector indicating the direction
+            from `target_mob` towards where this Mob should be placed.
+            This vector does not need to be normalized.
+        buffer
+            The minimum distance to maintain between
+            the closest edges of the two Mobs. Defaults to `DEFAULT_BUFFER`.
+        **kwargs
+            Passed to :meth:`~.Mob.move_to` .
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         """
         normalized_direction = F.normalize(direction, p=2, dim=-1)
@@ -947,7 +963,7 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            direction (torch.Tensor): The 3D vector defining the direction.
+            direction (torch.Tensor): The 3-D vector defining the direction.
 
         Returns
         -------
@@ -974,7 +990,7 @@ class Mob(Animatable):
                 If None, `direction` is used for both. Defaults to None.
             buffer (float, optional): The buffer distance to maintain between the edges.
                 Defaults to `DEFAULT_BUFFER`.
-            **kwargs: Additional arguments for `move`.
+            **kwargs: Additional arguments for :meth:`~.Mob.move`.
 
         Returns
         -------
@@ -1000,7 +1016,7 @@ class Mob(Animatable):
         Parameters
         ----------
             mob (Mob): The target Mob whose center will be aligned with.
-            direction (torch.Tensor): The 3D vector specifying the alignment direction.
+            direction (torch.Tensor): The 3-D vector specifying the alignment direction.
             buffer (float, optional): Buffer distance (currently seems unused in this specific
                 implementation, as it aligns centers, not edges). Defaults to `DEFAULT_BUFFER`.
 
@@ -1017,26 +1033,28 @@ class Mob(Animatable):
 
     def move_inline_with_mob(self, mob: 'Mob', align_direction: torch.Tensor, center: bool = False,
                              from_mob: 'Mob' | None = None, buffer: float = DEFAULT_BUFFER) -> 'Mob':
-        """
-        Moves this Mob to align with another Mob along a specific direction,
+        """Moves this Mob to align with another Mob along a specific direction,
         either by their edges or by their centers.
 
         Parameters
         ----------
-            mob (Mob): The target Mob to align with.
-            align_direction (torch.Tensor): The 3D vector defining the direction
-                along which alignment should occur.
-            center (bool, optional): If True, aligns the centers of the Mobs.
-                If False, aligns their edges. Defaults to False.
-            from_mob (Mob, optional): The Mob whose edge/center is considered
-                the starting point for calculating displacement. If None,
-                this Mob itself is used. Defaults to None.
-            buffer (float, optional): Buffer distance between aligned edges (only relevant
-                if `center` is False). Defaults to `DEFAULT_BUFFER`.
+        mob
+            The target Mob to align with.
+        align_direction
+            The 3-D vector defining the direction along which alignment should occur.
+        center
+            If True, aligns the centers of the Mobs. If False, aligns their edges.
+        from_mob
+            The Mob whose edge/center is considered the starting point for calculating displacement. If None,
+            this Mob itself is used.
+        buffer
+            Buffer distance between aligned edges (only relevant
+            if `center` is False). Defaults to `DEFAULT_BUFFER`.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
         """
         if center:
             # Align centers
@@ -1080,12 +1098,15 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            mob (Mob): The target Mob whose boundary will be aligned with.
-            direction (torch.Tensor): The direction along which to align the boundaries.
+        mob
+            The target Mob whose boundary will be aligned with.
+        direction
+            The direction along which to align the boundaries.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
         """
         return self.move(self.get_displacement_to_boundary(mob, direction))
 
@@ -1094,14 +1115,15 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            edge (torch.Tensor): A 3D vector indicating the screen edge direction
-                (e.g., `RIGHT`, `LEFT`, `UP`, `DOWN`).
-            buffer (float, optional): Distance to maintain from the screen border
-                after moving. Defaults to `DEFAULT_BUFFER`.
+        edge
+            A 3-D vector indicating the screen edge direction (e.g., `RIGHT`, `LEFT`, `UP`, `DOWN`).
+        buffer
+            Distance to maintain from the screen border after moving. Defaults to `DEFAULT_BUFFER`.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
         """
         normalized_edge = F.normalize(edge, p=2, dim=-1)
         # Get the boundary point of this Mob that is furthest towards the 'edge' direction
@@ -1121,14 +1143,17 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            edge1 (torch.Tensor): Vector for the first screen edge.
-            edge2 (torch.Tensor): Vector for the second screen edge.
-            buffer (float, optional): Distance to maintain from both screen borders.
-                Defaults to `DEFAULT_BUFFER`.
+        edge1
+            Vector for the first screen edge.
+        edge2
+            Vector for the second screen edge.
+        buffer
+            Distance to maintain from both screen borders. Defaults to `DEFAULT_BUFFER`.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
         """
         # Chain two calls to move_to_edge to reach the corner
         return self.move_to_edge(edge1, buffer=buffer).move_to_edge(edge2, buffer=buffer)
@@ -1138,15 +1163,17 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            edge (torch.Tensor): Vector indicating the direction to move off-screen.
-            buffer (float, optional): Additional distance beyond the screen edge
-                to move the Mob. Defaults to `DEFAULT_BUFFER`.
-            despawn (bool, optional): If True, the Mob is despawned immediately
-                after moving off-screen.
+        edge
+            Vector indicating the direction to move off-screen.
+        buffer
+            Additional distance beyond the screen edge to move the Mob. Defaults to `DEFAULT_BUFFER`.
+        despawn
+            If True, the Mob is despawned immediately after moving off-screen.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         """
         bbox = self.get_bounding_box()
@@ -1170,13 +1197,15 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            destination (torch.Tensor): The final target 3D location.
-            displacement (torch.Tensor): The initial 3D displacement vector for the
-                first segment of the path.
+        destination
+            The final target 3-D location.
+        displacement
+            The initial 3-D displacement vector for the first segment of the path.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         """
         # Vector from current location to destination
@@ -1194,16 +1223,18 @@ class Mob(Animatable):
         return self
 
     def get_length_along_direction(self, direction: torch.Tensor) -> torch.Tensor:
-        """Calculates the total length of the Mob (and its children) when projected
+        """Calculates the total length of the Mob (and its descendants) when projected
         onto a given direction.
 
         Parameters
         ----------
-            direction (torch.Tensor): The 3D direction vector.
+        direction
+            The 3-D direction vector.
 
         Returns
         -------
-            torch.Tensor: The length of the Mob along the specified direction.
+        torch.Tensor
+            The length of the Mob along the specified direction.
 
         """
         # Collect all boundary points from self and children
@@ -1221,7 +1252,9 @@ class Mob(Animatable):
 
         Returns
         -------
-            list[Mob]: A list containing this Mob and all its descendant Mobs.
+        list[:class:`~.Mob`]
+            A list containing this Mob and all its descendant Mobs.
+
         """
         parts = [self]
         for child in self.children:
@@ -1233,15 +1266,17 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            scale_factor (float or torch.Tensor): The scaling factor. Can be a scalar or
-                a tensor for per-axis/per-batch scaling. For example, `2` for double size,
-                `0.5` for half size.
-            recursive (bool, optional): If True, applies scaling recursively
-                to all child Mobs. Defaults to True.
+        scale_factor
+            The scaling factor. For example, `2` for double size,
+            `0.5` for half size.
+        recursive
+            If True, applies scaling recursively to all descendant Mobs.
 
         Returns
         =======
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
+
         """
         # Calculate the new absolute scale coefficient
         new_scale = scale_factor * self.scale_coefficient
@@ -1254,13 +1289,15 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            scale (float or torch.Tensor): The target absolute scaling factor.
-            recursive (bool, optional): If True, applies scaling recursively
-                to all child Mobs. Defaults to True.
+        scale
+            The target absolute scaling factor.
+        recursive
+            If True, applies scaling recursively to all descendant Mobs.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         """
         return self.set(scale_coefficient=scale) if recursive else self.set_non_recursive(scale_coefficient=scale)
@@ -1271,14 +1308,16 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            num_degrees (float or torch.Tensor): The angle of rotation in degrees.
-                Can be a scalar or a tensor for batched rotations.
-            axis (torch.Tensor, optional): The 3D axis of rotation (e.g., `OUT` for Z-axis, `UP` for Y-axis).
-                This vector does not need to be normalized. Defaults to `OUT`.
+        num_degrees
+            The angle of rotation in degrees.
+        axis
+            3-D axis of rotation (e.g., `OUT` for Z-axis, `UP` for Y-axis).
+            This vector does not need to be normalized. Defaults to `OUT`.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         """
         normalized_axis = F.normalize(axis, p=2, dim=-1)
@@ -1296,7 +1335,7 @@ class Mob(Animatable):
         Parameters
         ----------
             num_degrees (float or torch.Tensor): The total angle of rotation in degrees.
-            axis (torch.Tensor): The 3D axis of rotation.
+            axis (torch.Tensor): The 3-D axis of rotation.
             scale (float or torch.Tensor): The target absolute scale factor.
             interpolation (float, optional): The interpolation factor for the animation.
                 Defaults to 1.
@@ -1323,14 +1362,19 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            point (torch.Tensor): The 3D point to rotate around.
-            num_degrees (float or torch.Tensor): The angle of rotation in degrees.
-            axis (torch.Tensor, optional): The 3D axis of rotation (passing through `point`).
-                This vector does not need to be normalized. Defaults to `OUT`.
+        point
+            The 3-D point to rotate around.
+        num_degrees
+            The angle of rotation in degrees.
+        axis
+            The 3-D axis of rotation (passing through `point`).
+            This vector does not need to be normalized. Defaults to `OUT`.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
+
         """
         # Calculate displacement from the rotation point to the Mob's current location
         displacement_from_point = self.location - point
@@ -1348,14 +1392,18 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            point (torch.Tensor): The 3D point to rotate around.
-            num_degrees (float or torch.Tensor): The angle of rotation in degrees.
-            axis (torch.Tensor, optional): The 3D axis of rotation (passing through `point`).
-                Defaults to `OUT`.
+        point
+            The 3-D point to rotate around.
+        num_degrees
+            The angle of rotation in degrees.
+        axis
+            The 3-D axis of rotation (passing through `point`).
+            Defaults to `OUT`.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         """
         displacement_from_point = self.location - point
@@ -1372,7 +1420,7 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            point (torch.Tensor): The target 3D location.
+            point (torch.Tensor): The target 3-D location.
             arc_angle_degrees (float or torch.Tensor): The angle subtended by the arc, in degrees.
                 The sign determines the direction of rotation along the arc (clockwise/counter-clockwise).
             arc_normal (torch.Tensor, optional): The normal vector to the plane
@@ -1541,28 +1589,28 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            other_mob (Mob): The Mob to transform into. The type of this Mob must be
-                compatible with the current Mob (e.g., both should be `Mob` or derived
-                from it, and have the same `num_points_per_object` if applicable).
-            move_to (bool, optional): If True, the transformation explicitly includes
-                a movement animation to `other_mob`'s final location. Note that
-                attribute alignment typically includes location changes anyway.
-                Defaults to False.
-            detach_history (bool, optional): If True, the original Mob's animation
-                history is "detached" and this Mob starts a fresh animation history
-                from its transformed state. If False, the transformation is recorded
-                within the existing history. Defaults to True.
+        other_mob
+            The Mob to transform into. The type of this Mob must be
+            compatible with the current Mob (e.g., both should be `Mob` or derived
+            from it, and have the same `num_points_per_object` if applicable).
+        detach_history
+            If True, the original Mob's animation
+            history is "detached" and this Mob starts a fresh animation history
+            from its transformed state. If False, the transformation is recorded
+            within the existing history.
 
         Returns
         -------
-            Mob: The (transformed) Mob instance itself, or the `other_mob_original`
-            if `detach_history` is True (as it will be the "new" main mob).
+        :class:`~.Mob`
+            The new (transformed) Mob instance,
 
         Raises
         ------
-            NotImplementedError: If attempting to transform between mobs with
-                different underlying primitive types (e.g., changing a triangle-based
-                mob to a bezier-circuit-based mob).
+        NotImplementedError
+            If attempting to transform between mobs with
+            different underlying primitive types (e.g., changing a triangle-based
+            mob to a bezier-circuit-based mob).
+
         """
         # Temporarily turn off animation recording for setup steps
         with Off():
@@ -1613,9 +1661,9 @@ class Mob(Animatable):
             return self
 
     def _become_recursive(self, other_mob: 'Mob', move_to: bool = False):
-        """
-        Internal recursive helper for the `become` method.
+        """Internal recursive helper for the `become` method.
         Handles the transformation logic for children mobs.
+
         """
         other_children = list(other_mob.children)
         my_children = list(self.children)
@@ -1669,12 +1717,15 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            **kwargs: Keyword arguments where keys are attribute names (e.g., 'color', 'opacity')
-                and values are the new values for those attributes.
+        **kwargs
+            Keyword arguments where keys are attribute names (e.g., 'color', 'opacity')
+            and values are the new values for those attributes.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
+
         """
         with Sync():  # Ensure all these attribute sets happen in one synchronized animation step
             for key, value in kwargs.items():
@@ -1692,11 +1743,12 @@ class Mob(Animatable):
             Keyword arguments where keys are attribute names (e.g., 'location', 'color')
             and values are the new values for those attributes. These changes will
             be animated and propagated to children unless `recursing` is set to False
-            (via `setattr_non_recursive` or `_set_recursing_state`).
+            (via :meth:`~.Mob.setattr_non_recursive` or `_set_recursing_state`).
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         Examples
         ---------
@@ -1710,6 +1762,7 @@ class Mob(Animatable):
             mob.set(location=RIGHT, color=BLUE)
 
             render_to_file()
+
         """
         with Sync():
             for key, value in kwargs.items():
@@ -1721,9 +1774,12 @@ class Mob(Animatable):
         handling batching and time synchronization. This is used internally for
         propagating changes down a hierarchy.
 
-        Args:
-            parent (Mob): The parent Mob from which attribute values might be derived or synced.
-            **kwargs: Attributes to set, typically passed from the parent.
+        Parameters
+        ----------
+        parent
+            The parent Mob from which attribute values might be derived or synced.
+        **kwargs
+            Attributes to set, typically passed from the parent.
 
         """
         if self.parent_batch_sizes is not None:
@@ -1753,11 +1809,13 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            **kwargs: Keyword arguments for attributes to set.
+        **kwargs
+            Keyword arguments for attributes to set.
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         """
         self.set(**kwargs)  # Set attributes for the current mob
@@ -1771,7 +1829,8 @@ class Mob(Animatable):
 
         Returns
         -------
-            torch.Tensor: A 3D vector representing the forward direction.
+        torch.Tensor
+            A 3-D vector representing the forward direction.
 
         """
         return F.normalize(unsquish(self.basis, -1, 3)[..., 2, :], p=2, dim=-1)
@@ -1782,7 +1841,8 @@ class Mob(Animatable):
 
         Returns
         -------
-            torch.Tensor: A 3D vector representing the right direction.
+        torch.Tensor
+            A 3-D vector representing the right direction.
 
         """
         return F.normalize(unsquish(self.basis, -1, 3)[..., 0, :], p=2, dim=-1)
@@ -1793,7 +1853,8 @@ class Mob(Animatable):
 
         Returns
         -------
-            torch.Tensor: A 3D vector representing the upwards direction.
+        torch.Tensor
+            A 3-D vector representing the upwards direction.
 
         """
         return F.normalize(unsquish(self.basis, -1, 3)[..., 1, :], p=2, dim=-1)
@@ -1803,15 +1864,18 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            direction (torch.Tensor): The target 3D direction vector that the specified
-                local axis should point towards. This vector does not need to be normalized.
-            axis (int, optional): The index of the local axis to align.
-                0 for right (X-axis), 1 for up (Y-axis), 2 for forward (Z-axis).
-                Defaults to 2 (forward vector).
+        direction
+            The target 3-D direction vector that the specified
+            local axis should point towards. This vector does not need to be normalized.
+        axis
+            The index of the local axis to align.
+            0 for right (X-axis), 1 for up (Y-axis), 2 for forward (Z-axis).
+            Defaults to 2 (forward vector).
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         """
         # Get the rotation parameters (angle and axis) needed to align the current local axis
@@ -1829,7 +1893,7 @@ class Mob(Animatable):
 
         Parameters
         ----------
-            direction (torch.Tensor): The target 3D direction vector to look at.
+            direction (torch.Tensor): The target 3-D direction vector to look at.
             scale (float or torch.Tensor): The target absolute scale factor.
             axis (int, optional): The index of the local axis to align (0: right, 1: up, 2: forward).
                 Defaults to 2 (forward).
@@ -1849,18 +1913,21 @@ class Mob(Animatable):
         return self.rotate_and_scale(rotation_angle_degrees, rotation_axis, scale)
 
     def look_at(self, point: torch.Tensor, axis: int = 2) -> 'Mob':
-        """Rotates the Mob to face a specific 3D point.
+        """Rotates the Mob to face a specific 3-D point.
         The Mob's "forward" direction (or the specified `axis`) will be oriented towards the point.
 
         Parameters
         ----------
-            point (torch.Tensor): The 3D point to look at.
-            axis (int, optional): The index of the local axis to align (0: right, 1: up, 2: forward).
-                Defaults to 2 (forward vector).
+        point
+            The 3-D point to look at.
+        axis
+            The index of the local axis to align (0: right, 1: up, 2: forward).
+            Defaults to 2 (forward vector).
 
         Returns
         -------
-            Mob: The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
 
         """
         # Calculate the direction vector from the Mob's current location to the target point

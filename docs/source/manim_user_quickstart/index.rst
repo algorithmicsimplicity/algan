@@ -1,5 +1,5 @@
 Manim User Quickstart
-===============
+=====================
 
 .. toctree::
    :caption: Table of Contents

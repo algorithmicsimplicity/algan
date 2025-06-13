@@ -58,7 +58,7 @@ class RateFuncWrapper:
 class AnimationContext:
     """An AnimationContext is a context manager that defines how animated_functions that occur within its context
     should be combined and scaled when creating the final animation timeline. Roughly speaking, an AnimationContext
-    combines all of the animated_functions that take place within its context into a single animated_function that
+    combines all of the :func:`~.animated_function` s that take place within its context into a single :func:`~.animated_function` that
     plays all of the component animations one after the other.
 
     AnimationContexts are designed to be nested, in order to make defining complex animation behaviours easy.
@@ -69,34 +69,37 @@ class AnimationContext:
     Parameters
     ----------
     run_time
-        If not None, then this animation will have its duration be rescaled to run_time, otherwisee run_time
+        If not None, then this context will have its duration be rescaled to run_time, otherwise run_time
         is defined by the component animations that take place in this context.
     run_time_unit
         The duration that each component animation within this context will run for.
+        Uf `run_time` is not None, then `run_time` overrides `run_time_unit`.
     same_run_time
-        If True, rescale all component animations to have the same run_time (equal to the longest component run_time).
+        If True, rescale all component animations to have the same run_time
+        (equal to the longest component run time).
     lag_ratio
-        The portion of run_time_unit that will be waited for before starting the next component animations.
+        The portion of `run_time_unit` that will be waited for before starting the next component animation.
         When lag_ratio=0, all component animations are played at the same time, when lag_ratio=1, component animations
         are played one after the other immediately after the previous finishes.
     priority_level
         The priority level of this context. AnimationContexts can only be overridden by new AnimationContexts
-        or equal or lower priority.
+        of equal or higher priority.
     rate_func
         The rate function defines the rate at which time progresses for each component animation. Defaults to smooth.
-        Setting this parameter overrides the parent context's rate_func to be equal to this value.
+        Setting this parameter overrides the parent context's `rate_func` to be equal to this value.
     rate_func_compose
-        Setting this parameter sets the rate_func to be the composition of the parent context's rate_func with this
-        rate_func_compose.
+        Setting this parameter sets the rate_func to be the composition of the parent context's `rate_func` with this
+        `rate_func_compose`.
     record_funcs
-        Whether animated_functions within this context should be recorded in :class:`ModificationHistory`s.
+        Whether :func:`~.animated_function` s within this context should be recorded in :class:`~.ModificationHistory` s.
     record_attr_modifications
-        Whether changes to animatable_attributes within this context should be recorded in :class:`ModificationHistory`s.
-    prev_context
+        Whether changes to `animatable_attributes` within this context should be recorded in :class:`~.ModificationHistory` s.
+    prev_context : :class:`~.AnimationContext`
         The parent context in which this AnimationContext was created.
     spawn_at_end
-        If True, all :class:`Mob`s created in this context will be prevented from spawning, until the end of this
+        If True, all new :class:`~.Mob` s created in this context will be prevented from spawning, until the end of this
         context where they will all be spawned.
+
     """
 
     run_time: float|None = None
@@ -297,6 +300,8 @@ class NoExtra(AnimationContext):
 
 
 class Off(AnimationContext):
+    """Disables animations within its context.
+    """
     def __init__(self, priority_level=1, **kwargs):
         if 'record_funcs' not in kwargs:
             kwargs['record_funcs'] = False
@@ -304,16 +309,27 @@ class Off(AnimationContext):
 
 
 class Lag(AnimationContext):
-    def __init__(self, lag_ratio, **kwargs):
+    """Plays component animations sequentially lagged by a factor `lag_ratio`.
+
+    Parameters
+    ----------
+    lag_ratio
+        The portion of run_time to wait before playing the next animation. For example, lag_ratio=0.1
+        would wait 10% of the `run_time_unit` for one animation before starting the next.
+
+    """
+    def __init__(self, lag_ratio:float, **kwargs):
         super().__init__(lag_ratio=lag_ratio, new_animation=True, **kwargs)
 
 
 class Sync(Lag):
+    """Plays all component animations synchronously."""
     def __init__(self, **kwargs):
         super().__init__(lag_ratio=0, **kwargs)
 
 
 class Seq(Lag):
+    """Plays all component animations sequentially, with the next starting as soon as the current one finishes."""
     def __init__(self, **kwargs):
         super().__init__(lag_ratio=1, **kwargs)
 

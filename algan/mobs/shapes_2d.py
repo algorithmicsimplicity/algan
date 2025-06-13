@@ -103,8 +103,11 @@ class Polygon(BezierCircuitCubic):
     ----------
     vertex_locations : torch.Tensor[N, 3]
         3-D coordinates for each of the N vertex points.
+    *args, **kwargs
+        Passed to :class:`~.BezierCircuitCubic`
+
     """
-    def __init__(self, vertex_locations, *args, **kwargs):
+    def __init__(self, vertex_locations:torch.Tensor, *args, **kwargs):
         corner_locations = cast_to_tensor(vertex_locations)[0]
         control_points = []
         for line_start, line_end in zip(corner_locations, corner_locations.roll(-1,-2)):
@@ -118,7 +121,18 @@ class Polygon(BezierCircuitCubic):
 
 
 class RegularPolygon(Polygon):
-    def __init__(self, num_vertices, *args, **kwargs):
+    """A 2-D planar polygon with the given number of vertices spaced evenly around
+    the unit circle.
+
+    Parameters
+    ----------
+    num_vertices
+        The number of vertices of the polygon. Must be greater than or equal to 3.
+    *args, **kwargs
+        Passed to :class:`~.BezierCircuitCubic`
+
+    """
+    def __init__(self, num_vertices:int, *args, **kwargs):
         vertices = torch.stack([UP * torch.sin(a) + RIGHT * torch.cos(a) for a in torch.linspace(math.pi/2, -math.pi * 1.5, num_vertices+1)], -2)
         super().__init__(vertices, *args, **kwargs)
 
@@ -132,6 +146,18 @@ class Triangle(Polygon):
 
 
 class Rectangle(Quad):
+    """A rectangle.
+
+    Parameters
+    ----------
+    height
+        Rectangle height.
+    width
+        Rectangle width.
+    *args, **kwargs
+        Passed to :class:`~.BezierCircuitCubic`
+
+    """
     def __init__(self, height=2, width=2, **kwargs):
         corners = torch.tensor(((-width, height,0),
                                       (width, height,0),
@@ -145,11 +171,31 @@ class Rectangle(Quad):
 
 
 class Square(Rectangle):
-    def __init__(self, height=2, **kwargs):
-        super().__init__(height, height, **kwargs)
+    """A square.
+
+    Parameters
+    ----------
+    side_length
+        Length of each side of the square.
+    *args, **kwargs
+        Passed to :class:`~.BezierCircuitCubic`
+
+    """
+    def __init__(self, side_length=2, **kwargs):
+        super().__init__(side_length, side_length, **kwargs)
 
 
 class Circle(BezierCircuitCubic):
+    """A circle.
+
+    Parameters
+    ----------
+    radius
+        Circle radius.
+    *args, **kwargs
+        Passed to :class:`~.BezierCircuitCubic`
+
+    """
     def __init__(self, radius=1, *args, **kwargs):
         a = 1.00005519
         b = 0.55342686

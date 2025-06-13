@@ -8,7 +8,7 @@ an animation indefinitely, without knowing how long it will play for.
 In such cases, you can use *Updaters*.
 
 An updater applied to a mob will continuously update a mob's state
-ever frame, until it is explicitly stopped.
+every frame, until it is explicitly stopped.
 
 Example: Perpetually Rotating
 -----------------------------
@@ -44,7 +44,7 @@ and another to make the outer square follow its rotation.
 
     render_to_file()
 
-The :func:`~.Animatable.add_updater` function takes as input a function, and applies
+The :meth:`~.Animatable.add_updater` function takes as input a function, and applies
 that function at every subsequent frame. The function must take as its first input a Mob (which is set to the mob itself),
 and its second input a float. During animation, at each frame the second parameter will be set to the
 current elapsed time (the number of seconds since the animation began).

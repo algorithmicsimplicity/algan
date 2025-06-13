@@ -188,6 +188,7 @@ class AlganDirective(Directive):
             "skip-manim" in self.state.document.settings.env.app.builder.tags
             or self.state.document.settings.env.app.builder.name == "gettext"
         )
+        #should_skip = True
         if should_skip:
             clsname = self.arguments[0]
             node = SkipManimNode()

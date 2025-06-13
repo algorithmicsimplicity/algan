@@ -56,6 +56,12 @@ extensions = [
 
 # Automatically generate stub pages when using the .. autosummary directive
 autosummary_generate = True
+"""autodoc_member_order = 'bysource'
+autodoc_default_options = {
+    'members': True,
+    'undoc-members': True,
+    'show-inheritance': True,
+}"""
 
 myst_enable_extensions = ["colon_fence", "amsmath"]
 

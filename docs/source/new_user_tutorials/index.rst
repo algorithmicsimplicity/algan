@@ -1,5 +1,5 @@
 New User Tutorials
-=========
+==================
 
 .. toctree::
    :caption: Table of Contents

@@ -1,7 +1,7 @@
 Installation
 ============
 
-.. _local-installation:
+.. _installation:
 
 Installing Algan locally via pip
 ********************************

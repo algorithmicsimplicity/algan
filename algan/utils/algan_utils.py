@@ -17,8 +17,8 @@ from algan.scene_tracker import SceneTracker
 
 
 def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec='h264', **kwargs):
-    """Runs all of the animations specified in the active Scene, then renders the animations to video
-    as captured by the active Camera, and saves the video to a file.
+    """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
+    as captured by the active :class:`~.Camera`, and saves the video to a file.
 
     Parameters
     ----------
