@@ -245,11 +245,11 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         if window_coords is None:
             window_coords = 0, 0, screen_width, screen_height
-        #window_height = window_coords[-1] - window_coords[1]
-        #window_width = window_coords[-2] - window_coords[0]
+        window_height = window_coords[-1] - window_coords[1]
+        window_width = window_coords[-2] - window_coords[0]
         start_x, start_y, end_x, end_y = window_coords
-        end_x = end_x - 1
-        end_y = end_y - 1
+        end_x = end_x
+        end_y = end_y
         def project_onto_screen(x):
             rays = F.normalize(x - ray_origin, p=2, dim=-1)
             projected_corners, _ = intersect_line_with_plane(rays, screen_point, screen_basis[..., -1:, :], ray_origin)
@@ -267,7 +267,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         corners_locs, corners_inds, projected_distances = project_onto_screen(corners)
 
-        padding = max(20, border_width.amax().ceil().long()+1)
+        padding = border_width.amax().ceil().long()+1
 
         def get_bounding_box_fragment_coords(x):
             arange_num_segments_per_oject = torch.arange(len(num_segments_per_object), device=x.device)
@@ -448,15 +448,17 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         fragment_coords = torch.cat((fragment_x, fragment_y), -1).float()
 
-        inds = fragment_x + (fragment_y) * screen_width
-        screen_size = screen_width * screen_height
+        #TODO subtract window_start from x and y (so they are 0 centered.
+        inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
+        window_size = window_width * window_height
 
         if not self.filled:
             interior_mask[:] = 0
-        m = (inds < screen_size) & ((interior_mask > 0) | (border_mask > 0))
+        #TODO does this need to clip based on x and y instead of inds for window?
+        m = (inds < window_size) & ((interior_mask > 0) | (border_mask > 0))
         m = m.reshape(-1)
         border_mask = border_mask.view(-1)[m].unsqueeze(-1)
-        g_offsets = torch.arange(0, corners.shape[0], device=inds.device) * screen_size
+        g_offsets = torch.arange(0, corners.shape[0], device=inds.device) * window_size
         frame_to_fragment_gather_inds = object_to_fragment_gather_inds // num_objects
         g_offsets = self.expand_verts_to_frags(g_offsets.unsqueeze(-1), frame_to_fragment_gather_inds)
         inds = inds + g_offsets

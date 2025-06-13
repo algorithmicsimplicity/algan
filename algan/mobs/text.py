@@ -17,7 +17,19 @@ from algan.utils.python_utils import traverse
 
 
 class Text(Mob):
-    def __init__(self, text, font_size=48, latex=False, debug=False, **kwargs):
+    """Mob for displaying 2-D text.
+
+    Parameters
+    ----------
+    text
+        String containing the text to display.
+    font_size
+        Font size of the text.
+    **kwargs
+        Passed to :class:`~.Mob'.
+
+    """
+    def __init__(self, text:str, font_size:float=48, latex=False, debug=False, **kwargs):
         if 'color' not in kwargs:
             kwargs['color'] = DEFAULT_TEXT_COLOR
 
@@ -171,6 +183,16 @@ from manim.utils.tex import _DEFAULT_PREAMBLE
 
 
 class Tex(Text):
+    """Mob for displaying 2-D LaTeX.
+
+    Parameters
+    ----------
+    text
+        The LaTeX source that will be compiled.
+    **kwargs
+        Passed to :class:`~.Text'.
+
+    """
     def __init__(self, text, **kwargs):
         if 'font_size' not in kwargs:
             kwargs['font_size'] = 48

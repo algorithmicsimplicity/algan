@@ -75,7 +75,7 @@ class RenderPrimitive:
                 return
             else:
                 window_size = (window[2]-window[0]) * (window[3]-window[1])
-                if window_size < 50:
+                if window_size < 10:
                     raise OutOfRenderMemory('Rendering process ran out of memory. Please reduce the number of objects in the scene.')
                 xm = (window[0] + window[2]) // 2
                 ym = (window[1] + window[3]) // 2
@@ -242,7 +242,8 @@ class RenderPrimitive:
         if window_coords is None:
             window_coords = 0, 0, screen_width, screen_height
 
-        window_width = window_coords[-2] - window_coords[0]
+        window_width = window_coords[2] - window_coords[0]
+        window_height = window_coords[3] - window_coords[1]
         start_x, start_y, end_x, end_y = window_coords
 
         def project_onto_screen(x):
@@ -268,7 +269,7 @@ class RenderPrimitive:
         bbss = bounding_box_sizes.prod(-1, keepdim=True)
         bounding_box_num_pixels = bbss.amax(0)
         num_fragments = bounding_box_num_pixels.sum() * bbss.shape[0]
-        mem_per_fragment = 128
+        mem_per_fragment = 256
         total_mem_required = num_fragments * mem_per_fragment
 
         free_mem = memory.get_num_bytes_remaining()
@@ -283,7 +284,7 @@ class RenderPrimitive:
 
         offsets = self.expand_verts_to_frags(bounding_box_num_pixels.cumsum(-2) - bounding_box_num_pixels, repeats_inds, -2)
         fragment_inds = torch.arange(offsets.shape[-2], device=offsets.device).view(-1,1) - offsets
-        bounding_box_widths = self.expand_verts_to_frags(bounding_box_sizes[...,:1], repeats_inds, -2).clamp_min_(1)
+        bounding_box_widths = self.expand_verts_to_frags(bounding_box_sizes[...,:1], repeats_inds, -2)#.clamp_min_(1)
 
         bounding_corners_rep = self.expand_verts_to_frags(bounding_corners[...,0,:], repeats_inds, -2)
         fragment_x = self.get_tensor(bounding_box_widths.shape, torch.long)
@@ -297,12 +298,13 @@ class RenderPrimitive:
 
         all_mask = (all_ws.amin(-2) >= self.min_interpolation_coord).any(0)
 
-        inds = fragment_x + (fragment_y) * window_width
-        screen_size = screen_width * screen_height
+        # TODO subtract window start from fragment x and y
+        inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
+        window_size = window_width * window_height
 
-        m = (inds < (screen_size)) & all_mask
+        m = ((inds < (window_size))) & all_mask
         m = m.reshape(-1)
-        inds = inds + unsqueeze_right(torch.arange(inds.shape[0], device=inds.device) * screen_size, inds)
+        inds = inds + unsqueeze_right(torch.arange(inds.shape[0], device=inds.device) * window_size, inds)
         inds = inds.view(-1)
         inds = inds[m]
         unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)

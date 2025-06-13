@@ -21,36 +21,33 @@ from algan.utils.tensor_utils import dot_product, broadcast_gather, unsqueeze_ri
 
 
 class Mob(Animatable):
-    """Base class for all objects that have a location and orientation in 3D space.
+    """Base class for all objects that have a location and orientation in 3-D space.
 
-    A Mob is an Animatable that exists in a 3D scene,
+    A Mob is an Animatable that exists in a 3-D scene,
     possessing properties like location, orientation (basis), and color.
     It can have child Mobs, forming a hierarchy, and supports various
     transformations and animations.
 
     Parameters
     ----------
-    location : torch.Tensor, optional
-        Initial location in 3D world space. Defaults to `ORIGIN` (0,0,0).
+    location
+        Initial location in 3-D world space.
         Shape: `(*, 3)` where `*` denotes any number of batch dimensions.
-    basis : torch.Tensor, optional
+    basis
         Flattened 3x3 matrix specifying the Mob's orientation and scale.
-        The rows represent the right, upwards, and forwards directions,
-        and their norms represent the scale in those directions.
+        The rows represent the right, upwards, and forwards directions, respectively,
+        and the row norms represent the scale in those directions.
         Defaults to an identity matrix (no rotation, unit scale).
         Shape: `(*, 9)` representing `(*, 3, 3)` flattened.
-    color : Color or None, optional
+    color
         The color of the Mob. If None, it uses the default color defined
-        by `get_default_color()`. Defaults to None.
-    opacity : float, optional
+        by :meth:`~.Mob.get_default_color()` .
+    opacity
         The maximum opacity of the Mob (0.0 for fully transparent to 1.0 for fully opaque).
-        Defaults to 1.0.
-    glow : float, optional
-        The glow intensity of the Mob. Defaults to 0.0.
-    *args
-        Additional arguments passed to the `Animatable` base class.
-    **kwargs
-        Additional keyword arguments passed to the `Animatable` base class.
+    glow
+        The glow intensity of the Mob.
+    *args, **kwargs
+        Passed to :class:`~.Animatable` base class.
 
     Examples
     --------

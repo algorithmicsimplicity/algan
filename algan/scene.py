@@ -266,8 +266,8 @@ class Scene:
         if bgf.shape[-1] == 3:
             bgf = torch.cat((bgf, torch.zeros_like(bgf[...,:1])), -1)
         bgf = (bgf * 255).to(device, torch.uint8, non_blocking=True)
-        window_height = (window[-1] - window[1])
-        window_width = (window[-2] - window[0])
+        window_height = (window[3] - window[1])
+        window_width = (window[2] - window[0])
         window_size = window_width * window_height
 
         if fragments is None:
@@ -284,7 +284,7 @@ class Scene:
         frames, inds, num_pixels_in_frame = fragments
         if inds is None:
             frame[:] = bgf
-            frame = unsquish(frame, 0, -window_height).cpu().flip((-3, -1)).numpy()
+            frame = unsquish(frame, 0, -window_height)#.cpu().flip((-3, -1)).numpy()
             for i in range(len(frames)):
                 yield frame
             return
