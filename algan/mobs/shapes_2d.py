@@ -17,6 +17,7 @@ from algan.utils.tensor_utils import mean
 
 class TriangleTriangulated(Mob):
     def __init__(self, corner_locations, vertices=None, normals=None, **kwargs):
+        corner_locations = cast_to_tensor(corner_locations)
         if vertices is None:
             vertices = TriangleVertices
         if 'color' in kwargs:
@@ -61,6 +62,7 @@ class TriangleTriangulated(Mob):
 
 class TriangleVertices(Renderable):
     def __init__(self, corner_locations, normals=None, **kwargs):
+        corner_locations = cast_to_tensor(corner_locations)
         kwargs2 = {k: v for k, v in kwargs.items()}
         if 'location' in kwargs2:
             del kwargs2['location']
@@ -165,7 +167,7 @@ class Rectangle(Quad):
                                       (-width, -height,0),
                                       ))*0.5
         if 'location' in kwargs:
-            corners += kwargs['location']
+            corners = corners + cast_to_tensor(kwargs['location'])
             del kwargs['location']
         super().__init__(corners, **kwargs)
 

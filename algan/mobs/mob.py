@@ -804,7 +804,7 @@ class Mob(Animatable):
         -------
             Mob: The Mob instance itself, allowing for method chaining.
         """
-        self.move_to(self.location + displacement, **kwargs)
+        self.move_to(self.location + cast_to_tensor(displacement), **kwargs)
         return self
 
     def get_axis_aligned_lower_corner(self):
@@ -1320,7 +1320,7 @@ class Mob(Animatable):
             The Mob instance itself, allowing for method chaining.
 
         """
-        normalized_axis = F.normalize(axis, p=2, dim=-1)
+        normalized_axis = F.normalize(cast_to_tensor(axis), p=2, dim=-1)
         # Get the rotation matrix for the specified degrees and axis
         rotation_matrix = get_rotation_around_axis(num_degrees, normalized_axis, dim=-1)
         # Apply the rotation to the Mob's basis matrix

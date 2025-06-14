@@ -145,7 +145,15 @@ class BezierCircuitCubic(Renderable):
         next_segment_inds_offset = next_segment_inds - inds
 
         starting_inds = circuit_start_mask[0,:,0,0].nonzero()[:,0]
-        num_segments_per_circuit = torch.cat((starting_inds, torch.tensor((len(inds)-(starting_inds.amax() if len(starting_inds) > 0 else 0),), device=x.device)), -1)
+        num_segments_per_circuit = []
+        if len(starting_inds) == 0:
+            num_segments_per_circuit.append(torch.tensor((circuit_start_mask.shape[-3],), device=next_segment_inds.device, dtype=next_segment_inds.dtype).squeeze())
+        else:
+            for i in range(len(starting_inds)):
+                num_segments_per_circuit.append((starting_inds[(i+1)] if (i+1) < len(starting_inds) else
+                                                 circuit_start_mask.shape[-3]) - starting_inds[i])
+        num_segments_per_circuit = torch.stack(num_segments_per_circuit, 0)
+        #num_segments_per_circuit = torch.cat((starting_inds, torch.tensor((len(inds)-(starting_inds.amax() if len(starting_inds) > 0 else 0),), device=x.device)), -1)
 
         c = self.texture_points.color.unsqueeze(-3)
         if self.num_texture_points > c.shape[-2]:

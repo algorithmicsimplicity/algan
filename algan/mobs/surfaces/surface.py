@@ -11,7 +11,7 @@ from algan.geometry.geometry import map_global_to_local_coords
 from algan.mobs.mob import Mob
 from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.utils.file_utils import get_image
-from algan.utils.tensor_utils import unsqueeze_left, squish, unsquish
+from algan.utils.tensor_utils import unsqueeze_left, squish, unsquish, cast_to_tensor
 
 
 def grid_to_triangle_vertices(grid):
@@ -69,7 +69,7 @@ class Surface(Mob):
         triangle_corners = coord_function(base_grid)
         triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
         if 'location' in kwargs:
-            triangle_corners = triangle_corners + kwargs['location']
+            triangle_corners = triangle_corners + cast_to_tensor(kwargs['location'])
         triangle_corners = grid_to_triangle_vertices(triangle_corners)
 
         color = kwargs['color'] if 'color' in kwargs else self.get_default_color()

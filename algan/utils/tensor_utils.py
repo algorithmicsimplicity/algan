@@ -41,6 +41,11 @@ def packed_reorder(x, counts, ids):
     scatter_inds = cc_rep + (torch.arange(len(s)) - cc_rep[s])[ids_rep]
     return ids
 
+def _cast_to_tensor_recursive(x):
+    if isinstance(x, list) or isinstance(x, tuple):
+        return torch.stack([_cast_to_tensor_recursive(_) for _ in x], 0)
+    else:
+        return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
 
 def cast_to_tensor(x):
     """
@@ -53,7 +58,8 @@ def cast_to_tensor(x):
             x = x.unsqueeze(0)
         return x#.view(-1,x.shape[-1])
     if isinstance(x, list) or isinstance(x, tuple):
-        return torch.cat([cast_to_tensor(_) for _ in x], -2)#[cast_to_tensor(_) for _ in x]
+        x = _cast_to_tensor_recursive(x).squeeze(-1)
+        return x.view(1,-1,x.shape[-1])
     if x is None:
         x = 0
     try:
@@ -166,7 +172,10 @@ def broadcast_gather(src, dim:int, ind, keepdim=False, **kwargs):
 
 def broadcast_scatter(input, dim, ind, src, **kwargs):
     input, ind, src = broadcast_all([input, ind, src], ignored_dims=[dim if dim >= 0 else len(src.shape)+dim])
-    return input.scatter_reduce(dim, ind, src, **kwargs)
+    try:
+        return input.scatter_reduce(dim, ind, src, **kwargs)
+    except:
+        return input.scatter_reduce(dim, ind, src, **kwargs)
 
 
 def offset(x):
