@@ -237,6 +237,8 @@ def dot_product_in_place(x, y, dim=-1):
 def mean(xs):
     return sum(xs) / max(len(xs), 1)
 
+def mid_point(x, dim=-1, keepdim=True):
+    return (x.amin(dim, keepdim=keepdim) + x.amax(dim, keepdim=keepdim)) * 0.5
 
 def _get_empty_tensor_of_broadcasted_shape(x, y):
     if x.dim() < y.dim():

@@ -6,6 +6,7 @@ from collections import defaultdict
 #from scipy.optimize import linear_sum_assignment
 import torch
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 from torch import Tensor, TensorType
 
 from algan.animation.animatable import Animatable, animated_function, ModificationHistory, TimeInterval
@@ -17,7 +18,8 @@ from algan.constants.rate_funcs import ease_out_exp, inversed, identity
 from algan.defaults.style_defaults import DEFAULT_BUFFER
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
-from algan.utils.tensor_utils import dot_product, broadcast_gather, unsqueeze_right, unsquish, squish, broadcast_cross_product, cast_to_tensor
+from algan.utils.tensor_utils import dot_product, broadcast_gather, unsqueeze_right, unsquish, squish, \
+    broadcast_cross_product, cast_to_tensor, mid_point
 
 
 class Mob(Animatable):
@@ -1533,7 +1535,8 @@ class Mob(Animatable):
         for submob, factor in zip(lst, split_factors):
             new_submobs.append(submob)  # Add the original child
             for _ in range(1, factor):
-                new_submobs.append(submob.clone())  # Add clones
+                new_submobs.append(submob[-1, -1:, :].expand(*([-1 for _ in range(submob.dim() - 3)]),
+                                                    submob.shape[-3], self.num_points_per_object, -1))
         return new_submobs
 
     def expand_n_children(self, n: int):
@@ -1619,7 +1622,7 @@ class Mob(Animatable):
             self.data.data_dict[attr] = squish(torch.stack(new_batched_values, -3), -3, -2).unsqueeze(0)
         return self
 
-    def become(self, other_mob: 'Mob', move_to: bool = False, detach_history: bool = True) -> 'Mob':
+    def become(self, other_mob: 'Mob', move_to: bool = False, detach_history: bool = True, minimize_movement=True) -> 'Mob':
         """Transforms this Mob into another Mob (`other_mob`).
 
         This involves animating changes in location, opacity, color, basis, etc.,
@@ -1668,9 +1671,19 @@ class Mob(Animatable):
 
         with Seq():
             with Sync():
-                # Recursively apply 'become' to children to handle nested transformations
-                for my_child, other_child in zip(self.children, other_mob.children):
-                    my_child.become(other_child, detach_history=False)  # Children do not detach their history
+                if len(self.children) > 0:
+                    # Recursively apply 'become' to children to handle nested transformations
+                    if minimize_movement:
+                        child_locs = torch.stack([mid_point(c.location, -2).squeeze() for c in self.children])
+                        other_child_locs = torch.stack([mid_point(c.location, -2).squeeze() for c in other_mob.children])
+                        distance_matrix = torch.cdist(child_locs, other_child_locs)
+                        row_ind, col_ind = linear_sum_assignment(distance_matrix.cpu().numpy())
+
+                        for i, j in zip(row_ind, col_ind):
+                            self.children[i].become(other_mob.children[j], detach_history=False, minimize_movement=minimize_movement)
+                    else:
+                        for my_child, other_child in zip(self.children, other_mob.children):
+                            my_child.become(other_child, detach_history=False, minimize_movement=minimize_movement)  # Children do not detach their history
 
                 # Check for compatibility of primitive types
                 if other_mob.num_points_per_object != self.num_points_per_object:
@@ -1725,7 +1738,9 @@ class Mob(Animatable):
                         other_mob.expand_n_batch(-batch_difference)
 
                 # Set all animatable attributes non-recursively to match the target mob's values
-                for attr_name in ['location', 'opacity', 'color', 'basis', 'glow']:
+                for attr_name in ['location', 'opacity', 'color', 'basis', 'glow', 'border_color', 'border_width']:
+                    if not hasattr(self, attr_name):
+                        continue
                     # Use getattr to safely access attributes, as not all mobs may have all listed attributes
                     self.setattr_non_recursive(attr_name, getattr(other_mob, attr_name))
 
