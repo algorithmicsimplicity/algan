@@ -1522,6 +1522,20 @@ class Mob(Animatable):
                 self.spawn(animate=False)  # Re-spawn current mob without animation to start new history
                 return self
 
+    def expand_n_list(self, lst, n: int):
+        current_children_count = len(lst)
+        target_children_count = current_children_count + n
+        # Determine how many times each existing child needs to be repeated/cloned
+        repeat_indices = (torch.arange(target_children_count) * current_children_count) // target_children_count
+        split_factors = [(repeat_indices == i).sum() for i in range(current_children_count)]
+
+        new_submobs = []
+        for submob, factor in zip(lst, split_factors):
+            new_submobs.append(submob)  # Add the original child
+            for _ in range(1, factor):
+                new_submobs.append(submob.clone())  # Add clones
+        return new_submobs
+
     def expand_n_children(self, n: int):
         """Expands the number of children by cloning existing ones to reach `n` additional children.
         This is used internally by `become` for smooth transformations between Mobs with different
@@ -1543,6 +1557,32 @@ class Mob(Animatable):
                 new_submobs.append(submob.clone())  # Add clones
         self.children = new_submobs
         return self
+
+    def expand_n_tensor(self, tnsor, n: int):
+        current_batch_size = tnsor.shape[-3]# // self.num_points_per_object
+        target_batch_size = current_batch_size + n
+        # Determine how many times each existing batch element needs to be repeated
+        repeat_indices = (torch.arange(target_batch_size) * current_batch_size) // target_batch_size
+        split_factors = [(repeat_indices == i).sum() for i in range(current_batch_size)]
+
+        # Iterate over animatable attributes and expand their batch dimensions
+        for attr in ['location']:
+            value = tnsor
+            if value.shape[-3] == 1:  # If already a singleton batch, no expansion needed
+                continue
+
+            # Unsquish to separate individual objects in the batch if needed
+            value_per_object = value#unsquish(value, -2, self.num_points_per_object)
+            new_batched_values = []
+            for sub_object_data, factor in zip(value_per_object, split_factors):
+                new_batched_values.append(sub_object_data)  # Add original sub-object data
+                for _ in range(1, factor):
+                    # Clone the last point of the sub-object data to expand
+                    new_batched_values.append(
+                        sub_object_data[..., -1:, :].expand(*([-1 for _ in range(sub_object_data.dim() - 2)]),
+                                                            self.num_points_per_object, -1))
+            # Stack the new batched values and squish back to original shape for storage
+            return torch.stack(new_batched_values, -3)
 
     def expand_n_batch(self, n: int):
         """Expands the batch size of the Mob's attributes by cloning existing batch elements.
@@ -1641,12 +1681,48 @@ class Mob(Animatable):
                     )
 
                 # Adjust batch size (number of points per object) for smooth transitions
-                batch_difference = (other_mob.location.shape[-2] - self.location.shape[
-                    -2]) // self.num_points_per_object
-                if batch_difference > 0:
-                    self.expand_n_batch(batch_difference)
-                elif batch_difference < 0:
-                    other_mob.expand_n_batch(-batch_difference)
+                if self.num_points_per_object == 4:
+                    def get_sub_circuits(x):
+                        x = unsquish(x, -2, 4)
+                        x = x.squeeze(0)
+                        start_inds = ((x[...,0,:] - x.roll(1, -3)[...,-1,:]).abs().sum(-1) > 1e-6).squeeze().nonzero()
+                        if len(start_inds) == 0:
+                            return [x]
+                        else:
+                            out = []
+                            for i in range(len(start_inds)):
+                                out.append(x[start_inds[i]:start_inds[i+1] if (i + 1) < len(start_inds) else
+                                     x.shape[-3]])
+                            return out
+
+                    my_control_points, other_control_points = [get_sub_circuits(_)for _ in [self.location, other_mob.location]]
+
+                    child_difference = len(other_control_points) - len(my_control_points)
+                    if child_difference > 0:
+                        my_control_points = self.expand_n_list(my_control_points, child_difference)
+                    elif child_difference < 0:
+                        other_control_points = other_mob.expand_n_list(other_control_points, -child_difference)
+
+                    my_cs = []
+                    other_cs = []
+                    for my_c, other_c in zip(my_control_points, other_control_points):
+                        child_difference = (other_c.shape[-3] - my_c.shape[-3])
+                        if child_difference > 0:
+                            my_c = self.expand_n_tensor(my_c, child_difference)
+                        elif child_difference < 0:
+                            other_c = self.expand_n_tensor(other_c, -child_difference)
+                        my_cs.append(my_c)
+                        other_cs.append(other_c)
+
+                    self.data.data_dict['location'] = squish(torch.cat(my_cs, -3), -3, -2).unsqueeze(0)
+                    other_mob.data.data_dict['location'] = squish(torch.cat(other_cs, -3), -3, -2).unsqueeze(0)
+                else:
+                    batch_difference = (other_mob.location.shape[-2] - self.location.shape[
+                        -2]) // self.num_points_per_object
+                    if batch_difference > 0:
+                        self.expand_n_batch(batch_difference)
+                    elif batch_difference < 0:
+                        other_mob.expand_n_batch(-batch_difference)
 
                 # Set all animatable attributes non-recursively to match the target mob's values
                 for attr_name in ['location', 'opacity', 'color', 'basis', 'glow']:

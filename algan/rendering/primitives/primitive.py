@@ -2,6 +2,9 @@ import torch
 import torchvision
 import torch.nn.functional as F
 from torch_scatter import scatter_max
+import sys
+import gc
+import traceback
 
 from algan.constants.color import BLUE, BLACK
 from algan.geometry.geometry import intersect_line_with_plane
@@ -67,7 +70,13 @@ class RenderPrimitive:
                 self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'])
         except (InsufficientMemoryException, torch.OutOfMemoryError):
             self.memory.current_pointer = original_pointer
+            # All this stuff is necessary to free local variables assigned during the previous render attempt.
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            traceback.clear_frames(exc_traceback)
+            #exc_traceback.tb_next.tb_frame.clear()
+            gc.collect()
             torch.cuda.empty_cache()
+
             if (time_end - time_start) > 1:
                 m = time_start + (time_end - time_start)//2
                 self.render_window(primitives, scene, window, save_image, time_start, m, object_start, object_end, background_color, False, *args, **kwargs)

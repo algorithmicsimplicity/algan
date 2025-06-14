@@ -577,7 +577,8 @@ class Animatable:
             object.__setattr__(clone, k, copy.deepcopy(v, memo))
 
         clone.generate_animatable_attr_set_get_methods()
-        clone.spawn(animate_creation)
+        if self.data.spawn_time() >= 0:
+            clone.spawn(animate_creation)
         if copy_recursive:
             clone.add_children(*children_clones)
         return clone

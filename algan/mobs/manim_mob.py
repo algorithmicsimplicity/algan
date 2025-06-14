@@ -2,6 +2,7 @@ import torch
 from manim import Mobject
 
 from algan.mobs.bezier_circuit import BezierCircuitCubic
+from algan.mobs.group import Group
 from algan.utils.tensor_utils import unsquish
 
 
@@ -40,5 +41,6 @@ class ManimMob(BezierCircuitCubic):
                          border_color=convert_manim_color(manim_mob.stroke_color, manim_mob.stroke_opacity),
                          border_width=manim_mob.stroke_width,
                          filled=not hasattr(manim_mob, 'end'), **kwargs)
-        self.add_children(children)
+        if len(children) > 0:
+            self.add_children(Group(children))
         self.submobjects = children
