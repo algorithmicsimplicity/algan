@@ -172,10 +172,7 @@ def broadcast_gather(src, dim:int, ind, keepdim=False, **kwargs):
 
 def broadcast_scatter(input, dim, ind, src, **kwargs):
     input, ind, src = broadcast_all([input, ind, src], ignored_dims=[dim if dim >= 0 else len(src.shape)+dim])
-    try:
-        return input.scatter_reduce(dim, ind, src, **kwargs)
-    except:
-        return input.scatter_reduce(dim, ind, src, **kwargs)
+    return input.scatter_reduce(dim, ind, src, **kwargs)
 
 
 def offset(x):
@@ -393,18 +390,24 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
 
 
 def scatter_arg_max(x, inds, dim=-1, dim_size=None):
-    if scatter_max_op is not None:
+    if False:#scatter_max_op is not None:
         return scatter_max_op(x, inds, -1, dim_size=dim_size)
+    inds = inds.clone()
     x = x.view(-1)
     out_dims = [*x.shape]
-    out_dims[dim] = dim_size if dim_size is not None else inds.amax()
+    out_dims[dim] = dim_size if dim_size is not None else inds.amax()+1
     out = torch.zeros(out_dims, device=x.device)
     max_vals = torch.scatter_reduce(out, dim, inds, x, 'amax', include_self=False)
     max_vals_gathered = broadcast_gather(max_vals, dim, inds)
-    m = (x == max_vals_gathered)
-    inds[~m] = 0
-    prev_inds = inds.cummax(-1)[0].roll(1,-1)
-    prev_inds[...,0] = -1
-    argmax_inds = ((inds != prev_inds) & m).nonzero()
+    m = (x >= max_vals_gathered - 1e-6)
+    inds[~m] = -1
+
+    sorted_inds, sorted_indices = torch.sort(inds)
+    is_new_mask = torch.cat([
+        torch.tensor([True], device=x.device),
+        torch.diff(sorted_inds) != 0
+    ])
+
+    argmax_inds = sorted_indices[is_new_mask][1:]
     max_vals = broadcast_gather(x, -1, argmax_inds)
     return max_vals, argmax_inds

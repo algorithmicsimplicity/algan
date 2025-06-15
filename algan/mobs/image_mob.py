@@ -19,11 +19,11 @@ class ImageMob(Surface):
 
     """
 
-    def __init__(self, rgba_array_or_file_path:torch.Tensor|str, ignore_normals=True, **kwargs):
+    def __init__(self, rgba_array_or_file_path:torch.Tensor|str, **kwargs):
         rgba_array = file_utils.get_image(rgba_array_or_file_path)
 
         h = rgba_array.shape[-3]
         w = rgba_array.shape[-2]
 
         super().__init__(grid_height=h, grid_width=w, color_texture=rgba_array.transpose(-3,-2).flip(-2),
-                         ignore_normals=ignore_normals, **kwargs)
+                         **kwargs)

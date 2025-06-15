@@ -1,17 +1,14 @@
 import torch
 import torchvision
 import torch.nn.functional as F
-from torch_scatter import scatter_max
 import sys
-import gc
 import traceback
 
 from algan.constants.color import BLUE, BLACK
 from algan.geometry.geometry import intersect_line_with_plane
 from algan.rendering.post_processing import bloom_filter
-from algan.utils.plotting_utils import plot_tensor
 from algan.utils.memory_utils import InsufficientMemoryException
-from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, unsquish, unsqueeze_right
+from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, unsquish, unsqueeze_right, scatter_arg_max
 
 
 class OutOfRenderMemory(Exception):
@@ -74,8 +71,8 @@ class RenderPrimitive:
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback.clear_frames(exc_traceback)
             #exc_traceback.tb_next.tb_frame.clear()
-            gc.collect()
-            torch.cuda.empty_cache()
+            #gc.collect()
+            #torch.cuda.empty_cache()
 
             if (time_end - time_start) > 1:
                 m = time_start + (time_end - time_start)//2
@@ -163,7 +160,7 @@ class RenderPrimitive:
 
         def blend_colors(dists, inds, colors, out):
             for i in range(max_buffer_depth):
-                max_dist, max_ind = scatter_max(dists, inds, -1, dim_size=out.shape[-2])
+                max_dist, max_ind = scatter_arg_max(dists, inds, -1, dim_size=out.shape[-2])
                 mask = ((0 < max_dist) & (max_dist < 1e12)).unsqueeze(-1)
 
                 dists.scatter_(-1, max_ind, -1.0)
@@ -184,7 +181,7 @@ class RenderPrimitive:
 
         def blend_colors_layerwise(dists, inds, colors, out):
             while True:
-                max_dist, max_ind = scatter_max(dists, inds, -1, dim_size=out.shape[-2])
+                max_dist, max_ind = scatter_arg_max(dists, inds, -1, dim_size=out.shape[-2])
 
                 def apply_mask(max_ind):
                     remaining_inds = torch.arange(inds.shape[-1], device=inds.device)

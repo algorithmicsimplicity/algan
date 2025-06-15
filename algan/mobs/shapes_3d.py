@@ -22,12 +22,12 @@ class Sphere(Surface):
         x = coords_2d[..., 0]
         y = coords_2d[..., 1]
 
-        longitude = 2 * torch.pi * x - torch.pi
-        latitude = torch.pi * y - torch.pi * 0.5
+        longitude = -torch.pi * (1-x) + x * torch.pi
+        latitude = -torch.pi * 0.5 * (1-y) + y * torch.pi * 0.5
 
         X = torch.cos(latitude) * torch.cos(longitude)
-        Y = torch.cos(latitude) * torch.sin(longitude)
-        Z = torch.sin(latitude)
+        Y = torch.sin(latitude)
+        Z = torch.cos(latitude) * torch.sin(longitude)
 
         coords_3d = torch.stack([X, Y, Z], dim=-1)
         return coords_3d * self.radius
@@ -56,11 +56,11 @@ class Cylinder(Surface):
 
     def coord_function(self, uv):
         uv[..., 1:] /= uv[..., 1:].amax()
-        u = uv[..., :1]
+        u = -uv[..., :1]
         v = uv[..., 1:]
-        return torch.cat(((u * torch.pi * 2).cos() * self.radius,
+        return torch.cat(((u * torch.pi * 2).sin() * self.radius,
                           (v - 0.5) * self.height,
-                          (u * torch.pi * 2).sin() * self.radius), -1)
+                          (u * torch.pi * 2).cos() * self.radius), -1)
 
     def normal_function(self, uv):
         xyz = self.coord_function(uv)

@@ -2,13 +2,11 @@ import math
 
 import torch
 import torch.nn.functional as F
-import torch_scatter
 
 from algan.constants.color import BLUE, BLACK
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
 from algan.geometry.geometry import intersect_line_with_plane, project_point_onto_line, project_point_onto_line_segment
 from algan.rendering.primitives.primitive import InsufficientMemoryException, RenderPrimitive2D
-from algan.utils.plotting_utils import plot_tensor
 from algan.utils.tensor_utils import broadcast_all, broadcast_scatter
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, expand_as_left, unsquish, unsqueeze_right
 
@@ -418,8 +416,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         local_intersection_counts = torch.where(invalid_mask, 0, local_intersection_counts)
 
-        global_intersection_counts = torch_scatter.scatter_sum(local_intersection_counts.view(-1),
-                                                               local_to_global_inds.clamp(min=0, max=fragment_x.shape[-2]-1), -1, dim_size=fragment_x.shape[-2])
+        #global_intersection_counts = torch_scatter.scatter_sum(local_intersection_counts.view(-1), local_to_global_inds.clamp(min=0, max=fragment_x.shape[-2]-1), -1, dim_size=fragment_x.shape[-2])
+        out = torch.zeros((fragment_x.shape[-2],), device=fragment_x.device)
+        global_intersection_counts = torch.scatter_add(out, -1, local_to_global_inds.clamp(min=0, max=fragment_x.shape[-2]-1), local_intersection_counts.view(-1), out=out)
 
         # Now do border mask.
         local_window_xy = torch.stack((local_window_x, local_window_y), -1)
@@ -429,10 +428,15 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         local_dist = torch.where(dist_invalid_mask, 1e12, local_dist)
         global_dists = torch.empty((fragment_x.shape[-2],), device=control_points.device)
         global_dists[:] = 1e12
-        global_dists = torch_scatter.scatter_min(local_dist.view(-1),
+        '''global_dists = torch_scatter.scatter_min(local_dist.view(-1),
                                                                local_to_global_inds.clamp(min=0,
                                                                                           max=fragment_x.shape[-2] - 1),
-                                                               -1, out=global_dists)[0]
+                                                               -1, out=global_dists)[0]'''
+
+        out = global_dists#torch.full((fragment_x.shape[-2],), value=1e12, device=fragment_x.device)
+        global_dists = torch.scatter_reduce(out, -1,
+                                            local_to_global_inds.clamp(min=0, max=fragment_x.shape[-2] - 1),
+                                            local_dist.view(-1), reduce='amin', out=out)
 
         border_mask = (global_dists.unsqueeze(-1) < self.expand_verts_to_frags(squish(border_width, 0, 1), object_to_fragment_gather_inds)).float()
 

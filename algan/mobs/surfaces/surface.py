@@ -3,6 +3,8 @@ import math
 import torch
 import torch.nn.functional as F
 
+from algan.utils.tensor_utils import broadcast_cross_product
+from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.animation.animatable import animated_function
 from algan.animation.animation_contexts import Sync, Off
 from algan.constants.color import *
@@ -20,13 +22,13 @@ def grid_to_triangle_vertices(grid):
     transformed_grid = grid
 
     triangle_corners = torch.stack((
-        torch.stack((transformed_grid[:-1, :-1],
-                     transformed_grid[:-1, 1:],
-                     transformed_grid[1:, :-1]), -2),
-        torch.stack((transformed_grid[1:, :-1],
-                     transformed_grid[:-1, 1:],
-                     transformed_grid[1:, 1:]), -2)), -3)
-    return triangle_corners.reshape(-1, 3, transformed_grid.shape[-1])#unsquish(triangle_corners, -2, 3)
+        torch.stack((transformed_grid[...,:-1, :-1,:],
+                     transformed_grid[...,:-1, 1:,:],
+                     transformed_grid[...,1:, :-1,:]), -2),
+        torch.stack((transformed_grid[...,1:, :-1,:],
+                     transformed_grid[...,:-1, 1:,:],
+                     transformed_grid[...,1:, 1:,:]), -2)), -3)
+    return triangle_corners.reshape(*grid.shape[:-3], -1, transformed_grid.shape[-1])#unsquish(triangle_corners, -2, 3)
 
 class Surface(Mob):
     """A smooth 2-D surface, embedded in 3-D space, A.K.A a manifold.
@@ -64,13 +66,14 @@ class Surface(Mob):
         if grid_aspect_ratio is not None:
             grid_height = int(grid_width * grid_aspect_ratio)
 
+        self.coord_function_active = coord_function
+        self.normal_function_active = normal_function
+        self.ignore_normals = ignore_normals
+        #triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
+        super().__init__(*args, **kwargs)
         self.grid_height, self.grid_width = grid_height, grid_width
         base_grid = self.get_base_grid()
-        triangle_corners = coord_function(base_grid)
-        triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
-        if 'location' in kwargs:
-            triangle_corners = triangle_corners + cast_to_tensor(kwargs['location'])
-        triangle_corners = grid_to_triangle_vertices(triangle_corners)
+        grid_points = squish(coord_function(base_grid), -3, -2) + self.location
 
         color = kwargs['color'] if 'color' in kwargs else self.get_default_color()
         if checkered_color is None:
@@ -79,18 +82,51 @@ class Surface(Mob):
             checkered_color = unsqueeze_left(checkered_color, color)
 
         if color_texture is not None:
-            color = color_texture
+            color = squish(color_texture, -3, -2)
         else:
             color_grid = torch.zeros((self.grid_width * self.grid_height, 5))
             color_grid[::2] = color
             color_grid[1::2] = checkered_color
             color_grid = color_grid.view(self.grid_height, self.grid_width, 5)
-            color = color_grid
-        color = grid_to_triangle_vertices(color)
-        super().__init__(*args, **kwargs)
+            color = squish(color_grid, -3, -2)
+        #color = grid_to_triangle_vertices(color)
         kwargs['color'] = color
-        self.triangles = TriangleTriangulated(triangle_corners, normals=triangle_normals, **kwargs)
-        self.add_children(self.triangles)
+        kwargs['location'] = grid_points
+        self.grid = Mob(**kwargs)
+        self.add_children(self.grid)
+        self.grid.is_primitive = True
+        self.is_primitive = True
+
+    def get_render_primitives(self):
+        grid = unsquish(self.grid.location, -2, self.grid_height)
+        if not self.ignore_normals:
+            grid_x_plus_1 = grid.roll(-1,-3)
+            grid_x_minus_1 = grid.roll(1,-3)
+            grid_y_plus_1 = grid.roll(-1,-2)
+            grid_y_minus_1 = grid.roll(1, -2)
+            triangle_sides = unsquish(torch.stack((grid_x_minus_1, grid_y_minus_1,
+                                                   grid_y_minus_1, grid_x_plus_1,
+                                                   grid_x_plus_1, grid_y_plus_1,
+                                                   grid_y_plus_1, grid_x_minus_1
+                                                   ), -2) - grid.unsqueeze(-2), -2, 2)
+            triangle_normals = broadcast_cross_product(triangle_sides[...,0,:], triangle_sides[...,1,:])
+            triangle_normals[...,  0, :, [0,3], :] = 0
+            triangle_normals[..., -1, :, [1,2], :] = 0
+            triangle_normals[..., :, 0, [0,1], :] = 0
+            triangle_normals[..., :, -1, [2, 3], :] = 0
+            vertex_normals = -F.normalize(triangle_normals.sum(-2), p=2, dim=-1)
+            vertex_normals = grid_to_triangle_vertices(vertex_normals)
+        else:
+            vertex_normals = None
+
+        color = self.grid.color
+        if color.shape[-2] == 1:
+            color = color.expand(*[-1 for _ in color.shape[:-2]], grid.shape[-2]*grid.shape[-3], -1)
+
+        return TrianglePrimitive(corners=grid_to_triangle_vertices(grid),
+                                 colors=grid_to_triangle_vertices(unsquish(color, -2, self.grid_height)),
+                                 normals=vertex_normals,
+                                 )
 
     def coord_function(self, uv:torch.Tensor):
         """Default function used to map intrinsic coordinates to world space to define
@@ -136,11 +172,8 @@ class Surface(Mob):
             #self.set_normal_by_function(other_surface.normal_function)
 
     def set_location_by_function(self, function):
-        new_loc = grid_to_triangle_vertices(function(self.get_base_grid()) + self.location)
-        new_triangles = TriangleTriangulated(new_loc, normals=None, add_to_scene=False)
-        with Sync():
-            self.triangles.location = new_triangles.location
-            self.triangles.corners.location = new_triangles.corners.location
+        new_loc = squish(function(self.get_base_grid()), -3, -2) + self.location
+        self.grid.location = new_loc
         return self
 
     def set_normal_by_function(self, function):

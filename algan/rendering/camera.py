@@ -22,7 +22,7 @@ class Camera(Mob):
             self.is_primitive = True
             self.add_children(self.screen)
             #self.look_at(ORIGIN)
-            self.light_source_location = self.location + UP * 1 + RIGHT*0.5 + OUT*1
+            self.light_source_location = self.location + UP * 1 + RIGHT*5 + OUT*1
             self.light_color = WHITE.clone()
             #self.light_color[-2] = 0.0#1
             coord2_range = self.scene.num_pixels_screen_width / self.scene.num_pixels_screen_height

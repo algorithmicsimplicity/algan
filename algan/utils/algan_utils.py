@@ -87,7 +87,7 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             scene.camera = Camera(False)
 
 
-def render_all_funcs(module_name, render_settings=None, profile=False, overwrite=True, start_index=0,
+def render_all_funcs(module_name, render_settings=None, profile=True, overwrite=True, start_index=0,
                      max_rendered=-1, output_dir=None, output_path=None, **kwargs):
     def run(output_dir=None, render_settings=None, output_path=None):
         with torch.inference_mode():
