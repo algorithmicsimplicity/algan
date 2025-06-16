@@ -1,0 +1,25 @@
+﻿shaders
+=======
+
+.. currentmodule:: algan.rendering.shaders
+
+.. automodule:: algan.rendering.shaders
+
+   
+   
+   .. autoaliasattr:: algan.rendering.shaders
+
+   
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

@@ -1,0 +1,36 @@
+﻿shapes\_3d
+==========
+
+.. currentmodule:: algan.mobs.shapes_3d
+
+.. automodule:: algan.mobs.shapes_3d
+
+   
+   
+   .. autoaliasattr:: algan.mobs.shapes_3d
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        Cylinder
+      
+        Sphere
+      
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

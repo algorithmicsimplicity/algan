@@ -1,0 +1,42 @@
+﻿primitive
+=========
+
+.. currentmodule:: algan.rendering.primitives.primitive
+
+.. automodule:: algan.rendering.primitives.primitive
+
+   
+   
+   .. autoaliasattr:: algan.rendering.primitives.primitive
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        RenderPrimitive
+      
+        RenderPrimitive2D
+      
+   
+   
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Exceptions
+
+   .. autosummary::
+   
+      OutOfRenderMemory
+   
+   
+
+
+

@@ -1,0 +1,40 @@
+BezierCircuitCubic
+==================
+
+Qualified name: ``algan.mobs.bezier\_circuit.BezierCircuitCubic``
+
+.. currentmodule:: algan.mobs.bezier_circuit
+
+.. autoclass:: BezierCircuitCubic
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~BezierCircuitCubic.get_animatable_attrs
+      ~BezierCircuitCubic.get_default_color
+      ~BezierCircuitCubic.get_render_primitives
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~BezierCircuitCubic.animation_manager
+     ~BezierCircuitCubic.basis
+     ~BezierCircuitCubic.color
+     ~BezierCircuitCubic.glow
+     ~BezierCircuitCubic.location
+     ~BezierCircuitCubic.max_opacity
+     ~BezierCircuitCubic.metallicness
+     ~BezierCircuitCubic.normalized_basis
+     ~BezierCircuitCubic.opacity
+     ~BezierCircuitCubic.scale_coefficient
+     ~BezierCircuitCubic.smoothness
+   

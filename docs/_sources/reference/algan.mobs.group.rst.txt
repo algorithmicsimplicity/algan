@@ -1,0 +1,34 @@
+﻿group
+=====
+
+.. currentmodule:: algan.mobs.group
+
+.. automodule:: algan.mobs.group
+
+   
+   
+   .. autoaliasattr:: algan.mobs.group
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        Group
+      
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

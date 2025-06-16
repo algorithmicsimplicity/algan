@@ -1,0 +1,22 @@
+TimeInterval
+============
+
+Qualified name: ``algan.animation.animatable.TimeInterval``
+
+.. currentmodule:: algan.animation.animatable
+
+.. autoclass:: TimeInterval
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   

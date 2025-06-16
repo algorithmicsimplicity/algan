@@ -1,0 +1,32 @@
+RenderPrimitive
+===============
+
+Qualified name: ``algan.rendering.primitives.primitive.RenderPrimitive``
+
+.. currentmodule:: algan.rendering.primitives.primitive
+
+.. autoclass:: RenderPrimitive
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~RenderPrimitive.blend_frags_to_pixels
+      ~RenderPrimitive.expand_verts_to_frags
+      ~RenderPrimitive.get_batch_identifier
+      ~RenderPrimitive.get_tensor
+      ~RenderPrimitive.get_tensor_from_memory
+      ~RenderPrimitive.post_process_frames
+      ~RenderPrimitive.render
+      ~RenderPrimitive.render_
+      ~RenderPrimitive.render_window
+      ~RenderPrimitive.save_frames
+
+   
+   

@@ -1,0 +1,24 @@
+BezierCircuitPrimitive
+======================
+
+Qualified name: ``algan.rendering.primitives.bezier\_circuit\_primitive.BezierCircuitPrimitive``
+
+.. currentmodule:: algan.rendering.primitives.bezier_circuit_primitive
+
+.. autoclass:: BezierCircuitPrimitive
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~BezierCircuitPrimitive.get_batch_identifier
+      ~BezierCircuitPrimitive.render_
+
+   
+   

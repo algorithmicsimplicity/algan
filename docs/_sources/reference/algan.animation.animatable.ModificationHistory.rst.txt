@@ -1,0 +1,26 @@
+ModificationHistory
+===================
+
+Qualified name: ``algan.animation.animatable.ModificationHistory``
+
+.. currentmodule:: algan.animation.animatable
+
+.. autoclass:: ModificationHistory
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~ModificationHistory.get_history
+      ~ModificationHistory.insert_attr_modification
+      ~ModificationHistory.insert_function_application
+      ~ModificationHistory.overwrite_attr_history
+
+   
+   

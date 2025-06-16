@@ -1,0 +1,37 @@
+Text
+====
+
+Qualified name: ``algan.mobs.text.Text``
+
+.. currentmodule:: algan.mobs.text
+
+.. autoclass:: Text
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Text.animation_manager
+     ~Text.basis
+     ~Text.color
+     ~Text.glow
+     ~Text.location
+     ~Text.max_opacity
+     ~Text.metallicness
+     ~Text.normalized_basis
+     ~Text.opacity
+     ~Text.scale_coefficient
+     ~Text.smoothness
+   

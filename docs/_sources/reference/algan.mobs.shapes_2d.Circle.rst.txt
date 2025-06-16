@@ -1,0 +1,39 @@
+Circle
+======
+
+Qualified name: ``algan.mobs.shapes\_2d.Circle``
+
+.. currentmodule:: algan.mobs.shapes_2d
+
+.. autoclass:: Circle
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~Circle.get_default_color
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Circle.animation_manager
+     ~Circle.basis
+     ~Circle.color
+     ~Circle.glow
+     ~Circle.location
+     ~Circle.max_opacity
+     ~Circle.metallicness
+     ~Circle.normalized_basis
+     ~Circle.opacity
+     ~Circle.radius
+     ~Circle.scale_coefficient
+     ~Circle.smoothness
+   

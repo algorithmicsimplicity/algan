@@ -1,0 +1,41 @@
+Cylinder
+========
+
+Qualified name: ``algan.mobs.shapes\_3d.Cylinder``
+
+.. currentmodule:: algan.mobs.shapes_3d
+
+.. autoclass:: Cylinder
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~Cylinder.coord_function
+      ~Cylinder.move_between_points
+      ~Cylinder.normal_function
+      ~Cylinder.set_start_point
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Cylinder.animation_manager
+     ~Cylinder.basis
+     ~Cylinder.color
+     ~Cylinder.glow
+     ~Cylinder.location
+     ~Cylinder.max_opacity
+     ~Cylinder.metallicness
+     ~Cylinder.normalized_basis
+     ~Cylinder.opacity
+     ~Cylinder.scale_coefficient
+     ~Cylinder.smoothness
+   

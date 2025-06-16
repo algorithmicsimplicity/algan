@@ -1,0 +1,23 @@
+=======
+Shaders
+=======
+
+In rendering pipelines, the *shader* is responsible for determining
+how the brightness and color of objects changes when light is cast on them.
+
+.. important::
+
+    Currently shaders are only implemented for 3-D objects! 2-D objects
+    do not interact with lighting.
+
+By default, Algan will use the :func:`.basic_pbr_shader` function to shade Mobs.
+This function implements a simplified physics-based rendering shader, which uses
+the metallicness and smoothness of the surface of an object to compute diffuse
+and specular lighting. :attr:`~.Mob.metallicness` and :attr:`~.Mob.smoothness`
+are also animatable attributes of class :class:`~.Mob`, by default they are both
+set to 0.5. You can change these values to get different lighting effects.
+
+You can also write your own shader program. Just write a function with
+the same signature as :func:`.basic_pbr_shader`. You can then use
+:meth:`~.Mob.set_shader` with your function as the argument to set individual mobs
+to use your custom shader.

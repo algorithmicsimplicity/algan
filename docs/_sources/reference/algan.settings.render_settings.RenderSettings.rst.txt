@@ -1,0 +1,31 @@
+RenderSettings
+==============
+
+Qualified name: ``algan.settings.render\_settings.RenderSettings``
+
+.. currentmodule:: algan.settings.render_settings
+
+.. autoclass:: RenderSettings
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~RenderSettings.anti_alias_level
+     ~RenderSettings.audio_frames_per_second
+     ~RenderSettings.frames_per_second
+     ~RenderSettings.save_image
+     ~RenderSettings.resolution
+   

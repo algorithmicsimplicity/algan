@@ -1,0 +1,45 @@
+Lag
+===
+
+Qualified name: ``algan.animation.animation\_contexts.Lag``
+
+.. currentmodule:: algan.animation.animation_contexts
+
+.. autoclass:: Lag
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Lag.combine_rate_func
+     ~Lag.finished
+     ~Lag.lag_ratio
+     ~Lag.new_animation
+     ~Lag.prev_context
+     ~Lag.priority_level
+     ~Lag.rate_func
+     ~Lag.rate_func_compose
+     ~Lag.record_attr_modifications
+     ~Lag.record_funcs
+     ~Lag.run_time
+     ~Lag.run_time_unit
+     ~Lag.same_run_time
+     ~Lag.spawn_at_end
+     ~Lag.trace_mode
+     ~Lag.traced_mobs
+     ~Lag.new_mobs
+     ~Lag.child_contexts
+     ~Lag.kwargs
+   

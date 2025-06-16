@@ -1,0 +1,34 @@
+﻿render\_settings
+================
+
+.. currentmodule:: algan.settings.render_settings
+
+.. automodule:: algan.settings.render_settings
+
+   
+   
+   .. autoaliasattr:: algan.settings.render_settings
+
+   
+   
+   .. rubric:: Classes
+
+   .. autosummary::
+      :toctree: .
+      :nosignatures:
+      
+        RenderSettings
+      
+   
+   
+
+   
+   
+   
+
+   
+   
+   
+
+
+

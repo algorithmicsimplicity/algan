@@ -1,0 +1,47 @@
+NoExtra
+=======
+
+Qualified name: ``algan.animation.animation\_contexts.NoExtra``
+
+.. currentmodule:: algan.animation.animation_contexts
+
+.. autoclass:: NoExtra
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~NoExtra.on_create
+      ~NoExtra.on_destroy
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~NoExtra.combine_rate_func
+     ~NoExtra.finished
+     ~NoExtra.lag_ratio
+     ~NoExtra.new_animation
+     ~NoExtra.prev_context
+     ~NoExtra.priority_level
+     ~NoExtra.rate_func
+     ~NoExtra.rate_func_compose
+     ~NoExtra.record_attr_modifications
+     ~NoExtra.record_funcs
+     ~NoExtra.run_time
+     ~NoExtra.run_time_unit
+     ~NoExtra.same_run_time
+     ~NoExtra.spawn_at_end
+     ~NoExtra.trace_mode
+     ~NoExtra.traced_mobs
+     ~NoExtra.new_mobs
+     ~NoExtra.child_contexts
+     ~NoExtra.kwargs
+   

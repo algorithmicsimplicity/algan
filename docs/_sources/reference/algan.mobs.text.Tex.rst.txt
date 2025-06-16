@@ -1,0 +1,48 @@
+Tex
+===
+
+Qualified name: ``algan.mobs.text.Tex``
+
+.. currentmodule:: algan.mobs.text
+
+.. autoclass:: Tex
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~Tex.create_character_mobs
+      ~Tex.default_color
+      ~Tex.get_boundary_points_test
+      ~Tex.highlight
+      ~Tex.highlight_off
+      ~Tex.on_create
+      ~Tex.on_destroy
+      ~Tex.set_color
+      ~Tex.set_fill_width
+      ~Tex.set_size
+      ~Tex.set_text
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Tex.animation_manager
+     ~Tex.basis
+     ~Tex.color
+     ~Tex.glow
+     ~Tex.location
+     ~Tex.max_opacity
+     ~Tex.metallicness
+     ~Tex.normalized_basis
+     ~Tex.opacity
+     ~Tex.scale_coefficient
+     ~Tex.smoothness
+   

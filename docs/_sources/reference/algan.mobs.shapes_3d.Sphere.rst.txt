@@ -1,0 +1,39 @@
+Sphere
+======
+
+Qualified name: ``algan.mobs.shapes\_3d.Sphere``
+
+.. currentmodule:: algan.mobs.shapes_3d
+
+.. autoclass:: Sphere
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~Sphere.coord_function
+      ~Sphere.normal_function
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~Sphere.animation_manager
+     ~Sphere.basis
+     ~Sphere.color
+     ~Sphere.glow
+     ~Sphere.location
+     ~Sphere.max_opacity
+     ~Sphere.metallicness
+     ~Sphere.normalized_basis
+     ~Sphere.opacity
+     ~Sphere.scale_coefficient
+     ~Sphere.smoothness
+   

@@ -1,0 +1,31 @@
+﻿pbr\_shaders
+============
+
+.. currentmodule:: algan.rendering.shaders.pbr_shaders
+
+.. automodule:: algan.rendering.shaders.pbr_shaders
+
+   
+   
+   .. autoaliasattr:: algan.rendering.shaders.pbr_shaders
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Functions
+
+   
+   .. autofunction:: basic_pbr_shader
+   .. autofunction:: default_shader
+   
+   
+
+   
+   
+   
+
+
+
