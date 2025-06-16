@@ -60,8 +60,35 @@ on your machine. Open a terminal to run
 ```bash
 uv python install
 ```
-to install the latest version of Python. If this is successful, continue
-to the next step.
+to install the latest version of Python. 
+
+Once installed, we can create a new folder 'alganimations' and create a uv virtual 
+environment by running these commands
+
+::::{tab-set}
+:::{tab-item} MacOS and Linux
+```bash
+uv init alganimations
+cd alganimations
+uv venv
+source .venv/bin/activate
+```
+:::
+:::{tab-item} Windows
+```powershell
+uv init alganimations
+cd alganimations
+uv venv
+.venv/Scripts/activate
+```
+:::
+::::
+
+The final command activates the virtual environment we just created.
+This means that any commands to install Python packages will install to this folder,
+and the Python command will
+use the interpreter installed to this folder. Ensure that this environment is active for the rest
+of the installation process.
 
 (installation-optional-latex)=
 ### Step 2 (optional): Installing LaTeX
@@ -74,9 +101,9 @@ and widely used typesetting system allowing you to write formulas like
 = \frac{f^{(n)}(z_0)}{n!}.
 \end{equation*}
 
-If rendering plain text is sufficient for your needs and you don't want
-to render any typeset formulas, you can technically skip this step. Otherwise
-select your operating system from the tab list below and follow the instructions.
+Algan uses LaTeX to generate its text. If you never intend to render text, then
+you can technically skip this step. Otherwise select your operating system from the tab 
+list below and follow the instructions.
 
 :::::{tab-set}
 
@@ -134,28 +161,16 @@ setspace standalone tipa wasy wasysym xcolor xetex xkeyval
 ```
 :::
 
-### Step 3: Installing Pytorch
+### Step 3: Installing PyTorch
 
-The first thing we will do is create a new project using uv. Copy-paste
-the following commands into your terminal.
-
-```bash
-uv init alganimations
-cd alganimations
-uv venv
-.venv/Scripts/activate
-```
-
-This creates a new virtual environment where all of our packages will be installed to.
-
-Algan is built on top of Pytorch, to provide GPU accelerated animations and rendering.
+Algan is built on top of PyTorch, to provide GPU accelerated animations and rendering.
 Depending on your operating system and GPU hardware, you will need to install different
-versions of Pytorch.
+versions of PyTorch.
 
-Head over to [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) and 
-to find the instructions for installing Pytorch.
+Head over to [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) 
+and you should see a bunch of options to choose from.
 
-* For the Pytorch build select `Stable`.
+* For the PyTorch build select `Stable`.
 
 * Select your operating system.
 
@@ -166,56 +181,138 @@ to find the instructions for installing Pytorch.
 * For the compute platform, you need to select the right version for your
  computer's GPU hardware. If you are using an NVIDIA GPU you want to select
  the latest version of CUDA. If you are using an AMD GPU you will want to
- select ROCm. Otherwise, select CPU.
+ select ROCm. Otherwise, you can select CPU to run without GPU acceleration.
 
-In the "Run this command" box there should now be a line of text, something like
+There should now be a pip3 command shown in the "Run this Command" box. Since we are using
+uv to manage our packages, we need to modify the this command to use uv.
+Simply replace the `pip3` at the start of the command with `uv pip`.
+For example, PyTorch shows me the command
 
-"pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128".
+`pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128`
 
-Copy-paste the command from the Pytorch website, change pip3 to pip, and prepend uv to it.
-Now run this command (with uv prepended) in your terminal.
-e.g.
+So I would run
+
 ```bash
 uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 ```
 
-Once uv has finished installing Pytorch, you can check that it was
-successful by running this in your terminal
+If no error message is shown, then installation was successful and you can move on
+to installing Algan.
 
-```bash
-python -c "import torch; print('Success!')"
+### Step 4 (optional): Installing Manim 
+
+Algan is a work in progress, and currently our selection of built-in objects is
+relatively limited. To make up for this, we provide functionality to import
+objects created in Manim into Algan, allowing you to make use of Manim's much
+more extensive library of built in objects. In order to import Manim objects,
+you need to install Manim. If Algan's built in library is enough for needs,
+you can skip this step.
+
+Otherwise, follow the below instructions for your
+operating system.
+
+::::::{tab-set}
+
+:::::{tab-item} Windows
+
+Run this command
+```powershell
+uv add manim
 ```
 
-Finally, we need to install the torch-scatter extension package.
-Take this command
+:::::
 
-uv pip install torch-scatter -f https://data.pyg.org/whl/torch-2.7.0+{CUDA}.html
+:::::{tab-item} MacOS
+Before we can install Manim, we need to make sure that the system utilities
+`cairo` and `pkg-config` are present. They are needed for the [`pycairo` Python
+package](https://pycairo.readthedocs.io/en/latest/), a dependency of Manim.
 
-and replace {CUDA} with the version of CUDA you installed previously, either cpu, cu118, cu126, or cu128.
-Then run it in your terminal.
-
-e.g.
-
-```bash
-uv pip install torch-scatter -f https://data.pyg.org/whl/torch-2.7.0+cu128.html
-```
-
-Finally, check that installation was successful with this
+The easiest way of installing these utilities is by using [Homebrew](https://brew.sh/),
+a fairly popular 3rd party package manager for MacOS. Check whether Homebrew is
+already installed by running
 
 ```bash
-python -c "import torch_scatter; print('Success!')"
+brew --version
 ```
 
-### Step 4: Installing Algan
+which will report something along the lines of `Homebrew 4.4.15-54-...`
+if it is installed, and a message `command not found: brew` otherwise. In this
+case, use the shell installer [as instructed on Homebrew's website](https://brew.sh/),
+or get a `.pkg`-installer from
+[their GitHub release page](https://github.com/Homebrew/brew/releases). Make sure to
+follow the instructions of the installer carefully, especially when prompted to
+modify your `.zprofile` to add Homebrew to your system's PATH.
 
-Once Pytorch with torch-scatter has successfully been installed,
-you can proceed to install Algan by running this command in your terminal:
+With Homebrew available, the required utilities can be installed by running
+
+```bash
+brew install cairo pkg-config
+```
+
+With all of this preparation out of the way, now it is time to actually install
+Manim itself!
+
+```bash
+uv add manim
+```
+:::::
+
+:::::{tab-item} Linux
+Linux requires some additional dependencies to build 
+[ManimPango](https://github.com/ManimCommunity/ManimPango)
+(and potentially [pycairo](https://pycairo.readthedocs.io/en/latest/))
+from source. More specifically, this includes:
+
+- A C compiler,
+- Python's development headers,
+- the `pkg-config` tool,
+- Pango and its development headers,
+- and Cairo and its development headers.
+
+Instructions for popular systems / package managers are given below.
+
+::::{tab-set}
+
+:::{tab-item} Debian-based / apt
+```bash
+sudo apt update
+sudo apt install build-essential python3-dev libcairo2-dev libpango1.0-dev
+```
+:::
+
+:::{tab-item} Fedora / dnf
+```bash
+sudo dnf install python3-devel pkg-config cairo-devel pango-devel
+```
+:::
+
+:::{tab-item} Arch Linux / pacman
+```bash
+sudo pacman -Syu base-devel cairo pango
+```
+:::
+
+::::
+
+As soon as the required dependencies are installed, you can run
+```bash
+uv add manim
+```
+
+:::::
+
+::::::
+
+### Step 5: Installing Algan
+
+Once PyTorch has successfully been installed,
+you can proceed to install Algan by entering the following command in your terminal/powershell:
 
 ```bash
 uv pip install --extra-index-url https://test.pypi.org/simple/ algan --index-strategy unsafe-best-match
 ```
 
-If it works with no errors, then you are ready to Alganimate!
+If it completes with no errors, then you are ready to Alganimate!
 
 At this point, you can also open your project folder with the
 IDE of your choice. All modern Python IDEs (for example VS Code

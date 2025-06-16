@@ -97,6 +97,7 @@ from docutils import nodes
 from docutils.parsers.rst import Directive, directives
 from docutils.statemachine import StringList
 
+import algan.defaults.batch_defaults
 from algan.settings.render_settings import QUALITIES
 
 if TYPE_CHECKING:
@@ -307,6 +308,8 @@ class AlganDirective(Directive):
                 video_dir = config.get_dir("video_dir")
                 algan.defaults.directory_defaults.DEFAULT_OUTPUT_FILENAME = f'{output_file}'
                 algan.defaults.directory_defaults.DEFAULT_OUTPUT_DIRECTORY = video_dir
+                algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_FRAMES = 1
+                algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_ACTORS = 10
                 run_time = timeit(lambda: exec("\n".join(code), globals()), number=1)
                 images_dir = config.get_dir("images_dir")
         except Exception as e:

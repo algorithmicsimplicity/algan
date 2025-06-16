@@ -21,9 +21,20 @@ classifiers = [
     ]
 
 
-requires-python = ">=3.10,<=3.12"
+requires-python = ">=3.9,<3.13"
 
 dependencies = [
+    # from manim
+    "click>=8.0",
+    "cloup>=2.0.0",
+    "decorator>=4.3.2",
+    "beautifulsoup4>=4.12",
+    "pygments>=2.0.0",
+    "isosurfaces>=0.1.0",
+    "skia-pathops>=0.7.0",
+    "mapbox-earcut>=1.0.0",
+    # for algan
+
     "dendroid>=1.6.0",
     "prioq>=0.6.0",
     "reprit>=0.9.0",
@@ -34,9 +45,6 @@ dependencies = [
     "svgelements>=1.0.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
-    # "torch-scatter==2.1.2 ; sys_platform == 'darwin'", # ; sys_platform == 'linux'",
-    "torch-scatter>=2.0.0",#+pt27cu128",
-    "manim>=0.18.0",
 ]
 
 
@@ -50,7 +58,8 @@ homepage = "https://github.com/algorithmicsimplicity/algan"
 
 [dependency-groups]
 dev = [
-    'parameterized>=0.9.0',
+    "manim>=0.18.0",
+    "parameterized>=0.9.0",
     "furo>=2024.8.6",
     "gitpython>=3.1.44",
     "matplotlib>=3.9.4",

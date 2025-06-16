@@ -18,7 +18,9 @@ Running Your First Algan Program
 
 The quickest way to start creating animations with Algan is to write a Python script and execute it.
 
-Let's make a very simple animation. Create a new file named ``my_first_algan.py``, copy the code provided below into it, and then run it from your terminal using ``python my_first_algan.py``.
+Let's make a very simple animation. Create a new file named ``my_first_algan.py``,
+copy the code provided below into it, and then run it from your terminal
+using ``uv run python my_first_algan.py``.
 
 .. algan:: GettingStartedHelloWorld
 

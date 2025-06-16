@@ -11,11 +11,13 @@ import torch
 import cv2
 
 import algan
+from algan import compiled
 from algan.animation.animation_contexts import AnimationManager, Off
 from algan.rendering.camera import Camera
 from algan.scene_tracker import SceneTracker
 
 
+@compiled
 def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec='h264', **kwargs):
     """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
     as captured by the active :class:`~.Camera`, and saves the video to a file.
@@ -87,6 +89,7 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             scene.camera = Camera(False)
 
 
+@compiled
 def render_all_funcs(module_name, render_settings=None, profile=True, overwrite=True, start_index=0,
                      max_rendered=-1, output_dir=None, output_path=None, **kwargs):
     def run(output_dir=None, render_settings=None, output_path=None):

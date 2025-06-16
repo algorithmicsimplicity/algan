@@ -1,5 +1,4 @@
 import torch
-from manim import Mobject
 
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
@@ -11,14 +10,14 @@ class ManimMob(BezierCircuitCubic):
 
     Parameters
     ----------
-    manim_mob
+    manim_mob : manim.Mobject
         The Manim Mobject which will be converted into an Algan Mob. It must be
         a bezier-circuit based object.
     **kwargs
         Passed to :class:`~.BezierCircuitCubic` .
 
     """
-    def __init__(self, manim_mob:Mobject, **kwargs):
+    def __init__(self, manim_mob, **kwargs):
         manim_scale_factor = 1
         children = []
         for submob in manim_mob.submobjects:

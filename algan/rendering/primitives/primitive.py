@@ -3,6 +3,7 @@ import torchvision
 import torch.nn.functional as F
 import sys
 import traceback
+import gc
 
 from algan.constants.color import BLUE, BLACK
 from algan.geometry.geometry import intersect_line_with_plane
@@ -71,8 +72,6 @@ class RenderPrimitive:
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback.clear_frames(exc_traceback)
             #exc_traceback.tb_next.tb_frame.clear()
-            #gc.collect()
-            #torch.cuda.empty_cache()
 
             if (time_end - time_start) > 1:
                 m = time_start + (time_end - time_start)//2
@@ -94,12 +93,16 @@ class RenderPrimitive:
                                                             (window[0], ym, xm, window[3]),
                                                             (xm, ym, window[2], window[3])]]
 
+                gc.collect()
+                torch.cuda.empty_cache()
                 frames = torch.cat((torch.cat((frames[0], frames[1]), 1), torch.cat((frames[2], frames[3]), 1)), 0)
                 frame_shape = frames.shape
                 frames = (_ for _ in [frames])
                 if frame_shape[1] == kwargs['screen_width'] and frame_shape[0] == kwargs['screen_height']:
                     self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'])
-                return frames
+                    return None
+                else:
+                    return frames
             # old code for splittin based on scene objects, not used anymore as we split on window size.
 
             m = object_start + (object_end - object_start)/2

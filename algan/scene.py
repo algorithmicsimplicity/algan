@@ -8,9 +8,8 @@ import warnings
 import torch
 import torch.nn.functional as F
 
+import algan
 from algan.animation.animation_contexts import Sync, AnimationManager, Off
-from algan.defaults.batch_defaults import DEFAULT_BATCH_SIZE_FRAMES, DEFAULT_BATCH_SIZE_ACTORS, \
-    DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
 from algan.defaults.render_defaults import DEFAULT_RENDER_SETTINGS
 from algan.defaults.style_defaults import DEFAULT_FRAME
@@ -175,10 +174,14 @@ class Scene:
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
 
     def render_to_video(self, file_writer, file_path, file_path_out, audio_file_path,
-                        batch_size_actors=DEFAULT_BATCH_SIZE_ACTORS, batch_size_frames=DEFAULT_BATCH_SIZE_FRAMES):
+                        batch_size_actors=None, batch_size_frames=None):
         self.scene_times.append((self.scene_times[-1][1], (math.ceil(AnimationManager.instance().context.end_time * self.frames_per_second)+1)))
         self.initialize_frames()
 
+        if batch_size_actors is None:
+            batch_size_actors = algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_ACTORS
+        if batch_size_frames is None:
+            batch_size_frames = algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_FRAMES
         self.camera.despawn(animate=False)
         self.actors = [[self.camera, self.camera.screen, *self.actors[-1]]]
         save_image = False
@@ -333,6 +336,7 @@ class SceneTracker:
         if cls._instance is None:
             if cls._memory is None:
                 #TODO make this work for CPU
-                cls._memory = ManualMemory(((int((torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0))*DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING))))
+                cls._memory = ManualMemory(((int((torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0))
+                                                 *algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING))))
             cls._instance = Scene(memory=cls._memory)
         return cls._instance

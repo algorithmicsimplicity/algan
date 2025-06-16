@@ -408,6 +408,12 @@ def scatter_arg_max(x, inds, dim=-1, dim_size=None):
         torch.diff(sorted_inds) != 0
     ])
 
-    argmax_inds = sorted_indices[is_new_mask][1:]
+    argmax_inds = sorted_indices[is_new_mask]
+    if sorted_inds[0] == -1:
+        if len(argmax_inds) == 1:
+            argmax_inds = argmax_inds[:0]
+        elif len(argmax_inds) > 1:
+            argmax_inds = argmax_inds[1:]#sorted_indices[is_new_mask]
+
     max_vals = broadcast_gather(x, -1, argmax_inds)
     return max_vals, argmax_inds

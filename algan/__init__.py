@@ -1,6 +1,6 @@
 from importlib.metadata import version
 
-__version__ = version(__name__)
+__version__ = '0.0.7'# version(__name__)
 
 import os
 import shutil
@@ -10,9 +10,24 @@ torch.set_grad_enabled(False)
 c = torch.inference_mode()
 c.__enter__()
 
+try:
+    @torch.compile
+    def _dummy_func(x):
+        return x + 1
+
+    # Test the dummy function
+    _dummy_func(torch.tensor(1.0))
+
+    compiled = torch.compile
+    print('using torch.compile')
+except:
+    compiled = lambda x: x
+
+from algan.defaults.batch_defaults import *
 from algan.defaults.device_defaults import *
 from algan.defaults.style_defaults import *
 from algan.defaults.render_defaults import *
+from algan.defaults.directory_defaults import *
 
 from algan.settings.render_settings import *
 

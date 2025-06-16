@@ -2,7 +2,7 @@ import copy
 
 import numpy
 import torch.nn.functional as F
-import manim as mn
+import algan.external_libraries.manim as mn
 from svgelements import Path, Line, Move, Close
 import pathlib
 
@@ -16,8 +16,8 @@ from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
 
 
-class Text(Mob):
-    """Mob for displaying text.
+class Tex(Mob):
+    """Mob for displaying tex.
 
     Parameters
     ----------
@@ -29,7 +29,11 @@ class Text(Mob):
         Passed to :class:`~.Mob`.
 
     """
-    def __init__(self, text:str, font_size:float=48, latex=False, debug=False, **kwargs):
+    def __init__(self, text:str, font_size:float=48, latex=True, debug=False, **kwargs):
+        if 'preamble' in kwargs:
+            kwargs['tex_template'] = mn.TexTemplate(preamble=_DEFAULT_PREAMBLE + '\n' + kwargs['preamble'])
+            del kwargs['preamble']
+
         if 'color' not in kwargs:
             kwargs['color'] = DEFAULT_TEXT_COLOR
 
@@ -115,32 +119,28 @@ class Text(Mob):
         #s = 0.105 * self.size / 100
         s = 0.02 * 45 / 100
         self.convert_ratio = (0.105 * self.font_size / 100) / s
-        if self.latex:
-            manim_kwargs = {k: v for k, v in kwargs.items()}
-            if 'color' in manim_kwargs:
-                del manim_kwargs['color']
-            if 'scale' in manim_kwargs:
-                del manim_kwargs['scale']
-            if 'use_cache' in manim_kwargs:
-                del manim_kwargs['use_cache']
-            if 'add_to_scene' in manim_kwargs:
-                del manim_kwargs['add_to_scene']
-            if 'create' in manim_kwargs:
-                del manim_kwargs['create']
-            text = mn.MathTex(text, **manim_kwargs)
+        manim_kwargs = {k: v for k, v in kwargs.items()}
+        if 'color' in manim_kwargs:
+            del manim_kwargs['color']
+        if 'scale' in manim_kwargs:
+            del manim_kwargs['scale']
+        if 'use_cache' in manim_kwargs:
+            del manim_kwargs['use_cache']
+        if 'add_to_scene' in manim_kwargs:
+            del manim_kwargs['add_to_scene']
+        if 'create' in manim_kwargs:
+            del manim_kwargs['create']
+        text = (mn.MathTex if self.latex else mn.Tex)(text, **manim_kwargs)
 
-            def get_rect_as_path(ps):
-                ps = ps[...,:2].astype(numpy.float32)
-                ps = numpy.flip(ps, 0)
-                vmob = mn.VMobjectFromSVGPath(Path(Move(ps[0]), Close(ps[0], ps[0]), *([(Line)(ps[i*4], ps[(i+1)*4-1]) for i in range(4)]), Move(ps[0])))
-                vmob.needs_to_reverse = True
-                return vmob
+        def get_rect_as_path(ps):
+            ps = ps[...,:2].astype(numpy.float32)
+            ps = numpy.flip(ps, 0)
+            vmob = mn.VMobjectFromSVGPath(Path(Move(ps[0]), Close(ps[0], ps[0]), *([(Line)(ps[i*4], ps[(i+1)*4-1]) for i in range(4)]), Move(ps[0])))
+            vmob.needs_to_reverse = True
+            return vmob
 
-            svg_mobs = [[__ if isinstance(__, mn.VMobjectFromSVGPath) else get_rect_as_path(_.original_points[i]) for i, __ in enumerate(_.submobjects)] for _ in text.submobjects]
-            svg_mobs = [x for l in svg_mobs for x in l]
-        else:
-            text = mn.Text(text)
-            svg_mobs = text.chars
+        svg_mobs = [[__ if isinstance(__, mn.VMobjectFromSVGPath) else get_rect_as_path(_.original_points[i]) for i, __ in enumerate(_.submobjects)] for _ in text.submobjects]
+        svg_mobs = [x for l in svg_mobs for x in l]
 
         all_points = torch.cat([torch.stack([point_to_tensor2(_.end) for _ in c.path_obj], 0) for c in svg_mobs]).flip(-1)
         mx_point = all_points.amax(0)
@@ -170,7 +170,7 @@ class Text(Mob):
         self.mx_point = torch.cat((torch.zeros_like(mx_point[..., :1]), mx_point), -1)
 
         with Off():
-            self.character_mobs = TriangulatedBezierCircuit([c.path_obj for c in svg_mobs], invert=self.latex, hash_keys=None, reverse_points=hasattr(svg_mobs[0], 'needs_to_reverse'), init=False, **kwargs)
+            self.character_mobs = TriangulatedBezierCircuit([c.path_obj for c in svg_mobs], invert=True, hash_keys=None, reverse_points=hasattr(svg_mobs[0], 'needs_to_reverse'), init=False, **kwargs)
 
     def get_boundary_points_test(self):
         return torch.stack((self.mn_point,
@@ -179,10 +179,10 @@ class Text(Mob):
                      self.mx_point), -2) + self.location.unsqueeze(-2)
 
 
-from manim.utils.tex import _DEFAULT_PREAMBLE
+from algan.external_libraries.manim.utils.tex import _DEFAULT_PREAMBLE
 
 
-class Tex(Text):
+class Text(Tex):
     """Mob for displaying LaTeX.
 
     Parameters
@@ -194,9 +194,4 @@ class Tex(Text):
 
     """
     def __init__(self, text, **kwargs):
-        if 'font_size' not in kwargs:
-            kwargs['font_size'] = 48
-        if 'preamble' in kwargs:
-            kwargs['tex_template'] = mn.TexTemplate(preamble=_DEFAULT_PREAMBLE + '\n' + kwargs['preamble'])
-            del kwargs['preamble']
-        super().__init__(text, latex=True, **kwargs)
+        super().__init__(text, latex=False, **kwargs)
