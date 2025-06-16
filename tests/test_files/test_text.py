@@ -14,7 +14,7 @@ from algan.utils.tensor_utils import unsquish, squish
 
 
 def text():
-    x = Tex("Hello", font_size=90)
+    x = Tex("Hello", font_size=90).spawn()
     #p = x.character_mobs[0].location
     c1 = x.character_mobs[0]
     with Seq():

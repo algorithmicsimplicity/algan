@@ -390,6 +390,8 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
 
 
 def scatter_arg_max(x, inds, dim=-1, dim_size=None):
+    if len(inds) == 0:
+        return None, None
     if False:#scatter_max_op is not None:
         return scatter_max_op(x, inds, -1, dim_size=dim_size)
     inds = inds.clone()

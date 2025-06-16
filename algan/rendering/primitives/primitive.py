@@ -5,7 +5,7 @@ import sys
 import traceback
 import gc
 
-from algan.constants.color import BLUE, BLACK
+from algan.constants.color import BLUE, BLACK, WHITE
 from algan.geometry.geometry import intersect_line_with_plane
 from algan.rendering.post_processing import bloom_filter
 from algan.utils.memory_utils import InsufficientMemoryException
@@ -164,6 +164,8 @@ class RenderPrimitive:
         def blend_colors(dists, inds, colors, out):
             for i in range(max_buffer_depth):
                 max_dist, max_ind = scatter_arg_max(dists, inds, -1, dim_size=out.shape[-2])
+                if max_ind is None:
+                    break
                 mask = ((0 < max_dist) & (max_dist < 1e12)).unsqueeze(-1)
 
                 dists.scatter_(-1, max_ind, -1.0)
@@ -317,19 +319,16 @@ class RenderPrimitive:
         inds = inds.view(-1)
         inds = inds[m]
         unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
+
         if light_origin is not None:
-            #cent = self.corners.mean(-2)
-            #normals = F.normalize(broadcast_cross_product(self.corners[...,0,:] - cent, self.corners[...,1,:] - cent).unsqueeze(-2), p=2, dim=-1)
-            #normals = self.normals
-            #views = F.normalize(ray_origin - self.corners, p=2, dim=-1)
-            incidences = F.normalize(corners - light_origin, p=2, dim=-1)
-            #reflects = F.normalize(incidences - 2 * normals * (dot_product(normals, incidences)), p=2, dim=-1)
-            #diffuse_factor = dot_product(views, reflects).relu_().pow_(0.5)
-            #diffuse_factor = (dot_product(-incidences, normals) * ((dot_product(views, normals) < 0).float()*2-1)).abs().relu_().pow_(10)
-            diffuse_factor = (dot_product(-incidences, normals)).relu_().pow_(5)
-            diffuse_factor = diffuse_factor * 0.5
+            light_intensity = 1
+            ambient_light_color = WHITE.to(corners.device)
+            ambient_light_intensity = 1
+            smoothness = select_time(self.metallicness)#0.5
+            metallic = select_time(self.smoothness)#0.5
             self_colors = colors.clone()
-            self_colors[...,:-1] = self_colors[...,:-1] * (1-diffuse_factor) + diffuse_factor * light_color[:-1]
+            self_colors[...,:-1] = self.shader(corners, normals, colors[...,:-1], ray_origin, smoothness, metallic,
+                    light_origin, light_color[...,:-1], light_intensity, ambient_light_color[...,:-1], ambient_light_intensity)
         else:
             self_colors = colors
 

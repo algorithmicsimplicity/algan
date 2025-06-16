@@ -450,6 +450,9 @@ class Animatable:
                 dd[key] = self.__getattribute__(key).expand(len(self.data.time_inds_materialized), -1, -1)
             return
         if (dd[key].shape[0] < n1) or (dd[key].shape[1] < n2):
+            if dd[key].shape[1] > 1 and (dd[key].shape[1] < n2):
+                dd[key] = torch.cat((dd[key], dd[key][:,-1:].expand(-1,n2-dd[key].shape[1],-1)), 1)
+                value = torch.cat((value, value[:,-1:].expand(-1,n2-value.shape[1],-1)), 1)
             dd[key] = dd[key].expand(n1, n2, -1).contiguous()
         old_value = dd[key]
         new_value = old_value.clone()

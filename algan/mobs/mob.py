@@ -76,9 +76,11 @@ class Mob(Animatable):
     """
 
     def __init__(self, location: torch.Tensor = ORIGIN, basis: torch.Tensor = squish(torch.eye(3)),
-                 color: Color | None = None, opacity: float = 1, glow: float = 0, *args, **kwargs):
+                 color: Color | None = None, opacity: float = 1, glow: float = 0,
+                 metallicness: float=0.5, smoothness:float=0.5, *args, **kwargs):
         self.register_attrs_as_animatable(
-            {'location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow'}, Mob)
+            {'location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow',
+             'metallicness', 'smoothness'}, Mob)
         self.recursing = True
         self.exclude_from_boundary = False
         super().__init__(*args, **kwargs)
@@ -106,7 +108,10 @@ class Mob(Animatable):
         self.max_opacity = cast_to_tensor(opacity)
         self.opacity = cast_to_tensor(1)  # Current opacity, can be animated
         self.glow = cast_to_tensor(glow)
+        self.metallicness = cast_to_tensor(metallicness)
+        self.smoothness = cast_to_tensor(smoothness)
         self.num_points_per_object = 1
+        self.shader = None
 
     def reset_basis(self):
         """Resets the Mob's basis to the identity matrix (no rotation, unit scale)."""
@@ -1603,7 +1608,7 @@ class Mob(Animatable):
         split_factors = [(repeat_indices == i).sum() for i in range(current_batch_size)]
 
         # Iterate over animatable attributes and expand their batch dimensions
-        for attr in ['location', 'opacity', 'color', 'basis', 'glow']:
+        for attr in ['location', 'opacity', 'color', 'basis', 'glow', 'metallicness', 'smoothness']:
             value = self.__getattribute__(attr)[0]  # Get the current value (first time step)
             if value.shape[-2] == 1:  # If already a singleton batch, no expansion needed
                 continue
@@ -1738,7 +1743,8 @@ class Mob(Animatable):
                         other_mob.expand_n_batch(-batch_difference)
 
                 # Set all animatable attributes non-recursively to match the target mob's values
-                for attr_name in ['location', 'opacity', 'color', 'basis', 'glow', 'border_color', 'border_width']:
+                for attr_name in ['location', 'opacity', 'color', 'basis', 'glow', 'metallicness', 'smoothness',
+                                  'border_color', 'border_width']:
                     if not hasattr(self, attr_name):
                         continue
                     # Use getattr to safely access attributes, as not all mobs may have all listed attributes
@@ -1821,6 +1827,24 @@ class Mob(Animatable):
         with Sync():  # Ensure all these attribute sets happen in one synchronized animation step
             for key, value in kwargs.items():
                 self.setattr_non_recursive(key, value)
+        return self
+
+    def set_shader(self, shader):
+        """Sets the shader for this mob and all of its descendants.
+
+        Parameters
+        ----------
+        shader
+            The function to use for shading at render time.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            The mob instance itself, allowing for method chaining.
+
+        """
+        for d in self.get_descendants():
+            d.shader = shader
         return self
 
     def set(self, **kwargs) -> 'Mob':

@@ -1,5 +1,6 @@
 import torch
 
+import algan
 from algan.constants.color import BLUE
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE, DEFAULT_DEVICE
 from algan.rendering.primitives.primitive import RenderPrimitive
@@ -41,9 +42,11 @@ def interpolate_triangle_corners(self, interpolation_coord, property):
 
 class TrianglePrimitive(RenderPrimitive):
     def __init__(self, corners=None, colors=BLUE, opacity=1, normals=None, perimeter_points=None,
-                 reverse_perimeter=False, triangle_collection=None, glow=0):
+                 reverse_perimeter=False, triangle_collection=None, glow=0, metallicness=0, smoothness=1, shader=None):
         glow = cast_to_tensor(glow).to(DEFAULT_DEVICE)
         opacity = cast_to_tensor(opacity).to(DEFAULT_DEVICE)
+        metallicness = cast_to_tensor(metallicness).to(DEFAULT_DEVICE)
+        smoothness = cast_to_tensor(smoothness).to(DEFAULT_DEVICE)
         """
         corners: Tensor[batch[*], num_corners[3], corner_locations[3]]
             Location of triangle vertices/corners in 3d world space.
@@ -58,19 +61,29 @@ class TrianglePrimitive(RenderPrimitive):
         self.reverse_perimeter = reverse_perimeter
         self.min_interpolation_coord = 0
         if triangle_collection is not None:
-            self.corners, self.colors, self.normals = (
+            self.shader = triangle_collection[0].shader
+            self.corners, self.colors, self.normals, self.metallicness, self.smoothness = (
             unsquish(torch.cat(_, 1), -2, 3).to(DEFAULT_RENDER_DEVICE, non_blocking=True) for _ in
-            zip(*((triangle.corners, expand_as_left(triangle.colors, triangle.corners),
-                   expand_as_left(triangle.normals, triangle.corners)) for triangle in triangle_collection)))
+            zip(*(broadcast_all([triangle.corners, triangle.colors, triangle.normals,
+                                 triangle.metallicness, triangle.smoothness], ignored_dims=[-1]) for triangle in triangle_collection)))
             return
         self.corners = corners
         if normals is None:
             normals = torch.zeros_like(corners)
-        colors, opacity, glow = broadcast_all([colors, opacity, glow], ignored_dims=[-1])
+        colors, opacity, glow, metallicness, smoothness = broadcast_all([colors, opacity, glow, metallicness, smoothness], ignored_dims=[-1])
         self.colors = colors.clone()
         self.colors[...,-2:-1] += glow
         self.colors[..., -1:] *= opacity
         self.normals = normals
+        self.metallicness = metallicness
+        self.smoothness = smoothness
+
+        if shader is None:
+            shader = algan.defaults.render_defaults.DEFAULT_SHADER
+        self.shader = shader
+
+    def get_batch_identifier(self):
+        return f'{self.__class__}_{id(self.shader)}'
 
     def get_interpolation_coordinates(self, vertex_corners, fragment_x, fragment_y, aa_offsets, repeats_inds):
         return get_bary_coordinates(self.expand_verts_to_frags(vertex_corners, repeats_inds.unsqueeze(-1), -3), fragment_x, fragment_y, aa_offsets)

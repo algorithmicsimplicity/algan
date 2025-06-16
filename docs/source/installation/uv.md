@@ -62,33 +62,17 @@ uv python install
 ```
 to install the latest version of Python. 
 
-Once installed, we can create a new folder 'alganimations' and create a uv virtual 
+Once installed, we can create a new folder 'alganimations' and instantiate a uv virtual 
 environment by running these commands
 
-::::{tab-set}
-:::{tab-item} MacOS and Linux
 ```bash
 uv init alganimations
 cd alganimations
 uv venv
-source .venv/bin/activate
 ```
-:::
-:::{tab-item} Windows
-```powershell
-uv init alganimations
-cd alganimations
-uv venv
-.venv/Scripts/activate
-```
-:::
-::::
 
-The final command activates the virtual environment we just created.
-This means that any commands to install Python packages will install to this folder,
-and the Python command will
-use the interpreter installed to this folder. Ensure that this environment is active for the rest
-of the installation process.
+uv will install packages to the virtual environment contained in the current working directory,
+so make sure you stay in the same working directory throughout the installation process!
 
 (installation-optional-latex)=
 ### Step 2 (optional): Installing LaTeX
@@ -190,7 +174,7 @@ For example, PyTorch shows me the command
 
 `pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128`
 
-So I would run
+so I would run
 
 ```bash
 uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
@@ -205,7 +189,7 @@ Algan is a work in progress, and currently our selection of built-in objects is
 relatively limited. To make up for this, we provide functionality to import
 objects created in Manim into Algan, allowing you to make use of Manim's much
 more extensive library of built in objects. In order to import Manim objects,
-you need to install Manim. If Algan's built in library is enough for needs,
+you need to install Manim. If Algan's built-in [library](/reference) is enough for needs,
 you can skip this step.
 
 Otherwise, follow the below instructions for your

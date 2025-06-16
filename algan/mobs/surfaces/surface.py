@@ -123,9 +123,20 @@ class Surface(Mob):
         if color.shape[-2] == 1:
             color = color.expand(*[-1 for _ in color.shape[:-2]], grid.shape[-2]*grid.shape[-3], -1)
 
+        metallicness = self.grid.metallicness
+        if metallicness.shape[-2] == 1:
+            metallicness = metallicness.expand(*[-1 for _ in metallicness.shape[:-2]], grid.shape[-2] * grid.shape[-3], -1)
+
+        smoothness = self.grid.smoothness
+        if smoothness.shape[-2] == 1:
+            smoothness = smoothness.expand(*[-1 for _ in smoothness.shape[:-2]], grid.shape[-2] * grid.shape[-3],
+                                               -1)
         return TrianglePrimitive(corners=grid_to_triangle_vertices(grid),
                                  colors=grid_to_triangle_vertices(unsquish(color, -2, self.grid_height)),
                                  normals=vertex_normals,
+                                 metallicness=grid_to_triangle_vertices(unsquish(metallicness, -2, self.grid_height)),
+                                 smoothness=grid_to_triangle_vertices(unsquish(smoothness, -2, self.grid_height)),
+                                 shader=self.shader
                                  )
 
     def coord_function(self, uv:torch.Tensor):
