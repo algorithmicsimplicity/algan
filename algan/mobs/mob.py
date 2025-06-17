@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import math
 from collections import defaultdict
 
@@ -9,6 +10,7 @@ import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch import Tensor, TensorType
 
+from algan.rendering.shaders.pbr_shaders import default_shader
 from algan.animation.animatable import Animatable, animated_function, ModificationHistory, TimeInterval
 from algan.animation.animation_contexts import Seq, Off, Sync, AnimationContext, NoExtra
 from algan.constants.spatial import *
@@ -20,6 +22,10 @@ from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import dot_product, broadcast_gather, unsqueeze_right, unsquish, squish, \
     broadcast_cross_product, cast_to_tensor, mid_point
+
+
+class ModifiedProtectedAttributeError(Exception):
+    pass
 
 
 class Mob(Animatable):
@@ -77,10 +83,9 @@ class Mob(Animatable):
 
     def __init__(self, location: torch.Tensor = ORIGIN, basis: torch.Tensor = squish(torch.eye(3)),
                  color: Color | None = None, opacity: float = 1, glow: float = 0,
-                 metallicness: float=0.5, smoothness:float=0.5, *args, **kwargs):
+                 *args, **kwargs):
         self.register_attrs_as_animatable(
-            {'location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow',
-             'metallicness', 'smoothness'}, Mob)
+            {'location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow'}, Mob)
         self.recursing = True
         self.exclude_from_boundary = False
         super().__init__(*args, **kwargs)
@@ -108,8 +113,6 @@ class Mob(Animatable):
         self.max_opacity = cast_to_tensor(opacity)
         self.opacity = cast_to_tensor(1)  # Current opacity, can be animated
         self.glow = cast_to_tensor(glow)
-        self.metallicness = cast_to_tensor(metallicness)
-        self.smoothness = cast_to_tensor(smoothness)
         self.num_points_per_object = 1
         self.shader = None
 
@@ -1608,7 +1611,7 @@ class Mob(Animatable):
         split_factors = [(repeat_indices == i).sum() for i in range(current_batch_size)]
 
         # Iterate over animatable attributes and expand their batch dimensions
-        for attr in ['location', 'opacity', 'color', 'basis', 'glow', 'metallicness', 'smoothness']:
+        for attr in self.animatable_attrs:
             value = self.__getattribute__(attr)[0]  # Get the current value (first time step)
             if value.shape[-2] == 1:  # If already a singleton batch, no expansion needed
                 continue
@@ -1743,8 +1746,7 @@ class Mob(Animatable):
                         other_mob.expand_n_batch(-batch_difference)
 
                 # Set all animatable attributes non-recursively to match the target mob's values
-                for attr_name in ['location', 'opacity', 'color', 'basis', 'glow', 'metallicness', 'smoothness',
-                                  'border_color', 'border_width']:
+                for attr_name in self.animatable_attrs:
                     if not hasattr(self, attr_name):
                         continue
                     # Use getattr to safely access attributes, as not all mobs may have all listed attributes
@@ -1830,7 +1832,11 @@ class Mob(Animatable):
         return self
 
     def set_shader(self, shader):
-        """Sets the shader for this mob and all of its descendants.
+        """Sets the shader for this mob and all of its descendants. This MUST
+        be called before the mob is spawned, once spawned the shader cannot be changed.
+        If you need to change the shader for a spawned mob, create a new clone of it
+        with clone(spawn=False) and set the shader of the clone, and despawn
+        the original.
 
         Parameters
         ----------
@@ -1842,10 +1848,36 @@ class Mob(Animatable):
         :class:`~.Mob`
             The mob instance itself, allowing for method chaining.
 
+        Raises
+        ------
+        :class:`.ModifiedProtectedAttributeError`
+            If set_shader is used on an already spawned mob.
+
         """
-        for d in self.get_descendants():
+        if self.data.spawn_time() >= 0:
+            raise ModifiedProtectedAttributeError("You are attempting to change the shader"
+                                                  "of a mob that is already spawned. This is not allowed."
+                                                  "See docs for help.")
+
+        shader_params = inspect.signature(shader).parameters
+        num_shader_independent_params = len(inspect.signature(default_shader).parameters.keys())
+        shader_specific_param_names = list(shader_params.keys())[num_shader_independent_params:]
+        shader_specific_param_defaults = [shader_params[n].default if
+                                          shader_params[n].default is not inspect._empty else 0
+                                          for n in shader_specific_param_names]
+
+        for d in reversed(self.get_descendants()):
+            d.register_attrs_as_animatable(shader_specific_param_names)
+            for n, v in zip(shader_specific_param_names, shader_specific_param_defaults):
+                d.__setattr__(n, v)
             d.shader = shader
+            d.shader_specific_param_names = shader_specific_param_names
         return self
+
+    def get_shader_params(self):
+        if hasattr(self, 'shader_specific_param_names'):
+            return {_: self.__getattribute__(_) for _ in self.shader_specific_param_names}
+        return dict()
 
     def set(self, **kwargs) -> 'Mob':
         """Sets multiple attributes, applying changes recursively to children by default.

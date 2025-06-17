@@ -65,18 +65,18 @@ its animation. And we can use out of order animation to implement the animations
         # Get the current point in the timeline which this context is writing to.
         animation_start_time = context.current_time
         for i in range(len(mobs)):
-            # rescale to [0, 2], so the wave takes 2 seconds to propagate.
-            mob_start_time = 2 * (mob_dots[i] - min_dot) / (max_dot - min_dot)
+            # rescale to [0, 5], so the wave takes 5 seconds to propagate.
+            mob_start_time = 5 * (mob_dots[i] - min_dot) / (max_dot - min_dot)
 
             # Set the current time we write animations to, to the point in time when this mob should start
             context.current_time = animation_start_time+mob_start_time
 
             # Write the animation to this point on the timeline.
-            with Seq(run_time=5):
+            with Seq(run_time=2):
                 mobs[i].color = RED
 
-        # Now that we are done writing the animations, jump to the end of the animation to
+        # Now that we are done writing the animations, jump to the end of the context to
         # continue animating in order.
-        context.current_time = animation_start_time+1
+        context.current_time = context.end_time
 
     render_to_file()

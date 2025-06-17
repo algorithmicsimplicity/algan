@@ -322,13 +322,12 @@ class RenderPrimitive:
 
         if light_origin is not None:
             light_intensity = 1
-            ambient_light_color = WHITE.to(corners.device)
+            #ambient_light_color = WHITE.to(corners.device)
             ambient_light_intensity = 1
-            smoothness = select_time(self.metallicness)#0.5
-            metallic = select_time(self.smoothness)#0.5
             self_colors = colors.clone()
-            self_colors[...,:-1] = self.shader(corners, normals, colors[...,:-1], ray_origin, smoothness, metallic,
-                    light_origin, light_color[...,:-1], light_intensity, ambient_light_color[...,:-1], ambient_light_intensity)
+            self_colors[...,:-1] = self.shader(corners, normals, colors[...,:-1], ray_origin,
+                                               light_origin, light_color[..., :-1], light_intensity,
+                                               ambient_light_intensity, *[select_time(_) for _ in self.shader_param_values])
         else:
             self_colors = colors
 

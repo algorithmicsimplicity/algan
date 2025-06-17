@@ -516,6 +516,8 @@ class Animatable:
     def __deepcopy__(self, memo):
         if '___copy_add_to_scene___' not in memo:
             memo['___copy_add_to_scene___'] = self.copy_add_to_scene
+        if '___copy_spawn___' not in memo:
+            memo['___copy_spawn___'] = self.copy_spawn
         if '___copy_animate_creation___' not in memo:
             memo['___copy_animate_creation___'] = self.copy_animate_creation
         if '___copy_recursive___' not in memo:
@@ -525,6 +527,7 @@ class Animatable:
         if '___reset_history___' not in memo:
             memo['___reset_history___'] = self.reset_history
         add_to_scene = memo['___copy_add_to_scene___']
+        spawn = memo['___copy_spawn___']
         animate_creation = memo['___copy_animate_creation___']
         copy_recursive = memo['___copy_recursive___']
         clone_data = memo['___clone_data___']
@@ -580,14 +583,15 @@ class Animatable:
             object.__setattr__(clone, k, copy.deepcopy(v, memo))
 
         clone.generate_animatable_attr_set_get_methods()
-        if self.data.spawn_time() >= 0:
+        if self.data.spawn_time() >= 0 and spawn:
             clone.spawn(animate_creation)
         if copy_recursive:
             clone.add_children(*children_clones)
         return clone
 
-    def clone(self, add_to_scene=True, animate_creation=False, recursive=True, clone_data=True, reset_history=True):
+    def clone(self, add_to_scene=True, spawn=True, animate_creation=False, recursive=True, clone_data=True, reset_history=True):
         self.copy_add_to_scene = add_to_scene
+        self.copy_spawn = spawn
         self.copy_animate_creation = animate_creation
         self.copy_recursive = recursive
         self.clone_data = clone_data
