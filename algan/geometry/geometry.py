@@ -51,7 +51,7 @@ def get_rotation_around_axis(num_degrees, axis, dim=0):
     n2_0 = n2.select(dim, 0).unsqueeze(dim)
     n2_1 = n2.select(dim, 1).unsqueeze(dim)
     n2_2 = n2.select(dim, 2).unsqueeze(dim)
-    R = torch.cat((c + (n2_0) * (1 - c), n_0 * n_1 * (1 - c) - n_2 * s, n_0 * n_2 * (1 - c) + (n2_1) * s,
+    R = torch.cat((c + (n2_0) * (1 - c), n_0 * n_1 * (1 - c) - n_2 * s, n_0 * n_2 * (1 - c) + (n_1) * s,
                      n_0 * n_1 * (1 - c) + n_2 * s, c + n2_1 * (1 - c), n_1 * n_2 * (1 - c) - n_0 * s,
                      n_0 * n_2 * (1 - c) - n_1 * s, n_1 * n_2 * (1 - c) + n_0 * s, c + n2_2 * (1 - c)), dim)
     if dim < 0:

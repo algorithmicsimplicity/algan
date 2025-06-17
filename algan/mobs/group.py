@@ -131,7 +131,7 @@ class Group(Mob):
         return self
 
     def arrange_in_grid(self, num_rows:int=2, row_direction:torch.Tensor=RIGHT, column_direction:torch.Tensor=DOWN,
-                        row_buffer=DEFAULT_BUFFER, column_buffer=None):
+                        buffer=DEFAULT_BUFFER, column_buffer=None):
         """Moves the grouped mobs so that they in a given grid.
 
         Parameters
@@ -144,11 +144,11 @@ class Group(Mob):
         column_direction
             Vector in 3-D specifying the direction along which columns are aligned.
             Defaults to DOWN.
-        row_buffer
+        buffer
             The amount of extra space added between the mobs in the row direction.
         column_buffer
             The amount of extra space added between the mobs in the column direction. If None then
-            it is set to `row_buffer`.
+            it is set to `buffer`.
 
         Returns
         -------
@@ -169,10 +169,10 @@ class Group(Mob):
 
         """
         if column_buffer is None:
-            column_buffer = row_buffer
+            column_buffer = buffer
         row_direction = F.normalize(row_direction, p=2, dim=-1)
         column_direction = F.normalize(column_direction, p=2, dim=-1)
-        buf_dist1 = max([m.get_length_in_direction(row_direction) for m in self.mobs]) + row_buffer
+        buf_dist1 = max([m.get_length_in_direction(row_direction) for m in self.mobs]) + buffer
         buf_dist2 = max([m.get_length_in_direction(column_direction) for m in self.mobs]) + column_buffer
         num_cols = len(self.mobs) // num_rows
         start = self.location - (row_direction * buf_dist1 * (num_cols-1)/2 + column_direction * buf_dist2 * (num_rows-1)/2)

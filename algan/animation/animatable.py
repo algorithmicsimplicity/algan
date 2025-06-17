@@ -12,7 +12,7 @@ from algan.scene import Scene
 from algan.animation.animation_contexts import Sync, AnimationManager, AnimationContext, Off
 from algan.constants.color import BLACK
 from algan.utils.tensor_utils import broadcast_all, robust_concat, concat_dicts, prepare_kwargs, HANDLED_FUNCTIONS
-from algan.scene_tracker import SceneTracker
+from algan import SceneManager
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, cast_to_tensor_single, unsqueeze_dims
 
@@ -236,7 +236,7 @@ class Animatable:
         self.generate_animatable_attr_set_get_methods()
 
         if scene is None:
-            scene = SceneTracker.instance()
+            scene = SceneManager.instance()
         self.scene = scene
         self.id = self.scene.get_new_id()
         if add_to_scene:
@@ -277,6 +277,14 @@ class Animatable:
 
         if init:
             self.init()
+
+    def to(self, device):
+        for attr in self.animatable_attrs:
+            if attr in self.data.data_dict:
+                self.data.data_dict[attr] = self.data.data_dict[attr].to(device)
+            elif attr in self.data.data_dict_active:
+                self.data.data_dict_active[attr] = self.data.data_dict_active[attr].to(device)
+        return self
 
     def _set_dependant_mobs_time_inds_to_self_then_run_function(self, function):
         with AnimationContext(trace_mode=True) as context:

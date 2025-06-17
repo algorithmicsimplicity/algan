@@ -80,7 +80,7 @@ class RenderPrimitive:
                 return
             else:
                 window_size = (window[2]-window[0]) * (window[3]-window[1])
-                if window_size < 10:
+                if window_size < 200*200:
                     raise OutOfRenderMemory('Rendering process ran out of memory. Please reduce the number of objects in the scene.')
                 xm = (window[0] + window[2]) // 2
                 ym = (window[1] + window[3]) // 2
@@ -232,7 +232,7 @@ class RenderPrimitive:
 
     def render_(self, time_start, time_end, object_start, object_end, ray_origin, screen_point, screen_basis,
                background_color=BLACK, anti_alias=False, anti_alias_offset=[0.5, 0.5], anti_alias_level=1,
-               light_origin=None, light_color=None, screen_width=2000, screen_height=2000, window_coords=None, memory=None,
+               light_sources=[], screen_width=2000, screen_height=2000, window_coords=None, memory=None,
                 primitive_type=None):
         ray_origin = ray_origin.unsqueeze(-2)
         screen_point = screen_point.unsqueeze(-2)
@@ -320,16 +320,15 @@ class RenderPrimitive:
         inds = inds[m]
         unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
 
-        if light_origin is not None:
+        self_colors = colors.clone()
+        for light_source in light_sources:
             light_intensity = 1
-            #ambient_light_color = WHITE.to(corners.device)
             ambient_light_intensity = 1
-            self_colors = colors.clone()
-            self_colors[...,:-1] = self.shader(corners, normals, colors[...,:-1], ray_origin,
-                                               light_origin, light_color[..., :-1], light_intensity,
+            self_colors[...,:-1] = self.shader(corners, normals, self_colors[...,:-1], ray_origin,
+                                               select_time(light_source.location).unsqueeze(-2),
+                                               select_time(light_source.color[..., :-1] * light_source.color[..., -1:]).unsqueeze(-2),
+                                               light_intensity,
                                                ambient_light_intensity, *[select_time(_) for _ in self.shader_param_values])
-        else:
-            self_colors = colors
 
         output_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
         output_frags[:] = 0

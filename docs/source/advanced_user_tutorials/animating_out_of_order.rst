@@ -25,15 +25,16 @@ this makes animation code much simpler.
 Animating a wave effect
 ***********************
 
-Suppose that we have a bunch of mobs.
+Suppose that we have a bunch of mobs
 
 .. code-block:: python
 
     n = 10
     mobs = Group([Square(color=BLUE) for _ in range(n*n)]).arrange_in_grid(n).scale(0.25).spawn()
 
-We want to animate the effect of a wave passing through them, from the top-left of the screen to the
-bottom-right. When the wave hits a Mob, we will change its color to RED.
+and we want to animate the effect of a wave passing through them, from the top-left of the
+screen to the
+bottom-right. When the wave hits a Mob, we will change its color to RED briefly.
 This is quite a difficult animation to orchestrate normally. You need to sort
 mobs in the order in which the wave hits them, and then calculate how much time
 there is between the wave hitting one mob and the next.
@@ -68,12 +69,15 @@ its animation. And we can use out of order animation to implement the animations
             # rescale to [0, 5], so the wave takes 5 seconds to propagate.
             mob_start_time = 5 * (mob_dots[i] - min_dot) / (max_dot - min_dot)
 
-            # Set the current time we write animations to, to the point in time when this mob should start
+            # Set the current time we write animations to,
+            # to the point in time when this mob should start
             context.current_time = animation_start_time+mob_start_time
 
             # Write the animation to this point on the timeline.
             with Seq(run_time=2):
+                original_color = mobs[i].color
                 mobs[i].color = RED
+                mobs[i].color = original_color
 
         # Now that we are done writing the animations, jump to the end of the context to
         # continue animating in order.

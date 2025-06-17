@@ -9,6 +9,10 @@ import torch
 import torch.nn.functional as F
 
 import algan
+#from algan.rendering.camera import Camera
+from algan.constants.color import *
+from algan.constants.spatial import *
+#from algan.rendering.lights import PointLight
 from algan.animation.animation_contexts import Sync, AnimationManager, Off
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
 from algan.defaults.render_defaults import DEFAULT_RENDER_SETTINGS
@@ -16,7 +20,6 @@ from algan.defaults.style_defaults import DEFAULT_FRAME
 import numpy as np
 
 from algan.rendering.post_processing import bloom_filter
-from algan.utils.memory_utils import ManualMemory
 from algan.utils.tensor_utils import unsquish
 
 
@@ -25,7 +28,9 @@ class EmptySceneWarning(Warning):
 
 
 class Scene:
-    def __init__(self, background_frame=DEFAULT_FRAME, output_path='output', memory=None, render_settings=DEFAULT_RENDER_SETTINGS):
+    def __init__(self, background_frame=DEFAULT_FRAME, output_path='output', memory=None,
+                 render_settings=DEFAULT_RENDER_SETTINGS,
+                 scene_initializer=lambda x: x):
         self.set_render_settings(render_settings)
         self.current_time = 0
         self.min_time = 0
@@ -44,10 +49,24 @@ class Scene:
         self.output_path = output_path
         self.priority = 0
         self.id_count = 0
-        self.camera = None
+        #self.camera = None
+        self.scene_initializer = scene_initializer
+        self.reset_scene()
         self.allow_new_actors = True
 
         self.memory = memory
+
+    @staticmethod
+    def get_camera():
+        return algan.SceneManager.instance().camera
+
+    @staticmethod
+    def get_light_sources():
+        return algan.SceneManager.instance().light_sources
+
+    @staticmethod
+    def add_light_source(light_source):
+        algan.SceneManager.instance().light_sources.append(light_source)
 
     def length_to_num_pixels(self, length):
         return length * 0.5 * self.num_pixels_screen_height
@@ -131,6 +150,8 @@ class Scene:
         self.has_any_active_actors = True
         camera.set_state_to_time_t(time_inds)
         camera.screen.set_state_to_time_t(time_inds)
+        for l in self.light_sources:
+            l.set_state_to_time_t(time_inds)
 
         grouped_primitives = collections.defaultdict(lambda: [None, []])
 
@@ -152,8 +173,8 @@ class Scene:
                                                camera.screen.location.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
                                                camera.screen.basis.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
                                                anti_alias_level=self.render_settings.anti_alias_level,
-                                               light_origin=camera.light_source_location.to(DEFAULT_RENDER_DEVICE),
-                                               light_color=camera.light_color.to(DEFAULT_RENDER_DEVICE), memory=self.memory)
+                                               light_sources=[_.to(DEFAULT_RENDER_DEVICE) for _ in self.light_sources],
+                                               memory=self.memory)
 
     def get_frame(self, i):
         actors = self.actors[-1]
@@ -164,6 +185,7 @@ class Scene:
 
     def reset_scene(self):
         self.actors = [[]]
+        self.scene_initializer(self)
 
     def set_render_settings(self, render_settings):
         self.render_settings = render_settings
@@ -183,7 +205,10 @@ class Scene:
         if batch_size_frames is None:
             batch_size_frames = algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_FRAMES
         self.camera.despawn(animate=False)
-        self.actors = [[self.camera, self.camera.screen, *self.actors[-1]]]
+        for l in self.light_sources:
+            l.is_primitive = True
+            l.despawn()
+        self.actors = [[self.camera, self.camera.screen, *self.light_sources, *self.actors[-1]]]
         save_image = False
 
         self.has_any_active_actors = False
@@ -318,25 +343,3 @@ class Scene:
 
     def __deepcopy__(self, memo):
         return self
-
-
-class SceneTracker:
-    _instance = None
-    _memory = None
-
-    def __init__(self):
-        raise RuntimeError('Call instance() instead.')
-
-    @classmethod
-    def reset(cls):
-        cls._instance = None
-
-    @classmethod
-    def instance(cls):
-        if cls._instance is None:
-            if cls._memory is None:
-                #TODO make this work for CPU
-                cls._memory = ManualMemory(((int((torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0))
-                                                 *algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING))))
-            cls._instance = Scene(memory=cls._memory)
-        return cls._instance

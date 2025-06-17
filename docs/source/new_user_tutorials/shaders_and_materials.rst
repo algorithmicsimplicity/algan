@@ -36,20 +36,15 @@ Let's look at an example.
     from algan import *
     from algan.rendering.shaders.pbr_shaders import basic_pbr_shader
 
-    with Off():
+    with Sync():
         mob1 = Sphere().move(LEFT*2).spawn()
         mob2 = Sphere().move(RIGHT*2).set_shader(basic_pbr_shader).spawn()
 
-    t = 3
-    mob1.wait(t)
-    mob2.smoothness = 0
-    mob1.wait(t)
-    mob2.metallicness = 1
-    mob1.wait(t)
-    mob2.smoothness = 1
-    mob1.wait(t)
-    mob2.metallicness = 0
-    mob1.wait(t)
+    with Seq(run_time=5):
+        mob2.smoothness = 0
+        mob2.metallicness = 1
+        mob2.smoothness = 1
+        mob2.metallicness = 0
 
     render_to_file()
 

@@ -213,7 +213,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
     def render_(self, time_start, time_end, object_start, object_end, ray_origin, screen_point, screen_basis,
                background_color=BLACK, anti_alias=False, anti_alias_offset=[0.5, 0.5], anti_alias_level=1,
-               light_origin=None, light_color=None, screen_width=2000, screen_height=2000, window_coords=None, memory=None, primitive_type=None):
+               light_sources=[], screen_width=2000, screen_height=2000, window_coords=None, memory=None, primitive_type=None):
 
         ray_origin = ray_origin.unsqueeze(-2)
         screen_point = screen_point.unsqueeze(-2)

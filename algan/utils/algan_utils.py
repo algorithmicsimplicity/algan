@@ -14,7 +14,7 @@ import algan
 from algan import compiled
 from algan.animation.animation_contexts import AnimationManager, Off
 from algan.rendering.camera import Camera
-from algan.scene_tracker import SceneTracker
+from algan import SceneManager
 
 
 @compiled
@@ -57,7 +57,7 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
         if os.path.exists(file_path) and not overwrite:
             return
 
-        scene = SceneTracker.instance()
+        scene = SceneManager.instance()
         scene.set_render_settings(render_settings)
         if scene.camera is None:
             scene.camera = Camera(False)
@@ -81,12 +81,11 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             if os.path.exists(audio_file_path):
                 os.remove(audio_file_path)
 
-        SceneTracker.reset()
-        AnimationManager.reset()
-        scene = SceneTracker.instance()
+
+        SceneManager.reset()
+        #AnimationManager.reset()
+        #scene = SceneManager.instance()
         #scene.set_render_settings(render_settings)
-        if scene.camera is None:
-            scene.camera = Camera(False)
 
 
 @compiled
@@ -119,12 +118,8 @@ def render_all_funcs(module_name, render_settings=None, profile=True, overwrite=
             else:
                 e = s+max_rendered
             for i, (func_name, f) in list(enumerate(scene_funcs))[s:e]:
-                SceneTracker.reset()
-                AnimationManager.reset()
-                scene = SceneTracker.instance()
+                scene = SceneManager.reset()
                 scene.set_render_settings(render_settings)
-                if scene.camera is None:
-                    scene.camera = Camera(False)
                 f()
                 render_to_file(f'{i}_{func_name}', output_dir, output_path, render_settings, overwrite, **kwargs)
             return

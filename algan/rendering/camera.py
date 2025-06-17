@@ -1,7 +1,5 @@
 from algan.animation.animation_contexts import Off, Sync
-from algan.constants.color import *#WHITE
 from algan.constants.spatial import *#CAMERA_ORIGIN
-from algan.scene_tracker import SceneTracker
 from algan.mobs.mob import Mob
 from algan.utils.tensor_utils import expand_as_left, broadcast_gather, squish, unsquish, dot_product
 from algan.geometry.geometry import intersect_line_with_plane, intersect_line_with_plane_colinear
@@ -14,7 +12,6 @@ class Camera(Mob):
         self.animatable_attrs.remove('color')
         with Off():
             self.orthographic = orthographic
-            self.location = CAMERA_ORIGIN
             #self.rotate(180, UP)
             self.screen = Mob(location=self.location + screen_distance * self.get_forward_direction(), add_to_scene=False, init=False)
             self.screen.scale(torch.tensor((1/screen_scale, 1/screen_scale, 1)))
@@ -22,8 +19,6 @@ class Camera(Mob):
             self.is_primitive = True
             self.add_children(self.screen)
             #self.look_at(ORIGIN)
-            self.light_source_location = self.location + UP * 1 + RIGHT*5 + OUT*1
-            self.light_color = WHITE.clone()
             #self.light_color[-2] = 0.0#1
             coord2_range = self.scene.num_pixels_screen_width / self.scene.num_pixels_screen_height
             self.screen_distance = 5
@@ -42,7 +37,7 @@ class Camera(Mob):
             s = self.scene.num_pixels_screen_width / self.scene.num_pixels_screen_height
             self.corner_x_coords = torch.tensor([-s, -s, s, s]).view(-1, 1, 1, 1)
             self.corner_y_coords = torch.tensor([-1, 1, 1, -1]).view(-1, 1, 1, 1)
-            self.animatable_attrs.update({'light_source_location'})
+            #self.animatable_attrs.update({'light_source_location'})
             self.spawn(animate=False)
 
     def retroactive_center(self, mob, **kwargs):
@@ -318,6 +313,6 @@ class Camera(Mob):
         return self.rays[self.min_coord[...,0]:self.max_coord[...,0], self.min_coord[...,1]:self.max_coord[...,1]]
 
 
-scene = SceneTracker.instance()
-if scene.camera is None:
-    scene.camera = Camera(False)
+#scene = SceneTracker.instance()
+#if scene.camera is None:
+#    scene.camera = Camera(False)
