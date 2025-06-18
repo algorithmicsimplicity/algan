@@ -3,8 +3,8 @@ import torch.nn.functional as F
 
 
 #TODO fix up this code
-#def bloom_filter(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
-def bloom_filter(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=11, strength=10, scale_factor=8):
+def bloom_filter_old(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
+#def bloom_filter(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=11, strength=10, scale_factor=8):
     #kernel_size = int(kernel_size * x.shape[-3] / 2160)
     scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
 
@@ -114,3 +114,63 @@ def bloom_filter(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=11, st
     return (((out * 255).clamp_(max=255))).to(xdtype)
     #return ((out / out.amax().clamp_(min=255)) * 255).to(xdtype)
     #return (x[...,:-1] + xb*strength).clamp_(max=255).to(xdtype)
+
+
+def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
+    scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
+
+    xdtype = x.dtype
+
+    x = x.to(torch.float) / 255
+    color = x[...,:-1]
+    glow = x[..., -1:] * strength
+
+    color = color * glow
+    # To allow for dark colors to bloom as well as bright, we apply bloom filter to both color and inverse color,
+    # then average the result at the end.
+    #color = torch.cat((color*glow, (1-color)*(glow), glow), -1)
+
+    d = 1
+    filter = torch.exp(-1*(torch.linspace(-d, d, kernel_size, device=x.device)**2))
+    filter /= filter.sum()
+    filter_horizontal = filter.view(1, 1,1,kernel_size).expand(color.shape[-1],-1,-1,-1)
+    filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
+
+    # Do gaussian convolutions to spread colors.
+    p = (kernel_size-1)//2
+
+    color = color.permute(-1,0,1)
+    orig_shape = color.shape[-2:]
+    color = F.interpolate(color.unsqueeze(0), scale_factor=1/scale_factor, mode='bilinear').squeeze(0)
+
+    for i in range(num_iterations):
+        color = F.conv2d(color, filter_horizontal, padding=(0, p), groups=color.shape[0])
+        color = F.conv2d(color, filter_vertical, padding=(p, 0), groups=color.shape[0])
+
+    color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode='bilinear').squeeze(0)
+    color = color.permute(1,2,0)
+
+    out = color + x[...,:-1]
+    return (out * 255).clamp_(min=0, max=255).to(xdtype)
+
+    color = color[...,:-1]
+
+    s = color.shape[-1]//2
+
+    color = color + torch.cat((x[...,:-1], 1-x[...,:-1]), -1)
+
+    #color = torch.maximum(color[...,:s], 1-color[...,s:])
+    #inverse_color = color[...,s:]
+    # Take average of both color and inverse color.
+    color = color[...,:s]
+    #m = color[...,:s].norm(p=2,dim=-1,keepdim=True) > color[...,s:].norm(p=2,dim=-1,keepdim=True)
+    #color = (color[...,:s] * m + (~m) * (1-color[...,s:]))
+    #color = (1-color[...,s:])
+    #out = x[...,:-1] + color
+    out = color
+    # Interpolate original color and bloomed color based on
+    # how much glow was accumulated.
+    #w = 1/(1+glow)
+    #out = x[...,:-1] * w + (1-w) * color
+
+    return (out * 255).clamp_(min=0, max=255).to(xdtype)

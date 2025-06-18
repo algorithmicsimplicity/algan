@@ -133,7 +133,7 @@ class Scene:
             return torch.zeros((nt,)).cpu().numpy()
         return sum((a.render_audio() for a in active_actors))
 
-    def get_fragments(self, actors, start, end, save_image=False):
+    def get_fragments(self, actors, start, end, save_image=False, post_processes=[]):
         camera = self.camera
         nt = end-start
         active_actors = []
@@ -174,7 +174,8 @@ class Scene:
                                                camera.screen.basis.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
                                                anti_alias_level=self.render_settings.anti_alias_level,
                                                light_sources=[_.to(DEFAULT_RENDER_DEVICE) for _ in self.light_sources],
-                                               memory=self.memory)
+                                               memory=self.memory,
+                                               post_processes=post_processes)
 
     def get_frame(self, i):
         actors = self.actors[-1]
@@ -196,7 +197,7 @@ class Scene:
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
 
     def render_to_video(self, file_writer, file_path, file_path_out, audio_file_path,
-                        batch_size_actors=None, batch_size_frames=None):
+                        batch_size_actors=None, batch_size_frames=None, post_processes=[bloom_filter]):
         self.scene_times.append((self.scene_times[-1][1], (math.ceil(AnimationManager.instance().context.end_time * self.frames_per_second)+1)))
         self.initialize_frames()
 
@@ -253,7 +254,7 @@ class Scene:
                         end = min(actor_s + (i + 1) * batch_size_frames, actor_e)
 
                         def run():
-                            self.get_fragments(actors, start, end, save_image)
+                            self.get_fragments(actors, start, end, save_image, post_processes)
                             audio = self.get_audio(actors, start, end)
                             wav_file.writeframes(bytes(((audio+1)*255/2).astype(np.uint8)))
                             torch.cuda.empty_cache()

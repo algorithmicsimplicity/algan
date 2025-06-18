@@ -3,13 +3,12 @@ import math
 import torch
 import torch.nn.functional as F
 
+from algan.mobs.renderable import Renderable
 from algan.utils.tensor_utils import broadcast_cross_product
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
-from algan.animation.animatable import animated_function
 from algan.animation.animation_contexts import Sync, Off
 from algan.constants.color import *
 from algan.constants.spatial import ORIGIN, OUT
-from algan.geometry.geometry import map_global_to_local_coords
 from algan.mobs.mob import Mob
 from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.utils.file_utils import get_image
@@ -30,7 +29,7 @@ def grid_to_triangle_vertices(grid):
                      transformed_grid[...,1:, 1:,:]), -2)), -3)
     return triangle_corners.reshape(*grid.shape[:-3], -1, transformed_grid.shape[-1])#unsquish(triangle_corners, -2, 3)
 
-class Surface(Mob):
+class Surface(Renderable):
     """A smooth 2-D surface, embedded in 3-D space, A.K.A a manifold.
     The surface is implemented by sampling a uniform grid of 2-D points
     from the unit square (known as intrinsic coordinates, or "UV coordinates"),
@@ -63,6 +62,8 @@ class Surface(Mob):
             normal_function = self.normal_function
         if grid_width is None:
             grid_width = grid_height
+        if grid_height is None:
+            grid_height = grid_width
         if grid_aspect_ratio is not None:
             grid_height = int(grid_width * grid_aspect_ratio)
 
@@ -92,7 +93,7 @@ class Surface(Mob):
         #color = grid_to_triangle_vertices(color)
         kwargs['color'] = color
         kwargs['location'] = grid_points
-        self.grid = Mob(**kwargs)
+        self.grid = Renderable(**kwargs)
         self.add_children(self.grid)
         self.grid.is_primitive = True
         self.is_primitive = True
@@ -125,8 +126,11 @@ class Surface(Mob):
             x = unsquish(x, -2, self.grid_height)
             return grid_to_triangle_vertices(x)
 
+        grid_color = self.grid.color.clone()
+        grid_color[...,-1:] *= self.grid.opacity
+        grid_color[..., -2:-1] += self.grid.glow
         return TrianglePrimitive(corners=grid_to_triangle_vertices(grid),
-                                 colors=expand_grid_to_verts(self.grid.color),
+                                 colors=expand_grid_to_verts(grid_color),
                                  normals=vertex_normals,
                                  shader=self.shader,
                                  **{k: expand_grid_to_verts(v) for k, v in self.grid.get_shader_params().items()},

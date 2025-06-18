@@ -31,12 +31,15 @@ class RenderPrimitive:
         window = (0, 0, screen_width, screen_height)
         kwargs['screen_width'] = screen_width
         kwargs['screen_height'] = screen_height
-        frames = self.render_window(primitives, scene, window, save_image, 0, self.corners.shape[0], 0, 1, background_color, False, *args, **kwargs)
+        frames = self.render_window(primitives, scene, window, save_image, 0,
+                                    self.corners.shape[0], 0, 1, background_color,
+                                    False, *args, **kwargs)
 
-    def post_process_frames(self, frames, anti_alias_level):
+    def post_process_frames(self, frames, anti_alias_level, post_processes=[]):
         frame_out = frames
         frame_out = F.avg_pool2d(frame_out.float().permute(2, 0, 1), anti_alias_level).permute(1, 2, 0).to(torch.uint8)
-        frame_out = bloom_filter(frame_out, anti_alias_level)
+        for p in post_processes:
+            frame_out = p(frame_out)
         return frame_out.cpu().flip((-3, -1)).numpy()
 
     def save_frames(self, frames, save_image, scene, **kwargs):
@@ -48,11 +51,15 @@ class RenderPrimitive:
             for frame in frames:
                 torchvision.utils.save_image(torch.from_numpy(frame).permute(-1, 0, 1) / 255, scene.file_path)
 
-    def render_window(self, primitives, scene, window, save_image, time_start, time_end, object_start, object_end, background_color, return_frags=False, *args, **kwargs):
+    def render_window(self, primitives, scene, window, save_image, time_start, time_end, object_start,
+                      object_end, background_color, return_frags=False, *args, **kwargs):
         self.memory = kwargs['memory']
+        post_processes = kwargs['post_processes']
+        kwargs2 = {k: v for k, v in kwargs.items()}
+        del kwargs2['post_processes']
         original_pointer = self.memory.current_pointer
         try:
-            chunks = [p.render_(time_start, time_end, object_start, object_end, *args, **kwargs, window_coords=window) for p in primitives]
+            chunks = [p.render_(time_start, time_end, object_start, object_end, *args, **kwargs2, window_coords=window) for p in primitives]
             chunks = [_ for _ in chunks if _ is not None]
             if return_frags:
                 return chunks
@@ -65,7 +72,7 @@ class RenderPrimitive:
                 frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['screen_height'])
                 frames = scene.get_frames_from_fragments(frags, window, out, anti_alias_level=kwargs['anti_alias_level'])
             if (window[2]-window[0]) == kwargs['screen_width'] and (window[3]-window[1]) == kwargs['screen_height']:
-                self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'])
+                self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'], post_processes=post_processes)
         except (InsufficientMemoryException, torch.OutOfMemoryError):
             self.memory.current_pointer = original_pointer
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
@@ -99,7 +106,7 @@ class RenderPrimitive:
                 frame_shape = frames.shape
                 frames = (_ for _ in [frames])
                 if frame_shape[1] == kwargs['screen_width'] and frame_shape[0] == kwargs['screen_height']:
-                    self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'])
+                    self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'], post_processes=post_processes)
                     return None
                 else:
                     return frames
@@ -324,9 +331,10 @@ class RenderPrimitive:
         for light_source in light_sources:
             light_intensity = 1
             ambient_light_intensity = 1
-            self_colors[...,:-1] = self.shader(corners, normals, self_colors[...,:-1], ray_origin,
+            d = -1
+            self_colors[...,:d] = self.shader(corners, normals, self_colors[...,:d], ray_origin,
                                                select_time(light_source.location).unsqueeze(-2),
-                                               select_time(light_source.color[..., :-1] * light_source.color[..., -1:]).unsqueeze(-2),
+                                               select_time(light_source.color[..., :d] * light_source.color[..., -1:] * light_source.opacity).unsqueeze(-2),
                                                light_intensity,
                                                ambient_light_intensity, *[select_time(_) for _ in self.shader_param_values])
 

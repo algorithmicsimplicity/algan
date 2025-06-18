@@ -9,9 +9,10 @@ from algan.utils.tensor_utils import dot_product
 class Neuron(Mob):
     def __init__(self, input_locs, direction, **kwargs):
         super().__init__(**kwargs)
-        self.core = Sphere().scale(0.05).move_to(self.location)
-        self.shell = Sphere(opacity=0.8).scale(0.06).move_to(self.location).look(direction, axis=1)
-        self.synapses = [Cylinder().scale(0.02).move_between_points(l, self.location) for l in input_locs]
+        grid_height = 10
+        self.core = Sphere(grid_height=grid_height).scale(0.15).move_to(self.location)
+        self.shell = Sphere(opacity=0.5, grid_height=grid_height).scale(0.2).move_to(self.location).look(direction, axis=1)
+        self.synapses = [Cylinder(grid_height=grid_height).scale(0.04).move_between_points(l, self.location) for l in input_locs]
         self.add_children(self.core, self.shell, self.synapses)
 
 
@@ -23,7 +24,7 @@ class Neuron(Mob):
 
 
 class NeuralNetMLP(Mob):
-    def __init__(self, dims, direction=RIGHT, orth_direction=UP, layer_spacing=0.4, neuron_spacing=0.1, input_locs=None, **kwargs):
+    def __init__(self, dims, direction=RIGHT, orth_direction=UP, layer_spacing=1, neuron_spacing=0.5, input_locs=None, **kwargs):
         super().__init__(**kwargs)
         start = ORIGIN if input_locs is None else sum(input_locs) / len(input_locs)
 
@@ -52,7 +53,7 @@ class NeuralNetMLP(Mob):
                         syn.set_start_point(inp.location)#, n.location)
             return self.activate(color=color, run_time=run_time, output_generator=output_generator, **kwargs)
 
-    def backward(self, color=PURE_GREEN, run_time=1):
+    def backward(self, color=BLUE+GLOW, run_time=1):
         with Seq(run_time=run_time):
             self.activate(reverse=True, color=color, run_time=run_time)
             with Sync(run_time=3):
@@ -60,7 +61,7 @@ class NeuralNetMLP(Mob):
                     for syn in n.synapses:
                         syn.set_start_point(n.location + RIGHT * self.input_synapse_offset)#, n.location)
 
-    def activate(self, color=PURE_GREEN, run_time=1, reverse=False, output_generator=None):
+    def activate(self, color=PURE_RED+GLOW, run_time=1, reverse=False, output_generator=None):
         layers = self.layers
 
         def pulse_synapses(neuron):
@@ -84,16 +85,6 @@ class NeuralNetMLP(Mob):
                             with Lag(0.5):
                                 for f in pulse_funcs:
                                     f(neuron)
-                                #neuron.shell.wave_color(constants, 0.1)
-                                '''with Sequenced():
-                                    with Sequenced(run_time_part=0.75):
-                                        #neuron.shell.pulse_color(constants)
-                                        c = neuron.shell.constants
-                                        neuron.shell.constants = constants
-                                    with Sequenced(run_time_part=1):
-                                        neuron.shell.constants = constants
-                                    with Sequenced(run_time_part=1):
-                                        neuron.shell.constants = c'''
             self.animation_manager.context.current_time -= 1.5
             if output_generator is None:
                 return

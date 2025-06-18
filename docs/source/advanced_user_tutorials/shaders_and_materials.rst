@@ -56,7 +56,7 @@ Let's look at an example.
 In this example, the first mob (left) uses the default shader, and the second (right)
 uses the PBR shader,
 with a range of different material properties. Note that the `smoothness` and `metallicness`
-attributes are not methods of the :class:`.Mob` class. When we called the set_shader
+attributes are not methods of the :class:`.Mob` class. When we called the :meth:`~.Mob.set_shader`
 method, it read the the function signature of the shader and realised that there were
 2 additional arguments named smoothness and metallicness, so it automatically
 added those as animatable attributes to our mob.
@@ -69,9 +69,9 @@ Take a look at the source code for :func:`.default_shader` and :func:`.basic_pbr
 to see how this can be done in Pytorch. If you make your own shader function,
 it must have the same signature as the default shader, plus any additional shader
 parameters you require. Even if you don't use them, your function signature must
-still declare the default parameters. Any new arguments you introduce beyond those
-in the default_shader will be automatically added as animatable attributes to your mobs
-when you set this function as a shader.
+still declare the default parameters. Any new parameters you introduce beyond those
+in the :func:`.default_shader` will be automatically added as animatable attributes to your mobs
+when you set this function as their shader.
 
 Once you've defined your shader function, simply use :meth:`~.Mob.set_shader` as in the above example.
 You can then animate any shader parameters just as you would any of the built in

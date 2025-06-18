@@ -1,6 +1,8 @@
 New User Tutorials
 ==================
 
+Everything a new user needs to know to get up and running with Algan!
+
 .. toctree::
    :caption: Table of Contents
    :maxdepth: 2
@@ -11,6 +13,4 @@ New User Tutorials
    controlling_animations
    updaters
    nesting_mobs
-   images_and_textures
    importing_from_manim
-   shaders_and_materials

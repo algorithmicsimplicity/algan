@@ -13,7 +13,7 @@ The :class:`.Surface` class is used to make arbitrary curved surfaces, both
 :class:`.Sphere` and :class:`.Cylinder` are created by inheriting from it.
 Surfaces can be shaped by providing a function which maps intrinsic (UV) coordinates
 to world coordinates.
-:class:`ImageMob` also inherits from :class:`.Surface`, but allows for coloring
+:class:`.ImageMob` also inherits from :class:`.Surface`, but allows for coloring
 based on a provided image file path.
 
 .. algan:: TexturingManifolds

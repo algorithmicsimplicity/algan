@@ -165,3 +165,15 @@ def default_shader(vertex_location,
     vertex_normal = F.normalize(vertex_normal, p=2, dim=-1)
     diffuse_factor = (dot_product(-incidences, vertex_normal)).relu_().pow_(5) * 0.5
     return albedo_color * (1-diffuse_factor) + diffuse_factor * light_color
+
+
+def null_shader(vertex_location,
+                   vertex_normal,
+                   albedo_color,
+                   camera_location,
+                   light_origin,
+                   light_color,
+                   light_intensity: float,
+                   ambient_light_intensity: float
+                   ):
+    return albedo_color
