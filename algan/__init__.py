@@ -26,8 +26,9 @@ try:
     # Test the dummy function
     _dummy_func(torch.tensor(1.0))
 
-    compiled = torch.compile
-    print('using torch.compile')
+    #compiled = torch.compile
+    #print('using torch.compile')
+    compiled = lambda x: x
 except:
     compiled = lambda x: x
 

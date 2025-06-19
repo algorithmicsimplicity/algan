@@ -348,7 +348,10 @@ def robust_concat(xs):
 
     max_shape = torch.stack([unsqueeze_left_to_max_dim(torch.tensor(x.shape)) for x in xs]).amax(0)
     xs = [x.view(*([1] * (max_dim - x.dim())), *x.shape) for x in xs]
-    return torch.cat([x.expand([_ if x.shape[i] == 1 else -1 for i, _ in enumerate(max_shape)]) for x in xs])
+    try:
+        return torch.cat([x.expand([_ if x.shape[i] == 1 else -1 for i, _ in enumerate(max_shape)]) for x in xs])
+    except:
+        return torch.cat([x.expand([_ if x.shape[i] == 1 else -1 for i, _ in enumerate(max_shape)]) for x in xs])
 
 
 def concat_dicts(kwargs):

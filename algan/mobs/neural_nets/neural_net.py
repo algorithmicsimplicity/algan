@@ -2,7 +2,7 @@ from algan.animation.animation_contexts import Off, Sync, Seq, Lag
 from algan.constants.spatial import *#ORIGIN, OUT, RIGHT
 from algan.mobs.mob import Mob
 from algan.mobs.shapes_3d import Sphere, Cylinder
-from algan.constants.rate_funcs import identity
+from algan.constants.rate_funcs import identity, ease_in_expo, ease_out_expo
 from algan.utils.tensor_utils import dot_product
 
 
@@ -10,9 +10,9 @@ class Neuron(Mob):
     def __init__(self, input_locs, direction, **kwargs):
         super().__init__(**kwargs)
         grid_height = 10
-        self.core = Sphere(grid_height=grid_height).scale(0.15).move_to(self.location)
-        self.shell = Sphere(opacity=0.5, grid_height=grid_height).scale(0.2).move_to(self.location).look(direction, axis=1)
-        self.synapses = [Cylinder(grid_height=grid_height).scale(0.04).move_between_points(l, self.location) for l in input_locs]
+        self.core = Sphere(grid_height=grid_height, grid_aspect_ratio=2).scale(0.15).move_to(self.location)
+        self.shell = Sphere(opacity=0.5, grid_height=grid_height, grid_aspect_ratio=2).scale(0.2).move_to(self.location).look(direction, axis=1)
+        self.synapses = [Cylinder(grid_height=grid_height, grid_aspect_ratio=2).scale(0.04).move_between_points(l, self.location) for l in input_locs]
         self.add_children(self.core, self.shell, self.synapses)
 
 
@@ -53,7 +53,7 @@ class NeuralNetMLP(Mob):
                         syn.set_start_point(inp.location)#, n.location)
             return self.activate(color=color, run_time=run_time, output_generator=output_generator, **kwargs)
 
-    def backward(self, color=BLUE+GLOW, run_time=1):
+    def backward(self, color=BLUE, run_time=1):
         with Seq(run_time=run_time):
             self.activate(reverse=True, color=color, run_time=run_time)
             with Sync(run_time=3):
@@ -61,16 +61,17 @@ class NeuralNetMLP(Mob):
                     for syn in n.synapses:
                         syn.set_start_point(n.location + RIGHT * self.input_synapse_offset)#, n.location)
 
-    def activate(self, color=PURE_RED+GLOW, run_time=1, reverse=False, output_generator=None):
+    def activate(self, color=PURE_RED, run_time=1, reverse=False, output_generator=None):
         layers = self.layers
 
         def pulse_synapses(neuron):
-            with Sync():
+            with Sync(rate_func=ease_out_expo):
                 for synapse in neuron.synapses:
-                    synapse.wave_color(color, 0.33, reverse)
+                    synapse.wave_color(color + GLOW * 0.8, 0.9, reverse)
 
         def pulse_neuron(neuron):
-            neuron.shell.wave_color(color, 0.1, reverse)
+            with Seq(run_time=2):
+                neuron.shell.wave_color(color + GLOW, 1, reverse, lag_duration=0.5)
 
         pulse_funcs = [pulse_synapses, pulse_neuron]
         if reverse:

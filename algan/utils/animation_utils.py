@@ -36,12 +36,14 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
     dots = [dot_product(direction, mob.location, dim=-1, keepdim=True) for mob in mobs]
     dotsc = torch.cat(dots, -2)
     min_dot, max_dot = dotsc.amin(-2, keepdim=True), dotsc.amax(-2, keepdim=True)
-    ts = [(_ - min_dot) / (max_dot - min_dot).clamp_(min=1e-8) for _ in dots]
-    #t = t * lag_duration
 
     amc = mobs[0].animation_manager.context
-    run_time = max(amc.run_time_unit - lag_duration, 0)
-    lag_duration = min(lag_duration, amc.run_time_unit - run_time)
+    rate_func = amc.rate_func if amc.rate_func is not None else lambda x: x
+    ts = [rate_func((_ - min_dot) / (max_dot - min_dot).clamp_(min=1e-8)) for _ in dots]
+    #t = t * lag_duration
+
+    run_time = amc.run_time_unit#max(amc.run_time_unit - lag_duration, 0)
+    #lag_duration = min(lag_duration, amc.run_time_unit - run_time)
     start_time = amc.current_time
     old_max_time = amc.end_time
     #amc.max_max_time = max(amc.max_time, start_time + (run_time + lag_duration))

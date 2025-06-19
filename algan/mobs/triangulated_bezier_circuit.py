@@ -685,9 +685,7 @@ class TriangulatedBezierCircuit(Mob):
             del kwargs['animate_creation']
         super().__init__(*args, **kwargs)
         self.border_width = 0.1
-        self.animatable_attrs.update({'fill_portion'})
         self.debug = debug
-        self.fill_portion = 1
         self.color = color
 
         self.location = torch.stack([get_center(_).squeeze(0) for _ in all_tiles]).squeeze(1)

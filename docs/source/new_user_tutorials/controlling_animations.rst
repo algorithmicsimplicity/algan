@@ -30,24 +30,24 @@ and :class:`.Off` ("with animations off") contexts.
 
     from algan import *
 
-    mob1 = Circle().spawn()
-    mob2 = Square().spawn()
+    mob1 = Square().spawn()
+    mob2 = Circle().spawn()
 
     with Sync():
-        mob1.move(RIGHT)
-        mob2.rotate(360, OUT)
+        mob1.rotate(360, OUT)
+        mob2.move(RIGHT)
 
     with Seq():
-        mob1.move(UP)
-        mob2.move(RIGHT)
+        mob1.move(RIGHT)
+        mob2.move(UP)
 
     with Lag(0.5):
         mob1.move_to(ORIGIN)
         mob2.move_to(ORIGIN)
 
     with Off():
-        mob1.move(RIGHT)
-        mob2.move(LEFT)
+        mob1.move(LEFT)
+        mob2.move(RIGHT)
 
     render_to_file()
 

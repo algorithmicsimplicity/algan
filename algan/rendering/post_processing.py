@@ -123,14 +123,16 @@ def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=
 
     x = x.to(torch.float) / 255
     color = x[...,:-1]
-    glow = x[..., -1:] * strength
+    glow = x[..., -1:]# * strength
 
-    color = color * glow
+    k = (1-glow)#(-glow).exp()
+    #color = (color * (k) + (1-k) * torch.ones_like(color)) * glow * strength
+    color = color * glow * strength
     # To allow for dark colors to bloom as well as bright, we apply bloom filter to both color and inverse color,
     # then average the result at the end.
     #color = torch.cat((color*glow, (1-color)*(glow), glow), -1)
 
-    d = 1
+    d = 3
     filter = torch.exp(-1*(torch.linspace(-d, d, kernel_size, device=x.device)**2))
     filter /= filter.sum()
     filter_horizontal = filter.view(1, 1,1,kernel_size).expand(color.shape[-1],-1,-1,-1)
@@ -150,6 +152,7 @@ def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=
     color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode='bilinear').squeeze(0)
     color = color.permute(1,2,0)
 
+    #color = color / color.amax(-1, keepdim=True).clamp_min_(1)
     out = color + x[...,:-1]
     return (out * 255).clamp_(min=0, max=255).to(xdtype)
 

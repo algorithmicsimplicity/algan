@@ -85,7 +85,7 @@ class Mob(Animatable):
                  color: Color | None = None, opacity: float = 1, glow: float = 0,
                  *args, **kwargs):
         self.register_attrs_as_animatable(
-            {'location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow'}, Mob)
+            ['location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow'], Mob)
         self.recursing = True
         self.exclude_from_boundary = False
         super().__init__(*args, **kwargs)
@@ -120,7 +120,7 @@ class Mob(Animatable):
         """Resets the Mob's basis to the identity matrix (no rotation, unit scale)."""
         self.basis = cast_to_tensor(cast_to_tensor(squish(torch.eye(3))))
 
-    def register_attrs_as_animatable(self, attrs: set[str], my_class=None):
+    def register_attrs_as_animatable(self, attrs: list[str], my_class=None):
         """
         Registers attributes as animatable, meaning their changes can be tracked
         and interpolated over time for animation.
@@ -139,15 +139,15 @@ class Mob(Animatable):
         """
         if isinstance(attrs, str):
             attrs = {attrs, }
-        if not isinstance(attrs, set):
-            attrs = set(attrs)
+        #if not isinstance(attrs, set):
+        #    attrs = set(attrs)
         if not hasattr(self, 'animatable_attrs'):
-            self.animatable_attrs = set()
+            self.animatable_attrs = []
         if my_class is None:
             my_class = self.__class__
         for attr in attrs:
             self.add_property_getter_and_setter(attr, my_class)
-        self.animatable_attrs.update(attrs)
+        self.animatable_attrs.extend([_ for _ in attrs if _ not in self.animatable_attrs])#update(attrs)
 
     def add_property_getter_and_setter(self, property_name: str, class_to_attach_to=None):
         """Dynamically adds a property with a getter and setter for a given attribute name.
@@ -297,8 +297,8 @@ class Mob(Animatable):
                 self.apply_absolute_change_two('opacity', 1, 1)
         return self
 
-    def wave_color(self, color: torch.Tensor, wave_length: float = 1, reverse: bool = False,
-                   direction: torch.Tensor | None = None, **kwargs) -> 'Mob':
+    def wave_color(self, color: torch.Tensor, wave_length: float = 0.5, reverse: bool = False,
+                   direction: torch.Tensor | None = None, lag_duration=1, **kwargs) -> 'Mob':
         """Applies a color wave effect across the Mob and its descendants.
 
         The color change propagates spatially across the mob's constituent parts.
@@ -324,12 +324,12 @@ class Mob(Animatable):
         """
         if direction is None:
             direction = self.get_upwards_direction()
-        with AnimationContext(run_time_unit=3, rate_func=identity):
+        with AnimationContext(run_time_unit=wave_length):
             # Filters for primitive parts to ensure the wave animates on individual rendering elements
             #TODO change this to use non_recursive set
-            primitive_mobs = [_ for _ in self.get_descendants() if _.is_primitive]
+            primitive_mobs = [_ for _ in self.get_descendants() if (_.is_primitive and not _.ignore_wave_animations)]
             animate_lagged_by_location(primitive_mobs, lambda x: x.pulse_color(color, **kwargs),
-                                       direction * (-1 if reverse else 1), 1.5)
+                                       direction * (-1 if reverse else 1), lag_duration=lag_duration)
         return self
 
     @animated_function(animated_args={'interpolation': 0.0}, unique_args=['key', 'recursive', 'relation_key'])
@@ -667,7 +667,10 @@ class Mob(Animatable):
             ds = (self.get_descendants(include_self=False))
             [d.set_time_inds_to(self) for d in ds]
         old_basis = self.basis if hasattr(self, 'basis') else basis
-        interpolated_basis = old_basis * (1 - interpolation) + interpolation * basis
+        try:
+            interpolated_basis = old_basis * (1 - interpolation) + interpolation * basis
+        except:
+            interpolated_basis = old_basis * (1 - interpolation) + interpolation * basis
 
         # Temporarily set recursing flag to control setattr_relative behavior
         original_recursing_state = self.recursing
@@ -1621,7 +1624,7 @@ class Mob(Animatable):
 
         # Iterate over animatable attributes and expand their batch dimensions
         for attr in self.animatable_attrs:
-            value = self.__getattribute__(attr)[0]  # Get the current value (first time step)
+            value = cast_to_tensor(self.__getattribute__(attr))[0]  # Get the current value (first time step)
             if value.shape[-2] == 1:  # If already a singleton batch, no expansion needed
                 continue
 
@@ -1639,7 +1642,7 @@ class Mob(Animatable):
             self.data.data_dict[attr] = squish(torch.stack(new_batched_values, -3), -3, -2).unsqueeze(0)
         return self
 
-    def become(self, other_mob: 'Mob', move_to: bool = False, detach_history: bool = True, minimize_movement=True) -> 'Mob':
+    def become(self, other_mob: 'Mob', move_to: bool = False, detach_history: bool = True, minimize_movement=False) -> 'Mob':
         """Transforms this Mob into another Mob (`other_mob`).
 
         This involves animating changes in location, opacity, color, basis, etc.,

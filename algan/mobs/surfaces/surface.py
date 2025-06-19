@@ -97,6 +97,7 @@ class Surface(Renderable):
         self.add_children(self.grid)
         self.grid.is_primitive = True
         self.is_primitive = True
+        self.ignore_wave_animations = True
 
     def get_render_primitives(self):
         grid = unsquish(self.grid.location, -2, self.grid_height)

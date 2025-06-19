@@ -73,8 +73,8 @@ class BezierCircuitCubic(Renderable):
             third_basis_n = F.normalize(broadcast_cross_product(first_basis_n, second_basis), p=2, dim=-1)
             kwargs2['basis'] = torch.cat((first_basis, second_basis, third_basis_n), -1)
 
-        self.register_attrs_as_animatable({'border_width', 'border_color', 'portion_of_curve_drawn'}, BezierCircuitCubic)
         super().__init__(**kwargs2)
+        self.register_attrs_as_animatable(['border_width', 'border_color', 'portion_of_curve_drawn'], BezierCircuitCubic)
         self.filled = filled
 
         texture_triangle_vertices = self.location.squeeze(0)

@@ -46,7 +46,7 @@ def ease_out_exp_square(t):
 
 def ease_in_expo(t: float) -> float:
     def f(t):
-        s = 2
+        s = 5
         return pow(2, s * t - s)
 
     s = f(torch.tensor((0.0,)))
@@ -56,7 +56,7 @@ def ease_in_expo(t: float) -> float:
 
 def ease_out_expo(t: float) -> float:
     def f(t):
-        s = 2
+        s = 5
         return 1 - pow(2, -s * t)
 
     s = f(torch.tensor((0.0,)))

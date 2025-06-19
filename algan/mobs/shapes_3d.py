@@ -52,7 +52,9 @@ class Cylinder(Surface):
     def __init__(self, radius=1, height=1, *args, **kwargs):
         self.radius = radius
         self.height = height
-        super().__init__(grid_aspect_ratio=1/PI, *args, **kwargs)
+        if 'grid_aspect_ratio' not in kwargs:
+            kwargs['grid_aspect_ratio'] = 1/PI
+        super().__init__(*args, **kwargs)
 
     def coord_function(self, uv):
         uv[..., 1:] /= uv[..., 1:].amax()

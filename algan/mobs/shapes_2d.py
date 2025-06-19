@@ -80,16 +80,15 @@ class TriangleVertices(Renderable):
         return PURE_RED
 
     def get_render_primitives(self):
-        l, c, o, n, g, m, s = broadcast_all([self.location, self.color, self.opacity * self.max_opacity,
-                                    self.normals, self.glow, self.metallicness, self.smoothness], ignored_dims=[-1])
+        l, c, o, n, g = broadcast_all([self.location, self.color, self.opacity * self.max_opacity,
+                                    self.normals, self.glow], ignored_dims=[-1])
         if n is None:
             n = torch.zeros_like(l)
         return TrianglePrimitive(l, c, o,
                     F.normalize(map_local_to_global_coords(self.location, self.basis, n) - self.location, p=2, dim=-1),
                                  glow=g,
-                                 metallicness=m,
-                                 smoothness=s,
-                                 shader=self.shader
+                                 shader=self.shader,
+                                 **self.get_shader_params(),
                                  )
 
 

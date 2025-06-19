@@ -231,7 +231,7 @@ class Animatable:
                  is_primitive: bool=False):
 
         if not hasattr(self, 'animatable_attrs'):
-            self.animatable_attrs = set()
+            self.animatable_attrs = []
 
         self.generate_animatable_attr_set_get_methods()
 
@@ -274,6 +274,7 @@ class Animatable:
         self.reset_state()
         self.passive_animations = []
         self._passive_animation_functions = []
+        self.ignore_wave_animations = False
 
         if init:
             self.init()
