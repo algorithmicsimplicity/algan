@@ -25,13 +25,7 @@ Qualified name: ``algan.mobs.shapes\_2d.Triangle``
      
      ~Triangle.animation_manager
      ~Triangle.basis
-     ~Triangle.color
-     ~Triangle.glow
      ~Triangle.location
-     ~Triangle.max_opacity
-     ~Triangle.metallicness
      ~Triangle.normalized_basis
-     ~Triangle.opacity
      ~Triangle.scale_coefficient
-     ~Triangle.smoothness
    

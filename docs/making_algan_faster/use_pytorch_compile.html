@@ -3,21 +3,21 @@
   <head><meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta property="og:title" content="Pytorch Compile" />
+<meta property="og:title" content="PyTorch Compile" />
 <meta property="og:type" content="website" />
 <meta property="og:url" content="https://docs.manim.community/making_algan_faster/use_pytorch_compile.html" />
 <meta property="og:site_name" content="Algan | Documentation" />
-<meta property="og:description" content="If you are are running on Linux or MacOS, then you can skip this section, Pytorch compile is already activated by default. If you are running on Windows, read on! Pytorch offers the ability to comp..." />
+<meta property="og:description" content="If you are are running on Linux or MacOS, then you can skip this section, Pytorch compile is already activated by default. If you are running on Windows, read on! PyTorch offers the ability to comp..." />
 <meta property="og:image:width" content="1146" />
 <meta property="og:image:height" content="600" />
-<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_making_algan_faster_use_pytorch_compile_2f46eab2.png" />
-<meta property="og:image:alt" content="If you are are running on Linux or MacOS, then you can skip this section, Pytorch compile is already activated by default. If you are running on Windows, read on! Pytorch offers the ability to comp..." />
-<meta name="description" content="If you are are running on Linux or MacOS, then you can skip this section, Pytorch compile is already activated by default. If you are running on Windows, read on! Pytorch offers the ability to comp..." />
+<meta property="og:image" content="https://docs.manim.community/_images/social_previews/summary_making_algan_faster_use_pytorch_compile_cfa5ff77.png" />
+<meta property="og:image:alt" content="If you are are running on Linux or MacOS, then you can skip this section, Pytorch compile is already activated by default. If you are running on Windows, read on! PyTorch offers the ability to comp..." />
+<meta name="description" content="If you are are running on Linux or MacOS, then you can skip this section, Pytorch compile is already activated by default. If you are running on Windows, read on! PyTorch offers the ability to comp..." />
 <meta name="twitter:card" content="summary_large_image" />
-<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" />
+<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Developer Tutorials" href="../developer_tutorials/index.html" /><link rel="prev" title="Changing Batch Sizes" href="change_batch_sizes.html" />
 
     <link rel="shortcut icon" href="../_static/favicon.ico"/><!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 -->
-        <title>Pytorch Compile - Algan v0.1.0</title>
+        <title>PyTorch Compile - Algan v0.1.0</title>
       <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/styles/furo.css?v=354aac6f" />
     <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
@@ -247,12 +247,12 @@
   <input type="hidden" name="area" value="default">
 </form>
 <div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
-  <ul>
+  <ul class="current">
 <li class="toctree-l1 has-children"><a class="reference internal" href="../installation.html">Installation</a><input class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><div class="visually-hidden">Toggle navigation of Installation</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l2"><a class="reference internal" href="../installation/uv.html">Installing Algan locally</a></li>
 </ul>
 </li>
-<li class="toctree-l1 has-children"><a class="reference internal" href="../tutorials_guides.html">Tutorials &amp; Guides</a><input class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" role="switch" type="checkbox"/><label for="toctree-checkbox-2"><div class="visually-hidden">Toggle navigation of Tutorials &amp; Guides</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l1 current has-children"><a class="reference internal" href="../tutorials_guides.html">Tutorials &amp; Guides</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-2" name="toctree-checkbox-2" role="switch" type="checkbox"/><label for="toctree-checkbox-2"><div class="visually-hidden">Toggle navigation of Tutorials &amp; Guides</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
 <li class="toctree-l2 has-children"><a class="reference internal" href="../new_user_tutorials/index.html">New User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-3" name="toctree-checkbox-3" role="switch" type="checkbox"/><label for="toctree-checkbox-3"><div class="visually-hidden">Toggle navigation of New User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../new_user_tutorials/installation.html">Installation</a><input class="toctree-checkbox" id="toctree-checkbox-4" name="toctree-checkbox-4" role="switch" type="checkbox"/><label for="toctree-checkbox-4"><div class="visually-hidden">Toggle navigation of Installation</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../installation/uv.html">Installing Algan locally</a></li>
@@ -261,9 +261,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/getting_started.html">Getting Started</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/basic_animations.html">Basic Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/updaters.html">Updaters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -272,13 +271,17 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
 </li>
-<li class="toctree-l2 has-children"><a class="reference internal" href="index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l2 current has-children"><a class="reference internal" href="index.html">Making Algan Faster</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="change_batch_sizes.html">Changing Batch Sizes</a></li>
+<li class="toctree-l3 current current-page"><a class="current reference internal" href="#">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -368,6 +371,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -386,7 +390,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -452,33 +455,33 @@
         </div>
         <article role="main" id="furo-main-content">
           <section id="pytorch-compile">
-<h1>Pytorch Compile<a class="headerlink" href="#pytorch-compile" title="Link to this heading">¶</a></h1>
+<h1>PyTorch Compile<a class="headerlink" href="#pytorch-compile" title="Link to this heading">¶</a></h1>
 <p>If you are are running on Linux or MacOS, then you can skip this section, Pytorch compile
 is already activated by default.</p>
 <p>If you are running on Windows, read on!</p>
-<p>Pytorch offers the ability to compile code written in pytorch. Compiled code
+<p>PyTorch offers the ability to compile code written in PyTorch. Compiled code
 will combine multiple GPU kernels into one, as well as several other optimizations,
 resulting in much faster code execution.</p>
-<p>Unfortunately, Pytorch compile does not work on Windows.
-But there is a work around for Windows users: you just need to run Pytorch
+<p>Unfortunately, PyTorch compile does not work on Windows.
+But there is a work around for Windows users: you just need to run PyTorch
 from within the Windows Subsystem Linux (WSL).</p>
 <p>In order to do this, you will first need to install the WSL by following the instructions
 at <a class="reference external" href="https://learn.microsoft.com/en-us/windows/wsl/install">https://learn.microsoft.com/en-us/windows/wsl/install</a></p>
 <p>Then you must install Algan from scratch to your WSL. To do so, open the WSL terminal,
-then follow the instructions at <span class="xref std std-doc">local installation guide</span> making sure
+then follow the <a class="reference internal" href="../installation/uv.html"><span class="doc">installation instructions</span></a> , making sure
 you follow the instructions for Linux OS.</p>
 <p>Once you have successfully installed Algan to your WSL, you can then use it to run python
 files on your windows machine. And when run from the WSL, Algan will automatically enable
-Pytorch compile.</p>
+PyTorch compile.</p>
 <p><a class="reference external" href="https://github.com/rusty1s/pytorch_scatter">pytorch_scatter</a> is a project
 which implements highly optimized pre-compiled wheels for some advanced scatter operations
-that the regular Pytorch package lacks.
+that the regular PyTorch package lacks.
 Algan uses one such scatter operation in its rendering pipeline. If you don’t have
 pytorch_scatter installed, Algan will perform the operation by combining many un-optimized
 operations. If you install pytorch_scatter, Algan will automatically detect it and use it instead,
 resulting in 10-30% faster rendering times.</p>
 <p>To install it, follow the instructions at <a class="reference external" href="https://github.com/rusty1s/pytorch_scatter">pytorch_scatter</a>
-Make sure you select the same hardware version as your original Pytorch installation.</p>
+Make sure you select the same hardware version as your original PyTorch installation.</p>
 </section>
 
         </article>
@@ -486,8 +489,26 @@ Make sure you select the same hardware version as your original Pytorch installa
       <footer>
         
         <div class="related-pages">
-          
-          
+          <a class="next-page" href="../developer_tutorials/index.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title">Developer Tutorials</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="change_batch_sizes.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title">Changing Batch Sizes</div>
+                
+              </div>
+            </a>
         </div>
         <div class="bottom-of-page">
           <div class="left-details">

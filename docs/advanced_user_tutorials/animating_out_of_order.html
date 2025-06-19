@@ -14,7 +14,7 @@
 <meta property="og:image:alt" content="In Algan, when you change an animatable attribute, or run an animated function, Algan does not actually perform that animation immediately. Instead, Algan makes a record of the fact that this anima..." />
 <meta name="description" content="In Algan, when you change an animatable attribute, or run an animated function, Algan does not actually perform that animation immediately. Instead, Algan makes a record of the fact that this anima..." />
 <meta name="twitter:card" content="summary_large_image" />
-<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Extending Algan" href="extending_algan.html" /><link rel="prev" title="Advanced User Tutorials" href="index.html" />
+<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Extending Algan" href="extending_algan.html" /><link rel="prev" title="Shaders and Materials" href="shaders_and_materials.html" />
 
     <link rel="shortcut icon" href="../_static/favicon.ico"/><!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 -->
         <title>Animating Out of Order - Algan v0.1.0</title>
@@ -261,9 +261,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/getting_started.html">Getting Started</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/basic_animations.html">Basic Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/updaters.html">Updaters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -272,6 +271,9 @@
 </ul>
 </li>
 <li class="toctree-l2 current has-children"><a class="reference internal" href="index.html">Advanced User Tutorials</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
+<li class="toctree-l3"><a class="reference internal" href="images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3 current current-page"><a class="current reference internal" href="#">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -279,6 +281,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -368,6 +371,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -386,7 +390,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -472,13 +475,14 @@ in the timeline, at any point in the code. And in some situations,
 this makes animation code much simpler.</p>
 <section id="animating-a-wave-effect">
 <h2>Animating a wave effect<a class="headerlink" href="#animating-a-wave-effect" title="Link to this heading">¶</a></h2>
-<p>Suppose that we have a bunch of mobs.</p>
+<p>Suppose that we have a bunch of mobs</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">n</span> <span class="o">=</span> <span class="mi">10</span>
 <span class="n">mobs</span> <span class="o">=</span> <span class="n">Group</span><span class="p">([</span><span class="n">Square</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="n">BLUE</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="o">*</span><span class="n">n</span><span class="p">)])</span><span class="o">.</span><span class="n">arrange_in_grid</span><span class="p">(</span><span class="n">n</span><span class="p">)</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 </pre></div>
 </div>
-<p>We want to animate the effect of a wave passing through them, from the top-left of the screen to the
-bottom-right. When the wave hits a Mob, we will change its color to RED.
+<p>and we want to animate the effect of a wave passing through them, from the top-left of the
+screen to the
+bottom-right. When the wave hits a Mob, we will change its color to RED briefly.
 This is quite a difficult animation to orchestrate normally. You need to sort
 mobs in the order in which the wave hits them, and then calculate how much time
 there is between the wave hitting one mob and the next.
@@ -512,19 +516,22 @@ its animation. And we can use out of order animation to implement the animations
     <span class="c1"># Get the current point in the timeline which this context is writing to.</span>
     <span class="n">animation_start_time</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">current_time</span>
     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">mobs</span><span class="p">)):</span>
-        <span class="c1"># rescale to [0, 2], so the wave takes 2 seconds to propagate.</span>
-        <span class="n">mob_start_time</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="p">(</span><span class="n">mob_dots</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">-</span> <span class="n">min_dot</span><span class="p">)</span> <span class="o">/</span> <span class="p">(</span><span class="n">max_dot</span> <span class="o">-</span> <span class="n">min_dot</span><span class="p">)</span>
+        <span class="c1"># rescale to [0, 5], so the wave takes 5 seconds to propagate.</span>
+        <span class="n">mob_start_time</span> <span class="o">=</span> <span class="mi">5</span> <span class="o">*</span> <span class="p">(</span><span class="n">mob_dots</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">-</span> <span class="n">min_dot</span><span class="p">)</span> <span class="o">/</span> <span class="p">(</span><span class="n">max_dot</span> <span class="o">-</span> <span class="n">min_dot</span><span class="p">)</span>
 
-        <span class="c1"># Set the current time we write animations to, to the point in time when this mob should start</span>
+        <span class="c1"># Set the current time we write animations to,</span>
+        <span class="c1"># to the point in time when this mob should start</span>
         <span class="n">context</span><span class="o">.</span><span class="n">current_time</span> <span class="o">=</span> <span class="n">animation_start_time</span><span class="o">+</span><span class="n">mob_start_time</span>
 
         <span class="c1"># Write the animation to this point on the timeline.</span>
-        <span class="k">with</span> <span class="n">Seq</span><span class="p">(</span><span class="n">run_time</span><span class="o">=</span><span class="mi">5</span><span class="p">):</span>
+        <span class="k">with</span> <span class="n">Seq</span><span class="p">(</span><span class="n">run_time</span><span class="o">=</span><span class="mi">2</span><span class="p">):</span>
+            <span class="n">original_color</span> <span class="o">=</span> <span class="n">mobs</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">color</span>
             <span class="n">mobs</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">color</span> <span class="o">=</span> <span class="n">RED</span>
+            <span class="n">mobs</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">color</span> <span class="o">=</span> <span class="n">original_color</span>
 
-    <span class="c1"># Now that we are done writing the animations, jump to the end of the animation to</span>
+    <span class="c1"># Now that we are done writing the animations, jump to the end of the context to</span>
     <span class="c1"># continue animating in order.</span>
-    <span class="n">context</span><span class="o">.</span><span class="n">current_time</span> <span class="o">=</span> <span class="n">animation_start_time</span><span class="o">+</span><span class="mi">1</span>
+    <span class="n">context</span><span class="o">.</span><span class="n">current_time</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">end_time</span>
 
 <span class="n">render_to_file</span><span class="p">()</span>
 </pre></div>
@@ -544,19 +551,22 @@ with Seq() as context:
     # Get the current point in the timeline which this context is writing to.
     animation_start_time = context.current_time
     for i in range(len(mobs)):
-        # rescale to [0, 2], so the wave takes 2 seconds to propagate.
-        mob_start_time = 2 * (mob_dots[i] - min_dot) / (max_dot - min_dot)
+        # rescale to [0, 5], so the wave takes 5 seconds to propagate.
+        mob_start_time = 5 * (mob_dots[i] - min_dot) / (max_dot - min_dot)
 
-        # Set the current time we write animations to, to the point in time when this mob should start
+        # Set the current time we write animations to,
+        # to the point in time when this mob should start
         context.current_time = animation_start_time+mob_start_time
 
         # Write the animation to this point on the timeline.
-        with Seq(run_time=5):
+        with Seq(run_time=2):
+            original_color = mobs[i].color
             mobs[i].color = RED
+            mobs[i].color = original_color
 
-    # Now that we are done writing the animations, jump to the end of the animation to
+    # Now that we are done writing the animations, jump to the end of the context to
     # continue animating in order.
-    context.current_time = animation_start_time+1
+    context.current_time = context.end_time
 
 render_to_file()
 
@@ -577,14 +587,14 @@ render_to_file()
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
-          <a class="prev-page" href="index.html">
+          <a class="prev-page" href="shaders_and_materials.html">
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
               <div class="page-info">
                 <div class="context">
                   <span>Previous</span>
                 </div>
                 
-                <div class="title">Advanced User Tutorials</div>
+                <div class="title">Shaders and Materials</div>
                 
               </div>
             </a>

@@ -251,9 +251,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/shaders_and_materials.html">Shaders</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../manim_user_quickstart/index.html">Manim User Quickstart</a><input class="toctree-checkbox" id="toctree-checkbox-5" name="toctree-checkbox-5" role="switch" type="checkbox"/><label for="toctree-checkbox-5"><div class="visually-hidden">Toggle navigation of Manim User Quickstart</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -261,6 +259,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -268,7 +269,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/use_pytorch_compile.html">Pytorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -377,7 +378,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -435,6 +435,7 @@
           <h1>Source code for algan.mobs.mob</h1><div class="highlight"><pre>
 <span></span><span class="kn">from</span><span class="w"> </span><span class="nn">__future__</span><span class="w"> </span><span class="kn">import</span> <span class="n">annotations</span>
 
+<span class="kn">import</span><span class="w"> </span><span class="nn">inspect</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">collections</span><span class="w"> </span><span class="kn">import</span> <span class="n">defaultdict</span>
 
@@ -444,6 +445,7 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">scipy.optimize</span><span class="w"> </span><span class="kn">import</span> <span class="n">linear_sum_assignment</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">torch</span><span class="w"> </span><span class="kn">import</span> <span class="n">Tensor</span><span class="p">,</span> <span class="n">TensorType</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">algan.rendering.shaders.pbr_shaders</span><span class="w"> </span><span class="kn">import</span> <span class="n">default_shader</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.animation.animatable</span><span class="w"> </span><span class="kn">import</span> <span class="n">Animatable</span><span class="p">,</span> <span class="n">animated_function</span><span class="p">,</span> <span class="n">ModificationHistory</span><span class="p">,</span> <span class="n">TimeInterval</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.animation.animation_contexts</span><span class="w"> </span><span class="kn">import</span> <span class="n">Seq</span><span class="p">,</span> <span class="n">Off</span><span class="p">,</span> <span class="n">Sync</span><span class="p">,</span> <span class="n">AnimationContext</span><span class="p">,</span> <span class="n">NoExtra</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.constants.spatial</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
@@ -455,6 +457,10 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.python_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">traverse</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.tensor_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">dot_product</span><span class="p">,</span> <span class="n">broadcast_gather</span><span class="p">,</span> <span class="n">unsqueeze_right</span><span class="p">,</span> <span class="n">unsquish</span><span class="p">,</span> <span class="n">squish</span><span class="p">,</span> \
     <span class="n">broadcast_cross_product</span><span class="p">,</span> <span class="n">cast_to_tensor</span><span class="p">,</span> <span class="n">mid_point</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">ModifiedProtectedAttributeError</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+    <span class="k">pass</span>
 
 
 <div class="viewcode-block" id="Mob">
@@ -514,10 +520,9 @@
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">location</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span> <span class="o">=</span> <span class="n">ORIGIN</span><span class="p">,</span> <span class="n">basis</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span> <span class="o">=</span> <span class="n">squish</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">3</span><span class="p">)),</span>
                  <span class="n">color</span><span class="p">:</span> <span class="n">Color</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">opacity</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="n">glow</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mi">0</span><span class="p">,</span>
-                 <span class="n">metallicness</span><span class="p">:</span> <span class="nb">float</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">smoothness</span><span class="p">:</span><span class="nb">float</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+                 <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">register_attrs_as_animatable</span><span class="p">(</span>
-            <span class="p">{</span><span class="s1">&#39;location&#39;</span><span class="p">,</span> <span class="s1">&#39;basis&#39;</span><span class="p">,</span> <span class="s1">&#39;scale_coefficient&#39;</span><span class="p">,</span> <span class="s1">&#39;color&#39;</span><span class="p">,</span> <span class="s1">&#39;opacity&#39;</span><span class="p">,</span> <span class="s1">&#39;max_opacity&#39;</span><span class="p">,</span> <span class="s1">&#39;glow&#39;</span><span class="p">,</span>
-             <span class="s1">&#39;metallicness&#39;</span><span class="p">,</span> <span class="s1">&#39;smoothness&#39;</span><span class="p">},</span> <span class="n">Mob</span><span class="p">)</span>
+            <span class="p">[</span><span class="s1">&#39;location&#39;</span><span class="p">,</span> <span class="s1">&#39;basis&#39;</span><span class="p">,</span> <span class="s1">&#39;scale_coefficient&#39;</span><span class="p">,</span> <span class="s1">&#39;color&#39;</span><span class="p">,</span> <span class="s1">&#39;opacity&#39;</span><span class="p">,</span> <span class="s1">&#39;max_opacity&#39;</span><span class="p">,</span> <span class="s1">&#39;glow&#39;</span><span class="p">],</span> <span class="n">Mob</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">recursing</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">exclude_from_boundary</span> <span class="o">=</span> <span class="kc">False</span>
         <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
@@ -545,8 +550,6 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">max_opacity</span> <span class="o">=</span> <span class="n">cast_to_tensor</span><span class="p">(</span><span class="n">opacity</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">opacity</span> <span class="o">=</span> <span class="n">cast_to_tensor</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># Current opacity, can be animated</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">glow</span> <span class="o">=</span> <span class="n">cast_to_tensor</span><span class="p">(</span><span class="n">glow</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">metallicness</span> <span class="o">=</span> <span class="n">cast_to_tensor</span><span class="p">(</span><span class="n">metallicness</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">smoothness</span> <span class="o">=</span> <span class="n">cast_to_tensor</span><span class="p">(</span><span class="n">smoothness</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">num_points_per_object</span> <span class="o">=</span> <span class="mi">1</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">shader</span> <span class="o">=</span> <span class="kc">None</span>
 
@@ -559,7 +562,7 @@
 
 <div class="viewcode-block" id="Mob.register_attrs_as_animatable">
 <a class="viewcode-back" href="../../../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.register_attrs_as_animatable">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">register_attrs_as_animatable</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">attrs</span><span class="p">:</span> <span class="nb">set</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="n">my_class</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">register_attrs_as_animatable</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">attrs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span> <span class="n">my_class</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">        Registers attributes as animatable, meaning their changes can be tracked</span>
 <span class="sd">        and interpolated over time for animation.</span>
@@ -578,15 +581,15 @@
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">attrs</span><span class="p">,</span> <span class="nb">str</span><span class="p">):</span>
             <span class="n">attrs</span> <span class="o">=</span> <span class="p">{</span><span class="n">attrs</span><span class="p">,</span> <span class="p">}</span>
-        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">attrs</span><span class="p">,</span> <span class="nb">set</span><span class="p">):</span>
-            <span class="n">attrs</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">attrs</span><span class="p">)</span>
+        <span class="c1">#if not isinstance(attrs, set):</span>
+        <span class="c1">#    attrs = set(attrs)</span>
         <span class="k">if</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;animatable_attrs&#39;</span><span class="p">):</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span> <span class="o">=</span> <span class="p">[]</span>
         <span class="k">if</span> <span class="n">my_class</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">my_class</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span>
         <span class="k">for</span> <span class="n">attr</span> <span class="ow">in</span> <span class="n">attrs</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">add_property_getter_and_setter</span><span class="p">(</span><span class="n">attr</span><span class="p">,</span> <span class="n">my_class</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">attrs</span><span class="p">)</span></div>
+        <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span><span class="o">.</span><span class="n">extend</span><span class="p">([</span><span class="n">_</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">attrs</span> <span class="k">if</span> <span class="n">_</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span><span class="p">])</span><span class="c1">#update(attrs)</span></div>
 
 
 <div class="viewcode-block" id="Mob.add_property_getter_and_setter">
@@ -1154,7 +1157,10 @@
             <span class="n">ds</span> <span class="o">=</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">get_descendants</span><span class="p">(</span><span class="n">include_self</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
             <span class="p">[</span><span class="n">d</span><span class="o">.</span><span class="n">set_time_inds_to</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">ds</span><span class="p">]</span>
         <span class="n">old_basis</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">basis</span> <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;basis&#39;</span><span class="p">)</span> <span class="k">else</span> <span class="n">basis</span>
-        <span class="n">interpolated_basis</span> <span class="o">=</span> <span class="n">old_basis</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">interpolation</span><span class="p">)</span> <span class="o">+</span> <span class="n">interpolation</span> <span class="o">*</span> <span class="n">basis</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">interpolated_basis</span> <span class="o">=</span> <span class="n">old_basis</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">interpolation</span><span class="p">)</span> <span class="o">+</span> <span class="n">interpolation</span> <span class="o">*</span> <span class="n">basis</span>
+        <span class="k">except</span><span class="p">:</span>
+            <span class="n">interpolated_basis</span> <span class="o">=</span> <span class="n">old_basis</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">interpolation</span><span class="p">)</span> <span class="o">+</span> <span class="n">interpolation</span> <span class="o">*</span> <span class="n">basis</span>
 
         <span class="c1"># Temporarily set recursing flag to control setattr_relative behavior</span>
         <span class="n">original_recursing_state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">recursing</span>
@@ -1946,6 +1952,10 @@
         <span class="k">return</span> <span class="bp">self</span></div>
 
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">rotate_around_line</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">line_point</span><span class="p">,</span> <span class="n">line_direction</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="n">rotation_point</span> <span class="o">=</span> <span class="n">project_point_onto_line</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">location</span><span class="p">,</span> <span class="n">line_direction</span><span class="p">,</span> <span class="n">line_point</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">rotate_around_point</span><span class="p">(</span><span class="n">rotation_point</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+
 <div class="viewcode-block" id="Mob.rotate_around_point">
 <a class="viewcode-back" href="../../../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.rotate_around_point">[docs]</a>
     <span class="nd">@animated_function</span><span class="p">(</span><span class="n">animated_args</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;num_degrees&#39;</span><span class="p">:</span> <span class="mi">0</span><span class="p">},</span> <span class="n">unique_args</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;axis&#39;</span><span class="p">])</span>
@@ -1978,6 +1988,11 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">location</span> <span class="o">=</span> <span class="n">new_location</span>  <span class="c1"># This setter handles recursive rotation and updates</span>
         <span class="k">return</span> <span class="bp">self</span></div>
 
+
+    <span class="nd">@animated_function</span><span class="p">(</span><span class="n">animated_args</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;num_degrees&#39;</span><span class="p">:</span> <span class="mi">0</span><span class="p">},</span> <span class="n">unique_args</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;axis&#39;</span><span class="p">])</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">orbit_around_point</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">point</span><span class="p">,</span> <span class="n">num_degrees</span><span class="p">,</span> <span class="n">axis</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rotate_around_point</span><span class="p">(</span><span class="n">point</span><span class="p">,</span> <span class="n">num_degrees</span><span class="p">,</span> <span class="n">axis</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">look_at</span><span class="p">(</span><span class="n">point</span><span class="p">)</span>
 
 <div class="viewcode-block" id="Mob.rotate_around_point_non_recursive">
 <a class="viewcode-back" href="../../../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.rotate_around_point_non_recursive">[docs]</a>
@@ -2212,8 +2227,8 @@
         <span class="n">split_factors</span> <span class="o">=</span> <span class="p">[(</span><span class="n">repeat_indices</span> <span class="o">==</span> <span class="n">i</span><span class="p">)</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">current_batch_size</span><span class="p">)]</span>
 
         <span class="c1"># Iterate over animatable attributes and expand their batch dimensions</span>
-        <span class="k">for</span> <span class="n">attr</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;location&#39;</span><span class="p">,</span> <span class="s1">&#39;opacity&#39;</span><span class="p">,</span> <span class="s1">&#39;color&#39;</span><span class="p">,</span> <span class="s1">&#39;basis&#39;</span><span class="p">,</span> <span class="s1">&#39;glow&#39;</span><span class="p">,</span> <span class="s1">&#39;metallicness&#39;</span><span class="p">,</span> <span class="s1">&#39;smoothness&#39;</span><span class="p">]:</span>
-            <span class="n">value</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="fm">__getattribute__</span><span class="p">(</span><span class="n">attr</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># Get the current value (first time step)</span>
+        <span class="k">for</span> <span class="n">attr</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span><span class="p">:</span>
+            <span class="n">value</span> <span class="o">=</span> <span class="n">cast_to_tensor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="fm">__getattribute__</span><span class="p">(</span><span class="n">attr</span><span class="p">))[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># Get the current value (first time step)</span>
             <span class="k">if</span> <span class="n">value</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>  <span class="c1"># If already a singleton batch, no expansion needed</span>
                 <span class="k">continue</span>
 
@@ -2234,7 +2249,7 @@
 
 <div class="viewcode-block" id="Mob.become">
 <a class="viewcode-back" href="../../../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.become">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">become</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other_mob</span><span class="p">:</span> <span class="s1">&#39;Mob&#39;</span><span class="p">,</span> <span class="n">move_to</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n">detach_history</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="n">minimize_movement</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;Mob&#39;</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">become</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other_mob</span><span class="p">:</span> <span class="s1">&#39;Mob&#39;</span><span class="p">,</span> <span class="n">move_to</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n">detach_history</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="n">minimize_movement</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;Mob&#39;</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Transforms this Mob into another Mob (`other_mob`).</span>
 
 <span class="sd">        This involves animating changes in location, opacity, color, basis, etc.,</span>
@@ -2350,8 +2365,7 @@
                         <span class="n">other_mob</span><span class="o">.</span><span class="n">expand_n_batch</span><span class="p">(</span><span class="o">-</span><span class="n">batch_difference</span><span class="p">)</span>
 
                 <span class="c1"># Set all animatable attributes non-recursively to match the target mob&#39;s values</span>
-                <span class="k">for</span> <span class="n">attr_name</span> <span class="ow">in</span> <span class="p">[</span><span class="s1">&#39;location&#39;</span><span class="p">,</span> <span class="s1">&#39;opacity&#39;</span><span class="p">,</span> <span class="s1">&#39;color&#39;</span><span class="p">,</span> <span class="s1">&#39;basis&#39;</span><span class="p">,</span> <span class="s1">&#39;glow&#39;</span><span class="p">,</span> <span class="s1">&#39;metallicness&#39;</span><span class="p">,</span> <span class="s1">&#39;smoothness&#39;</span><span class="p">,</span>
-                                  <span class="s1">&#39;border_color&#39;</span><span class="p">,</span> <span class="s1">&#39;border_width&#39;</span><span class="p">]:</span>
+                <span class="k">for</span> <span class="n">attr_name</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span><span class="p">:</span>
                     <span class="k">if</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">attr_name</span><span class="p">):</span>
                         <span class="k">continue</span>
                     <span class="c1"># Use getattr to safely access attributes, as not all mobs may have all listed attributes</span>
@@ -2446,7 +2460,11 @@
 <div class="viewcode-block" id="Mob.set_shader">
 <a class="viewcode-back" href="../../../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.set_shader">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">set_shader</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">shader</span><span class="p">):</span>
-<span class="w">        </span><span class="sd">&quot;&quot;&quot;Sets the shader for this mob and all of its descendants.</span>
+<span class="w">        </span><span class="sd">&quot;&quot;&quot;Sets the shader for this mob and all of its descendants. This MUST</span>
+<span class="sd">        be called before the mob is spawned, once spawned the shader cannot be changed.</span>
+<span class="sd">        If you need to change the shader for a spawned mob, create a new clone of it</span>
+<span class="sd">        with clone(spawn=False) and set the shader of the clone, and despawn</span>
+<span class="sd">        the original.</span>
 
 <span class="sd">        Parameters</span>
 <span class="sd">        ----------</span>
@@ -2457,11 +2475,38 @@
 <span class="sd">        -------</span>
 <span class="sd">        :class:`~.Mob`</span>
 <span class="sd">            The mob instance itself, allowing for method chaining.</span>
+
+<span class="sd">        Raises</span>
+<span class="sd">        ------</span>
+<span class="sd">        :class:`.ModifiedProtectedAttributeError`</span>
+<span class="sd">            If set_shader is used on an already spawned mob.</span>
+
 <span class="sd">        &quot;&quot;&quot;</span>
-        <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_descendants</span><span class="p">():</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">spawn_time</span><span class="p">()</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">ModifiedProtectedAttributeError</span><span class="p">(</span><span class="s2">&quot;You are attempting to change the shader&quot;</span>
+                                                  <span class="s2">&quot;of a mob that is already spawned. This is not allowed.&quot;</span>
+                                                  <span class="s2">&quot;See docs for help.&quot;</span><span class="p">)</span>
+
+        <span class="n">shader_params</span> <span class="o">=</span> <span class="n">inspect</span><span class="o">.</span><span class="n">signature</span><span class="p">(</span><span class="n">shader</span><span class="p">)</span><span class="o">.</span><span class="n">parameters</span>
+        <span class="n">num_shader_independent_params</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">inspect</span><span class="o">.</span><span class="n">signature</span><span class="p">(</span><span class="n">default_shader</span><span class="p">)</span><span class="o">.</span><span class="n">parameters</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span>
+        <span class="n">shader_specific_param_names</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">shader_params</span><span class="o">.</span><span class="n">keys</span><span class="p">())[</span><span class="n">num_shader_independent_params</span><span class="p">:]</span>
+        <span class="n">shader_specific_param_defaults</span> <span class="o">=</span> <span class="p">[</span><span class="n">shader_params</span><span class="p">[</span><span class="n">n</span><span class="p">]</span><span class="o">.</span><span class="n">default</span> <span class="k">if</span>
+                                          <span class="n">shader_params</span><span class="p">[</span><span class="n">n</span><span class="p">]</span><span class="o">.</span><span class="n">default</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">inspect</span><span class="o">.</span><span class="n">_empty</span> <span class="k">else</span> <span class="mi">0</span>
+                                          <span class="k">for</span> <span class="n">n</span> <span class="ow">in</span> <span class="n">shader_specific_param_names</span><span class="p">]</span>
+
+        <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="nb">reversed</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">get_descendants</span><span class="p">()):</span>
+            <span class="n">d</span><span class="o">.</span><span class="n">register_attrs_as_animatable</span><span class="p">(</span><span class="n">shader_specific_param_names</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">n</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">shader_specific_param_names</span><span class="p">,</span> <span class="n">shader_specific_param_defaults</span><span class="p">):</span>
+                <span class="n">d</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span>
             <span class="n">d</span><span class="o">.</span><span class="n">shader</span> <span class="o">=</span> <span class="n">shader</span>
+            <span class="n">d</span><span class="o">.</span><span class="n">shader_specific_param_names</span> <span class="o">=</span> <span class="n">shader_specific_param_names</span>
         <span class="k">return</span> <span class="bp">self</span></div>
 
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_shader_params</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;shader_specific_param_names&#39;</span><span class="p">):</span>
+            <span class="k">return</span> <span class="p">{</span><span class="n">_</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="fm">__getattribute__</span><span class="p">(</span><span class="n">_</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">shader_specific_param_names</span><span class="p">}</span>
+        <span class="k">return</span> <span class="nb">dict</span><span class="p">()</span>
 
 <div class="viewcode-block" id="Mob.set">
 <a class="viewcode-back" href="../../../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.set">[docs]</a>

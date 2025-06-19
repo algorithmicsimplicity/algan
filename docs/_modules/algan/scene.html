@@ -249,9 +249,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../../new_user_tutorials/getting_started.html">Getting Started</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../new_user_tutorials/basic_animations.html">Basic Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../new_user_tutorials/updaters.html">Updaters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -260,6 +259,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -267,7 +269,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../making_algan_faster/use_pytorch_compile.html">Pytorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -357,6 +359,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../../reference/algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../../reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -375,7 +378,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -442,6 +444,10 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn.functional</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">F</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">algan</span>
+<span class="c1">#from algan.rendering.camera import Camera</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">algan.constants.color</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">algan.constants.spatial</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<span class="c1">#from algan.rendering.lights import PointLight</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.animation.animation_contexts</span><span class="w"> </span><span class="kn">import</span> <span class="n">Sync</span><span class="p">,</span> <span class="n">AnimationManager</span><span class="p">,</span> <span class="n">Off</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.defaults.device_defaults</span><span class="w"> </span><span class="kn">import</span> <span class="n">DEFAULT_RENDER_DEVICE</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.defaults.render_defaults</span><span class="w"> </span><span class="kn">import</span> <span class="n">DEFAULT_RENDER_SETTINGS</span>
@@ -449,7 +455,6 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.rendering.post_processing</span><span class="w"> </span><span class="kn">import</span> <span class="n">bloom_filter</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.memory_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">ManualMemory</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.tensor_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">unsquish</span>
 
 
@@ -460,7 +465,9 @@
 <div class="viewcode-block" id="Scene">
 <a class="viewcode-back" href="../../reference/algan.scene.Scene.html#algan.scene.Scene">[docs]</a>
 <span class="k">class</span><span class="w"> </span><span class="nc">Scene</span><span class="p">:</span>
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">background_frame</span><span class="o">=</span><span class="n">DEFAULT_FRAME</span><span class="p">,</span> <span class="n">output_path</span><span class="o">=</span><span class="s1">&#39;output&#39;</span><span class="p">,</span> <span class="n">memory</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">render_settings</span><span class="o">=</span><span class="n">DEFAULT_RENDER_SETTINGS</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">background_frame</span><span class="o">=</span><span class="n">DEFAULT_FRAME</span><span class="p">,</span> <span class="n">output_path</span><span class="o">=</span><span class="s1">&#39;output&#39;</span><span class="p">,</span> <span class="n">memory</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+                 <span class="n">render_settings</span><span class="o">=</span><span class="n">DEFAULT_RENDER_SETTINGS</span><span class="p">,</span>
+                 <span class="n">scene_initializer</span><span class="o">=</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">x</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">set_render_settings</span><span class="p">(</span><span class="n">render_settings</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">current_time</span> <span class="o">=</span> <span class="mi">0</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">min_time</span> <span class="o">=</span> <span class="mi">0</span>
@@ -479,10 +486,24 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">output_path</span> <span class="o">=</span> <span class="n">output_path</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">priority</span> <span class="o">=</span> <span class="mi">0</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">id_count</span> <span class="o">=</span> <span class="mi">0</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">camera</span> <span class="o">=</span> <span class="kc">None</span>
+        <span class="c1">#self.camera = None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">scene_initializer</span> <span class="o">=</span> <span class="n">scene_initializer</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">reset_scene</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">allow_new_actors</span> <span class="o">=</span> <span class="kc">True</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">memory</span> <span class="o">=</span> <span class="n">memory</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_camera</span><span class="p">():</span>
+        <span class="k">return</span> <span class="n">algan</span><span class="o">.</span><span class="n">SceneManager</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span><span class="o">.</span><span class="n">camera</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_light_sources</span><span class="p">():</span>
+        <span class="k">return</span> <span class="n">algan</span><span class="o">.</span><span class="n">SceneManager</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span><span class="o">.</span><span class="n">light_sources</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">add_light_source</span><span class="p">(</span><span class="n">light_source</span><span class="p">):</span>
+        <span class="n">algan</span><span class="o">.</span><span class="n">SceneManager</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span><span class="o">.</span><span class="n">light_sources</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">light_source</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">length_to_num_pixels</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">length</span><span class="p">):</span>
         <span class="k">return</span> <span class="n">length</span> <span class="o">*</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_pixels_screen_height</span>
@@ -549,7 +570,7 @@
             <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">nt</span><span class="p">,))</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
         <span class="k">return</span> <span class="nb">sum</span><span class="p">((</span><span class="n">a</span><span class="o">.</span><span class="n">render_audio</span><span class="p">()</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">active_actors</span><span class="p">))</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">get_fragments</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">actors</span><span class="p">,</span> <span class="n">start</span><span class="p">,</span> <span class="n">end</span><span class="p">,</span> <span class="n">save_image</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_fragments</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">actors</span><span class="p">,</span> <span class="n">start</span><span class="p">,</span> <span class="n">end</span><span class="p">,</span> <span class="n">save_image</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">post_processes</span><span class="o">=</span><span class="p">[]):</span>
         <span class="n">camera</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">camera</span>
         <span class="n">nt</span> <span class="o">=</span> <span class="n">end</span><span class="o">-</span><span class="n">start</span>
         <span class="n">active_actors</span> <span class="o">=</span> <span class="p">[]</span>
@@ -566,6 +587,8 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">has_any_active_actors</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="n">camera</span><span class="o">.</span><span class="n">set_state_to_time_t</span><span class="p">(</span><span class="n">time_inds</span><span class="p">)</span>
         <span class="n">camera</span><span class="o">.</span><span class="n">screen</span><span class="o">.</span><span class="n">set_state_to_time_t</span><span class="p">(</span><span class="n">time_inds</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">light_sources</span><span class="p">:</span>
+            <span class="n">l</span><span class="o">.</span><span class="n">set_state_to_time_t</span><span class="p">(</span><span class="n">time_inds</span><span class="p">)</span>
 
         <span class="n">grouped_primitives</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span><span class="k">lambda</span><span class="p">:</span> <span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="p">[]])</span>
 
@@ -587,8 +610,9 @@
                                                <span class="n">camera</span><span class="o">.</span><span class="n">screen</span><span class="o">.</span><span class="n">location</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">DEFAULT_RENDER_DEVICE</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
                                                <span class="n">camera</span><span class="o">.</span><span class="n">screen</span><span class="o">.</span><span class="n">basis</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">DEFAULT_RENDER_DEVICE</span><span class="p">,</span> <span class="n">non_blocking</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
                                                <span class="n">anti_alias_level</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">render_settings</span><span class="o">.</span><span class="n">anti_alias_level</span><span class="p">,</span>
-                                               <span class="n">light_origin</span><span class="o">=</span><span class="n">camera</span><span class="o">.</span><span class="n">light_source_location</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">DEFAULT_RENDER_DEVICE</span><span class="p">),</span>
-                                               <span class="n">light_color</span><span class="o">=</span><span class="n">camera</span><span class="o">.</span><span class="n">light_color</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">DEFAULT_RENDER_DEVICE</span><span class="p">),</span> <span class="n">memory</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">memory</span><span class="p">)</span>
+                                               <span class="n">light_sources</span><span class="o">=</span><span class="p">[</span><span class="n">_</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">DEFAULT_RENDER_DEVICE</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">light_sources</span><span class="p">],</span>
+                                               <span class="n">memory</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">memory</span><span class="p">,</span>
+                                               <span class="n">post_processes</span><span class="o">=</span><span class="n">post_processes</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">get_frame</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">i</span><span class="p">):</span>
         <span class="n">actors</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">actors</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
@@ -599,6 +623,7 @@
 
     <span class="k">def</span><span class="w"> </span><span class="nf">reset_scene</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">actors</span> <span class="o">=</span> <span class="p">[[]]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">scene_initializer</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">set_render_settings</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">render_settings</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">render_settings</span> <span class="o">=</span> <span class="n">render_settings</span>
@@ -609,7 +634,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">size</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_pixels_screen_width</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_pixels_screen_height</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">render_to_video</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">file_writer</span><span class="p">,</span> <span class="n">file_path</span><span class="p">,</span> <span class="n">file_path_out</span><span class="p">,</span> <span class="n">audio_file_path</span><span class="p">,</span>
-                        <span class="n">batch_size_actors</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">batch_size_frames</span><span class="o">=</span><span class="kc">None</span><span class="p">):</span>
+                        <span class="n">batch_size_actors</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">batch_size_frames</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">post_processes</span><span class="o">=</span><span class="p">[</span><span class="n">bloom_filter</span><span class="p">]):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">scene_times</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">scene_times</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">][</span><span class="mi">1</span><span class="p">],</span> <span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">ceil</span><span class="p">(</span><span class="n">AnimationManager</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">end_time</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">frames_per_second</span><span class="p">)</span><span class="o">+</span><span class="mi">1</span><span class="p">)))</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">initialize_frames</span><span class="p">()</span>
 
@@ -618,7 +643,10 @@
         <span class="k">if</span> <span class="n">batch_size_frames</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">batch_size_frames</span> <span class="o">=</span> <span class="n">algan</span><span class="o">.</span><span class="n">defaults</span><span class="o">.</span><span class="n">batch_defaults</span><span class="o">.</span><span class="n">DEFAULT_BATCH_SIZE_FRAMES</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">camera</span><span class="o">.</span><span class="n">despawn</span><span class="p">(</span><span class="n">animate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">actors</span> <span class="o">=</span> <span class="p">[[</span><span class="bp">self</span><span class="o">.</span><span class="n">camera</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">camera</span><span class="o">.</span><span class="n">screen</span><span class="p">,</span> <span class="o">*</span><span class="bp">self</span><span class="o">.</span><span class="n">actors</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]]]</span>
+        <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">light_sources</span><span class="p">:</span>
+            <span class="n">l</span><span class="o">.</span><span class="n">is_primitive</span> <span class="o">=</span> <span class="kc">True</span>
+            <span class="n">l</span><span class="o">.</span><span class="n">despawn</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">actors</span> <span class="o">=</span> <span class="p">[[</span><span class="bp">self</span><span class="o">.</span><span class="n">camera</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">camera</span><span class="o">.</span><span class="n">screen</span><span class="p">,</span> <span class="o">*</span><span class="bp">self</span><span class="o">.</span><span class="n">light_sources</span><span class="p">,</span> <span class="o">*</span><span class="bp">self</span><span class="o">.</span><span class="n">actors</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]]]</span>
         <span class="n">save_image</span> <span class="o">=</span> <span class="kc">False</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">has_any_active_actors</span> <span class="o">=</span> <span class="kc">False</span>
@@ -663,7 +691,7 @@
                         <span class="n">end</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">actor_s</span> <span class="o">+</span> <span class="p">(</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">*</span> <span class="n">batch_size_frames</span><span class="p">,</span> <span class="n">actor_e</span><span class="p">)</span>
 
                         <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">():</span>
-                            <span class="bp">self</span><span class="o">.</span><span class="n">get_fragments</span><span class="p">(</span><span class="n">actors</span><span class="p">,</span> <span class="n">start</span><span class="p">,</span> <span class="n">end</span><span class="p">,</span> <span class="n">save_image</span><span class="p">)</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">get_fragments</span><span class="p">(</span><span class="n">actors</span><span class="p">,</span> <span class="n">start</span><span class="p">,</span> <span class="n">end</span><span class="p">,</span> <span class="n">save_image</span><span class="p">,</span> <span class="n">post_processes</span><span class="p">)</span>
                             <span class="n">audio</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_audio</span><span class="p">(</span><span class="n">actors</span><span class="p">,</span> <span class="n">start</span><span class="p">,</span> <span class="n">end</span><span class="p">)</span>
                             <span class="n">wav_file</span><span class="o">.</span><span class="n">writeframes</span><span class="p">(</span><span class="nb">bytes</span><span class="p">(((</span><span class="n">audio</span><span class="o">+</span><span class="mi">1</span><span class="p">)</span><span class="o">*</span><span class="mi">255</span><span class="o">/</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">uint8</span><span class="p">)))</span>
                             <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">empty_cache</span><span class="p">()</span>
@@ -753,31 +781,6 @@
 
     <span class="k">def</span><span class="w"> </span><span class="nf">__deepcopy__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">memo</span><span class="p">):</span>
         <span class="k">return</span> <span class="bp">self</span></div>
-
-
-
-<div class="viewcode-block" id="SceneTracker">
-<a class="viewcode-back" href="../../reference/algan.scene.SceneTracker.html#algan.scene.SceneTracker">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">SceneTracker</span><span class="p">:</span>
-    <span class="n">_instance</span> <span class="o">=</span> <span class="kc">None</span>
-    <span class="n">_memory</span> <span class="o">=</span> <span class="kc">None</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s1">&#39;Call instance() instead.&#39;</span><span class="p">)</span>
-
-    <span class="nd">@classmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">reset</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
-        <span class="bp">cls</span><span class="o">.</span><span class="n">_instance</span> <span class="o">=</span> <span class="kc">None</span>
-
-    <span class="nd">@classmethod</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">instance</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
-        <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_instance</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_memory</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-                <span class="c1">#TODO make this work for CPU</span>
-                <span class="bp">cls</span><span class="o">.</span><span class="n">_memory</span> <span class="o">=</span> <span class="n">ManualMemory</span><span class="p">(((</span><span class="nb">int</span><span class="p">((</span><span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">get_device_properties</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">total_memory</span> <span class="o">-</span> <span class="n">torch</span><span class="o">.</span><span class="n">cuda</span><span class="o">.</span><span class="n">memory_allocated</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>
-                                                 <span class="o">*</span><span class="n">algan</span><span class="o">.</span><span class="n">defaults</span><span class="o">.</span><span class="n">batch_defaults</span><span class="o">.</span><span class="n">DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING</span><span class="p">))))</span>
-            <span class="bp">cls</span><span class="o">.</span><span class="n">_instance</span> <span class="o">=</span> <span class="n">Scene</span><span class="p">(</span><span class="n">memory</span><span class="o">=</span><span class="bp">cls</span><span class="o">.</span><span class="n">_memory</span><span class="p">)</span>
-        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_instance</span></div>
 
 </pre></div>
         </article>

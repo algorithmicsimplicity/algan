@@ -29,14 +29,8 @@ Qualified name: ``algan.mobs.numeric\_display.NumericDisplay``
      
      ~NumericDisplay.animation_manager
      ~NumericDisplay.basis
-     ~NumericDisplay.color
-     ~NumericDisplay.glow
      ~NumericDisplay.location
-     ~NumericDisplay.max_opacity
-     ~NumericDisplay.metallicness
      ~NumericDisplay.normalized_basis
-     ~NumericDisplay.opacity
      ~NumericDisplay.scale_coefficient
-     ~NumericDisplay.smoothness
      ~NumericDisplay.value
    

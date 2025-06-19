@@ -35,13 +35,7 @@ Qualified name: ``algan.mobs.surfaces.surface.Surface``
      
      ~Surface.animation_manager
      ~Surface.basis
-     ~Surface.color
-     ~Surface.glow
      ~Surface.location
-     ~Surface.max_opacity
-     ~Surface.metallicness
      ~Surface.normalized_basis
-     ~Surface.opacity
      ~Surface.scale_coefficient
-     ~Surface.smoothness
    

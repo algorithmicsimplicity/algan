@@ -25,13 +25,7 @@ Qualified name: ``algan.mobs.shapes\_2d.QuadTriangulated``
      
      ~QuadTriangulated.animation_manager
      ~QuadTriangulated.basis
-     ~QuadTriangulated.color
-     ~QuadTriangulated.glow
      ~QuadTriangulated.location
-     ~QuadTriangulated.max_opacity
-     ~QuadTriangulated.metallicness
      ~QuadTriangulated.normalized_basis
-     ~QuadTriangulated.opacity
      ~QuadTriangulated.scale_coefficient
-     ~QuadTriangulated.smoothness
    

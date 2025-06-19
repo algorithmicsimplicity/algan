@@ -26,14 +26,8 @@ Qualified name: ``algan.mobs.shapes\_2d.Circle``
      
      ~Circle.animation_manager
      ~Circle.basis
-     ~Circle.color
-     ~Circle.glow
      ~Circle.location
-     ~Circle.max_opacity
-     ~Circle.metallicness
      ~Circle.normalized_basis
-     ~Circle.opacity
      ~Circle.radius
      ~Circle.scale_coefficient
-     ~Circle.smoothness
    

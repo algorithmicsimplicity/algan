@@ -36,13 +36,7 @@ Qualified name: ``algan.mobs.text.Tex``
      
      ~Tex.animation_manager
      ~Tex.basis
-     ~Tex.color
-     ~Tex.glow
      ~Tex.location
-     ~Tex.max_opacity
-     ~Tex.metallicness
      ~Tex.normalized_basis
-     ~Tex.opacity
      ~Tex.scale_coefficient
-     ~Tex.smoothness
    

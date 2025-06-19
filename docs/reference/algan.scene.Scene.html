@@ -14,7 +14,7 @@
 <meta property="og:image:alt" content="Qualified name: algan.scene.Scene" />
 <meta name="description" content="Qualified name: algan.scene.Scene" />
 <meta name="twitter:card" content="summary_large_image" />
-<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="SceneTracker" href="algan.scene.SceneTracker.html" /><link rel="prev" title="scene" href="algan.scene.html" />
+<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Settings" href="../reference_index/settings.html" /><link rel="prev" title="scene" href="algan.scene.html" />
 
     <link rel="shortcut icon" href="../_static/favicon.ico"/><!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 -->
         <title>Scene - Algan v0.1.0</title>
@@ -263,7 +263,6 @@
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -272,6 +271,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -279,7 +281,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">Pytorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -369,7 +371,7 @@
 <li class="toctree-l4"><a class="reference internal" href="algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
-<li class="toctree-l3"><a class="reference internal" href="algan.rendering.shaders.html">shaders</a></li>
+<li class="toctree-l3"><a class="reference internal" href="algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -388,7 +390,6 @@
 <li class="toctree-l2 current has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
 <li class="toctree-l3 current has-children"><a class="reference internal" href="algan.scene.html">scene</a><input checked="" class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul class="current">
 <li class="toctree-l4 current current-page"><a class="current reference internal" href="#">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -458,7 +459,7 @@
 <p>Qualified name: <code class="docutils literal notranslate"><span class="pre">algan.scene.Scene</span></code></p>
 <dl class="py class">
 <dt class="sig sig-object py" id="algan.scene.Scene">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Scene</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">background_frame</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">Color([0.1200,</span> <span class="pre">0.1200,</span> <span class="pre">0.1200,</span> <span class="pre">0.0000,</span> <span class="pre">1.0000])</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_path</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'output'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">memory</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">render_settings</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">RenderSettings(resolution=(854,</span> <span class="pre">480),</span> <span class="pre">frames_per_second=30,</span> <span class="pre">anti_alias_level=2,</span> <span class="pre">audio_frames_per_second=44100,</span> <span class="pre">save_image=False)</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/scene.html#Scene"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.scene.Scene" title="Link to this definition">¶</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Scene</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">background_frame=Color([0.1200</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">0.1200</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">0.1200</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">0.0000</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">1.0000])</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">output_path='output'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">memory=None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">render_settings=RenderSettings(resolution=(854</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">480)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">frames_per_second=30</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">anti_alias_level=2</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">audio_frames_per_second=44100</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">save_image=False)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">scene_initializer=&lt;function</span> <span class="pre">Scene.&lt;lambda&gt;&gt;</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/scene.html#Scene"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.scene.Scene" title="Link to this definition">¶</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
 <p class="rubric">Methods</p>
 <div class="table-wrapper autosummary longtable docutils container">
@@ -470,13 +471,19 @@
 <tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">add_effect</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">clear_scene</span></code></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">add_light_source</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_actors</span></code></p></td>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">clear_scene</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_audio</span></code></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_actors</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_audio</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_camera</span></code></p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_current_frame</span></code></p></td>
@@ -491,40 +498,43 @@
 <tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_frames_from_fragments</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_new_id</span></code></p></td>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_light_sources</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_num_batches</span></code></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_new_id</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">increment_current_time</span></code></p></td>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_num_batches</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">initialize_frames</span></code></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">increment_current_time</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">length_to_num_pixels</span></code></p></td>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">initialize_frames</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">num_pixels_to_length</span></code></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">length_to_num_pixels</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_to_video</span></code></p></td>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">num_pixels_to_length</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">reset_scene</span></code></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">render_to_video</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_current_time</span></code></p></td>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">reset_scene</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_render_settings</span></code></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_current_time</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_time_to_latest</span></code></p></td>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_render_settings</span></code></p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">update_max_time</span></code></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_time_to_latest</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">update_max_time</span></code></p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -539,12 +549,12 @@
       <footer>
         
         <div class="related-pages">
-          <a class="next-page" href="algan.scene.SceneTracker.html">
+          <a class="next-page" href="../reference_index/settings.html">
               <div class="page-info">
                 <div class="context">
                   <span>Next</span>
                 </div>
-                <div class="title">SceneTracker</div>
+                <div class="title">Settings</div>
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>

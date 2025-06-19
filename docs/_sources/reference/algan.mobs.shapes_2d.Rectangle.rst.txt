@@ -25,13 +25,7 @@ Qualified name: ``algan.mobs.shapes\_2d.Rectangle``
      
      ~Rectangle.animation_manager
      ~Rectangle.basis
-     ~Rectangle.color
-     ~Rectangle.glow
      ~Rectangle.location
-     ~Rectangle.max_opacity
-     ~Rectangle.metallicness
      ~Rectangle.normalized_basis
-     ~Rectangle.opacity
      ~Rectangle.scale_coefficient
-     ~Rectangle.smoothness
    

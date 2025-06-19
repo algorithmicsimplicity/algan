@@ -263,9 +263,7 @@
 <li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
-<li class="toctree-l3"><a class="reference internal" href="new_user_tutorials/shaders_and_materials.html">Shaders</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="manim_user_quickstart/index.html">Manim User Quickstart</a><input class="toctree-checkbox" id="toctree-checkbox-5" name="toctree-checkbox-5" role="switch" type="checkbox"/><label for="toctree-checkbox-5"><div class="visually-hidden">Toggle navigation of Manim User Quickstart</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -273,6 +271,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -280,7 +281,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="making_algan_faster/use_pytorch_compile.html">Pytorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -389,7 +390,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -483,6 +483,7 @@ splines=ortho;
   &quot;Mob&quot; [URL=&quot;reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Base class for all objects that have a location and orientation in 3-D space.&quot;,width=0.05];
   &quot;Animatable&quot; -&gt; &quot;Mob&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;ModificationHistory&quot; [URL=&quot;reference/algan.animation.animatable.ModificationHistory.html#algan.animation.animatable.ModificationHistory&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A complete record of every change applied to a particular Mob, and the timestamps those changes occur over.&quot;,width=0.05];
+  &quot;ModifiedProtectedAttributeError&quot; [fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,width=0.05];
   &quot;TimeInterval&quot; [URL=&quot;reference/algan.animation.animatable.TimeInterval.html#algan.animation.animatable.TimeInterval&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
 }
 </section>
@@ -554,7 +555,6 @@ size=&quot;&quot;;
 splines=ortho;
   &quot;EmptySceneWarning&quot; [fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,width=0.05];
   &quot;Scene&quot; [URL=&quot;reference/algan.scene.Scene.html#algan.scene.Scene&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
-  &quot;SceneTracker&quot; [URL=&quot;reference/algan.scene.SceneTracker.html#algan.scene.SceneTracker&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
 }
 </section>
 </section>
@@ -647,6 +647,7 @@ splines=ortho;
 <li class="toctree-l2"><a class="reference internal" href="reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.shaders.pbr_shaders.html#algan.rendering.shaders.pbr_shaders.basic_pbr_shader"><code class="docutils literal notranslate"><span class="pre">basic_pbr_shader()</span></code></a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.shaders.pbr_shaders.html#algan.rendering.shaders.pbr_shaders.default_shader"><code class="docutils literal notranslate"><span class="pre">default_shader()</span></code></a></li>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.rendering.shaders.pbr_shaders.html#algan.rendering.shaders.pbr_shaders.null_shader"><code class="docutils literal notranslate"><span class="pre">null_shader()</span></code></a></li>
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="reference/algan.rendering.primitives.primitive.html">primitive</a><ul>
@@ -679,7 +680,6 @@ splines=ortho;
 <li class="toctree-l1"><a class="reference internal" href="reference_index/scenes.html">Scenes</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="reference/algan.scene.html">scene</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l3"><a class="reference internal" href="reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>

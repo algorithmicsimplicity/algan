@@ -25,13 +25,7 @@ Qualified name: ``algan.mobs.manim\_mob.ManimMob``
      
      ~ManimMob.animation_manager
      ~ManimMob.basis
-     ~ManimMob.color
-     ~ManimMob.glow
      ~ManimMob.location
-     ~ManimMob.max_opacity
-     ~ManimMob.metallicness
      ~ManimMob.normalized_basis
-     ~ManimMob.opacity
      ~ManimMob.scale_coefficient
-     ~ManimMob.smoothness
    

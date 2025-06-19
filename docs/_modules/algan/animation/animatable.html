@@ -251,7 +251,6 @@
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -260,6 +259,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -267,7 +269,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/use_pytorch_compile.html">Pytorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -357,6 +359,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../../../reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -375,7 +378,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -445,7 +447,7 @@
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.animation.animation_contexts</span><span class="w"> </span><span class="kn">import</span> <span class="n">Sync</span><span class="p">,</span> <span class="n">AnimationManager</span><span class="p">,</span> <span class="n">AnimationContext</span><span class="p">,</span> <span class="n">Off</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.constants.color</span><span class="w"> </span><span class="kn">import</span> <span class="n">BLACK</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.tensor_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">broadcast_all</span><span class="p">,</span> <span class="n">robust_concat</span><span class="p">,</span> <span class="n">concat_dicts</span><span class="p">,</span> <span class="n">prepare_kwargs</span><span class="p">,</span> <span class="n">HANDLED_FUNCTIONS</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">algan.scene_tracker</span><span class="w"> </span><span class="kn">import</span> <span class="n">SceneTracker</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="n">SceneManager</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.python_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">traverse</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.tensor_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">broadcast_gather</span><span class="p">,</span> <span class="n">cast_to_tensor</span><span class="p">,</span> <span class="n">cast_to_tensor_single</span><span class="p">,</span> <span class="n">unsqueeze_dims</span>
 
@@ -678,12 +680,12 @@
                  <span class="n">is_primitive</span><span class="p">:</span> <span class="nb">bool</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
 
         <span class="k">if</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;animatable_attrs&#39;</span><span class="p">):</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span> <span class="o">=</span> <span class="p">[]</span>
 
         <span class="bp">self</span><span class="o">.</span><span class="n">generate_animatable_attr_set_get_methods</span><span class="p">()</span>
 
         <span class="k">if</span> <span class="n">scene</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">scene</span> <span class="o">=</span> <span class="n">SceneTracker</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span>
+            <span class="n">scene</span> <span class="o">=</span> <span class="n">SceneManager</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">scene</span> <span class="o">=</span> <span class="n">scene</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scene</span><span class="o">.</span><span class="n">get_new_id</span><span class="p">()</span>
         <span class="k">if</span> <span class="n">add_to_scene</span><span class="p">:</span>
@@ -724,6 +726,14 @@
 
         <span class="k">if</span> <span class="n">init</span><span class="p">:</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">init</span><span class="p">()</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">to</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">device</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">attr</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">attr</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">data_dict</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">data_dict</span><span class="p">[</span><span class="n">attr</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">data_dict</span><span class="p">[</span><span class="n">attr</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+            <span class="k">elif</span> <span class="n">attr</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">data_dict_active</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">data_dict_active</span><span class="p">[</span><span class="n">attr</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">data_dict_active</span><span class="p">[</span><span class="n">attr</span><span class="p">]</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">_set_dependant_mobs_time_inds_to_self_then_run_function</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">function</span><span class="p">):</span>
         <span class="k">with</span> <span class="n">AnimationContext</span><span class="p">(</span><span class="n">trace_mode</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="k">as</span> <span class="n">context</span><span class="p">:</span>
@@ -978,6 +988,8 @@
     <span class="k">def</span><span class="w"> </span><span class="nf">__deepcopy__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">memo</span><span class="p">):</span>
         <span class="k">if</span> <span class="s1">&#39;___copy_add_to_scene___&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">memo</span><span class="p">:</span>
             <span class="n">memo</span><span class="p">[</span><span class="s1">&#39;___copy_add_to_scene___&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">copy_add_to_scene</span>
+        <span class="k">if</span> <span class="s1">&#39;___copy_spawn___&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">memo</span><span class="p">:</span>
+            <span class="n">memo</span><span class="p">[</span><span class="s1">&#39;___copy_spawn___&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">copy_spawn</span>
         <span class="k">if</span> <span class="s1">&#39;___copy_animate_creation___&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">memo</span><span class="p">:</span>
             <span class="n">memo</span><span class="p">[</span><span class="s1">&#39;___copy_animate_creation___&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">copy_animate_creation</span>
         <span class="k">if</span> <span class="s1">&#39;___copy_recursive___&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">memo</span><span class="p">:</span>
@@ -987,6 +999,7 @@
         <span class="k">if</span> <span class="s1">&#39;___reset_history___&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">memo</span><span class="p">:</span>
             <span class="n">memo</span><span class="p">[</span><span class="s1">&#39;___reset_history___&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">reset_history</span>
         <span class="n">add_to_scene</span> <span class="o">=</span> <span class="n">memo</span><span class="p">[</span><span class="s1">&#39;___copy_add_to_scene___&#39;</span><span class="p">]</span>
+        <span class="n">spawn</span> <span class="o">=</span> <span class="n">memo</span><span class="p">[</span><span class="s1">&#39;___copy_spawn___&#39;</span><span class="p">]</span>
         <span class="n">animate_creation</span> <span class="o">=</span> <span class="n">memo</span><span class="p">[</span><span class="s1">&#39;___copy_animate_creation___&#39;</span><span class="p">]</span>
         <span class="n">copy_recursive</span> <span class="o">=</span> <span class="n">memo</span><span class="p">[</span><span class="s1">&#39;___copy_recursive___&#39;</span><span class="p">]</span>
         <span class="n">clone_data</span> <span class="o">=</span> <span class="n">memo</span><span class="p">[</span><span class="s1">&#39;___clone_data___&#39;</span><span class="p">]</span>
@@ -1042,14 +1055,15 @@
             <span class="nb">object</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="n">clone</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">copy</span><span class="o">.</span><span class="n">deepcopy</span><span class="p">(</span><span class="n">v</span><span class="p">,</span> <span class="n">memo</span><span class="p">))</span>
 
         <span class="n">clone</span><span class="o">.</span><span class="n">generate_animatable_attr_set_get_methods</span><span class="p">()</span>
-        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">spawn_time</span><span class="p">()</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="o">.</span><span class="n">spawn_time</span><span class="p">()</span> <span class="o">&gt;=</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">spawn</span><span class="p">:</span>
             <span class="n">clone</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="n">animate_creation</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">copy_recursive</span><span class="p">:</span>
             <span class="n">clone</span><span class="o">.</span><span class="n">add_children</span><span class="p">(</span><span class="o">*</span><span class="n">children_clones</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">clone</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">clone</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">add_to_scene</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">animate_creation</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">recursive</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">clone_data</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">reset_history</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">clone</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">add_to_scene</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">spawn</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">animate_creation</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">recursive</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">clone_data</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">reset_history</span><span class="o">=</span><span class="kc">True</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">copy_add_to_scene</span> <span class="o">=</span> <span class="n">add_to_scene</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">copy_spawn</span> <span class="o">=</span> <span class="n">spawn</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">copy_animate_creation</span> <span class="o">=</span> <span class="n">animate_creation</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">copy_recursive</span> <span class="o">=</span> <span class="n">recursive</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">clone_data</span> <span class="o">=</span> <span class="n">clone_data</span>

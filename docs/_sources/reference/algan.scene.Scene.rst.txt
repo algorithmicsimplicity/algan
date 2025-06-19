@@ -19,13 +19,16 @@ Qualified name: ``algan.scene.Scene``
       
       ~Scene.add_actor
       ~Scene.add_effect
+      ~Scene.add_light_source
       ~Scene.clear_scene
       ~Scene.get_actors
       ~Scene.get_audio
+      ~Scene.get_camera
       ~Scene.get_current_frame
       ~Scene.get_fragments
       ~Scene.get_frame
       ~Scene.get_frames_from_fragments
+      ~Scene.get_light_sources
       ~Scene.get_new_id
       ~Scene.get_num_batches
       ~Scene.increment_current_time

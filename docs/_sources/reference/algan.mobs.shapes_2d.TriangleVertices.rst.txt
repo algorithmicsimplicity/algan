@@ -27,13 +27,7 @@ Qualified name: ``algan.mobs.shapes\_2d.TriangleVertices``
      
      ~TriangleVertices.animation_manager
      ~TriangleVertices.basis
-     ~TriangleVertices.color
-     ~TriangleVertices.glow
      ~TriangleVertices.location
-     ~TriangleVertices.max_opacity
-     ~TriangleVertices.metallicness
      ~TriangleVertices.normalized_basis
-     ~TriangleVertices.opacity
      ~TriangleVertices.scale_coefficient
-     ~TriangleVertices.smoothness
    

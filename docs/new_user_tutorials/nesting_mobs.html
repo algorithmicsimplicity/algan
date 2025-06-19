@@ -14,7 +14,7 @@
 <meta property="og:image:alt" content="So far we have been using simple Mob s. To make more complex Mob s we can combine together multiple mobs into one. This is done by adding other mobs as children to one another with add_children(). ..." />
 <meta name="description" content="So far we have been using simple Mob s. To make more complex Mob s we can combine together multiple mobs into one. This is done by adding other mobs as children to one another with add_children(). ..." />
 <meta name="twitter:card" content="summary_large_image" />
-<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Images and Textures" href="images_and_textures.html" /><link rel="prev" title="Controlling Animations" href="controlling_animations.html" />
+<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Importing From Manim" href="importing_from_manim.html" /><link rel="prev" title="Updaters" href="updaters.html" />
 
     <link rel="shortcut icon" href="../_static/favicon.ico"/><!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 -->
         <title>Nesting Mobs - Algan v0.1.0</title>
@@ -261,9 +261,8 @@
 <li class="toctree-l3"><a class="reference internal" href="getting_started.html">Getting Started</a></li>
 <li class="toctree-l3"><a class="reference internal" href="basic_animations.html">Basic Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="controlling_animations.html">Controlling Animations</a></li>
-<li class="toctree-l3 current current-page"><a class="current reference internal" href="#">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="updaters.html">Updaters</a></li>
+<li class="toctree-l3 current current-page"><a class="current reference internal" href="#">Nesting Mobs</a></li>
 <li class="toctree-l3"><a class="reference internal" href="importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -272,6 +271,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -279,6 +281,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -368,6 +371,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -386,7 +390,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -577,23 +580,23 @@ at the center of the provided mobs, then adding all of the provided mobs as chil
       <footer>
         
         <div class="related-pages">
-          <a class="next-page" href="images_and_textures.html">
+          <a class="next-page" href="importing_from_manim.html">
               <div class="page-info">
                 <div class="context">
                   <span>Next</span>
                 </div>
-                <div class="title">Images and Textures</div>
+                <div class="title">Importing From Manim</div>
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
-          <a class="prev-page" href="controlling_animations.html">
+          <a class="prev-page" href="updaters.html">
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
               <div class="page-info">
                 <div class="context">
                   <span>Previous</span>
                 </div>
                 
-                <div class="title">Controlling Animations</div>
+                <div class="title">Updaters</div>
                 
               </div>
             </a>

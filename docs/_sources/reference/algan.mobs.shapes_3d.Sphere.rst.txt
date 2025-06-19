@@ -27,13 +27,7 @@ Qualified name: ``algan.mobs.shapes\_3d.Sphere``
      
      ~Sphere.animation_manager
      ~Sphere.basis
-     ~Sphere.color
-     ~Sphere.glow
      ~Sphere.location
-     ~Sphere.max_opacity
-     ~Sphere.metallicness
      ~Sphere.normalized_basis
-     ~Sphere.opacity
      ~Sphere.scale_coefficient
-     ~Sphere.smoothness
    

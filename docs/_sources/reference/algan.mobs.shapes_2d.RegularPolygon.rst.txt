@@ -25,13 +25,7 @@ Qualified name: ``algan.mobs.shapes\_2d.RegularPolygon``
      
      ~RegularPolygon.animation_manager
      ~RegularPolygon.basis
-     ~RegularPolygon.color
-     ~RegularPolygon.glow
      ~RegularPolygon.location
-     ~RegularPolygon.max_opacity
-     ~RegularPolygon.metallicness
      ~RegularPolygon.normalized_basis
-     ~RegularPolygon.opacity
      ~RegularPolygon.scale_coefficient
-     ~RegularPolygon.smoothness
    

@@ -14,7 +14,7 @@
 <meta property="og:image:alt" content="Algan provides a bunch of built-in Mobs, but our collection is nowhere as extensive as Manim’s. So we provide functionality to import Mobs directly from Manim. This way you can make use of the vast..." />
 <meta name="description" content="Algan provides a bunch of built-in Mobs, but our collection is nowhere as extensive as Manim’s. So we provide functionality to import Mobs directly from Manim. This way you can make use of the vast..." />
 <meta name="twitter:card" content="summary_large_image" />
-<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Manim User Quickstart" href="../manim_user_quickstart/index.html" /><link rel="prev" title="Updaters" href="updaters.html" />
+<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Manim User Quickstart" href="../manim_user_quickstart/index.html" /><link rel="prev" title="Nesting Mobs" href="nesting_mobs.html" />
 
     <link rel="shortcut icon" href="../_static/favicon.ico"/><!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 -->
         <title>Importing From Manim - Algan v0.1.0</title>
@@ -261,9 +261,8 @@
 <li class="toctree-l3"><a class="reference internal" href="getting_started.html">Getting Started</a></li>
 <li class="toctree-l3"><a class="reference internal" href="basic_animations.html">Basic Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="controlling_animations.html">Controlling Animations</a></li>
-<li class="toctree-l3"><a class="reference internal" href="nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="updaters.html">Updaters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nesting_mobs.html">Nesting Mobs</a></li>
 <li class="toctree-l3 current current-page"><a class="current reference internal" href="#">Importing From Manim</a></li>
 </ul>
 </li>
@@ -272,6 +271,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -279,6 +281,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -368,6 +371,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -386,7 +390,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -457,9 +460,14 @@
 as <a class="reference external" href="https://docs.manim.community/en/stable/">Manim’s</a>. So we provide functionality
 to import Mobs directly from Manim.
 This way you can make use of the vast collection of Mobs defined by Manim.</p>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p>You must install the Manim package to your Python environment in order to use Manim Mobs.</p>
+</div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>You must install the Manim package to your Python environment in order to use Manim Mobs.</p>
+<p>You can only import mobs from Manim, but not animations. If there is a Manim animation
+you wish to use you will need to recreate it yourself in Algan.</p>
 </div>
 <section id="the-maninmob">
 <h2>The ManinMob<a class="headerlink" href="#the-maninmob" title="Link to this heading">¶</a></h2>
@@ -474,11 +482,12 @@ This way you can make use of the vast collection of Mobs defined by Manim.</p>
 </video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">manim</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mn</span>
 
-<span class="c1"># Let&#39;s grab a number line from the manim library.</span>
-<span class="n">mob</span> <span class="o">=</span> <span class="n">ManimMob</span><span class="p">(</span><span class="n">mn</span><span class="o">.</span><span class="n">NumberLine</span><span class="p">())</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
+<span class="c1"># Let&#39;s grab a complex plane from the manim library.</span>
+<span class="n">mob</span> <span class="o">=</span> <span class="n">ManimMob</span><span class="p">(</span><span class="n">mn</span><span class="o">.</span><span class="n">ComplexPlane</span><span class="p">()</span><span class="o">.</span><span class="n">add_coordinates</span><span class="p">())</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
 <span class="c1"># Now we have a mob that we can animate using Algan!</span>
 <span class="k">with</span> <span class="n">Seq</span><span class="p">(</span><span class="n">run_time</span><span class="o">=</span><span class="mi">5</span><span class="p">):</span>
+    <span class="n">mob</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
     <span class="n">mob</span><span class="o">.</span><span class="n">rotate</span><span class="p">(</span><span class="mi">90</span><span class="p">,</span> <span class="n">OUT</span><span class="p">)</span>
 
 <span class="n">render_to_file</span><span class="p">()</span>
@@ -488,19 +497,21 @@ This way you can make use of the vast collection of Mobs defined by Manim.</p>
 from algan import *
 import manim as mn
 
-# Let's grab a number line from the manim library.
-mob = ManimMob(mn.NumberLine()).scale(0.5).spawn()
+# Let's grab a complex plane from the manim library.
+mob = ManimMob(mn.ComplexPlane().add_coordinates()).spawn()
 
 # Now we have a mob that we can animate using Algan!
 with Seq(run_time=5):
+    mob.scale(0.5)
     mob.rotate(90, OUT)
 
 render_to_file()
 
-</pre></div><div class="admonition note">
-<p class="admonition-title">Note</p>
-<p>You can only import mobs from Manim, but not animations. If there is a Manim animation you wish to use
-you will need to recreate it yourself in Algan.</p>
+</pre></div><div class="admonition important">
+<p class="admonition-title">Important</p>
+<p>Do not use both <cite>from algan import *</cite> and <cite>from manim import *</cite>, as this will lead to
+clashing definitions. You must give them one of them a name, as in this example where we
+name manim as mn.</p>
 </div>
 </section>
 </section>
@@ -519,14 +530,14 @@ you will need to recreate it yourself in Algan.</p>
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
-          <a class="prev-page" href="updaters.html">
+          <a class="prev-page" href="nesting_mobs.html">
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
               <div class="page-info">
                 <div class="context">
                   <span>Previous</span>
                 </div>
                 
-                <div class="title">Updaters</div>
+                <div class="title">Nesting Mobs</div>
                 
               </div>
             </a>

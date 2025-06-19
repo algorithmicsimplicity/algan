@@ -48,6 +48,7 @@ Qualified name: ``algan.animation.animatable.Animatable``
       ~Animatable.set_to_retroactive
       ~Animatable.setattr_and_record_modification
       ~Animatable.spawn
+      ~Animatable.to
       ~Animatable.update_gather_scatter_inds
       ~Animatable.wait
 

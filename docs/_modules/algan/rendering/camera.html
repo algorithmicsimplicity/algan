@@ -249,9 +249,8 @@
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/getting_started.html">Getting Started</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/basic_animations.html">Basic Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/updaters.html">Updaters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -260,6 +259,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -267,6 +269,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -356,6 +359,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../../../reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -374,7 +378,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -431,9 +434,7 @@
         <article role="main" id="furo-main-content">
           <h1>Source code for algan.rendering.camera</h1><div class="highlight"><pre>
 <span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan.animation.animation_contexts</span><span class="w"> </span><span class="kn">import</span> <span class="n">Off</span><span class="p">,</span> <span class="n">Sync</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">algan.constants.color</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span><span class="c1">#WHITE</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.constants.spatial</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span><span class="c1">#CAMERA_ORIGIN</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">algan.scene_tracker</span><span class="w"> </span><span class="kn">import</span> <span class="n">SceneTracker</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.mobs.mob</span><span class="w"> </span><span class="kn">import</span> <span class="n">Mob</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.tensor_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">expand_as_left</span><span class="p">,</span> <span class="n">broadcast_gather</span><span class="p">,</span> <span class="n">squish</span><span class="p">,</span> <span class="n">unsquish</span><span class="p">,</span> <span class="n">dot_product</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.geometry.geometry</span><span class="w"> </span><span class="kn">import</span> <span class="n">intersect_line_with_plane</span><span class="p">,</span> <span class="n">intersect_line_with_plane_colinear</span>
@@ -448,7 +449,6 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="s1">&#39;color&#39;</span><span class="p">)</span>
         <span class="k">with</span> <span class="n">Off</span><span class="p">():</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">orthographic</span> <span class="o">=</span> <span class="n">orthographic</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">location</span> <span class="o">=</span> <span class="n">CAMERA_ORIGIN</span>
             <span class="c1">#self.rotate(180, UP)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">screen</span> <span class="o">=</span> <span class="n">Mob</span><span class="p">(</span><span class="n">location</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">location</span> <span class="o">+</span> <span class="n">screen_distance</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_forward_direction</span><span class="p">(),</span> <span class="n">add_to_scene</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">init</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">screen</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">((</span><span class="mi">1</span><span class="o">/</span><span class="n">screen_scale</span><span class="p">,</span> <span class="mi">1</span><span class="o">/</span><span class="n">screen_scale</span><span class="p">,</span> <span class="mi">1</span><span class="p">)))</span>
@@ -456,8 +456,6 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">is_primitive</span> <span class="o">=</span> <span class="kc">True</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">add_children</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">screen</span><span class="p">)</span>
             <span class="c1">#self.look_at(ORIGIN)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">light_source_location</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">location</span> <span class="o">+</span> <span class="n">UP</span> <span class="o">*</span> <span class="mi">1</span> <span class="o">+</span> <span class="n">RIGHT</span><span class="o">*</span><span class="mi">5</span> <span class="o">+</span> <span class="n">OUT</span><span class="o">*</span><span class="mi">1</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">light_color</span> <span class="o">=</span> <span class="n">WHITE</span><span class="o">.</span><span class="n">clone</span><span class="p">()</span>
             <span class="c1">#self.light_color[-2] = 0.0#1</span>
             <span class="n">coord2_range</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scene</span><span class="o">.</span><span class="n">num_pixels_screen_width</span> <span class="o">/</span> <span class="bp">self</span><span class="o">.</span><span class="n">scene</span><span class="o">.</span><span class="n">num_pixels_screen_height</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">screen_distance</span> <span class="o">=</span> <span class="mi">5</span>
@@ -476,7 +474,7 @@
             <span class="n">s</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scene</span><span class="o">.</span><span class="n">num_pixels_screen_width</span> <span class="o">/</span> <span class="bp">self</span><span class="o">.</span><span class="n">scene</span><span class="o">.</span><span class="n">num_pixels_screen_height</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">corner_x_coords</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="o">-</span><span class="n">s</span><span class="p">,</span> <span class="o">-</span><span class="n">s</span><span class="p">,</span> <span class="n">s</span><span class="p">,</span> <span class="n">s</span><span class="p">])</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">corner_y_coords</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">])</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">animatable_attrs</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="s1">&#39;light_source_location&#39;</span><span class="p">})</span>
+            <span class="c1">#self.animatable_attrs.update({&#39;light_source_location&#39;})</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">spawn</span><span class="p">(</span><span class="n">animate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">retroactive_center</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mob</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
@@ -753,9 +751,9 @@
 
 
 
-<span class="n">scene</span> <span class="o">=</span> <span class="n">SceneTracker</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span>
-<span class="k">if</span> <span class="n">scene</span><span class="o">.</span><span class="n">camera</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-    <span class="n">scene</span><span class="o">.</span><span class="n">camera</span> <span class="o">=</span> <span class="n">Camera</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
+<span class="c1">#scene = SceneTracker.instance()</span>
+<span class="c1">#if scene.camera is None:</span>
+<span class="c1">#    scene.camera = Camera(False)</span>
 </pre></div>
         </article>
       </div>
@@ -795,7 +793,7 @@
     <script src="../../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../../_static/copybutton.js?v=f281be69"></script>
     <script src="../../../_static/manim-binder.min.js?v=29f72615"></script>
-    <script>window.initManimBinder({branch: "v0.0.0"})</script>
+    <script>window.initManimBinder({branch: "v0.0.7"})</script>
     <script src="../../../_static/design-tabs.js?v=f930bc37"></script>
     <script src="../../../_static/responsiveSvg.js?v=f1528c9d"></script>
     </body>

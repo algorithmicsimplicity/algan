@@ -28,6 +28,12 @@
 
    
    
+   .. rubric:: Exceptions
+
+   .. autosummary::
+   
+      ModifiedProtectedAttributeError
+   
    
 
 

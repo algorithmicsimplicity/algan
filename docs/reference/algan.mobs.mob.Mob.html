@@ -263,9 +263,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/shaders_and_materials.html">Shaders</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../manim_user_quickstart/index.html">Manim User Quickstart</a><input class="toctree-checkbox" id="toctree-checkbox-5" name="toctree-checkbox-5" role="switch" type="checkbox"/><label for="toctree-checkbox-5"><div class="visually-hidden">Toggle navigation of Manim User Quickstart</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -273,6 +271,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -280,7 +281,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">Pytorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -389,7 +390,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -459,7 +459,7 @@
 <p>Qualified name: <code class="docutils literal notranslate"><span class="pre">algan.mobs.mob.Mob</span></code></p>
 <dl class="py class">
 <dt class="sig sig-object py" id="algan.mobs.mob.Mob">
-<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Mob</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">location</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">tensor([0.,</span> <span class="pre">0.,</span> <span class="pre">0.])</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">tensor([1.,</span> <span class="pre">0.,</span> <span class="pre">0.,</span> <span class="pre">0.,</span> <span class="pre">1.,</span> <span class="pre">0.,</span> <span class="pre">0.,</span> <span class="pre">0.,</span> <span class="pre">1.])</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">opacity</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">glow</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metallicness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">smoothness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/mobs/mob.html#Mob"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.mobs.mob.Mob" title="Link to this definition">¶</a></dt>
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Mob</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">location</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">tensor([0.,</span> <span class="pre">0.,</span> <span class="pre">0.])</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">basis</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">tensor([1.,</span> <span class="pre">0.,</span> <span class="pre">0.,</span> <span class="pre">0.,</span> <span class="pre">1.,</span> <span class="pre">0.,</span> <span class="pre">0.,</span> <span class="pre">0.,</span> <span class="pre">1.])</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">color</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">opacity</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">glow</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">args</span></span></em>, <em class="sig-param"><span class="o"><span class="pre">**</span></span><span class="n"><span class="pre">kwargs</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/mobs/mob.html#Mob"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.mobs.mob.Mob" title="Link to this definition">¶</a></dt>
 <dd><p>Bases: <a class="reference internal" href="algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable" title="algan.animation.animatable.Animatable"><code class="xref py py-class docutils literal notranslate"><span class="pre">Animatable</span></code></a></p>
 <p>Base class for all objects that have a location and orientation in 3-D space.</p>
 <p>A Mob is an Animatable that exists in a 3-D scene,
@@ -482,8 +482,6 @@ by <code class="xref py py-meth docutils literal notranslate"><span class="pre">
 <li><p><strong>glow</strong> (<em>float</em>) – The glow intensity of the Mob.</p></li>
 <li><p><strong>*args</strong> – Passed to <a class="reference internal" href="algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable" title="algan.animation.animatable.Animatable"><code class="xref py py-class docutils literal notranslate"><span class="pre">Animatable</span></code></a> base class.</p></li>
 <li><p><strong>**kwargs</strong> – Passed to <a class="reference internal" href="algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable" title="algan.animation.animatable.Animatable"><code class="xref py py-class docutils literal notranslate"><span class="pre">Animatable</span></code></a> base class.</p></li>
-<li><p><strong>metallicness</strong> (<em>float</em>)</p></li>
-<li><p><strong>smoothness</strong> (<em>float</em>)</p></li>
 </ul>
 </dd>
 </dl>
@@ -628,53 +626,59 @@ render_to_file()
 <tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.get_right_direction" title="algan.mobs.mob.Mob.get_right_direction"><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_right_direction</span></code></a></p></td>
 <td><p>Gets the Mob's current right direction vector (normalized).</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.get_upwards_direction" title="algan.mobs.mob.Mob.get_upwards_direction"><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_upwards_direction</span></code></a></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_shader_params</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.get_upwards_direction" title="algan.mobs.mob.Mob.get_upwards_direction"><code class="xref py py-obj docutils literal notranslate"><span class="pre">get_upwards_direction</span></code></a></p></td>
 <td><p>Gets the Mob's current upwards direction vector (normalized).</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.look" title="algan.mobs.mob.Mob.look"><code class="xref py py-obj docutils literal notranslate"><span class="pre">look</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.look" title="algan.mobs.mob.Mob.look"><code class="xref py py-obj docutils literal notranslate"><span class="pre">look</span></code></a></p></td>
 <td><p>Rotates the Mob so that one of its local axes points in the given direction.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.look_and_scale" title="algan.mobs.mob.Mob.look_and_scale"><code class="xref py py-obj docutils literal notranslate"><span class="pre">look_and_scale</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.look_and_scale" title="algan.mobs.mob.Mob.look_and_scale"><code class="xref py py-obj docutils literal notranslate"><span class="pre">look_and_scale</span></code></a></p></td>
 <td><p>Rotates the Mob to look in a specific direction and simultaneously scales it.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.look_at" title="algan.mobs.mob.Mob.look_at"><code class="xref py py-obj docutils literal notranslate"><span class="pre">look_at</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.look_at" title="algan.mobs.mob.Mob.look_at"><code class="xref py py-obj docutils literal notranslate"><span class="pre">look_at</span></code></a></p></td>
 <td><p>Rotates the Mob to face a specific 3-D point.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move" title="algan.mobs.mob.Mob.move"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move" title="algan.mobs.mob.Mob.move"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move</span></code></a></p></td>
 <td><p>Moves the Mob by a given displacement vector from its current location.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_inline_with_boundary" title="algan.mobs.mob.Mob.move_inline_with_boundary"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_inline_with_boundary</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_inline_with_boundary" title="algan.mobs.mob.Mob.move_inline_with_boundary"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_inline_with_boundary</span></code></a></p></td>
 <td><p>Moves this Mob so its boundary aligns with another Mob's boundary along a specific direction.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_inline_with_center" title="algan.mobs.mob.Mob.move_inline_with_center"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_inline_with_center</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_inline_with_center" title="algan.mobs.mob.Mob.move_inline_with_center"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_inline_with_center</span></code></a></p></td>
 <td><p>Moves this Mob so its center is aligned with another Mob's center along a given direction.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_inline_with_edge" title="algan.mobs.mob.Mob.move_inline_with_edge"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_inline_with_edge</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_inline_with_edge" title="algan.mobs.mob.Mob.move_inline_with_edge"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_inline_with_edge</span></code></a></p></td>
 <td><p>Moves this Mob so its specified edge is aligned with another Mob's edge along a given direction, while maintaining a buffer.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_inline_with_mob" title="algan.mobs.mob.Mob.move_inline_with_mob"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_inline_with_mob</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_inline_with_mob" title="algan.mobs.mob.Mob.move_inline_with_mob"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_inline_with_mob</span></code></a></p></td>
 <td><p>Moves this Mob to align with another Mob along a specific direction, either by their edges or by their centers.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_next_to" title="algan.mobs.mob.Mob.move_next_to"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_next_to</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_next_to" title="algan.mobs.mob.Mob.move_next_to"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_next_to</span></code></a></p></td>
 <td><p>Moves this Mob to be adjacent to another Mob (or a point) in a given direction.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_out_of_screen" title="algan.mobs.mob.Mob.move_out_of_screen"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_out_of_screen</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_out_of_screen" title="algan.mobs.mob.Mob.move_out_of_screen"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_out_of_screen</span></code></a></p></td>
 <td><p>Animates the Mob moving off-screen in a given edge direction and then optionally despawns it.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to" title="algan.mobs.mob.Mob.move_to"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to" title="algan.mobs.mob.Mob.move_to"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to</span></code></a></p></td>
 <td><p>Moves the Mob to a specified location.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to_corner" title="algan.mobs.mob.Mob.move_to_corner"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to_corner</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to_corner" title="algan.mobs.mob.Mob.move_to_corner"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to_corner</span></code></a></p></td>
 <td><p>Moves the Mob to a corner of the screen, defined by two intersecting edge directions.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to_edge" title="algan.mobs.mob.Mob.move_to_edge"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to_edge</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to_edge" title="algan.mobs.mob.Mob.move_to_edge"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to_edge</span></code></a></p></td>
 <td><p>Moves the Mob to an edge of the screen.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to_point_along_arc" title="algan.mobs.mob.Mob.move_to_point_along_arc"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to_point_along_arc</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to_point_along_arc" title="algan.mobs.mob.Mob.move_to_point_along_arc"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to_point_along_arc</span></code></a></p></td>
 <td><p>Moves the Mob to a target point along a circular arc.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to_point_along_square" title="algan.mobs.mob.Mob.move_to_point_along_square"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to_point_along_square</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.move_to_point_along_square" title="algan.mobs.mob.Mob.move_to_point_along_square"><code class="xref py py-obj docutils literal notranslate"><span class="pre">move_to_point_along_square</span></code></a></p></td>
 <td><p>Moves the Mob to a destination in a two-step &quot;square&quot; path.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">orbit_around_point</span></code></p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.pulse_color" title="algan.mobs.mob.Mob.pulse_color"><code class="xref py py-obj docutils literal notranslate"><span class="pre">pulse_color</span></code></a></p></td>
 <td><p>Animates a color pulse effect.</p></td>
@@ -694,76 +698,79 @@ render_to_file()
 <tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.rotate_and_scale" title="algan.mobs.mob.Mob.rotate_and_scale"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rotate_and_scale</span></code></a></p></td>
 <td><p>Performs both rotation and scaling simultaneously.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.rotate_around_point" title="algan.mobs.mob.Mob.rotate_around_point"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rotate_around_point</span></code></a></p></td>
+<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">rotate_around_line</span></code></p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.rotate_around_point" title="algan.mobs.mob.Mob.rotate_around_point"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rotate_around_point</span></code></a></p></td>
 <td><p>Rotates the Mob around an arbitrary point in space.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.rotate_around_point_non_recursive" title="algan.mobs.mob.Mob.rotate_around_point_non_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rotate_around_point_non_recursive</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.rotate_around_point_non_recursive" title="algan.mobs.mob.Mob.rotate_around_point_non_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">rotate_around_point_non_recursive</span></code></a></p></td>
 <td><p>Rotates the Mob around an arbitrary point in space without affecting its children.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.scale" title="algan.mobs.mob.Mob.scale"><code class="xref py py-obj docutils literal notranslate"><span class="pre">scale</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.scale" title="algan.mobs.mob.Mob.scale"><code class="xref py py-obj docutils literal notranslate"><span class="pre">scale</span></code></a></p></td>
 <td><p>Scales the Mob by a factor <cite>scale_factor</cite> relative to its current scale.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set" title="algan.mobs.mob.Mob.set"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set" title="algan.mobs.mob.Mob.set"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set</span></code></a></p></td>
 <td><p>Sets multiple attributes, applying changes recursively to children by default.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_basis_inner" title="algan.mobs.mob.Mob.set_basis_inner"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_basis_inner</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_basis_inner" title="algan.mobs.mob.Mob.set_basis_inner"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_basis_inner</span></code></a></p></td>
 <td><p>Internal method to set the basis of a child Mob relative to its parent, ensuring its global position is maintained despite parent's basis change.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_basis_interpolated" title="algan.mobs.mob.Mob.set_basis_interpolated"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_basis_interpolated</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_basis_interpolated" title="algan.mobs.mob.Mob.set_basis_interpolated"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_basis_interpolated</span></code></a></p></td>
 <td><p>Wrapper around <cite>_set_basis_interpolated</cite> to handle recursive flag.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_data_sub_inds" title="algan.mobs.mob.Mob.set_data_sub_inds"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_data_sub_inds</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_data_sub_inds" title="algan.mobs.mob.Mob.set_data_sub_inds"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_data_sub_inds</span></code></a></p></td>
 <td><p>Sets the sub-indices that this Mob will use when reading and writing from the shared data dictionaries (<cite>data.data_dict_active</cite>, <cite>data.data_dict_materialized</cite>).</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_location" title="algan.mobs.mob.Mob.set_location"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_location</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_location" title="algan.mobs.mob.Mob.set_location"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_location</span></code></a></p></td>
 <td><p>Sets the location of the Mob.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_non_recursive" title="algan.mobs.mob.Mob.set_non_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_non_recursive</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_non_recursive" title="algan.mobs.mob.Mob.set_non_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_non_recursive</span></code></a></p></td>
 <td><p>Sets multiple attributes non-recursively (i.e., only for this Mob, not its children).</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_recursive" title="algan.mobs.mob.Mob.set_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_recursive</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_recursive" title="algan.mobs.mob.Mob.set_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_recursive</span></code></a></p></td>
 <td><p>Sets multiple attributes for this Mob and then recursively propagates the changes to all its children.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_recursive_from_parent" title="algan.mobs.mob.Mob.set_recursive_from_parent"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_recursive_from_parent</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_recursive_from_parent" title="algan.mobs.mob.Mob.set_recursive_from_parent"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_recursive_from_parent</span></code></a></p></td>
 <td><p>Sets attributes recursively for this Mob based on a parent Mob's attributes, handling batching and time synchronization.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_scale" title="algan.mobs.mob.Mob.set_scale"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_scale</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_scale" title="algan.mobs.mob.Mob.set_scale"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_scale</span></code></a></p></td>
 <td><p>Sets the absolute scale of the Mob to a specific value.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_shader" title="algan.mobs.mob.Mob.set_shader"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_shader</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_shader" title="algan.mobs.mob.Mob.set_shader"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_shader</span></code></a></p></td>
 <td><p>Sets the shader for this mob and all of its descendants.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_time_inds_to" title="algan.mobs.mob.Mob.set_time_inds_to"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_time_inds_to</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_time_inds_to" title="algan.mobs.mob.Mob.set_time_inds_to"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_time_inds_to</span></code></a></p></td>
 <td><p>Synchronizes the animation time indices of this Mob with another Mob.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_x_coord" title="algan.mobs.mob.Mob.set_x_coord"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_x_coord</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_x_coord" title="algan.mobs.mob.Mob.set_x_coord"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_x_coord</span></code></a></p></td>
 <td><p>Sets the x-coordinate of the Mob's location, preserving y and z.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_x_y_coord" title="algan.mobs.mob.Mob.set_x_y_coord"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_x_y_coord</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_x_y_coord" title="algan.mobs.mob.Mob.set_x_y_coord"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_x_y_coord</span></code></a></p></td>
 <td><p>Sets the x and y coordinates of the Mob's location, preserving z.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_y_coord" title="algan.mobs.mob.Mob.set_y_coord"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_y_coord</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.set_y_coord" title="algan.mobs.mob.Mob.set_y_coord"><code class="xref py py-obj docutils literal notranslate"><span class="pre">set_y_coord</span></code></a></p></td>
 <td><p>Sets the y-coordinate of the Mob's location, preserving x and z.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.setattr_absolute" title="algan.mobs.mob.Mob.setattr_absolute"><code class="xref py py-obj docutils literal notranslate"><span class="pre">setattr_absolute</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.setattr_absolute" title="algan.mobs.mob.Mob.setattr_absolute"><code class="xref py py-obj docutils literal notranslate"><span class="pre">setattr_absolute</span></code></a></p></td>
 <td><p>Sets an attribute to a value absolutely, animating the transition.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.setattr_basic" title="algan.mobs.mob.Mob.setattr_basic"><code class="xref py py-obj docutils literal notranslate"><span class="pre">setattr_basic</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.setattr_basic" title="algan.mobs.mob.Mob.setattr_basic"><code class="xref py py-obj docutils literal notranslate"><span class="pre">setattr_basic</span></code></a></p></td>
 <td><p>Sets an attribute's value directly without complex animation logic.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.setattr_non_recursive" title="algan.mobs.mob.Mob.setattr_non_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">setattr_non_recursive</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.setattr_non_recursive" title="algan.mobs.mob.Mob.setattr_non_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">setattr_non_recursive</span></code></a></p></td>
 <td><p>Sets an attribute's value without applying the change to child Mobs.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.setattr_relative" title="algan.mobs.mob.Mob.setattr_relative"><code class="xref py py-obj docutils literal notranslate"><span class="pre">setattr_relative</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.setattr_relative" title="algan.mobs.mob.Mob.setattr_relative"><code class="xref py py-obj docutils literal notranslate"><span class="pre">setattr_relative</span></code></a></p></td>
 <td><p>Sets an attribute by applying a relative change.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.spawn_from_random_direction" title="algan.mobs.mob.Mob.spawn_from_random_direction"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spawn_from_random_direction</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.spawn_from_random_direction" title="algan.mobs.mob.Mob.spawn_from_random_direction"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spawn_from_random_direction</span></code></a></p></td>
 <td><p>Animates the Mob appearing from a random direction, fading in and optionally rotating.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.spawn_tilewise_recursive" title="algan.mobs.mob.Mob.spawn_tilewise_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spawn_tilewise_recursive</span></code></a></p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.spawn_tilewise_recursive" title="algan.mobs.mob.Mob.spawn_tilewise_recursive"><code class="xref py py-obj docutils literal notranslate"><span class="pre">spawn_tilewise_recursive</span></code></a></p></td>
 <td><p>Animates the spawning of the Mob and its primitive children in a lagged, &quot;tile-wise&quot; manner.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.wave_color" title="algan.mobs.mob.Mob.wave_color"><code class="xref py py-obj docutils literal notranslate"><span class="pre">wave_color</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.wave_color" title="algan.mobs.mob.Mob.wave_color"><code class="xref py py-obj docutils literal notranslate"><span class="pre">wave_color</span></code></a></p></td>
 <td><p>Applies a color wave effect across the Mob and its descendants.</p></td>
 </tr>
 </tbody>
@@ -779,32 +786,14 @@ render_to_file()
 <tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.basis" title="algan.mobs.mob.Mob.basis"><code class="xref py py-obj docutils literal notranslate"><span class="pre">basis</span></code></a></p></td>
 <td><p>The flattened 3x3 matrix representing the Mob's orientation and scale.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">color</span></code></p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">glow</span></code></p></td>
-<td><p></p></td>
-</tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.location" title="algan.mobs.mob.Mob.location"><code class="xref py py-obj docutils literal notranslate"><span class="pre">location</span></code></a></p></td>
 <td><p>The 3-D location of the Mob in world space.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">max_opacity</span></code></p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">metallicness</span></code></p></td>
-<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.normalized_basis" title="algan.mobs.mob.Mob.normalized_basis"><code class="xref py py-obj docutils literal notranslate"><span class="pre">normalized_basis</span></code></a></p></td>
 <td><p>The Mob's basis matrix with all its row vectors normalized to unit length.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">opacity</span></code></p></td>
-<td><p></p></td>
-</tr>
-<tr class="row-even"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.scale_coefficient" title="algan.mobs.mob.Mob.scale_coefficient"><code class="xref py py-obj docutils literal notranslate"><span class="pre">scale_coefficient</span></code></a></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="#algan.mobs.mob.Mob.scale_coefficient" title="algan.mobs.mob.Mob.scale_coefficient"><code class="xref py py-obj docutils literal notranslate"><span class="pre">scale_coefficient</span></code></a></p></td>
 <td><p>The scaling factor of the Mob along its local axes, derived from the basis.</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="xref py py-obj docutils literal notranslate"><span class="pre">smoothness</span></code></p></td>
-<td><p></p></td>
 </tr>
 </tbody>
 </table>
@@ -1027,7 +1016,7 @@ maintaining child Mob positions relative to the parent.</p>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="algan.mobs.mob.Mob.become">
-<span class="sig-name descname"><span class="pre">become</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">other_mob</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">move_to</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">detach_history</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">minimize_movement</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/mobs/mob.html#Mob.become"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.mobs.mob.Mob.become" title="Link to this definition">¶</a></dt>
+<span class="sig-name descname"><span class="pre">become</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">other_mob</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">move_to</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">detach_history</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">minimize_movement</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/mobs/mob.html#Mob.become"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.mobs.mob.Mob.become" title="Link to this definition">¶</a></dt>
 <dd><p>Transforms this Mob into another Mob (<cite>other_mob</cite>).</p>
 <p>This involves animating changes in location, opacity, color, basis, etc.,
 to match <cite>other_mob</cite>. It intelligently attempts to match parts of this Mob
@@ -1775,7 +1764,7 @@ modified, the change is recorded in the mob’s <cite>ModificationHistory</cite>
 <li><p><strong>str</strong><strong>)</strong> (<em>attrs</em><em> (</em><em>set</em><em>[</em><em>str</em><em>] </em><em>or</em>) – attribute name) to register as animatable.</p></li>
 <li><p><strong>(</strong><strong>type</strong> (<em>my_class</em>) – and setters should be attached. Defaults to the current Mob’s class.</p></li>
 <li><p><strong>optional</strong><strong>)</strong> (<em>The class to which the property getters</em>) – and setters should be attached. Defaults to the current Mob’s class.</p></li>
-<li><p><strong>attrs</strong> (<em>set</em><em>[</em><em>str</em><em>]</em>)</p></li>
+<li><p><strong>attrs</strong> (<em>list</em><em>[</em><em>str</em><em>]</em>)</p></li>
 </ul>
 </dd>
 </dl>
@@ -2107,7 +2096,11 @@ propagating changes down a hierarchy.</p>
 <dl class="py method">
 <dt class="sig sig-object py" id="algan.mobs.mob.Mob.set_shader">
 <span class="sig-name descname"><span class="pre">set_shader</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">shader</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/mobs/mob.html#Mob.set_shader"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.mobs.mob.Mob.set_shader" title="Link to this definition">¶</a></dt>
-<dd><p>Sets the shader for this mob and all of its descendants.</p>
+<dd><p>Sets the shader for this mob and all of its descendants. This MUST
+be called before the mob is spawned, once spawned the shader cannot be changed.
+If you need to change the shader for a spawned mob, create a new clone of it
+with clone(spawn=False) and set the shader of the clone, and despawn
+the original.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><p><strong>shader</strong> – The function to use for shading at render time.</p>
@@ -2117,6 +2110,9 @@ propagating changes down a hierarchy.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p><a class="reference internal" href="#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a></p>
+</dd>
+<dt class="field-even">Raises<span class="colon">:</span></dt>
+<dd class="field-even"><p><strong>.ModifiedProtectedAttributeError</strong> – If set_shader is used on an already spawned mob.</p>
 </dd>
 </dl>
 </dd></dl>

@@ -263,9 +263,7 @@
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../new_user_tutorials/shaders_and_materials.html">Shaders</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../manim_user_quickstart/index.html">Manim User Quickstart</a><input class="toctree-checkbox" id="toctree-checkbox-5" name="toctree-checkbox-5" role="switch" type="checkbox"/><label for="toctree-checkbox-5"><div class="visually-hidden">Toggle navigation of Manim User Quickstart</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -273,6 +271,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -280,7 +281,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">Pytorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -389,7 +390,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -461,26 +461,26 @@
 <p class="rubric">Functions</p>
 <dl class="py function">
 <dt class="sig sig-object py" id="algan.rendering.shaders.pbr_shaders.basic_pbr_shader">
-<span class="sig-name descname"><span class="pre">basic_pbr_shader</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">object_pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normal</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">smoothness</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metallic</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_intensity</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ambient_light_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ambient_light_intensity</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/rendering/shaders/pbr_shaders.html#basic_pbr_shader"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.rendering.shaders.pbr_shaders.basic_pbr_shader" title="Link to this definition">¶</a></dt>
+<span class="sig-name descname"><span class="pre">basic_pbr_shader</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">vertex_location</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vertex_normal</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">albedo_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_location</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_origin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_intensity</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ambient_light_intensity</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">smoothness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metallicness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.5</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/rendering/shaders/pbr_shaders.html#basic_pbr_shader"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.rendering.shaders.pbr_shaders.basic_pbr_shader" title="Link to this definition">¶</a></dt>
 <dd><p>Implements a simplified physics-based rendering shader, using smoothness and metallicness
-to define diffuse and specular lighting..</p>
+to define diffuse and specular lighting.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>object_pos</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The 3D position of the point on the object.</p></li>
-<li><p><strong>normal</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The surface normal vector at that point (must be normalized).</p></li>
-<li><p><strong>base_color</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The albedo/base RGB color of the material.</p></li>
-<li><p><strong>camera_pos</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The 3D position of the camera/viewer.</p></li>
-<li><p><strong>smoothness</strong> (<em>(</em><em>float</em><em>)</em>) – The smoothness of the material [0, 1]. 0=rough, 1=smooth.</p></li>
-<li><p><strong>metallic</strong> (<em>(</em><em>float</em><em>)</em>) – The metallic property of the material [0, 1]. 0=dielectric, 1=metal.</p></li>
-<li><p><strong>light_pos</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The 3D position of the point light source.</p></li>
+<li><p><strong>vertex_location</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The 3D location of the vertex to be shaded.</p></li>
+<li><p><strong>vertex_normal</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The surface normal vector at the vertex point (need not be normalized).</p></li>
+<li><p><strong>albedo_color</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The albedo/base RGBG color of the material.</p></li>
+<li><p><strong>camera_location</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The 3D location of the camera/viewer.</p></li>
+<li><p><strong>light_origin</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The 3D location of the point light source.</p></li>
 <li><p><strong>light_color</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The RGB color of the light.</p></li>
-<li><p><strong>light_intensity</strong> (<em>float</em>) – The intensity/brightness of the light.</p></li>
-<li><p><strong>ambient_light_color</strong> (<em>np.ndarray</em>) – The RGB color of the scene’s ambient light.</p></li>
+<li><p><strong>light_intensity</strong> (<em>float</em>) – The intensity/brightness of the light source.</p></li>
+<li><p><strong>ambient_light_intensity</strong> (<em>float</em>) – The intensity of ambient scene lighting, ranges from 0 (no light) to 1.</p></li>
+<li><p><strong>smoothness</strong> (<em>(</em><em>float</em><em>)</em>) – The smoothness of the material [0, 1]. 0=rough, 1=smooth.</p></li>
+<li><p><strong>metallicness</strong> (<em>(</em><em>float</em><em>)</em>) – The metallicness property of the material [0, 1]. 0=dielectric, 1=metal.</p></li>
 </ul>
 </dd>
 <dt class="field-even">Returns<span class="colon">:</span></dt>
-<dd class="field-even"><p>The final computed RGB color for the point.</p>
+<dd class="field-even"><p>The final computed RGB color for the vertex.</p>
 </dd>
 <dt class="field-odd">Return type<span class="colon">:</span></dt>
 <dd class="field-odd"><p>np.ndarray</p>
@@ -490,13 +490,38 @@ to define diffuse and specular lighting..</p>
 
 <dl class="py function">
 <dt class="sig sig-object py" id="algan.rendering.shaders.pbr_shaders.default_shader">
-<span class="sig-name descname"><span class="pre">default_shader</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">object_pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">normal</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">base_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">smoothness</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">metallic</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_pos</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_intensity</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ambient_light_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ambient_light_intensity</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/rendering/shaders/pbr_shaders.html#default_shader"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.rendering.shaders.pbr_shaders.default_shader" title="Link to this definition">¶</a></dt>
+<span class="sig-name descname"><span class="pre">default_shader</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">vertex_location</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vertex_normal</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">albedo_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_location</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_origin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_intensity</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ambient_light_intensity</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/rendering/shaders/pbr_shaders.html#default_shader"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.rendering.shaders.pbr_shaders.default_shader" title="Link to this definition">¶</a></dt>
+<dd><p>Implements just diffuse lighting.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>vertex_location</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The 3D location of the vertex to be shaded.</p></li>
+<li><p><strong>vertex_normal</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The surface normal vector at the vertex point (need not be normalized).</p></li>
+<li><p><strong>albedo_color</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The albedo/base RGBG color of the material.</p></li>
+<li><p><strong>camera_location</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The 3D location of the camera/viewer.</p></li>
+<li><p><strong>light_origin</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The 3D location of the point light source.</p></li>
+<li><p><strong>light_color</strong> (<em>(</em><em>np.ndarray</em><em>)</em>) – The RGB color of the light.</p></li>
+<li><p><strong>light_intensity</strong> (<em>float</em>) – The intensity/brightness of the light source.</p></li>
+<li><p><strong>ambient_light_intensity</strong> (<em>float</em>) – The intensity of ambient scene lighting, ranges from 0 (no light) to 1.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The final computed RGB color for the vertex.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p>np.ndarray</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="algan.rendering.shaders.pbr_shaders.null_shader">
+<span class="sig-name descname"><span class="pre">null_shader</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">vertex_location</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">vertex_normal</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">albedo_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">camera_location</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_origin</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_color</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">light_intensity</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ambient_light_intensity</span></span></em><span class="sig-paren">)</span><a class="reference internal" href="../_modules/algan/rendering/shaders/pbr_shaders.html#null_shader"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#algan.rendering.shaders.pbr_shaders.null_shader" title="Link to this definition">¶</a></dt>
 <dd><dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
-<li><p><strong>smoothness</strong> (<em>float</em>)</p></li>
-<li><p><strong>metallic</strong> (<em>float</em>)</p></li>
 <li><p><strong>light_intensity</strong> (<em>float</em>)</p></li>
+<li><p><strong>ambient_light_intensity</strong> (<em>float</em>)</p></li>
 </ul>
 </dd>
 </dl>
@@ -562,6 +587,7 @@ to define diffuse and specular lighting..</p>
 <li><a class="reference internal" href="#">pbr_shaders</a><ul>
 <li><a class="reference internal" href="#algan.rendering.shaders.pbr_shaders.basic_pbr_shader"><code class="docutils literal notranslate"><span class="pre">basic_pbr_shader()</span></code></a></li>
 <li><a class="reference internal" href="#algan.rendering.shaders.pbr_shaders.default_shader"><code class="docutils literal notranslate"><span class="pre">default_shader()</span></code></a></li>
+<li><a class="reference internal" href="#algan.rendering.shaders.pbr_shaders.null_shader"><code class="docutils literal notranslate"><span class="pre">null_shader()</span></code></a></li>
 </ul>
 </li>
 </ul>

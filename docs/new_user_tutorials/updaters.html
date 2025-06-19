@@ -14,7 +14,7 @@
 <meta property="og:image:alt" content="So far we have been specifying animations by saying what time they start, and how long they should run for. Sometimes, you want to be able to play an animation indefinitely, without knowing how lon..." />
 <meta name="description" content="So far we have been specifying animations by saying what time they start, and how long they should run for. Sometimes, you want to be able to play an animation indefinitely, without knowing how lon..." />
 <meta name="twitter:card" content="summary_large_image" />
-<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Importing From Manim" href="importing_from_manim.html" /><link rel="prev" title="Images and Textures" href="images_and_textures.html" />
+<link rel="index" title="Index" href="../genindex.html" /><link rel="search" title="Search" href="../search.html" /><link rel="next" title="Nesting Mobs" href="nesting_mobs.html" /><link rel="prev" title="Controlling Animations" href="controlling_animations.html" />
 
     <link rel="shortcut icon" href="../_static/favicon.ico"/><!-- Generated with Sphinx 8.2.3 and Furo 2024.08.06 -->
         <title>Updaters - Algan v0.1.0</title>
@@ -261,9 +261,8 @@
 <li class="toctree-l3"><a class="reference internal" href="getting_started.html">Getting Started</a></li>
 <li class="toctree-l3"><a class="reference internal" href="basic_animations.html">Basic Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="controlling_animations.html">Controlling Animations</a></li>
-<li class="toctree-l3"><a class="reference internal" href="nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3 current current-page"><a class="current reference internal" href="#">Updaters</a></li>
+<li class="toctree-l3"><a class="reference internal" href="nesting_mobs.html">Nesting Mobs</a></li>
 <li class="toctree-l3"><a class="reference internal" href="importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -272,6 +271,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -279,6 +281,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -368,6 +371,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -386,7 +390,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -474,8 +477,8 @@ and another to make the outer square follow its rotation.</p>
 
 <span class="n">square</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="c1"># Set square rotating at a rate of 180 degrees per second, indefinitely.</span>
-<span class="c1"># The apply_passive_animation function returns the id the animation it creates,</span>
-<span class="c1"># we will need to hang onto it if we want to stop the animation later.</span>
+<span class="c1"># The add_updater function returns the ID the updater it creates,</span>
+<span class="c1"># we will need to hang onto this ID if we want to stop the animation later.</span>
 <span class="n">updater_id_1</span> <span class="o">=</span> <span class="n">square</span><span class="o">.</span><span class="n">add_updater</span><span class="p">(</span><span class="k">lambda</span> <span class="bp">self</span><span class="p">,</span> <span class="n">t</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">rotate</span><span class="p">(</span><span class="n">t</span><span class="o">*</span><span class="mi">180</span><span class="p">,</span> <span class="n">OUT</span><span class="p">))</span>
 
 <span class="n">square2</span> <span class="o">=</span> <span class="n">Square</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="n">BLUE</span><span class="p">)</span><span class="o">.</span><span class="n">move</span><span class="p">(</span><span class="n">RIGHT</span><span class="o">*</span><span class="mf">1.5</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
@@ -483,14 +486,14 @@ and another to make the outer square follow its rotation.</p>
 <span class="c1"># Note that even though we don&#39;t use the t parameter here,</span>
 <span class="c1"># we still must declare it in the function signature.</span>
 <span class="n">updater_id_2</span> <span class="o">=</span> <span class="n">square2</span><span class="o">.</span><span class="n">add_updater</span><span class="p">(</span><span class="k">lambda</span> <span class="bp">self</span><span class="p">,</span> <span class="n">t</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">move_to</span><span class="p">(</span><span class="n">square</span><span class="o">.</span><span class="n">location</span> <span class="o">+</span>
-                                                                            <span class="n">square</span><span class="o">.</span><span class="n">get_right_direction</span><span class="p">()</span><span class="o">*</span><span class="mf">1.5</span><span class="p">))</span>
+                                                <span class="n">square</span><span class="o">.</span><span class="n">get_right_direction</span><span class="p">()</span><span class="o">*</span><span class="mf">1.5</span><span class="p">))</span>
 
-<span class="c1"># Now we can continue animating as usual, these passive animations will continue.</span>
+<span class="c1"># Now we can continue animating as usual, the updaters will persist.</span>
 <span class="n">square</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
 <span class="n">square</span><span class="o">.</span><span class="n">color</span> <span class="o">=</span> <span class="n">GREEN</span>
 <span class="n">square</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
 
-<span class="c1"># And we can stop the animations when we want.</span>
+<span class="c1"># And we can stop the updaters when we want.</span>
 <span class="n">square2</span><span class="o">.</span><span class="n">remove_updater</span><span class="p">(</span><span class="n">updater_id_2</span><span class="p">)</span>
 <span class="n">square</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>
 
@@ -502,8 +505,8 @@ from algan import *
 
 square = Square().spawn()
 # Set square rotating at a rate of 180 degrees per second, indefinitely.
-# The apply_passive_animation function returns the id the animation it creates,
-# we will need to hang onto it if we want to stop the animation later.
+# The add_updater function returns the ID the updater it creates,
+# we will need to hang onto this ID if we want to stop the animation later.
 updater_id_1 = square.add_updater(lambda self, t: self.rotate(t*180, OUT))
 
 square2 = Square(color=BLUE).move(RIGHT*1.5).spawn()
@@ -511,23 +514,24 @@ square2 = Square(color=BLUE).move(RIGHT*1.5).spawn()
 # Note that even though we don't use the t parameter here,
 # we still must declare it in the function signature.
 updater_id_2 = square2.add_updater(lambda self, t: self.move_to(square.location +
-                                                                            square.get_right_direction()*1.5))
+                                                square.get_right_direction()*1.5))
 
-# Now we can continue animating as usual, these passive animations will continue.
+# Now we can continue animating as usual, the updaters will persist.
 square.wait(2)
 square.color = GREEN
 square.wait(2)
 
-# And we can stop the animations when we want.
+# And we can stop the updaters when we want.
 square2.remove_updater(updater_id_2)
 square.wait(2)
 
 render_to_file()
 
 </pre></div><p>The <a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable.add_updater" title="algan.animation.animatable.Animatable.add_updater"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_updater()</span></code></a> function takes as input a function, and applies
-that function at every subsequent frame. The function must take as its first input a Mob (which is set to the mob itself),
-and its second input a float. During animation, at each frame the second parameter will be set to the
-current elapsed time (the number of seconds since the animation began).</p>
+that function at every subsequent frame. The function must take a Mob as its first argument
+(which is set to the mob itself), and a float as its second argument. During animation,
+at each frame the function will be called with thesecond parameter set to the current
+elapsed time (the number of seconds since the updater was first added) for that frame.</p>
 <div class="admonition important">
 <p class="admonition-title">Important</p>
 <p>The second parameter must be specified in the function signature even if you don’t use it!</p>
@@ -540,23 +544,23 @@ current elapsed time (the number of seconds since the animation began).</p>
       <footer>
         
         <div class="related-pages">
-          <a class="next-page" href="importing_from_manim.html">
+          <a class="next-page" href="nesting_mobs.html">
               <div class="page-info">
                 <div class="context">
                   <span>Next</span>
                 </div>
-                <div class="title">Importing From Manim</div>
+                <div class="title">Nesting Mobs</div>
               </div>
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
             </a>
-          <a class="prev-page" href="images_and_textures.html">
+          <a class="prev-page" href="controlling_animations.html">
               <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
               <div class="page-info">
                 <div class="context">
                   <span>Previous</span>
                 </div>
                 
-                <div class="title">Images and Textures</div>
+                <div class="title">Controlling Animations</div>
                 
               </div>
             </a>

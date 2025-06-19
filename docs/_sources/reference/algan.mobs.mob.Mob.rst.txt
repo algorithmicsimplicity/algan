@@ -47,6 +47,7 @@ Qualified name: ``algan.mobs.mob.Mob``
       ~Mob.get_normal
       ~Mob.get_parts_as_mobs
       ~Mob.get_right_direction
+      ~Mob.get_shader_params
       ~Mob.get_upwards_direction
       ~Mob.look
       ~Mob.look_and_scale
@@ -63,12 +64,14 @@ Qualified name: ``algan.mobs.mob.Mob``
       ~Mob.move_to_edge
       ~Mob.move_to_point_along_arc
       ~Mob.move_to_point_along_square
+      ~Mob.orbit_around_point
       ~Mob.pulse_color
       ~Mob.refresh_history
       ~Mob.register_attrs_as_animatable
       ~Mob.reset_basis
       ~Mob.rotate
       ~Mob.rotate_and_scale
+      ~Mob.rotate_around_line
       ~Mob.rotate_around_point
       ~Mob.rotate_around_point_non_recursive
       ~Mob.scale
@@ -101,13 +104,7 @@ Qualified name: ``algan.mobs.mob.Mob``
      
      ~Mob.animation_manager
      ~Mob.basis
-     ~Mob.color
-     ~Mob.glow
      ~Mob.location
-     ~Mob.max_opacity
-     ~Mob.metallicness
      ~Mob.normalized_basis
-     ~Mob.opacity
      ~Mob.scale_coefficient
-     ~Mob.smoothness
    

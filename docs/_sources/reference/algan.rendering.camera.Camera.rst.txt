@@ -39,13 +39,7 @@ Qualified name: ``algan.rendering.camera.Camera``
      
      ~Camera.animation_manager
      ~Camera.basis
-     ~Camera.color
-     ~Camera.glow
      ~Camera.location
-     ~Camera.max_opacity
-     ~Camera.metallicness
      ~Camera.normalized_basis
-     ~Camera.opacity
      ~Camera.scale_coefficient
-     ~Camera.smoothness
    

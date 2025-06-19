@@ -28,13 +28,7 @@ Qualified name: ``algan.mobs.bezier\_circuit.BezierCircuitCubic``
      
      ~BezierCircuitCubic.animation_manager
      ~BezierCircuitCubic.basis
-     ~BezierCircuitCubic.color
-     ~BezierCircuitCubic.glow
      ~BezierCircuitCubic.location
-     ~BezierCircuitCubic.max_opacity
-     ~BezierCircuitCubic.metallicness
      ~BezierCircuitCubic.normalized_basis
-     ~BezierCircuitCubic.opacity
      ~BezierCircuitCubic.scale_coefficient
-     ~BezierCircuitCubic.smoothness
    

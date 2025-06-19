@@ -20,6 +20,7 @@
    
    .. autofunction:: basic_pbr_shader
    .. autofunction:: default_shader
+   .. autofunction:: null_shader
    
    
 

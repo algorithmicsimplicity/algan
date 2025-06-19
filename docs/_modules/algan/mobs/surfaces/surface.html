@@ -251,7 +251,6 @@
 <li class="toctree-l3"><a class="reference internal" href="../../../../new_user_tutorials/controlling_animations.html">Controlling Animations</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../../new_user_tutorials/updaters.html">Updaters</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../../new_user_tutorials/nesting_mobs.html">Nesting Mobs</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../../new_user_tutorials/images_and_textures.html">Images and Textures</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../../new_user_tutorials/importing_from_manim.html">Importing From Manim</a></li>
 </ul>
 </li>
@@ -260,6 +259,9 @@
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../../advanced_user_tutorials/index.html">Advanced User Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-6" name="toctree-checkbox-6" role="switch" type="checkbox"/><label for="toctree-checkbox-6"><div class="visually-hidden">Toggle navigation of Advanced User Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../../../advanced_user_tutorials/images_and_textures.html">Images and Textures</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../../advanced_user_tutorials/lights_camera_action.html">Lights, Camera, Action!</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
 </ul>
@@ -267,7 +269,7 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../../../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../../making_algan_faster/use_pytorch_compile.html">Pytorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -357,6 +359,7 @@
 <li class="toctree-l4"><a class="reference internal" href="../../../../reference/algan.rendering.camera.Camera.html">Camera</a></li>
 </ul>
 </li>
+<li class="toctree-l3"><a class="reference internal" href="../../../../reference/algan.rendering.shaders.pbr_shaders.html">pbr_shaders</a></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../../../reference/algan.rendering.primitives.primitive.html">primitive</a><input class="toctree-checkbox" id="toctree-checkbox-25" name="toctree-checkbox-25" role="switch" type="checkbox"/><label for="toctree-checkbox-25"><div class="visually-hidden">Toggle navigation of primitive</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../../../../reference/algan.rendering.primitives.primitive.RenderPrimitive.html">RenderPrimitive</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../../../../reference/algan.rendering.primitives.primitive.RenderPrimitive2D.html">RenderPrimitive2D</a></li>
@@ -375,7 +378,6 @@
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../../reference_index/scenes.html">Scenes</a><input class="toctree-checkbox" id="toctree-checkbox-28" name="toctree-checkbox-28" role="switch" type="checkbox"/><label for="toctree-checkbox-28"><div class="visually-hidden">Toggle navigation of Scenes</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../../../reference/algan.scene.html">scene</a><input class="toctree-checkbox" id="toctree-checkbox-29" name="toctree-checkbox-29" role="switch" type="checkbox"/><label for="toctree-checkbox-29"><div class="visually-hidden">Toggle navigation of scene</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l4"><a class="reference internal" href="../../../../reference/algan.scene.Scene.html">Scene</a></li>
-<li class="toctree-l4"><a class="reference internal" href="../../../../reference/algan.scene.SceneTracker.html">SceneTracker</a></li>
 </ul>
 </li>
 </ul>
@@ -436,13 +438,12 @@
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch.nn.functional</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">F</span>
 
+<span class="kn">from</span><span class="w"> </span><span class="nn">algan.mobs.renderable</span><span class="w"> </span><span class="kn">import</span> <span class="n">Renderable</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.tensor_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">broadcast_cross_product</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.rendering.primitives.triangle_primitive</span><span class="w"> </span><span class="kn">import</span> <span class="n">TrianglePrimitive</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">algan.animation.animatable</span><span class="w"> </span><span class="kn">import</span> <span class="n">animated_function</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.animation.animation_contexts</span><span class="w"> </span><span class="kn">import</span> <span class="n">Sync</span><span class="p">,</span> <span class="n">Off</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.constants.color</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.constants.spatial</span><span class="w"> </span><span class="kn">import</span> <span class="n">ORIGIN</span><span class="p">,</span> <span class="n">OUT</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">algan.geometry.geometry</span><span class="w"> </span><span class="kn">import</span> <span class="n">map_global_to_local_coords</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.mobs.mob</span><span class="w"> </span><span class="kn">import</span> <span class="n">Mob</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.mobs.shapes_2d</span><span class="w"> </span><span class="kn">import</span> <span class="n">TriangleTriangulated</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.utils.file_utils</span><span class="w"> </span><span class="kn">import</span> <span class="n">get_image</span>
@@ -468,7 +469,7 @@
 
 <div class="viewcode-block" id="Surface">
 <a class="viewcode-back" href="../../../../reference/algan.mobs.surfaces.surface.Surface.html#algan.mobs.surfaces.surface.Surface">[docs]</a>
-<span class="k">class</span><span class="w"> </span><span class="nc">Surface</span><span class="p">(</span><span class="n">Mob</span><span class="p">):</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">Surface</span><span class="p">(</span><span class="n">Renderable</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;A smooth 2-D surface, embedded in 3-D space, A.K.A a manifold.</span>
 <span class="sd">    The surface is implemented by sampling a uniform grid of 2-D points</span>
 <span class="sd">    from the unit square (known as intrinsic coordinates, or &quot;UV coordinates&quot;),</span>
@@ -501,6 +502,8 @@
             <span class="n">normal_function</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">normal_function</span>
         <span class="k">if</span> <span class="n">grid_width</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">grid_width</span> <span class="o">=</span> <span class="n">grid_height</span>
+        <span class="k">if</span> <span class="n">grid_height</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">grid_height</span> <span class="o">=</span> <span class="n">grid_width</span>
         <span class="k">if</span> <span class="n">grid_aspect_ratio</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">grid_height</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">grid_width</span> <span class="o">*</span> <span class="n">grid_aspect_ratio</span><span class="p">)</span>
 
@@ -530,7 +533,7 @@
         <span class="c1">#color = grid_to_triangle_vertices(color)</span>
         <span class="n">kwargs</span><span class="p">[</span><span class="s1">&#39;color&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">color</span>
         <span class="n">kwargs</span><span class="p">[</span><span class="s1">&#39;location&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">grid_points</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">grid</span> <span class="o">=</span> <span class="n">Mob</span><span class="p">(</span><span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">grid</span> <span class="o">=</span> <span class="n">Renderable</span><span class="p">(</span><span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">add_children</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">grid</span><span class="p">)</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">grid</span><span class="o">.</span><span class="n">is_primitive</span> <span class="o">=</span> <span class="kc">True</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">is_primitive</span> <span class="o">=</span> <span class="kc">True</span>
@@ -557,24 +560,20 @@
         <span class="k">else</span><span class="p">:</span>
             <span class="n">vertex_normals</span> <span class="o">=</span> <span class="kc">None</span>
 
-        <span class="n">color</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid</span><span class="o">.</span><span class="n">color</span>
-        <span class="k">if</span> <span class="n">color</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
-            <span class="n">color</span> <span class="o">=</span> <span class="n">color</span><span class="o">.</span><span class="n">expand</span><span class="p">(</span><span class="o">*</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">color</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">2</span><span class="p">]],</span> <span class="n">grid</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span><span class="o">*</span><span class="n">grid</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">3</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+        <span class="k">def</span><span class="w"> </span><span class="nf">expand_grid_to_verts</span><span class="p">(</span><span class="n">x</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">x</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="n">x</span> <span class="o">=</span> <span class="n">x</span><span class="o">.</span><span class="n">expand</span><span class="p">(</span><span class="o">*</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">x</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">2</span><span class="p">]],</span> <span class="n">grid</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span><span class="o">*</span><span class="n">grid</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">3</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+            <span class="n">x</span> <span class="o">=</span> <span class="n">unsquish</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid_height</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">grid_to_triangle_vertices</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
 
-        <span class="n">metallicness</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid</span><span class="o">.</span><span class="n">metallicness</span>
-        <span class="k">if</span> <span class="n">metallicness</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
-            <span class="n">metallicness</span> <span class="o">=</span> <span class="n">metallicness</span><span class="o">.</span><span class="n">expand</span><span class="p">(</span><span class="o">*</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">metallicness</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">2</span><span class="p">]],</span> <span class="n">grid</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">*</span> <span class="n">grid</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">3</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
-
-        <span class="n">smoothness</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid</span><span class="o">.</span><span class="n">smoothness</span>
-        <span class="k">if</span> <span class="n">smoothness</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
-            <span class="n">smoothness</span> <span class="o">=</span> <span class="n">smoothness</span><span class="o">.</span><span class="n">expand</span><span class="p">(</span><span class="o">*</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">smoothness</span><span class="o">.</span><span class="n">shape</span><span class="p">[:</span><span class="o">-</span><span class="mi">2</span><span class="p">]],</span> <span class="n">grid</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">2</span><span class="p">]</span> <span class="o">*</span> <span class="n">grid</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">3</span><span class="p">],</span>
-                                               <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">grid_color</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid</span><span class="o">.</span><span class="n">color</span><span class="o">.</span><span class="n">clone</span><span class="p">()</span>
+        <span class="n">grid_color</span><span class="p">[</span><span class="o">...</span><span class="p">,</span><span class="o">-</span><span class="mi">1</span><span class="p">:]</span> <span class="o">*=</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid</span><span class="o">.</span><span class="n">opacity</span>
+        <span class="n">grid_color</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">:</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span> <span class="o">+=</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid</span><span class="o">.</span><span class="n">glow</span>
         <span class="k">return</span> <span class="n">TrianglePrimitive</span><span class="p">(</span><span class="n">corners</span><span class="o">=</span><span class="n">grid_to_triangle_vertices</span><span class="p">(</span><span class="n">grid</span><span class="p">),</span>
-                                 <span class="n">colors</span><span class="o">=</span><span class="n">grid_to_triangle_vertices</span><span class="p">(</span><span class="n">unsquish</span><span class="p">(</span><span class="n">color</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid_height</span><span class="p">)),</span>
+                                 <span class="n">colors</span><span class="o">=</span><span class="n">expand_grid_to_verts</span><span class="p">(</span><span class="n">grid_color</span><span class="p">),</span>
                                  <span class="n">normals</span><span class="o">=</span><span class="n">vertex_normals</span><span class="p">,</span>
-                                 <span class="n">metallicness</span><span class="o">=</span><span class="n">grid_to_triangle_vertices</span><span class="p">(</span><span class="n">unsquish</span><span class="p">(</span><span class="n">metallicness</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid_height</span><span class="p">)),</span>
-                                 <span class="n">smoothness</span><span class="o">=</span><span class="n">grid_to_triangle_vertices</span><span class="p">(</span><span class="n">unsquish</span><span class="p">(</span><span class="n">smoothness</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid_height</span><span class="p">)),</span>
-                                 <span class="n">shader</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">shader</span>
+                                 <span class="n">shader</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">shader</span><span class="p">,</span>
+                                 <span class="o">**</span><span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="n">expand_grid_to_verts</span><span class="p">(</span><span class="n">v</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">grid</span><span class="o">.</span><span class="n">get_shader_params</span><span class="p">()</span><span class="o">.</span><span class="n">items</span><span class="p">()},</span>
                                  <span class="p">)</span>
 
 <div class="viewcode-block" id="Surface.coord_function">
