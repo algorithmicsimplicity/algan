@@ -105,6 +105,7 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
     tile_size: size of each tile.
     random_perturbation: strength of random perturbation applied to tile corners.
     """
+    #perimeter_points = torch.cat((perimeter_points, perimeter_points[:1]))
 
     m = (perimeter_points > -1e11).float()
     mn_corner, mx_corner = (perimeter_points * m + (1-m) * 1e12).amin(0)-1e-5, perimeter_points.amax(0)+1e-5
@@ -119,6 +120,7 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
     grid4 = torch.stack([grid[...,:-1,:-1,:], grid[...,:-1,1:,:], grid[...,1:, 1:,:], grid[...,1:,:-1,:]], -2)
 
     m = ((perimeter_points - torch.cat((perimeter_points[-1:], perimeter_points[:-1]))).norm(p=2,dim=-1) > 1e-6)
+    m[0] = True
     perimeter_points = perimeter_points[m]
     if len(perimeter_points) == 0:
         return None, None
@@ -273,6 +275,8 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
     all_grid_ids = []
     total_num_polygons = 0
     for c in cell_to_paths:
+        if c == 6:
+            print('c')
         pee = list(zip(*(cell_to_paths[c], cell_to_enters[c], cell_to_exits[c])))
         polygons = [[]]
         current_ind = 0
@@ -284,10 +288,7 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
         first_enter = None
 
         while True:
-            try:
-                path, enter, exit = pee[current_ind]
-            except IndexError:
-                path, enter, exit = pee[current_ind]
+            path, enter, exit = pee[current_ind]
             if first_enter is None:
                 first_enter = enter
             polygons[-1].extend(path)
@@ -392,6 +393,9 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
         total_num_polygons += len(polygons)
 
         def shift(_):
+            #return _
+            if True:#0 <= c <= 130:
+                return _ + 0.5
             return _
         ps = [shift(torch.stack(polygon)) for polygon in polygons if len(polygon) >= 3]
         all_polygons.append(ps)
@@ -517,7 +521,7 @@ def get_points_along_cubic_bezier(params, invert=False):
     roots = torch.linspace(0, 1, num_points_per_curve+1)
     if invert:
         roots = roots.flip(-1)
-    roots = roots[:num_points_per_curve]
+    #roots = roots[:num_points_per_curve]
     critical_points = cubic_bezier_eval(p.unsqueeze(-1), roots)
     return critical_points.squeeze(0).transpose(-2,-1), None
     parallel_vec = cubic_bezier_derivative_eval(p.unsqueeze(-1), roots)
@@ -586,7 +590,7 @@ def project_onto_line(params, point, invert=False):
 
 
 class TriangulatedBezierCircuit(Mob):
-    def __init__(self, paths, invert=False, border_width=0.1, tile_size=0.0124731, debug=False, hash_keys=None, use_cache=True,
+    def __init__(self, paths, invert=False, border_width=0.1, tile_size=0.04, debug=False, hash_keys=None, use_cache=True,
                  reverse_points=True, color=WHITE, create_direction=F.normalize(RIGHT*2+DOWN, p=2, dim=-1), *args, **kwargs):
         self.invert = invert
 
@@ -633,7 +637,20 @@ class TriangulatedBezierCircuit(Mob):
 
             points = []
             if (not use_cache) or (use_cache and not found_hash):
-                points = get_points_along_cubic_bezier(path[...,:2])[0]
+                path = path[...,:2]
+                loop_end_mask = (path[-1] - path[0].roll(-1,-2)).norm(p=2,dim=-1) > 1e-5
+                loop_inds = loop_end_mask.nonzero() + 1
+                if len(loop_inds) > 0:
+                    paths = []
+                    loop_inds = [0] + [_ for _ in loop_inds]
+                    if loop_inds[-1] <  path.shape[-2]:
+                        loop_inds = loop_inds + [path.shape[-2]]
+                    for i in range(len(loop_inds)-1):
+                        paths.append(path[:,loop_inds[i]:loop_inds[i+1]])
+                        paths.append(torch.full_like(path[:,:1], -1e12))
+                    path = torch.cat(paths, -2)
+
+                points = get_points_along_cubic_bezier(path)[0]
                 
                 self.num_curves = len(points)
 

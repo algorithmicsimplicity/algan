@@ -277,7 +277,7 @@ class Mob(Animatable):
                 c.apply_relative_change(key, interpolated_value, interpolation=1, recursive=recursive)
         return self
 
-    def pulse_color(self, color: torch.Tensor, set_opaque: bool = False) -> 'Mob':
+    def pulse_color(self, color: torch.Tensor, opacity: bool = None) -> 'Mob':
         """Animates a color pulse effect.
 
         The Mob's color changes to the target `color` and then animates back to its
@@ -296,9 +296,10 @@ class Mob(Animatable):
 
         """
         with Sync():
-            self.apply_absolute_change_two('color', color, self.color)
-            if set_opaque:
-                self.apply_absolute_change_two('opacity', 1, 1)
+            if color is not None:
+                self.apply_absolute_change_two('color', color, self.color)
+            if opacity is not None:
+                self.apply_absolute_change_two('opacity', opacity, opacity)
         return self
 
     def wave_color(self, color: torch.Tensor, wave_length: float = 2, reverse: bool = False,

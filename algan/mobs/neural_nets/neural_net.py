@@ -41,7 +41,7 @@ def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
             s.spawn(animate=False)
     with Sync(run_time=1):
         for s in syns:
-            s.wave_color(color + GLOW, direction=s.get_upwards_direction(), set_opaque=True, wave_length=1.5)
+            s.wave_color(color + GLOW, direction=s.get_upwards_direction(), opacity=1, wave_length=1.5)
     return
 
 
@@ -136,6 +136,6 @@ class NeuralNetMLP(Mob):
                     _.set_opacity(0)
                 output.spawn(animate=False)
             with Seq(run_time=3):
-                output.wave_color(color + GLOW, direction=self.direction, set_opaque=True, wave_length=1.5)
+                output.wave_color(color + GLOW, direction=self.direction, opacity=0, wave_length=1.5)
             return output
 

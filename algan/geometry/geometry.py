@@ -282,6 +282,7 @@ def get_orthonormal_vector(vector):
 
 
 def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):
+    #TODO change this to use scanline
     """
     polygon_vertices: Tensor[batch[*], num_vertices, 2]
     grid_points: Tensor[batch[*], num_grid_points, 2]

@@ -7,7 +7,7 @@ import pathlib
 
 import manim as mn
 from algan.defaults.style_defaults import *
-from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag
+from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag, Seq
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit, point_to_tensor2
 from algan.constants.spatial import DOWN, RIGHT
 from algan.mobs.group import Group
@@ -25,7 +25,8 @@ class Tex(Mob):
         self.latex = latex
         #if not self.latex:
         #    text = f'\\text{{{text}}}'
-        t = (mn.MathTex if self.latex else mn.Text)(text, font_size=48)#font_size)
+        base_font_size = 48
+        t = (mn.MathTex if self.latex else mn.Text)(text, font_size=base_font_size)
         def maybe_flip(x):
             if not latex:
                 return x.flip(-2)
@@ -36,8 +37,9 @@ class Tex(Mob):
             self.character_mobs = TriangulatedBezierCircuit(p, invert=False, hash_keys=p,
                                                             reverse_points=False,
                                                             init=False, *args, **kwargs)
-        super().__init__(*args, **kwargs)
-        self.add_children(self.character_mobs)
+            super().__init__(*args, **kwargs)
+            self.add_children(self.character_mobs)
+            self.scale(font_size / base_font_size)
     
     def __getitem__(self, item):
         return Group([self.character_mobs[item]])
@@ -62,19 +64,26 @@ class Tex(Mob):
         return self
 
     def on_create(self):
+        with Off():  # Ensure initial state setting is not recorded as an animation
+            self.opacity = 0
+        self._create_recursive(animate=False)  # Mark as created without immediate animation
+        self.wave_color(None, direction=F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1), opacity=1)
+        return self
         tiles = list(traverse([c.children for c in self.children]))
         with AnimationContext(run_time_unit=2):
             animate_lagged_by_location(tiles, lambda m: m.spawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
         return self
 
     def on_destroy(self):
-        tiles = list(traverse([c.children for c in self.children]))
-        with AnimationContext(run_time_unit=2):
-            animate_lagged_by_location(tiles, lambda m: m.despawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
-        old_ct = self.animation_manager.context.current_time
-        self.animation_manager.context.current_time = self.animation_manager.context.end_time
-        self._destroy_recursive(animate=False)
-        self.animation_manager.context.current_time = old_ct
+        #tiles = list(traverse([c.children for c in self.children]))
+        #with AnimationContext(run_time_unit=2):
+        #    animate_lagged_by_location(tiles, lambda m: m.despawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
+        with Seq():
+            self.wave_color(None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=0)
+            old_ct = self.animation_manager.context.current_time
+            self.animation_manager.context.current_time = self.animation_manager.context.end_time
+            self._destroy_recursive(animate=False)
+            self.animation_manager.context.current_time = old_ct
         return self
 
 
