@@ -40,7 +40,7 @@ Let's look at an example.
         mob1 = Sphere().move(LEFT*2).spawn()
         mob2 = Sphere().move(RIGHT*2).set_shader(basic_pbr_shader).spawn()
 
-    with Seq(run_time=5):
+    with Seq(run_time_unit=5):
         mob2.smoothness = 0
         mob2.metallicness = 1
         mob2.smoothness = 1
