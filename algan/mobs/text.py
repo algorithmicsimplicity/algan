@@ -244,7 +244,7 @@ class OldTex(Mob):
 from algan.external_libraries.manim.utils.tex import _DEFAULT_PREAMBLE
 
 
-class TextTriangulated(TexTriangulated):
+class Text(Tex):
     """Mob for displaying LaTeX.
 
     Parameters

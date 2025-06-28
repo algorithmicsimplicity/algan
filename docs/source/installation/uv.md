@@ -183,17 +183,9 @@ uv pip install torch torchvision torchaudio --index-url https://download.pytorch
 If no error message is shown, then installation was successful and you can move on
 to installing Algan.
 
-### Step 4 (optional): Installing Manim 
+### Step 4: Installing Algan 
 
-Algan is a work in progress, and currently our selection of built-in objects is
-relatively limited. To make up for this, we provide functionality to import
-objects created in Manim into Algan, allowing you to make use of Manim's much
-more extensive library of built in objects. In order to import Manim objects,
-you need to install Manim. If Algan's built-in [library](/reference) is enough for needs,
-you can skip this step.
-
-Otherwise, follow the below instructions for your
-operating system.
+Follow the instructions for your operating system below:
 
 ::::::{tab-set}
 
@@ -201,15 +193,15 @@ operating system.
 
 Run this command
 ```powershell
-uv add manim
+uv pip install --extra-index-url https://test.pypi.org/simple/ algan --index-strategy unsafe-best-match
 ```
 
 :::::
 
 :::::{tab-item} MacOS
-Before we can install Manim, we need to make sure that the system utilities
+Before we can install Algan, we need to make sure that the system utilities
 `cairo` and `pkg-config` are present. They are needed for the [`pycairo` Python
-package](https://pycairo.readthedocs.io/en/latest/), a dependency of Manim.
+package](https://pycairo.readthedocs.io/en/latest/), a dependency of Algan.
 
 The easiest way of installing these utilities is by using [Homebrew](https://brew.sh/),
 a fairly popular 3rd party package manager for MacOS. Check whether Homebrew is
@@ -234,10 +226,10 @@ brew install cairo pkg-config
 ```
 
 With all of this preparation out of the way, now it is time to actually install
-Manim itself!
+Algan itself!
 
 ```bash
-uv add manim
+uv pip install --extra-index-url https://test.pypi.org/simple/ algan --index-strategy unsafe-best-match
 ```
 :::::
 
@@ -280,23 +272,14 @@ sudo pacman -Syu base-devel cairo pango
 
 As soon as the required dependencies are installed, you can run
 ```bash
-uv add manim
+uv pip install --extra-index-url https://test.pypi.org/simple/ algan --index-strategy unsafe-best-match
 ```
 
 :::::
 
 ::::::
 
-### Step 5: Installing Algan
-
-Once PyTorch has successfully been installed,
-you can proceed to install Algan by entering the following command in your terminal/powershell:
-
-```bash
-uv pip install --extra-index-url https://test.pypi.org/simple/ algan --index-strategy unsafe-best-match
-```
-
-If it completes with no errors, then you are ready to Alganimate!
+If you completed the installation instructions with no errors, then you are ready to Alganimate!
 
 At this point, you can also open your project folder with the
 IDE of your choice. All modern Python IDEs (for example VS Code
