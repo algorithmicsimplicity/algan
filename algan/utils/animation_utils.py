@@ -39,7 +39,7 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
 
     amc = mobs[0].animation_manager.context
     rate_func = amc.rate_func if amc.rate_func is not None else lambda x: x
-    ts = [rate_func((_ - min_dot) / (max_dot - min_dot).clamp_(min=1e-8)) for _ in dots]
+    ts = [((_ - min_dot) / (max_dot - min_dot).clamp_(min=1e-8)) for _ in dots]
     #t = t * lag_duration
 
     run_time = amc.run_time_unit#max(amc.run_time_unit - lag_duration, 0)

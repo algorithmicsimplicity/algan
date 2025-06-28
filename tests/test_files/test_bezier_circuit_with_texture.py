@@ -11,7 +11,7 @@ p = torch.stack((
 p = p - p.mean((0,1))
 p = p * 4
 
-get_mob = lambda q=p: BezierCircuitCubic(q, color=YELLOW, add_texture_grid=True).spawn()
+get_mob = lambda q=p: BezierCircuitCubic(q, color=YELLOW, add_texture_grid=True, texture_grid_size=10).spawn()
 
 #TODO at end of rotation the curve flips inside ot
 #could this be because we just default normals to camera direction?

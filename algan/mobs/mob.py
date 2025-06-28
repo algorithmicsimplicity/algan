@@ -301,7 +301,7 @@ class Mob(Animatable):
                 self.apply_absolute_change_two('opacity', 1, 1)
         return self
 
-    def wave_color(self, color: torch.Tensor, wave_length: float = 0.5, reverse: bool = False,
+    def wave_color(self, color: torch.Tensor, wave_length: float = 2, reverse: bool = False,
                    direction: torch.Tensor | None = None, lag_duration=1, **kwargs) -> 'Mob':
         """Applies a color wave effect across the Mob and its descendants.
 
@@ -328,7 +328,7 @@ class Mob(Animatable):
         """
         if direction is None:
             direction = self.get_upwards_direction()
-        with AnimationContext(run_time_unit=wave_length):
+        with AnimationContext(run_time_unit=wave_length / lag_duration):
             # Filters for primitive parts to ensure the wave animates on individual rendering elements
             #TODO change this to use non_recursive set
             primitive_mobs = [_ for _ in self.get_descendants() if (_.is_primitive and not _.ignore_wave_animations)]
@@ -671,10 +671,7 @@ class Mob(Animatable):
             ds = (self.get_descendants(include_self=False))
             [d.set_time_inds_to(self) for d in ds]
         old_basis = self.basis if hasattr(self, 'basis') else basis
-        try:
-            interpolated_basis = old_basis * (1 - interpolation) + interpolation * basis
-        except:
-            interpolated_basis = old_basis * (1 - interpolation) + interpolation * basis
+        interpolated_basis = old_basis * (1 - interpolation) + interpolation * basis
 
         # Temporarily set recursing flag to control setattr_relative behavior
         original_recursing_state = self.recursing
