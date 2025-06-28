@@ -37,7 +37,7 @@ class RenderSettings:
 THUMBNAIL = RenderSettings((1280, 720), 1, save_image=True)
 
 # Render at (600, 400) resolution, 10 fps.
-PREVIEW = RenderSettings((600, 400), 10)
+PREVIEW = RenderSettings((640, 400), 10)
 
 # Render at (854, 480) resolution, 30 fps.
 LD = RenderSettings((854, 480), 30)

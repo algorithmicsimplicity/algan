@@ -25,9 +25,11 @@ class ManimMob(BezierCircuitCubic):
                 raise NotImplementedError('ManimMob does not support Mobjects which do not have n_points_per_curve == 4')
             children.append(ManimMob(submob))
 
+        empty = False
         if len(manim_mob.points) == 0:
             control_points = torch.from_numpy(manim_mob.get_center()).float()
             control_points = torch.stack([control_points for _ in range(4)], -2)
+            empty = True
         else:
             control_points = unsquish(torch.from_numpy(manim_mob.points).float(), -2, 4)
 
@@ -36,10 +38,10 @@ class ManimMob(BezierCircuitCubic):
             if opacity is not None:
                 c[-1] *= opacity
             return torch.cat((c[:-1], torch.tensor((0,)), c[-1:]))
-        super().__init__(control_points * manim_scale_factor, color=convert_manim_color(manim_mob.fill_color, opacity=manim_mob.fill_opacity),
+        super().__init__(control_points * manim_scale_factor, color=convert_manim_color(manim_mob.fill_color, opacity=1), opacity=manim_mob.fill_opacity,
                          border_color=convert_manim_color(manim_mob.stroke_color, manim_mob.stroke_opacity),
                          border_width=manim_mob.stroke_width,
-                         filled=not hasattr(manim_mob, 'end'), **kwargs)
+                         filled=not hasattr(manim_mob, 'end'), empty=empty, **kwargs)
         if len(children) > 0:
             self.add_children(Group(children))
         self.submobjects = children

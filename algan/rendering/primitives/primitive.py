@@ -87,7 +87,7 @@ class RenderPrimitive:
                 return
             else:
                 window_size = (window[2]-window[0]) * (window[3]-window[1])
-                if window_size < 200*200:
+                if window_size < 100*100:
                     raise OutOfRenderMemory('Rendering process ran out of memory. Please reduce the number of objects in the scene.')
                 xm = (window[0] + window[2]) // 2
                 ym = (window[1] + window[3]) // 2
@@ -272,7 +272,7 @@ class RenderPrimitive:
             projected_corners -= screen_point
             corners_2d = dot_product(projected_corners.unsqueeze(-2), screen_basis[...,:-1, :].unsqueeze(-3), -1, keepdim=False)
             corners_2d.nan_to_num_()
-            corners_2d = corners_2d * (screen_height//2)
+            corners_2d *= (screen_height//2)
             corners_2d[..., 0] += screen_width // 2
             corners_2d[..., 1] += screen_height // 2
             corners_locs = corners_2d

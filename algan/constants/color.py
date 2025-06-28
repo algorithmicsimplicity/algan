@@ -23,6 +23,14 @@ class Color(torch.Tensor):
         pass#super().__init__((red, green, blue, glow, opacity))
 
     @property
+    def opacity(self):
+        return self.data[..., -1:]
+
+    @opacity.setter
+    def opacity(self, value):
+        self.data[..., -1:] = value
+
+    @property
     def rgb(self):
         return self.data[...,:3]
 
@@ -36,6 +44,13 @@ class Color(torch.Tensor):
         out.data = self.data.clone()
         out.rgb = self.rgb * orgb
         return out
+
+    def set_opacity(self, opacity):
+        out = self.new_empty()
+        out.data = self.data.clone()
+        out.opacity = opacity
+        return out
+
 
     def convert_to_uint8(self):
         return (self * 255).to(torch.uint8)

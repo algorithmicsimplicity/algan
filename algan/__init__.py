@@ -96,8 +96,9 @@ def clear_cache():
         shutil.rmtree(f)
 
 def default_scene_initializer(scene):
-    scene.camera = Camera(location=algan.constants.spatial.CAMERA_ORIGIN)
+    scene.camera = Camera(location=algan.constants.spatial.CAMERA_ORIGIN).spawn(animate=False)
     scene.light_sources = [PointLight(location=scene.camera.location + UP * 1 + RIGHT * 5 + OUT * 1,
                                      color=WHITE).spawn(animate=False)]
 
 SceneManager.set_scene_class(algan.scene.Scene, default_scene_initializer)
+SceneManager.instance()

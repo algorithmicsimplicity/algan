@@ -57,6 +57,10 @@ class Scene:
         self.memory = memory
 
     @staticmethod
+    def instance():
+        return algan.SceneManager.instance()
+
+    @staticmethod
     def get_camera():
         return algan.SceneManager.instance().camera
 
@@ -205,10 +209,11 @@ class Scene:
             batch_size_actors = algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_ACTORS
         if batch_size_frames is None:
             batch_size_frames = algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_FRAMES
+        self.camera.wait(1/self.frames_per_second + 1e-4)
         self.camera.despawn(animate=False)
         for l in self.light_sources:
             l.is_primitive = True
-            l.despawn()
+            l.despawn(animate=False)
         self.actors = [[self.camera, self.camera.screen, *self.light_sources, *self.actors[-1]]]
         save_image = False
 

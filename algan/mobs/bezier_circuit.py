@@ -1,3 +1,4 @@
+import torch
 from algan import RIGHT
 from algan.animation.animation_contexts import Off
 from algan.mobs.renderable import Renderable
@@ -11,7 +12,7 @@ from algan.utils.tensor_utils import *
 
 class BezierCircuitCubic(Renderable):
     def __init__(self, control_points, normals=None, border_width=5, border_color=WHITE, portion_of_curve_drawn=1.0,
-                 filled=True, add_texture_grid=False, texture_grid_size = 10, **kwargs):
+                 filled=True, add_texture_grid=True, texture_grid_size = 2, empty=False, **kwargs):
 
         self.num_bezier_parameters = 4
         control_points = control_points.view(-1, control_points.shape[-1])
@@ -76,6 +77,7 @@ class BezierCircuitCubic(Renderable):
         super().__init__(**kwargs2)
         self.register_attrs_as_animatable(['border_width', 'border_color', 'portion_of_curve_drawn'], BezierCircuitCubic)
         self.filled = filled
+        self.empty = empty
 
         texture_triangle_vertices = self.location.squeeze(0)
         if add_texture_grid:
@@ -118,6 +120,8 @@ class BezierCircuitCubic(Renderable):
         return PURPLE
 
     def get_render_primitives(self):
+        self.texture_points.set_time_inds_to(self)
+        self.control_points.set_time_inds_to(self)
         o, n, g, bw, bc, pc = broadcast_all([self.opacity * self.max_opacity, self.basis, self.glow, self.border_width, self.border_color, self.portion_of_curve_drawn], ignored_dims=[-1])
 
         num_control_points = 4 # cubic beziers
@@ -158,6 +162,10 @@ class BezierCircuitCubic(Renderable):
         c = self.texture_points.color.unsqueeze(-3)
         if self.num_texture_points > c.shape[-2]:
             c = c.expand(-1,-1,self.num_texture_points,-1)
+
+        if self.empty:
+            c = torch.zeros_like(c)
+            bc = torch.zeros_like(bc)
 
         prim = self.render_primitive(x, next_segment_inds_offset, num_segments_per_circuit, c, o, self.basis[..., -3:],
                                      bw, bc, pc, self.location, cast_to_tensor(self.grid_width),

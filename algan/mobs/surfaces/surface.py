@@ -85,7 +85,7 @@ class Surface(Renderable):
         if color_texture is not None:
             color = squish(color_texture, -3, -2)
         else:
-            color_grid = torch.zeros((self.grid_width * self.grid_height, 5))
+            color_grid = (BLACK * 0).view(1,-1).expand((self.grid_width * self.grid_height, -1)).contiguous()
             color_grid[::2] = color
             color_grid[1::2] = checkered_color
             color_grid = color_grid.view(self.grid_height, self.grid_width, 5)
@@ -100,6 +100,7 @@ class Surface(Renderable):
         self.ignore_wave_animations = True
 
     def get_render_primitives(self):
+        self.grid.set_time_inds_to(self)
         grid = unsquish(self.grid.location, -2, self.grid_height)
         if not self.ignore_normals:
             grid_x_plus_1 = grid.roll(-1,-3)

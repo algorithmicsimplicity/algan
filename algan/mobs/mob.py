@@ -116,6 +116,10 @@ class Mob(Animatable):
         self.num_points_per_object = 1
         self.shader = None
 
+    def get_points_evenly_along_direction(self, direction, num_points=3):
+        e, s = self.get_boundary_edge_point(direction), self.get_boundary_edge_point(-direction)
+        return [s * t + (1 - t) * e for t in torch.linspace(0, 1, num_points + 2)[1:-1]]
+
     def reset_basis(self):
         """Resets the Mob's basis to the identity matrix (no rotation, unit scale)."""
         self.basis = cast_to_tensor(cast_to_tensor(squish(torch.eye(3))))
@@ -864,7 +868,7 @@ class Mob(Animatable):
             return self.get_boundary_points()
         elif num_children == 1:
             return self.children[0].get_boundary_points_recursive()
-        return torch.cat([child.get_boundary_points_recursive() for child in self.children], -2)
+        return torch.cat([child.get_boundary_points_recursive() for child in self.children if not child.exclude_from_boundary], -2)
 
     def get_boundary_edge_point(self, direction: torch.Tensor) -> torch.Tensor:
         """Finds the point on the Mob's recursive boundary that is furthest in a given direction.
@@ -900,6 +904,7 @@ class Mob(Animatable):
             torch.Tensor: The 3-D coordinate of the boundary point.
 
         """
+        direction = F.normalize(direction, p=2, dim=-1)
         edge_point = self.get_boundary_edge_point(direction)
 
         def get_median_location(tensor_values: torch.Tensor) -> torch.Tensor:
@@ -2154,7 +2159,7 @@ class Mob(Animatable):
             # self.location = current_location + torch.randn_like(current_location) * travel_distance
             # self.rotate(720, F.normalize(torch.randn_like(self.location), p=2, dim=-1))
             self.opacity = 0  # Animate opacity to zero
-            self._destroy_recursive(animate=False)  # Mark as destroyed without immediate animation
+            #self._destroy_recursive(animate=False)  # Mark as destroyed without immediate animation
             # with Synchronized(run_time=2, rate_func=tan):
             # self.destroy()
         return self

@@ -519,6 +519,7 @@ def get_points_along_cubic_bezier(params, invert=False):
         roots = roots.flip(-1)
     roots = roots[:num_points_per_curve]
     critical_points = cubic_bezier_eval(p.unsqueeze(-1), roots)
+    return critical_points.squeeze(0).transpose(-2,-1), None
     parallel_vec = cubic_bezier_derivative_eval(p.unsqueeze(-1), roots)
     parallel_vec = F.normalize(parallel_vec, p=2, dim=-1, eps=eps)
     perp_vec = torch.stack([-parallel_vec[..., 1, :], parallel_vec[..., 0, :]], -2)
@@ -586,7 +587,7 @@ def project_onto_line(params, point, invert=False):
 
 class TriangulatedBezierCircuit(Mob):
     def __init__(self, paths, invert=False, border_width=0.1, tile_size=0.0125, debug=False, hash_keys=None, use_cache=True,
-                 reverse_points=False, color=WHITE, create_direction=F.normalize(RIGHT*2+DOWN, p=2, dim=-1), *args, **kwargs):
+                 reverse_points=True, color=WHITE, create_direction=F.normalize(RIGHT*2+DOWN, p=2, dim=-1), *args, **kwargs):
         self.invert = invert
 
         self.funcs = []
@@ -612,7 +613,8 @@ class TriangulatedBezierCircuit(Mob):
             just_moved = False
             if hash_key is not None:
                 n = 12
-                hash_key = torch.from_numpy(hash_key).to(DEFAULT_DEVICE)
+                #hash_key = torch.from_numpy(hash_key).to(DEFAULT_DEVICE)
+                hash_key = squish(hash_key, 0, 1)
                 offset = hash_key.amin(0)
                 hash_key = hash_key - offset
                 hash_key = (hash_key.round(decimals=n) * (10**n)).long()
@@ -623,7 +625,7 @@ class TriangulatedBezierCircuit(Mob):
                 hasher = hashlib.sha256()
                 hasher.update(hash_bytes.encode())
                 hash_bytes = hasher.hexdigest()[:32]
-                file_path = os.path.join(DEFAULT_DIR, 'algan_cache', f'{hash_bytes}.txt')
+                file_path = os.path.join(DEFAULT_DIRECTORY, 'algan_cache', f'{hash_bytes}.txt')
                 if os.path.exists(file_path):
                     tiles, tile_counts = torch.load(file_path, map_location=DEFAULT_DEVICE)
                     tiles = tiles + offset.float()[:2]
@@ -631,29 +633,14 @@ class TriangulatedBezierCircuit(Mob):
 
             points = []
             if (not use_cache) or (use_cache and not found_hash):
-                for i, element in enumerate(path if not self.invert else reversed(path)):
-                    if isinstance(element, svgelements.Move):
-                        if i == 0:
-                            continue
-                        just_moved = True
-                        points[-1][0][-1] = -2e12
-                        continue
-                    elif isinstance(element, svgelements.Line) or isinstance(element, svgelements.Close):
-                        params = (params_to_tensor([element.start, element.end]))
-                        points.append(get_points_along_line(params, invert=self.invert))
-                    elif isinstance(element, svgelements.CubicBezier):
-                        params = (params_to_tensor([element.start, element.control1, element.control2, element.end]))
-                        points.append(get_points_along_cubic_bezier(params, invert=self.invert))
-                    else:
-                        raise NotImplementedError(f'{type(element)}')
-                    if just_moved:
-                        points[-1][0][0] = -2e12
-                        just_moved = False
-
+                points = get_points_along_cubic_bezier(path[...,:2])[0]
+                
                 self.num_curves = len(points)
 
-                points, normals = [torch.cat(_) for _ in zip(*points)]
-                tiles, tile_counts = tile_region(points, tile_size=tile_size, reverse_points=reverse_points)
+                points = squish(points,0,1)
+                #points, normals = [torch.cat(_) for _ in zip(*points)]
+                tiles, tile_counts = tile_region(points.flip(0).float(), tile_size=tile_size, reverse_points=reverse_points)
+                print('path done')
                 if tiles is None:
                     continue
                 if hash_key is not None:

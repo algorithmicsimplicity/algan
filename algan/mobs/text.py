@@ -2,10 +2,10 @@ import copy
 
 import numpy
 import torch.nn.functional as F
-import algan.external_libraries.manim as mn
 from svgelements import Path, Line, Move, Close
 import pathlib
 
+import manim as mn
 from algan.defaults.style_defaults import *
 from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit, point_to_tensor2
@@ -14,9 +14,71 @@ from algan.mobs.group import Group
 from algan.mobs.mob import Mob
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
+from algan.utils.tensor_utils import unsquish
 
 
 class Tex(Mob):
+    def __init__(self, text, font_size=24, latex=True, *args, **kwargs):
+        if 'preamble' in kwargs:
+            kwargs['tex_template'] = mn.TexTemplate(preamble=_DEFAULT_PREAMBLE + '\n' + kwargs['preamble'])
+            del kwargs['preamble']
+        self.latex = latex
+        #if not self.latex:
+        #    text = f'\\text{{{text}}}'
+        t = (mn.MathTex if self.latex else mn.Text)(text, font_size=font_size)
+        def maybe_flip(x):
+            if not latex:
+                return x.flip(-2)
+            return x
+        p = [unsquish(maybe_flip(torch.from_numpy(_.points).to(DEFAULT_DEVICE)), -2, 4).transpose(-3,-2) for _ in
+             (t.submobjects[0] if latex else t).submobjects]
+        with Off():
+            self.character_mobs = TriangulatedBezierCircuit(p, invert=False, hash_keys=p,
+                                                            reverse_points=False,
+                                                            init=False, *args, **kwargs)
+        super().__init__(*args, **kwargs)
+        self.add_children(self.character_mobs)
+    
+    def __getitem__(self, item):
+        return Group([self.character_mobs[item]])
+
+    def __len__(self):
+        return len(self.character_mobs)
+
+    def default_color(self):
+        return BLUE
+
+    def highlight(self):
+        self.orig_color = self.color
+        with Sync():
+            for _ in self.get_descendants():
+                _.color = RED_A
+        return self
+
+    def highlight_off(self):
+        with Sync():
+            for _ in self.get_descendants():
+                _.color = WHITE
+        return self
+
+    def on_create(self):
+        tiles = list(traverse([c.children for c in self.children]))
+        with AnimationContext(run_time_unit=2):
+            animate_lagged_by_location(tiles, lambda m: m.spawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
+        return self
+
+    def on_destroy(self):
+        tiles = list(traverse([c.children for c in self.children]))
+        with AnimationContext(run_time_unit=2):
+            animate_lagged_by_location(tiles, lambda m: m.despawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
+        old_ct = self.animation_manager.context.current_time
+        self.animation_manager.context.current_time = self.animation_manager.context.end_time
+        self._destroy_recursive(animate=False)
+        self.animation_manager.context.current_time = old_ct
+        return self
+
+
+class OldTex(Mob):
     """Mob for displaying tex.
 
     Parameters
@@ -182,7 +244,7 @@ class Tex(Mob):
 from algan.external_libraries.manim.utils.tex import _DEFAULT_PREAMBLE
 
 
-class Text(Tex):
+class TextTriangulated(TexTriangulated):
     """Mob for displaying LaTeX.
 
     Parameters

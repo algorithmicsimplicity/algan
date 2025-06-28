@@ -252,7 +252,7 @@ class AnimationContext:
         if not (self.spawn_at_end and not am.context.spawn_at_end):
             return False
         with Sync():
-            for mob in self.new_mobs:
+            for mob in sorted(self.new_mobs, key=lambda x: -x.anchor_priority):
                 mob.spawn()
         return False
 
@@ -262,7 +262,7 @@ class AnimationContext:
 
     def wait(self, t=None):
         if t is None:
-            t = self.run_time_unit * 0.5
+            t = self.run_time_unit
         self.end_time = max(self.end_time, self.current_time + t)
         self.current_time = self.current_time + t * self.lag_ratio
 

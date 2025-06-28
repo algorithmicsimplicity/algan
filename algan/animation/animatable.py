@@ -660,7 +660,7 @@ class Animatable:
             if self.data.despawn_time() < 0:
                 if animate:
                     self.on_destroy()
-                self.data.despawn_time = self.animation_manager.context.get_current_end_time()
+                self.data.despawn_time = self.animation_manager.context.get_end_time()
                 #self.remove_all_passive_animations()
             for c in self.children:
                 c._destroy_recursive(animate)

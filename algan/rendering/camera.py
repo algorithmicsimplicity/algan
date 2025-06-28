@@ -34,7 +34,7 @@ class Camera(Mob):
             self.rays_outdated = True
             self.rays = None
             self.in_subview_mode = False
-            s = self.scene.num_pixels_screen_width / self.scene.num_pixels_screen_height
+            s = 1#self.scene.num_pixels_screen_width / self.scene.num_pixels_screen_height
             self.corner_x_coords = torch.tensor([-s, -s, s, s]).view(-1, 1, 1, 1)
             self.corner_y_coords = torch.tensor([-1, 1, 1, -1]).view(-1, 1, 1, 1)
             #self.animatable_attrs.update({'light_source_location'})
@@ -271,7 +271,8 @@ class Camera(Mob):
     def get_corner_pixels(self):
         b = unsquish(self.screen.basis, -1, 3)
         b = b / b.norm(p=2,dim=-1,keepdim=True).square().clamp_min(1e-6)
-        return self.screen.location + b[..., 0, :] * self.corner_x_coords + b[..., 1, :] * self.corner_y_coords
+        aspect_ratio = self.scene.render_settings.resolution[0] / self.scene.render_settings.resolution[1]
+        return self.screen.location + b[..., 0, :] * self.corner_x_coords * aspect_ratio + b[..., 1, :] * self.corner_y_coords
         self.location, camera.screen.location, camera.screen.basis
         return self.corner_pixels + self.location + self.get_forward_direction() * self.screen_distance
 
