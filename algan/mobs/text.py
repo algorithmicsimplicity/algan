@@ -25,7 +25,7 @@ class Tex(Mob):
         self.latex = latex
         #if not self.latex:
         #    text = f'\\text{{{text}}}'
-        t = (mn.MathTex if self.latex else mn.Text)(text, font_size=font_size)
+        t = (mn.MathTex if self.latex else mn.Text)(text, font_size=48)#font_size)
         def maybe_flip(x):
             if not latex:
                 return x.flip(-2)

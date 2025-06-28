@@ -18,7 +18,7 @@ from algan import SceneManager
 
 
 @compiled
-def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec='h264', **kwargs):
+def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec='h264', file_extension=None, **kwargs):
     """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
     as captured by the active :class:`~.Camera`, and saves the video to a file.
 
@@ -49,6 +49,12 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
         if render_settings is None:
             render_settings = algan.defaults.render_defaults.DEFAULT_RENDER_SETTINGS
 
+        file_name, file_ext = os.path.splitext(file_name)
+        if file_ext == '':
+            file_ext = '.mp4'
+        if file_extension is not None:
+            file_ext = file_extension
+
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         temp_file_path = os.path.join(output_dir, f"{file_name}_temp")
         file_path = os.path.join(output_dir, f"{file_name}")
@@ -63,7 +69,9 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             scene.camera = Camera(False)
         torch.cuda.empty_cache()
 
-        file_writer = cv2.VideoWriter(f'{temp_file_path}.mp4', cv2.VideoWriter_fourcc(*codec),
+        temp_file_path = f'{temp_file_path}{file_ext}'
+        file_path = f'{file_path}{file_ext}'
+        file_writer = cv2.VideoWriter(temp_file_path, cv2.VideoWriter_fourcc(*codec),
                                       render_settings.frames_per_second, render_settings.resolution)
 
         try:
@@ -90,7 +98,7 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
 
 @compiled
 def render_all_funcs(module_name, render_settings=None, profile=True, overwrite=True, start_index=0,
-                     max_rendered=-1, output_dir=None, output_path=None, **kwargs):
+                     max_rendered=-1, output_dir=None, output_path=None, file_extension='mp4', **kwargs):
     def run(output_dir=None, render_settings=None, output_path=None):
         with torch.inference_mode():
             module = sys.modules[module_name]
@@ -121,7 +129,7 @@ def render_all_funcs(module_name, render_settings=None, profile=True, overwrite=
                 scene = SceneManager.reset()
                 scene.set_render_settings(render_settings)
                 f()
-                render_to_file(f'{i}_{func_name}', output_dir, output_path, render_settings, overwrite, **kwargs)
+                render_to_file(f'{i}_{func_name}.{file_extension}', output_dir, output_path, render_settings, overwrite, **kwargs)
             return
 
     if profile:

@@ -586,7 +586,7 @@ def project_onto_line(params, point, invert=False):
 
 
 class TriangulatedBezierCircuit(Mob):
-    def __init__(self, paths, invert=False, border_width=0.1, tile_size=0.0125, debug=False, hash_keys=None, use_cache=True,
+    def __init__(self, paths, invert=False, border_width=0.1, tile_size=0.0124731, debug=False, hash_keys=None, use_cache=True,
                  reverse_points=True, color=WHITE, create_direction=F.normalize(RIGHT*2+DOWN, p=2, dim=-1), *args, **kwargs):
         self.invert = invert
 
@@ -640,7 +640,6 @@ class TriangulatedBezierCircuit(Mob):
                 points = squish(points,0,1)
                 #points, normals = [torch.cat(_) for _ in zip(*points)]
                 tiles, tile_counts = tile_region(points.flip(0).float(), tile_size=tile_size, reverse_points=reverse_points)
-                print('path done')
                 if tiles is None:
                     continue
                 if hash_key is not None:

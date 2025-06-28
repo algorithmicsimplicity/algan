@@ -137,7 +137,7 @@ class Scene:
             return torch.zeros((nt,)).cpu().numpy()
         return sum((a.render_audio() for a in active_actors))
 
-    def get_fragments(self, actors, start, end, save_image=False, post_processes=[]):
+    def get_fragments(self, actors, start, end, save_image=False, post_processes=[], transparent_background=False, background_color=None):
         camera = self.camera
         nt = end-start
         active_actors = []
@@ -173,7 +173,9 @@ class Scene:
             primitive_collections[-1].scene = self
         self.memory.reset()
         return primitive_collections[0].render(primitive_collections, self, save_image, self.num_pixels_screen_width,
-                                               self.num_pixels_screen_height, self.background_frame, camera.location.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
+                                               self.num_pixels_screen_height, self.background_frame if background_color is None else background_color,
+                                               transparent_background,
+                                               camera.location.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
                                                camera.screen.location.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
                                                camera.screen.basis.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
                                                anti_alias_level=self.render_settings.anti_alias_level,
@@ -201,9 +203,15 @@ class Scene:
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
 
     def render_to_video(self, file_writer, file_path, file_path_out, audio_file_path,
-                        batch_size_actors=None, batch_size_frames=None, post_processes=[bloom_filter]):
+                        batch_size_actors=None, batch_size_frames=None, post_processes=[bloom_filter],
+                        background_color=None):
         self.scene_times.append((self.scene_times[-1][1], (math.ceil(AnimationManager.instance().context.end_time * self.frames_per_second)+1)))
         self.initialize_frames()
+        self.original_background_frame = self.background_frame
+        if background_color is not None:
+            self.background_frame = background_color
+
+        transparent_background = self.background_frame[...,-1].min() < 1
 
         if batch_size_actors is None:
             batch_size_actors = algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_ACTORS
@@ -230,9 +238,6 @@ class Scene:
                     save_image = True
                     file_path = f'{file_path}.png'
                     file_path_out = f'{file_path_out}.png'
-                if not save_image:
-                    file_path = f'{file_path}.mp4'
-                    file_path_out = f'{file_path_out}.mp4'
 
                 self.file_path = file_path
                 self.file_writer = file_writer
@@ -259,7 +264,8 @@ class Scene:
                         end = min(actor_s + (i + 1) * batch_size_frames, actor_e)
 
                         def run():
-                            self.get_fragments(actors, start, end, save_image, post_processes)
+                            self.get_fragments(actors, start, end, save_image, post_processes, transparent_background,
+                                               background_color)
                             audio = self.get_audio(actors, start, end)
                             wav_file.writeframes(bytes(((audio+1)*255/2).astype(np.uint8)))
                             torch.cuda.empty_cache()
@@ -270,6 +276,8 @@ class Scene:
                     actors = [a for a in actors if a.despawn_ind >= actor_e]
                     for _ in all_actors:
                         _.reset_state()
+
+        self.background_frame = self.original_background_frame
 
         file_writer.release()
         if True:#len(self.effects) == 0:

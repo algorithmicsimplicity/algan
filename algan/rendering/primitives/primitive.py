@@ -25,7 +25,7 @@ class RenderPrimitive:
     def get_batch_identifier(self):
         return f'{self.__class__}'
 
-    def render(self, primitives, scene, save_image, screen_width, screen_height, background_color, *args, **kwargs):
+    def render(self, primitives, scene, save_image, screen_width, screen_height, background_color, transparent_background=False, *args, **kwargs):
         screen_width *= kwargs['anti_alias_level']
         screen_height *= kwargs['anti_alias_level']
         window = (0, 0, screen_width, screen_height)
@@ -33,14 +33,21 @@ class RenderPrimitive:
         kwargs['screen_height'] = screen_height
         frames = self.render_window(primitives, scene, window, save_image, 0,
                                     self.corners.shape[0], 0, 1, background_color,
-                                    False, *args, **kwargs)
+                                    False, transparent_background, *args, **kwargs)
 
     def post_process_frames(self, frames, anti_alias_level, post_processes=[]):
         frame_out = frames
         frame_out = F.avg_pool2d(frame_out.float().permute(2, 0, 1), anti_alias_level).permute(1, 2, 0).to(torch.uint8)
-        for p in post_processes:
-            frame_out = p(frame_out)
-        return frame_out.cpu().flip((-3, -1)).numpy()
+        if frame_out.shape[-1] == 5:
+            for p in post_processes:
+                frame_out = torch.cat((p(frame_out[...,:-1]), frame_out[...,-1:]), -1)
+            frame_out = frame_out.cpu().flip((-3))
+            frame_out = torch.cat((frame_out[...,:-1].flip(-1), frame_out[...,-1:]), -1)
+            return frame_out.numpy()
+        else:
+            for p in post_processes:
+                frame_out = p(frame_out)
+            return frame_out.cpu().flip((-3, -1)).numpy()
 
     def save_frames(self, frames, save_image, scene, **kwargs):
         frames = (self.post_process_frames(frame, **kwargs) for frame in frames)
@@ -52,7 +59,7 @@ class RenderPrimitive:
                 torchvision.utils.save_image(torch.from_numpy(frame).permute(-1, 0, 1) / 255, scene.file_path)
 
     def render_window(self, primitives, scene, window, save_image, time_start, time_end, object_start,
-                      object_end, background_color, return_frags=False, *args, **kwargs):
+                      object_end, background_color, return_frags=False, transparent_output=False, *args, **kwargs):
         self.memory = kwargs['memory']
         post_processes = kwargs['post_processes']
         kwargs2 = {k: v for k, v in kwargs.items()}
@@ -63,13 +70,13 @@ class RenderPrimitive:
             chunks = [_ for _ in chunks if _ is not None]
             if return_frags:
                 return chunks
-            out = self.get_tensor_from_memory((((window[2]-window[0])*(window[3]-window[1])), 4), torch.uint8)
+            out = self.get_tensor_from_memory((((window[2]-window[0])*(window[3]-window[1])), 4 if not transparent_output else 5), torch.uint8)
             out = out.clone()
             if len(chunks) == 0:
                 frames = (next(scene.get_frames_from_fragments(None, window, out, anti_alias_level=kwargs['anti_alias_level'])) for _ in range(time_end - time_start))
             else:
                 colors, dists, inds = [torch.cat(_) for _ in zip(*chunks)]
-                frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['screen_height'])
+                frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['screen_height'], transparent_output)
                 frames = scene.get_frames_from_fragments(frags, window, out, anti_alias_level=kwargs['anti_alias_level'])
             if (window[2]-window[0]) == kwargs['screen_width'] and (window[3]-window[1]) == kwargs['screen_height']:
                 self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'], post_processes=post_processes)
@@ -82,8 +89,8 @@ class RenderPrimitive:
 
             if (time_end - time_start) > 1:
                 m = time_start + (time_end - time_start)//2
-                self.render_window(primitives, scene, window, save_image, time_start, m, object_start, object_end, background_color, False, *args, **kwargs)
-                self.render_window(primitives, scene, window, save_image, m, time_end, object_start, object_end, background_color, False, *args, **kwargs)
+                self.render_window(primitives, scene, window, save_image, time_start, m, object_start, object_end, background_color, False, transparent_output, *args, **kwargs)
+                self.render_window(primitives, scene, window, save_image, m, time_end, object_start, object_end, background_color, False, transparent_output,*args, **kwargs)
                 return
             else:
                 window_size = (window[2]-window[0]) * (window[3]-window[1])
@@ -94,7 +101,7 @@ class RenderPrimitive:
 
                 frames = [next(
                     self.render_window(primitives, scene, w, save_image, time_start, time_end, object_start, object_end,
-                                       background_color, False, *args,
+                                       background_color, False, transparent_output,*args,
                                        **kwargs)) for w in [(window[0], window[1], xm, ym),
                                                             (xm, window[1], window[2], ym),
                                                             (window[0], ym, xm, window[3]),
@@ -149,10 +156,10 @@ class RenderPrimitive:
             out = self.get_tensor(xshape, x.dtype)
         return broadcast_gather(x, dim, repeats_inds, out=out)
 
-    def blend_frags_to_pixels(self, colors, dists, inds, background_color, num_frames, screen_width, screen_height):
+    def blend_frags_to_pixels(self, colors, dists, inds, background_color, num_frames, screen_width, screen_height, transparent_output=False):
         unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
 
-        current_frags = self.get_tensor((len(unique_inds), colors.shape[-1] - 1), torch.float)
+        current_frags = self.get_tensor((len(unique_inds), colors.shape[-1] - (0 if transparent_output else 1)), torch.float)
         self.memory.save_pointer()
 
         if unique_counts.numel() == 0:
@@ -163,7 +170,7 @@ class RenderPrimitive:
 
         out = current_frags
         out[..., :] = background_color[...,:out.shape[-1]]
-        out[..., -1] = 0
+        #out[..., -1] = 0
 
         # TODO make it so that if opacity is 0, that pixel is removed entirely (instead of just painting background constants), this will save us having to
         # render invisble objects.
@@ -182,8 +189,13 @@ class RenderPrimitive:
                     c_write = broadcast_gather(colors, -2, max_ind.unsqueeze(-1), keepdim=True)
                     ie = inds_selected.unsqueeze(-1).expand(-1, out.shape[-1])
                     c_read = broadcast_gather(out, -2, ie, keepdim=True)
-                    a = c_write[..., -1:]
-                    write = c_read * (1 - a) + a * (c_write[..., :-1])
+                    if transparent_output:
+                        a = c_write[..., -1:].clone()
+                        c_write[...,-1:] = 1
+                    else:
+                        a = c_write[..., -1:]
+                        c_write = c_write[..., :-1]
+                    write = c_read * (1 - a) + a * (c_write)
                     write = write * mask + (~mask) * c_read
                     out.scatter_(-2, ie, write)
                     return out
@@ -338,8 +350,8 @@ class RenderPrimitive:
                                                light_intensity,
                                                ambient_light_intensity, *[select_time(_) for _ in self.shader_param_values])
 
-        output_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
-        output_frags[:] = 0
+        #output_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
+        #output_frags[:] = 0
         ##current_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
 
         if unique_counts.numel() == 0:
