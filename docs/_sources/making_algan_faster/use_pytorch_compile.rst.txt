@@ -1,6 +1,6 @@
-===============
-PyTorch Compile
-===============
+=====================
+Using PyTorch Compile
+=====================
 
 If you are are running on Linux or MacOS, then you can skip this section, Pytorch compile
 is already activated by default.

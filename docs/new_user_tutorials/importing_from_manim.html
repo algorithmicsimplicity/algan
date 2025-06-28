@@ -276,12 +276,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/transparent_backgrounds.html">Transparent Backgrounds</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">Using PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -301,6 +302,7 @@
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>
@@ -472,14 +474,10 @@ you wish to use you will need to recreate it yourself in Algan.</p>
 <section id="the-maninmob">
 <h2>The ManinMob<a class="headerlink" href="#the-maninmob" title="Link to this heading">¶</a></h2>
 <p>Importing is straightforward, just create a <a class="reference internal" href="../reference/algan.mobs.manim_mob.ManimMob.html#algan.mobs.manim_mob.ManimMob" title="algan.mobs.manim_mob.ManimMob"><code class="xref py py-class docutils literal notranslate"><span class="pre">ManimMob</span></code></a> object and pass in a Manim Mobject as the parameter.</p>
-<div id="importingmanimmob" class="admonition admonition-manim-example">
-<p class="admonition-title">Example: ImportingManimMob <a class="headerlink" href="#importingmanimmob">¶</a></p><video
-    class="manim-video"
-    controls
-    loop
-    autoplay
-    src="./ImportingManimMob-1.mp4">
-</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div class="admonition">
+<p class="admonition-title">Example Placeholder</p>
+<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">ImportingManimMob</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">manim</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mn</span>
 
 <span class="c1"># Let&#39;s grab a complex plane from the manim library.</span>
@@ -506,8 +504,8 @@ with Seq(run_time=5):
     mob.rotate(90, OUT)
 
 render_to_file()
-
-</pre></div><div class="admonition important">
+</pre></div>
+<div class="admonition important">
 <p class="admonition-title">Important</p>
 <p>Do not use both <cite>from algan import *</cite> and <cite>from manim import *</cite>, as this will lead to
 clashing definitions. You must give them one of them a name, as in this example where we

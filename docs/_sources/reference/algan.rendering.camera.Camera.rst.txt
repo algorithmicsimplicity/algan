@@ -1,4 +1,4 @@
-Camera
+﻿Camera
 ======
 
 Qualified name: ``algan.rendering.camera.Camera``
@@ -39,7 +39,11 @@ Qualified name: ``algan.rendering.camera.Camera``
      
      ~Camera.animation_manager
      ~Camera.basis
+     ~Camera.color
+     ~Camera.glow
      ~Camera.location
+     ~Camera.max_opacity
      ~Camera.normalized_basis
+     ~Camera.opacity
      ~Camera.scale_coefficient
    

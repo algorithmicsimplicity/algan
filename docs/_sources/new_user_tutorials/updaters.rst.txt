@@ -47,7 +47,7 @@ and another to make the outer square follow its rotation.
 The :meth:`~.Animatable.add_updater` function takes as input a function, and applies
 that function at every subsequent frame. The function must take a Mob as its first argument
 (which is set to the mob itself), and a float as its second argument. During animation,
-at each frame the function will be called with thesecond parameter set to the current
+at each frame the function will be called with the second parameter set to the current
 elapsed time (the number of seconds since the updater was first added) for that frame.
 
 .. important::

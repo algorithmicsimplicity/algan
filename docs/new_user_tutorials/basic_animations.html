@@ -276,12 +276,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/transparent_backgrounds.html">Transparent Backgrounds</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">Using PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -301,6 +302,7 @@
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>
@@ -484,14 +486,10 @@ as a vector of 5 components in that order). Colors with a non-zero glow componen
 into nearby pixels.
 <code class="xref py py-attr docutils literal notranslate"><span class="pre">glow</span></code> and <code class="xref py py-attr docutils literal notranslate"><span class="pre">opacity</span></code> can optionally be set in the <code class="xref py py-class docutils literal notranslate"><span class="pre">Color</span></code> object, or as properties of the Mob itself.</p>
 </div>
-<div id="basicchangingattributes" class="admonition admonition-manim-example">
-<p class="admonition-title">Example: BasicChangingAttributes <a class="headerlink" href="#basicchangingattributes">¶</a></p><video
-    class="manim-video"
-    controls
-    loop
-    autoplay
-    src="./BasicChangingAttributes-1.mp4">
-</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div class="admonition">
+<p class="admonition-title">Example Placeholder</p>
+<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">BasicChangingAttributes</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">circle</span> <span class="o">=</span> <span class="n">Circle</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
@@ -516,8 +514,8 @@ circle.glow = 0.5
 circle.color = GREEN
 
 render_to_file()
-
-</pre></div><div class="admonition important">
+</pre></div>
+<div class="admonition important">
 <p class="admonition-title">Important</p>
 <p>Only non-inplace assignments are animated! That means that, for example, <code class="docutils literal notranslate"><span class="pre">circle.location</span> <span class="pre">+=</span> <span class="pre">UP</span> <span class="pre">*</span> <span class="pre">0.5</span></code> will
 not be animated. You should NEVER assign animated attributes inplace!</p>
@@ -528,14 +526,10 @@ not be animated. You should NEVER assign animated attributes inplace!</p>
 <p>You will be able to get pretty far just modifying the animatable attributes, but there are some cases were linear
 interpolation just isn’t enough. For example, you may wish to move a Mob along a curved path. This animation
 cannot be expressed by linearly interpolating the Mob’s location. For such a case, you can create an <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a>.</p>
-<div id="basicanimatedfunction" class="admonition admonition-manim-example">
-<p class="admonition-title">Example: BasicAnimatedFunction <a class="headerlink" href="#basicanimatedfunction">¶</a></p><video
-    class="manim-video"
-    controls
-    loop
-    autoplay
-    src="./BasicAnimatedFunction-1.mp4">
-</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div class="admonition">
+<p class="admonition-title">Example Placeholder</p>
+<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">BasicAnimatedFunction</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 
 <span class="c1"># Define a function mapping a scalar parameter t to a point on the circle.</span>
@@ -572,8 +566,8 @@ square.location = path_func(0) # Move to starting point.
 move_along_path(square, 2*PI)
 
 render_to_file()
-
-</pre></div><p>The <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a> decorator specifies that a function should be animated. This decorator accepts a parameter
+</pre></div>
+<p>The <a class="reference internal" href="../reference/algan.animation.animatable.html#algan.animation.animatable.animated_function" title="algan.animation.animatable.animated_function"><code class="xref py py-func docutils literal notranslate"><span class="pre">animated_function()</span></code></a> decorator specifies that a function should be animated. This decorator accepts a parameter
 <code class="docutils literal notranslate"><span class="pre">animated_args</span></code>, which must be a dictionary mapping the names of animated arguments to their initial values when the animation
 begins. Like with attribute modification, the animation will take place over a 1 second period. The animation is created by linearly interpolating the <code class="docutils literal notranslate"><span class="pre">animated_args</span></code> from their initial values given in the dict,
 to the value the function is called with. In this example, we specify that parameter <code class="docutils literal notranslate"><span class="pre">t</span></code> has an initial value
@@ -592,14 +586,10 @@ marked as <code class="docutils literal notranslate"><span class="pre">animated_
 <h2>Mob Methods<a class="headerlink" href="#mob-methods" title="Link to this heading">¶</a></h2>
 <p>Finally, the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> class comes with a bunch of animated functions built in as methods, which should serve
 most of your common needs. Here are some examples:</p>
-<div id="basicmobmethods" class="admonition admonition-manim-example">
-<p class="admonition-title">Example: BasicMobMethods <a class="headerlink" href="#basicmobmethods">¶</a></p><video
-    class="manim-video"
-    controls
-    loop
-    autoplay
-    src="./BasicMobMethods-1.mp4">
-</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div class="admonition">
+<p class="admonition-title">Example Placeholder</p>
+<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">BasicMobMethods</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">mob</span> <span class="o">=</span> <span class="n">RegularPolygon</span><span class="p">(</span><span class="mi">5</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="n">mob</span><span class="o">.</span><span class="n">move</span><span class="p">(</span><span class="n">RIGHT</span><span class="p">)</span>
@@ -622,8 +612,8 @@ mob.rotate_around_point(ORIGIN, 180, OUT)
 mob = mob.become(Circle())
 
 render_to_file()
-
-</pre></div><p>Here’s a brief explanation of the methods shown in the example:</p>
+</pre></div>
+<p>Here’s a brief explanation of the methods shown in the example:</p>
 <ul class="simple">
 <li><p><a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.move" title="algan.mobs.mob.Mob.move"><code class="xref py py-meth docutils literal notranslate"><span class="pre">Mob.move()</span></code></a>: This method is used to translate (move) the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> by a specified vector. For example,
 <cite>mob.move(RIGHT)</cite> moves the object to the right one unit.</p></li>

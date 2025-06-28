@@ -1,4 +1,4 @@
-Scene
+﻿Scene
 =====
 
 Qualified name: ``algan.scene.Scene``
@@ -33,6 +33,7 @@ Qualified name: ``algan.scene.Scene``
       ~Scene.get_num_batches
       ~Scene.increment_current_time
       ~Scene.initialize_frames
+      ~Scene.instance
       ~Scene.length_to_num_pixels
       ~Scene.num_pixels_to_length
       ~Scene.render_to_video

@@ -276,12 +276,13 @@
 <li class="toctree-l3"><a class="reference internal" href="shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3 current current-page"><a class="current reference internal" href="#">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="extending_algan.html">Extending Algan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="transparent_backgrounds.html">Transparent Backgrounds</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">Using PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -301,6 +302,7 @@
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>
@@ -495,14 +497,10 @@ Instead, it is much simpler to specify for each Mob when its animation should st
 </div>
 <p>We now have a list of the times at which each mob should start playing
 its animation. And we can use out of order animation to implement the animations.</p>
-<div id="aoowave1" class="admonition admonition-manim-example">
-<p class="admonition-title">Example: AOOWave1 <a class="headerlink" href="#aoowave1">¶</a></p><video
-    class="manim-video"
-    controls
-    loop
-    autoplay
-    src="./AOOWave1-1.mp4">
-</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div class="admonition">
+<p class="admonition-title">Example Placeholder</p>
+<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">AOOWave1</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">n</span> <span class="o">=</span> <span class="mi">10</span>
 <span class="n">mobs</span> <span class="o">=</span> <span class="n">Group</span><span class="p">([</span><span class="n">Square</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="n">BLUE</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n</span><span class="o">*</span><span class="n">n</span><span class="p">)])</span><span class="o">.</span><span class="n">arrange_in_grid</span><span class="p">(</span><span class="n">n</span><span class="p">)</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
@@ -569,8 +567,8 @@ with Seq() as context:
     context.current_time = context.end_time
 
 render_to_file()
-
-</pre></div></section>
+</pre></div>
+</section>
 </section>
 
         </article>

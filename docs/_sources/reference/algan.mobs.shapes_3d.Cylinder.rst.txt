@@ -1,4 +1,4 @@
-Cylinder
+﻿Cylinder
 ========
 
 Qualified name: ``algan.mobs.shapes\_3d.Cylinder``
@@ -29,7 +29,11 @@ Qualified name: ``algan.mobs.shapes\_3d.Cylinder``
      
      ~Cylinder.animation_manager
      ~Cylinder.basis
+     ~Cylinder.color
+     ~Cylinder.glow
      ~Cylinder.location
+     ~Cylinder.max_opacity
      ~Cylinder.normalized_basis
+     ~Cylinder.opacity
      ~Cylinder.scale_coefficient
    

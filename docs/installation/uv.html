@@ -276,12 +276,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/transparent_backgrounds.html">Transparent Backgrounds</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">Using PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -301,6 +302,7 @@
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>
@@ -621,31 +623,24 @@ For example, PyTorch shows me the command</p>
 <p>If no error message is shown, then installation was successful and you can move on
 to installing Algan.</p>
 </section>
-<section id="step-4-optional-installing-manim">
-<h3>Step 4 (optional): Installing Manim<a class="headerlink" href="#step-4-optional-installing-manim" title="Link to this heading">¶</a></h3>
-<p>Algan is a work in progress, and currently our selection of built-in objects is
-relatively limited. To make up for this, we provide functionality to import
-objects created in Manim into Algan, allowing you to make use of Manim’s much
-more extensive library of built in objects. In order to import Manim objects,
-you need to install Manim. If Algan’s built-in <a class="reference internal" href="../reference.html"><span class="doc std std-doc">library</span></a> is enough for needs,
-you can skip this step.</p>
-<p>Otherwise, follow the below instructions for your
-operating system.</p>
+<section id="step-4-installing-algan">
+<h3>Step 4: Installing Algan<a class="headerlink" href="#step-4-installing-algan" title="Link to this heading">¶</a></h3>
+<p>Follow the instructions for your operating system below:</p>
 <div class="sd-tab-set docutils">
 <input checked="checked" id="sd-tab-item-5" name="sd-tab-set-2" type="radio">
 <label class="sd-tab-label" for="sd-tab-item-5">
 Windows</label><div class="sd-tab-content docutils">
 <p>Run this command</p>
-<div class="highlight-powershell notranslate"><div class="highlight"><pre><span></span><span class="n">uv</span> <span class="n">add</span> <span class="n">manim</span>
+<div class="highlight-powershell notranslate"><div class="highlight"><pre><span></span><span class="n">uv</span> <span class="n">pip</span> <span class="n">install</span> <span class="p">-</span><span class="n">-extra-index-url</span> <span class="n">https</span><span class="p">://</span><span class="n">test</span><span class="p">.</span><span class="n">pypi</span><span class="p">.</span><span class="n">org</span><span class="p">/</span><span class="n">simple</span><span class="p">/</span> <span class="n">algan</span> <span class="p">-</span><span class="n">-index-strategy</span> <span class="n">unsafe-best</span><span class="o">-match</span>
 </pre></div>
 </div>
 </div>
 <input id="sd-tab-item-6" name="sd-tab-set-2" type="radio">
 <label class="sd-tab-label" for="sd-tab-item-6">
 MacOS</label><div class="sd-tab-content docutils">
-<p>Before we can install Manim, we need to make sure that the system utilities
+<p>Before we can install Algan, we need to make sure that the system utilities
 <code class="docutils literal notranslate"><span class="pre">cairo</span></code> and <code class="docutils literal notranslate"><span class="pre">pkg-config</span></code> are present. They are needed for the <a class="reference external" href="https://pycairo.readthedocs.io/en/latest/"><code class="docutils literal notranslate"><span class="pre">pycairo</span></code> Python
-package</a>, a dependency of Manim.</p>
+package</a>, a dependency of Algan.</p>
 <p>The easiest way of installing these utilities is by using <a class="reference external" href="https://brew.sh/">Homebrew</a>,
 a fairly popular 3rd party package manager for MacOS. Check whether Homebrew is
 already installed by running</p>
@@ -664,8 +659,8 @@ modify your <code class="docutils literal notranslate"><span class="pre">.zprofi
 </pre></div>
 </div>
 <p>With all of this preparation out of the way, now it is time to actually install
-Manim itself!</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>add<span class="w"> </span>manim
+Algan itself!</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--extra-index-url<span class="w"> </span>https://test.pypi.org/simple/<span class="w"> </span>algan<span class="w"> </span>--index-strategy<span class="w"> </span>unsafe-best-match
 </pre></div>
 </div>
 </div>
@@ -709,20 +704,12 @@ Arch Linux / pacman</label><div class="sd-tab-content docutils">
 </div>
 </div>
 <p>As soon as the required dependencies are installed, you can run</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>add<span class="w"> </span>manim
-</pre></div>
-</div>
-</div>
-</div>
-</section>
-<section id="step-5-installing-algan">
-<h3>Step 5: Installing Algan<a class="headerlink" href="#step-5-installing-algan" title="Link to this heading">¶</a></h3>
-<p>Once PyTorch has successfully been installed,
-you can proceed to install Algan by entering the following command in your terminal/powershell:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>--extra-index-url<span class="w"> </span>https://test.pypi.org/simple/<span class="w"> </span>algan<span class="w"> </span>--index-strategy<span class="w"> </span>unsafe-best-match
 </pre></div>
 </div>
-<p>If it completes with no errors, then you are ready to Alganimate!</p>
+</div>
+</div>
+<p>If you completed the installation instructions with no errors, then you are ready to Alganimate!</p>
 <p>At this point, you can also open your project folder with the
 IDE of your choice. All modern Python IDEs (for example VS Code
 with the Python extension, or PyCharm) should automatically detect
@@ -797,8 +784,7 @@ correctly and autocompletion is available.</p>
 <li><a class="reference internal" href="#step-1-installing-python">Step 1: Installing Python</a></li>
 <li><a class="reference internal" href="#step-2-optional-installing-latex">Step 2 (optional): Installing LaTeX</a></li>
 <li><a class="reference internal" href="#step-3-installing-pytorch">Step 3: Installing PyTorch</a></li>
-<li><a class="reference internal" href="#step-4-optional-installing-manim">Step 4 (optional): Installing Manim</a></li>
-<li><a class="reference internal" href="#step-5-installing-algan">Step 5: Installing Algan</a></li>
+<li><a class="reference internal" href="#step-4-installing-algan">Step 4: Installing Algan</a></li>
 </ul>
 </li>
 </ul>

@@ -276,12 +276,13 @@
 <li class="toctree-l3"><a class="reference internal" href="advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="advanced_user_tutorials/transparent_backgrounds.html">Transparent Backgrounds</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="making_algan_faster/use_pytorch_compile.html">Using PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -301,6 +302,7 @@
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>
@@ -517,6 +519,8 @@ splines=ortho;
   &quot;Circle&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Circle.html#algan.mobs.shapes_2d.Circle&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A circle.&quot;,width=0.05];
   &quot;BezierCircuitCubic&quot; -&gt; &quot;Circle&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;Mob&quot; [URL=&quot;reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Base class for all objects that have a location and orientation in 3-D space.&quot;,width=0.05];
+  &quot;OldTex&quot; [URL=&quot;reference/algan.mobs.text.OldTex.html#algan.mobs.text.OldTex&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Mob for displaying tex.&quot;,width=0.05];
+  &quot;Mob&quot; -&gt; &quot;OldTex&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;Polygon&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Polygon.html#algan.mobs.shapes_2d.Polygon&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A 2-D planar polygon with N vertices.&quot;,width=0.05];
   &quot;BezierCircuitCubic&quot; -&gt; &quot;Polygon&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;Quad&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Quad.html#algan.mobs.shapes_2d.Quad&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
@@ -531,7 +535,7 @@ splines=ortho;
   &quot;Mob&quot; -&gt; &quot;Renderable&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;Square&quot; [URL=&quot;reference/algan.mobs.shapes_2d.Square.html#algan.mobs.shapes_2d.Square&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;A square.&quot;,width=0.05];
   &quot;Rectangle&quot; -&gt; &quot;Square&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
-  &quot;Tex&quot; [URL=&quot;reference/algan.mobs.text.Tex.html#algan.mobs.text.Tex&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Mob for displaying tex.&quot;,width=0.05];
+  &quot;Tex&quot; [URL=&quot;reference/algan.mobs.text.Tex.html#algan.mobs.text.Tex&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,width=0.05];
   &quot;Mob&quot; -&gt; &quot;Tex&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
   &quot;Text&quot; [URL=&quot;reference/algan.mobs.text.Text.html#algan.mobs.text.Text&quot;,fillcolor=white,fontname=&quot;Vera Sans, DejaVu Sans, Liberation Sans, Arial, Helvetica, sans&quot;,fontsize=10,height=0.05,margin=0.05,penwidth=0,shape=box,style=&quot;setlinewidth(0.5),filled&quot;,target=&quot;_top&quot;,tooltip=&quot;Mob for displaying LaTeX.&quot;,width=0.05];
   &quot;Tex&quot; -&gt; &quot;Text&quot; [arrowsize=0.5,penwidth=1,style=&quot;setlinewidth(0.5)&quot;];
@@ -572,6 +576,7 @@ splines=ortho;
 </ul>
 </li>
 <li class="toctree-l2"><a class="reference internal" href="reference/algan.mobs.text.html">text</a><ul>
+<li class="toctree-l3"><a class="reference internal" href="reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l3"><a class="reference internal" href="reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>

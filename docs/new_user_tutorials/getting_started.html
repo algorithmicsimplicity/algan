@@ -276,12 +276,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../advanced_user_tutorials/transparent_backgrounds.html">Transparent Backgrounds</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">Using PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -301,6 +302,7 @@
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>
@@ -473,14 +475,10 @@ instructions displayed when running <code class="docutils literal notranslate"><
 <p>Let’s make a very simple animation. Create a new file named <code class="docutils literal notranslate"><span class="pre">my_first_algan.py</span></code>,
 copy the code provided below into it, and then run it from your terminal
 using <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">run</span> <span class="pre">python</span> <span class="pre">my_first_algan.py</span></code>.</p>
-<div id="gettingstartedhelloworld" class="admonition admonition-manim-example">
-<p class="admonition-title">Example: GettingStartedHelloWorld <a class="headerlink" href="#gettingstartedhelloworld">¶</a></p><video
-    class="manim-video"
-    controls
-    loop
-    autoplay
-    src="./GettingStartedHelloWorld-1.mp4">
-</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div class="admonition">
+<p class="admonition-title">Example Placeholder</p>
+<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">GettingStartedHelloWorld</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">my_first_mob</span> <span class="o">=</span> <span class="n">Text</span><span class="p">(</span><span class="s1">&#39;Hello World!&#39;</span><span class="p">,</span> <span class="n">font_size</span><span class="o">=</span><span class="mi">100</span><span class="p">)</span>
 <span class="n">my_first_mob</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
@@ -495,8 +493,8 @@ my_first_mob = Text('Hello World!', font_size=100)
 my_first_mob.spawn()
 
 render_to_file()
-
-</pre></div><p>If the execution is successful, you should find a new video file named <cite>algan_render_output.mp4</cite> in the same directory as your Python script. Open this video file, and you will see your first Algan animation playing: “Hello World!” appearing on screen.</p>
+</pre></div>
+<p>If the execution is successful, you should find a new video file named <cite>algan_render_output.mp4</cite> in the same directory as your Python script. Open this video file, and you will see your first Algan animation playing: “Hello World!” appearing on screen.</p>
 <section id="explanation">
 <h3>Explanation<a class="headerlink" href="#explanation" title="Link to this heading">¶</a></h3>
 <p>Let’s break down this minimal program line-by-line to see what’s going on:</p>

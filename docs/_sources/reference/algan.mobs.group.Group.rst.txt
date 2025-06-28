@@ -1,4 +1,4 @@
-Group
+﻿Group
 =====
 
 Qualified name: ``algan.mobs.group.Group``
@@ -32,7 +32,11 @@ Qualified name: ``algan.mobs.group.Group``
      
      ~Group.animation_manager
      ~Group.basis
+     ~Group.color
+     ~Group.glow
      ~Group.location
+     ~Group.max_opacity
      ~Group.normalized_basis
+     ~Group.opacity
      ~Group.scale_coefficient
    

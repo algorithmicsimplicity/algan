@@ -25,7 +25,11 @@ Qualified name: ``algan.mobs.text.Text``
      
      ~Text.animation_manager
      ~Text.basis
+     ~Text.color
+     ~Text.glow
      ~Text.location
+     ~Text.max_opacity
      ~Text.normalized_basis
+     ~Text.opacity
      ~Text.scale_coefficient
    

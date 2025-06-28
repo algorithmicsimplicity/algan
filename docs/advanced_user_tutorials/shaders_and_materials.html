@@ -276,12 +276,13 @@
 <li class="toctree-l3 current current-page"><a class="current reference internal" href="#">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="extending_algan.html">Extending Algan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="transparent_backgrounds.html">Transparent Backgrounds</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../making_algan_faster/use_pytorch_compile.html">Using PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -301,6 +302,7 @@
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>
@@ -479,21 +481,17 @@ of metal vs non-metal and smooth vs rough texture to compute diffuse
 and specular lighting effects.</p>
 <p>You can make a mob use this shader with the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.set_shader" title="algan.mobs.mob.Mob.set_shader"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_shader()</span></code></a> method.
 Let’s look at an example.</p>
-<div id="setshader" class="admonition admonition-manim-example">
-<p class="admonition-title">Example: SetShader <a class="headerlink" href="#setshader">¶</a></p><video
-    class="manim-video"
-    controls
-    loop
-    autoplay
-    src="./SetShader-1.mp4">
-</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div class="admonition">
+<p class="admonition-title">Example Placeholder</p>
+<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">SetShader</span></code>.</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.rendering.shaders.pbr_shaders</span><span class="w"> </span><span class="kn">import</span> <span class="n">basic_pbr_shader</span>
 
 <span class="k">with</span> <span class="n">Sync</span><span class="p">():</span>
     <span class="n">mob1</span> <span class="o">=</span> <span class="n">Sphere</span><span class="p">()</span><span class="o">.</span><span class="n">move</span><span class="p">(</span><span class="n">LEFT</span><span class="o">*</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
     <span class="n">mob2</span> <span class="o">=</span> <span class="n">Sphere</span><span class="p">()</span><span class="o">.</span><span class="n">move</span><span class="p">(</span><span class="n">RIGHT</span><span class="o">*</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">set_shader</span><span class="p">(</span><span class="n">basic_pbr_shader</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
-<span class="k">with</span> <span class="n">Seq</span><span class="p">(</span><span class="n">run_time</span><span class="o">=</span><span class="mi">5</span><span class="p">):</span>
+<span class="k">with</span> <span class="n">Seq</span><span class="p">(</span><span class="n">run_time_unit</span><span class="o">=</span><span class="mi">5</span><span class="p">):</span>
     <span class="n">mob2</span><span class="o">.</span><span class="n">smoothness</span> <span class="o">=</span> <span class="mi">0</span>
     <span class="n">mob2</span><span class="o">.</span><span class="n">metallicness</span> <span class="o">=</span> <span class="mi">1</span>
     <span class="n">mob2</span><span class="o">.</span><span class="n">smoothness</span> <span class="o">=</span> <span class="mi">1</span>
@@ -510,15 +508,15 @@ with Sync():
     mob1 = Sphere().move(LEFT*2).spawn()
     mob2 = Sphere().move(RIGHT*2).set_shader(basic_pbr_shader).spawn()
 
-with Seq(run_time=5):
+with Seq(run_time_unit=5):
     mob2.smoothness = 0
     mob2.metallicness = 1
     mob2.smoothness = 1
     mob2.metallicness = 0
 
 render_to_file()
-
-</pre></div><div class="admonition important">
+</pre></div>
+<div class="admonition important">
 <p class="admonition-title">Important</p>
 <p>You must use <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.set_shader" title="algan.mobs.mob.Mob.set_shader"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_shader()</span></code></a> before spawning the mob! Once spawned,
 the shader cannot be changed.</p>

@@ -1,4 +1,4 @@
-Polygon
+﻿Polygon
 =======
 
 Qualified name: ``algan.mobs.shapes\_2d.Polygon``
@@ -26,7 +26,11 @@ Qualified name: ``algan.mobs.shapes\_2d.Polygon``
      
      ~Polygon.animation_manager
      ~Polygon.basis
+     ~Polygon.color
+     ~Polygon.glow
      ~Polygon.location
+     ~Polygon.max_opacity
      ~Polygon.normalized_basis
+     ~Polygon.opacity
      ~Polygon.scale_coefficient
    

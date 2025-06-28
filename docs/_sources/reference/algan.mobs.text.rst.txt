@@ -17,6 +17,8 @@
       :toctree: .
       :nosignatures:
       
+        OldTex
+      
         Tex
       
         Text

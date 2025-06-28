@@ -1,4 +1,4 @@
-Square
+﻿Square
 ======
 
 Qualified name: ``algan.mobs.shapes\_2d.Square``
@@ -25,7 +25,11 @@ Qualified name: ``algan.mobs.shapes\_2d.Square``
      
      ~Square.animation_manager
      ~Square.basis
+     ~Square.color
+     ~Square.glow
      ~Square.location
+     ~Square.max_opacity
      ~Square.normalized_basis
+     ~Square.opacity
      ~Square.scale_coefficient
    

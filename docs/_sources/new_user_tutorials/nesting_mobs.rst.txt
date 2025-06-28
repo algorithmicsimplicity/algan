@@ -14,7 +14,8 @@ This is done by adding other mobs as children to one another with :meth:`~.Anima
 
     parent_mob.add_children(children_mobs) # this is the crucial step
 
-    # Now, any change that we make to the parent mob will be propagated to the children mobs (including spawning).
+    # Now, any change that we make to the parent mob will be propagated to the
+    # children mobs (including spawning).
     parent_mob.scale(0.75).spawn()
     parent_mob.rotate(90, OUT)
     parent_mob.move(RIGHT*0.5)

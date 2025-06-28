@@ -1,4 +1,4 @@
-Quad
+﻿Quad
 ====
 
 Qualified name: ``algan.mobs.shapes\_2d.Quad``
@@ -25,7 +25,11 @@ Qualified name: ``algan.mobs.shapes\_2d.Quad``
      
      ~Quad.animation_manager
      ~Quad.basis
+     ~Quad.color
+     ~Quad.glow
      ~Quad.location
+     ~Quad.max_opacity
      ~Quad.normalized_basis
+     ~Quad.opacity
      ~Quad.scale_coefficient
    

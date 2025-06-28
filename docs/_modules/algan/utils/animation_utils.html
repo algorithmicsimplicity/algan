@@ -264,12 +264,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/transparent_backgrounds.html">Transparent Backgrounds</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/use_pytorch_compile.html">Using PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -289,6 +290,7 @@
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>
@@ -479,12 +481,14 @@
     <span class="n">dots</span> <span class="o">=</span> <span class="p">[</span><span class="n">dot_product</span><span class="p">(</span><span class="n">direction</span><span class="p">,</span> <span class="n">mob</span><span class="o">.</span><span class="n">location</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span> <span class="k">for</span> <span class="n">mob</span> <span class="ow">in</span> <span class="n">mobs</span><span class="p">]</span>
     <span class="n">dotsc</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">dots</span><span class="p">,</span> <span class="o">-</span><span class="mi">2</span><span class="p">)</span>
     <span class="n">min_dot</span><span class="p">,</span> <span class="n">max_dot</span> <span class="o">=</span> <span class="n">dotsc</span><span class="o">.</span><span class="n">amin</span><span class="p">(</span><span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span> <span class="n">dotsc</span><span class="o">.</span><span class="n">amax</span><span class="p">(</span><span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-    <span class="n">ts</span> <span class="o">=</span> <span class="p">[(</span><span class="n">_</span> <span class="o">-</span> <span class="n">min_dot</span><span class="p">)</span> <span class="o">/</span> <span class="p">(</span><span class="n">max_dot</span> <span class="o">-</span> <span class="n">min_dot</span><span class="p">)</span><span class="o">.</span><span class="n">clamp_</span><span class="p">(</span><span class="nb">min</span><span class="o">=</span><span class="mf">1e-8</span><span class="p">)</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">dots</span><span class="p">]</span>
-    <span class="c1">#t = t * lag_duration</span>
 
     <span class="n">amc</span> <span class="o">=</span> <span class="n">mobs</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">animation_manager</span><span class="o">.</span><span class="n">context</span>
-    <span class="n">run_time</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">amc</span><span class="o">.</span><span class="n">run_time_unit</span> <span class="o">-</span> <span class="n">lag_duration</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
-    <span class="n">lag_duration</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">lag_duration</span><span class="p">,</span> <span class="n">amc</span><span class="o">.</span><span class="n">run_time_unit</span> <span class="o">-</span> <span class="n">run_time</span><span class="p">)</span>
+    <span class="n">rate_func</span> <span class="o">=</span> <span class="n">amc</span><span class="o">.</span><span class="n">rate_func</span> <span class="k">if</span> <span class="n">amc</span><span class="o">.</span><span class="n">rate_func</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">x</span>
+    <span class="n">ts</span> <span class="o">=</span> <span class="p">[((</span><span class="n">_</span> <span class="o">-</span> <span class="n">min_dot</span><span class="p">)</span> <span class="o">/</span> <span class="p">(</span><span class="n">max_dot</span> <span class="o">-</span> <span class="n">min_dot</span><span class="p">)</span><span class="o">.</span><span class="n">clamp_</span><span class="p">(</span><span class="nb">min</span><span class="o">=</span><span class="mf">1e-8</span><span class="p">))</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">dots</span><span class="p">]</span>
+    <span class="c1">#t = t * lag_duration</span>
+
+    <span class="n">run_time</span> <span class="o">=</span> <span class="n">amc</span><span class="o">.</span><span class="n">run_time_unit</span><span class="c1">#max(amc.run_time_unit - lag_duration, 0)</span>
+    <span class="c1">#lag_duration = min(lag_duration, amc.run_time_unit - run_time)</span>
     <span class="n">start_time</span> <span class="o">=</span> <span class="n">amc</span><span class="o">.</span><span class="n">current_time</span>
     <span class="n">old_max_time</span> <span class="o">=</span> <span class="n">amc</span><span class="o">.</span><span class="n">end_time</span>
     <span class="c1">#amc.max_max_time = max(amc.max_time, start_time + (run_time + lag_duration))</span>

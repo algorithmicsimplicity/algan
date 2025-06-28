@@ -1,4 +1,4 @@
-Surface
+﻿Surface
 =======
 
 Qualified name: ``algan.mobs.surfaces.surface.Surface``
@@ -35,7 +35,11 @@ Qualified name: ``algan.mobs.surfaces.surface.Surface``
      
      ~Surface.animation_manager
      ~Surface.basis
+     ~Surface.color
+     ~Surface.glow
      ~Surface.location
+     ~Surface.max_opacity
      ~Surface.normalized_basis
+     ~Surface.opacity
      ~Surface.scale_coefficient
    

@@ -12,3 +12,4 @@ Tutorials for advanced techniques that you won't need for most use-cases.
    shaders_and_materials
    animating_out_of_order
    extending_algan
+   transparent_backgrounds

@@ -1,4 +1,4 @@
-BezierCurveCubic
+﻿BezierCurveCubic
 ================
 
 Qualified name: ``algan.mobs.bezier\_circuit.BezierCurveCubic``
@@ -25,7 +25,11 @@ Qualified name: ``algan.mobs.bezier\_circuit.BezierCurveCubic``
      
      ~BezierCurveCubic.animation_manager
      ~BezierCurveCubic.basis
+     ~BezierCurveCubic.color
+     ~BezierCurveCubic.glow
      ~BezierCurveCubic.location
+     ~BezierCurveCubic.max_opacity
      ~BezierCurveCubic.normalized_basis
+     ~BezierCurveCubic.opacity
      ~BezierCurveCubic.scale_coefficient
    

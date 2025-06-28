@@ -264,12 +264,13 @@
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/shaders_and_materials.html">Shaders and Materials</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/animating_out_of_order.html">Animating Out of Order</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/extending_algan.html">Extending Algan</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../advanced_user_tutorials/transparent_backgrounds.html">Transparent Backgrounds</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../making_algan_faster/index.html">Making Algan Faster</a><input class="toctree-checkbox" id="toctree-checkbox-7" name="toctree-checkbox-7" role="switch" type="checkbox"/><label for="toctree-checkbox-7"><div class="visually-hidden">Toggle navigation of Making Algan Faster</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/install_pytorch_scatter.html">Installing pytorch_scatter</a></li>
 <li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/change_batch_sizes.html">Changing Batch Sizes</a></li>
-<li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/use_pytorch_compile.html">PyTorch Compile</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../../making_algan_faster/use_pytorch_compile.html">Using PyTorch Compile</a></li>
 </ul>
 </li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="../../../developer_tutorials/index.html">Developer Tutorials</a><input class="toctree-checkbox" id="toctree-checkbox-8" name="toctree-checkbox-8" role="switch" type="checkbox"/><label for="toctree-checkbox-8"><div class="visually-hidden">Toggle navigation of Developer Tutorials</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
@@ -289,6 +290,7 @@
 </ul>
 </li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="../../../reference/algan.mobs.text.html">text</a><input class="toctree-checkbox" id="toctree-checkbox-13" name="toctree-checkbox-13" role="switch" type="checkbox"/><label for="toctree-checkbox-13"><div class="visually-hidden">Toggle navigation of text</div><i class="icon"><svg><use href="#svg-arrow-right"></use></svg></i></label><ul>
+<li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.mobs.text.OldTex.html">OldTex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.mobs.text.Tex.html">Tex</a></li>
 <li class="toctree-l4"><a class="reference internal" href="../../../reference/algan.mobs.text.Text.html">Text</a></li>
 </ul>
@@ -553,6 +555,10 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">num_points_per_object</span> <span class="o">=</span> <span class="mi">1</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">shader</span> <span class="o">=</span> <span class="kc">None</span>
 
+    <span class="k">def</span><span class="w"> </span><span class="nf">get_points_evenly_along_direction</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">direction</span><span class="p">,</span> <span class="n">num_points</span><span class="o">=</span><span class="mi">3</span><span class="p">):</span>
+        <span class="n">e</span><span class="p">,</span> <span class="n">s</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_boundary_edge_point</span><span class="p">(</span><span class="n">direction</span><span class="p">),</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_boundary_edge_point</span><span class="p">(</span><span class="o">-</span><span class="n">direction</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">s</span> <span class="o">*</span> <span class="n">t</span> <span class="o">+</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">t</span><span class="p">)</span> <span class="o">*</span> <span class="n">e</span> <span class="k">for</span> <span class="n">t</span> <span class="ow">in</span> <span class="n">torch</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">num_points</span> <span class="o">+</span> <span class="mi">2</span><span class="p">)[</span><span class="mi">1</span><span class="p">:</span><span class="o">-</span><span class="mi">1</span><span class="p">]]</span>
+
 <div class="viewcode-block" id="Mob.reset_basis">
 <a class="viewcode-back" href="../../../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.reset_basis">[docs]</a>
     <span class="k">def</span><span class="w"> </span><span class="nf">reset_basis</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
@@ -733,7 +739,7 @@
 
 <div class="viewcode-block" id="Mob.pulse_color">
 <a class="viewcode-back" href="../../../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.pulse_color">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">pulse_color</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">color</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">set_opaque</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;Mob&#39;</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">pulse_color</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">color</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">opacity</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;Mob&#39;</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Animates a color pulse effect.</span>
 
 <span class="sd">        The Mob&#39;s color changes to the target `color` and then animates back to its</span>
@@ -752,16 +758,17 @@
 
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">with</span> <span class="n">Sync</span><span class="p">():</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">apply_absolute_change_two</span><span class="p">(</span><span class="s1">&#39;color&#39;</span><span class="p">,</span> <span class="n">color</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">color</span><span class="p">)</span>
-            <span class="k">if</span> <span class="n">set_opaque</span><span class="p">:</span>
-                <span class="bp">self</span><span class="o">.</span><span class="n">apply_absolute_change_two</span><span class="p">(</span><span class="s1">&#39;opacity&#39;</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">color</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">apply_absolute_change_two</span><span class="p">(</span><span class="s1">&#39;color&#39;</span><span class="p">,</span> <span class="n">color</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">color</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">opacity</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">apply_absolute_change_two</span><span class="p">(</span><span class="s1">&#39;opacity&#39;</span><span class="p">,</span> <span class="n">opacity</span><span class="p">,</span> <span class="n">opacity</span><span class="p">)</span>
         <span class="k">return</span> <span class="bp">self</span></div>
 
 
 <div class="viewcode-block" id="Mob.wave_color">
 <a class="viewcode-back" href="../../../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.wave_color">[docs]</a>
-    <span class="k">def</span><span class="w"> </span><span class="nf">wave_color</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">color</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">wave_length</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="n">reverse</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-                   <span class="n">direction</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;Mob&#39;</span><span class="p">:</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">wave_color</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">color</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">wave_length</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mi">2</span><span class="p">,</span> <span class="n">reverse</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+                   <span class="n">direction</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">lag_duration</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="s1">&#39;Mob&#39;</span><span class="p">:</span>
 <span class="w">        </span><span class="sd">&quot;&quot;&quot;Applies a color wave effect across the Mob and its descendants.</span>
 
 <span class="sd">        The color change propagates spatially across the mob&#39;s constituent parts.</span>
@@ -787,12 +794,12 @@
 <span class="sd">        &quot;&quot;&quot;</span>
         <span class="k">if</span> <span class="n">direction</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">direction</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_upwards_direction</span><span class="p">()</span>
-        <span class="k">with</span> <span class="n">AnimationContext</span><span class="p">(</span><span class="n">run_time_unit</span><span class="o">=</span><span class="mi">3</span><span class="p">,</span> <span class="n">rate_func</span><span class="o">=</span><span class="n">identity</span><span class="p">):</span>
+        <span class="k">with</span> <span class="n">AnimationContext</span><span class="p">(</span><span class="n">run_time_unit</span><span class="o">=</span><span class="n">wave_length</span> <span class="o">/</span> <span class="n">lag_duration</span><span class="p">):</span>
             <span class="c1"># Filters for primitive parts to ensure the wave animates on individual rendering elements</span>
             <span class="c1">#TODO change this to use non_recursive set</span>
-            <span class="n">primitive_mobs</span> <span class="o">=</span> <span class="p">[</span><span class="n">_</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_descendants</span><span class="p">()</span> <span class="k">if</span> <span class="n">_</span><span class="o">.</span><span class="n">is_primitive</span><span class="p">]</span>
+            <span class="n">primitive_mobs</span> <span class="o">=</span> <span class="p">[</span><span class="n">_</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_descendants</span><span class="p">()</span> <span class="k">if</span> <span class="p">(</span><span class="n">_</span><span class="o">.</span><span class="n">is_primitive</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">_</span><span class="o">.</span><span class="n">ignore_wave_animations</span><span class="p">)]</span>
             <span class="n">animate_lagged_by_location</span><span class="p">(</span><span class="n">primitive_mobs</span><span class="p">,</span> <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">x</span><span class="o">.</span><span class="n">pulse_color</span><span class="p">(</span><span class="n">color</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">),</span>
-                                       <span class="n">direction</span> <span class="o">*</span> <span class="p">(</span><span class="o">-</span><span class="mi">1</span> <span class="k">if</span> <span class="n">reverse</span> <span class="k">else</span> <span class="mi">1</span><span class="p">),</span> <span class="mf">1.5</span><span class="p">)</span>
+                                       <span class="n">direction</span> <span class="o">*</span> <span class="p">(</span><span class="o">-</span><span class="mi">1</span> <span class="k">if</span> <span class="n">reverse</span> <span class="k">else</span> <span class="mi">1</span><span class="p">),</span> <span class="n">lag_duration</span><span class="o">=</span><span class="n">lag_duration</span><span class="p">)</span>
         <span class="k">return</span> <span class="bp">self</span></div>
 
 
@@ -1157,10 +1164,7 @@
             <span class="n">ds</span> <span class="o">=</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">get_descendants</span><span class="p">(</span><span class="n">include_self</span><span class="o">=</span><span class="kc">False</span><span class="p">))</span>
             <span class="p">[</span><span class="n">d</span><span class="o">.</span><span class="n">set_time_inds_to</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="k">for</span> <span class="n">d</span> <span class="ow">in</span> <span class="n">ds</span><span class="p">]</span>
         <span class="n">old_basis</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">basis</span> <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;basis&#39;</span><span class="p">)</span> <span class="k">else</span> <span class="n">basis</span>
-        <span class="k">try</span><span class="p">:</span>
-            <span class="n">interpolated_basis</span> <span class="o">=</span> <span class="n">old_basis</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">interpolation</span><span class="p">)</span> <span class="o">+</span> <span class="n">interpolation</span> <span class="o">*</span> <span class="n">basis</span>
-        <span class="k">except</span><span class="p">:</span>
-            <span class="n">interpolated_basis</span> <span class="o">=</span> <span class="n">old_basis</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">interpolation</span><span class="p">)</span> <span class="o">+</span> <span class="n">interpolation</span> <span class="o">*</span> <span class="n">basis</span>
+        <span class="n">interpolated_basis</span> <span class="o">=</span> <span class="n">old_basis</span> <span class="o">*</span> <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">interpolation</span><span class="p">)</span> <span class="o">+</span> <span class="n">interpolation</span> <span class="o">*</span> <span class="n">basis</span>
 
         <span class="c1"># Temporarily set recursing flag to control setattr_relative behavior</span>
         <span class="n">original_recursing_state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">recursing</span>
@@ -1381,7 +1385,7 @@
             <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_boundary_points</span><span class="p">()</span>
         <span class="k">elif</span> <span class="n">num_children</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
             <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">children</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">get_boundary_points_recursive</span><span class="p">()</span>
-        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">([</span><span class="n">child</span><span class="o">.</span><span class="n">get_boundary_points_recursive</span><span class="p">()</span> <span class="k">for</span> <span class="n">child</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">children</span><span class="p">],</span> <span class="o">-</span><span class="mi">2</span><span class="p">)</span></div>
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">([</span><span class="n">child</span><span class="o">.</span><span class="n">get_boundary_points_recursive</span><span class="p">()</span> <span class="k">for</span> <span class="n">child</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">children</span> <span class="k">if</span> <span class="ow">not</span> <span class="n">child</span><span class="o">.</span><span class="n">exclude_from_boundary</span><span class="p">],</span> <span class="o">-</span><span class="mi">2</span><span class="p">)</span></div>
 
 
 <div class="viewcode-block" id="Mob.get_boundary_edge_point">
@@ -1423,6 +1427,7 @@
 <span class="sd">            torch.Tensor: The 3-D coordinate of the boundary point.</span>
 
 <span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">direction</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">normalize</span><span class="p">(</span><span class="n">direction</span><span class="p">,</span> <span class="n">p</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
         <span class="n">edge_point</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_boundary_edge_point</span><span class="p">(</span><span class="n">direction</span><span class="p">)</span>
 
         <span class="k">def</span><span class="w"> </span><span class="nf">get_median_location</span><span class="p">(</span><span class="n">tensor_values</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">:</span>
@@ -2809,7 +2814,7 @@
             <span class="c1"># self.location = current_location + torch.randn_like(current_location) * travel_distance</span>
             <span class="c1"># self.rotate(720, F.normalize(torch.randn_like(self.location), p=2, dim=-1))</span>
             <span class="bp">self</span><span class="o">.</span><span class="n">opacity</span> <span class="o">=</span> <span class="mi">0</span>  <span class="c1"># Animate opacity to zero</span>
-            <span class="bp">self</span><span class="o">.</span><span class="n">_destroy_recursive</span><span class="p">(</span><span class="n">animate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>  <span class="c1"># Mark as destroyed without immediate animation</span>
+            <span class="c1">#self._destroy_recursive(animate=False)  # Mark as destroyed without immediate animation</span>
             <span class="c1"># with Synchronized(run_time=2, rate_func=tan):</span>
             <span class="c1"># self.destroy()</span>
         <span class="k">return</span> <span class="bp">self</span></div>
