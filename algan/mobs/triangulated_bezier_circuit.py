@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 import svgelements
 
+import algan.defaults.directory_defaults
 from algan.constants.color import RED, WHITE, GREEN, RED_A
 from algan.constants.spatial import RIGHT, DOWN
 from algan.defaults.device_defaults import DEFAULT_DEVICE
@@ -275,8 +276,6 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
     all_grid_ids = []
     total_num_polygons = 0
     for c in cell_to_paths:
-        if c == 6:
-            print('c')
         pee = list(zip(*(cell_to_paths[c], cell_to_enters[c], cell_to_exits[c])))
         polygons = [[]]
         current_ind = 0
@@ -393,9 +392,6 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
         total_num_polygons += len(polygons)
 
         def shift(_):
-            #return _
-            if True:#0 <= c <= 130:
-                return _ + 0.5
             return _
         ps = [shift(torch.stack(polygon)) for polygon in polygons if len(polygon) >= 3]
         all_polygons.append(ps)
@@ -410,6 +406,9 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
         if (i+len(grid_x)+1) >= grid_interior_mask.shape[0]:
             continue
         ri = riy * (len(grid_x)-1) + rix
+
+        if ri.item() in cell_to_paths:
+            continue
 
         if (sum([grid_interior_mask[j] for j in [i+1, i+len(grid_x), i+len(grid_x)+1]]) > 2.5):
             all_polygons.append([grid4[ri]])
@@ -512,7 +511,7 @@ def params_to_tensor(params):
     return torch.stack(p, 0).unsqueeze(-2).unsqueeze(-2).unsqueeze(-2)
 
 
-num_points_per_curve = 20
+num_points_per_curve = 30
 
 
 def get_points_along_cubic_bezier(params, invert=False):
@@ -629,7 +628,7 @@ class TriangulatedBezierCircuit(Mob):
                 hasher = hashlib.sha256()
                 hasher.update(hash_bytes.encode())
                 hash_bytes = hasher.hexdigest()[:32]
-                file_path = os.path.join(DEFAULT_DIRECTORY, 'algan_cache', f'{hash_bytes}.txt')
+                file_path = os.path.join(algan.defaults.directory_defaults.DEFAULT_DIRECTORY, 'algan_cache', f'{hash_bytes}.txt')
                 if os.path.exists(file_path):
                     tiles, tile_counts = torch.load(file_path, map_location=DEFAULT_DEVICE)
                     tiles = tiles + offset.float()[:2]

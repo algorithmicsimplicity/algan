@@ -8,7 +8,7 @@ and 2) make sure the background color has an alpha value (opacity) less than 1.
 
 Example with fully transparent background:
 
-.. algan:: TransparentBackgroundExample
+.. code-block:: python
 
     from algan import *
 
@@ -18,7 +18,7 @@ Example with fully transparent background:
 
 Example with 50% transparent background:
 
-.. algan:: HalfTransparentBackgroundExample
+.. code-block:: python
 
     from algan import *
 

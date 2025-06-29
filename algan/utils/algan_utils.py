@@ -53,7 +53,7 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
         if file_ext == '':
             file_ext = '.mp4'
         if file_extension is not None:
-            file_ext = file_extension
+            file_ext = f'.{file_extension}'
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         temp_file_path = os.path.join(output_dir, f"{file_name}_temp")

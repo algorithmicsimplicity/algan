@@ -306,6 +306,7 @@ class AlganDirective(Directive):
         try:
             with tempconfig(example_config):
                 video_dir = config.get_dir("video_dir")
+                algan.defaults.directory_defaults.DEFAULT_DIRECTORY = Path(__file__).parent.resolve()
                 algan.defaults.directory_defaults.DEFAULT_OUTPUT_FILENAME = f'{output_file}'
                 algan.defaults.directory_defaults.DEFAULT_OUTPUT_DIRECTORY = video_dir
                 algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_FRAMES = 1
