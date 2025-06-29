@@ -102,3 +102,13 @@ def default_scene_initializer(scene):
 
 SceneManager.set_scene_class(algan.scene.Scene, default_scene_initializer)
 SceneManager.instance()
+
+
+def make_manim_dir():
+    from manim import config
+
+    tex_dir = config.get_dir("tex_dir")
+    if not tex_dir.exists():
+        tex_dir.mkdir(parents=True)
+
+make_manim_dir()
