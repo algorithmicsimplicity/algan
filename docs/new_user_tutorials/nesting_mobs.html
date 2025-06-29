@@ -460,10 +460,14 @@
 <h1>Nesting Mobs<a class="headerlink" href="#nesting-mobs" title="Link to this heading">¶</a></h1>
 <p>So far we have been using simple <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s. To make more complex <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> s we can combine together multiple mobs into one.
 This is done by adding other mobs as children to one another with <a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable.add_children" title="algan.animation.animatable.Animatable.add_children"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_children()</span></code></a> .</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">NMBasic</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="nmbasic" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: NMBasic <a class="headerlink" href="#nmbasic">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./NMBasic-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">parent_mob</span> <span class="o">=</span> <span class="n">Square</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="n">BLUE</span><span class="p">)</span>
 <span class="n">children_mobs</span> <span class="o">=</span> <span class="p">[</span><span class="n">Square</span><span class="p">(</span><span class="n">location</span><span class="o">=</span><span class="n">loc</span><span class="p">)</span> <span class="k">for</span> <span class="n">loc</span> <span class="ow">in</span> <span class="p">[</span><span class="n">LEFT</span><span class="o">*</span><span class="mf">2.5</span><span class="p">,</span> <span class="n">UP</span><span class="o">*</span><span class="mf">2.5</span><span class="p">,</span> <span class="n">RIGHT</span><span class="o">*</span><span class="mf">2.5</span><span class="p">,</span> <span class="n">DOWN</span><span class="o">*</span><span class="mf">2.5</span><span class="p">]]</span>
@@ -510,8 +514,8 @@ with Sync(run_time=5):
     children_mobs[0].rotate(180, UP)
 
 render_to_file()
-</pre></div>
-<p>Once mobs are added as a child to another, any changes applied to the parent will be propagated
+
+</pre></div><p>Once mobs are added as a child to another, any changes applied to the parent will be propagated
 to the child mobs. The way that the change is propagated depends on the attribute changed.
 When a parent’s location is changed, the child mob’s location is moved by the same amount.
 When a parent’s basis is rotated, the child’s basis is rotated by the same amount and the child’s
@@ -530,10 +534,14 @@ You can also get a list of all descendent mobs (children, and grand-children, an
 <p>Mobs can also be grouped together into one <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob" title="algan.mobs.mob.Mob"><code class="xref py py-class docutils literal notranslate"><span class="pre">Mob</span></code></a> using <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group" title="algan.mobs.group.Group"><code class="xref py py-class docutils literal notranslate"><span class="pre">Group</span></code></a> . The <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group" title="algan.mobs.group.Group"><code class="xref py py-class docutils literal notranslate"><span class="pre">Group</span></code></a>
 class provides the <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group.arrange_in_line" title="algan.mobs.group.Group.arrange_in_line"><code class="xref py py-meth docutils literal notranslate"><span class="pre">arrange_in_line()</span></code></a> and <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group.arrange_in_grid" title="algan.mobs.group.Group.arrange_in_grid"><code class="xref py py-meth docutils literal notranslate"><span class="pre">arrange_in_grid()</span></code></a> methods
 which are useful for arranging Mobs.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">NMGroup</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="nmgroup" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: NMGroup <a class="headerlink" href="#nmgroup">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./NMGroup-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">mobs</span> <span class="o">=</span> <span class="p">[</span><span class="n">Square</span><span class="p">()</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">9</span><span class="p">)]</span>
 <span class="n">group</span> <span class="o">=</span> <span class="n">Group</span><span class="p">(</span><span class="n">mobs</span><span class="p">)</span>
@@ -562,8 +570,8 @@ with Sync():
 group.wait()
 
 render_to_file()
-</pre></div>
-<div class="admonition note">
+
+</pre></div><div class="admonition note">
 <p class="admonition-title">Note</p>
 <p>Internally, the way that <a class="reference internal" href="../reference/algan.mobs.group.Group.html#algan.mobs.group.Group" title="algan.mobs.group.Group"><code class="xref py py-class docutils literal notranslate"><span class="pre">Group</span></code></a> works is by creating a new empty mob
 at the center of the provided mobs, then adding all of the provided mobs as children to it.</p>

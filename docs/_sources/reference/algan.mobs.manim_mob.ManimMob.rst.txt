@@ -1,4 +1,4 @@
-﻿ManimMob
+ManimMob
 ========
 
 Qualified name: ``algan.mobs.manim\_mob.ManimMob``

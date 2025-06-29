@@ -472,10 +472,14 @@ which means you can animate them just as you would any other <a class="reference
 add more light sources using <code class="xref py py-meth docutils literal notranslate"><span class="pre">SCene.add_light_sources()</span></code> .</p>
 <section id="example-animating-lights-and-camera">
 <h2>Example: Animating Lights and Camera<a class="headerlink" href="#example-animating-lights-and-camera" title="Link to this heading">¶</a></h2>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">LightsAndCameraExample</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="lightsandcameraexample" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: LightsAndCameraExample <a class="headerlink" href="#lightsandcameraexample">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./LightsAndCameraExample-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">c1</span> <span class="o">=</span> <span class="n">GREEN</span>
 <span class="n">c2</span> <span class="o">=</span> <span class="n">RED</span>
@@ -540,8 +544,8 @@ Scene.add_light_source(PointLight(location=ORIGIN + DOWN*10 + OUT * 20,
 mobs.wait(r)
 
 render_to_file()
-</pre></div>
-</section>
+
+</pre></div></section>
 </section>
 
         </article>

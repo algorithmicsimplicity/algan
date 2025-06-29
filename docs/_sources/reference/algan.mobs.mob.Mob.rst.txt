@@ -1,4 +1,4 @@
-﻿Mob
+Mob
 ===
 
 Qualified name: ``algan.mobs.mob.Mob``

@@ -1,4 +1,4 @@
-﻿Camera
+Camera
 ======
 
 Qualified name: ``algan.rendering.camera.Camera``

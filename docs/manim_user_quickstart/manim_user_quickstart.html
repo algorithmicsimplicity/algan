@@ -470,10 +470,14 @@ orientation, color using the “set” method, or with specialized methods such 
 </section>
 <section id="basic-mobs">
 <h2>Basic Mobs<a class="headerlink" href="#basic-mobs" title="Link to this heading">¶</a></h2>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">MQSBasicMobs</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="mqsbasicmobs" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: MQSBasicMobs <a class="headerlink" href="#mqsbasicmobs">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./MQSBasicMobs-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">circle</span> <span class="o">=</span> <span class="n">Circle</span><span class="p">()</span>
 <span class="n">circle</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="n">BLUE</span><span class="p">,</span> <span class="n">opacity</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">border_color</span><span class="o">=</span><span class="n">BLUE_E</span><span class="p">,</span>  <span class="n">border_width</span><span class="o">=</span><span class="mi">4</span><span class="p">)</span>
@@ -490,7 +494,7 @@ orientation, color using the “set” method, or with specialized methods such 
 <span class="n">square</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
 <span class="n">square</span><span class="o">.</span><span class="n">move_to</span><span class="p">(</span><span class="n">LEFT</span><span class="o">+</span><span class="n">UP</span><span class="o">*</span><span class="mi">2</span><span class="p">)</span>
 
-<span class="c1">#text = Text(&quot;I am a Text Mob.&quot;).spawn()</span>
+<span class="n">text</span> <span class="o">=</span> <span class="n">Text</span><span class="p">(</span><span class="s2">&quot;I am a Text Mob.&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
 <span class="n">render_to_file</span><span class="p">()</span>
 </pre></div>
@@ -513,11 +517,11 @@ square.move(0.3 * RIGHT)
 square.scale(0.5)
 square.move_to(LEFT+UP*2)
 
-#text = Text("I am a Text Mob.").spawn()
+text = Text("I am a Text Mob.").spawn()
 
 render_to_file()
-</pre></div>
-</section>
+
+</pre></div></section>
 <section id="animation-contexts">
 <h2>Animation Contexts<a class="headerlink" href="#animation-contexts" title="Link to this heading">¶</a></h2>
 <p>In Manim, it is necessary to specify when changes should be animated by using the self.play function
@@ -527,10 +531,14 @@ Once it has been spawned, it will begin to appear on screen, and from then on an
 will be animated over a 1 second period. Changes are animated in sequence, in the order that changes are made in code.
 In order to override this default behaviour you can make use of AnimationContexts.
 AnimationContexts control how all changes made within its contexts should be animated.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">MQSAnimationContexts</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="mqsanimationcontexts" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: MQSAnimationContexts <a class="headerlink" href="#mqsanimationcontexts">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./MQSAnimationContexts-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">square</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="n">circle</span> <span class="o">=</span> <span class="n">Circle</span><span class="p">()</span><span class="o">.</span><span class="n">move</span><span class="p">(</span><span class="n">OUT</span><span class="o">*</span><span class="mf">0.01</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span> <span class="c1"># Slight offset towards IN so they don&#39;t intersect</span>
@@ -627,17 +635,21 @@ with Off():
 square.wait(1) # wait one second without any changes.
 
 render_to_file()
-</pre></div>
-</section>
+
+</pre></div></section>
 <section id="nested-animation-contexts">
 <h2>Nested Animation Contexts<a class="headerlink" href="#nested-animation-contexts" title="Link to this heading">¶</a></h2>
 <p>The real power of AnimationContexts is that they can be nested seamlessly. This makes orchestrating
 complex animations involving many Mobs straightforward. When nesting contexts, each sub-context
 is treated as a single animation for rules of the parent context.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">MQSNestedAnimationContexts</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="mqsnestedanimationcontexts" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: MQSNestedAnimationContexts <a class="headerlink" href="#mqsnestedanimationcontexts">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./MQSNestedAnimationContexts-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">square</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="n">circle</span> <span class="o">=</span> <span class="n">Circle</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
@@ -716,8 +728,8 @@ with Sync():
             circle.rotate(-180, UP)
 
 render_to_file()
-</pre></div>
-</section>
+
+</pre></div></section>
 </section>
 
         </article>

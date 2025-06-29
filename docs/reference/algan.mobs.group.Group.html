@@ -483,10 +483,14 @@ given mob collection and adds the mobs as children.</p>
 </dl>
 <p class="rubric">Examples</p>
 <p>Arrange 3 mobs horizontally in a line, left to right.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">Example1Group</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">group</span> <span class="o">=</span> <span class="n">Group</span><span class="p">([</span><span class="n">Square</span><span class="p">()</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)])</span><span class="o">.</span><span class="n">arrange_in_line</span><span class="p">(</span><span class="n">RIGHT</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
+<div id="example1group" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: Example1Group <a class="headerlink" href="#example1group">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./Example1Group-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">group</span> <span class="o">=</span> <span class="n">Group</span><span class="p">([</span><span class="n">Square</span><span class="p">()</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">3</span><span class="p">)])</span><span class="o">.</span><span class="n">arrange_in_line</span><span class="p">(</span><span class="n">RIGHT</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="n">group</span><span class="o">.</span><span class="n">rotate</span><span class="p">(</span><span class="mi">90</span><span class="p">,</span> <span class="n">OUT</span><span class="p">)</span>
 
 <span class="n">render_to_file</span><span class="p">()</span>
@@ -497,8 +501,8 @@ group = Group([Square() for _ in range(3)]).arrange_in_line(RIGHT).spawn()
 group.rotate(90, OUT)
 
 render_to_file()
-</pre></div>
-<p class="rubric">Methods</p>
+
+</pre></div><p class="rubric">Methods</p>
 <div class="table-wrapper autosummary longtable docutils container">
 <table class="autosummary longtable docutils align-default">
 <tbody>
@@ -586,10 +590,14 @@ it is set to <cite>buffer</cite>.</p></li>
 </dl>
 <p class="rubric">Examples</p>
 <p>Arrange mobs in a 3x3 grid slanted at a 45 degrees angle.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">Example1ArrangeInGrid</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">group</span> <span class="o">=</span> <span class="n">Group</span><span class="p">([</span><span class="n">Square</span><span class="p">()</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">9</span><span class="p">)])</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mi">1</span><span class="o">/</span><span class="mi">3</span><span class="p">)</span><span class="o">.</span><span class="n">arrange_in_grid</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">RIGHT</span><span class="o">+</span><span class="n">UP</span><span class="p">,</span> <span class="n">RIGHT</span><span class="o">+</span><span class="n">DOWN</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
+<div id="example1arrangeingrid" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: Example1ArrangeInGrid <a class="headerlink" href="#example1arrangeingrid">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./Example1ArrangeInGrid-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">group</span> <span class="o">=</span> <span class="n">Group</span><span class="p">([</span><span class="n">Square</span><span class="p">()</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">9</span><span class="p">)])</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mi">1</span><span class="o">/</span><span class="mi">3</span><span class="p">)</span><span class="o">.</span><span class="n">arrange_in_grid</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">RIGHT</span><span class="o">+</span><span class="n">UP</span><span class="p">,</span> <span class="n">RIGHT</span><span class="o">+</span><span class="n">DOWN</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="n">group</span><span class="o">.</span><span class="n">rotate</span><span class="p">(</span><span class="mi">90</span><span class="p">,</span> <span class="n">OUT</span><span class="p">)</span>
 
 <span class="n">render_to_file</span><span class="p">()</span>
@@ -600,8 +608,8 @@ group = Group([Square() for _ in range(9)]).scale(1/3).arrange_in_grid(3, RIGHT+
 group.rotate(90, OUT)
 
 render_to_file()
-</pre></div>
-</dd></dl>
+
+</pre></div></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="algan.mobs.group.Group.arrange_in_line">

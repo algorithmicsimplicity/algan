@@ -1,4 +1,4 @@
-﻿BezierCircuitCubic
+BezierCircuitCubic
 ==================
 
 Qualified name: ``algan.mobs.bezier\_circuit.BezierCircuitCubic``

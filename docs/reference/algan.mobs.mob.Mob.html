@@ -489,10 +489,14 @@ by <code class="xref py py-meth docutils literal notranslate"><span class="pre">
 </dl>
 <p class="rubric">Examples</p>
 <p>Create a square and move it to the left:</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">Example1Mob</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="example1mob" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: Example1Mob <a class="headerlink" href="#example1mob">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./Example1Mob-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">square</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="n">square</span><span class="o">.</span><span class="n">move</span><span class="p">(</span><span class="n">LEFT</span><span class="p">)</span>
@@ -507,12 +511,16 @@ square = Square().spawn()
 square.move(LEFT)
 
 render_to_file()
-</pre></div>
-<p>Create a mob with a specific color and scale:</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">Example2Mob</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+
+</pre></div><p>Create a mob with a specific color and scale:</p>
+<div id="example2mob" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: Example2Mob <a class="headerlink" href="#example2mob">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./Example2Mob-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">circle</span> <span class="o">=</span> <span class="n">Circle</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="n">BLUE</span><span class="p">)</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
@@ -525,8 +533,8 @@ from algan import *
 circle = Circle(color=BLUE).scale(2).spawn()
 
 render_to_file()
-</pre></div>
-<p class="rubric">Methods</p>
+
+</pre></div><p class="rubric">Methods</p>
 <div class="table-wrapper autosummary longtable docutils container">
 <table class="autosummary longtable docutils align-default">
 <tbody>
@@ -1927,10 +1935,14 @@ be animated and propagated to children unless <cite>recursing</cite> is set to F
 </dl>
 <p class="rubric">Examples</p>
 <p>Move a square to the right and change its color to blue:</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">Example1MobSet</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="example1mobset" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: Example1MobSet <a class="headerlink" href="#example1mobset">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./Example1MobSet-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">mob</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="n">mob</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="n">location</span><span class="o">=</span><span class="n">RIGHT</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="n">BLUE</span><span class="p">)</span>
@@ -1945,8 +1957,8 @@ mob = Square().spawn()
 mob.set(location=RIGHT, color=BLUE)
 
 render_to_file()
-</pre></div>
-</dd></dl>
+
+</pre></div></dd></dl>
 
 <dl class="py method">
 <dt class="sig sig-object py" id="algan.mobs.mob.Mob.set_basis_inner">

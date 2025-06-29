@@ -1,4 +1,4 @@
-﻿Surface
+Surface
 =======
 
 Qualified name: ``algan.mobs.surfaces.surface.Surface``

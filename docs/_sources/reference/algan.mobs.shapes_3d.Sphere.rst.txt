@@ -1,4 +1,4 @@
-﻿Sphere
+Sphere
 ======
 
 Qualified name: ``algan.mobs.shapes\_3d.Sphere``

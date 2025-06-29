@@ -1,4 +1,4 @@
-﻿Cylinder
+Cylinder
 ========
 
 Qualified name: ``algan.mobs.shapes\_3d.Cylinder``

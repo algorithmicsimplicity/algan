@@ -463,10 +463,14 @@
 <h2>Animation Contexts<a class="headerlink" href="#animation-contexts" title="Link to this heading">¶</a></h2>
 <p>In Algan, you can control how animations should be played by placing them within an appropriate context.
 Let’s dive in with an example.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">CombiningSync</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="combiningsync" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: CombiningSync <a class="headerlink" href="#combiningsync">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./CombiningSync-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">mob</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="k">with</span> <span class="n">Sync</span><span class="p">():</span>
@@ -485,15 +489,19 @@ with Sync():
     mob.rotate(90, OUT)
 
 render_to_file()
-</pre></div>
-<p>Here we use the <a class="reference internal" href="../reference/algan.animation.animation_contexts.Sync.html#algan.animation.animation_contexts.Sync" title="algan.animation.animation_contexts.Sync"><code class="xref py py-class docutils literal notranslate"><span class="pre">Sync</span></code></a> context (read as “with animations synchronized”) to specify
+
+</pre></div><p>Here we use the <a class="reference internal" href="../reference/algan.animation.animation_contexts.Sync.html#algan.animation.animation_contexts.Sync" title="algan.animation.animation_contexts.Sync"><code class="xref py py-class docutils literal notranslate"><span class="pre">Sync</span></code></a> context (read as “with animations synchronized”) to specify
 the animations should be synchronized. All animations that take place within the <code class="docutils literal notranslate"><span class="pre">with</span> <span class="pre">Sync():</span></code> clause will be
 played at the same time. In addition to Sync, Algan also provides the <a class="reference internal" href="../reference/algan.animation.animation_contexts.Seq.html#algan.animation.animation_contexts.Seq" title="algan.animation.animation_contexts.Seq"><code class="xref py py-class docutils literal notranslate"><span class="pre">Seq</span></code></a> (“with animations sequenced”), <a class="reference internal" href="../reference/algan.animation.animation_contexts.Lag.html#algan.animation.animation_contexts.Lag" title="algan.animation.animation_contexts.Lag"><code class="xref py py-class docutils literal notranslate"><span class="pre">Lag</span></code></a> (“with animations lagged”),
 and <a class="reference internal" href="../reference/algan.animation.animation_contexts.Off.html#algan.animation.animation_contexts.Off" title="algan.animation.animation_contexts.Off"><code class="xref py py-class docutils literal notranslate"><span class="pre">Off</span></code></a> (“with animations off”) contexts.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">CombiningContextExamples</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="combiningcontextexamples" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: CombiningContextExamples <a class="headerlink" href="#combiningcontextexamples">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./CombiningContextExamples-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">mob1</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="n">mob2</span> <span class="o">=</span> <span class="n">Circle</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
@@ -540,8 +548,8 @@ with Off():
     mob2.move(RIGHT)
 
 render_to_file()
-</pre></div>
-<p>Seq() will play animations sequentially one after the other (note that this is the default behaviour when not in any context),
+
+</pre></div><p>Seq() will play animations sequentially one after the other (note that this is the default behaviour when not in any context),
 Lag(lag_ratio=r) will play animations sequentially lagged by a factor of r.
 e.g. Lag(0.5) will begin the next
 animation once the current one is 50% finished.</p>
@@ -553,10 +561,14 @@ animation once the current one is 50% finished.</p>
 <a class="reference internal" href="../reference/algan.animation.animation_contexts.AnimationContext.html#algan.animation.animation_contexts.AnimationContext" title="algan.animation.animation_contexts.AnimationContext"><code class="xref py py-class docutils literal notranslate"><span class="pre">AnimationContext</span></code></a> s can also be given a number of parameters to change their
 behaviour. Most notably, the length of animations that take place within a context can be
 controlled with <code class="docutils literal notranslate"><span class="pre">run_time</span></code> and <code class="docutils literal notranslate"><span class="pre">run_time_unit</span></code>.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">CombiningContextExamples</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="combiningcontextexamples" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: CombiningContextExamples <a class="headerlink" href="#combiningcontextexamples">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./CombiningContextExamples-2.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">mob1</span> <span class="o">=</span> <span class="n">Circle</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 
@@ -589,8 +601,8 @@ with Seq(run_time_unit=5):
     mob1.move_to(ORIGIN)
 
 render_to_file()
-</pre></div>
-<p>The <code class="docutils literal notranslate"><span class="pre">run_time</span></code> parameter specifies the total amount of time that the context should take place over, individual animations
+
+</pre></div><p>The <code class="docutils literal notranslate"><span class="pre">run_time</span></code> parameter specifies the total amount of time that the context should take place over, individual animations
 will be rescaled (sped up or slowed down) so that their total time is equal <code class="docutils literal notranslate"><span class="pre">run_time</span></code>.
 The <code class="docutils literal notranslate"><span class="pre">run_time_unit</span></code> parameter specifies how long each individual animation should be played for.</p>
 <div class="admonition note">
@@ -604,10 +616,14 @@ The <code class="docutils literal notranslate"><span class="pre">run_time_unit</
 When one context is created within another, the sub-context will be treated as a single cohesive animation by the parent.
 This way, you can think of each context as combining the animations that take place within it into a single new animation.
 This makes specifying complex animations and designing modular animation code a breeze.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">CombiningContextExamples</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="combiningcontextexamples" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: CombiningContextExamples <a class="headerlink" href="#combiningcontextexamples">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./CombiningContextExamples-3.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">mob1</span> <span class="o">=</span> <span class="n">Circle</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="n">mob2</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
@@ -668,8 +684,8 @@ with Sync():
             mob2.glow = 0.5
 
 render_to_file()
-</pre></div>
-</section>
+
+</pre></div></section>
 </section>
 
         </article>

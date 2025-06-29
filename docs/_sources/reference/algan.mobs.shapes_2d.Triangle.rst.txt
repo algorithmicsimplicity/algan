@@ -1,4 +1,4 @@
-﻿Triangle
+Triangle
 ========
 
 Qualified name: ``algan.mobs.shapes\_2d.Triangle``

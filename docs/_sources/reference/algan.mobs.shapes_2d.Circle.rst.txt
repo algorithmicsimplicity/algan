@@ -1,4 +1,4 @@
-﻿Circle
+Circle
 ======
 
 Qualified name: ``algan.mobs.shapes\_2d.Circle``

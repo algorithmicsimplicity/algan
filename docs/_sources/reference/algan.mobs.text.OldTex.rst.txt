@@ -1,0 +1,46 @@
+OldTex
+======
+
+Qualified name: ``algan.mobs.text.OldTex``
+
+.. currentmodule:: algan.mobs.text
+
+.. autoclass:: OldTex
+   :show-inheritance:
+   :members:
+   :private-members:
+
+
+   
+   .. rubric:: Methods
+
+   .. autosummary::
+      :nosignatures:
+      
+      ~OldTex.create_character_mobs
+      ~OldTex.default_color
+      ~OldTex.get_boundary_points_test
+      ~OldTex.highlight
+      ~OldTex.highlight_off
+      ~OldTex.on_create
+      ~OldTex.on_destroy
+      ~OldTex.set_color
+      ~OldTex.set_fill_width
+      ~OldTex.set_size
+      ~OldTex.set_text
+
+   
+   .. rubric:: Attributes
+
+   .. autosummary::
+     
+     ~OldTex.animation_manager
+     ~OldTex.basis
+     ~OldTex.color
+     ~OldTex.glow
+     ~OldTex.location
+     ~OldTex.max_opacity
+     ~OldTex.normalized_basis
+     ~OldTex.opacity
+     ~OldTex.scale_coefficient
+   

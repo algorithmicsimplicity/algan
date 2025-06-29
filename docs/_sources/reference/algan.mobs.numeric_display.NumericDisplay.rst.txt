@@ -1,4 +1,4 @@
-﻿NumericDisplay
+NumericDisplay
 ==============
 
 Qualified name: ``algan.mobs.numeric\_display.NumericDisplay``

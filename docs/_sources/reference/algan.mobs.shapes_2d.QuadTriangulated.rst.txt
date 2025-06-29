@@ -1,4 +1,4 @@
-﻿QuadTriangulated
+QuadTriangulated
 ================
 
 Qualified name: ``algan.mobs.shapes\_2d.QuadTriangulated``

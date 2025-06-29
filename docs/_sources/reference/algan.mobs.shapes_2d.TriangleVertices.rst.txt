@@ -1,4 +1,4 @@
-﻿TriangleVertices
+TriangleVertices
 ================
 
 Qualified name: ``algan.mobs.shapes\_2d.TriangleVertices``

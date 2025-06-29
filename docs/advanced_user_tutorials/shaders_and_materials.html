@@ -481,10 +481,14 @@ of metal vs non-metal and smooth vs rough texture to compute diffuse
 and specular lighting effects.</p>
 <p>You can make a mob use this shader with the <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.set_shader" title="algan.mobs.mob.Mob.set_shader"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_shader()</span></code></a> method.
 Let’s look at an example.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">SetShader</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="setshader" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: SetShader <a class="headerlink" href="#setshader">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./SetShader-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">algan.rendering.shaders.pbr_shaders</span><span class="w"> </span><span class="kn">import</span> <span class="n">basic_pbr_shader</span>
 
 <span class="k">with</span> <span class="n">Sync</span><span class="p">():</span>
@@ -515,8 +519,8 @@ with Seq(run_time_unit=5):
     mob2.metallicness = 0
 
 render_to_file()
-</pre></div>
-<div class="admonition important">
+
+</pre></div><div class="admonition important">
 <p class="admonition-title">Important</p>
 <p>You must use <a class="reference internal" href="../reference/algan.mobs.mob.Mob.html#algan.mobs.mob.Mob.set_shader" title="algan.mobs.mob.Mob.set_shader"><code class="xref py py-meth docutils literal notranslate"><span class="pre">set_shader()</span></code></a> before spawning the mob! Once spawned,
 the shader cannot be changed.</p>

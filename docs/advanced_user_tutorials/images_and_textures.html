@@ -469,10 +469,14 @@ Surfaces can be shaped by providing a function which maps intrinsic (UV) coordin
 to world coordinates.
 <code class="xref py py-class docutils literal notranslate"><span class="pre">ImageMob</span></code> also inherits from <a class="reference internal" href="../reference/algan.mobs.surfaces.surface.Surface.html#algan.mobs.surfaces.surface.Surface" title="algan.mobs.surfaces.surface.Surface"><code class="xref py py-class docutils literal notranslate"><span class="pre">Surface</span></code></a>, but allows for coloring
 based on a provided image file path.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">TexturingManifolds</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="texturingmanifolds" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: TexturingManifolds <a class="headerlink" href="#texturingmanifolds">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./TexturingManifolds-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="c1"># Make a flat (plane) surface, colored by our image file.</span>
 <span class="n">mob</span> <span class="o">=</span> <span class="n">ImageMob</span><span class="p">(</span><span class="s1">&#39;world_map.jpg&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">scale</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
@@ -503,8 +507,8 @@ with Seq(run_time_unit=10, rate_func=rate_funcs.identity):
         mob.rotate(360, RIGHT)
 
 render_to_file()
-</pre></div>
-</section>
+
+</pre></div></section>
 </section>
 
         </article>

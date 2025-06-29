@@ -468,10 +468,14 @@ every frame, until it is explicitly stopped.</p>
 <h2>Example: Perpetually Rotating<a class="headerlink" href="#example-perpetually-rotating" title="Link to this heading">¶</a></h2>
 <p>In this example we apply 2 updaters, one to make the inner square rotate,
 and another to make the outer square follow its rotation.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">BasicChangingAttributes</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="basicchangingattributes" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: BasicChangingAttributes <a class="headerlink" href="#basicchangingattributes">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./BasicChangingAttributes-2.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 
 <span class="n">square</span> <span class="o">=</span> <span class="n">Square</span><span class="p">()</span><span class="o">.</span><span class="n">spawn</span><span class="p">()</span>
 <span class="c1"># Set square rotating at a rate of 180 degrees per second, indefinitely.</span>
@@ -524,8 +528,8 @@ square2.remove_updater(updater_id_2)
 square.wait(2)
 
 render_to_file()
-</pre></div>
-<p>The <a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable.add_updater" title="algan.animation.animatable.Animatable.add_updater"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_updater()</span></code></a> function takes as input a function, and applies
+
+</pre></div><p>The <a class="reference internal" href="../reference/algan.animation.animatable.Animatable.html#algan.animation.animatable.Animatable.add_updater" title="algan.animation.animatable.Animatable.add_updater"><code class="xref py py-meth docutils literal notranslate"><span class="pre">add_updater()</span></code></a> function takes as input a function, and applies
 that function at every subsequent frame. The function must take a Mob as its first argument
 (which is set to the mob itself), and a float as its second argument. During animation,
 at each frame the function will be called with the second parameter set to the current

@@ -1,4 +1,4 @@
-﻿Quad
+Quad
 ====
 
 Qualified name: ``algan.mobs.shapes\_2d.Quad``

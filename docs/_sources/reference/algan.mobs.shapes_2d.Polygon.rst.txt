@@ -1,4 +1,4 @@
-﻿Polygon
+Polygon
 =======
 
 Qualified name: ``algan.mobs.shapes\_2d.Polygon``

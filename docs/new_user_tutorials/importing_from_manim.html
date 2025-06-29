@@ -474,10 +474,14 @@ you wish to use you will need to recreate it yourself in Algan.</p>
 <section id="the-maninmob">
 <h2>The ManinMob<a class="headerlink" href="#the-maninmob" title="Link to this heading">¶</a></h2>
 <p>Importing is straightforward, just create a <a class="reference internal" href="../reference/algan.mobs.manim_mob.ManimMob.html#algan.mobs.manim_mob.ManimMob" title="algan.mobs.manim_mob.ManimMob"><code class="xref py py-class docutils literal notranslate"><span class="pre">ManimMob</span></code></a> object and pass in a Manim Mobject as the parameter.</p>
-<div class="admonition">
-<p class="admonition-title">Example Placeholder</p>
-<p>Placeholder block for <code class="docutils literal notranslate"><span class="pre">ImportingManimMob</span></code>.</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
+<div id="importingmanimmob" class="admonition admonition-manim-example">
+<p class="admonition-title">Example: ImportingManimMob <a class="headerlink" href="#importingmanimmob">¶</a></p><video
+    class="manim-video"
+    controls
+    loop
+    autoplay
+    src="./ImportingManimMob-1.mp4">
+</video><div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">algan</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">manim</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mn</span>
 
 <span class="c1"># Let&#39;s grab a complex plane from the manim library.</span>
@@ -504,8 +508,8 @@ with Seq(run_time=5):
     mob.rotate(90, OUT)
 
 render_to_file()
-</pre></div>
-<div class="admonition important">
+
+</pre></div><div class="admonition important">
 <p class="admonition-title">Important</p>
 <p>Do not use both <cite>from algan import *</cite> and <cite>from manim import *</cite>, as this will lead to
 clashing definitions. You must give them one of them a name, as in this example where we

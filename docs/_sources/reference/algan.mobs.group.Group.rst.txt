@@ -1,4 +1,4 @@
-﻿Group
+Group
 =====
 
 Qualified name: ``algan.mobs.group.Group``

@@ -1,4 +1,4 @@
-﻿TriangleTriangulated
+TriangleTriangulated
 ====================
 
 Qualified name: ``algan.mobs.shapes\_2d.TriangleTriangulated``
