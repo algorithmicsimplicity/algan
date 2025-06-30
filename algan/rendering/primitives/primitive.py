@@ -312,24 +312,45 @@ class RenderPrimitive:
         num_frags = repeats.sum()
         repeats_inds = torch.repeat_interleave(torch.arange(len(repeats), device=repeats.device), repeats, -1, output_size=num_frags).unsqueeze(-1)
 
+        fragment_inds = self.get_tensor([num_frags], dtype=torch.long)
+        pointer = self.memory.current_pointer
         offsets = self.expand_verts_to_frags(bounding_box_num_pixels.cumsum(-2) - bounding_box_num_pixels, repeats_inds, -2)
-        fragment_inds = torch.arange(offsets.shape[-2], device=offsets.device).view(-1,1) - offsets
-        bounding_box_widths = self.expand_verts_to_frags(bounding_box_sizes[...,:1], repeats_inds, -2)#.clamp_min_(1)
+        # fragment_inds = torch.arange(offsets.shape[-2], device=offsets.device).view(-1,1) - offsets
+        fragment_inds = torch.arange(offsets.shape[-2], device=fragment_inds.device, out=fragment_inds).view(-1,1)
+        fragment_inds -= offsets
+        self.memory.current_pointer = pointer
 
-        bounding_corners_rep = self.expand_verts_to_frags(bounding_corners[...,0,:], repeats_inds, -2)
+        inds = self.get_tensor([*bounding_box_sizes.shape[:-2], num_frags, 1], torch.long)
+        corners_locs = self.expand_verts_to_frags(corners_locs, repeats_inds.unsqueeze(-1), -3)
+
+        pointer = self.memory.current_pointer
+        bounding_box_widths = self.expand_verts_to_frags(bounding_box_sizes[...,:1], repeats_inds, -2)#.clamp_min_(1)
         fragment_x = self.get_tensor(bounding_box_widths.shape, torch.long)
-        fragment_x[:] = (fragment_inds % bounding_box_widths) + bounding_corners_rep[...,:1]
         fragment_y = self.get_tensor(bounding_box_widths.shape, torch.long)
+        bounding_corners_rep = self.expand_verts_to_frags(bounding_corners[...,0,:], repeats_inds, -2)
+        #fragment_x = self.get_tensor(bounding_box_widths.shape, torch.long)
+        fragment_x[:] = (fragment_inds % bounding_box_widths) + bounding_corners_rep[...,:1]
+        #fragment_y = self.get_tensor(bounding_box_widths.shape, torch.long)
         fragment_y[:] = (fragment_inds // bounding_box_widths) + bounding_corners_rep[...,1:]
 
-        aa_offsets = torch.linspace(0, 1, anti_alias_level * 2 + 1, device=fragment_x.device)[1:-1:2]
-        aa_offsets = squish(torch.stack((aa_offsets.view(-1, 1).expand([-1, len(aa_offsets)]), aa_offsets.view(1, -1).expand([len(aa_offsets), -1])), -1))
-        all_ws = self.get_interpolation_coordinates(corners_locs, fragment_x, fragment_y, aa_offsets, repeats_inds)
+        #aa_offsets = torch.linspace(0, 1, anti_alias_level * 2 + 1, device=fragment_x.device)[1:-1:2]
+        #aa_offsets = squish(torch.stack((aa_offsets.view(-1, 1).expand([-1, len(aa_offsets)]), aa_offsets.view(1, -1).expand([len(aa_offsets), -1])), -1))
+        # inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
+        inds = torch.mul(fragment_y, window_width, out=inds)
+        inds += fragment_x
+        inds -= (start_y * window_width + start_x)
+        all_ws = self.get_interpolation_coordinates(corners_locs, fragment_x.float(), fragment_y.float(), None)
+        self.memory.current_pointer = pointer
 
-        all_mask = (all_ws.amin(-2) >= self.min_interpolation_coord).any(0)
+        # all_mask = (min_w >= self.min_interpolation_coord).any(0)
+        all_mask = self.get_tensor([*all_ws.shape[:-2], 1], dtype=torch.bool)
+        pointer = self.memory.current_pointer
+        min_w = self.get_tensor([*all_ws.shape[:-2], 1])
+        min_w = torch.amin(all_ws, -2, out=min_w)
+        torch.greater_equal(min_w, self.min_interpolation_coord, out=all_mask)
+        self.memory.current_pointer = pointer
 
         # TODO subtract window start from fragment x and y
-        inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
         window_size = window_width * window_height
 
         m = ((inds < (window_size))) & all_mask
@@ -380,7 +401,7 @@ class RenderPrimitive:
             colors, dists = get_colors(), get_dists()
             return colors, dists
 
-        colors, dists = get_frags(all_ws[0])
+        colors, dists = get_frags(all_ws)
         return colors, dists, inds
 
 

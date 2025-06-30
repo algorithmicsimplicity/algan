@@ -37,7 +37,7 @@ class ManualMemory:
             num_bytes = 4
         elif dtype in [torch.long, torch.double]:
             num_bytes = 8
-        shape[-1] *= num_bytes
+        shape[-1] = shape[-1] * num_bytes
 
         remainder = (self.current_pointer % num_bytes)
         byte_align_offset = (num_bytes - remainder) if (remainder > 0) else 0
