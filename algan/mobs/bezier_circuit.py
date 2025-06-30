@@ -161,7 +161,7 @@ class BezierCircuitCubic(Renderable):
 
         c = self.texture_points.color.unsqueeze(-3)
         if self.num_texture_points > c.shape[-2]:
-            c = c.expand(-1,-1,self.num_texture_points,-1)
+            c = c.expand([-1,-1,self.num_texture_points,-1])
 
         if self.empty:
             c = torch.zeros_like(c)

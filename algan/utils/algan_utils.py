@@ -17,7 +17,7 @@ from algan.rendering.camera import Camera
 from algan import SceneManager
 
 
-@compiled
+#@compiled
 def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec='h264', file_extension=None, **kwargs):
     """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
     as captured by the active :class:`~.Camera`, and saves the video to a file.
@@ -96,7 +96,7 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
         #scene.set_render_settings(render_settings)
 
 
-@compiled
+#@compiled
 def render_all_funcs(module_name, render_settings=None, profile=True, overwrite=True, start_index=0,
                      max_rendered=-1, output_dir=None, output_path=None, file_extension='mp4', **kwargs):
     def run(output_dir=None, render_settings=None, output_path=None):

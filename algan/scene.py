@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 
 import algan
+from algan import compiled
 #from algan.rendering.camera import Camera
 from algan.constants.color import *
 from algan.constants.spatial import *
@@ -36,8 +37,8 @@ class Scene:
         self.min_time = 0
         self.max_time = 0
         if hasattr(background_frame, '__call__'):
-            background_frame = background_frame(torch.stack((torch.arange(self.num_pixels_screen_height).view(-1,1).expand(-1,self.num_pixels_screen_width),
-                                                torch.arange(self.num_pixels_screen_width).view(1,-1).expand(self.num_pixels_screen_height, -1)), -1))
+            background_frame = background_frame(torch.stack((torch.arange(self.num_pixels_screen_height).view(-1,1).expand([-1,self.num_pixels_screen_width]),
+                                                torch.arange(self.num_pixels_screen_width).view(1,-1).expand([self.num_pixels_screen_height, -1])), -1))
         else:
             background_frame = background_frame
         self.background_frame = background_frame
@@ -137,6 +138,7 @@ class Scene:
             return torch.zeros((nt,)).cpu().numpy()
         return sum((a.render_audio() for a in active_actors))
 
+    @compiled
     def get_fragments(self, actors, start, end, save_image=False, post_processes=[], transparent_background=False, background_color=None):
         camera = self.camera
         nt = end-start
@@ -302,6 +304,7 @@ class Scene:
             videoclip.close()
             os.remove(file_path)
 
+    @torch.compiler.disable(recursive=True)
     def get_frames_from_fragments(self, fragments, window, frame, anti_alias_level=1):
         device = fragments[0].device if fragments is not None else frame.device
         bgf = self.background_frame
@@ -324,6 +327,7 @@ class Scene:
 
 
         frames, inds, num_pixels_in_frame = fragments
+        frames = frames[...,:frame.shape[-1]]
         if inds is None:
             frame[:] = bgf
             frame = unsquish(frame, 0, -window_height)#.cpu().flip((-3, -1)).numpy()
@@ -333,7 +337,7 @@ class Scene:
 
         frame_ind_delimits = num_pixels_in_frame.cumsum(0)
         inds = inds % window_size
-        inds = inds.unsqueeze(-1).expand(-1,frames.shape[-1])
+        inds = inds.unsqueeze(-1).expand([-1,frames.shape[-1]])
         frames = (frames * 255).to(torch.uint8)
 
         for i in range(len(frame_ind_delimits)):

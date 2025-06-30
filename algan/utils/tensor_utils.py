@@ -47,6 +47,7 @@ def _cast_to_tensor_recursive(x):
     else:
         return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
 
+@torch.compiler.disable(recursive=True)
 def cast_to_tensor(x):
     """
     Converts scalars or lists of scalars into tensors, and combines lists of tensors into a single tensor.
@@ -87,8 +88,8 @@ def make_grid(height, width=None, min_coord=-1, max_coord=1, min_coord2=None, ma
         max_coord2 = max_coord
 
     return torch.stack((torch.zeros((height, width), device=DEFAULT_DEVICE),
-           torch.linspace(min_coord, max_coord, height, device=DEFAULT_DEVICE).view(-1,  1).expand(-1, width),
-           torch.linspace(min_coord2, max_coord2, width, device=DEFAULT_DEVICE).view(1, -1).expand(height, -1)), -1)
+           torch.linspace(min_coord, max_coord, height, device=DEFAULT_DEVICE).view(-1,  1).expand(torch.Size([-1, width])),
+           torch.linspace(min_coord2, max_coord2, width, device=DEFAULT_DEVICE).view(1, -1).expand(torch.Size([height, -1]))), -1)
 
 
 def add_dummy_dims_right(x, y):
@@ -122,7 +123,7 @@ def unsqueeze_dims(x, y, insert_dim=0):
 def expand_as_left(x, y, offset:int=0):
     n = y.dim() - x.dim()
     x = unsqueeze_left(x, y)
-    return x.expand([-1 if x.shape[i] != 1 else y.shape[i] for i in range(x.dim())])
+    return x.expand(torch.Size([-1 if x.shape[i] != 1 else y.shape[i] for i in range(x.dim())]))
     return x.expand(list(y.shape[:n]) + ([-1] * (x.dim()-n)))
 
 
@@ -155,12 +156,13 @@ def unsqueeze_until_dim(x, dim, insert_dim=0):
         x = x.unsqueeze(insert_dim)
     return x
 
+@torch.compiler.disable(recursive=True)
 def broadcast_all(xs, ignored_dims=[]):
     max_dim = max([_.dim() if hasattr(_, 'dim') else 0 for _ in xs])
     ignored_dims = [_ if _ >= 0 else _ + max_dim for _ in ignored_dims]
     xs = [unsqueeze_until_dim(x, max_dim) if isinstance(x, torch.Tensor) else x for x in xs]
     max_shapes = [max([x.shape[i] if isinstance(x, torch.Tensor) else 0 for x in xs]) if i not in ignored_dims else -1 for i in range(max_dim)]
-    return [x.expand(*max_shapes) if isinstance(x, torch.Tensor) else x for x in xs]
+    return [x.expand(torch.Size(max_shapes)) if isinstance(x, torch.Tensor) else x for x in xs]
 
 def broadcast_gather(src, dim:int, ind, keepdim=False, **kwargs):
     ind, src = broadcast_both_left(ind, src, ignored_dims=[dim if dim >= 0 else len(src.shape)+dim])

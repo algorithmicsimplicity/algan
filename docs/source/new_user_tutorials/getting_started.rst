@@ -89,7 +89,7 @@ by giving parameters to it. Here are some examples:
     # Name the output file My_Algan_Video.mp4
     render_to_file(file_name='My_Algan_Video')
 
-    # Place the output file named My_Algan_Video.mp4 as path 'C://Users/Me/Videos
+    # Place the output file named My_Algan_Video.mp4 at path 'C://Users/Me/Videos
     render_to_file(file_name='MY_Algan_Video', output_path='C://Users/Me/Videos')
 
     # Render video in Ultra-High Definition (4k) 60 frames per second.

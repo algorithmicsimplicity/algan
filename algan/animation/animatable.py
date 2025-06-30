@@ -12,7 +12,7 @@ from algan.scene import Scene
 from algan.animation.animation_contexts import Sync, AnimationManager, AnimationContext, Off
 from algan.constants.color import BLACK
 from algan.utils.tensor_utils import broadcast_all, robust_concat, concat_dicts, prepare_kwargs, HANDLED_FUNCTIONS
-from algan import SceneManager
+from algan import SceneManager, compiled
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, cast_to_tensor_single, unsqueeze_dims
 
@@ -732,6 +732,7 @@ class Animatable:
         self.data.time_inds_materialized = time_inds
         self.data.set_pre_function_application = True
 
+    @compiled
     def set_state_full(self, s, e):
         """Sets all animatable attribute values to their final values after animated_functions have been applied.
         """

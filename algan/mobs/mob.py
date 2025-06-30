@@ -269,8 +269,8 @@ class Mob(Animatable):
                 if c.parent_batch_sizes is not None:
                     def expand(x):
                         if x.shape[-2] == 1:
-                            x = x.expand(*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes),
-                                         -1).contiguous()
+                            x = x.expand(torch.Size([*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes),
+                                         -1])).contiguous()
                         return x
 
                     interpolated_value = torch.repeat_interleave(expand(interpolated_value), c.parent_batch_sizes, -2)
@@ -376,7 +376,7 @@ class Mob(Animatable):
                 if c.parent_batch_sizes is not None:
                     def expand(x):
                         if x.shape[-2] == 1:
-                            x = x.expand(*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes), -1).contiguous()
+                            x = x.expand(torch.Size([*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes), -1])).contiguous()
                         return x
                     change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
                 c.apply_relative_change(key, change2, interpolation=1, recursive=recursive, relation_key=relation_key)
@@ -461,8 +461,8 @@ class Mob(Animatable):
                 if c.parent_batch_sizes is not None:
                     def expand(x):
                         if x.shape[-2] == 1:
-                            x = x.expand(*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes),
-                                         -1).contiguous()
+                            x = x.expand(torch.Size([*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes),
+                                         -1])).contiguous()
                         return x
 
                     change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
@@ -619,7 +619,7 @@ class Mob(Animatable):
         if self.parent_batch_sizes is not None:
             # Expand parent data to match child's batch size for batched operations
             def expand_for_child(x: torch.Tensor) -> torch.Tensor:
-                return x.expand(-1, self.parent_batch_sizes.shape[0], -1)
+                return x.expand(torch.Size([-1, self.parent_batch_sizes.shape[0], -1]))
 
             parent_location, old_basis, new_basis = [
                 torch.repeat_interleave(expand_for_child(val), self.parent_batch_sizes, -2) for val in
@@ -1558,8 +1558,8 @@ class Mob(Animatable):
         for submob, factor in zip(lst, split_factors):
             new_submobs.append(submob)  # Add the original child
             for _ in range(1, factor):
-                new_submobs.append(submob[-1, -1:, :].expand(*([-1 for _ in range(submob.dim() - 3)]),
-                                                    submob.shape[-3], self.num_points_per_object, -1))
+                new_submobs.append(submob[-1, -1:, :].expand(torch.Size([*([-1 for _ in range(submob.dim() - 3)]),
+                                                    submob.shape[-3], self.num_points_per_object, -1])))
         return new_submobs
 
     def expand_n_children(self, n: int):
@@ -1605,8 +1605,8 @@ class Mob(Animatable):
                 for _ in range(1, factor):
                     # Clone the last point of the sub-object data to expand
                     new_batched_values.append(
-                        sub_object_data[..., -1:, :].expand(*([-1 for _ in range(sub_object_data.dim() - 2)]),
-                                                            self.num_points_per_object, -1))
+                        sub_object_data[..., -1:, :].expand(torch.Size([*([-1 for _ in range(sub_object_data.dim() - 2)]),
+                                                            self.num_points_per_object, -1])))
             # Stack the new batched values and squish back to original shape for storage
             return torch.stack(new_batched_values, -3)
 
@@ -1639,8 +1639,8 @@ class Mob(Animatable):
                 for _ in range(1, factor):
                     # Clone the last point of the sub-object data to expand
                     new_batched_values.append(
-                        sub_object_data[..., -1:, :].expand(*([-1 for _ in range(sub_object_data.dim() - 2)]),
-                                                            self.num_points_per_object, -1))
+                        sub_object_data[..., -1:, :].expand(torch.Size([*([-1 for _ in range(sub_object_data.dim() - 2)]),
+                                                            self.num_points_per_object, -1])))
             # Stack the new batched values and squish back to original shape for storage
             self.data.data_dict[attr] = squish(torch.stack(new_batched_values, -3), -3, -2).unsqueeze(0)
         return self
@@ -1814,7 +1814,7 @@ class Mob(Animatable):
                 with Off(record_funcs=False, record_attr_modifications=False):
                     # Expand current location to match target batch size if smaller
                     expanded_location = torch.cat(
-                        [my_location, my_location[..., -1:, :].expand(-1, other_batch_size - my_batch_size, -1)], -2)
+                        [my_location, my_location[..., -1:, :].expand(torch.Size([-1, other_batch_size - my_batch_size, -1]))], -2)
                     self.setattr_regular('_location', expanded_location)  # Direct set to avoid recursion issues here
                     self.batch_size = max(self.batch_size, self.location.shape[-2])
                     self.parent_batch_sizes = other_mob.parent_batch_sizes
@@ -1950,7 +1950,7 @@ class Mob(Animatable):
                 if isinstance(value_to_cast, torch.Tensor):
                     return value_to_cast
                 # Convert scalar to tensor and expand for batch dimensions
-                return torch.tensor((value_to_cast,)).view(1, 1, 1).expand(len(self.parent_batch_sizes), -1, -1)
+                return torch.tensor((value_to_cast,)).view(1, 1, 1).expand(torch.Size([len(self.parent_batch_sizes), -1, -1]))
 
             # Synchronize time indices with parent if parent has materialized times
             if self.data.time_inds_materialized is None and parent.data.time_inds_materialized is not None:

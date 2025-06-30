@@ -124,7 +124,7 @@ class Surface(Renderable):
 
         def expand_grid_to_verts(x):
             if x.shape[-2] == 1:
-                x = x.expand(*[-1 for _ in x.shape[:-2]], grid.shape[-2]*grid.shape[-3], -1)
+                x = x.expand([*[-1 for _ in x.shape[:-2]], grid.shape[-2]*grid.shape[-3], -1])
             x = unsquish(x, -2, self.grid_height)
             return grid_to_triangle_vertices(x)
 

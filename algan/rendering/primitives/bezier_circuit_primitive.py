@@ -322,6 +322,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             return None
         control_points = corners_locs
 
+
+
         control_net_lengths = (control_points[...,1:,:] - control_points[...,:-1,:]).norm(p=2, dim=-1).sum(-1)
         maximum_net_length = control_net_lengths.amax()
         num_sampled_points = (maximum_net_length*0.25).ceil().long().clamp_min_(1) # 1 sample per 4 pixel widths.
@@ -357,8 +359,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         local_window_inds = torch.arange(local_window_size * local_window_size, device=control_points.device)
 
         # we subtract half_local_window_size so that in local coord (0,0) is the center (i.e. line start).
-        local_window_x = local_window_inds % local_window_size - half_local_window_size
-        local_window_y = local_window_inds // local_window_size - half_local_window_size
+        local_window_x_centered = local_window_inds % local_window_size - half_local_window_size
+        local_window_y_centered = local_window_inds // local_window_size - half_local_window_size
 
         line_start_x = polygon_vertices[...,:1]# % 1
         line_start_y = polygon_vertices[...,1:]# % 1
@@ -367,11 +369,28 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         #line_end_x = next_polygon_vertices[...,:1]#line_segments[..., :1] + line_start_x
         line_end_y = next_polygon_vertices[...,1:]#line_segments[..., 1:] + line_start_y
 
-        local_window_x = local_window_x + line_start_x.floor().long()
-        local_window_y = local_window_y + line_start_y.floor().long()
+        #local_window_x = local_window_x_centered + line_start_x.floor().long()
+        #local_window_y = local_window_y_centered + line_start_y.floor().long()
+        local_window_x = self.get_tensor([*line_start_x.shape[:-1], local_window_x_centered.shape[-1]], dtype=torch.long)
+        torch.add(local_window_x_centered, line_start_x.floor().long(), out=local_window_x)
+        local_window_y = self.get_tensor([*line_start_y.shape[:-1], local_window_y_centered.shape[-1]], dtype=torch.long)
+        torch.add(local_window_y_centered, line_start_y.floor().long(), out=local_window_y)
+
 
         # First we check that the local pixel is within the horizontal extent of the line segment.
-        horizontal_mask = (local_window_y < line_end_y) != (local_window_y < line_start_y)
+        #horizontal_mask = (local_window_y < line_end_y) != (local_window_y < line_start_y)
+        local_intersection_counts = self.get_tensor(local_window_y.shape, dtype=torch.float)
+        horizontal_mask_pointer = self.memory.current_pointer
+        intersect_mask = self.get_tensor(local_window_x.shape, dtype=torch.bool)
+        horizontal_mask = self.get_tensor(local_window_y.shape, dtype=torch.bool)
+        horizontal_mask_upper_pointer = self.memory.current_pointer
+        horizontal_upper_mask = self.get_tensor(local_window_y.shape, dtype=torch.bool)
+        torch.lt(local_window_y, line_end_y, out=horizontal_mask)
+        torch.lt(local_window_y, line_start_y, out=horizontal_upper_mask)
+        torch.not_equal(horizontal_mask, horizontal_upper_mask, out=horizontal_mask)
+        self.memory.current_pointer = horizontal_mask_upper_pointer
+
+
         # I think the current horizontal mask double counts the end points if local_window_y == line_start_y,
         # might need to switch to something like:
         #horizontal_mask = (((line_start_y < local_window_y) & (local_window_y < line_end_y)) |
@@ -382,78 +401,168 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         # Then we check that if we move from the pixel center to the right edge of the pixel
         # we move from one side of the line to the other. If so, that means that this pixel intersects
         # with the line (i.e. polygon boundary).
-        intersect_mask = (((local_window_x - line_start_x) * -line_segments[...,1:]
+        '''intersect_mask = (((local_window_x - line_start_x) * -line_segments[...,1:]
                            + (local_window_y - line_start_y) * line_segments[...,:1]) < 0) != \
                          (((local_window_x + 1 - line_start_x) * -line_segments[..., 1:]
-                           + (local_window_y - line_start_y) * line_segments[..., :1]) < 0)
+                           + (local_window_y - line_start_y) * line_segments[..., :1]) < 0)'''
 
-        local_intersection_counts = (horizontal_mask & intersect_mask).float()#.view(-1)
+        #pointer = self.memory.current_pointer
+        temp_x = self.get_tensor(local_window_x.shape, dtype=torch.float)
+        torch.subtract(local_window_x, line_start_x, out=temp_x)
+        torch.multiply(temp_x, line_segments[...,1:], out=temp_x)
+        temp_y = self.get_tensor(local_window_y.shape, dtype=torch.float)
+        torch.subtract(local_window_y, line_start_y, out=temp_y)
+        torch.multiply(temp_y, line_segments[..., :1], out=temp_y)
+        torch.gt(temp_x, temp_y, out=intersect_mask)
+        intersect_mask2 = self.get_tensor(local_window_x.shape, dtype=torch.bool)
+        temp_x += line_segments[...,1:]
+        torch.gt(temp_x, temp_y, out=intersect_mask2)
+        torch.not_equal(intersect_mask, intersect_mask2, out=intersect_mask)
+        #self.memory.current_pointer = pointer
+
+        #local_intersection_counts = (horizontal_mask & intersect_mask).float()
+        torch.logical_and(horizontal_mask, intersect_mask, out=local_intersection_counts)
+        self.memory.current_pointer = horizontal_mask_pointer
 
         '''local_to_global_inds = ((polygon_vertices_int[...,:1] + local_window_x).clamp_min(1) +
                                 (polygon_vertices_int[...,1:] + local_window_y) * bounding_box_widths.unsqueeze(-1)
                                 ).clamp_(min=torch.zeros_like(bounding_box_num_pixels.unsqueeze(-1)), max=bounding_box_num_pixels.unsqueeze(-1)-1)'''
-        object_bounding_box_dimensions_for_segments = torch.repeat_interleave(object_bounding_box_dimensions, num_segments_per_object, -2).unsqueeze(-1)
+        object_bounding_box_dimensions_for_segments = torch.repeat_interleave(object_bounding_box_dimensions, num_segments_per_object, -2,).unsqueeze(-1)
+        """object_bounding_box_dimensions_for_segments = self.get_tensor([*object_bounding_box_dimensions.shape[:-2],
+                                                                       num_segments_per_object.sum(),
+                                                                       object_bounding_box_dimensions.shape[-1]], dtype=torch.long)
+        object_bounding_box_dimensions_for_segments = self.expand_verts_to_frags(object_bounding_box_dimensions,
+                                                    num_segments_per_object.unsqueeze(-1),
+                                                    out=object_bounding_box_dimensions_for_segments).unsqueeze(-1)"""
+
         object_bounding_corners_bottom_left_for_segments = torch.repeat_interleave(object_bounding_corners_bottom_left, num_segments_per_object, -2).unsqueeze(-1)
-        bbox_x = local_window_x - object_bounding_corners_bottom_left_for_segments[...,:1,:]
-        bbox_y = local_window_y - object_bounding_corners_bottom_left_for_segments[...,1:,:]
+        #bbox_x = local_window_x - object_bounding_corners_bottom_left_for_segments[...,:1,:]
+        #bbox_y = local_window_y - object_bounding_corners_bottom_left_for_segments[...,1:,:]
+        #pointer = self.memory.current_pointer
+        bbox_x = self.get_tensor(local_window_x.shape, dtype=torch.long)
+        torch.subtract(local_window_x, object_bounding_corners_bottom_left_for_segments[...,:1,:], out=bbox_x)
+        bbox_y = self.get_tensor(local_window_y.shape, dtype=torch.long)
+        torch.subtract(local_window_y, object_bounding_corners_bottom_left_for_segments[..., 1:, :], out=bbox_y)
         bbox_num_pixels = object_bounding_box_dimensions_for_segments.prod(-2, keepdim=True)
-        local_to_bbox_inds = (bbox_x.clamp_min(0) + bbox_y * object_bounding_box_dimensions_for_segments[...,:1,:]
-                                ).clamp_(min=torch.zeros_like(bbox_num_pixels),
-                                         max=bbox_num_pixels - 1)
+        #local_to_bbox_inds = (bbox_x.clamp_min(0) + bbox_y * object_bounding_box_dimensions_for_segments[...,:1,:]
+        #                        ).clamp_(min=torch.zeros_like(bbox_num_pixels),
+        #                                 max=bbox_num_pixels - 1)
+        local_to_bbox_inds = self.get_tensor(bbox_x.shape, dtype=torch.long)
+        torch.clamp_min(bbox_x, 0, out=local_to_bbox_inds)
+        torch.addcmul(local_to_bbox_inds, object_bounding_box_dimensions_for_segments[...,:1,:], bbox_y, value=1, out=local_to_bbox_inds)
+        local_to_bbox_inds.clamp_min_(0)
+        local_to_bbox_inds.clamp_max_(bbox_num_pixels-1)
 
         # local_to_bbox_inds scatters from local_window into object level bounding box.
         # Now we need to add offsets so that inds from different objects end up in different output frames.
         offsets = object_bounding_box_dimensions.prod(-1, keepdims=True).view(-1,1)
         offsets = offsets.cumsum(-2)  - offsets
         offsets_for_segments = squish(torch.repeat_interleave(unsquish(offsets, 0, -corners.shape[0]), num_segments_per_object, -2).unsqueeze(-1), 0, 1)
-        local_to_global_inds = (squish(local_to_bbox_inds, 0, 1) + offsets_for_segments.view(-1,1,1)).view(-1)
+        local_to_global_inds = squish(local_to_bbox_inds, 0, 1)
+        local_to_global_inds += offsets_for_segments.view(-1,1,1)
+        local_to_global_inds = local_to_global_inds.view(-1)
+
+        local_to_global_inds.clamp_(min=0, max=fragment_x.shape[-2]-1)
 
         #invalid_mask = ((bbox_x < 0) | (bbox_x > bounding_box_widths.unsqueeze(-2))) | (((bbox_y < 0) | (bbox_y > bounding_box_heights.unsqueeze(-2))))
-        invalid_mask = ((bbox_x >= object_bounding_box_dimensions_for_segments[...,:1,:]) |
-                        (bbox_y < 0) | (bbox_y > object_bounding_box_dimensions_for_segments[...,1:,:]))
+        #invalid_mask = ((bbox_x >= object_bounding_box_dimensions_for_segments[...,:1,:]) |
+        #                (bbox_y < 0) | (bbox_y > object_bounding_box_dimensions_for_segments[...,1:,:]))
+        invalid_mask = self.get_tensor(bbox_x.shape, dtype=torch.bool)
+        pointer = self.memory.current_pointer
+        temp_bool = self.get_tensor(bbox_x.shape, dtype=torch.bool)
+        torch.greater_equal(bbox_x, object_bounding_box_dimensions_for_segments[...,:1,:], out=invalid_mask)
+        torch.lt(bbox_y, 0, out=temp_bool)
+        torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
+        torch.gt(bbox_y, object_bounding_box_dimensions_for_segments[...,1:,:], out=temp_bool)
+        torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
+        self.memory.current_pointer = pointer
+
         # Note we need to keep negative x inds around for now, because we cumsum across rows from the left
         # to count intersections, we will cull negative x inds later.
+        zero = self.get_tensor([1])
+        zero[:] = 0
+        local_intersection_counts = torch.where(invalid_mask, zero, local_intersection_counts, out=local_intersection_counts)
 
-        local_intersection_counts = torch.where(invalid_mask, 0, local_intersection_counts)
+        #global_intersection_counts = torch_scatter.scatter_sum(local_intersection_counts.view(-1), local_to_global_inds, -1, dim_size=fragment_x.shape[-2])
+        #out = torch.zeros((fragment_x.shape[-2],), device=fragment_x.device)
+        out = self.get_tensor([fragment_x.shape[-2]])
+        out[:] = 0
 
-        #global_intersection_counts = torch_scatter.scatter_sum(local_intersection_counts.view(-1), local_to_global_inds.clamp(min=0, max=fragment_x.shape[-2]-1), -1, dim_size=fragment_x.shape[-2])
-        out = torch.zeros((fragment_x.shape[-2],), device=fragment_x.device)
-        global_intersection_counts = torch.scatter_add(out, -1, local_to_global_inds.clamp(min=0, max=fragment_x.shape[-2]-1), local_intersection_counts.view(-1), out=out)
+        global_intersection_counts = torch.scatter_add(out, -1, local_to_global_inds, local_intersection_counts.view(-1), out=out)
+        #self.memory.current_pointer = local_intersection_counts_pointer
 
         # Now do border mask.
-        local_window_xy = torch.stack((local_window_x, local_window_y), -1)
-        local_proj_onto_line = project_point_onto_line_segment(local_window_xy, polygon_vertices.unsqueeze(-2), next_polygon_vertices.unsqueeze(-2))
-        local_dist = (local_window_xy - local_proj_onto_line).norm(p=2, dim=-1)
-        dist_invalid_mask = invalid_mask | (bbox_x <0)
-        local_dist = torch.where(dist_invalid_mask, 1e12, local_dist)
-        global_dists = torch.empty((fragment_x.shape[-2],), device=control_points.device)
+        #local_window_xy = torch.stack((local_window_x, local_window_y), -1)
+        local_window_xy = self.get_tensor([*local_window_x.shape, 2], dtype=torch.long)
+        local_window_xy[...,0] = local_window_x
+        local_window_xy[..., 1] = local_window_y
+        local_proj_onto_line = project_point_onto_line_segment(local_window_xy, polygon_vertices.unsqueeze(-2), next_polygon_vertices.unsqueeze(-2), memory=self.memory)
+
+        #local_dist = (local_window_xy - local_proj_onto_line).norm(p=2, dim=-1)
+        local_window_xy_centered = torch.subtract(local_window_xy, local_proj_onto_line, out=local_proj_onto_line)
+
+        global_dists = self.get_tensor([fragment_x.shape[-2]], dtype=torch.float)
         global_dists[:] = 1e12
+        local_dist_pointer = self.memory.current_pointer
+        local_dist = self.get_tensor(local_window_x.shape, dtype=torch.float)
+        local_dist = torch.norm(local_window_xy_centered, p=2, dim=-1, out=local_dist)
+
+        #dist_invalid_mask = invalid_mask | (bbox_x < 0)
+        pointer = self.memory.current_pointer
+        dist_invalid_mask = self.get_tensor(invalid_mask.shape, dtype=torch.bool)
+        torch.lt(bbox_x, 0, out=dist_invalid_mask)
+        torch.logical_or(dist_invalid_mask, invalid_mask, out=dist_invalid_mask)
+
+
+        zero[:] = 1e12
+        local_dist = torch.where(dist_invalid_mask, zero, local_dist, out=local_dist)
+        self.memory.current_pointer = pointer
+        #global_dists = torch.empty((fragment_x.shape[-2],), device=control_points.device)
         '''global_dists = torch_scatter.scatter_min(local_dist.view(-1),
                                                                local_to_global_inds.clamp(min=0,
                                                                                           max=fragment_x.shape[-2] - 1),
                                                                -1, out=global_dists)[0]'''
 
-        out = global_dists#torch.full((fragment_x.shape[-2],), value=1e12, device=fragment_x.device)
-        global_dists = torch.scatter_reduce(out, -1,
-                                            local_to_global_inds.clamp(min=0, max=fragment_x.shape[-2] - 1),
-                                            local_dist.view(-1), reduce='amin', out=out)
+        global_dists = torch.scatter_reduce(global_dists, -1, local_to_global_inds, local_dist.view(-1), reduce='amin',
+                                            out=global_dists)
 
-        border_mask = (global_dists.unsqueeze(-1) < self.expand_verts_to_frags(squish(border_width, 0, 1), object_to_fragment_gather_inds)).float()
+        self.memory.current_pointer = local_dist_pointer
+
+        #border_mask = (global_dists.unsqueeze(-1) < self.expand_verts_to_frags(squish(border_width, 0, 1), object_to_fragment_gather_inds)).float()
+
+        border_mask = self.expand_verts_to_frags(squish(border_width, 0, 1), object_to_fragment_gather_inds)
+        torch.lt(global_dists.unsqueeze(-1), border_mask, out=border_mask)
 
         # Count the number of intersections in the horizontal ray to this pixel's left.
-        left_intersection_counts = global_intersection_counts.cumsum(-1)
-        row_start_ind = (self.expand_verts_to_frags(offsets.view(-1,1), object_to_fragment_gather_inds) +
-                         (fragment_y_bbox)*self.expand_verts_to_frags(object_bounding_box_dimensions[...,:1].view(-1,1), object_to_fragment_gather_inds)).view(-1)
-        row_start_ind = (row_start_ind-1).clamp_min(0)
+        left_intersection_counts = torch.cumsum(global_intersection_counts, -1, out=global_intersection_counts)
 
-        left_intersection_counts = left_intersection_counts - broadcast_gather(left_intersection_counts, -1, row_start_ind, keepdim=True)
+        pointer = self.memory.current_pointer
+        row_start_counts = self.get_tensor(left_intersection_counts.shape)
+        row_start_ind_local = self.expand_verts_to_frags(object_bounding_box_dimensions[...,:1].view(-1,1), object_to_fragment_gather_inds)
+        row_start_ind_local *= fragment_y_bbox
+        row_start_offset = self.expand_verts_to_frags(offsets.view(-1,1), object_to_fragment_gather_inds)
+        row_start_ind = torch.add(row_start_offset, row_start_ind_local, out=row_start_ind_local).view(-1)
+        #row_start_ind = (row_start_ind-1).clamp_min(0)
+        row_start_ind -= 1
+        row_start_ind.clamp_min_(0)
 
-        interior_mask = ((left_intersection_counts % 2) == 1).float().unsqueeze(-1)
+        row_start_counts = broadcast_gather(left_intersection_counts, -1, row_start_ind, keepdim=True, out=row_start_counts)
+        left_intersection_counts -= row_start_counts
+        self.memory.current_pointer = pointer
 
-        fragment_coords = torch.cat((fragment_x, fragment_y), -1).float()
+        #interior_mask = ((left_intersection_counts % 2) == 1).float().unsqueeze(-1)
+        left_intersection_counts %= 2
+        interior_mask = torch.eq(left_intersection_counts, 1, out=left_intersection_counts).unsqueeze(-1)
+
+        #fragment_coords = torch.cat((fragment_x, fragment_y), -1).float()
 
         #TODO subtract window_start from x and y (so they are 0 centered.
-        inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
+        #inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
+        inds = self.get_tensor(fragment_x.shape, dtype=torch.long)
+        torch.multiply(fragment_y, window_width, out=inds)
+        inds -= start_y * window_width + start_x
+        inds += fragment_x
+
         window_size = window_width * window_height
 
         if not self.filled:
@@ -484,9 +593,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         ray_origin = expo(ray_origin, False, gather_inds=frame_to_fragment_gather_inds)
         screen_basis = screen_basis / screen_basis.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-6)
         ray_direction = F.normalize(
-            (screen_point + (((fragment_coords[..., :1] - screen_width * 0.5) /
+            (screen_point + (((fragment_x - screen_width * 0.5) /
                               (screen_height * 0.5))) * screen_basis[..., 0, :] +
-             (((fragment_coords[..., 1:] - screen_height * 0.5) /
+             (((fragment_y - screen_height * 0.5) /
                                 (screen_height * 0.5))) * screen_basis[..., 1, :]) - ray_origin, p=2, dim=-1)
         dists = (self.raycast_onto_plane(ray_origin, ray_direction,
                                         mob_center_for_frags, normals_for_frags))
@@ -530,7 +639,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         #output_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
         #output_frags[:] = 0
 
-        def get_frags(ws, fragment_coords=fragment_coords):
+        def get_frags(ws, fragment_coords=None):
 
             def get_colors():
                 colors = interpolated_colors

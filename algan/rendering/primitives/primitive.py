@@ -187,7 +187,7 @@ class RenderPrimitive:
                 def do_write(out):
                     inds_selected = broadcast_gather(inds, -1, max_ind, keepdim=True)
                     c_write = broadcast_gather(colors, -2, max_ind.unsqueeze(-1), keepdim=True)
-                    ie = inds_selected.unsqueeze(-1).expand(-1, out.shape[-1])
+                    ie = inds_selected.unsqueeze(-1).expand([-1, out.shape[-1]])
                     c_read = broadcast_gather(out, -2, ie, keepdim=True)
                     if transparent_output:
                         a = c_write[..., -1:].clone()
@@ -218,7 +218,7 @@ class RenderPrimitive:
                 def do_write(out):
                     inds_selected = broadcast_gather(inds, -1, max_ind, keepdim=True)
                     c_write = broadcast_gather(colors, -2, max_ind.unsqueeze(-1), keepdim=True)
-                    ie = inds_selected.unsqueeze(-1).expand(-1, 3)
+                    ie = inds_selected.unsqueeze(-1).expand([-1, 3])
                     c_read = broadcast_gather(out, -2, ie, keepdim=True)
                     a = c_write[..., -1:]
                     out.scatter_(-2, ie, c_read * (1 - a) + a * c_write[..., :-1])
@@ -239,7 +239,7 @@ class RenderPrimitive:
                     break
                 dists = torch.gather(dists, -1, remaining_inds)
                 inds = torch.gather(inds, -1, remaining_inds)
-                colors = torch.gather(colors, -2, remaining_inds.unsqueeze(-1).expand(-1, colors.shape[-1]))
+                colors = torch.gather(colors, -2, remaining_inds.unsqueeze(-1).expand([-1, colors.shape[-1]]))
             return out
 
         out = blend_colors(dists, unique_inds_inverse, colors, out)
@@ -323,7 +323,7 @@ class RenderPrimitive:
         fragment_y[:] = (fragment_inds // bounding_box_widths) + bounding_corners_rep[...,1:]
 
         aa_offsets = torch.linspace(0, 1, anti_alias_level * 2 + 1, device=fragment_x.device)[1:-1:2]
-        aa_offsets = squish(torch.stack((aa_offsets.view(-1, 1).expand(-1, len(aa_offsets)), aa_offsets.view(1, -1).expand(len(aa_offsets), -1)), -1))
+        aa_offsets = squish(torch.stack((aa_offsets.view(-1, 1).expand([-1, len(aa_offsets)]), aa_offsets.view(1, -1).expand([len(aa_offsets), -1])), -1))
         all_ws = self.get_interpolation_coordinates(corners_locs, fragment_x, fragment_y, aa_offsets, repeats_inds)
 
         all_mask = (all_ws.amin(-2) >= self.min_interpolation_coord).any(0)

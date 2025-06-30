@@ -8,11 +8,17 @@ class InsufficientMemoryException(Exception):
     pass
 
 class ManualMemory:
-    def __init__(self, num_bytes):
+    def __init__(self, portion_of_available_memory_used):
         self.is_cpu = DEFAULT_RENDER_DEVICE == torch.device('cpu')
-        self.data = torch.empty((1 if self.is_cpu else num_bytes,), device=DEFAULT_RENDER_DEVICE, dtype=torch.bool)
         self.current_pointer = 0
+        self.max_pointer = 0
         self.stack = []
+        if self.is_cpu:
+            return
+
+        num_bytes = int((torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0))
+                                                 * portion_of_available_memory_used)
+        self.data = torch.empty((1 if self.is_cpu else num_bytes,), device=DEFAULT_RENDER_DEVICE, dtype=torch.bool)
 
     def __len__(self):
         return len(self.data)
@@ -42,11 +48,13 @@ class ManualMemory:
 
         x = self.data[self.current_pointer+byte_align_offset:self.current_pointer + numel]
         self.current_pointer = self.current_pointer + numel
+        self.max_pointer = max(self.max_pointer, self.current_pointer)
         x = x.view(shape).view(dtype)
         return x
 
     def reset(self):
         self.current_pointer = 0
+        self.max_pointer = 0
         self.stack = []
 
     def save_pointer(self):

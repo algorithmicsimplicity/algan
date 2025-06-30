@@ -138,13 +138,35 @@ def project_point_onto_line(point, line_direction, line_start=0, dim=-1):
     return line_start + line_direction * dot_product(point - line_start, line_direction, dim=dim)
 
 
-def project_point_onto_line_segment(point, line_start, line_end, dim=-1):
+def project_point_onto_line_segment(point, line_start, line_end, dim=-1, memory=None):
     """
     Projects point x to the closest point on a line segment defined by its start and end points.
     """
-    line_direction = F.normalize(line_end-line_start, p=2, dim=dim)
-    line_lengths = (line_end - line_start).norm(p=2,dim=-1, keepdim=True)
-    return line_start + line_direction * dot_product(point - line_start, line_direction, dim=dim).clamp(min=torch.zeros_like(line_lengths), max=line_lengths)
+    if memory is None:
+        line_direction = F.normalize(line_end-line_start, p=2, dim=dim)
+        line_lengths = (line_end - line_start).norm(p=2,dim=dim, keepdim=True)
+        return line_start + line_direction * dot_product(point - line_start, line_direction, dim=dim).clamp(min=torch.zeros_like(line_lengths), max=line_lengths)
+
+    out = memory.get_tensor(point.shape, dtype=torch.float)
+    pointer = memory.current_pointer
+    lines = memory.get_tensor(line_start.shape, dtype=torch.float)
+    lines = torch.subtract(line_end, line_start, out=lines)
+
+    line_lengths = memory.get_tensor([*line_start.shape[:dim], 1, *line_start.shape[dim:][1:]], dtype=torch.float)
+    line_lengths = torch.norm(lines, p=2, dim=dim, out=line_lengths, keepdim=True)
+
+    line_direction = F.normalize(lines, p=2, dim=dim, out=lines)
+
+    torch.subtract(point, line_start, out=out)
+
+    dots = memory.get_tensor([*point.shape[:dim], 1, *point.shape[dim:][1:]], dtype=torch.float)
+    dots = dot_product(out, line_direction, dim=dim, out=dots)
+    dots.clamp_min_(0)
+    dots.clamp_max_(line_lengths)
+
+    out = torch.addcmul(line_start, line_direction, dots, value=1, out=out)
+    memory.current_pointer = pointer
+    return out
 
 
 def project_point_onto_plane(point, plane_normal, plane_point=0, dim=-1):

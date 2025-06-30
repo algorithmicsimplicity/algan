@@ -1,3 +1,4 @@
+from functools import wraps
 from importlib.metadata import version
 
 __version__ = version(__name__)
@@ -11,12 +12,24 @@ from algan.defaults.device_defaults import *
 from algan.defaults.style_defaults import *
 from algan.defaults.render_defaults import *
 from algan.defaults.directory_defaults import *
+from algan.defaults.compute_defaults import *
 
 from algan.utils.memory_utils import ManualMemory
 
 torch.set_grad_enabled(False)
 c = torch.inference_mode()
 c.__enter__()
+
+def compile_wrapper(function):
+    compiled_function = torch.compile(function, dynamic=True)
+    def _decorate(func, compiled_func):
+        @wraps(func)
+        def wrapper_func(*args, **kwargs):
+            if COMPUTE_DEFAULTS.compiled:
+                return compiled_func(*args, **kwargs)
+            return func(*args, **kwargs)
+        return wrapper_func
+    return _decorate(function, compiled_function)
 
 try:
     @torch.compile
@@ -28,7 +41,7 @@ try:
 
     #compiled = torch.compile
     #print('using torch.compile')
-    compiled = lambda x: x
+    compiled = compile_wrapper
 except:
     compiled = lambda x: x
 
@@ -57,8 +70,7 @@ class SceneManager:
     def instance(cls):
         if cls._instance is None:
             if cls._memory is None:
-                cls._memory = ManualMemory(((int((torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0))
-                                                 *algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING))))
+                cls._memory = ManualMemory(algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING)
             cls._instance = cls._scene_class(memory=cls._memory)
             cls._instance.scene_initializer = cls._scene_initializer
             cls._instance.reset_scene()
@@ -96,19 +108,19 @@ def clear_cache():
         shutil.rmtree(f)
 
 def default_scene_initializer(scene):
-    scene.camera = Camera(location=algan.constants.spatial.CAMERA_ORIGIN).spawn(animate=False)
+    scene.camera = Camera(location=CAMERA_ORIGIN).spawn(animate=False)
     scene.light_sources = [PointLight(location=scene.camera.location + UP * 1 + RIGHT * 5 + OUT * 1,
                                      color=WHITE).spawn(animate=False)]
 
-SceneManager.set_scene_class(algan.scene.Scene, default_scene_initializer)
+SceneManager.set_scene_class(Scene, default_scene_initializer)
 SceneManager.instance()
 
 
 def make_manim_dir():
     from manim import config
 
-    tex_dir = config.get_dir("tex_dir")
-    if not tex_dir.exists():
-        tex_dir.mkdir(parents=True)
+    for tex_dir in [config.get_dir("tex_dir"), config.get_dir("text_dir")]:
+        if not tex_dir.exists():
+            tex_dir.mkdir(parents=True)
 
 make_manim_dir()

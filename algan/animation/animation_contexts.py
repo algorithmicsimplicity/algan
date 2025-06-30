@@ -117,10 +117,24 @@ class AnimationContext:
     new_animation: bool|None = False
     finished: bool = False
     trace_mode: bool|None = None
-    traced_mobs: set = field(default_factory=set)
-    new_mobs: list = field(default_factory=list)
-    child_contexts: list = field(default_factory=list)
-    kwargs: Any = field(default_factory=dict)
+    traced_mobs: set|None = None
+    new_mobs: list|None = None
+    child_contexts: list|None = None
+    kwargs: Any = None
+    #traced_mobs: set = field(default_factory=set)
+    #new_mobs: list = field(default_factory=list)
+    #child_contexts: list = field(default_factory=list)
+    #kwargs: Any = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.traced_mobs is None:
+            self.traced_mobs = set()
+        if self.new_mobs is None:
+            self.new_mobs = list()
+        if self.child_contexts is None:
+            self.child_contexts = list()
+        if self.kwargs is None:
+            self.kwargs = dict()
 
     def __enter__(self):
         am = AnimationManager.instance()
