@@ -322,6 +322,17 @@ class RenderPrimitive:
 
         inds = self.get_tensor([*bounding_box_sizes.shape[:-2], num_frags, 1], torch.long)
         corners_locs = self.expand_verts_to_frags(corners_locs, repeats_inds.unsqueeze(-1), -3)
+        bisector_lengths = self.get_tensor([*corners_locs.shape[:-1], 1])
+
+        pointer = self.memory.current_pointer
+        mid_point_locs = self.get_tensor(corners_locs.shape)
+        mid_point_locs[..., 0, :] = torch.add(corners_locs[...,1,:], corners_locs[...,2,:], out=mid_point_locs[...,0,:])
+        mid_point_locs[..., 1, :] = torch.add(corners_locs[..., 0, :], corners_locs[..., 2, :], out=mid_point_locs[..., 1, :])
+        mid_point_locs[..., 2, :] = torch.add(corners_locs[..., 0, :], corners_locs[..., 1, :], out=mid_point_locs[..., 2, :])
+        mid_point_locs *= 0.5
+        bisector_segments = torch.subtract(corners_locs, mid_point_locs, out=mid_point_locs)
+        torch.norm(bisector_segments, p=2, dim=-1, keepdim=True, out=bisector_lengths)
+        self.memory.current_pointer = pointer
 
         pointer = self.memory.current_pointer
         bounding_box_widths = self.expand_verts_to_frags(bounding_box_sizes[...,:1], repeats_inds, -2)#.clamp_min_(1)
@@ -342,13 +353,20 @@ class RenderPrimitive:
         all_ws = self.get_interpolation_coordinates(corners_locs, fragment_x.float(), fragment_y.float(), None)
         self.memory.current_pointer = pointer
 
+        #
+        bisector_lengths *= all_ws
+        ###distance_to_border = torch.amin(bisector_lengths, -2, out=bisector_lengths[..., 0, :])
         # all_mask = (min_w >= self.min_interpolation_coord).any(0)
         all_mask = self.get_tensor([*all_ws.shape[:-2], 1], dtype=torch.bool)
         pointer = self.memory.current_pointer
         min_w = self.get_tensor([*all_ws.shape[:-2], 1])
-        min_w = torch.amin(all_ws, -2, out=min_w)
-        torch.greater_equal(min_w, self.min_interpolation_coord, out=all_mask)
+        distance_to_border = torch.amin(all_ws, -2, out=min_w)
+        ###distance_to_border += 0.5 + 1e-1
+        torch.greater_equal(distance_to_border, self.min_interpolation_coord, out=all_mask)
         self.memory.current_pointer = pointer
+        #distance_to_border += 0.5
+        ###anti_alias_mask = torch.clamp(distance_to_border, 0, 1, out=distance_to_border)
+        ###anti_alias_mask.nan_to_num_(0, 1, 0)
 
         # TODO subtract window start from fragment x and y
         window_size = window_width * window_height
@@ -387,7 +405,7 @@ class RenderPrimitive:
 
             def get_colors():
                 colors = interpolate(self_colors)
-                colors[..., -1:] *= (ws.amin(-2) >= self.min_interpolation_coord)
+                #colors[..., -1:] *= anti_alias_mask
                 colors = colors.reshape(-1, colors.shape[-1])
                 colors = colors[m]
                 return colors

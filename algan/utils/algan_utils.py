@@ -18,7 +18,7 @@ from algan import SceneManager
 
 
 #@compiled
-def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec='h264', file_extension=None, **kwargs):
+def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec=None, file_extension=None, **kwargs):
     """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
     as captured by the active :class:`~.Camera`, and saves the video to a file.
 
@@ -71,8 +71,25 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
 
         temp_file_path = f'{temp_file_path}{file_ext}'
         file_path = f'{file_path}{file_ext}'
-        file_writer = cv2.VideoWriter(temp_file_path, cv2.VideoWriter_fourcc(*codec),
+
+
+        if file_ext == 'mp4':
+            codecs_to_try = ['h264', 'mp4v']
+        elif file_ext == 'avi':
+            codecs_to_try = ['XVID', 'MJPG']
+        else:
+            codecs_to_try = ['h264', 'mp4v', 'XVID', 'MJPG']
+        if codec is not None:
+            codecs_to_try = [codec]
+
+        file_writer = None
+        for fourcc_code in codecs_to_try:
+            file_writer = cv2.VideoWriter(temp_file_path, cv2.VideoWriter_fourcc(*fourcc_code),
                                       render_settings.frames_per_second, render_settings.resolution)
+            if file_writer.isOpened():
+                break
+        if not file_writer.isOpened():
+            raise RuntimeError(f'None of the codecs in {codecs_to_try} are available on this system, please try a different codec.')
 
         try:
             if render_settings.save_image:
