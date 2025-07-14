@@ -84,7 +84,7 @@ class BezierCircuitCubic(Renderable):
             aspect_ratio = second_basis.norm(p=2, dim=-1) / first_basis.norm(p=2, dim=-1)
 
             a1 = torch.linspace(-1, 1, texture_grid_size).view(-1, 1, 1) * (1+1e-5)
-            a2 = torch.linspace(-1, 1, int(texture_grid_size * aspect_ratio)).view(1, -1, 1) * (1+1e-5)
+            a2 = torch.linspace(-1, 1, int((texture_grid_size * aspect_ratio).round())).view(1, -1, 1) * (1+1e-5)
             texture_grid_points = (a1 * first_basis + a2 * second_basis) + self.location
             texture_triangle_vertices = texture_grid_points
             self.grid_width = texture_triangle_vertices.shape[-2]
@@ -100,11 +100,11 @@ class BezierCircuitCubic(Renderable):
             self.texture_points.is_primitive = True
             self.add_children(self.texture_points)
 
-        with Off():
             self.control_points = Mob(control_points, **kwargs)
             self.control_points.is_primitive = True
             self.add_children(self.control_points)
             self.control_points.num_points_per_object = 4
+            self.components = [self.texture_points, self.control_points]
 
         self.border_width = cast_to_tensor(border_width)
         self.border_color = cast_to_tensor(border_color)
@@ -120,6 +120,8 @@ class BezierCircuitCubic(Renderable):
         return PURPLE
 
     def get_render_primitives(self):
+        if self.empty:
+            return None
         self.texture_points.set_time_inds_to(self)
         self.control_points.set_time_inds_to(self)
         o, n, g, bw, bc, pc = broadcast_all([self.opacity * self.max_opacity, self.basis, self.glow, self.border_width, self.border_color, self.portion_of_curve_drawn], ignored_dims=[-1])
@@ -163,14 +165,10 @@ class BezierCircuitCubic(Renderable):
         if self.num_texture_points > c.shape[-2]:
             c = c.expand([-1,-1,self.num_texture_points,-1])
 
-        if self.empty:
-            c = torch.zeros_like(c)
-            bc = torch.zeros_like(bc)
-
         prim = self.render_primitive(x, next_segment_inds_offset, num_segments_per_circuit, c, o, self.basis[..., -3:],
                                      bw, bc, pc, self.location, cast_to_tensor(self.grid_width),
                                      cast_to_tensor(self.grid_height), self.basis[...,:3], self.basis[...,3:6],
-                                     glow=g, filled=self.filled)
+                                     glow=g, num_texture_points=self.num_texture_points, filled=self.filled)
         prim.num_texture_points = self.num_texture_points
         return prim
 

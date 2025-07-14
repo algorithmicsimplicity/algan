@@ -11,8 +11,29 @@ from algan.mobs.mob import Mob
 from algan.mobs.renderable import Renderable
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.defaults.style_defaults import *
-from algan.utils.tensor_utils import unsqueeze_left, broadcast_all, cast_to_tensor
+from algan.utils.tensor_utils import unsqueeze_left, broadcast_all, cast_to_tensor, unsquish
 from algan.utils.tensor_utils import mean
+
+
+class Line(BezierCircuitCubic):
+    def __init__(self, start, end, *args, **kwargs):
+        start = cast_to_tensor(start)
+        end = cast_to_tensor(end)
+        kwargs['filled'] = False
+        if 'color' in kwargs:
+            kwargs['border_color'] = kwargs['color']
+        super().__init__(torch.cat([start * (1-a) + a * end for a in torch.linspace(0, 1, 4)], -2), *args, **kwargs)
+
+    def get_start(self):
+        return unsquish(self.control_points.location, -2, 4)[..., 0, :]
+
+    def get_end(self):
+        return unsquish(self.control_points.location, -2, 4)[..., -1, :]
+
+class Point(BezierCircuitCubic):
+    def __init__(self, location, *args, **kwargs):
+        location = cast_to_tensor(location)
+        super().__init__(torch.cat([location for _ in range(4)], -2), *args, **kwargs)
 
 
 class TriangleTriangulated(Mob):
@@ -175,6 +196,32 @@ class Rectangle(Quad):
         if 'location' in kwargs:
             corners = corners + cast_to_tensor(kwargs['location'])
             del kwargs['location']
+        super().__init__(corners, **kwargs)
+
+
+class SurroundingRectangle(Quad):
+    """A rectangle.
+
+    Parameters
+    ----------
+    height
+        Rectangle height.
+    width
+        Rectangle width.
+    *args, **kwargs
+        Passed to :class:`~.BezierCircuitCubic`
+
+    """
+    def __init__(self, mob, buffer=DEFAULT_BUFFER, **kwargs):
+        bbox = mob.get_bounding_box()
+        mn = bbox.amin(-2) - buffer
+        mx = bbox.amax(-2) + buffer
+        md = (mn + mx) * 0.5
+
+        corners = torch.stack((torch.stack((mn[...,0], mx[...,1], md[...,2]), -1),
+                               mx,
+                               torch.stack((mx[...,0], mn[...,1], md[...,2]), -1),
+                               mn), -2)
         super().__init__(corners, **kwargs)
 
 

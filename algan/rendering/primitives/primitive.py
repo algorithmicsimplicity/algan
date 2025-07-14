@@ -58,6 +58,18 @@ class RenderPrimitive:
             for frame in frames:
                 torchvision.utils.save_image(torch.from_numpy(frame).permute(-1, 0, 1) / 255, scene.file_path)
 
+    def mem_cat(self, xs):
+        dim = 0
+        x_shape = xs[0].shape
+        concatenated_size = sum([x.shape[dim] for x in xs])
+        out_shape = [*x_shape[:dim], concatenated_size, *x_shape[dim:][1:]]
+        out = self.get_tensor(out_shape, dtype=xs[0].dtype)
+        i = 0
+        for x in xs:
+            out[i:i+x.shape[dim]] = x
+            i += x.shape[dim]
+        return out
+
     def render_window(self, primitives, scene, window, save_image, time_start, time_end, object_start,
                       object_end, background_color, return_frags=False, transparent_output=False, *args, **kwargs):
         self.memory = kwargs['memory']
@@ -66,8 +78,12 @@ class RenderPrimitive:
         del kwargs2['post_processes']
         original_pointer = self.memory.current_pointer
         try:
-            chunks = [p.render_(time_start, time_end, object_start, object_end, *args, **kwargs2, window_coords=window) for p in primitives]
-            chunks = [_ for _ in chunks if _ is not None]
+            chunks = []
+            for p in primitives:
+                chunk = p.render_(time_start, time_end, object_start, object_end, *args, **kwargs2, window_coords=window)
+                if chunk is not None:
+                    chunks.append(chunk)#[_.clone() for _ in chunk])
+                #self.memory.current_pointer = original_pointer
             if return_frags:
                 return chunks
             out = self.get_tensor_from_memory((((window[2]-window[0])*(window[3]-window[1])), 4 if not transparent_output else 5), torch.uint8)
@@ -310,6 +326,8 @@ class RenderPrimitive:
 
         repeats = bounding_box_num_pixels.view(-1)
         num_frags = repeats.sum()
+        if num_frags == 0:
+            return None
         repeats_inds = torch.repeat_interleave(torch.arange(len(repeats), device=repeats.device), repeats, -1, output_size=num_frags).unsqueeze(-1)
 
         fragment_inds = self.get_tensor([num_frags], dtype=torch.long)

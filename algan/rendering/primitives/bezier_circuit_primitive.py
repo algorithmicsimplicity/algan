@@ -356,6 +356,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         else:
             half_local_window_size = border_width.amax().ceil().long()
         local_window_size = half_local_window_size * 2 + 1 + 1
+        if local_window_size > 50:
+            raise RuntimeError("Filled Bezier Circuit is not closed, make sure that the starting and ending points"
+                               "of your Bezier circuits are the same, or else set filled=False.")
         local_window_inds = torch.arange(local_window_size * local_window_size, device=control_points.device)
 
         # we subtract half_local_window_size so that in local coord (0,0) is the center (i.e. line start).
@@ -531,7 +534,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         #border_mask = (global_dists.unsqueeze(-1) < self.expand_verts_to_frags(squish(border_width, 0, 1), object_to_fragment_gather_inds)).float()
 
         border_mask = self.expand_verts_to_frags(squish(border_width, 0, 1), object_to_fragment_gather_inds)
-        torch.lt(global_dists.unsqueeze(-1), border_mask, out=border_mask)
+        global_dists -= 1e-3
+        torch.less_equal(global_dists.unsqueeze(-1), border_mask, out=border_mask)
 
         # Count the number of intersections in the horizontal ray to this pixel's left.
         left_intersection_counts = torch.cumsum(global_intersection_counts, -1, out=global_intersection_counts)

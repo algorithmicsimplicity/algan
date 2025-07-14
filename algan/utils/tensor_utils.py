@@ -6,6 +6,7 @@ from string import ascii_lowercase
 from typing import List, Optional
 import re
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -54,6 +55,8 @@ def cast_to_tensor(x):
     All other input types are returned unchanged.
     Returned tensors are always of shape [1,N,D] where D is dimension and N is the number of tensors combined.
     """
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x).to(dtype=torch.get_default_dtype())
     if isinstance(x, torch.Tensor):
         while x.dim() < 3:
             x = x.unsqueeze(0)

@@ -348,6 +348,20 @@ class Seq(Lag):
         super().__init__(lag_ratio=1, **kwargs)
 
 
+class Audio(AnimationContext):
+    """Plays the portion of the audio source assosciated with the given script segment over the course of this context.
+    This context's run_time will automatically be set to the duration of the played audio segment.
+
+    Parameters
+    ----------
+    script
+        The segment of script identifying which portion of the audio source to play during this context.
+
+    """
+    def __init__(self, script:str, **kwargs):
+        super().__init__(**kwargs)
+
+
 class SlideShow(Seq):
     def on_create_extra(self, animatable):
         animatable.wait(1)

@@ -95,6 +95,7 @@ class Surface(Renderable):
         kwargs['location'] = grid_points
         self.grid = Renderable(**kwargs)
         self.add_children(self.grid)
+        self.components = [self.grid]
         self.grid.is_primitive = True
         self.is_primitive = True
         self.ignore_wave_animations = True

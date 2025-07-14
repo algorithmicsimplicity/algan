@@ -7,11 +7,13 @@ import pathlib
 
 import manim as mn
 from algan.defaults.style_defaults import *
+from algan.defaults.device_defaults import DEFAULT_DEVICE
 from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag, Seq
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit, point_to_tensor2
 from algan.constants.spatial import DOWN, RIGHT
 from algan.mobs.group import Group
 from algan.mobs.mob import Mob
+from algan.mobs.image_mob import ImageMob
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import unsquish
@@ -27,18 +29,21 @@ class Tex(Mob):
         #    text = f'\\text{{{text}}}'
         base_font_size = 48
         t = (mn.MathTex if self.latex else mn.Text)(text, font_size=base_font_size)
-        def maybe_flip(x):
-            if not latex:
+        def maybe_flip(submob):
+            x = torch.from_numpy(submob.points).to(DEFAULT_DEVICE)
+            if (not latex) or (not isinstance(submob, mn.VMobjectFromSVGPath)):
                 return x.flip(-2)
             return x
-        p = [unsquish(maybe_flip(torch.from_numpy(_.points).to(DEFAULT_DEVICE)), -2, 4).transpose(-3,-2) for _ in
-             (t.submobjects[0] if latex else t).submobjects]
+        chars = (t.submobjects[0] if latex else t).submobjects
+        p = [unsquish(maybe_flip(_), -2, 4).transpose(-3,-2) for _ in
+             [_ for _ in chars if not isinstance(_, mn.ImageMobject)]]
         with Off():
             self.character_mobs = TriangulatedBezierCircuit(p, invert=False, hash_keys=p,
                                                             reverse_points=False,
-                                                            init=False, *args, **kwargs)
+                                                            *args, **kwargs)
+            self.image_mobs = [ImageMob(_) for _ in chars if isinstance(_, mn.ImageMobject)]
             super().__init__(*args, **kwargs)
-            self.add_children(self.character_mobs)
+            self.add_children(self.character_mobs, self.image_mobs)
             self.scale(font_size / base_font_size)
     
     def __getitem__(self, item):

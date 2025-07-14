@@ -58,6 +58,10 @@ class Scene:
         self.memory = memory
 
     @staticmethod
+    def wait(time):
+        return AnimationManager.wait(time)
+
+    @staticmethod
     def instance():
         return algan.SceneManager.instance()
 
@@ -121,7 +125,8 @@ class Scene:
     def clear_scene(self, **kwargs):
         with Sync():
             for actor in list(sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)):
-                actor.despawn(**kwargs)
+                if actor.data.spawn_time() >= 0:
+                    actor.despawn(**kwargs)
         AnimationManager.wait()
 
     def get_audio(self, actors, start, end):

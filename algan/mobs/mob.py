@@ -917,17 +917,39 @@ class Mob(Animatable):
         # and add it back to the center to get the boundary point in that direction.
         return project_point_onto_line(edge_point - mob_center, direction, dim=-1) + mob_center
 
-    def set_x_coord(self, x_coord: torch.Tensor):
-        """Sets the x-coordinate of the Mob's location, preserving y and z."""
-        new_location = self.location.clone()
-        new_location[..., 0] = x_coord[..., 0]
-        self.location = new_location
+    def set_x_coord(self, target):
+        return self.set_individual_coords(target, 0)
 
-    def set_y_coord(self, y_coord: torch.Tensor):
-        """Sets the y-coordinate of the Mob's location, preserving x and z."""
+    def set_y_coord(self, target):
+        return self.set_individual_coords(target, 1)
+
+    def set_z_coord(self, target):
+        return self.set_individual_coords(target, 2)
+
+    def set_individual_coords(self, target, coord_indexes):
+        if isinstance(target, Mob):
+            target = target.location
+        target = cast_to_tensor(target)
+        if not hasattr(coord_indexes, '__len__'):
+            coord_indexes = [coord_indexes]
+        if target.shape[-1] != 1:
+            target = target[..., coord_indexes]
         new_location = self.location.clone()
-        new_location[..., 1] = y_coord[..., 0]
+        new_location[..., coord_indexes] = target
         self.location = new_location
+        return self
+
+    def get_x_coord(self):
+        return self.get_individual_coords(0)
+
+    def get_y_coord(self):
+        return self.get_individual_coords(1)
+
+    def get_z_coord(self):
+        return self.get_individual_coords(2)
+
+    def get_individual_coords(self, coord_indexes):
+        return self.location[..., coord_indexes].clone()
 
     def set_x_y_coord(self, xy_coords: torch.Tensor):
         """Sets the x and y coordinates of the Mob's location, preserving z."""
@@ -936,6 +958,7 @@ class Mob(Animatable):
         self.location = new_location
 
     def move_next_to(self, target_mob: 'Mob' | torch.Tensor, direction: torch.Tensor, buffer: float = DEFAULT_BUFFER,
+                     align_edge=None,
                      **kwargs) -> 'Mob':
         """Moves this Mob to be adjacent to another Mob (or a point) in a given direction.
 
@@ -970,6 +993,8 @@ class Mob(Animatable):
         # plus the buffer distance, and then apply it to the Mob's current location.
         displacement_to_align_edges = target_edge_point + normalized_direction * buffer - my_edge_point
         self.move_to(self.location + displacement_to_align_edges, **kwargs)
+        if align_edge is not None:
+            self.move_inline_with_boundary(target_mob, align_edge)
         return self
 
     def get_length_in_direction(self, direction: torch.Tensor) -> torch.Tensor:
@@ -1537,15 +1562,9 @@ class Mob(Animatable):
         """
         with Off():
             with NoExtra(priority_level=1):
-                if self.data.spawn_time() >= 0:
-                    # If the mob has a history, clone its current state
-                    old_self = self.clone(reset_history=False)
-                    # Advance its time slightly to ensure it's "past" the current point
-                    old_self.wait((1 / self.scene.frames_per_second) + 1e-5)
-                    old_self.despawn(animate=False)  # Despawn the old clone without animation
-                self.refresh_history()  # Reset current mob's history
-                self.spawn(animate=False)  # Re-spawn current mob without animation to start new history
-                return self
+                self.despawn(animate=False)
+                new_self = self.clone(reset_history=True, spawn=True)
+                return new_self
 
     def expand_n_list(self, lst, n: int):
         current_children_count = len(lst)
@@ -1570,18 +1589,18 @@ class Mob(Animatable):
         Args:
             n (int): The number of additional children to add.
         """
-        current_children_count = len(self.children)
+        current_children_count = len(self.get_non_component_children())
         target_children_count = current_children_count + n
         # Determine how many times each existing child needs to be repeated/cloned
         repeat_indices = (torch.arange(target_children_count) * current_children_count) // target_children_count
         split_factors = [(repeat_indices == i).sum() for i in range(current_children_count)]
 
         new_submobs = []
-        for submob, factor in zip(self.children, split_factors):
+        for submob, factor in zip(self.get_non_component_children(), split_factors):
             new_submobs.append(submob)  # Add the original child
             for _ in range(1, factor):
                 new_submobs.append(submob.clone())  # Add clones
-        self.children = new_submobs
+        self.children = new_submobs + [_ for _ in self.children if _ in self.components]
         return self
 
     def expand_n_tensor(self, tnsor, n: int):
@@ -1595,7 +1614,7 @@ class Mob(Animatable):
         for attr in ['location']:
             value = tnsor
             if value.shape[-3] == 1:  # If already a singleton batch, no expansion needed
-                continue
+                return value.expand(target_batch_size, -1, -1)
 
             # Unsquish to separate individual objects in the batch if needed
             value_per_object = value#unsquish(value, -2, self.num_points_per_object)
@@ -1645,6 +1664,9 @@ class Mob(Animatable):
             self.data.data_dict[attr] = squish(torch.stack(new_batched_values, -3), -3, -2).unsqueeze(0)
         return self
 
+    def get_non_component_children(self):
+        return [_ for _ in self.children if _ not in self.components]
+
     def become(self, other_mob: 'Mob', move_to: bool = False, detach_history: bool = True, minimize_movement=False) -> 'Mob':
         """Transforms this Mob into another Mob (`other_mob`).
 
@@ -1678,64 +1700,69 @@ class Mob(Animatable):
             mob to a bezier-circuit-based mob).
 
         """
-        # Temporarily turn off animation recording for setup steps
+
+        if (other_mob.num_points_per_object != self.num_points_per_object) or (
+                len(other_mob.components) != len(self.components)):
+            raise NotImplementedError(
+                "You are trying to change an object of one primitive type (e.g., triangle) "
+                "to another type (e.g., cubic bezier circuit). This is not supported. "
+                "When using become(), the target mob must be of the same primitive type as the original."
+            )
+
         with Off():
+            new_self = self
             if detach_history:
-                self.detach_history()  # Detach current mob's history
+                new_self = self.detach_history()
+                # Detach current mob's history
                 other_mob_original = other_mob  # Keep a reference to the original target mob
                 other_mob = other_mob.clone(add_to_scene=False)  # Clone target to avoid modifying it directly
 
             # Adjust child counts to match for smooth transitions
-            child_difference = len(other_mob.children) - len(self.children)
+            child_difference = len(other_mob.get_non_component_children()) - len(new_self.get_non_component_children())
             if child_difference > 0:
-                self.expand_n_children(child_difference)
+                new_self.expand_n_children(child_difference)
             elif child_difference < 0:
                 other_mob.expand_n_children(-child_difference)
 
+        my_children = new_self.get_non_component_children()
+        other_children = other_mob.get_non_component_children()
         with Seq():
             with Sync():
-                if len(self.children) > 0:
+                if len(new_self.get_non_component_children()) > 0:
                     # Recursively apply 'become' to children to handle nested transformations
                     if minimize_movement:
-                        child_locs = torch.stack([mid_point(c.location, -2).squeeze() for c in self.children])
-                        other_child_locs = torch.stack([mid_point(c.location, -2).squeeze() for c in other_mob.children])
+                        child_locs = torch.stack([mid_point(c.location, -2).squeeze() for c in my_children])
+                        other_child_locs = torch.stack([mid_point(c.location, -2).squeeze() for c in other_children])
                         distance_matrix = torch.cdist(child_locs, other_child_locs)
                         row_ind, col_ind = linear_sum_assignment(distance_matrix.cpu().numpy())
 
                         for i, j in zip(row_ind, col_ind):
-                            self.children[i].become(other_mob.children[j], detach_history=False, minimize_movement=minimize_movement)
+                            my_children[i].become(other_children[j], detach_history=False, minimize_movement=minimize_movement)
                     else:
-                        for my_child, other_child in zip(self.children, other_mob.children):
+                        for my_child, other_child in zip(my_children, other_children):
                             my_child.become(other_child, detach_history=False, minimize_movement=minimize_movement)  # Children do not detach their history
-
-                # Check for compatibility of primitive types
-                if other_mob.num_points_per_object != self.num_points_per_object:
-                    raise NotImplementedError(
-                        "You are trying to change an object of one primitive type (e.g., triangle) "
-                        "to another type (e.g., cubic bezier circuit). This is not supported. "
-                        "When using become(), the target mob must be of the same primitive type as the original."
-                    )
+                    for my_component, other_component in zip(new_self.components, other_mob.components):
+                        my_component.become(other_component, detach_history=False, minimize_movement=minimize_movement)
 
                 # Adjust batch size (number of points per object) for smooth transitions
-                if self.num_points_per_object == 4:
+                if new_self.num_points_per_object == 4:
                     def get_sub_circuits(x):
                         x = unsquish(x, -2, 4)
                         x = x.squeeze(0)
                         start_inds = ((x[...,0,:] - x.roll(1, -3)[...,-1,:]).abs().sum(-1) > 1e-6).squeeze().nonzero()
-                        if len(start_inds) == 0:
+                        if start_inds.numel() == 0:
                             return [x]
                         else:
                             out = []
                             for i in range(len(start_inds)):
-                                out.append(x[start_inds[i]:start_inds[i+1] if (i + 1) < len(start_inds) else
-                                     x.shape[-3]])
+                                out.append(x[start_inds[i]:start_inds[i+1] if (i + 1) < len(start_inds) else x.shape[-3]])
                             return out
 
-                    my_control_points, other_control_points = [get_sub_circuits(_)for _ in [self.location, other_mob.location]]
+                    my_control_points, other_control_points = [get_sub_circuits(_) for _ in [new_self.location, other_mob.location]]
 
                     child_difference = len(other_control_points) - len(my_control_points)
                     if child_difference > 0:
-                        my_control_points = self.expand_n_list(my_control_points, child_difference)
+                        my_control_points = new_self.expand_n_list(my_control_points, child_difference)
                     elif child_difference < 0:
                         other_control_points = other_mob.expand_n_list(other_control_points, -child_difference)
 
@@ -1744,35 +1771,35 @@ class Mob(Animatable):
                     for my_c, other_c in zip(my_control_points, other_control_points):
                         child_difference = (other_c.shape[-3] - my_c.shape[-3])
                         if child_difference > 0:
-                            my_c = self.expand_n_tensor(my_c, child_difference)
+                            my_c = new_self.expand_n_tensor(my_c, child_difference)
                         elif child_difference < 0:
-                            other_c = self.expand_n_tensor(other_c, -child_difference)
+                            other_c = new_self.expand_n_tensor(other_c, -child_difference)
                         my_cs.append(my_c)
                         other_cs.append(other_c)
 
-                    self.data.data_dict['location'] = squish(torch.cat(my_cs, -3), -3, -2).unsqueeze(0)
+                    new_self.data.data_dict['location'] = squish(torch.cat(my_cs, -3), -3, -2).unsqueeze(0)
                     other_mob.data.data_dict['location'] = squish(torch.cat(other_cs, -3), -3, -2).unsqueeze(0)
                 else:
-                    batch_difference = (other_mob.location.shape[-2] - self.location.shape[
-                        -2]) // self.num_points_per_object
+                    batch_difference = (other_mob.location.shape[-2] - new_self.location.shape[
+                        -2]) // new_self.num_points_per_object
                     if batch_difference > 0:
-                        self.expand_n_batch(batch_difference)
+                        new_self.expand_n_batch(batch_difference)
                     elif batch_difference < 0:
                         other_mob.expand_n_batch(-batch_difference)
 
                 # Set all animatable attributes non-recursively to match the target mob's values
-                for attr_name in self.animatable_attrs:
-                    if not hasattr(self, attr_name):
+                for attr_name in new_self.animatable_attrs:
+                    if not hasattr(new_self, attr_name):
                         continue
                     # Use getattr to safely access attributes, as not all mobs may have all listed attributes
-                    self.setattr_non_recursive(attr_name, getattr(other_mob, attr_name))
+                    new_self.setattr_non_recursive(attr_name, getattr(other_mob, attr_name))
 
             if detach_history:
                 # If history was detached, despawn the transforming mob and spawn the original target mob
                 with Off():
-                    self.despawn(animate=False)
+                    new_self.despawn(animate=False)
                     return other_mob_original.spawn(animate=False)
-            return self
+            return new_self
 
     def _become_recursive(self, other_mob: 'Mob', move_to: bool = False):
         """Internal recursive helper for the `become` method.

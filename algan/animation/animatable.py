@@ -69,7 +69,7 @@ class ModificationHistory:
 
         for attr in self.attribute_modifications:
             v = animatable.data.animatable.__getattribute__(attr) # current (i.e. ending) value
-            history = [(v, e) for v, s, e in self.attribute_modifications[attr]] + [(v, lambda: float('inf'))]
+            history = [(v, e) for v, s, e in self.attribute_modifications[attr] if e() > s() + 1e-3] + [(v, lambda: float('inf'))]
             values, times = zip(*history)
             # Note that times are stored as functions so they can be retroactively changed by animation contexts, here we evaluate them to get the actual (float) times.
             attrs.append((attr, robust_concat(values), torch.tensor([_() for _ in times])))
@@ -256,6 +256,7 @@ class Animatable:
         self.anchor_priority = 0
 
         self.children = []
+        self.components = []
         self.parents = []
         self.traversable = True
         self.parent_batch_sizes = parent_batch_sizes
@@ -552,24 +553,27 @@ class Animatable:
 
         if clone_data:
             oa = self.data.animatable
+            oh = self.data.history
             self.data.animatable = None
-            ti = copy.deepcopy(self.data, memo)
+            self.data.history = None
+            ti = copy.deepcopy(self.data)
             ti.animatable = clone
-            if reset_history:
-                ti.history = ModificationHistory()
+            ti.history = ModificationHistory() if reset_history else oh
+            ti.spawn_time = lambda: -1
+            ti.despawn_time = lambda: -1
             self.data.animatable = oa
+            self.data.history = oh
         else:
             ti = self.data
 
         object.__setattr__(clone, 'data', ti)
-        if not clone_data:
-            object.__setattr__(clone, 'data', self.data)
         if add_to_scene:
             self.scene.add_actor(clone)
             self.animation_manager.context.add_mob(clone)
         clone.id = self.scene.get_new_id()
         children = list(object.__getattribute__(self, 'children')) if (hasattr(self, 'children') and copy_recursive) else []
         children_clones = [copy.deepcopy(c, memo) for c in children] if copy_recursive else []
+        component_clones = [copy.deepcopy(c, memo) for c in object.__getattribute__(self, 'components')]
 
         child_to_id = {c: i for i, c in enumerate(children)}
         id_to_child = {i: c for i, c in enumerate(children_clones)}
@@ -577,7 +581,7 @@ class Animatable:
         for k, v in self.__dict__.items():
             if k in ['video', 'id', 'created', 'destroyed', 'spawn_time', 'despawn_time', 'animation_manager', '_animation_manager', 'time_inds', 'history']:
                 continue
-            if k == 'data' and not clone_data:
+            if k == 'data':# and not clone_data:
                 continue
             if k in ['parents']:
                 object.__setattr__(clone, k, [])
@@ -585,7 +589,7 @@ class Animatable:
             if isinstance(v, Animatable) and v in children:
                 object.__setattr__(clone, k, id_to_child[child_to_id[v]])
                 continue
-            if k in ['children']:
+            if k in ['children', 'components']:
                 v = []
             if k in ['anchors']:
                 v = defaultdict(list)
@@ -596,6 +600,7 @@ class Animatable:
             clone.spawn(animate_creation)
         if copy_recursive:
             clone.add_children(*children_clones)
+        clone.components = component_clones
         return clone
 
     def clone(self, add_to_scene=True, spawn=True, animate_creation=False, recursive=True, clone_data=True, reset_history=True):
@@ -648,7 +653,7 @@ class Animatable:
         return self
 
     def despawn(self, animate=True):
-        if (self.data.despawn_time() >= 0) or (self.data.spawn_time() < 0):
+        if (self.data.despawn_time() >= 0):# or (self.data.spawn_time() < 0):
             return self
         self._destroy_recursive(animate)
         self.animation_manager.context.on_destroy(self)

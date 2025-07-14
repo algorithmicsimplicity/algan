@@ -511,7 +511,7 @@ def params_to_tensor(params):
     return torch.stack(p, 0).unsqueeze(-2).unsqueeze(-2).unsqueeze(-2)
 
 
-num_points_per_curve = 30
+num_points_per_curve = 20
 
 
 def get_points_along_cubic_bezier(params, invert=False):
@@ -589,7 +589,7 @@ def project_onto_line(params, point, invert=False):
 
 
 class TriangulatedBezierCircuit(Mob):
-    def __init__(self, paths, invert=False, border_width=0.1, tile_size=0.04, debug=False, hash_keys=None, use_cache=True,
+    def __init__(self, paths, invert=False, border_width=0.1, tile_size=0.08, debug=False, hash_keys=None, use_cache=True,
                  reverse_points=True, color=WHITE, create_direction=F.normalize(RIGHT*2+DOWN, p=2, dim=-1), *args, **kwargs):
         self.invert = invert
 
