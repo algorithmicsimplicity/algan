@@ -60,7 +60,7 @@ class Group(Mob):
             return torch.stack([_.mean(-2, keepdim=True) for _ in x], -1).mean(-1)
 
 
-        super().__init__(self.get_mob_midpoint(), color=mean(list(traverse([mob.color for mob in mobs]))), *args, **kwargs)
+        super().__init__(self.get_mob_midpoint(), color=mean(list(traverse([mob.color for mob in mobs]))), **kwargs)
         if all([_.data.spawn_time() >= 0 for _ in mobs]):
             self.spawn(animate=False)
         self.add_children(mobs)

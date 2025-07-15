@@ -25,7 +25,7 @@ def test_cylinder():
     #x.move(LEFT)
     with Sync():
         for i, x in enumerate(xs):
-            x.wave_color(PURE_BLUE, 0)
+            x.wave_color(PURE_BLUE)
 
 
 def test_sphere():

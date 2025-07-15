@@ -1741,8 +1741,8 @@ class Mob(Animatable):
                     else:
                         for my_child, other_child in zip(my_children, other_children):
                             my_child.become(other_child, detach_history=False, minimize_movement=minimize_movement)  # Children do not detach their history
-                    for my_component, other_component in zip(new_self.components, other_mob.components):
-                        my_component.become(other_component, detach_history=False, minimize_movement=minimize_movement)
+                for my_component, other_component in zip(new_self.components, other_mob.components):
+                    my_component.become(other_component, detach_history=False, minimize_movement=minimize_movement)
 
                 # Adjust batch size (number of points per object) for smooth transitions
                 if new_self.num_points_per_object == 4:

@@ -2,6 +2,7 @@ import cv2
 import importlib
 import numpy as np
 import os
+import shutil
 from unittest import TestCase
 from parameterized import parameterized
 
@@ -15,7 +16,9 @@ algan.defaults.render_defaults.DEFAULT_RENDER_SETTINGS = PREVIEW
 
 class TestOverseer(TestCase):
     def setUp(self):
-        pass
+        if os.path.exists('algan_cache'):
+            shutil.rmtree('algan_cache')
+
 
     @parameterized.expand(test_files)
     def test_algan_file(self, test_file):
