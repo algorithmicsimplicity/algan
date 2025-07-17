@@ -37,7 +37,10 @@ class ManimMob(BezierCircuitCubic):
             control_points = torch.stack([control_points for _ in range(4)], -2)
             empty = True
         else:
-            control_points = unsquish(torch.from_numpy(manim_mob.points).float(), -2, 4)
+            points = torch.from_numpy(manim_mob.points)
+            if points.shape[-2] == 1:
+                points = points.expand(*([-1] * (points.dim() - 2)), 4, -1)
+            control_points = unsquish(points.float(), -2, 4)
 
         def convert_manim_color(manim_color, opacity):
             c = torch.from_numpy(manim_color.to_rgba()).float()

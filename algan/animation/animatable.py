@@ -60,9 +60,10 @@ class ModificationHistory:
         rate_func_compose = animation_context.rate_func_compose
 
         if func_name not in self.function_applications:
-            self.function_applications[func_name] = (func, [], [])
-        self.function_applications[func_name][-1].append([animated_args, kwargs, start_time, end_time, (rate_func, rate_func_compose)])
-        self.most_recent_function_added = self.function_applications[func_name][-1][-1]
+            self.function_applications[func_name] = [func, [], [], -1]
+        self.function_applications[func_name][2].append([animated_args, kwargs, start_time, end_time, end_time, (rate_func, rate_func_compose)])
+        self.function_applications[func_name][3] = AnimationManager.get_execution_count()
+        self.most_recent_function_added = self.function_applications[func_name][2][-1]
 
     def get_history(self, animatable):
         attrs = []
@@ -71,21 +72,37 @@ class ModificationHistory:
             v = animatable.data.animatable.__getattribute__(attr) # current (i.e. ending) value
             history = [(v, e) for v, s, e in self.attribute_modifications[attr] if e() > s() + 1e-3] + [(v, lambda: float('inf'))]
             values, times = zip(*history)
-            # Note that times are stored as functions so they can be retroactively changed by animation contexts, here we evaluate them to get the actual (float) times.
+            # Note that times are stored as functions so they can be retroactively changed by animation contexts,
+            # here we evaluate them to get the actual (float) times.
             attrs.append((attr, robust_concat(values), torch.tensor([_() for _ in times])))
 
         funcs = []
 
-        for func_name, (func, modified_attrs, arg_list) in sorted(self.function_applications.items(), key=lambda _: 0 if 'setattr_' in _[0] else (1 if 'update_relative' in _[0] else 2)):
-            animated_args, kwargs, start_time, end_time, rate_funcs = zip(*arg_list)
+        # For overlapping animations, if one ends in the middle of another, we need to extend
+        # the end time to match the end of the longest animation, otherwise the remaining portion
+        # of the time won't be animated.
+        # TODO rewrite this into non-awful code.
+        for func_name_outer, func_data_outer in sorted(self.function_applications.items(),
+                    key=lambda _: (0 if 'setattr_' in _[0] else (1 if 'update_relative' in _[0] else 2))):
+            for func_name, func_data in self.function_applications.items():
+                for func_application_outer in func_data_outer[2]:
+                    for func_application in func_data[2]:
+                        if func_application[2]() <  func_application_outer[2]() < func_application_outer[4]() < func_application[3]():
+                            func_application_outer[4] = func_application[3]
+
+        for func_name, (func, modified_attrs, arg_list, execution_order) in sorted(self.function_applications.items(),
+                    key=lambda _: (0 if 'setattr_' in _[0] else (1 if 'update_relative' in _[0] else 2))):#, _[1][-1])):
+            animated_args, kwargs, start_time, end_time, extended_end_time, rate_funcs = zip(*arg_list)
             kwargs = concat_dicts(kwargs)
             animated_args = concat_dicts(animated_args)
             animated_args = {k: unsqueeze_dims(v, kwargs[k], 1) for k, v in animated_args.items()} #TODO shouldn't the unsqueeze dim be 0?
-            start_time, end_time = torch.tensor([_() for _ in start_time]), torch.tensor([_() for _ in end_time])
+            start_time, end_time, extended_end_time = (torch.tensor([_() for _ in start_time]),
+                                                       torch.tensor([_() for _ in end_time]),
+                                                       torch.tensor([_() for _ in extended_end_time]))
 
             # In the event where 2 or more functions take place at the same time (overlap), we manually split them up.
             # into separate funcs.
-            overlaps = (~((start_time > end_time.unsqueeze(-1)) | (end_time < start_time.unsqueeze(-1)))).float()
+            overlaps = (~((start_time > extended_end_time.unsqueeze(-1)) | (extended_end_time < start_time.unsqueeze(-1)))).float()
             orders = (overlaps * torch.triu(torch.ones_like(overlaps), diagonal=1)).sum(-2)
             unique_orders, uinds = torch.unique(orders, return_inverse=True)
             for order in unique_orders:#[-1:]:
@@ -95,7 +112,7 @@ class ModificationHistory:
                     return x[uinds == order]
                 sub_rate_funcs = [rate_funcs[i] for i in (uinds == order).nonzero()]
                 funcs.append((func, {k: g(v) for k, v in animated_args.items()}, {k: g(v) for k, v in kwargs.items()},
-                              g(start_time), g(end_time), sub_rate_funcs))
+                              g(start_time), g(end_time), g(extended_end_time), sub_rate_funcs))
         return attrs, funcs
 
 
@@ -291,9 +308,15 @@ class Animatable:
     def _set_dependant_mobs_time_inds_to_self_then_run_function(self, function):
         with AnimationContext(trace_mode=True) as context:
             function()
-            for mob in context.traced_mobs:
-                mob.anchor_priority = max(mob.anchor_priority, self.anchor_priority + 1)
-                mob.set_time_inds_to(self)
+            dependent_mobs = [_ for _ in (sorted(context.traced_mobs, key=lambda x: x.anchor_priority, reverse=True)) if _ != self]
+
+        materialized_mobs = []
+        for mob in dependent_mobs:
+            #mob.anchor_priority = max(mob.anchor_priority, self.anchor_priority + 1)
+            if hasattr(self, 'raw_s'):
+                if (mob.set_state_full(self.raw_s, self.raw_e)):
+                    materialized_mobs.append(mob)
+            mob.set_time_inds_to(self)
         function()
 
     @animated_function(animated_args={'t': 0}, unique_args=['function'])
@@ -369,6 +392,7 @@ class Animatable:
         self._passive_animation_functions.append(lambda mob, t: update_function(mob, cast_to_tensor(t), *args, **kwargs))
         self.passive_animations[-1][2] = start_pointer
         self.passive_animations[-1][3] = lambda: 1e13+1 # last forever, unless remove_updater is called to set it to an earlier time.
+        self.passive_animations[-1][4] = lambda: 1e13+1
         return len(self.passive_animations)-1
 
     def remove_updater(self, updater_id):
@@ -387,10 +411,10 @@ class Animatable:
             # Make sure that we only remove it the first time.
             return
         self.passive_animations[i][3] = self.animation_manager.context.get_current_time()
+        self.passive_animations[i][4] = self.animation_manager.context.get_current_time()
         #self.set_state_to_time_t(self.passive_animations[i][3])
         with Off(record_funcs=False):
             self._passive_animation_functions[i](self, self.passive_animations[i][3]() - self.passive_animations[i][2]())
-
 
     def remove_all_passive_animations(self):
         for i in range(len(self.passive_animations)-1, -1, -1):
@@ -692,7 +716,10 @@ class Animatable:
         return 0
 
     def set_state_to_time_t(self, time_inds):
-        self.data.time_inds_active = (self.data.time_inds_materialized.view(-1,1) == time_inds.view(1,-1)).sum(1).nonzero().view(-1)
+        try:
+            self.data.time_inds_active = (self.data.time_inds_materialized.view(-1,1) == time_inds.view(1,-1)).sum(1).nonzero().view(-1)
+        except:
+            self.data.time_inds_active = (self.data.time_inds_materialized.view(-1,1) == time_inds.view(1,-1)).sum(1).nonzero().view(-1)
         return self
 
     def set_state_to_time_all(self):
@@ -707,6 +734,7 @@ class Animatable:
         self.data.time_inds_active = None
         self.data.data_dict = self.data.data_dict_active
         self.data.set_pre_function_application = False
+        self.already_set_state = False
 
     def set_state_pre_function_applications(self, spawn_ind, despawn_ind):
         """Sets all animatable attribute values to the values they had before any animated_function applications take place.
@@ -744,13 +772,21 @@ class Animatable:
     def set_state_full(self, s, e):
         """Sets all animatable attribute values to their final values after animated_functions have been applied.
         """
+        if self.already_set_state:
+            return False
+        self.raw_s = s
+        self.raw_e = e
         if not self.data.set_pre_function_application:
             self.set_state_pre_function_applications(s, e)
         t = self.t
         animating_inds = [torch.zeros((1,), dtype=torch.long)]
-        for func, animated_args, kwargs, start_times, end_times, rate_funcs in self.func_history:
+        for func, animated_args, kwargs, start_times, end_times, extended_end_times, rate_funcs in self.func_history:
             (func, caller) = func
-            found = ((start_times < t) & (t < end_times)).type(t.dtype)
+            if (extended_end_times != end_times).any():
+                print(' ')
+                if 'num_degrees' in kwargs or ('key' in kwargs and kwargs['key'] == 'location'):
+                    print(' ')#extended_end_times = end_times
+            found = ((start_times < t) & (t < extended_end_times)).type(t.dtype)
             if found.nonzero().numel() == 0:
                 continue
 
@@ -758,9 +794,10 @@ class Animatable:
             animating_inds.append(found_inds)
 
             fa = (found[found_inds] + (torch.arange(found.shape[-1]) / (2*found.shape[-1]))).argmax(-1, keepdim=True)
-            s, e = (broadcast_gather(_.unsqueeze(0), 1, fa, keepdim=True) for _ in (start_times, end_times))
+            s, e, ee = (broadcast_gather(_.unsqueeze(0), 1, fa, keepdim=True) for _ in (start_times, end_times, extended_end_times))
             elapsed_time = (t[found_inds] - s)
             a = elapsed_time / (e - s)
+            a = a.clamp_(max=1)
 
             a = a.unsqueeze(-2)
             ar = torch.stack(broadcast_all([rf(rfc(a)) if rfc is not None else rf(a) for rf, rfc in rate_funcs]), -1)
@@ -781,7 +818,8 @@ class Animatable:
 
             func(caller, **kwargs2)
 
-        return self
+        self.already_set_state = True
+        return True
 
     def update_gather_scatter_inds(self, n):
         all_inds = torch.arange(n)

@@ -29,7 +29,15 @@ class AnimationManager:
             cls._instance.context.begin_time = 0
             cls._instance.context.current_time = 0
             cls._instance.context.end_time = 0
+            cls._instance.execution_count = 0
         return cls._instance
+
+    @classmethod
+    def get_execution_count(cls):
+        am = AnimationManager.instance()
+        c = am.execution_count
+        am.execution_count += 1
+        return c
 
     @classmethod
     def wait(cls, t=None):

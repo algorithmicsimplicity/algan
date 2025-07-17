@@ -2,5 +2,9 @@ import math
 
 PI = math.pi
 TAU = PI * 2
+
 DEGREES = 1
 RADIANS = 180 / PI
+
+RADIANS_TO_DEGREES = RADIANS
+DEGREES_TO_RADIANS = PI / 180

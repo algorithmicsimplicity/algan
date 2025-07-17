@@ -4,7 +4,7 @@ from string import ascii_lowercase
 import torch
 import torch.nn.functional as F
 
-from algan.constants.spatial import DEGREES_TO_RADIANS, RADIANS_TO_DEGREES
+from algan.constants.math import DEGREES_TO_RADIANS, RADIANS_TO_DEGREES
 from algan.utils.tensor_utils import expand_as_left, squish
 from algan.utils.tensor_utils import broadcast_cross_product, dot_product, unsqueeze_left, broadcast_gather, unsquish
 

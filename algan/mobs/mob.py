@@ -1435,6 +1435,7 @@ class Mob(Animatable):
         with Sync():
             self.rotate_around_point(point, num_degrees, axis)
             self.rotate(num_degrees, axis)
+        return self
 
     def orbit_around_line(self, line_point, line_direction, *args, **kwargs):
         rotation_point = project_point_onto_line(self.location, line_direction, line_point)
