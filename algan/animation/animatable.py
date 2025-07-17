@@ -688,6 +688,9 @@ class Animatable:
             return func(*args, **kwargs)
         return HANDLED_FUNCTIONS[func](*args, **kwargs)
 
+    def get_memory_used_per_timestep(self):
+        return 0
+
     def set_state_to_time_t(self, time_inds):
         self.data.time_inds_active = (self.data.time_inds_materialized.view(-1,1) == time_inds.view(1,-1)).sum(1).nonzero().view(-1)
         return self

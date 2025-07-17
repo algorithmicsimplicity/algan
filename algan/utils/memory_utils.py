@@ -2,10 +2,19 @@ import math
 
 import torch
 
+from algan import DEFAULT_CPU_MEMORY_USED
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
 
 class InsufficientMemoryException(Exception):
     pass
+
+def get_num_available_bytes(cuda=True):
+    if cuda:
+        torch.cuda.empty_cache()
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        return free_bytes#torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_reserved(0)
+    else:
+        return DEFAULT_CPU_MEMORY_USED
 
 class ManualMemory:
     def __init__(self, portion_of_available_memory_used):
@@ -16,8 +25,7 @@ class ManualMemory:
         if self.is_cpu:
             return
 
-        num_bytes = int((torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0))
-                                                 * portion_of_available_memory_used)
+        num_bytes = int(get_num_available_bytes() * portion_of_available_memory_used)
         self.data = torch.empty((1 if self.is_cpu else num_bytes,), device=DEFAULT_RENDER_DEVICE, dtype=torch.bool)
 
     def __len__(self):

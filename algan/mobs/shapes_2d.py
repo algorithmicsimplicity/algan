@@ -97,6 +97,15 @@ class TriangleVertices(Renderable):
         self.is_primitive = True
         self.num_points_per_object = 3
 
+    def get_memory_used_per_timestep(self):
+        n = self.location.shape[-2]
+        # 3 (location) + 5 (color) + 3 (normal) = 11 floats
+        num_vars = 11
+        for _ in self.get_shader_params().values():
+            num_vars += _.shape[-1]
+        # 4 bytes per float
+        return n * num_vars * 4
+
     def get_default_color(self):
         return PURE_RED
 

@@ -189,6 +189,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 self.colors = self.colors#[..., 0, :]
             else:
                 self.colors = self.colors[...,(-self.num_texture_points):, :]
+            self.padding = max(self.border_width.amax().ceil().long() + 1, 5)
             #self.portion_of_curve_drawn = self.portion_of_curve_drawn[...,0,:1]
             return
         self.corners = corners
@@ -208,22 +209,103 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         self.basis1 = first_basis
         self.basis2 = second_basis
 
+    def get_windowed_bounding_boxes(self, bounding_corners, screen_width, screen_height, window_coords=None):
+        if window_coords is None:
+            window_coords = (0, 0, screen_width, screen_height)
+        start_x, start_y, end_x, end_y = window_coords
+        end_x = end_x - 1
+        end_y = end_y - 1
+        bounding_corners = bounding_corners.clamp(
+            min=torch.tensor((start_x, start_y), device=bounding_corners.device),
+            max=torch.tensor((end_x, end_y), device=bounding_corners.device))
+        bounding_box_sizes = (bounding_corners[..., 1, :] - bounding_corners[..., 0, :])
+        bbss = bounding_box_sizes.prod(-1, keepdim=True)
+        num_fragments_per_object = bbss.amax(0)
+        num_fragments_per_frame = num_fragments_per_object.sum()
+        num_fragments = num_fragments_per_frame * bbss.shape[0]
+
+        def get_bounding_box_fragment_coords(x):
+            arange_num_segments_per_oject = torch.arange(len(self.num_segments_per_object), device=x.device)
+            segment_to_object_scatter_inds = torch.repeat_interleave(arange_num_segments_per_oject,
+                                                                     self.num_segments_per_object,
+                                                                     -1).view(1, -1, 1)
+
+            arange_num_segments_per_oject = arange_num_segments_per_oject.view(1, -1, 1)
+            object_bounding_corners_bottom_left = (broadcast_scatter(arange_num_segments_per_oject, -2,
+                                                                     segment_to_object_scatter_inds, x[..., 0, :], reduce='amin',
+                                                                     include_self=False)).clamp_(
+                min=torch.tensor((start_x, start_y), device=x.device),
+                max=torch.tensor((end_x, end_y), device=x.device))
+            object_bounding_corners_top_right = (broadcast_scatter(arange_num_segments_per_oject, -2,
+                                                                   segment_to_object_scatter_inds, x[..., 1, :], reduce='amax',
+                                                                   include_self=False)).clamp_(
+                min=torch.tensor((start_x, start_y), device=x.device),
+                max=torch.tensor((end_x, end_y), device=x.device))
+
+            object_bounding_box_dimensions = object_bounding_corners_top_right - object_bounding_corners_bottom_left
+            object_bounding_box_num_pixels = object_bounding_box_dimensions.prod(-1, keepdim=True)
+
+            num_fragments = object_bounding_box_num_pixels.sum()
+            self.num_fragments_fill = num_fragments / len(object_bounding_box_num_pixels)
+            if self.first_projection:
+                return None
+
+            object_to_fragment_gather_inds = torch.repeat_interleave(
+                torch.arange(object_bounding_box_num_pixels.numel(),
+                             device=x.device), object_bounding_box_num_pixels.view(-1), -1,
+                output_size=num_fragments).unsqueeze(-1)
+
+            object_fragment_inds = torch.arange(num_fragments, device=x.device).view(-1, 1)
+
+            object_offsets = (object_bounding_box_num_pixels.view(-1).cumsum(-1) - object_bounding_box_num_pixels.view(
+                -1)).view(-1, 1)
+            object_fragment_inds = object_fragment_inds - broadcast_gather(object_offsets, -2,
+                                                                           object_to_fragment_gather_inds, keepdim=True)
+
+            object_bounding_box_dimensions_for_frags = broadcast_gather(squish(object_bounding_box_dimensions, 0, 1),
+                                                                        -2, object_to_fragment_gather_inds,
+                                                                        keepdim=True)
+            object_bounding_corners_bottom_left_for_frags = broadcast_gather(
+                squish(object_bounding_corners_bottom_left, 0, 1), -2, object_to_fragment_gather_inds, keepdim=True)
+            object_fragment_x = (object_fragment_inds % object_bounding_box_dimensions_for_frags[...,
+                                                        :1]) + object_bounding_corners_bottom_left_for_frags[..., :1]
+            object_fragment_y_bbox = (object_fragment_inds // object_bounding_box_dimensions_for_frags[..., :1])
+            object_fragment_y = object_fragment_y_bbox + object_bounding_corners_bottom_left_for_frags[..., 1:]
+
+            return (object_fragment_x, object_fragment_y, object_fragment_y_bbox, object_fragment_inds,
+                    object_bounding_box_dimensions,
+                    object_bounding_corners_bottom_left, object_to_fragment_gather_inds)
+
+        return bounding_corners, bounding_box_sizes, bbss, num_fragments_per_object, num_fragments_per_frame, num_fragments, get_bounding_box_fragment_coords(bounding_corners)
+
+    def project_to_screen(self, camera, light_sources):
+        super().project_to_screen(camera, light_sources)
+        control_points = self.corners
+
+        control_net_lengths = (control_points[..., 1:, :] - control_points[..., :-1, :]).norm(p=2, dim=-1).sum(-1)
+        maximum_net_length = control_net_lengths.amax()
+        self.num_sampled_points = (maximum_net_length * 0.25).ceil().long().clamp_min_(1)  # 1 sample per 4 pixel widths.
+        return self
+
     def get_batch_identifier(self):
         return f'{__class__}_{self.num_texture_points}_{self.filled}'
+
+    def get_memory_used_per_timestep(self):
+        num_fragments_border_segments = self.num_fragments_per_frame
+        num_fragments_border_samples = self.num_sampled_points * int((self.padding * 2 + 1) ** 2) * self.corners.shape[-3]
+        return self.num_fragments_fill * 256 + num_fragments_border_segments * 256 + num_fragments_border_samples * 128
 
     def render_(self, time_start, time_end, object_start, object_end, ray_origin, screen_point, screen_basis,
                background_color=BLACK, anti_alias=False, anti_alias_offset=[0.5, 0.5], anti_alias_level=1,
                light_sources=[], screen_width=2000, screen_height=2000, window_coords=None, memory=None, primitive_type=None):
-
-        ray_origin = ray_origin.unsqueeze(-2)
-        screen_point = screen_point.unsqueeze(-2)
-        screen_basis = unsquish(screen_basis, -1, 3)
 
         def select_time(x, texture=False):
             x = x if len(x) == 1 else x[time_start:time_end]
             x = x if x.shape[1] == 1 else x[:, int(x.shape[1]*object_start):int(x.shape[1]*object_end)]
             return x
         corners = select_time(self.corners)
+        corners_int = select_time(self.corners_int)
+        projected_distances = select_time(self.projected_distances)
         if corners.numel() == 0:
             return None
         normals = select_time(self.normals)
@@ -246,88 +328,19 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         window_height = window_coords[-1] - window_coords[1]
         window_width = window_coords[-2] - window_coords[0]
         start_x, start_y, end_x, end_y = window_coords
-        end_x = end_x
-        end_y = end_y
-        def project_onto_screen(x):
-            rays = F.normalize(x - ray_origin, p=2, dim=-1)
-            projected_corners, _ = intersect_line_with_plane(rays, screen_point, screen_basis[..., -1:, :], ray_origin)
-            projected_corners.nan_to_num_()
-            projected_distances = (x - ray_origin).norm(p=2, dim=-1, keepdim=True)
-            projected_corners -= screen_point
-            corners_2d = dot_product(projected_corners.unsqueeze(-2), screen_basis[...,:-1, :].unsqueeze(-3), -1, keepdim=False)
-            corners_2d.nan_to_num_()
-            corners_2d = corners_2d * (screen_height//2)
-            corners_2d[..., 0] += screen_width // 2
-            corners_2d[..., 1] += screen_height // 2
-            corners_locs = corners_2d
-            corners_inds = corners_locs.long()
-            return corners_locs, corners_inds, projected_distances
 
-        corners_locs, corners_inds, projected_distances = project_onto_screen(corners)
+        bounding_corners = select_time(self.bounding_corners)
 
-        padding = border_width.amax().ceil().long()+1
-
-        def get_bounding_box_fragment_coords(x):
-            arange_num_segments_per_oject = torch.arange(len(num_segments_per_object), device=x.device)
-            segment_to_object_scatter_inds = torch.repeat_interleave(arange_num_segments_per_oject,
-                                                             num_segments_per_object*self.num_bezier_parameters, -1).view(1,-1,1)
-
-            arange_num_segments_per_oject = arange_num_segments_per_oject.view(1,-1,1)
-            object_bounding_corners_bottom_left = (broadcast_scatter(arange_num_segments_per_oject, -2,
-                        segment_to_object_scatter_inds, x, reduce='amin', include_self=False) - padding).clamp_(
-                min=torch.tensor((start_x, start_y), device=x.device),
-                max=torch.tensor((end_x, end_y), device=x.device))
-            object_bounding_corners_top_right = (broadcast_scatter(arange_num_segments_per_oject, -2,
-                        segment_to_object_scatter_inds, x, reduce='amax', include_self=False) + padding).clamp_(
-                min=torch.tensor((start_x, start_y), device=x.device),
-                max=torch.tensor((end_x, end_y), device=x.device))
-
-            object_bounding_box_dimensions = object_bounding_corners_top_right - object_bounding_corners_bottom_left
-            object_bounding_box_num_pixels = object_bounding_box_dimensions.prod(-1, keepdim=True)
-
-            num_fragments = object_bounding_box_num_pixels.sum()
-            mem_per_fragment = 256
-            total_mem_required = num_fragments * mem_per_fragment
-
-            free_mem = self.memory.get_num_bytes_remaining()
-
-            if free_mem < total_mem_required:
-                raise InsufficientMemoryException
-
-            object_to_fragment_gather_inds = torch.repeat_interleave(
-                torch.arange(object_bounding_box_num_pixels.numel(),
-                             device=x.device), object_bounding_box_num_pixels.view(-1), -1,
-                output_size=num_fragments).unsqueeze(-1)
-
-            object_fragment_inds = torch.arange(num_fragments, device=x.device).view(-1,1)
-
-            object_offsets = (object_bounding_box_num_pixels.view(-1).cumsum(-1) - object_bounding_box_num_pixels.view(-1)).view(-1,1)
-            object_fragment_inds = object_fragment_inds - broadcast_gather(object_offsets, -2, object_to_fragment_gather_inds, keepdim=True)
-
-            object_bounding_box_dimensions_for_frags = broadcast_gather(squish(object_bounding_box_dimensions,0,1), -2, object_to_fragment_gather_inds, keepdim=True)
-            object_bounding_corners_bottom_left_for_frags = broadcast_gather(squish(object_bounding_corners_bottom_left,0,1), -2, object_to_fragment_gather_inds, keepdim=True)
-            object_fragment_x = (object_fragment_inds % object_bounding_box_dimensions_for_frags[...,:1]) + object_bounding_corners_bottom_left_for_frags[...,:1]
-            object_fragment_y_bbox = (object_fragment_inds // object_bounding_box_dimensions_for_frags[..., :1])
-            object_fragment_y = object_fragment_y_bbox + object_bounding_corners_bottom_left_for_frags[...,1:]
-
-            return (object_fragment_x, object_fragment_y, object_fragment_y_bbox, object_fragment_inds, object_bounding_box_dimensions,
-                    object_bounding_corners_bottom_left, object_to_fragment_gather_inds)
-
-        (fragment_x, fragment_y, fragment_y_bbox, fragment_inds,
-            object_bounding_box_dimensions, object_bounding_corners_bottom_left,
-         object_to_fragment_gather_inds
-         ) = get_bounding_box_fragment_coords(squish(corners_inds, -3, -2))
+        fragment_x, fragment_y, fragment_y_bbox, fragment_inds, \
+        object_bounding_box_dimensions, object_bounding_corners_bottom_left,\
+        object_to_fragment_gather_inds = self.get_windowed_bounding_boxes(bounding_corners, screen_width, screen_height,
+                                                                          window_coords)[-1]
 
         if fragment_x.numel() == 0:
             return None
-        control_points = corners_locs
 
-
-
-        control_net_lengths = (control_points[...,1:,:] - control_points[...,:-1,:]).norm(p=2, dim=-1).sum(-1)
-        maximum_net_length = control_net_lengths.amax()
-        num_sampled_points = (maximum_net_length*0.25).ceil().long().clamp_min_(1) # 1 sample per 4 pixel widths.
-        t = torch.linspace(0, 1, num_sampled_points, device=control_points.device)
+        control_points = corners
+        t = torch.linspace(0, 1, self.num_sampled_points, device=control_points.device)
         ##polygon_vertices = self.get_tensor((*control_points.shape[:3], num_sampled_points, 2))
         polygon_vertices = evaluate_cubic_bezier_old3(control_points, t.unsqueeze(-1))#, polygon_vertices, self.memory)
         # assert polygon_vertices.shape == [T, N, P, 2] (time (frames), num segments, num control points per segment, 2D)

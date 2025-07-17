@@ -1,4 +1,5 @@
 import collections
+import gc
 import math
 import os
 import time
@@ -17,10 +18,13 @@ from algan.constants.spatial import *
 from algan.animation.animation_contexts import Sync, AnimationManager, Off
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
 from algan.defaults.render_defaults import DEFAULT_RENDER_SETTINGS
+from algan.defaults.batch_defaults import DEFAULT_PORTION_MEMORY_USED_FOR_ANIMATING
 from algan.defaults.style_defaults import DEFAULT_FRAME
 import numpy as np
 
 from algan.rendering.post_processing import bloom_filter
+from algan.rendering.primitives.primitive import OutOfRenderMemory
+from algan.utils.memory_utils import get_num_available_bytes, ManualMemory
 from algan.utils.tensor_utils import unsquish
 
 
@@ -127,13 +131,12 @@ class Scene:
             for actor in list(sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)):
                 if actor.data.spawn_time() >= 0:
                     actor.despawn(**kwargs)
-        AnimationManager.wait()
 
     def get_audio(self, actors, start, end):
         active_actors = []
         time_inds = torch.arange(start, end)
         for actor_id, actor in enumerate(list(sorted(actors, key=lambda x: x.anchor_priority, reverse=True))):
-            if end <= actor.spawn_ind or actor.despawn_ind <= start or not hasattr(actor, 'render_audio'):
+            if (not hasattr(actor, 'spawn_ind')) or end <= actor.spawn_ind or actor.despawn_ind <= start or not hasattr(actor, 'render_audio'):
                 continue
             active_actors.append(actor)
             actor.set_state_to_time_t(time_inds)
@@ -144,51 +147,67 @@ class Scene:
         return sum((a.render_audio() for a in active_actors))
 
     @compiled
-    def get_fragments(self, actors, start, end, save_image=False, post_processes=[], transparent_background=False, background_color=None):
+    def render_primitive_batch(self, primitive_batch, start_ind, end_ind, save_image=False, post_processes=[], transparent_background=False, background_color=None):
+        time_inds = torch.arange(start_ind, end_ind)
         camera = self.camera
-        nt = end-start
-        active_actors = []
-        time_inds = torch.arange(start, end)
-        for actor_id, actor in enumerate(list(sorted(actors, key=lambda x: x.anchor_priority, reverse=True))):
-            if end <= actor.spawn_ind or actor.despawn_ind <= start or not actor.is_primitive:
-                continue
-            active_actors.append(actor)
-            actor.set_state_to_time_t(time_inds)
-
-        active_actors = [a for a in active_actors if hasattr(a, 'get_render_primitives')]
-        if len(active_actors) == 0:
-            return torch.empty((nt,)), None, None
-        self.has_any_active_actors = True
-        camera.set_state_to_time_t(time_inds)
         camera.screen.set_state_to_time_t(time_inds)
+        camera.set_state_to_time_t(time_inds)
+        camera.screen_width = self.num_pixels_screen_width * self.render_settings.anti_alias_level
+        camera.screen_height = self.num_pixels_screen_height * self.render_settings.anti_alias_level
         for l in self.light_sources:
             l.set_state_to_time_t(time_inds)
+            l.origin = l.location.unsqueeze(-2).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
+            l.light_color = (l.color[..., :-1] * l.color[..., -1:] * l.opacity).unsqueeze(-2).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
 
-        grouped_primitives = collections.defaultdict(lambda: [None, []])
+        gc.collect()
+        torch.cuda.empty_cache()
+        for primitive in primitive_batch:
+            primitive.project_to_screen(camera, self.light_sources)
 
-        for primitive in [actor.get_render_primitives() for actor in active_actors]:
-            if primitive is None:
-                continue
-            grouped_primitives[primitive.get_batch_identifier()][0] = primitive.__class__
-            grouped_primitives[primitive.get_batch_identifier()][1].append(primitive)
+        gc.collect()
+        self.memory = ManualMemory(algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING)
+        current_ind = start_ind
+        while True:
+            self.memory.reset()
+            torch.cuda.empty_cache()
+            duration = end_ind - current_ind
+            while True:
+                mem_used = sum([_.get_memory_used(current_ind-start_ind, current_ind+duration-start_ind) for _ in primitive_batch])
+                if mem_used <= self.memory.get_num_bytes_remaining():
+                    break
+                duration = duration // 2
+                if duration <= 1:
+                    duration = 1
+                    break
+            new_ind = current_ind + duration
 
-        # Return the values (the lists of grouped items) from the dictionary.
-        primitive_collections = []
-        for _, (primitive_class, primitives) in grouped_primitives.items():
-            primitive_collections.append(primitive_class(triangle_collection=primitives))
-            primitive_collections[-1].memory = self.memory
-            primitive_collections[-1].scene = self
-        self.memory.reset()
-        return primitive_collections[0].render(primitive_collections, self, save_image, self.num_pixels_screen_width,
-                                               self.num_pixels_screen_height, self.background_frame if background_color is None else background_color,
-                                               transparent_background,
-                                               camera.location.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
-                                               camera.screen.location.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
-                                               camera.screen.basis.to(DEFAULT_RENDER_DEVICE, non_blocking=True),
-                                               anti_alias_level=self.render_settings.anti_alias_level,
-                                               light_sources=[_.to(DEFAULT_RENDER_DEVICE) for _ in self.light_sources],
-                                               memory=self.memory,
-                                               post_processes=post_processes)
+            time_inds = torch.arange(current_ind, new_ind)
+            #camera.set_state_to_time_t(time_inds)
+            #camera.screen.set_state_to_time_t(time_inds)
+            #for l in self.light_sources:
+            #    l.set_state_to_time_t(time_inds)
+
+            primitive_batch[0].render(primitive_batch, self, save_image, self.num_pixels_screen_width,
+                                    self.num_pixels_screen_height,
+                                      current_ind-start_ind, new_ind-start_ind,
+                                    self.background_frame if background_color is None else background_color,
+                                    transparent_background,
+                                    camera.ray_origin,
+                                    camera.screen_point,
+                                    camera.screen_basis,
+                                    anti_alias_level=self.render_settings.anti_alias_level,
+                                    light_sources=self.light_sources,
+                                    memory=self.memory,
+                                    post_processes=post_processes)
+
+            current_ind = new_ind
+            if current_ind >= end_ind:
+                break
+
+        self.memory.data = None
+        self.memory = None
+        for actor in [self.camera, self.camera.screen, *self.light_sources]:
+            actor.reset_state()
 
     def get_frame(self, i):
         actors = self.actors[-1]
@@ -209,10 +228,57 @@ class Scene:
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
 
+    def get_batch_of_primitives(self, start_time_ind, max_end_time_ind, actors, max_mem_used):
+        max_end_time = max_end_time_ind / self.frames_per_second
+        start_time = start_time_ind / self.frames_per_second
+        primitive_actors = [_ for _ in actors if
+                            (_.data.spawn_time() <= max_end_time) and
+                            (_.data.despawn_time() >= start_time) and
+                            hasattr(_, 'get_render_primitives')]
+
+        # Binary search to find a batch size that will fit in memory.
+        duration = max_end_time_ind - start_time_ind
+        while True:
+            selected_actors = [_ for _ in primitive_actors if (_.data.spawn_time() <= (start_time_ind + duration)/self.frames_per_second)]
+            mem_used = sum([_.get_memory_used_per_timestep() * duration for _ in selected_actors])
+            if mem_used <= max_mem_used:
+                break
+            duration = duration // 2
+            if duration == 0:
+                return [], start_time_ind
+        actors = [_ for _ in actors if (_.data.spawn_time() <= (start_time_ind + duration)/self.frames_per_second) and
+                  (_.data.despawn_time() >= start_time)]
+        time_inds = torch.arange(start_time_ind, start_time_ind+duration+1)
+
+        grouped_primitives = collections.defaultdict(lambda: [None, []])
+        for actor in sorted(actors, key=lambda x: x.anchor_priority, reverse=True):
+            if hasattr(actor, 'already_set_state') and actor.already_set_state:
+                continue
+            actor.set_state_full(start_time_ind, start_time_ind + duration+1)
+            if hasattr(actor, 'get_render_primitives'):
+                actor.set_state_to_time_t(time_inds)
+                for component in actor.components:
+                    component.set_state_full(start_time_ind, start_time_ind + duration+1)
+                    component.set_state_to_time_t(time_inds)
+                primitive = actor.get_render_primitives()
+                if primitive is not None:
+                    grouped_primitives[primitive.get_batch_identifier()][0] = primitive.__class__
+                    grouped_primitives[primitive.get_batch_identifier()][1].append(primitive)
+            if not (actor == self.camera or actor == self.camera.screen or actor in self.light_sources):
+                actor.reset_state()
+
+        primitive_collections = []
+        for _, (primitive_class, primitives) in grouped_primitives.items():
+            primitive_collections.append(primitive_class(triangle_collection=primitives))
+            primitive_collections[-1].memory = self.memory
+            primitive_collections[-1].scene = self
+
+        return primitive_collections, start_time_ind + duration + 1
+
     def render_to_video(self, file_writer, file_path, file_path_out, audio_file_path,
                         batch_size_actors=None, batch_size_frames=None, post_processes=[bloom_filter],
                         background_color=None):
-        self.scene_times.append((self.scene_times[-1][1], (math.ceil(AnimationManager.instance().context.end_time * self.frames_per_second)+1)))
+        self.scene_times.append((self.scene_times[-1][1], (math.ceil(AnimationManager.instance().context.end_time * self.frames_per_second))))
         self.initialize_frames()
         self.original_background_frame = self.background_frame
         if background_color is not None:
@@ -249,40 +315,32 @@ class Scene:
                 self.file_path = file_path
                 self.file_writer = file_writer
 
-                num_actor_batches = self.get_num_batches(scene_start, scene_end, batch_size_actors)
-                all_actors = actors
-                for i in range(num_actor_batches):
-                    actor_s = i * batch_size_actors
-                    actor_e = min((i+1) * batch_size_actors, scene_end)
-                    if actor_s >= scene_end:
-                        continue
-                    for actor_id, actor in enumerate(list(sorted(actors, key=lambda x: x.anchor_priority, reverse=True))):
-                        actor.set_state_full(actor_s, actor_e)
+                current_time_ind = scene_start
 
-                    if self.camera.data.time_inds_materialized is None:
-                        break
-                    num_batches = self.get_num_batches(actor_s, actor_e, batch_size_frames)
-                    s = time.time()
-                    print(f'Rendering {(actor_e - actor_s) / self.frames_per_second} seconds of video.')
-                    for i in range(num_batches):
-                        start = actor_s + i * batch_size_frames
-                        if start >= scene_end:
-                            continue
-                        end = min(actor_s + (i + 1) * batch_size_frames, actor_e)
+                max_animate_mem = int(DEFAULT_PORTION_MEMORY_USED_FOR_ANIMATING * get_num_available_bytes(DEFAULT_RENDER_DEVICE != torch.device('cpu')))
 
-                        def run():
-                            self.get_fragments(actors, start, end, save_image, post_processes, transparent_background,
-                                               background_color)
-                            audio = self.get_audio(actors, start, end)
-                            wav_file.writeframes(bytes(((audio+1)*255/2).astype(np.uint8)))
-                            torch.cuda.empty_cache()
-                        run()
+                while True:
+                    primitives, new_time_ind = self.get_batch_of_primitives(current_time_ind, scene_end, actors, max_animate_mem)
+                    if new_time_ind <= current_time_ind:
+                        raise OutOfRenderMemory("Insufficient memory to render this scene,"
+                                                "please reduce the number of Mobs used.")
+                    if len(primitives) > 0:
+                        self.has_any_active_actors = True
+
+                        s = time.time()
+                        print(f'Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video.')
+                        self.render_primitive_batch(primitives, current_time_ind, new_time_ind, save_image, post_processes,
+                                                   transparent_background,
+                                                   background_color)
+                        audio = self.get_audio(actors, current_time_ind, new_time_ind)
+                        wav_file.writeframes(bytes(((audio + 1) * 255 / 2).astype(np.uint8)))
+                        #torch.cuda.empty_cache()
                         e = time.time()
-                        print(f'{i}: {start}:{end}, took {e-s} seconds')
-                        s = e
-                    actors = [a for a in actors if a.despawn_ind >= actor_e]
-                    for _ in all_actors:
-                        _.reset_state()
+                        print(f'{current_time_ind}:{new_time_ind}, took {e - s} seconds')
+
+                    current_time_ind = new_time_ind
+                    if new_time_ind > scene_end:
+                        break
 
         self.background_frame = self.original_background_frame
 

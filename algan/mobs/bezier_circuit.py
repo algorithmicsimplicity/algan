@@ -119,6 +119,10 @@ class BezierCircuitCubic(Renderable):
     def get_default_color(self):
         return PURPLE
 
+    def get_memory_used_per_timestep(self):
+        n = self.control_points.location.shape[-2] * 3 + self.texture_points.location.shape[-2] * 5 + self.location.shape[-2] * (6)
+        return n * 4
+
     def get_render_primitives(self):
         if self.empty:
             return None
@@ -168,7 +172,7 @@ class BezierCircuitCubic(Renderable):
         prim = self.render_primitive(x, next_segment_inds_offset, num_segments_per_circuit, c, o, self.basis[..., -3:],
                                      bw, bc, pc, self.location, cast_to_tensor(self.grid_width),
                                      cast_to_tensor(self.grid_height), self.basis[...,:3], self.basis[...,3:6],
-                                     glow=g, num_texture_points=self.num_texture_points, filled=self.filled)
+                                     glow=g, num_texture_points=self.num_texture_points, filled=self.filled, )
         prim.num_texture_points = self.num_texture_points
         return prim
 

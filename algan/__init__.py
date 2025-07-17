@@ -70,7 +70,7 @@ class SceneManager:
     def instance(cls):
         if cls._instance is None:
             if cls._memory is None:
-                cls._memory = ManualMemory(algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING)
+                cls._memory = None#ManualMemory(algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING)
             cls._instance = cls._scene_class(memory=cls._memory)
             cls._instance.scene_initializer = cls._scene_initializer
             cls._instance.reset_scene()

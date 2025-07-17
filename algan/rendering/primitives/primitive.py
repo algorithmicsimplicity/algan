@@ -5,6 +5,7 @@ import sys
 import traceback
 import gc
 
+from algan import DEFAULT_RENDER_DEVICE
 from algan.constants.color import BLUE, BLACK, WHITE
 from algan.geometry.geometry import intersect_line_with_plane
 from algan.rendering.post_processing import bloom_filter
@@ -21,18 +22,28 @@ class RenderPrimitive:
         self.corners = corners
         self.colors = colors
         self.normals = normals
+        self.padding = 1
 
     def get_batch_identifier(self):
         return f'{self.__class__}'
 
-    def render(self, primitives, scene, save_image, screen_width, screen_height, background_color, transparent_background=False, *args, **kwargs):
+    def get_memory_used_per_timestep(self):
+        return self.num_fragments_per_frame * 128
+
+    def get_memory_used(self, start_ind, end_ind):
+        #The blending process uses, for each fragment, 1 4-channel color and 1 5-channel color (9 floats), and one index (long), so 9*4+1*8 bytes.
+        mem_used_for_blending = self.num_fragments_per_frame * (9*4+8)
+        return (self.get_memory_used_per_timestep() + mem_used_for_blending) * (end_ind - start_ind)
+
+    def render(self, primitives, scene, save_image, screen_width, screen_height, time_start, time_end, background_color,
+               transparent_background=False, *args, **kwargs):
         screen_width *= kwargs['anti_alias_level']
         screen_height *= kwargs['anti_alias_level']
         window = (0, 0, screen_width, screen_height)
         kwargs['screen_width'] = screen_width
         kwargs['screen_height'] = screen_height
-        frames = self.render_window(primitives, scene, window, save_image, 0,
-                                    self.corners.shape[0], 0, 1, background_color,
+        frames = self.render_window(primitives, scene, window, save_image, time_start, time_end,
+                                    0, 1, background_color,
                                     False, transparent_background, *args, **kwargs)
 
     def post_process_frames(self, frames, anti_alias_level, post_processes=[]):
@@ -80,6 +91,7 @@ class RenderPrimitive:
         try:
             chunks = []
             for p in primitives:
+                p.memory = self.memory
                 chunk = p.render_(time_start, time_end, object_start, object_end, *args, **kwargs2, window_coords=window)
                 if chunk is not None:
                     chunks.append(chunk)#[_.clone() for _ in chunk])
@@ -101,6 +113,7 @@ class RenderPrimitive:
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
             traceback.clear_frames(exc_traceback)
+            #traceback.print_tb(exc_traceback)
             #exc_traceback.tb_next.tb_frame.clear()
 
             if (time_end - time_start) > 1:
@@ -192,6 +205,10 @@ class RenderPrimitive:
         # render invisble objects.
 
         def blend_colors(dists, inds, colors, out):
+            original_pointer = self.memory.current_pointer
+            inds_selected_ = self.get_tensor(inds.shape, inds.dtype)
+            c_write_ = self.get_tensor(colors.shape, colors.dtype)
+            c_read_ = self.get_tensor(out.shape, out.dtype)
             for i in range(max_buffer_depth):
                 max_dist, max_ind = scatter_arg_max(dists, inds, -1, dim_size=out.shape[-2])
                 if max_ind is None:
@@ -201,22 +218,30 @@ class RenderPrimitive:
                 dists.scatter_(-1, max_ind, -1.0)
 
                 def do_write(out):
-                    inds_selected = broadcast_gather(inds, -1, max_ind, keepdim=True)
-                    c_write = broadcast_gather(colors, -2, max_ind.unsqueeze(-1), keepdim=True)
+                    inds_selected = broadcast_gather(inds, -1, max_ind, out=inds_selected_[:len(max_ind)], keepdim=True)
+                    c_write = broadcast_gather(colors, -2, max_ind.unsqueeze(-1), out=c_write_[:len(max_ind)], keepdim=True)
                     ie = inds_selected.unsqueeze(-1).expand([-1, out.shape[-1]])
-                    c_read = broadcast_gather(out, -2, ie, keepdim=True)
+                    c_read = broadcast_gather(out, -2, ie, out=c_read_[:len(max_ind)], keepdim=True)
                     if transparent_output:
                         a = c_write[..., -1:].clone()
                         c_write[...,-1:] = 1
                     else:
                         a = c_write[..., -1:]
                         c_write = c_write[..., :-1]
-                    write = c_read * (1 - a) + a * (c_write)
-                    write = write * mask + (~mask) * c_read
+                    # write = c_read * (1 - a) + a * (c_write)
+                    c_write *= a
+                    a *= -1
+                    a += 1
+                    write = torch.addcmul(c_write, c_read, a, out=c_write)
+
+                    #write = write * mask + (~mask) * c_read
+                    write = torch.where(mask, write, c_read, out=write)
+
                     out.scatter_(-2, ie, write)
                     return out
 
                 out = do_write(out)
+            self.memory.current_pointer = original_pointer
             return out
 
         def blend_colors_layerwise(dists, inds, colors, out):
@@ -265,13 +290,81 @@ class RenderPrimitive:
         ind_counts = torch.histc(out_inds.float(), num_frames, min=0, max=(screen_width * screen_height * num_frames)).long()
         return out, out_inds, ind_counts
 
+    def get_windowed_bounding_boxes(self, bounding_corners, screen_width, screen_height, window_coords=None):
+        if window_coords is None:
+            window_coords = (0, 0, screen_width, screen_height)
+        start_x, start_y, end_x, end_y = window_coords
+        end_x = end_x
+        end_y = end_y
+        bounding_corners = bounding_corners.clamp(
+            min=torch.tensor((start_x, start_y), device=bounding_corners.device),
+            max=torch.tensor((end_x, end_y), device=bounding_corners.device))
+        bounding_box_sizes = (bounding_corners[..., 1, :] - bounding_corners[..., 0, :])
+        bbss = bounding_box_sizes.prod(-1, keepdim=True)
+        num_fragments_per_object = bbss.amax(0)
+        num_fragments_per_frame = num_fragments_per_object.sum()
+        num_fragments = num_fragments_per_frame * bbss.shape[0]
+
+        return bounding_corners, bounding_box_sizes, bbss, num_fragments_per_object, num_fragments_per_frame, num_fragments, None
+
+
+    def project_and_get_bounding_boxes(self, x, ray_origin, screen_point, screen_basis, screen_width, screen_height, window_coords=None):
+        rays = F.normalize(x - ray_origin, p=2, dim=-1)
+        projected_corners, _ = intersect_line_with_plane(rays, screen_point, screen_basis[..., -1:, :], ray_origin)
+        projected_corners.nan_to_num_()
+        projected_distances = (x - ray_origin).norm(p=2, dim=-1, keepdim=True)
+        projected_corners -= screen_point
+        corners_2d = dot_product(projected_corners.unsqueeze(-2), screen_basis[..., :-1, :].unsqueeze(-3), -1,
+                                 keepdim=False)
+        corners_2d.nan_to_num_()
+
+        corners_2d *= (screen_height // 2)
+        corners_2d[..., 0] += screen_width // 2
+        corners_2d[..., 1] += screen_height // 2
+
+        corners = corners_2d
+        corners_int = corners.int()
+
+        bounding_corners = torch.stack(((corners_int.amin(-2) - self.padding),
+                                        (corners_int.amax(-2) + self.padding)),
+                                       -2)
+
+        bounding_corners, bounding_box_sizes, bbss, num_fragments_per_object, num_fragments_per_frame, num_fragments, _ = self.get_windowed_bounding_boxes(bounding_corners, screen_width, screen_height, window_coords)
+
+        return corners, corners_int, projected_distances, bounding_corners, bounding_box_sizes,\
+            bbss, num_fragments_per_object, num_fragments_per_frame, num_fragments, _
+
+    def project_to_screen(self, camera, light_sources):
+        ray_origin = camera.ray_origin
+        screen_point = camera.screen_point
+        screen_basis = camera.screen_basis
+        screen_width = camera.screen_width
+        screen_height = camera.screen_height
+
+        light_intensity = 1
+        ambient_light_intensity = 1
+        d = -1
+        if hasattr(self, 'shader') and self.shader is not None:
+            for light_source in light_sources:
+                self.colors[..., :d] = self.shader(self.corners, self.normals, self.colors[..., :d], ray_origin,
+                                                   light_source.origin,
+                                                   light_source.light_color,
+                                                   light_intensity,
+                                                   ambient_light_intensity,
+                                                   *self.shader_param_values)
+
+        self.first_projection = True
+        self.corners, self.corners_int, self.projected_distances, self.bounding_corners, self.bounding_box_sizes,\
+            self.bbss, self.num_fragments_per_object, self.num_fragments_per_frame, \
+            self.num_fragments, _ = self.project_and_get_bounding_boxes(self.corners, ray_origin,
+                                                            screen_point, screen_basis, screen_width, screen_height)
+        self.first_projection = False
+        return self
+
     def render_(self, time_start, time_end, object_start, object_end, ray_origin, screen_point, screen_basis,
                background_color=BLACK, anti_alias=False, anti_alias_offset=[0.5, 0.5], anti_alias_level=1,
                light_sources=[], screen_width=2000, screen_height=2000, window_coords=None, memory=None,
                 primitive_type=None):
-        ray_origin = ray_origin.unsqueeze(-2)
-        screen_point = screen_point.unsqueeze(-2)
-        screen_basis = unsquish(screen_basis, -1, 3)
 
         def select_time(x):
             x = x if len(x) == 1 else x[time_start:time_end]
@@ -279,11 +372,9 @@ class RenderPrimitive:
             return x
 
         corners = select_time(self.corners)
-        normals = select_time(self.normals)
+        corners_int = select_time(self.corners_int)
+        projected_distances = select_time(self.projected_distances)
         colors = select_time(self.colors)
-        screen_point = select_time(screen_point)
-        screen_basis = select_time(screen_basis)
-        ray_origin = select_time(ray_origin)
 
         if window_coords is None:
             window_coords = 0, 0, screen_width, screen_height
@@ -292,37 +383,14 @@ class RenderPrimitive:
         window_height = window_coords[3] - window_coords[1]
         start_x, start_y, end_x, end_y = window_coords
 
-        def project_onto_screen(x):
-            rays = F.normalize(x - ray_origin, p=2, dim=-1)
-            projected_corners, _ = intersect_line_with_plane(rays, screen_point, screen_basis[..., -1:, :], ray_origin)
-            projected_corners.nan_to_num_()
-            projected_distances = (x - ray_origin).norm(p=2, dim=-1, keepdim=True)
-            projected_corners -= screen_point
-            corners_2d = dot_product(projected_corners.unsqueeze(-2), screen_basis[...,:-1, :].unsqueeze(-3), -1, keepdim=False)
-            corners_2d.nan_to_num_()
-            corners_2d *= (screen_height//2)
-            corners_2d[..., 0] += screen_width // 2
-            corners_2d[..., 1] += screen_height // 2
-            corners_locs = corners_2d
-            corners_inds = corners_locs.long()
-            return corners_locs, corners_inds, projected_distances
+        corners_locs, corners_inds, projected_distances = corners, corners_int, projected_distances
+        bounding_box_num_pixels = self.num_fragments_per_object
+        bounding_box_sizes = select_time(self.bounding_box_sizes)
+        bounding_corners = select_time(self.bounding_corners)
 
-        corners_locs, corners_inds, projected_distances = project_onto_screen(corners)
-        bounding_corners = torch.stack(((corners_inds.amin(-2)-1), (corners_inds.amax(-2)+1)), -2).clamp_(min=torch.tensor((start_x, start_y), device=corners_locs.device), max=torch.tensor((end_x, end_y), device=corners_locs.device))
-
-        bounding_box_sizes = (bounding_corners[..., 1, :] - bounding_corners[..., 0, :])
-
-        bbss = bounding_box_sizes.prod(-1, keepdim=True)
-        bounding_box_num_pixels = bbss.amax(0)
-        num_fragments = bounding_box_num_pixels.sum() * bbss.shape[0]
-        mem_per_fragment = 256
-        total_mem_required = num_fragments * mem_per_fragment
-
-        free_mem = memory.get_num_bytes_remaining()
-
-        if free_mem < total_mem_required:
-            raise InsufficientMemoryException
-
+        if window_width < screen_width or window_height < screen_height:
+            bounding_corners, bounding_box_sizes, bbss, bounding_box_num_pixels, num_fragments_per_frame, num_fragments, _ = self.get_windowed_bounding_boxes(
+                bounding_corners, screen_width, screen_height, window_coords)
 
         repeats = bounding_box_num_pixels.view(-1)
         num_frags = repeats.sum()
@@ -396,17 +464,7 @@ class RenderPrimitive:
         inds = inds[m]
         unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
 
-        self_colors = colors.clone()
-        for light_source in light_sources:
-            light_intensity = 1
-            ambient_light_intensity = 1
-            d = -1
-            self_colors[...,:d] = self.shader(corners, normals, self_colors[...,:d], ray_origin,
-                                               select_time(light_source.location).unsqueeze(-2),
-                                               select_time(light_source.color[..., :d] * light_source.color[..., -1:] * light_source.opacity).unsqueeze(-2),
-                                               light_intensity,
-                                               ambient_light_intensity, *[select_time(_) for _ in self.shader_param_values])
-
+        self_colors = colors
         #output_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
         #output_frags[:] = 0
         ##current_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))

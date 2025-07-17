@@ -45,7 +45,10 @@ def get_bary_coordinates(triangle_corners, fragment_x, fragment_y, aa_offsets):
         w3 *= -1
         w3 += 1
         # We carefully wrote w1, w2, w3 into the first 3 positions of cs, so we can just return that and save ourselves a stack.
-        return cs.view(*cs.shape[:-2], -1)[...,:3].unsqueeze(-1)
+        try:
+            return cs.view(*cs.shape[:-2], -1)[...,:3].unsqueeze(-1)
+        except:
+            return cs.view(*cs.shape[:-2], -1)[..., :3].unsqueeze(-1)
         #return torch.stack((w1, w2, w3), -2)
     return get_coords(aa_offsets)
     #return torch.stack([get_coords(_) for _ in aa_offsets])
@@ -85,6 +88,7 @@ class TrianglePrimitive(RenderPrimitive):
             unsquish(torch.cat(_, 1), -2, 3).to(DEFAULT_RENDER_DEVICE, non_blocking=True) for _ in
             zip(*(broadcast_all([triangle.corners, triangle.colors, triangle.normals,
                                  *triangle.shader_param_values], ignored_dims=[-1]) for triangle in triangle_collection)))
+            self.padding = 1
             return
         self.corners = corners
         if normals is None:
