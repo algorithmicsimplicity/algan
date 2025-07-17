@@ -1398,6 +1398,7 @@ class Mob(Animatable):
 
     def rotate_around_line(self, line_point, line_direction, *args, **kwargs):
         rotation_point = project_point_onto_line(self.location, line_direction, line_point)
+        kwargs['axis'] = line_direction
         return self.rotate_around_point(rotation_point, *args, **kwargs)
 
     @animated_function(animated_args={'num_degrees': 0}, unique_args=['axis'])
@@ -1430,10 +1431,15 @@ class Mob(Animatable):
         self.location = new_location  # This setter handles recursive rotation and updates
         return self
 
-    @animated_function(animated_args={'num_degrees': 0}, unique_args=['axis'])
     def orbit_around_point(self, point, num_degrees, axis):
-        self.rotate_around_point(point, num_degrees, axis)
-        return self.look_at(point)
+        with Sync():
+            self.rotate_around_point(point, num_degrees, axis)
+            self.rotate(num_degrees, axis)
+
+    def orbit_around_line(self, line_point, line_direction, *args, **kwargs):
+        rotation_point = project_point_onto_line(self.location, line_direction, line_point)
+        kwargs['axis'] = line_direction
+        return self.orbit_around_point(rotation_point, *args, **kwargs)
 
     @animated_function(animated_args={'num_degrees': 0}, unique_args=['axis'])
     def rotate_around_point_non_recursive(self, point: torch.Tensor, num_degrees: float | torch.Tensor,

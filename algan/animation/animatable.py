@@ -336,7 +336,7 @@ class Animatable:
         """
         start_time = self.animation_manager.context.current_time
         end_time = self.animation_manager.context.end_time
-        self._set_dependant_mobs_time_inds_to_self_then_run_function(lambda: function(self, time_elapsed, *args, **kwargs))
+        self._set_dependant_mobs_time_inds_to_self_then_run_function(lambda: function(self, cast_to_tensor(time_elapsed), *args, **kwargs))
         self.animation_manager.context.current_time = start_time
         self.animation_manager.context.end_time = end_time
         return self
@@ -366,7 +366,7 @@ class Animatable:
         with AnimationContext(record_funcs=True):
             self.animate_function_of_time(update_function, *args, **kwargs)
         self.passive_animations.append(self.data.history.most_recent_function_added)
-        self._passive_animation_functions.append(lambda mob, t: update_function(mob, t, *args, **kwargs))
+        self._passive_animation_functions.append(lambda mob, t: update_function(mob, cast_to_tensor(t), *args, **kwargs))
         self.passive_animations[-1][2] = start_pointer
         self.passive_animations[-1][3] = lambda: 1e13+1 # last forever, unless remove_updater is called to set it to an earlier time.
         return len(self.passive_animations)-1

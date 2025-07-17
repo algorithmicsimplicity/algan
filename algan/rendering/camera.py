@@ -41,6 +41,12 @@ class Camera(Mob):
             #self.animatable_attrs.update({'light_source_location'})
             self.spawn(animate=False)
 
+    def set_euler_angles(self, angle_1, angle_2, angle_3):
+        with Sync():
+            self.orbit_around_line(ORIGIN, RIGHT, num_degrees=angle_1)
+            self.orbit_around_line(ORIGIN, UP, num_degrees=angle_2)
+            self.orbit_around_line(ORIGIN, OUT, num_degrees=angle_3)
+
     def set_state_to_time_t(self, time_inds):
         super().set_state_to_time_t(time_inds)
         self.ray_origin = self.location.unsqueeze(-2).to(DEFAULT_RENDER_DEVICE, non_blocking=True)

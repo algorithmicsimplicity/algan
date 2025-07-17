@@ -45,10 +45,7 @@ def get_bary_coordinates(triangle_corners, fragment_x, fragment_y, aa_offsets):
         w3 *= -1
         w3 += 1
         # We carefully wrote w1, w2, w3 into the first 3 positions of cs, so we can just return that and save ourselves a stack.
-        try:
-            return cs.view(*cs.shape[:-2], -1)[...,:3].unsqueeze(-1)
-        except:
-            return cs.view(*cs.shape[:-2], -1)[..., :3].unsqueeze(-1)
+        return cs.view(*cs.shape[:-2], -1)[...,:3].unsqueeze(-1)
         #return torch.stack((w1, w2, w3), -2)
     return get_coords(aa_offsets)
     #return torch.stack([get_coords(_) for _ in aa_offsets])
