@@ -12,9 +12,9 @@ def get_num_available_bytes(device=torch.device('cuda')):
     if device == torch.device('cuda'):
         torch.cuda.empty_cache()
         free_bytes, total_bytes = torch.cuda.mem_get_info()
-        return free_bytes#torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_reserved(0)
+        return free_bytes
     elif device == torch.device('mps'):
-        allocated_bytes = torch.mps.current_allocated_memory()
+        allocated_bytes = torch.mps.driver_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
         return total_bytes - allocated_bytes
     else:
@@ -27,14 +27,12 @@ def empty_cache():
         torch.mps.empty_cache()
 
 class ManualMemory:
-    def __init__(self, portion_of_available_memory_used):
-        device = COMPUTING_DEFAULTS.render_device
-        self.is_cpu = device == torch.device('cpu')
+    def __init__(self, portion_of_available_memory_used, device=None):
+        if device is None:
+            device = COMPUTING_DEFAULTS.render_device
         self.current_pointer = 0
         self.max_pointer = 0
         self.stack = []
-        #if self.is_cpu:
-        #    return
 
         num_bytes = int(get_num_available_bytes(device) * portion_of_available_memory_used)
         self.data = torch.empty((num_bytes,), device=device, dtype=torch.bool)
@@ -42,14 +40,13 @@ class ManualMemory:
     def __len__(self):
         return len(self.data)
 
+    def get_percent_used(self):
+        return self.current_pointer / len(self)
+
     def get_num_bytes_remaining(self):
-        #if self.is_cpu:
-        #    return COMPUTING_DEFAULTS.max_cpu_memory_used
         return len(self) - self.current_pointer
 
     def get_tensor(self, shape, dtype=torch.float):
-        #if self.is_cpu:
-        #    return torch.empty(shape, dtype=dtype)
         shape = [_ for _ in shape]
         num_bytes = 1
         if dtype in [torch.int, torch.float]:
@@ -66,7 +63,7 @@ class ManualMemory:
             raise InsufficientMemoryException
 
         x = self.data[self.current_pointer+byte_align_offset:self.current_pointer + numel]
-        self.current_pointer = self.current_pointer + numel
+        self.current_pointer = self.current_pointer + numel.item()
         self.max_pointer = max(self.max_pointer, self.current_pointer)
         x = x.view(shape).view(dtype)
         return x

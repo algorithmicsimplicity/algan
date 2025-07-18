@@ -1,6 +1,6 @@
 [project]
 name = "algan"
-version = "0.0.29"
+version = "0.0.30"
 description = "The simplest animation engine for 3D graphics."
 authors = [
   {name = "Algorithmic Simplicity", email = "algorithmicsimplicity@gmail.com"},
@@ -20,7 +20,6 @@ classifiers = [
     "Natural Language :: English",
     ]
 
-
 requires-python = ">=3.9,<3.13"
 
 dependencies = [
@@ -36,6 +35,7 @@ dependencies = [
     "manim>=0.18.0",
     # for algan
 
+    "moviepy>=2.2.0",
     "dendroid>=1.6.0",
     "prioq>=0.6.0",
     "reprit>=0.9.0",

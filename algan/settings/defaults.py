@@ -15,7 +15,7 @@ class ComputingDefaults:
     portion_of_memory_used_for_rendering: float = 0.6
     max_cpu_memory_used = 1024 * MEGABYTES
     animation_device = torch.device('cpu')
-    render_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')#('mps' if torch.mps.is_available() else 'cpu'))
+    render_device = torch.device('cuda' if torch.cuda.is_available() else ('mps' if torch.mps.is_available() else 'cpu'))
 
 COMPUTING_DEFAULTS = ComputingDefaults()
 torch.set_default_device(COMPUTING_DEFAULTS.animation_device)

@@ -158,7 +158,7 @@ class Scene:
             l.light_color = (l.color[..., :-1] * l.color[..., -1:] * l.opacity).unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device, non_blocking=True)
 
         gc.collect()
-        torch.cuda.empty_cache()
+        empty_cache()
         for primitive in primitive_batch:
             primitive.project_to_screen(camera, self.light_sources)
 
@@ -336,7 +336,6 @@ class Scene:
                                                    background_color)
                         audio = self.get_audio(actors, current_time_ind, new_time_ind)
                         wav_file.writeframes(bytes(((audio + 1) * 255 / 2).astype(np.uint8)))
-                        #torch.cuda.empty_cache()
                         e = time.time()
                         print(f'{current_time_ind}:{new_time_ind}, took {e - s} seconds')
 
