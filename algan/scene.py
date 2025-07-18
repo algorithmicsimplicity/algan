@@ -124,6 +124,10 @@ class Scene:
         self.num_frames = int((self.max_time - self.min_time) * self.frames_per_second)
         return
 
+    @staticmethod
+    def clear():
+        algan.SceneManager.instance().clear_scene()
+
     def clear_scene(self, **kwargs):
         with Sync():
             for actor in list(sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)):
@@ -247,17 +251,17 @@ class Scene:
                 break
         actors = [_ for _ in actors if (_.data.spawn_time() <= (start_time_ind + duration)/self.frames_per_second) and
                   (_.data.despawn_time() >= start_time)]
-        time_inds = torch.arange(start_time_ind, start_time_ind+duration+1)
+        time_inds = torch.arange(start_time_ind, start_time_ind+duration)
 
         grouped_primitives = collections.defaultdict(lambda: [None, []])
         for actor in sorted(actors, key=lambda x: x.anchor_priority, reverse=True):
             if hasattr(actor, 'already_set_state') and actor.already_set_state:
                 continue
-            actor.set_state_full(start_time_ind, start_time_ind + duration+1)
+            actor.set_state_full(start_time_ind, start_time_ind + duration)
             if hasattr(actor, 'get_render_primitives'):
                 actor.set_state_to_time_t(time_inds)
                 for component in actor.components:
-                    component.set_state_full(start_time_ind, start_time_ind + duration+1)
+                    component.set_state_full(start_time_ind, start_time_ind + duration)
                     component.set_state_to_time_t(time_inds)
                 primitive = actor.get_render_primitives()
                 if primitive is not None:
@@ -272,7 +276,7 @@ class Scene:
             primitive_collections[-1].memory = self.memory
             primitive_collections[-1].scene = self
 
-        return primitive_collections, start_time_ind + duration + 1
+        return primitive_collections, start_time_ind + duration
 
     def background_is_transparent(self):
         return (self.background_frame[..., -1].min() < 1).item()
@@ -283,7 +287,7 @@ class Scene:
     def render_to_video(self, file_writer, file_path, file_path_out, audio_file_path,
                         batch_size_actors=None, batch_size_frames=None, post_processes=[bloom_filter],
                         background_color=None):
-        self.scene_times.append((self.scene_times[-1][1], (math.ceil(AnimationManager.instance().context.end_time * self.frames_per_second))))
+        self.scene_times.append((self.scene_times[-1][1], (round(AnimationManager.instance().context.end_time * self.frames_per_second))))
         self.initialize_frames()
         self.original_background_frame = self.background_frame
         if background_color is not None:
@@ -291,7 +295,7 @@ class Scene:
 
         transparent_background = self.background_is_transparent()
 
-        self.camera.wait(1/self.frames_per_second + 1e-4)
+        #self.camera.wait(1/self.frames_per_second + 1e-4)
         self.camera.despawn(animate=False)
         for l in self.light_sources:
             l.is_primitive = True
@@ -340,7 +344,7 @@ class Scene:
                         print(f'{current_time_ind}:{new_time_ind}, took {e - s} seconds')
 
                     current_time_ind = new_time_ind
-                    if new_time_ind > scene_end:
+                    if new_time_ind >= scene_end:
                         break
 
         self.background_frame = self.original_background_frame

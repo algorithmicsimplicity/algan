@@ -86,11 +86,8 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
                                          fps=render_settings.frames_per_second, with_mask=scene.background_is_transparent())
 
         try:
-            if render_settings.save_image:
-                with Off():
-                    scene.clear_scene(animate=False)
-            else:
-                scene.clear_scene()
+            with Off():
+                scene.clear_scene(animate=False)
             print(f'Rendering {file_name}')
             scene.render_to_video(file_writer, temp_file_path, file_path, audio_file_path, **kwargs)
         finally:
