@@ -33,7 +33,7 @@ class ManualMemory:
 
     def get_num_bytes_remaining(self):
         if self.is_cpu:
-            return math.inf
+            return DEFAULT_CPU_MEMORY_USED
         return len(self) - self.current_pointer
 
     def get_tensor(self, shape, dtype=torch.float):

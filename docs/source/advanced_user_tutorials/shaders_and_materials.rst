@@ -56,7 +56,7 @@ Let's look at an example.
 In this example, the first mob (left) uses the default shader, and the second (right)
 uses the PBR shader,
 with a range of different material properties. Note that the `smoothness` and `metallicness`
-attributes are not methods of the :class:`.Mob` class. When we called the :meth:`~.Mob.set_shader`
+attributes are not properties of the :class:`.Mob` class. When we called the :meth:`~.Mob.set_shader`
 method, it read the the function signature of the shader and realised that there were
 2 additional arguments named smoothness and metallicness, so it automatically
 added those as animatable attributes to our mob.

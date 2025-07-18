@@ -244,8 +244,9 @@ class Scene:
             if mem_used <= max_mem_used:
                 break
             duration = duration // 2
-            if duration == 0:
-                return [], start_time_ind
+            if duration <= 1:
+                duration = 1
+                break
         actors = [_ for _ in actors if (_.data.spawn_time() <= (start_time_ind + duration)/self.frames_per_second) and
                   (_.data.despawn_time() >= start_time)]
         time_inds = torch.arange(start_time_ind, start_time_ind+duration+1)
@@ -317,7 +318,8 @@ class Scene:
 
                 current_time_ind = scene_start
 
-                max_animate_mem = int(DEFAULT_PORTION_MEMORY_USED_FOR_ANIMATING * get_num_available_bytes(DEFAULT_RENDER_DEVICE != torch.device('cpu')))
+                max_animate_mem = int(DEFAULT_PORTION_MEMORY_USED_FOR_ANIMATING *
+                                      get_num_available_bytes(DEFAULT_RENDER_DEVICE != torch.device('cpu')))
 
                 while True:
                     primitives, new_time_ind = self.get_batch_of_primitives(current_time_ind, scene_end, actors, max_animate_mem)
