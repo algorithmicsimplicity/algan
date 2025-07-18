@@ -22,7 +22,7 @@ import numpy as np
 
 from algan.rendering.post_processing import bloom_filter
 from algan.rendering.primitives.primitive import OutOfRenderMemory
-from algan.utils.memory_utils import get_num_available_bytes, ManualMemory
+from algan.utils.memory_utils import get_num_available_bytes, ManualMemory, empty_cache
 from algan.utils.tensor_utils import unsquish
 
 
@@ -167,7 +167,7 @@ class Scene:
         current_ind = start_ind
         while True:
             self.memory.reset()
-            torch.cuda.empty_cache()
+            empty_cache()
             duration = end_ind - current_ind
             while True:
                 mem_used = sum([_.get_memory_used(current_ind-start_ind, current_ind+duration-start_ind) for _ in primitive_batch])
@@ -274,6 +274,12 @@ class Scene:
 
         return primitive_collections, start_time_ind + duration + 1
 
+    def background_is_transparent(self):
+        return (self.background_frame[..., -1].min() < 1).item()
+
+    def get_pixel_format(self):
+        return 'rgba' if self.background_is_transparent() else 'rgb'
+
     def render_to_video(self, file_writer, file_path, file_path_out, audio_file_path,
                         batch_size_actors=None, batch_size_frames=None, post_processes=[bloom_filter],
                         background_color=None):
@@ -283,7 +289,7 @@ class Scene:
         if background_color is not None:
             self.background_frame = background_color
 
-        transparent_background = self.background_frame[...,-1].min() < 1
+        transparent_background = self.background_is_transparent()
 
         self.camera.wait(1/self.frames_per_second + 1e-4)
         self.camera.despawn(animate=False)
@@ -313,7 +319,7 @@ class Scene:
                 current_time_ind = scene_start
 
                 max_animate_mem = int(COMPUTING_DEFAULTS.portion_of_memory_used_for_animating *
-                                      get_num_available_bytes(COMPUTING_DEFAULTS.render_device != torch.device('cpu')))
+                                      get_num_available_bytes(COMPUTING_DEFAULTS.render_device))
 
                 while True:
                     primitives, new_time_ind = self.get_batch_of_primitives(current_time_ind, scene_end, actors, max_animate_mem)
@@ -340,7 +346,7 @@ class Scene:
 
         self.background_frame = self.original_background_frame
 
-        file_writer.release()
+        file_writer.close()
         if True:#len(self.effects) == 0:
             if os.path.exists(file_path_out):
                 os.remove(file_path_out)

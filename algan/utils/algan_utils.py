@@ -9,17 +9,21 @@ import sys
 
 import torch
 import cv2
+from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter
 
 import algan
 from algan.settings.defaults import *
+from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan import compiled
 from algan.animation.animation_contexts import AnimationManager, Off
 from algan.rendering.camera import Camera
 from algan import SceneManager
+from algan.utils.memory_utils import empty_cache
 
 
 #@compiled
-def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec=None, file_extension=None, **kwargs):
+def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec=None,
+                   file_extension=None, background_color=None, **kwargs):
     """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
     as captured by the active :class:`~.Camera`, and saves the video to a file.
 
@@ -68,29 +72,18 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
         scene.set_render_settings(render_settings)
         if scene.camera is None:
             scene.camera = Camera(False)
-        torch.cuda.empty_cache()
+        empty_cache()
+        if background_color is None:
+            background_color = STYLE_DEFAULTS.background_color
+        scene.background_frame = scene.background_color = background_color
 
         temp_file_path = f'{temp_file_path}{file_ext}'
         file_path = f'{file_path}{file_ext}'
 
-
-        if file_ext == 'mp4':
-            codecs_to_try = ['h264', 'mp4v']
-        elif file_ext == 'avi':
-            codecs_to_try = ['XVID', 'MJPG']
-        else:
-            codecs_to_try = ['h264', 'mp4v', 'XVID', 'MJPG']
-        if codec is not None:
-            codecs_to_try = [codec]
-
-        file_writer = None
-        for fourcc_code in codecs_to_try:
-            file_writer = cv2.VideoWriter(temp_file_path, cv2.VideoWriter_fourcc(*fourcc_code),
-                                      render_settings.frames_per_second, render_settings.resolution)
-            if file_writer.isOpened():
-                break
-        if not file_writer.isOpened():
-            raise RuntimeError(f'None of the codecs in {codecs_to_try} are available on this system, please try a different codec.')
+        if codec is None:
+            codec = 'png'
+        file_writer = FFMPEG_VideoWriter(temp_file_path, size=render_settings.resolution, codec=codec,
+                                         fps=render_settings.frames_per_second, with_mask=scene.background_is_transparent())
 
         try:
             if render_settings.save_image:
@@ -101,7 +94,8 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             print(f'Rendering {file_name}')
             scene.render_to_video(file_writer, temp_file_path, file_path, audio_file_path, **kwargs)
         finally:
-            file_writer.release()
+            #file_writer.release()
+            file_writer.close()
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
             if os.path.exists(audio_file_path):

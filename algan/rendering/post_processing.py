@@ -116,44 +116,73 @@ def bloom_filter_old(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=31
     #return (x[...,:-1] + xb*strength).clamp_(max=255).to(xdtype)
 
 
-def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
+def bloom_filter_premultiply(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
     scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
 
     xdtype = x.dtype
 
     x = x.to(torch.float) / 255
-    color = x[...,:-1]
-    glow = x[..., -1:]# * strength
+    color = x[..., :3]
+    glow = x[..., 3:4]
 
-    k = (1-glow)#(-glow).exp()
-    #color = (color * (k) + (1-k) * torch.ones_like(color)) * glow * strength
     color = color * glow * strength
-    # To allow for dark colors to bloom as well as bright, we apply bloom filter to both color and inverse color,
-    # then average the result at the end.
-    #color = torch.cat((color*glow, (1-color)*(glow), glow), -1)
 
     d = 3
-    filter = torch.exp(-1*(torch.linspace(-d, d, kernel_size, device=x.device)**2))
+    filter = torch.exp(-1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2))
     filter /= filter.sum()
-    filter_horizontal = filter.view(1, 1,1,kernel_size).expand(color.shape[-1],-1,-1,-1)
+    filter_horizontal = filter.view(1, 1, 1, kernel_size).expand(color.shape[-1], -1, -1, -1)
     filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
 
-    # Do gaussian convolutions to spread colors.
-    p = (kernel_size-1)//2
+    p = (kernel_size - 1) // 2
 
-    color = color.permute(-1,0,1)
+    color = color.permute(-1, 0, 1)
     orig_shape = color.shape[-2:]
-    color = F.interpolate(color.unsqueeze(0), scale_factor=1/scale_factor, mode='bilinear').squeeze(0)
+    color = F.interpolate(color.unsqueeze(0), scale_factor=1 / scale_factor, mode='bilinear').squeeze(0)
 
     for i in range(num_iterations):
         color = F.conv2d(color, filter_horizontal, padding=(0, p), groups=color.shape[0])
         color = F.conv2d(color, filter_vertical, padding=(p, 0), groups=color.shape[0])
 
     color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode='bilinear').squeeze(0)
-    color = color.permute(1,2,0)
+    color = color.permute(1, 2, 0)
 
-    #color = color / color.amax(-1, keepdim=True).clamp_min_(1)
-    out = color + x[...,:-1]
+    out = torch.cat((x[..., :3] * x[...,4:5] + color, x[...,4:5]), -1)
+    return (out * 255).clamp_(min=0, max=255).to(xdtype)
+
+
+def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
+    scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
+
+    xdtype = x.dtype
+
+    x = x.to(torch.float) / 255
+    color = x[..., :3]
+    glow = x[..., 3:4]
+
+    color = color * glow * strength
+
+    d = 3
+    filter = torch.exp(-1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2))
+    filter /= filter.sum()
+    filter_horizontal = filter.view(1, 1, 1, kernel_size).expand(color.shape[-1], -1, -1, -1)
+    filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
+
+    p = (kernel_size - 1) // 2
+
+    color = color.permute(-1, 0, 1)
+    orig_shape = color.shape[-2:]
+    color = F.interpolate(color.unsqueeze(0), scale_factor=1 / scale_factor, mode='bilinear').squeeze(0)
+
+    for i in range(num_iterations):
+        color = F.conv2d(color, filter_horizontal, padding=(0, p), groups=color.shape[0])
+        color = F.conv2d(color, filter_vertical, padding=(p, 0), groups=color.shape[0])
+
+    color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode='bilinear').squeeze(0)
+    color = color.permute(1, 2, 0)
+
+    x[..., :3] += color
+    out = x
+    #out = torch.cat((x[..., :3] * x[...,4:5] + color, x[...,4:5]), -1)
     return (out * 255).clamp_(min=0, max=255).to(xdtype)
 
     color = color[...,:-1]

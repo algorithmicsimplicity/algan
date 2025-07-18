@@ -7,7 +7,7 @@ import gc
 
 from algan.constants.color import BLUE, BLACK, WHITE
 from algan.geometry.geometry import intersect_line_with_plane
-from algan.utils.memory_utils import InsufficientMemoryException
+from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, unsquish, unsqueeze_right, scatter_arg_max
 
 
@@ -47,22 +47,21 @@ class RenderPrimitive:
     def post_process_frames(self, frames, anti_alias_level, post_processes=[]):
         frame_out = frames
         frame_out = F.avg_pool2d(frame_out.float().permute(2, 0, 1), anti_alias_level).permute(1, 2, 0).to(torch.uint8)
-        if frame_out.shape[-1] == 5:
-            for p in post_processes:
-                frame_out = torch.cat((p(frame_out[...,:-1]), frame_out[...,-1:]), -1)
-            frame_out = frame_out.cpu().flip((-3))
-            frame_out = torch.cat((frame_out[...,:-1].flip(-1), frame_out[...,-1:]), -1)
-            return frame_out.numpy()
-        else:
-            for p in post_processes:
-                frame_out = p(frame_out)
-            return frame_out.cpu().flip((-3, -1)).numpy()
+        num_channels = frame_out.shape[-1]
+        for p in post_processes:
+            frame_out = p(frame_out)
+        if num_channels == frame_out.shape[-1]:
+            frame_out = frame_out[...,[*range(num_channels-2), -1]]
+        frame_out = frame_out.cpu().flip(-3)
+        #frame_out = frame_out.transpose(0, 1)
+        #frame_out[...,:3] = frame_out[...,:3].flip(-1)
+        return frame_out.numpy()
 
     def save_frames(self, frames, save_image, scene, **kwargs):
         frames = (self.post_process_frames(frame, **kwargs) for frame in frames)
         if not save_image:
             for frame in frames:
-                scene.file_writer.write(frame)
+                scene.file_writer.write_frame(frame)
         else:
             for frame in frames:
                 torchvision.utils.save_image(torch.from_numpy(frame).permute(-1, 0, 1) / 255, scene.file_path)
@@ -135,7 +134,7 @@ class RenderPrimitive:
                                                             (xm, ym, window[2], window[3])]]
 
                 gc.collect()
-                torch.cuda.empty_cache()
+                empty_cache()
                 frames = torch.cat((torch.cat((frames[0], frames[1]), 1), torch.cat((frames[2], frames[3]), 1)), 0)
                 frame_shape = frames.shape
                 frames = (_ for _ in [frames])

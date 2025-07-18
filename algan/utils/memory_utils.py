@@ -8,32 +8,43 @@ from algan.settings.defaults import COMPUTING_DEFAULTS
 class InsufficientMemoryException(Exception):
     pass
 
-def get_num_available_bytes(cuda=True):
-    if cuda:
+def get_num_available_bytes(device=torch.device('cuda')):
+    if device == torch.device('cuda'):
         torch.cuda.empty_cache()
         free_bytes, total_bytes = torch.cuda.mem_get_info()
         return free_bytes#torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_reserved(0)
+    elif device == torch.device('mps'):
+        allocated_bytes = torch.mps.current_allocated_memory()
+        total_bytes = torch.mps.recommended_max_memory()
+        return total_bytes - allocated_bytes
     else:
         return COMPUTING_DEFAULTS.max_cpu_memory_used
 
+def empty_cache():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if torch.mps.is_available():
+        torch.mps.empty_cache()
+
 class ManualMemory:
     def __init__(self, portion_of_available_memory_used):
-        self.is_cpu = COMPUTING_DEFAULTS.render_device == torch.device('cpu')
+        device = COMPUTING_DEFAULTS.render_device
+        self.is_cpu = device == torch.device('cpu')
         self.current_pointer = 0
         self.max_pointer = 0
         self.stack = []
         #if self.is_cpu:
         #    return
 
-        num_bytes = int(get_num_available_bytes() * portion_of_available_memory_used)
-        self.data = torch.empty((num_bytes,), device=COMPUTING_DEFAULTS.render_device, dtype=torch.bool)
+        num_bytes = int(get_num_available_bytes(device) * portion_of_available_memory_used)
+        self.data = torch.empty((num_bytes,), device=device, dtype=torch.bool)
 
     def __len__(self):
         return len(self.data)
 
     def get_num_bytes_remaining(self):
-        if self.is_cpu:
-            return COMPUTING_DEFAULTS.max_cpu_memory_used
+        #if self.is_cpu:
+        #    return COMPUTING_DEFAULTS.max_cpu_memory_used
         return len(self) - self.current_pointer
 
     def get_tensor(self, shape, dtype=torch.float):
