@@ -6,11 +6,12 @@ from svgelements import Path, Line, Move, Close
 import pathlib
 
 import manim as mn
-from algan.defaults.style_defaults import *
-from algan.defaults.device_defaults import DEFAULT_DEVICE
+from algan.settings.defaults import *
+from algan.settings.style_defaults import *
 from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag, Seq
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit, point_to_tensor2
 from algan.constants.spatial import DOWN, RIGHT
+from algan.constants.color import *
 from algan.mobs.group import Group
 from algan.mobs.mob import Mob
 from algan.mobs.image_mob import ImageMob
@@ -30,7 +31,7 @@ class Tex(Mob):
         base_font_size = 48
         t = (mn.MathTex if self.latex else mn.Text)(text, font_size=base_font_size)
         def maybe_flip(submob):
-            x = torch.from_numpy(submob.points).to(DEFAULT_DEVICE)
+            x = torch.from_numpy(submob.points).to(COMPUTING_DEFAULTS.animation_device)
             if (not latex) or (not isinstance(submob, mn.VMobjectFromSVGPath)):
                 return x.flip(-2)
             return x
@@ -111,7 +112,7 @@ class OldTex(Mob):
             del kwargs['preamble']
 
         if 'color' not in kwargs:
-            kwargs['color'] = DEFAULT_TEXT_COLOR
+            kwargs['color'] = STYLE_DEFAULTS.text_color
 
         kwargs2 = {k: v for k, v in kwargs.items()}
         if 'create' in kwargs2:

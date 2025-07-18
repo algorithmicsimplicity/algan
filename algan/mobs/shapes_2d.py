@@ -5,12 +5,13 @@ import torch.nn.functional as F
 
 from algan.animation.animation_contexts import Off, Sync
 from algan.constants.spatial import UP, RIGHT
+from algan.constants.color import *
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.mob import Mob
 from algan.mobs.renderable import Renderable
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
-from algan.defaults.style_defaults import *
+from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.tensor_utils import unsqueeze_left, broadcast_all, cast_to_tensor, unsquish
 from algan.utils.tensor_utils import mean
 
@@ -221,7 +222,7 @@ class SurroundingRectangle(Quad):
         Passed to :class:`~.BezierCircuitCubic`
 
     """
-    def __init__(self, mob, buffer=DEFAULT_BUFFER, **kwargs):
+    def __init__(self, mob, buffer=STYLE_DEFAULTS.buffer, **kwargs):
         bbox = mob.get_bounding_box()
         mn = bbox.amin(-2) - buffer
         mx = bbox.amax(-2) + buffer

@@ -2,8 +2,8 @@ import math
 
 import torch
 
-from algan import DEFAULT_CPU_MEMORY_USED
-from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
+from algan.settings.defaults import COMPUTING_DEFAULTS
+
 
 class InsufficientMemoryException(Exception):
     pass
@@ -14,31 +14,31 @@ def get_num_available_bytes(cuda=True):
         free_bytes, total_bytes = torch.cuda.mem_get_info()
         return free_bytes#torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_reserved(0)
     else:
-        return DEFAULT_CPU_MEMORY_USED
+        return COMPUTING_DEFAULTS.max_cpu_memory_used
 
 class ManualMemory:
     def __init__(self, portion_of_available_memory_used):
-        self.is_cpu = DEFAULT_RENDER_DEVICE == torch.device('cpu')
+        self.is_cpu = COMPUTING_DEFAULTS.render_device == torch.device('cpu')
         self.current_pointer = 0
         self.max_pointer = 0
         self.stack = []
-        if self.is_cpu:
-            return
+        #if self.is_cpu:
+        #    return
 
         num_bytes = int(get_num_available_bytes() * portion_of_available_memory_used)
-        self.data = torch.empty((1 if self.is_cpu else num_bytes,), device=DEFAULT_RENDER_DEVICE, dtype=torch.bool)
+        self.data = torch.empty((num_bytes,), device=COMPUTING_DEFAULTS.render_device, dtype=torch.bool)
 
     def __len__(self):
         return len(self.data)
 
     def get_num_bytes_remaining(self):
         if self.is_cpu:
-            return DEFAULT_CPU_MEMORY_USED
+            return COMPUTING_DEFAULTS.max_cpu_memory_used
         return len(self) - self.current_pointer
 
     def get_tensor(self, shape, dtype=torch.float):
-        if self.is_cpu:
-            return torch.empty(shape, dtype=dtype)
+        #if self.is_cpu:
+        #    return torch.empty(shape, dtype=dtype)
         shape = [_ for _ in shape]
         num_bytes = 1
         if dtype in [torch.int, torch.float]:

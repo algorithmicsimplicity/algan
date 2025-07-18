@@ -7,12 +7,7 @@ import os
 import shutil
 import torch
 
-from algan.defaults.batch_defaults import *
-from algan.defaults.device_defaults import *
-from algan.defaults.style_defaults import *
-from algan.defaults.render_defaults import *
-from algan.defaults.directory_defaults import *
-from algan.defaults.compute_defaults import *
+from algan.settings.defaults import *
 
 from algan.utils.memory_utils import ManualMemory
 
@@ -25,7 +20,7 @@ def compile_wrapper(function):
     def _decorate(func, compiled_func):
         @wraps(func)
         def wrapper_func(*args, **kwargs):
-            if COMPUTE_DEFAULTS.compiled:
+            if COMPUTING_DEFAULTS.compiled:
                 return compiled_func(*args, **kwargs)
             return func(*args, **kwargs)
         return wrapper_func
@@ -96,14 +91,12 @@ from algan.mobs.bezier_circuit import *
 from algan.scene import Scene
 
 from algan.animation.animation_contexts import *
-
 from algan.utils.algan_utils import *
-
 from algan.rendering.lights import *
 
 
 def clear_cache():
-    f = os.path.join(algan.defaults.directory_defaults.DEFAULT_DIR, 'algan_cache')
+    f = os.path.join(DIRECTORY_DEFAULTS.base_directory, 'algan_cache')
     if os.path.exists(f):
         shutil.rmtree(f)
 

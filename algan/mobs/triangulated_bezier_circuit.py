@@ -8,11 +8,9 @@ import torch
 import torch.nn.functional as F
 import svgelements
 
-import algan.defaults.directory_defaults
 from algan.constants.color import RED, WHITE, GREEN, RED_A
 from algan.constants.spatial import RIGHT, DOWN
-from algan.defaults.device_defaults import DEFAULT_DEVICE
-from algan.defaults.directory_defaults import DEFAULT_DIRECTORY
+from algan.settings.defaults import *
 from algan.geometry.geometry import get_roots_of_cubic, get_roots_of_quadratic, \
     get_2d_polygon_mask
 from algan.mobs.mob import Mob
@@ -415,8 +413,8 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
             all_grid_ids.append(ri.item())
 
     out = [*triangulate_simple_polygon(all_polygons)]
-    out = [_.to(DEFAULT_DEVICE, non_blocking=True) for _ in out]
-    torch.set_default_device(DEFAULT_DEVICE)
+    out = [_.to(COMPUTING_DEFAULTS.animation_device, non_blocking=True) for _ in out]
+    torch.set_default_device(COMPUTING_DEFAULTS.animation_device)
     out[1] = [out[1], torch.tensor(all_grid_ids), (len(grid_x) - 1), len(grid_y)-1]
     return out
 
@@ -628,9 +626,9 @@ class TriangulatedBezierCircuit(Mob):
                 hasher = hashlib.sha256()
                 hasher.update(hash_bytes.encode())
                 hash_bytes = hasher.hexdigest()[:32]
-                file_path = os.path.join(algan.defaults.directory_defaults.DEFAULT_DIRECTORY, 'algan_cache', f'{hash_bytes}.txt')
+                file_path = os.path.join(DIRECTORY_DEFAULTS.base_directory, 'algan_cache', f'{hash_bytes}.txt')
                 if os.path.exists(file_path):
-                    tiles, tile_counts = torch.load(file_path, map_location=DEFAULT_DEVICE)
+                    tiles, tile_counts = torch.load(file_path, map_location=COMPUTING_DEFAULTS.animation_device)
                     tiles = tiles + offset.float()[:2]
                     found_hash = True
 

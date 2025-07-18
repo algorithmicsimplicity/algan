@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.constants.color import BLUE, BLACK
-from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
+from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.geometry.geometry import intersect_line_with_plane, project_point_onto_line, project_point_onto_line_segment
 from algan.rendering.primitives.primitive import InsufficientMemoryException, RenderPrimitive2D
 from algan.utils.tensor_utils import broadcast_all, broadcast_scatter
@@ -156,26 +156,27 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         self.num_texture_points = num_texture_points
         self.filled = filled
         if triangle_collection is not None:
-            self.num_segments_per_circuit = torch.cat([_.num_segments_per_circuit for _ in triangle_collection]).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
-            self.num_segments_per_object = torch.stack([_.num_segments_per_circuit.sum() for _ in triangle_collection]).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
+            device = COMPUTING_DEFAULTS.render_device
+            self.num_segments_per_circuit = torch.cat([_.num_segments_per_circuit for _ in triangle_collection]).to(device, non_blocking=True)
+            self.num_segments_per_object = torch.stack([_.num_segments_per_circuit.sum() for _ in triangle_collection]).to(device, non_blocking=True)
 
             self.num_texture_points = triangle_collection[0].num_texture_points
             self.filled = triangle_collection[0].filled
-            self.corners = torch.cat([_.corners for _ in triangle_collection], -3).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
-            self.colors = torch.cat([_.colors for _ in triangle_collection], -3).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
+            self.corners = torch.cat([_.corners for _ in triangle_collection], -3).to(device, non_blocking=True)
+            self.colors = torch.cat([_.colors for _ in triangle_collection], -3).to(device, non_blocking=True)
             if self.num_texture_points == 0:
                 self.colors = self.colors.squeeze(-2)
-            self.next_segment_inds = torch.cat([_.next_segment_inds for _ in triangle_collection], -3).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
+            self.next_segment_inds = torch.cat([_.next_segment_inds for _ in triangle_collection], -3).to(device, non_blocking=True)
             self.next_segment_inds = self.next_segment_inds + torch.arange(self.next_segment_inds.shape[-3], device=self.next_segment_inds.device).view(-1,1,1)
 
             self.normals, self.border_width, self.border_color, self.portion_of_curve_drawn = (
-                ((torch.cat([(__) for __ in _], -2))).to(DEFAULT_RENDER_DEVICE, non_blocking=True) for _ in
+                ((torch.cat([(__) for __ in _], -2))).to(device, non_blocking=True) for _ in
                 zip(*((
                     triangle.normals, triangle.border_width, triangle.border_color, triangle.portion_of_curve_drawn)
                     for triangle in triangle_collection)))
 
             self.mob_center, self.grid_width, self.grid_height, self.basis1, self.basis2 = (
-                ((torch.stack([(__) for __ in _], 1))).to(DEFAULT_RENDER_DEVICE, non_blocking=True) for _ in
+                ((torch.stack([(__) for __ in _], 1))).to(device, non_blocking=True) for _ in
                 zip(*(broadcast_all((
                     triangle.mob_center,
                     triangle.grid_height,

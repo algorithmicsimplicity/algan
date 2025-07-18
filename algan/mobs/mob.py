@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from scipy.optimize import linear_sum_assignment
 from torch import Tensor, TensorType
 
+from algan.constants.math import RADIANS_TO_DEGREES
 from algan.rendering.shaders.pbr_shaders import default_shader
 from algan.animation.animatable import Animatable, animated_function, ModificationHistory, TimeInterval
 from algan.animation.animation_contexts import Seq, Off, Sync, AnimationContext, NoExtra
@@ -17,12 +18,13 @@ from algan.constants.spatial import *
 from algan.geometry.geometry import rotate_vector_around_axis, get_rotation_between_3d_vectors, project_point_onto_line, get_rotation_around_axis, map_global_to_local_coords, map_local_to_global_coords, \
     get_rotation_between_bases
 from algan.constants.rate_funcs import ease_out_exp, inversed, identity
-from algan.defaults.style_defaults import DEFAULT_BUFFER
+from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import dot_product, broadcast_gather, unsqueeze_right, unsquish, squish, \
     broadcast_cross_product, cast_to_tensor, mid_point
 
+DEFAULT_BUFFER = STYLE_DEFAULTS.buffer
 
 class ModifiedProtectedAttributeError(Exception):
     pass

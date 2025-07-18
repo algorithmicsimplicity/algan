@@ -2,7 +2,7 @@ import torch
 
 import algan
 from algan.constants.color import BLUE
-from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE, DEFAULT_DEVICE
+from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.rendering.primitives.primitive import RenderPrimitive
 from algan.utils.tensor_utils import broadcast_all
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, expand_as_left, unsquish, cast_to_tensor
@@ -64,8 +64,9 @@ def interpolate_triangle_corners(self, interpolation_coord, property):
 class TrianglePrimitive(RenderPrimitive):
     def __init__(self, corners=None, colors=BLUE, opacity=1, normals=None, perimeter_points=None,
                  reverse_perimeter=False, triangle_collection=None, glow=0, shader=None, **shader_kwargs):
-        glow = cast_to_tensor(glow).to(DEFAULT_DEVICE)
-        opacity = cast_to_tensor(opacity).to(DEFAULT_DEVICE)
+        device = COMPUTING_DEFAULTS.animation_device
+        glow = cast_to_tensor(glow).to(device)
+        opacity = cast_to_tensor(opacity).to(device)
         """
         corners: Tensor[batch[*], num_corners[3], corner_locations[3]]
             Location of triangle vertices/corners in 3d world space.
@@ -82,7 +83,7 @@ class TrianglePrimitive(RenderPrimitive):
         if triangle_collection is not None:
             self.shader = triangle_collection[0].shader
             self.corners, self.colors, self.normals, *self.shader_param_values = (
-            unsquish(torch.cat(_, 1), -2, 3).to(DEFAULT_RENDER_DEVICE, non_blocking=True) for _ in
+            unsquish(torch.cat(_, 1), -2, 3).to(COMPUTING_DEFAULTS.render_device, non_blocking=True) for _ in
             zip(*(broadcast_all([triangle.corners, triangle.colors, triangle.normals,
                                  *triangle.shader_param_values], ignored_dims=[-1]) for triangle in triangle_collection)))
             self.padding = 1

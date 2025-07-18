@@ -1,4 +1,4 @@
-from algan import DEFAULT_RENDER_DEVICE
+from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.animation.animation_contexts import Off, Sync
 from algan.constants.spatial import *#CAMERA_ORIGIN
 from algan.mobs.mob import Mob
@@ -49,9 +49,10 @@ class Camera(Mob):
 
     def set_state_to_time_t(self, time_inds):
         super().set_state_to_time_t(time_inds)
-        self.ray_origin = self.location.unsqueeze(-2).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
-        self.screen_point = self.screen.location.unsqueeze(-2).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
-        self.screen_basis = unsquish(self.screen.basis, -1, 3).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
+        device = COMPUTING_DEFAULTS.render_device
+        self.ray_origin = self.location.unsqueeze(-2).to(device, non_blocking=True)
+        self.screen_point = self.screen.location.unsqueeze(-2).to(device, non_blocking=True)
+        self.screen_basis = unsquish(self.screen.basis, -1, 3).to(device, non_blocking=True)
 
     def retroactive_center(self, mob, **kwargs):
         self.set_to_retroactive()

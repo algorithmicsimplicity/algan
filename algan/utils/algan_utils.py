@@ -11,6 +11,7 @@ import torch
 import cv2
 
 import algan
+from algan.settings.defaults import *
 from algan import compiled
 from algan.animation.animation_contexts import AnimationManager, Off
 from algan.rendering.camera import Camera
@@ -25,11 +26,11 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
     Parameters
     ----------
     file_name
-        Name of the output file (without extension). If None will use `DEFAULT_OUTPUT_FILENAME`.
+        Name of the output file (without extension). If None will use `DIRECTORY_DEFAULTS.output_filename`.
     output_dir
         Directory where to save the video. If None will use the directory of the running script.
     render_settings
-        The :class:`.RenderSettings` object to use to specify video properties. If None will use `DEFAULT_RENDER_SETTINGS`.
+        The :class:`.RenderSettings` object to use to specify video properties. If None will use `RENDERING_DEFAULTS.render_settings`.
     overwrite
         Whether the existing file at the output destination should be overwritten if one exists.
     codec
@@ -38,16 +39,16 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
     """
     with torch.inference_mode():
         if file_name is None:
-            file_name = algan.defaults.directory_defaults.DEFAULT_OUTPUT_FILENAME
+            file_name = DIRECTORY_DEFAULTS.output_filename
         if output_dir is None:
-            output_dir = algan.defaults.directory_defaults.DEFAULT_OUTPUT_DIRECTORY
+            output_dir = DIRECTORY_DEFAULTS.output_directory
         if output_path is None:
-            output_path = algan.defaults.directory_defaults.DEFAULT_OUTPUT_PATH
+            output_path = DIRECTORY_DEFAULTS.output_path
             if output_path is None:
-                output_path = algan.defaults.directory_defaults.DEFAULT_DIRECTORY
+                output_path = DIRECTORY_DEFAULTS.base_directory
         output_dir = os.path.join(output_path, output_dir)
         if render_settings is None:
-            render_settings = algan.defaults.render_defaults.DEFAULT_RENDER_SETTINGS
+            render_settings = RENDERING_DEFAULTS.settings
 
         file_name, file_ext = os.path.splitext(file_name)
         if file_ext == '':
@@ -125,14 +126,14 @@ def render_all_funcs(module_name, render_settings=None, profile=True, overwrite=
             scene_funcs = list(sorted(scene_funcs, key=lambda x: x[1].__code__.co_firstlineno))
 
             if render_settings is None:
-                render_settings = algan.defaults.render_defaults.DEFAULT_RENDER_SETTINGS
+                render_settings = RENDERING_DEFAULTS.settings
 
             if output_path is None:
-                output_path = algan.defaults.directory_defaults.DEFAULT_OUTPUT_PATH
+                output_path = DIRECTORY_DEFAULTS.output_path
                 if output_path is None:
-                    output_path = algan.defaults.directory_defaults.DEFAULT_DIRECTORY
+                    output_path = DIRECTORY_DEFAULTS.base_directory
             if output_dir is None:
-                output_dir = algan.defaults.directory_defaults.DEFAULT_OUTPUT_DIRECTORY
+                output_dir = DIRECTORY_DEFAULTS.output_directory
             output_dir = os.path.join(output_dir, module_name)
             if start_index < 0:
                 s = start_index + len(scene_funcs)

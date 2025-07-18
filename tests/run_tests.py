@@ -6,13 +6,12 @@ import shutil
 from unittest import TestCase
 from parameterized import parameterized
 
-import algan.defaults.render_defaults
-from algan import PREVIEW
+from algan import PREVIEW, RENDERING_DEFAULTS
 
 test_file_dir = 'test_files'
 test_files = [[f] for f in os.listdir(test_file_dir) if f.endswith('.py')]
 
-algan.defaults.render_defaults.DEFAULT_RENDER_SETTINGS = PREVIEW
+RENDERING_DEFAULTS.settings = PREVIEW
 
 class TestOverseer(TestCase):
     def setUp(self):

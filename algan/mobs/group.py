@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from algan.animation.animation_contexts import Sync, Off
 from algan.constants.spatial import RIGHT, DOWN, ORIGIN
 from algan.mobs.mob import Mob
-from algan.defaults.style_defaults import DEFAULT_BUFFER
+from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import dot_product, broadcast_gather
 
@@ -100,7 +100,7 @@ class Group(Mob):
         furthest_ind = dots.argmax(0, keepdim=True)
         return broadcast_gather(points, 0, furthest_ind, keepdim=False)
 
-    def arrange_in_line(self, direction:torch.Tensor=RIGHT, buffer:float=DEFAULT_BUFFER, start_at_first:bool=False,
+    def arrange_in_line(self, direction:torch.Tensor=RIGHT, buffer:float=STYLE_DEFAULTS.buffer, start_at_first:bool=False,
                         equal_displacement:bool=False, alignment_direction:torch.Tensor|None=None):
         """Moves the grouped mobs so that they lie along a given line.
 
@@ -155,7 +155,7 @@ class Group(Mob):
         return self
 
     def arrange_in_grid(self, num_rows:int=None, row_direction:torch.Tensor=RIGHT, column_direction:torch.Tensor=DOWN,
-                        buffer=DEFAULT_BUFFER, column_buffer=None, tight_axis=None):
+                        buffer=STYLE_DEFAULTS.buffer, column_buffer=None, tight_axis=None):
         """Moves the grouped mobs so that they in a given grid.
 
         Parameters

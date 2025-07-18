@@ -3,7 +3,7 @@ from typing import overload, Tuple
 import torch
 import re
 
-from algan import DEFAULT_DEVICE
+from algan.settings.defaults import COMPUTING_DEFAULTS
 
 re_hex = re.compile("((?<=#)|(?<=0x))[A-F0-9]{6,8}", re.IGNORECASE)
 
@@ -17,7 +17,7 @@ class Color(torch.Tensor):
             rgb = (((tmp >> 24) & 0xFF) / 255,
                    ((tmp >> 16) & 0xFF) / 255,
                    ((tmp >> 8) & 0xFF) / 255)
-        return super().__new__(cls, (*rgb, glow, opacity), *args, **kwargs).to(DEFAULT_DEVICE)
+        return super().__new__(cls, (*rgb, glow, opacity), *args, **kwargs).to(COMPUTING_DEFAULTS.animation_device)
 
     def __init__(self, rgb, glow=0, opacity=1, *args, **kwargs):
         pass#super().__init__((red, green, blue, glow, opacity))

@@ -5,10 +5,8 @@ import sys
 import traceback
 import gc
 
-from algan import DEFAULT_RENDER_DEVICE
 from algan.constants.color import BLUE, BLACK, WHITE
 from algan.geometry.geometry import intersect_line_with_plane
-from algan.rendering.post_processing import bloom_filter
 from algan.utils.memory_utils import InsufficientMemoryException
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, unsquish, unsqueeze_right, scatter_arg_max
 

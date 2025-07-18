@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from algan.defaults.device_defaults import DEFAULT_DEVICE
+from algan.settings.defaults import *
 
 try:
     from torch_scatter import scatter_max as scatter_max_op
@@ -90,9 +90,10 @@ def make_grid(height, width=None, min_coord=-1, max_coord=1, min_coord2=None, ma
     if max_coord2 is None:
         max_coord2 = max_coord
 
-    return torch.stack((torch.zeros((height, width), device=DEFAULT_DEVICE),
-           torch.linspace(min_coord, max_coord, height, device=DEFAULT_DEVICE).view(-1,  1).expand(torch.Size([-1, width])),
-           torch.linspace(min_coord2, max_coord2, width, device=DEFAULT_DEVICE).view(1, -1).expand(torch.Size([height, -1]))), -1)
+    device = COMPUTING_DEFAULTS.animation_device
+    return torch.stack((torch.zeros((height, width), device=device),
+           torch.linspace(min_coord, max_coord, height, device=device).view(-1,  1).expand(torch.Size([-1, width])),
+           torch.linspace(min_coord2, max_coord2, width, device=device).view(1, -1).expand(torch.Size([height, -1]))), -1)
 
 
 def add_dummy_dims_right(x, y):

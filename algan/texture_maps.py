@@ -2,13 +2,14 @@ import copy
 
 import torch
 
-from algan.defaults.style_defaults import DEFAULT_SPRITE_COLOR
+from algan.constants.color import *
+#from algan.defaults.style_defaults import DEFAULT_SPRITE_COLOR
 
 
 class TextureMap:
     def __init__(self, specification=None):
         if specification is None:
-            specification = DEFAULT_SPRITE_COLOR
+            specification = BLACK#DEFAULT_SPRITE_COLOR
         self.specification = specification
         if isinstance(specification, torch.Tensor):
             self.get_texture = self.get_constant_color#lambda coords: specification.view(([1] * (coords.dim()-1)) + [-1]).expand(list(coords.shape[:-1]) + [-1])

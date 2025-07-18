@@ -10,16 +10,14 @@ import torch
 import torch.nn.functional as F
 
 import algan
+from algan.settings.defaults import *
+from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan import compiled
 #from algan.rendering.camera import Camera
 from algan.constants.color import *
 from algan.constants.spatial import *
 #from algan.rendering.lights import PointLight
 from algan.animation.animation_contexts import Sync, AnimationManager, Off
-from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
-from algan.defaults.render_defaults import DEFAULT_RENDER_SETTINGS
-from algan.defaults.batch_defaults import DEFAULT_PORTION_MEMORY_USED_FOR_ANIMATING
-from algan.defaults.style_defaults import DEFAULT_FRAME
 import numpy as np
 
 from algan.rendering.post_processing import bloom_filter
@@ -33,8 +31,8 @@ class EmptySceneWarning(Warning):
 
 
 class Scene:
-    def __init__(self, background_frame=DEFAULT_FRAME, output_path='output', memory=None,
-                 render_settings=DEFAULT_RENDER_SETTINGS,
+    def __init__(self, background_frame=STYLE_DEFAULTS.frame, output_path='output', memory=None,
+                 render_settings=RENDERING_DEFAULTS.settings,
                  scene_initializer=lambda x: x):
         self.set_render_settings(render_settings)
         self.current_time = 0
@@ -156,8 +154,8 @@ class Scene:
         camera.screen_height = self.num_pixels_screen_height * self.render_settings.anti_alias_level
         for l in self.light_sources:
             l.set_state_to_time_t(time_inds)
-            l.origin = l.location.unsqueeze(-2).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
-            l.light_color = (l.color[..., :-1] * l.color[..., -1:] * l.opacity).unsqueeze(-2).to(DEFAULT_RENDER_DEVICE, non_blocking=True)
+            l.origin = l.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device, non_blocking=True)
+            l.light_color = (l.color[..., :-1] * l.color[..., -1:] * l.opacity).unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device, non_blocking=True)
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -165,7 +163,7 @@ class Scene:
             primitive.project_to_screen(camera, self.light_sources)
 
         gc.collect()
-        self.memory = ManualMemory(algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING)
+        self.memory = ManualMemory(COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering)
         current_ind = start_ind
         while True:
             self.memory.reset()
@@ -287,10 +285,6 @@ class Scene:
 
         transparent_background = self.background_frame[...,-1].min() < 1
 
-        if batch_size_actors is None:
-            batch_size_actors = algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_ACTORS
-        if batch_size_frames is None:
-            batch_size_frames = algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_FRAMES
         self.camera.wait(1/self.frames_per_second + 1e-4)
         self.camera.despawn(animate=False)
         for l in self.light_sources:
@@ -318,8 +312,8 @@ class Scene:
 
                 current_time_ind = scene_start
 
-                max_animate_mem = int(DEFAULT_PORTION_MEMORY_USED_FOR_ANIMATING *
-                                      get_num_available_bytes(DEFAULT_RENDER_DEVICE != torch.device('cpu')))
+                max_animate_mem = int(COMPUTING_DEFAULTS.portion_of_memory_used_for_animating *
+                                      get_num_available_bytes(COMPUTING_DEFAULTS.render_device != torch.device('cpu')))
 
                 while True:
                     primitives, new_time_ind = self.get_batch_of_primitives(current_time_ind, scene_end, actors, max_animate_mem)
