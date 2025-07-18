@@ -1,5 +1,6 @@
 import torch
 
+from algan.constants.color import Color
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.group import Group
@@ -29,7 +30,7 @@ class ManimMob(BezierCircuitCubic):
                 continue
             if submob.n_points_per_curve != 4 or submob.n_points_per_cubic_curve != 4:
                 raise NotImplementedError('ManimMob does not support Mobjects which do not have n_points_per_curve == 4')
-            children.append(ManimMob(submob))
+            children.append(ManimMob(submob, **kwargs))
 
         empty = False
         if len(manim_mob.points) == 0:
@@ -43,10 +44,12 @@ class ManimMob(BezierCircuitCubic):
             control_points = unsquish(points.float(), -2, 4)
 
         def convert_manim_color(manim_color, opacity):
-            c = torch.from_numpy(manim_color.to_rgba()).float()
+            rgba = manim_color.to_rgba()
+            rgb = rgba[:3]
+            a = rgba[-1]
             if opacity is not None:
-                c[-1] *= opacity
-            return torch.cat((c[:-1], torch.tensor((0,)), c[-1:]))
+                a =a * opacity
+            return Color(rgb, glow=0, opacity=a)
         super().__init__(control_points * manim_scale_factor, color=convert_manim_color(manim_mob.fill_color, opacity=manim_mob.fill_opacity), opacity=1,
                          border_color=convert_manim_color(manim_mob.stroke_color, manim_mob.stroke_opacity),
                          border_width=manim_mob.stroke_width,

@@ -25,6 +25,7 @@ class ComputingDefaults:
 COMPUTING_DEFAULTS = ComputingDefaults()
 torch.set_default_device(COMPUTING_DEFAULTS.animation_device)
 torch.set_default_dtype(torch.float32)
+print(f'Rendering device set to {COMPUTING_DEFAULTS.render_device}')
 
 @dataclass
 class DirectoryDefaults:

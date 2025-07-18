@@ -2,7 +2,7 @@ import torch
 
 import algan
 from algan.constants.color import BLUE
-from algan.settings.defaults import COMPUTING_DEFAULTS
+from algan.settings.defaults import *
 from algan.rendering.primitives.primitive import RenderPrimitive
 from algan.utils.tensor_utils import broadcast_all
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, expand_as_left, unsquish, cast_to_tensor
@@ -99,7 +99,7 @@ class TrianglePrimitive(RenderPrimitive):
         self.shader_param_values = broadcast_all([colors, *shader_kwargs.values()], ignored_dims=[-1])[1:]
 
         if shader is None:
-            shader = algan.defaults.render_defaults.DEFAULT_SHADER
+            shader = RENDERING_DEFAULTS.shader
         self.shader = shader
 
     def get_batch_identifier(self):

@@ -3,6 +3,7 @@ from typing import overload, Tuple
 import torch
 import re
 
+from algan.utils.tensor_utils import broadcast, cast_to_tensor
 from algan.settings.defaults import COMPUTING_DEFAULTS
 
 re_hex = re.compile("((?<=#)|(?<=0x))[A-F0-9]{6,8}", re.IGNORECASE)
@@ -31,6 +32,14 @@ class Color(torch.Tensor):
         self.data[..., -1:] = value
 
     @property
+    def glow(self):
+        return self.data[..., -2:-1]
+
+    @glow.setter
+    def glow(self, value):
+        self.data[..., -2:-1] = value
+
+    @property
     def rgb(self):
         return self.data[...,:3]
 
@@ -45,12 +54,22 @@ class Color(torch.Tensor):
         out.rgb = self.rgb * orgb
         return out
 
-    def set_opacity(self, opacity):
+    def prep_set(self, value):
+        value = cast_to_tensor(value)
         out = self.new_empty()
         out.data = self.data.clone()
+        out = broadcast(out, value, [-1]).contiguous()
+        return out
+
+    def set_opacity(self, opacity):
+        out = self.prep_set(opacity)
         out.opacity = opacity
         return out
 
+    def set_glow(self, glow):
+        out = self.prep_set(glow)
+        out.glow = glow
+        return out
 
     def convert_to_uint8(self):
         return (self * 255).to(torch.uint8)

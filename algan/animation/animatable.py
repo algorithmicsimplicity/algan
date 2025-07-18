@@ -716,10 +716,7 @@ class Animatable:
         return 0
 
     def set_state_to_time_t(self, time_inds):
-        try:
-            self.data.time_inds_active = (self.data.time_inds_materialized.view(-1,1) == time_inds.view(1,-1)).sum(1).nonzero().view(-1)
-        except:
-            self.data.time_inds_active = (self.data.time_inds_materialized.view(-1,1) == time_inds.view(1,-1)).sum(1).nonzero().view(-1)
+        self.data.time_inds_active = (self.data.time_inds_materialized.view(-1,1) == time_inds.view(1,-1)).sum(1).nonzero().view(-1)
         return self
 
     def set_state_to_time_all(self):
@@ -782,10 +779,6 @@ class Animatable:
         animating_inds = [torch.zeros((1,), dtype=torch.long)]
         for func, animated_args, kwargs, start_times, end_times, extended_end_times, rate_funcs in self.func_history:
             (func, caller) = func
-            if (extended_end_times != end_times).any():
-                print(' ')
-                if 'num_degrees' in kwargs or ('key' in kwargs and kwargs['key'] == 'location'):
-                    print(' ')#extended_end_times = end_times
             found = ((start_times < t) & (t < extended_end_times)).type(t.dtype)
             if found.nonzero().numel() == 0:
                 continue

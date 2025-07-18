@@ -93,7 +93,9 @@ class BezierCircuitCubic(Renderable):
             self.num_texture_points = texture_triangle_vertices.shape[-2]
 
             #control_points = torch.cat((control_points, texture_triangle_vertices), -2)
-        kwargs['color'] = self.color
+        self.border_width = cast_to_tensor(border_width)
+        self.border_color = cast_to_tensor(border_color)
+        kwargs['color'] = self.color if self.filled else self.border_color
         with Off():
             self.texture_points = Mob(texture_triangle_vertices, **kwargs)
             self.texture_points.exclude_from_boundary = True
@@ -106,8 +108,6 @@ class BezierCircuitCubic(Renderable):
             self.control_points.num_points_per_object = 4
             self.components = [self.texture_points, self.control_points]
 
-        self.border_width = cast_to_tensor(border_width)
-        self.border_color = cast_to_tensor(border_color)
         self.portion_of_curve_drawn = cast_to_tensor(portion_of_curve_drawn)
         self.normals = normals
         self.is_primitive = True

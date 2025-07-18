@@ -661,13 +661,14 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
             def get_colors():
                 colors = interpolated_colors
-                border_colors_frags = self.expand_verts_to_frags(squish(border_colors,0,1), object_to_fragment_gather_inds)
                 colors = colors.reshape(-1, colors.shape[-1])
                 colors = colors[m]
 
-                border_colors_frags = border_colors_frags.reshape(-1, border_colors_frags.shape[-1])
-                border_colors_frags = border_colors_frags[m]
-                colors[...,:] = colors[...,:] * (1-border_mask) + border_mask * border_colors_frags
+                if self.filled:
+                    border_colors_frags = self.expand_verts_to_frags(squish(border_colors, 0, 1), object_to_fragment_gather_inds)
+                    border_colors_frags = border_colors_frags.reshape(-1, border_colors_frags.shape[-1])
+                    border_colors_frags = border_colors_frags[m]
+                    colors[...,:] = colors[...,:] * (1-border_mask) + border_mask * border_colors_frags
                 return colors
 
             colors = get_colors()
