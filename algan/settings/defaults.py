@@ -39,6 +39,7 @@ DIRECTORY_DEFAULTS = DirectoryDefaults()
 @dataclass
 class RenderingDefaults:
     settings = LD
-    shader = default_shader  # basic_pbr_shader
+    shader = None
 
 RENDERING_DEFAULTS = RenderingDefaults()
+RENDERING_DEFAULTS.shader = default_shader
