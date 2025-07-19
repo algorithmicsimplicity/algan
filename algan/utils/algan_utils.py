@@ -85,9 +85,15 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
                 codec = 'png'
             else:
                 codec = 'libx264'
-        file_writer = FFMPEG_VideoWriter(temp_file_path, size=render_settings.resolution, codec=codec,
-                                         fps=render_settings.frames_per_second, with_mask=scene.background_is_transparent(),
-                                         ffmpeg_params=ffmpeg_params)
+        try:
+            file_writer = FFMPEG_VideoWriter(temp_file_path, size=render_settings.resolution, codec=codec,
+                                             fps=render_settings.frames_per_second, with_mask=scene.background_is_transparent(),
+                                             ffmpeg_params=ffmpeg_params)
+        except TypeError:
+            file_writer = FFMPEG_VideoWriter(temp_file_path, size=render_settings.resolution, codec=codec,
+                                             fps=render_settings.frames_per_second,
+                                             withmask=scene.background_is_transparent(),
+                                             ffmpeg_params=ffmpeg_params)
 
         try:
             with Off():

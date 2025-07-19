@@ -7,6 +7,7 @@ import gc
 
 from algan.constants.color import BLUE, BLACK, WHITE
 from algan.geometry.geometry import intersect_line_with_plane
+from algan.logging.logger import LoggerManager
 from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, unsquish, unsqueeze_right, scatter_arg_max
 
@@ -107,6 +108,8 @@ class RenderPrimitive:
                 frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['screen_height'], transparent_output)
                 frames = scene.get_frames_from_fragments(frags, window, out, anti_alias_level=kwargs['anti_alias_level'])
             if (window[2]-window[0]) == kwargs['screen_width'] and (window[3]-window[1]) == kwargs['screen_height']:
+                LoggerManager.instance().set_class('rendering').log_message(
+                    f'beginning save_frames,')
                 self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'], post_processes=post_processes)
         except (InsufficientMemoryException, torch.OutOfMemoryError):
             self.memory.current_pointer = original_pointer

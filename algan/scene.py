@@ -259,7 +259,7 @@ class Scene:
         logger = LoggerManager.instance().set_class('batching')
         logger.log_message(f'Fetching batch of primitives from {start_time_ind}:{start_time_ind+duration}.')
         actors = [_ for _ in actors if (_.data.spawn_time() <= (start_time_ind + duration)/self.frames_per_second) and
-                  (_.data.despawn_time() >= start_time)]
+                  (_.data.despawn_time() >= start_time_ind/self.frames_per_second)]
         time_inds = torch.arange(start_time_ind, start_time_ind+duration)
 
         grouped_primitives = collections.defaultdict(lambda: [None, []])
@@ -278,6 +278,8 @@ class Scene:
                     grouped_primitives[primitive.get_batch_identifier()][1].append(primitive)
             if not (actor == self.camera or actor == self.camera.screen or actor in self.light_sources):
                 actor.reset_state()
+                for component in actor.components:
+                    component.reset_state()
 
         primitive_collections = []
         for _, (primitive_class, primitives) in grouped_primitives.items():

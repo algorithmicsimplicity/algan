@@ -178,7 +178,7 @@ def broadcast_gather(src, dim:int, ind, keepdim=False, **kwargs):
 
 def broadcast_scatter(input, dim, ind, src, **kwargs):
     input, ind, src = broadcast_all([input, ind, src], ignored_dims=[dim if dim >= 0 else len(src.shape)+dim])
-    return input.scatter_reduce(dim, ind, src, **kwargs)
+    return input.cpu().scatter_reduce(dim, ind.cpu(), src.cpu(), **kwargs).to(input.device, dtype=input.dtype)
 
 
 def offset(x):
