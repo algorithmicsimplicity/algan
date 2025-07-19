@@ -20,10 +20,10 @@ from algan.rendering.camera import Camera
 from algan import SceneManager
 from algan.utils.memory_utils import empty_cache
 
-
+#‘mpeg4’ > ‘libx264’
 #@compiled
 def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec=None,
-                   file_extension=None, background_color=None, **kwargs):
+                   file_extension=None, background_color=None, ffmpeg_params=[], **kwargs):
     """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
     as captured by the active :class:`~.Camera`, and saves the video to a file.
 
@@ -81,9 +81,13 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
         file_path = f'{file_path}{file_ext}'
 
         if codec is None:
-            codec = 'png'
+            if scene.background_is_transparent():
+                codec = 'png'
+            else:
+                codec = 'libx264'
         file_writer = FFMPEG_VideoWriter(temp_file_path, size=render_settings.resolution, codec=codec,
-                                         fps=render_settings.frames_per_second, with_mask=scene.background_is_transparent())
+                                         fps=render_settings.frames_per_second, with_mask=scene.background_is_transparent(),
+                                         ffmpeg_params=ffmpeg_params)
 
         try:
             with Off():

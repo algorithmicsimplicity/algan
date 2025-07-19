@@ -240,6 +240,7 @@ class Scene:
 
         # Binary search to find a batch size that will fit in memory.
         duration = max_end_time_ind - start_time_ind
+        duration = min(duration, COMPUTING_DEFAULTS.max_animate_batch_size)
         while True:
             selected_actors = [_ for _ in primitive_actors if (_.data.spawn_time() <= (start_time_ind + duration)/self.frames_per_second)]
             mem_used = sum([_.get_memory_used_per_timestep() * duration for _ in selected_actors])

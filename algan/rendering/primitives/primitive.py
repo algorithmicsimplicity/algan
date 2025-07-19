@@ -51,7 +51,10 @@ class RenderPrimitive:
         for p in post_processes:
             frame_out = p(frame_out)
         if num_channels == frame_out.shape[-1]:
-            frame_out = frame_out[...,[*range(num_channels-2), -1]]
+            if num_channels == 5:
+                frame_out = frame_out[...,[*range(num_channels-2), -1]]
+            else:
+                frame_out = frame_out[...,:-1]
         frame_out = frame_out.cpu().flip(-3)
         #frame_out = frame_out.transpose(0, 1)
         #frame_out[...,:3] = frame_out[...,:3].flip(-1)
@@ -199,7 +202,7 @@ class RenderPrimitive:
         #out[..., -1] = 0
 
         # TODO make it so that if opacity is 0, that pixel is removed entirely (instead of just painting background constants), this will save us having to
-        # render invisble objects.
+        # render invisible objects.
 
         def blend_colors(dists, inds, colors, out):
             original_pointer = self.memory.current_pointer

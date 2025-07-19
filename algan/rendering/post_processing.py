@@ -180,8 +180,8 @@ def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=
     color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode='bilinear').squeeze(0)
     color = color.permute(1, 2, 0)
 
-    x[..., :3] += color
     out = x
+    out[..., :3] += color
     #out = torch.cat((x[..., :3] * x[...,4:5] + color, x[...,4:5]), -1)
     return (out * 255).clamp_(min=0, max=255).to(xdtype)
 
