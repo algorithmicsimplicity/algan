@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.constants.color import BLUE, BLACK
+from algan.logging.logger import LoggerManager
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.geometry.geometry import intersect_line_with_plane, project_point_onto_line, project_point_onto_line_segment
 from algan.rendering.primitives.primitive import InsufficientMemoryException, RenderPrimitive2D
@@ -227,6 +228,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         def get_bounding_box_fragment_coords(x):
             arange_num_segments_per_oject = torch.arange(len(self.num_segments_per_object), device=x.device)
+            logger = LoggerManager.instance().set_class('rendering')
+            logger.log_message(f'Attempting repeat_interleave with arguments {arange_num_segments_per_oject},'
+                               f'{self.num_segments_per_object}, device: {x.device}, x.shape: {x.shape}')
             segment_to_object_scatter_inds = torch.repeat_interleave(arange_num_segments_per_oject,
                                                                      self.num_segments_per_object,
                                                                      -1).view(1, -1, 1)

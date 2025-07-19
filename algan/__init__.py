@@ -8,6 +8,8 @@ import shutil
 import torch
 
 from algan.settings.defaults import *
+from algan.settings.style_defaults import *
+from algan.settings.logging_defaults import *
 
 from algan.utils.memory_utils import ManualMemory
 

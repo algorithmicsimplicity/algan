@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 import algan
+from algan.logging.logger import LoggerManager
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan import compiled
@@ -163,7 +164,12 @@ class Scene:
 
         gc.collect()
         empty_cache()
+        logger = LoggerManager.instance().set_class('batching')
         for primitive in primitive_batch:
+            logger.log_message(f'Pre-projecting primitive {primitive} with corners.shape: {primitive.corners.shape},'
+                               f'camera.location.shape: {camera.location.shape}, camera.ray_origin.shape: {camera.ray_origin.shape},'
+                               f'light_source.location.shape: {self.light_sources[0].location.shape}, '
+                               f'light_source.origin: {self.light_sources[0].origin.shape}')
             primitive.project_to_screen(camera, self.light_sources)
 
         gc.collect()
@@ -250,6 +256,8 @@ class Scene:
             if duration <= 1:
                 duration = 1
                 break
+        logger = LoggerManager.instance().set_class('batching')
+        logger.log_message(f'Fetching batch of primitives from {start_time_ind}:{start_time_ind+duration}.')
         actors = [_ for _ in actors if (_.data.spawn_time() <= (start_time_ind + duration)/self.frames_per_second) and
                   (_.data.despawn_time() >= start_time)]
         time_inds = torch.arange(start_time_ind, start_time_ind+duration)

@@ -1,7 +1,9 @@
 import math
+import traceback
 
 import torch
 
+from algan.logging.logger import LoggerManager
 from algan.settings.defaults import COMPUTING_DEFAULTS
 
 
@@ -9,14 +11,19 @@ class InsufficientMemoryException(Exception):
     pass
 
 def get_num_available_bytes(device=torch.device('cuda')):
+    logger = LoggerManager.instance().set_class('memory')
     if device == torch.device('cuda'):
         torch.cuda.empty_cache()
         free_bytes, total_bytes = torch.cuda.mem_get_info()
+        logger.log_message(f'get_num_available_bytes device: {device}, total_bytes: {total_bytes}, free_bytes: {free_bytes}')
         return free_bytes
     elif device == torch.device('mps'):
         allocated_bytes = torch.mps.driver_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
-        return total_bytes - allocated_bytes
+        free_bytes = total_bytes - allocated_bytes
+        logger.log_message(f'get_num_available_bytes device: {device}, allocated_bytes: {allocated_bytes}, total_bytes:'
+                           f' {total_bytes}, free_bytes: {free_bytes}, free_portion: {free_bytes / total_bytes}')
+        return free_bytes
     else:
         return COMPUTING_DEFAULTS.max_cpu_memory_used
 
@@ -60,6 +67,9 @@ class ManualMemory:
 
         numel = torch.tensor(shape).prod() + byte_align_offset
         if (self.current_pointer + numel) >= len(self):
+            logger = LoggerManager.instance().set_class('memory')
+            logger.log_message(f'Manual Memory OOM, tried to allocate {numel} bytes, memory is already {self.get_percent_used()} full.')
+
             raise InsufficientMemoryException
 
         x = self.data[self.current_pointer+byte_align_offset:self.current_pointer + numel]

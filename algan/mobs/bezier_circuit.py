@@ -1,6 +1,7 @@
 import torch
 from algan import RIGHT
 from algan.animation.animation_contexts import Off
+from algan.logging.logger import LoggerManager
 from algan.mobs.renderable import Renderable
 from algan.constants.color import *
 from algan.geometry.geometry import get_roots_of_quadratic, get_orthonormal_vector
@@ -163,6 +164,7 @@ class BezierCircuitCubic(Renderable):
                 num_segments_per_circuit.append((starting_inds[(i+1)] if (i+1) < len(starting_inds) else
                                                  circuit_start_mask.shape[-3]) - starting_inds[i])
         num_segments_per_circuit = torch.stack(num_segments_per_circuit, 0)
+        LoggerManager.instance().set_class('batching').log_message(f'Making bezier with num_segments_per_circuit: {num_segments_per_circuit}')
         #num_segments_per_circuit = torch.cat((starting_inds, torch.tensor((len(inds)-(starting_inds.amax() if len(starting_inds) > 0 else 0),), device=x.device)), -1)
 
         c = self.texture_points.color.unsqueeze(-3)
