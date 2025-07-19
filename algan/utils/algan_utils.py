@@ -98,8 +98,9 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
         try:
             with Off():
                 scene.clear_scene(animate=False)
-            print(f'Rendering {file_name}')
+            print(f'Began rendering {file_name}')
             scene.render_to_video(file_writer, temp_file_path, file_path, audio_file_path, **kwargs)
+            print(f'Finished rendering {file_name}')
         finally:
             #file_writer.release()
             file_writer.close()
