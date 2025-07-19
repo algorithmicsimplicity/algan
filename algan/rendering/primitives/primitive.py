@@ -189,6 +189,7 @@ class RenderPrimitive:
         return broadcast_gather(x, dim, repeats_inds, out=out)
 
     def blend_frags_to_pixels(self, colors, dists, inds, background_color, num_frames, screen_width, screen_height, transparent_output=False):
+        colors[...,-1].clamp_(min=0, max=1)
         unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
 
         current_frags = self.get_tensor((len(unique_inds), colors.shape[-1] - (0 if transparent_output else 1)), torch.float)
