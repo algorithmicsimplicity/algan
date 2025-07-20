@@ -159,8 +159,8 @@ class Scene:
         camera.screen_height = self.num_pixels_screen_height * self.render_settings.anti_alias_level
         for l in self.light_sources:
             l.set_state_to_time_t(time_inds)
-            l.origin = l.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device, non_blocking=True)
-            l.light_color = (l.color[..., :-1] * l.color[..., -1:] * l.opacity).unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device, non_blocking=True)
+            l.origin = l.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
+            l.light_color = (l.color[..., :-1] * l.color[..., -1:] * l.opacity).unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
 
         gc.collect()
         empty_cache()
@@ -389,7 +389,7 @@ class Scene:
         bgf = self.background_frame
         if bgf.shape[-1] == 3:
             bgf = torch.cat((bgf, torch.zeros_like(bgf[...,:1])), -1)
-        bgf = (bgf * 255).to(device, torch.uint8, non_blocking=True)
+        bgf = (bgf * 255).to(device, torch.uint8)
         window_height = (window[3] - window[1])
         window_width = (window[2] - window[0])
         window_size = window_width * window_height

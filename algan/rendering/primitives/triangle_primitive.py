@@ -83,7 +83,7 @@ class TrianglePrimitive(RenderPrimitive):
         if triangle_collection is not None:
             self.shader = triangle_collection[0].shader
             self.corners, self.colors, self.normals, *self.shader_param_values = (
-            unsquish(torch.cat(_, 1), -2, 3).to(COMPUTING_DEFAULTS.render_device, non_blocking=True) for _ in
+            unsquish(torch.cat(_, 1), -2, 3).to(COMPUTING_DEFAULTS.render_device) for _ in
             zip(*(broadcast_all([triangle.corners, triangle.colors, triangle.normals,
                                  *triangle.shader_param_values], ignored_dims=[-1]) for triangle in triangle_collection)))
             self.padding = 1

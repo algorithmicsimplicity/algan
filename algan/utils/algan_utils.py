@@ -23,7 +23,7 @@ from algan.utils.memory_utils import empty_cache
 #‘mpeg4’ > ‘libx264’
 #@compiled
 def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec=None,
-                   file_extension=None, background_color=None, ffmpeg_params=[], **kwargs):
+                   file_extension=None, background_color=None, ffmpeg_params=None, **kwargs):
     """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
     as captured by the active :class:`~.Camera`, and saves the video to a file.
 
@@ -55,10 +55,6 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             render_settings = RENDERING_DEFAULTS.settings
 
         file_name, file_ext = os.path.splitext(file_name)
-        if file_ext == '':
-            file_ext = '.mp4'
-        if file_extension is not None:
-            file_ext = f'.{file_extension}'
 
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         temp_file_path = os.path.join(output_dir, f"{file_name}_temp")
@@ -77,14 +73,25 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             background_color = STYLE_DEFAULTS.background_color
         scene.background_frame = scene.background_color = background_color
 
+        if file_ext == '':
+            file_ext = '.mov' if scene.background_is_transparent() else '.mp4'
+        if file_extension is not None:
+            file_ext = f'.{file_extension}'
         temp_file_path = f'{temp_file_path}{file_ext}'
         file_path = f'{file_path}{file_ext}'
 
+        if file_ext in ['.mp4'] and scene.background_is_transparent():
+            raise ValueError(f'You are trying to render a scene with a transparent background to a file format which'
+                             f'does not support alpha channels ({file_ext}). Please use a file format that supports'
+                             f'alpha channels such as .mov or .webm, or change the background color to be opaque.')
+
         if codec is None:
-            if scene.background_is_transparent():
-                codec = 'png'
-            else:
-                codec = 'libx264'
+            codec = 'png' if scene.background_is_transparent() else 'libx264'
+        if ffmpeg_params is None:
+            ffmpeg_params = [
+                '-crf', '10',
+                '-preset', 'veryslow'
+            ] if not scene.background_is_transparent() else []
         try:
             file_writer = FFMPEG_VideoWriter(temp_file_path, size=render_settings.resolution, codec=codec,
                                              fps=render_settings.frames_per_second, with_mask=scene.background_is_transparent(),
@@ -98,9 +105,9 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
         try:
             with Off():
                 scene.clear_scene(animate=False)
-            print(f'Began rendering {file_name}')
+            print(f'Began rendering {file_name}{file_ext}')
             scene.render_to_video(file_writer, temp_file_path, file_path, audio_file_path, **kwargs)
-            print(f'Finished rendering {file_name}')
+            print(f'Finished rendering {file_name}{file_ext}')
         finally:
             #file_writer.release()
             file_writer.close()

@@ -413,7 +413,7 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
             all_grid_ids.append(ri.item())
 
     out = [*triangulate_simple_polygon(all_polygons)]
-    out = [_.to(COMPUTING_DEFAULTS.animation_device, non_blocking=True) for _ in out]
+    out = [_.to(COMPUTING_DEFAULTS.animation_device) for _ in out]
     torch.set_default_device(COMPUTING_DEFAULTS.animation_device)
     out[1] = [out[1], torch.tensor(all_grid_ids), (len(grid_x) - 1), len(grid_y)-1]
     return out

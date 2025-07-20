@@ -50,9 +50,9 @@ class Camera(Mob):
     def set_state_to_time_t(self, time_inds):
         super().set_state_to_time_t(time_inds)
         device = COMPUTING_DEFAULTS.render_device
-        self.ray_origin = self.location.unsqueeze(-2).to(device, non_blocking=True)
-        self.screen_point = self.screen.location.unsqueeze(-2).to(device, non_blocking=True)
-        self.screen_basis = unsquish(self.screen.basis, -1, 3).to(device, non_blocking=True)
+        self.ray_origin = self.location.unsqueeze(-2).to(device)
+        self.screen_point = self.screen.location.unsqueeze(-2).to(device)
+        self.screen_basis = unsquish(self.screen.basis, -1, 3).to(device)
 
     def retroactive_center(self, mob, **kwargs):
         self.set_to_retroactive()

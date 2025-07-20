@@ -218,8 +218,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         if window_coords is None:
             window_coords = (0, 0, screen_width, screen_height)
         start_x, start_y, end_x, end_y = window_coords
-        end_x = end_x - 1
-        end_y = end_y - 1
+        #end_x = end_x - 1
+        #end_y = end_y - 1
         bounding_corners = bounding_corners.clamp(
             min=torch.tensor((start_x, start_y), device=bounding_corners.device),
             max=torch.tensor((end_x, end_y), device=bounding_corners.device))
@@ -237,24 +237,31 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             segment_to_object_scatter_inds = torch.repeat_interleave(arange_num_segments_per_oject,
                                                                      self.num_segments_per_object,
                                                                      -1).view(1, -1, 1)
-
+            def log_var(name, var):
+                logger.log_message(f'{name} {var.shape},\n'
+                                   f'{var.dtype},\n {var}\n')
+            log_var('segment_to_object_scatter_inds', segment_to_object_scatter_inds)
             arange_num_segments_per_oject = arange_num_segments_per_oject.view(1, -1, 1)
+            log_var('arange_num_segments_per_oject', arange_num_segments_per_oject)
+            log_var('x0', x[...,0])
             object_bounding_corners_bottom_left = (broadcast_scatter(arange_num_segments_per_oject, -2,
                                                                      segment_to_object_scatter_inds, x[..., 0, :], reduce='amin',
                                                                      include_self=False)).clamp_(
                 min=torch.tensor((start_x, start_y), device=x.device),
                 max=torch.tensor((end_x, end_y), device=x.device))
+            log_var('object_bounding_corners_bottom_left', object_bounding_corners_bottom_left)
             object_bounding_corners_top_right = (broadcast_scatter(arange_num_segments_per_oject, -2,
                                                                    segment_to_object_scatter_inds, x[..., 1, :], reduce='amax',
                                                                    include_self=False)).clamp_(
                 min=torch.tensor((start_x, start_y), device=x.device),
                 max=torch.tensor((end_x, end_y), device=x.device))
+            log_var('object_bounding_corners_top_right', object_bounding_corners_top_right)
 
             object_bounding_box_dimensions = object_bounding_corners_top_right - object_bounding_corners_bottom_left
             object_bounding_box_num_pixels = object_bounding_box_dimensions.prod(-1, keepdim=True)
 
-            LoggerManager.instance().set_class('rendering').log_message(
-                f'bbox: {object_bounding_box_num_pixels}, {object_bounding_box_num_pixels.dtype}')
+            log_var('object_bounding_box_dimensions', object_bounding_box_dimensions)
+            log_var('object_bounding_box_num_pixels', object_bounding_box_num_pixels)
             num_fragments = object_bounding_box_num_pixels.long().sum()
             self.num_fragments_fill = num_fragments / len(object_bounding_box_num_pixels)
             if self.first_projection:
