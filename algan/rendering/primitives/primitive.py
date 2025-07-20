@@ -226,20 +226,32 @@ class RenderPrimitive:
                     c_write = broadcast_gather(colors, -2, max_ind.unsqueeze(-1), out=c_write_[:len(max_ind)], keepdim=True)
                     ie = inds_selected.unsqueeze(-1).expand([-1, out.shape[-1]])
                     c_read = broadcast_gather(out, -2, ie, out=c_read_[:len(max_ind)], keepdim=True)
+                    a = c_write[..., -1:]
                     if transparent_output:
-                        a = c_write[..., -1:].clone()
-                        c_write[...,-1:] = 1
+                        af = a
+                        ab = c_read[..., -1:]
+                        a_out = af + ab * (1 - af)
+
+                        # If the resulting alpha is 0, the color is black with 0 alpha (fully transparent)
+                        #m = a_out > 1e-3
+
+                        rgb_f = c_write[..., :-1]
+                        rgb_b = c_read[...,:-1]
+                        # Calculate the resulting RGB components
+                        rgb_out = (rgb_f * af + (1-af) * ab * rgb_b) / a_out.clamp_min(1e-3)
+                        #rgg_out = torch.where(m, rgb_out, torch.zeros((1,), device=m.device), out=c_write[...,:-1])
+                        c_write[...,-1:] = a_out
                     else:
-                        a = c_write[..., -1:]
                         c_write = c_write[..., :-1]
-                    # write = c_read * (1 - a) + a * (c_write)
-                    c_write *= a
-                    a *= -1
-                    a += 1
-                    write = torch.addcmul(c_write, c_read, a, out=c_write)
+                    #if True:#not (i == 0 and transparent_output):
+                        # write = c_read * (1 - a) + a * (c_write)
+                        c_write *= a
+                        a *= -1
+                        a += 1
+                        c_write = torch.addcmul(c_write, c_read, a, out=c_write)
 
                     #write = write * mask + (~mask) * c_read
-                    write = torch.where(mask, write, c_read, out=write)
+                    write = torch.where(mask, c_write, c_read, out=c_write)
 
                     out.scatter_(-2, ie, write)
                     return out

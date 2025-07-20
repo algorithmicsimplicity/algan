@@ -5,6 +5,7 @@ import torch
 
 from algan.logging.logger import LoggerManager
 from algan.settings.defaults import COMPUTING_DEFAULTS
+from algan.constants.math import GIGABYTES
 
 
 class InsufficientMemoryException(Exception):
@@ -23,6 +24,7 @@ def get_num_available_bytes(device=torch.device('cuda')):
         free_bytes = total_bytes - allocated_bytes
         logger.log_message(f'get_num_available_bytes device: {device}, allocated_bytes: {allocated_bytes}, total_bytes:'
                            f' {total_bytes}, free_bytes: {free_bytes}, free_portion: {free_bytes / total_bytes}')
+        free_bytes = min(free_bytes, 1 * GIGABYTES)
         return free_bytes
     else:
         return COMPUTING_DEFAULTS.max_cpu_memory_used

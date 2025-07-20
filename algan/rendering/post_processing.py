@@ -117,6 +117,9 @@ def bloom_filter_old(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=31
 
 
 def bloom_filter_premultiply(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
+    if x.shape[-1] < 5:
+        raise ValueError('bloom_filter_premultiply only works for scenes with transparent backgrounds, please set'
+                         'background_color=TRANSPARENT when rendering.')
     scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
 
     xdtype = x.dtype
@@ -156,7 +159,8 @@ def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=
     xdtype = x.dtype
 
     x = x.to(torch.float) / 255
-    color = x[..., :3]
+    color_channels = [*range(3), 4] if x.shape[-1] == 5 else [*range(3)]
+    color = x[..., color_channels]
     glow = x[..., 3:4]
 
     color = color * glow * strength
@@ -181,7 +185,10 @@ def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=
     color = color.permute(1, 2, 0)
 
     out = x.clone()
-    out[..., :3] += color
+    out[..., color_channels] += color
+    #if x.shape[-1] == 5:
+    #    out.clamp_(min=0, max=1)
+    #    out[...,:3] /= out[...,-1:].clamp_min_(1e-3)
     #out = torch.cat((x[..., :3] * x[...,4:5] + color, x[...,4:5]), -1)
     return (out * 255).clamp_(min=0, max=255).to(xdtype)
 
