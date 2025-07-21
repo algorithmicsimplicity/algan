@@ -104,7 +104,8 @@ class RenderPrimitive:
             if len(chunks) == 0:
                 frames = (next(scene.get_frames_from_fragments(None, window, out, anti_alias_level=kwargs['anti_alias_level'])) for _ in range(time_end - time_start))
             else:
-                colors, dists, inds = [torch.cat(_) for _ in zip(*chunks)]
+                # colors, dists, inds = [torch.cat(_) for _ in zip(*chunks)]
+                colors, dists, inds = [self.mem_cat(_) for _ in zip(*chunks)]
                 frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['screen_height'], transparent_output)
                 frames = scene.get_frames_from_fragments(frags, window, out, anti_alias_level=kwargs['anti_alias_level'])
             if (window[2]-window[0]) == kwargs['screen_width'] and (window[3]-window[1]) == kwargs['screen_height']:
@@ -141,7 +142,13 @@ class RenderPrimitive:
 
                 gc.collect()
                 empty_cache()
-                frames = torch.cat((torch.cat((frames[0], frames[1]), 1), torch.cat((frames[2], frames[3]), 1)), 0)
+                # frames = torch.cat((torch.cat((frames[0], frames[1]), 1), torch.cat((frames[2], frames[3]), 1)), 0)
+                top_row = self.get_tensor([frames[0].shape[0], frames[0].shape[1] + frames[1].shape[1], frames[0].shape[2]], dtype=frames[0].dtype)
+                torch.cat((frames[0], frames[1]), 1, out=top_row)
+                bottom_row = self.get_tensor([frames[2].shape[0], frames[2].shape[1] + frames[3].shape[1], frames[2].shape[2]], dtype=frames[2].dtype)
+                torch.cat((frames[2], frames[3]), 1, out=bottom_row)
+                frames = self.get_tensor([top_row.shape[0] + bottom_row.shape[0], top_row.shape[1], top_row.shape[2]], dtype=top_row.dtype)
+                torch.cat((top_row, bottom_row), 0, out=frames)
                 frame_shape = frames.shape
                 frames = (_ for _ in [frames])
                 if frame_shape[1] == kwargs['screen_width'] and frame_shape[0] == kwargs['screen_height']:
@@ -166,7 +173,8 @@ class RenderPrimitive:
             if len(chunks) == 0:
                 frames = (next(scene.get_frames_from_fragments(None, window, out, anti_alias_level=kwargs['anti_alias_level'])) for _ in range(time_end - time_start))
             else:
-                colors, dists, inds = [torch.cat(_) for _ in zip(*chunks)]
+                # colors, dists, inds = [torch.cat(_) for _ in zip(*chunks)]
+                colors, dists, inds = [self.mem_cat(_) for _ in zip(*chunks)]
                 frags = self.blend_frags_to_pixels(colors, dists, inds, background_color, time_end-time_start, kwargs['screen_width'], kwargs['screen_height'])
                 frames = scene.get_frames_from_fragments(frags, window, out, anti_alias_level=kwargs['anti_alias_level'])
 
@@ -240,15 +248,15 @@ class RenderPrimitive:
                         # Calculate the resulting RGB components
                         rgb_out = (rgb_f * af + (1-af) * ab * rgb_b) / a_out.clamp_min(1e-3)
                         #rgg_out = torch.where(m, rgb_out, torch.zeros((1,), device=m.device), out=c_write[...,:-1])
-                        c_write[...,-1:] = a_out
+                        c_write[...,-1:].copy_(a_out)
                     else:
                         c_write = c_write[..., :-1]
                     #if True:#not (i == 0 and transparent_output):
                         # write = c_read * (1 - a) + a * (c_write)
-                        c_write *= a
-                        a *= -1
-                        a += 1
-                        c_write = torch.addcmul(c_write, c_read, a, out=c_write)
+                        torch.mul(c_write, a, out=c_write)
+                        torch.mul(a, -1, out=a)
+                        torch.add(a, 1, out=a)
+                        torch.addcmul(c_write, c_read, a, out=c_write)
 
                     #write = write * mask + (~mask) * c_read
                     write = torch.where(mask, c_write, c_read, out=c_write)
@@ -265,7 +273,9 @@ class RenderPrimitive:
                 max_dist, max_ind = scatter_arg_max(dists, inds, -1, dim_size=out.shape[-2])
 
                 def apply_mask(max_ind):
-                    remaining_inds = torch.arange(inds.shape[-1], device=inds.device)
+                    # remaining_inds = torch.arange(inds.shape[-1], device=inds.device)
+                    remaining_inds = self.get_tensor([inds.shape[-1]], dtype=torch.long)
+                    torch.arange(inds.shape[-1], device=remaining_inds.device, out=remaining_inds)
                     dump_mask = (max_ind < inds.shape[-1]) & (max_dist < 1e12) & (0 < max_dist)
                     max_ind = max_ind[dump_mask]
                     return remaining_inds, max_ind
@@ -285,7 +295,9 @@ class RenderPrimitive:
 
                 def get_rem_inds(remaining_inds):
                     mu = max_ind.clamp_max_(inds.shape[-1] - 1).unique()
-                    combined = torch.cat((mu, remaining_inds), -1)
+                    # combined = torch.cat((mu, remaining_inds), -1)
+                    combined = self.get_tensor([mu.shape[-1] + remaining_inds.shape[-1]], dtype=torch.long)
+                    torch.cat((mu, remaining_inds), -1, out=combined)
                     uniques, counts = combined.unique(return_counts=True)
                     remaining_inds = uniques[counts == 1]
                     return remaining_inds
@@ -303,7 +315,12 @@ class RenderPrimitive:
         self.memory.reset_pointer()
 
         out_inds = unique_inds.scatter_(0, unique_inds_inverse, inds)
-        ind_counts = torch.histc(out_inds.float(), num_frames, min=0, max=(screen_width * screen_height * num_frames)).long()
+        # ind_counts = torch.histc(out_inds.float(), num_frames, min=0, max=(screen_width * screen_height * num_frames)).long()
+        float_tensor = self.get_tensor(out_inds.shape, dtype=torch.float)
+        float_tensor.copy_(out_inds)
+        histc_result = torch.histc(float_tensor, num_frames, min=0, max=(screen_width * screen_height * num_frames))
+        ind_counts = self.get_tensor(histc_result.shape, dtype=torch.long)
+        ind_counts.copy_(histc_result.long())
         return out, out_inds, ind_counts
 
     def get_windowed_bounding_boxes(self, bounding_corners, screen_width, screen_height, window_coords=None):
@@ -312,13 +329,27 @@ class RenderPrimitive:
         start_x, start_y, end_x, end_y = window_coords
         end_x = end_x
         end_y = end_y
-        bounding_corners = bounding_corners.clamp(
-            min=torch.tensor((start_x, start_y), device=bounding_corners.device),
-            max=torch.tensor((end_x, end_y), device=bounding_corners.device))
-        bounding_box_sizes = (bounding_corners[..., 1, :] - bounding_corners[..., 0, :])
-        bbss = bounding_box_sizes.prod(-1, keepdim=True)
-        num_fragments_per_object = bbss.amax(0)
-        num_fragments_per_frame = num_fragments_per_object.sum()
+        # bounding_corners = bounding_corners.clamp(
+        #     min=torch.tensor((start_x, start_y), device=bounding_corners.device),
+        #     max=torch.tensor((end_x, end_y), device=bounding_corners.device))
+        min_tensor = self.get_tensor([2], dtype=bounding_corners.dtype)
+        min_tensor[0] = start_x
+        min_tensor[1] = start_y
+        max_tensor = self.get_tensor([2], dtype=bounding_corners.dtype)
+        max_tensor[0] = end_x
+        max_tensor[1] = end_y
+        bounding_corners.clamp_(min=min_tensor, max=max_tensor)
+        # bounding_box_sizes = (bounding_corners[..., 1, :] - bounding_corners[..., 0, :])
+        bounding_box_sizes = self.get_tensor(bounding_corners[..., 1, :].shape, dtype=bounding_corners.dtype)
+        torch.subtract(bounding_corners[..., 1, :], bounding_corners[..., 0, :], out=bounding_box_sizes)
+        # bbss = bounding_box_sizes.prod(-1, keepdim=True)
+        bbss = self.get_tensor([*bounding_box_sizes.shape[:-1], 1], dtype=bounding_box_sizes.dtype)
+        torch.prod(bounding_box_sizes, -1, keepdim=True, out=bbss)
+        # num_fragments_per_object = bbss.amax(0)
+        num_fragments_per_object = self.get_tensor(bbss.shape[1:], dtype=bbss.dtype)
+        torch.amax(bbss, 0, out=num_fragments_per_object)
+        # num_fragments_per_frame = num_fragments_per_object.sum()
+        num_fragments_per_frame = torch.sum(num_fragments_per_object)
         num_fragments = num_fragments_per_frame * bbss.shape[0]
 
         return bounding_corners, bounding_box_sizes, bbss, num_fragments_per_object, num_fragments_per_frame, num_fragments, None
@@ -341,9 +372,14 @@ class RenderPrimitive:
         corners = corners_2d
         corners_int = corners.int()
 
-        bounding_corners = torch.stack(((corners_int.amin(-2) - self.padding),
-                                        (corners_int.amax(-2) + self.padding)),
-                                       -2)
+        # bounding_corners = torch.stack(((corners_int.amin(-2) - self.padding),
+        #                                 (corners_int.amax(-2) + self.padding)),
+        #                                -2)
+        bounding_corners = self.get_tensor([*corners_int.shape[:-2], 2, corners_int.shape[-1]], dtype=corners_int.dtype)
+        min_corners = torch.amin(corners_int, -2, out=bounding_corners[...,0,:])
+        max_corners = torch.amax(corners_int, -2, out=bounding_corners[...,1,:])
+        min_corners -= self.padding
+        max_corners += self.padding
 
         bounding_corners, bounding_box_sizes, bbss, num_fragments_per_object, num_fragments_per_frame, num_fragments, _ = self.get_windowed_bounding_boxes(bounding_corners, screen_width, screen_height, window_coords)
 
@@ -412,11 +448,22 @@ class RenderPrimitive:
         num_frags = repeats.sum()
         if num_frags == 0:
             return None
-        repeats_inds = torch.repeat_interleave(torch.arange(len(repeats), device=repeats.device), repeats, -1, output_size=num_frags).unsqueeze(-1)
+        # repeats_inds = torch.repeat_interleave(torch.arange(len(repeats), device=repeats.device), repeats, -1, output_size=num_frags).unsqueeze(-1)
+        arange_tensor = self.get_tensor([len(repeats)], dtype=torch.long)
+        torch.arange(len(repeats), device=arange_tensor.device, out=arange_tensor)
+        repeats_inds = torch.repeat_interleave(arange_tensor, repeats, -1, output_size=num_frags).unsqueeze(-1)
 
         fragment_inds = self.get_tensor([num_frags], dtype=torch.long)
         pointer = self.memory.current_pointer
-        offsets = self.expand_verts_to_frags(bounding_box_num_pixels.cumsum(-2) - bounding_box_num_pixels, repeats_inds, -2)
+        # offsets = self.expand_verts_to_frags(bounding_box_num_pixels.cumsum(-2) - bounding_box_num_pixels, repeats_inds, -2)
+        offsets = self.get_tensor([num_frags, 1], dtype=torch.long)
+        cumsum_tensor = self.get_tensor(bounding_box_num_pixels.shape, dtype=torch.long)
+        torch.cumsum(bounding_box_num_pixels, -2, out=cumsum_tensor)
+        cumsum_tensor -= bounding_box_num_pixels
+        offsets = self.expand_verts_to_frags(cumsum_tensor, repeats_inds, -2, out=offsets)
+        # Free cumsum_tensor as it's no longer needed
+        cumsum_size = cumsum_tensor.numel() * cumsum_tensor.element_size()
+        self.memory.current_pointer -= cumsum_size
         # fragment_inds = torch.arange(offsets.shape[-2], device=offsets.device).view(-1,1) - offsets
         fragment_inds = torch.arange(offsets.shape[-2], device=fragment_inds.device, out=fragment_inds).view(-1,1)
         fragment_inds -= offsets
@@ -442,16 +489,20 @@ class RenderPrimitive:
         fragment_y = self.get_tensor(bounding_box_widths.shape, torch.long)
         bounding_corners_rep = self.expand_verts_to_frags(bounding_corners[...,0,:], repeats_inds, -2)
         #fragment_x = self.get_tensor(bounding_box_widths.shape, torch.long)
-        fragment_x[:] = (fragment_inds % bounding_box_widths) + bounding_corners_rep[...,:1]
+        # fragment_x[:] = (fragment_inds % bounding_box_widths) + bounding_corners_rep[...,:1]
+        torch.remainder(fragment_inds, bounding_box_widths, out=fragment_x)
+        torch.add(fragment_x, bounding_corners_rep[...,:1], out=fragment_x)
         #fragment_y = self.get_tensor(bounding_box_widths.shape, torch.long)
-        fragment_y[:] = (fragment_inds // bounding_box_widths) + bounding_corners_rep[...,1:]
+        # fragment_y[:] = (fragment_inds // bounding_box_widths) + bounding_corners_rep[...,1:]
+        torch.div(fragment_inds, bounding_box_widths, rounding_mode='floor', out=fragment_y)
+        torch.add(fragment_y, bounding_corners_rep[...,1:], out=fragment_y)
 
         #aa_offsets = torch.linspace(0, 1, anti_alias_level * 2 + 1, device=fragment_x.device)[1:-1:2]
         #aa_offsets = squish(torch.stack((aa_offsets.view(-1, 1).expand([-1, len(aa_offsets)]), aa_offsets.view(1, -1).expand([len(aa_offsets), -1])), -1))
         # inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
-        inds = torch.mul(fragment_y, window_width, out=inds)
-        inds += fragment_x
-        inds -= (start_y * window_width + start_x)
+        torch.mul(fragment_y, window_width, out=inds)
+        torch.add(inds, fragment_x, out=inds)
+        torch.sub(inds, (start_y * window_width + start_x), out=inds)
         all_ws = self.get_interpolation_coordinates(corners_locs, fragment_x.float(), fragment_y.float(), None)
         self.memory.current_pointer = pointer
 
@@ -475,7 +526,12 @@ class RenderPrimitive:
 
         m = ((inds < (window_size))) & all_mask
         m = m.reshape(-1)
-        inds = inds + unsqueeze_right(torch.arange(inds.shape[0], device=inds.device) * window_size, inds)
+        # inds = inds + unsqueeze_right(torch.arange(inds.shape[0], device=inds.device) * window_size, inds)
+        arange_window = self.get_tensor([inds.shape[0]], dtype=torch.long)
+        torch.arange(inds.shape[0], device=arange_window.device, out=arange_window)
+        torch.mul(arange_window, window_size, out=arange_window)
+        unsqueezed_arange = unsqueeze_right(arange_window, inds)
+        torch.add(inds, unsqueezed_arange, out=inds)
         inds = inds.view(-1)
         inds = inds[m]
         unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)

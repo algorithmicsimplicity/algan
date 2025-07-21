@@ -168,9 +168,12 @@ def broadcast_all(xs, ignored_dims=[]):
     max_shapes = [max([x.shape[i] if isinstance(x, torch.Tensor) else 0 for x in xs]) if i not in ignored_dims else -1 for i in range(max_dim)]
     return [x.expand(torch.Size(max_shapes)) if isinstance(x, torch.Tensor) else x for x in xs]
 
-def broadcast_gather(src, dim:int, ind, keepdim=False, **kwargs):
+def broadcast_gather(src, dim:int, ind, keepdim=False, out=None, **kwargs):
     ind, src = broadcast_both_left(ind, src, ignored_dims=[dim if dim >= 0 else len(src.shape)+dim])
-    out = torch.gather(src, dim, ind, **kwargs)
+    if hasattr(out, 'get_tensor'):
+        out_shape = [_ for _ in ind.shape]
+        out = out.get_tensor(out_shape, dtype=src.dtype)
+    out = torch.gather(src, dim, ind, out=out, **kwargs)
     if not keepdim:
         out = out.squeeze(dim)
     return out

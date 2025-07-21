@@ -164,20 +164,19 @@ class Scene:
 
         gc.collect()
         empty_cache()
+        self.memory = ManualMemory(COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering)
         logger = LoggerManager.instance().set_class('batching')
         for primitive in primitive_batch:
             logger.log_message(f'Pre-projecting primitive {primitive} with corners.shape: {primitive.corners.shape},'
                                f'camera.location.shape: {camera.location.shape}, camera.ray_origin.shape: {camera.ray_origin.shape},'
                                f'light_source.location.shape: {self.light_sources[0].location.shape}, '
                                f'light_source.origin: {self.light_sources[0].origin.shape}')
+            primitive.memory = self.memory
             primitive.project_to_screen(camera, self.light_sources)
 
-        gc.collect()
-        self.memory = ManualMemory(COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering)
         current_ind = start_ind
+        start_pointer = self.memory.current_pointer
         while True:
-            self.memory.reset()
-            empty_cache()
             duration = end_ind - current_ind
             while True:
                 mem_used = sum([_.get_memory_used(current_ind-start_ind, current_ind+duration-start_ind) for _ in primitive_batch])
@@ -189,7 +188,7 @@ class Scene:
                     break
             new_ind = current_ind + duration
 
-            time_inds = torch.arange(current_ind, new_ind)
+            #time_inds = torch.arange(current_ind, new_ind)
             #camera.set_state_to_time_t(time_inds)
             #camera.screen.set_state_to_time_t(time_inds)
             #for l in self.light_sources:
@@ -208,6 +207,7 @@ class Scene:
                                     memory=self.memory,
                                     post_processes=post_processes)
 
+            self.memory.current_pointer = start_pointer
             current_ind = new_ind
             if current_ind >= end_ind:
                 break
