@@ -12,14 +12,20 @@ from algan.utils.tensor_utils import broadcast_all, broadcast_scatter
 from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, expand_as_left, unsquish, unsqueeze_right
 
 
-def evaluate_cubic_bezier_old3(p, t):
+def evaluate_cubic_bezier_old3(p, t, i=-1):
     # out = ((1 - t) ** 3) * p[..., 0, :].unsqueeze(-2)
     # out[:] += 3 * ((1 - t) ** 2) * t * p[..., 1, :].unsqueeze(-2)
     # out[:] += 3 * (1 - t) * t * t * p[..., 2, :].unsqueeze(-2)
     # out[:] += (t ** 3) * p[..., 3, :].unsqueeze(-2)
     out = ((1 - t) ** 3) * p[..., 0, :].unsqueeze(-2)
+    if i == 0:
+        return out
     out[:] += 3 * ((1 - t) ** 2) * t * p[..., 1, :].unsqueeze(-2)
+    if i == 1:
+        return out
     out[:] += 3 * (1 - t) * t * t * p[..., 2, :].unsqueeze(-2)
+    if i == 2:
+        return out
     out[:] += (t ** 3) * p[..., 3, :].unsqueeze(-2)
     return out
 
@@ -40,31 +46,46 @@ def evaluate_cubic_bezier_old(p, t, out, mem):
     return out
 
 
-def evaluate_cubic_bezier(p, t, out, mem):
+def evaluate_cubic_bezier(p, t, out, mem, i=-1):
     p0 = p[..., 0, :].unsqueeze(-2)
     p1 = p[..., 1, :].unsqueeze(-2)
     p2 = p[..., 2, :].unsqueeze(-2)
     p3 = p[..., 3, :].unsqueeze(-2)
     mem.save_pointer()
-    temp = mem.get_tensor([*p0.shape])
-    temp2 = mem.get_tensor([*p0.shape])
-    torch.subtract(1, t, out=temp[...,:1])
-    torch.pow(temp[...,:1], 3, out=temp2[...,:1])
-    torch.mul(p0, temp2[...,:1], out=out)
+    temp_t = mem.get_tensor(t.shape)
+    temp_t_2 = mem.get_tensor(t.shape)
+    temp = mem.get_tensor(out.shape)
+    _1_m_t = torch.subtract(1, t, out=temp_t)
+    _1_m_t3 = torch.pow(_1_m_t, 3, out=temp_t)
+    _1_m_t3p0 = torch.mul(p0, _1_m_t3, out=out)
+    if i == 0:
+        return out
     # out[:] = ((1 - t) ** 3) * p[..., 0, :]
-    torch.mul(t, p1, out=temp2)
-    torch.pow(temp[...,:1], 2, out=temp[...,:1])
-    torch.addcmul(out, temp[...,:1], temp2, value=3, out=out)
+    tp1 = torch.mul(t, p1, out=temp)
+    _1_m_t = torch.subtract(1, t, out=temp_t)
+    _1_m_t2 = torch.pow(_1_m_t, 2, out=_1_m_t)
+    torch.addcmul(_1_m_t3p0, _1_m_t2, tp1, value=3, out=out)
     #out[:] += 3 * ((1 - t) ** 2) * t * p[..., 1, :]
-
-    torch.square(t, out=temp[...,:1])
-    torch.subtract(1,t,out=temp2[...,:1])
-    torch.mul(temp[...,:1],temp2[...,:1],out=temp[...,:1])
-    torch.addcmul(out, temp[...,:1], p2, value=3, out=out)
+    if i == 1:
+        return out
+    # Is this a Pytorch bug?
+    #torch.square(t, out=temp[...,:1])
+    temp_t[:] = t
+    temp_t.square_()
+    #torch.subtract(1,t,out=temp2[...,:1])
+    temp_t_2[:] = t
+    temp_t_2 *= -1
+    temp_t_2 += 1
+    temp_t *= temp_t_2
+    #torch.mul(temp[...,:1],temp2[...,:1],out=temp[...,:1])
+    torch.addcmul(out, temp_t, p2, value=3, out=out)
     # out[:] += 3 * (1 - t) * t * t * p[..., 2, :]
-
-    torch.pow(t, 3, out=temp[...,:1])
-    torch.addcmul(out, temp[...,:1], p3, out=out)
+    if i == 2:
+        return out
+    #torch.pow(t, 3, out=temp[...,:1])
+    temp_t[:] = t
+    temp_t **= 3
+    torch.addcmul(out, temp_t, p3, out=out)
     #out[:] += (t ** 3) * p[..., 3, :]
     mem.reset_pointer()
     return out
@@ -426,10 +447,13 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             f'got bounding boxes')
         control_points = corners
         # t = torch.linspace(0, 1, self.num_sampled_points, device=control_points.device)
+        polygon_vertices = self.get_tensor([*control_points.shape[:-2], self.num_sampled_points, control_points.shape[-1]])
+        self.memory.save_pointer()
         t = self.get_tensor([self.num_sampled_points], dtype=torch.float)
         torch.linspace(0, 1, self.num_sampled_points, device=t.device, out=t)
         ##polygon_vertices = self.get_tensor((*control_points.shape[:3], num_sampled_points, 2))
-        polygon_vertices = evaluate_cubic_bezier_old3(control_points, t.unsqueeze(-1))#, polygon_vertices, self.memory)
+        polygon_vertices = evaluate_cubic_bezier(control_points, t.unsqueeze(-1), polygon_vertices, self.memory)
+        #polygon_vertices = evaluate_cubic_bezier_old3(control_points, t.unsqueeze(-1))
         # assert polygon_vertices.shape == [T, N, P, 2] (time (frames), num segments, num control points per segment, 2D)
         #polygon_vertices = squish(polygon_vertices, -3, -2)  # shape [T, N, S*P, 2]
         next_polygon_vertices = polygon_vertices.roll(shifts=-1, dims=-2)
@@ -438,9 +462,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         # next_segments = broadcast_gather(polygon_vertices, -3, next_segment_inds, keepdim=True)
         next_segments = broadcast_gather(polygon_vertices, -3, next_segment_inds, keepdim=True, out=self.memory)
         next_polygon_vertices[...,-1,:] = next_segments[...,0,:]
-
+        self.memory.reset_pointer()
         # line_segments = next_polygon_vertices - polygon_vertices
         line_segments = self.get_tensor(polygon_vertices.shape, dtype=polygon_vertices.dtype)
+        self.memory.save_pointer()
         torch.subtract(next_polygon_vertices, polygon_vertices, out=line_segments)
         # line_segment_lengths = line_segments.norm(p=2, dim=-1)
         line_segment_lengths = self.get_tensor([*line_segments.shape[:-1]], dtype=line_segments.dtype)
@@ -467,19 +492,27 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         if local_window_size > 50:
             raise RuntimeError("Filled Bezier Circuit is not closed, make sure that the starting and ending points"
                                "of your Bezier circuits are the same, or else set filled=False.")
+
+        self.memory.reset_pointer()
+        window_shape = [local_window_size * local_window_size]
+        local_window_x = self.get_tensor([*polygon_vertices.shape[:-1], window_shape[-1]], dtype=torch.long)
+        local_window_y = self.get_tensor([*polygon_vertices.shape[:-1], window_shape[-1]], dtype=torch.long)
+        self.memory.save_pointer()
+        local_window_x_centered = self.get_tensor(window_shape, dtype=torch.long)
+        local_window_y_centered = self.get_tensor(window_shape, dtype=torch.long)
+        self.memory.save_pointer()
         # local_window_inds = torch.arange(local_window_size * local_window_size, device=control_points.device)
-        local_window_inds = self.get_tensor([local_window_size * local_window_size], dtype=torch.long)
+        local_window_inds = self.get_tensor(window_shape, dtype=torch.long)
         torch.arange(local_window_size * local_window_size, device=local_window_inds.device, out=local_window_inds)
 
         # we subtract half_local_window_size so that in local coord (0,0) is the center (i.e. line start).
         # local_window_x_centered = local_window_inds % local_window_size - half_local_window_size
         # local_window_y_centered = local_window_inds // local_window_size - half_local_window_size
-        local_window_x_centered = self.get_tensor(local_window_inds.shape, dtype=torch.long)
-        local_window_y_centered = self.get_tensor(local_window_inds.shape, dtype=torch.long)
         torch.remainder(local_window_inds, local_window_size, out=local_window_x_centered)
         local_window_x_centered -= half_local_window_size
         torch.div(local_window_inds, local_window_size, rounding_mode='floor', out=local_window_y_centered)
         local_window_y_centered -= half_local_window_size
+        self.memory.reset_pointer()
 
         LoggerManager.instance().set_class('rendering').log_message(
             f'got local windows')
@@ -493,26 +526,22 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         #local_window_x = local_window_x_centered + line_start_x.floor().long()
         #local_window_y = local_window_y_centered + line_start_y.floor().long()
-        local_window_x = self.get_tensor([*line_start_x.shape[:-1], local_window_x_centered.shape[-1]], dtype=torch.long)
-        local_window_y = self.get_tensor([*line_start_y.shape[:-1], local_window_y_centered.shape[-1]], dtype=torch.long)
         # torch.add(local_window_x_centered, line_start_x.floor().long(), out=local_window_x)
+        self.memory.save_pointer()
         line_start_x_floor = self.get_tensor(line_start_x.shape, dtype=torch.long)
         line_start_x_floor_float = self.get_tensor(line_start_x.shape, dtype=line_start_x.dtype)
         torch.floor(line_start_x, out=line_start_x_floor_float)
         line_start_x_floor[:] = line_start_x_floor_float
-        # Free line_start_x_floor_float as it's no longer needed
-        float_size = line_start_x_floor_float.numel() * line_start_x_floor_float.element_size()
-        self.memory.current_pointer -= float_size
         torch.add(local_window_x_centered, line_start_x_floor, out=local_window_x)
+        self.memory.reset_pointer()
         # torch.add(local_window_y_centered, line_start_y.floor().long(), out=local_window_y)
         line_start_y_floor = self.get_tensor(line_start_y.shape, dtype=torch.long)
         line_start_y_floor_float = self.get_tensor(line_start_y.shape, dtype=line_start_y.dtype)
         torch.floor(line_start_y, out=line_start_y_floor_float)
         line_start_y_floor[:] = line_start_y_floor_float
         # Free line_start_y_floor_float as it's no longer needed
-        float_size = line_start_y_floor_float.numel() * line_start_y_floor_float.element_size()
-        self.memory.current_pointer -= float_size
         torch.add(local_window_y_centered, line_start_y_floor, out=local_window_y)
+        self.memory.reset_pointer()
 
         LoggerManager.instance().set_class('rendering').log_message(
             f'got local window centered')
@@ -550,7 +579,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                          (((local_window_x + 1 - line_start_x) * -line_segments[..., 1:]
                            + (local_window_y - line_start_y) * line_segments[..., :1]) < 0)'''
 
-        #pointer = self.memory.current_pointer
+        pointer = self.memory.current_pointer
         temp_y = self.get_tensor(local_window_y.shape, dtype=torch.float)
         temp_x = self.get_tensor(local_window_x.shape, dtype=torch.float)
         torch.subtract(local_window_x, line_start_x, out=temp_x)
@@ -563,14 +592,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         torch.gt(temp_x, temp_y, out=intersect_mask2)
         torch.not_equal(intersect_mask, intersect_mask2, out=intersect_mask)
         # Free temp_x and temp_y as they're no longer needed
-        temp_size = intersect_mask2.numel() * intersect_mask2.element_size()
-        self.memory.current_pointer -= temp_size  # Free intersect_mask2
-        temp_size = temp_x.numel() * temp_x.element_size()
-        self.memory.current_pointer -= temp_size  # Free temp_x
-        temp_size = temp_y.numel() * temp_y.element_size()
-        self.memory.current_pointer -= temp_size  # Free temp_y
-        LoggerManager.instance().set_class('rendering').log_message(
-            f'got intersect mask')
+        self.memory.current_pointer = pointer
 
         #local_intersection_counts = (horizontal_mask & intersect_mask).float()
         torch.logical_and(horizontal_mask, intersect_mask, out=local_intersection_counts)
