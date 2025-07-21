@@ -5,7 +5,7 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.group import Group
 from algan.utils.tensor_utils import unsquish
-from manim import ImageMobject
+from manim import ImageMobject, VectorizedPoint
 
 
 class ManimMob(BezierCircuitCubic):
@@ -38,17 +38,18 @@ class ManimMob(BezierCircuitCubic):
             control_points = torch.stack([control_points for _ in range(4)], -2)
             empty = True
         else:
-            points = torch.from_numpy(manim_mob.points)
-            if points.shape[-2] == 1:
-                points = points.expand(*([-1] * (points.dim() - 2)), 4, -1)
-            control_points = unsquish(points.float(), -2, 4)
+            control_points = torch.from_numpy(manim_mob.points)
+            if len(control_points) == 1:
+                control_points = control_points.expand(*([-1] * (control_points.dim() - 2)), 4, -1)
+                empty = True
+            control_points = unsquish(control_points.float(), -2, 4)
 
         def convert_manim_color(manim_color, opacity):
             rgba = manim_color.to_rgba()
             rgb = rgba[:3]
             a = rgba[-1]
             if opacity is not None:
-                a =a * opacity
+                a = a * opacity
             return Color(rgb, glow=0, opacity=a)
         super().__init__(control_points * manim_scale_factor, color=convert_manim_color(manim_mob.fill_color, opacity=manim_mob.fill_opacity), opacity=1,
                          border_color=convert_manim_color(manim_mob.stroke_color, manim_mob.stroke_opacity),

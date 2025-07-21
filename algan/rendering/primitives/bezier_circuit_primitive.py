@@ -568,7 +568,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         LoggerManager.instance().set_class('rendering').log_message(
             f'attempting scatter_add {local_intersection_counts}')
-        global_intersection_counts = torch.scatter_add(out.cpu(), -1, local_to_global_inds.cpu(), local_intersection_counts.cpu().view(-1), out=out.cpu()).to(out.device, dtype=out.dtype)
+        global_intersection_counts = torch.scatter_add(out, -1, local_to_global_inds, local_intersection_counts.view(-1), out=out)
         #self.memory.current_pointer = local_intersection_counts_pointer
 
         # Now do border mask.
@@ -607,8 +607,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         LoggerManager.instance().set_class('rendering').log_message(
             f'attempting scatter_reduce')
-        global_dists = torch.scatter_reduce(global_dists.cpu(), -1, local_to_global_inds.cpu(), local_dist.cpu().view(-1), reduce='amin',
-                                            out=global_dists.cpu()).to(global_dists.device, dtype=global_dists.dtype)
+        global_dists = torch.scatter_reduce(global_dists, -1, local_to_global_inds, local_dist.view(-1), reduce='amin',
+                                            out=global_dists)
 
         self.memory.current_pointer = local_dist_pointer
 

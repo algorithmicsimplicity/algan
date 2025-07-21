@@ -36,17 +36,19 @@ class RenderSettings:
 
 THUMBNAIL = RenderSettings((1280, 720), 1, save_image=True)
 
+SMOKE_TEST = RenderSettings((100, 100), 2, anti_alias_level=1)
+
 # Render at (600, 400) resolution, 10 fps.
 PREVIEW = RenderSettings((640, 400), 10)
 
 # Render at (854, 480) resolution, 30 fps.
-LD = RenderSettings((854, 480), 30)
+LD = RenderSettings((854, 480), 15)
 
 # Render at (1280, 720) resolution, 30 fps.
 MD = RenderSettings((1280, 720), 30)
 
 # Render at (1920, 1080) resolution, 60 fps.
-HD = RenderSettings((1920, 1080), 60)
+HD = RenderSettings((1920, 1080), 30)
 
 # Render at (2560, 1440) resolution, 60 fps.
 PRODUCTION = RenderSettings((2560, 1440),60)

@@ -4,6 +4,7 @@ from importlib.metadata import version
 __version__ = version(__name__)
 
 import os
+os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
 import shutil
 import torch
 

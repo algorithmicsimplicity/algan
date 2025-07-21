@@ -1,3 +1,5 @@
+import torch
+
 from algan import *
 from algan import PI
 from algan.mobs.surfaces.surface import Surface
@@ -36,6 +38,51 @@ class Sphere(Surface):
         return self.coord_function(uv)
 
 
+class Cone(Surface):
+    """A 3-D cone.
+
+    Parameters
+    ----------
+    radius
+        base radius.
+    height
+        cone height.
+    *args, **kwargs
+        Passed to :class:`~.Surface`
+
+    """
+    def __init__(self, radius=1, height=1, closed=False, *args, **kwargs):
+        self.radius = radius
+        self.height = height
+        if 'grid_aspect_ratio' not in kwargs:
+            kwargs['grid_aspect_ratio'] = 1/PI
+        super().__init__(*args, **kwargs)
+        if closed:
+            self.cap = Circle(radius=radius).move(DOWN * height * 0.5)
+            self.add_children(self.cap)
+
+    def coord_function(self, uv):
+        uv[..., 1:] /= uv[..., 1:].amax()
+        u = -uv[..., :1]
+        v = uv[..., 1:]
+        return torch.cat(((u * torch.pi * 2).sin() * self.radius * v,
+                          (v - 0.5) * self.height,
+                          (u * torch.pi * 2).cos() * self.radius * v), -1)
+
+    def normal_function(self, uv):
+        xyz = self.coord_function(uv)
+        xyz[...,1] = 0
+        return xyz
+
+
+class Arrow3D(Mob):
+    def __init__(self, start_point, end_point, thickness: float = 0.02, height: float = 0.3, base_radius: float = 0.08, *args, **kwargs):
+        super().__init__()
+        self.tail = Cylinder(radius=thickness, closed=True, *args, **kwargs).move_between_points(start_point, end_point)
+        self.head = Cone(base_radius, height, closed=True, *args, **kwargs).move_to(self.tail
+                        ).move((end_point-start_point) * 0.5)
+
+
 class Cylinder(Surface):
     """A 3-D cylinder.
 
@@ -49,12 +96,16 @@ class Cylinder(Surface):
         Passed to :class:`~.Surface`
 
     """
-    def __init__(self, radius=1, height=1, *args, **kwargs):
+    def __init__(self, radius=1, height=1, closed=False, *args, **kwargs):
         self.radius = radius
         self.height = height
         if 'grid_aspect_ratio' not in kwargs:
             kwargs['grid_aspect_ratio'] = 1/PI
         super().__init__(*args, **kwargs)
+        if closed:
+            self.bottom_cap = Circle(radius=radius).move(DOWN * height * 0.5)
+            self.top_cap = Circle(radius=radius).move(UP * height * 0.5)
+            self.add_children(self.bottom_cap, self.top_cap)
 
     def coord_function(self, uv):
         uv[..., 1:] /= uv[..., 1:].amax()
