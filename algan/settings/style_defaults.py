@@ -10,5 +10,6 @@ class StyleDefaults:
     frame = background_color
     text_color = WHITE
     buffer = 0.6
+    fade_out_on_scene_end = False
 
 STYLE_DEFAULTS = StyleDefaults()

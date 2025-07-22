@@ -90,6 +90,9 @@ class RenderPrimitive:
         del kwargs2['post_processes']
         original_pointer = self.memory.current_pointer
         try:
+            out = self.get_tensor(
+                (((window[2] - window[0]) * (window[3] - window[1])), 4 if not transparent_output else 5), torch.uint8)
+            out_pointer = self.memory.current_pointer
             chunks = []
             for p in primitives:
                 p.memory = self.memory
@@ -99,8 +102,7 @@ class RenderPrimitive:
                 #self.memory.current_pointer = original_pointer
             if return_frags:
                 return chunks
-            out = self.get_tensor_from_memory((((window[2]-window[0])*(window[3]-window[1])), 4 if not transparent_output else 5), torch.uint8)
-            out = out.clone()
+
             if len(chunks) == 0:
                 frames = (next(scene.get_frames_from_fragments(None, window, out, anti_alias_level=kwargs['anti_alias_level'])) for _ in range(time_end - time_start))
             else:
@@ -112,6 +114,9 @@ class RenderPrimitive:
                 LoggerManager.instance().set_class('rendering').log_message(
                     f'beginning save_frames,')
                 self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'], post_processes=post_processes)
+                self.memory.current_pointer = original_pointer
+            else:
+                self.memory.current_pointer = out_pointer
         except (InsufficientMemoryException, torch.OutOfMemoryError):
             self.memory.current_pointer = original_pointer
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
@@ -179,8 +184,6 @@ class RenderPrimitive:
                 frames = scene.get_frames_from_fragments(frags, window, out, anti_alias_level=kwargs['anti_alias_level'])
 
             self.save_frames(frames, save_image, scene, anti_alias_level=kwargs['anti_alias_level'])
-        finally:
-            self.memory.current_pointer = original_pointer
         return frames
 
     def get_tensor_from_memory(self, *args, **kwargs):
@@ -201,6 +204,7 @@ class RenderPrimitive:
         unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
 
         current_frags = self.get_tensor((len(unique_inds), colors.shape[-1] - (0 if transparent_output else 1)), torch.float)
+        out_pointer = self.memory.current_pointer
         self.memory.save_pointer()
 
         if unique_counts.numel() == 0:
@@ -268,49 +272,6 @@ class RenderPrimitive:
             self.memory.current_pointer = original_pointer
             return out
 
-        def blend_colors_layerwise(dists, inds, colors, out):
-            while True:
-                max_dist, max_ind = scatter_arg_max(dists, inds, -1, dim_size=out.shape[-2])
-
-                def apply_mask(max_ind):
-                    # remaining_inds = torch.arange(inds.shape[-1], device=inds.device)
-                    remaining_inds = self.get_tensor([inds.shape[-1]], dtype=torch.long)
-                    torch.arange(inds.shape[-1], device=remaining_inds.device, out=remaining_inds)
-                    dump_mask = (max_ind < inds.shape[-1]) & (max_dist < 1e12) & (0 < max_dist)
-                    max_ind = max_ind[dump_mask]
-                    return remaining_inds, max_ind
-
-                remaining_inds, max_ind = apply_mask(max_ind)
-
-                def do_write(out):
-                    inds_selected = broadcast_gather(inds, -1, max_ind, keepdim=True)
-                    c_write = broadcast_gather(colors, -2, max_ind.unsqueeze(-1), keepdim=True)
-                    ie = inds_selected.unsqueeze(-1).expand([-1, 3])
-                    c_read = broadcast_gather(out, -2, ie, keepdim=True)
-                    a = c_write[..., -1:]
-                    out.scatter_(-2, ie, c_read * (1 - a) + a * c_write[..., :-1])
-                    return out
-
-                out = do_write(out)
-
-                def get_rem_inds(remaining_inds):
-                    mu = max_ind.clamp_max_(inds.shape[-1] - 1).unique()
-                    # combined = torch.cat((mu, remaining_inds), -1)
-                    combined = self.get_tensor([mu.shape[-1] + remaining_inds.shape[-1]], dtype=torch.long)
-                    torch.cat((mu, remaining_inds), -1, out=combined)
-                    uniques, counts = combined.unique(return_counts=True)
-                    remaining_inds = uniques[counts == 1]
-                    return remaining_inds
-
-                remaining_inds = get_rem_inds(remaining_inds)
-
-                if remaining_inds.shape[-1] <= 1:
-                    break
-                dists = torch.gather(dists, -1, remaining_inds)
-                inds = torch.gather(inds, -1, remaining_inds)
-                colors = torch.gather(colors, -2, remaining_inds.unsqueeze(-1).expand([-1, colors.shape[-1]]))
-            return out
-
         out = blend_colors(dists, unique_inds_inverse, colors, out)
         self.memory.reset_pointer()
 
@@ -319,8 +280,8 @@ class RenderPrimitive:
         float_tensor = self.get_tensor(out_inds.shape, dtype=torch.float)
         float_tensor.copy_(out_inds)
         histc_result = torch.histc(float_tensor, num_frames, min=0, max=(screen_width * screen_height * num_frames))
-        ind_counts = self.get_tensor(histc_result.shape, dtype=torch.long)
-        ind_counts.copy_(histc_result.long())
+        ind_counts = histc_result.long()
+        self.memory.current_pointer = out_pointer
         return out, out_inds, ind_counts
 
     def get_windowed_bounding_boxes(self, bounding_corners, screen_width, screen_height, window_coords=None):
@@ -446,6 +407,13 @@ class RenderPrimitive:
 
         repeats = bounding_box_num_pixels.view(-1)
         num_frags = repeats.sum()
+        inds = self.get_tensor([*bounding_box_sizes.shape[:-2], num_frags, 1], torch.long)
+        inds_pointer = self.memory.current_pointer
+
+        fragment_inds = self.get_tensor([num_frags], dtype=torch.long)
+        pointer = self.memory.current_pointer
+
+
         if num_frags == 0:
             return None
         # repeats_inds = torch.repeat_interleave(torch.arange(len(repeats), device=repeats.device), repeats, -1, output_size=num_frags).unsqueeze(-1)
@@ -453,8 +421,7 @@ class RenderPrimitive:
         torch.arange(len(repeats), device=arange_tensor.device, out=arange_tensor)
         repeats_inds = torch.repeat_interleave(arange_tensor, repeats, -1, output_size=num_frags).unsqueeze(-1)
 
-        fragment_inds = self.get_tensor([num_frags], dtype=torch.long)
-        pointer = self.memory.current_pointer
+
         # offsets = self.expand_verts_to_frags(bounding_box_num_pixels.cumsum(-2) - bounding_box_num_pixels, repeats_inds, -2)
         offsets = self.get_tensor([num_frags, 1], dtype=torch.long)
         cumsum_tensor = self.get_tensor(bounding_box_num_pixels.shape, dtype=torch.long)
@@ -462,14 +429,11 @@ class RenderPrimitive:
         cumsum_tensor -= bounding_box_num_pixels
         offsets = self.expand_verts_to_frags(cumsum_tensor, repeats_inds, -2, out=offsets)
         # Free cumsum_tensor as it's no longer needed
-        cumsum_size = cumsum_tensor.numel() * cumsum_tensor.element_size()
-        self.memory.current_pointer -= cumsum_size
         # fragment_inds = torch.arange(offsets.shape[-2], device=offsets.device).view(-1,1) - offsets
         fragment_inds = torch.arange(offsets.shape[-2], device=fragment_inds.device, out=fragment_inds).view(-1,1)
         fragment_inds -= offsets
         self.memory.current_pointer = pointer
 
-        inds = self.get_tensor([*bounding_box_sizes.shape[:-2], num_frags, 1], torch.long)
         corners_locs = self.expand_verts_to_frags(corners_locs, repeats_inds.unsqueeze(-1), -3)
         bisector_lengths = self.get_tensor([*corners_locs.shape[:-1], 1])
 
@@ -485,8 +449,9 @@ class RenderPrimitive:
 
         pointer = self.memory.current_pointer
         bounding_box_widths = self.expand_verts_to_frags(bounding_box_sizes[...,:1], repeats_inds, -2)#.clamp_min_(1)
-        fragment_x = self.get_tensor(bounding_box_widths.shape, torch.long)
-        fragment_y = self.get_tensor(bounding_box_widths.shape, torch.long)
+        fragment_inds_float = self.get_tensor(bounding_box_widths.shape)
+        fragment_x = self.get_tensor(bounding_box_widths.shape)
+        fragment_y = self.get_tensor(bounding_box_widths.shape)
         bounding_corners_rep = self.expand_verts_to_frags(bounding_corners[...,0,:], repeats_inds, -2)
         #fragment_x = self.get_tensor(bounding_box_widths.shape, torch.long)
         # fragment_x[:] = (fragment_inds % bounding_box_widths) + bounding_corners_rep[...,:1]
@@ -500,10 +465,12 @@ class RenderPrimitive:
         #aa_offsets = torch.linspace(0, 1, anti_alias_level * 2 + 1, device=fragment_x.device)[1:-1:2]
         #aa_offsets = squish(torch.stack((aa_offsets.view(-1, 1).expand([-1, len(aa_offsets)]), aa_offsets.view(1, -1).expand([len(aa_offsets), -1])), -1))
         # inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
-        torch.mul(fragment_y, window_width, out=inds)
-        torch.add(inds, fragment_x, out=inds)
-        torch.sub(inds, (start_y * window_width + start_x), out=inds)
-        all_ws = self.get_interpolation_coordinates(corners_locs, fragment_x.float(), fragment_y.float(), None)
+        torch.mul(fragment_y, window_width, out=fragment_inds_float)
+        fragment_inds_float += fragment_x
+        fragment_inds_float -= (start_y * window_width + start_x)
+        all_ws = self.get_interpolation_coordinates(corners_locs, fragment_x, fragment_y, None)
+        torch.round(fragment_inds_float, out=fragment_inds_float)
+        inds[:] = fragment_inds_float
         self.memory.current_pointer = pointer
 
         #
@@ -534,17 +501,12 @@ class RenderPrimitive:
         torch.add(inds, unsqueezed_arange, out=inds)
         inds = inds.view(-1)
         inds = inds[m]
-        unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
+        #unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
 
         self_colors = colors
         #output_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
         #output_frags[:] = 0
         ##current_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
-
-        if unique_counts.numel() == 0:
-            max_buffer_depth = 1
-        else:
-            max_buffer_depth = unique_counts.amax()
 
         def get_frags(ws):
 
@@ -554,13 +516,13 @@ class RenderPrimitive:
             def get_colors():
                 colors = interpolate(self_colors)
                 #colors[..., -1:] *= anti_alias_mask
-                colors = colors.reshape(-1, colors.shape[-1])
+                colors = colors.view(-1, colors.shape[-1])
                 colors = colors[m]
                 return colors
 
             def get_dists():
                 dists = interpolate(projected_distances)
-                dists = dists.reshape(-1)
+                dists = dists.view(-1)
                 dists = dists[m]
                 return dists
 
@@ -568,6 +530,7 @@ class RenderPrimitive:
             return colors, dists
 
         colors, dists = get_frags(all_ws)
+        self.memory.current_pointer = inds_pointer
         return colors, dists, inds
 
 

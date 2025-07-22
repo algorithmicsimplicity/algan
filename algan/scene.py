@@ -57,6 +57,7 @@ class Scene:
         self.scene_initializer = scene_initializer
         self.reset_scene()
         self.allow_new_actors = True
+        self.animate_scene_clear = False
 
         self.memory = memory
 
@@ -208,6 +209,7 @@ class Scene:
                                     post_processes=post_processes)
 
             self.memory.current_pointer = start_pointer
+            self.memory.max_pointer = start_pointer
             current_ind = new_ind
             if current_ind >= end_ind:
                 break

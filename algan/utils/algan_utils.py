@@ -23,7 +23,7 @@ from algan.utils.memory_utils import empty_cache
 #‘mpeg4’ > ‘libx264’
 #@compiled
 def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec=None,
-                   file_extension=None, background_color=None, ffmpeg_params=None, **kwargs):
+                   file_extension=None, background_color=None, ffmpeg_params=None, animate_fade_out=None, **kwargs):
     """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
     as captured by the active :class:`~.Camera`, and saves the video to a file.
 
@@ -89,7 +89,7 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             codec = 'png' if scene.background_is_transparent() else 'libx264'
         if ffmpeg_params is None:
             ffmpeg_params = [
-                '-crf', '10',
+                '-crf', '15',
                 '-preset', 'veryslow'
             ] if not scene.background_is_transparent() else []
         try:
@@ -103,8 +103,13 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
                                              ffmpeg_params=ffmpeg_params)
 
         try:
-            with Off():
-                scene.clear_scene(animate=False)
+            if animate_fade_out is None:
+                animate_fade_out = STYLE_DEFAULTS.fade_out_on_scene_end
+            if animate_fade_out:
+                scene.clear_scene()
+            else:
+                with Off():
+                    scene.clear_scene(animate=False)
             print(f'Began rendering {file_name}{file_ext}')
             scene.render_to_video(file_writer, temp_file_path, file_path, audio_file_path, **kwargs)
             print(f'Finished rendering {file_name}{file_ext}')

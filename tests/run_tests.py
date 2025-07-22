@@ -6,18 +6,18 @@ import shutil
 from unittest import TestCase
 from parameterized import parameterized
 
-from algan import PREVIEW, RENDERING_DEFAULTS
+from algan import PREVIEW, RENDERING_DEFAULTS, SceneManager, STYLE_DEFAULTS
 
 test_file_dir = 'test_files'
 test_files = [[f] for f in os.listdir(test_file_dir) if f.endswith('.py')]
 
+STYLE_DEFAULTS.fade_out_on_scene_end = True
 RENDERING_DEFAULTS.settings = PREVIEW
 
 class TestOverseer(TestCase):
     def setUp(self):
         if os.path.exists('algan_cache'):
             shutil.rmtree('algan_cache')
-
 
     @parameterized.expand(test_files)
     def test_algan_file(self, test_file):

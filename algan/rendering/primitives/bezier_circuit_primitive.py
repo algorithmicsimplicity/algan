@@ -440,6 +440,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         object_to_fragment_gather_inds = self.get_windowed_bounding_boxes(bounding_corners, screen_width, screen_height,
                                                                           window_coords)[-1]
 
+        inds = self.get_tensor(fragment_x.shape, dtype=torch.long)
+        inds_pointer = self.memory.current_pointer
         if fragment_x.numel() == 0:
             return None
 
@@ -771,7 +773,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         #TODO subtract window_start from x and y (so they are 0 centered.
         #inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
-        inds = self.get_tensor(fragment_x.shape, dtype=torch.long)
         torch.multiply(fragment_y, window_width, out=inds)
         inds -= start_y * window_width + start_x
         inds += fragment_x
@@ -979,4 +980,5 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         colors, dists = get_frags(1)
         LoggerManager.instance().set_class('rendering').log_message(
             f'finished getting frags {colors.shape},')
+        self.memory.current_pointer = inds_pointer
         return colors, dists, inds
