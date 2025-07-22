@@ -1,4 +1,4 @@
-from algan.mobs.shapes_2d import Circle, Square, Polygon, RegularPolygon
+from algan.mobs.shapes_2d import Circle, RegularPolygon, Square
 from algan.mobs.text import Tex
 from algan.utils.algan_utils import render_all_funcs
 

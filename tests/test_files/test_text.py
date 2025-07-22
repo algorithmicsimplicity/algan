@@ -1,16 +1,20 @@
+import sys
+
 import torch
 import torch.nn.functional as F
 
-import sys
 sys.path.insert(-1, '/')
 from algan.animation.animation_contexts import Seq  # , Runtime, Sequential
+
 #from constants import BLUE
 from algan.constants.spatial import RIGHT, UP
+
 #from mobs.group import Group
 from algan.mobs.text import Tex
 from algan.utils.algan_utils import render_all_funcs
+
 #from mobs.shapes_2d import Rectangle
-from algan.utils.tensor_utils import unsquish, squish
+from algan.utils.tensor_utils import squish, unsquish
 
 
 def text():

@@ -1,5 +1,5 @@
-from algan.animation.animation_contexts import Sync, Off, Seq
-from algan.constants.spatial import *#RIGHT, LEFT, IN, OUT, ORIGIN, UP
+from algan.animation.animation_contexts import Off, Seq, Sync
+from algan.constants.spatial import *  #RIGHT, LEFT, IN, OUT, ORIGIN, UP
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.utils.algan_utils import render_all_funcs
 
@@ -11,7 +11,8 @@ p = torch.stack((
 p = p - p.mean((0,1))
 p = p * 4
 
-get_mob = lambda q=p: BezierCircuitCubic(q, color=YELLOW, add_texture_grid=False, render_with_distance_to_curve=False).spawn()
+def get_mob(q=p):
+    return BezierCircuitCubic(q, color=YELLOW, add_texture_grid=False, render_with_distance_to_curve=False).spawn()
 
 #TODO at end of rotation the curve flips inside ot
 #could this be because we just default normals to camera direction?

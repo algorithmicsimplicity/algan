@@ -1,8 +1,9 @@
-import cv2
 import importlib
-import numpy as np
 import os
 from unittest import TestCase
+
+import cv2
+import numpy as np
 from parameterized import parameterized
 
 test_file_dir = 'test_files'
@@ -29,9 +30,9 @@ class TestOverseer(TestCase):
                     ret1, yh_ = yh.read()
                     ret2, y_ = y.read()
                     if not (ret1 and ret2):
-                        self.assertEqual(ret1, ret2, f'{module_name} output does not have the expected number of frames.')
+                        assert ret1 == ret2, f'{module_name} output does not have the expected number of frames.'
                         break
-                    self.assertEqual(np.abs(yh_ - y_).max(), 0, f'{module_name} output does not match expectation.')
+                    assert np.abs(yh_ - y_).max() == 0, f'{module_name} output does not match expectation.'
                 yh.release()
                 y.release()
                 #with open(os.path.join(test_output_dir, f), 'r') as yh, open(os.path.getsize(), 'r') as y:

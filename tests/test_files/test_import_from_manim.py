@@ -1,7 +1,7 @@
 import manim as mn
 
-from algan.animation.animation_contexts import Sync, Off
-from algan.constants.spatial import *#RIGHT, LEFT, IN, OUT, ORIGIN, UP
+from algan.animation.animation_contexts import Off, Sync
+from algan.constants.spatial import *  #RIGHT, LEFT, IN, OUT, ORIGIN, UP
 from algan.mobs.manim_mob import ManimMob
 from algan.utils.algan_utils import render_all_funcs
 
