@@ -8,7 +8,6 @@ from typing import Any, Callable
 import cairo
 import pytest
 from _pytest.fixtures import FixtureRequest
-
 from manim import Scene
 from manim._config import tempconfig
 from manim._config.utils import ManimConfig

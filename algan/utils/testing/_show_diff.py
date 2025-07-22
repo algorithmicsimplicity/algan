@@ -4,7 +4,6 @@ import logging
 import warnings
 
 import numpy as np
-
 from manim.typing import PixelArray
 
 

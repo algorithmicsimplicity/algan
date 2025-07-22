@@ -1,29 +1,38 @@
+from __future__ import annotations
+
 import cProfile
-import os.path
-
-from pathlib import Path
-
 import inspect
+import os.path
 import pstats
 import sys
+from pathlib import Path
 
 import torch
-import cv2
 from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter
 
-import algan
+from algan import SceneManager
+from algan.animation.animation_contexts import Off
+from algan.rendering.camera import Camera
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
-from algan import compiled
-from algan.animation.animation_contexts import AnimationManager, Off
-from algan.rendering.camera import Camera
-from algan import SceneManager
 from algan.utils.memory_utils import empty_cache
 
-#‘mpeg4’ > ‘libx264’
-#@compiled
-def render_to_file(file_name=None, output_dir=None, output_path=None, render_settings=None, overwrite=True, codec=None,
-                   file_extension=None, background_color=None, ffmpeg_params=None, animate_fade_out=None, **kwargs):
+
+# ‘mpeg4’ > ‘libx264’
+# @compiled
+def render_to_file(
+    file_name=None,
+    output_dir=None,
+    output_path=None,
+    render_settings=None,
+    overwrite=True,
+    codec=None,
+    file_extension=None,
+    background_color=None,
+    ffmpeg_params=None,
+    animate_fade_out=None,
+    **kwargs,
+):
     """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
     as captured by the active :class:`~.Camera`, and saves the video to a file.
 
@@ -73,34 +82,46 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             background_color = STYLE_DEFAULTS.background_color
         scene.background_frame = scene.background_color = background_color
 
-        if file_ext == '':
-            file_ext = '.mov' if scene.background_is_transparent() else '.mp4'
+        if file_ext == "":
+            file_ext = ".mov" if scene.background_is_transparent() else ".mp4"
         if file_extension is not None:
-            file_ext = f'.{file_extension}'
-        temp_file_path = f'{temp_file_path}{file_ext}'
-        file_path = f'{file_path}{file_ext}'
+            file_ext = f".{file_extension}"
+        temp_file_path = f"{temp_file_path}{file_ext}"
+        file_path = f"{file_path}{file_ext}"
 
-        if file_ext in ['.mp4'] and scene.background_is_transparent():
-            raise ValueError(f'You are trying to render a scene with a transparent background to a file format which'
-                             f'does not support alpha channels ({file_ext}). Please use a file format that supports'
-                             f'alpha channels such as .mov or .webm, or change the background color to be opaque.')
+        if file_ext in [".mp4"] and scene.background_is_transparent():
+            raise ValueError(
+                f"You are trying to render a scene with a transparent background to a file format which"
+                f"does not support alpha channels ({file_ext}). Please use a file format that supports"
+                f"alpha channels such as .mov or .webm, or change the background color to be opaque."
+            )
 
         if codec is None:
-            codec = 'png' if scene.background_is_transparent() else 'libx264'
+            codec = "png" if scene.background_is_transparent() else "libx264"
         if ffmpeg_params is None:
-            ffmpeg_params = [
-                '-crf', '15',
-                '-preset', 'veryslow'
-            ] if not scene.background_is_transparent() else []
+            ffmpeg_params = (
+                ["-crf", "15", "-preset", "veryslow"]
+                if not scene.background_is_transparent()
+                else []
+            )
         try:
-            file_writer = FFMPEG_VideoWriter(temp_file_path, size=render_settings.resolution, codec=codec,
-                                             fps=render_settings.frames_per_second, with_mask=scene.background_is_transparent(),
-                                             ffmpeg_params=ffmpeg_params)
+            file_writer = FFMPEG_VideoWriter(
+                temp_file_path,
+                size=render_settings.resolution,
+                codec=codec,
+                fps=render_settings.frames_per_second,
+                with_mask=scene.background_is_transparent(),
+                ffmpeg_params=ffmpeg_params,
+            )
         except TypeError:
-            file_writer = FFMPEG_VideoWriter(temp_file_path, size=render_settings.resolution, codec=codec,
-                                             fps=render_settings.frames_per_second,
-                                             withmask=scene.background_is_transparent(),
-                                             ffmpeg_params=ffmpeg_params)
+            file_writer = FFMPEG_VideoWriter(
+                temp_file_path,
+                size=render_settings.resolution,
+                codec=codec,
+                fps=render_settings.frames_per_second,
+                withmask=scene.background_is_transparent(),
+                ffmpeg_params=ffmpeg_params,
+            )
 
         try:
             if animate_fade_out is None:
@@ -110,34 +131,51 @@ def render_to_file(file_name=None, output_dir=None, output_path=None, render_set
             else:
                 with Off():
                     scene.clear_scene(animate=False)
-            print(f'Began rendering {file_name}{file_ext}')
-            scene.render_to_video(file_writer, temp_file_path, file_path, audio_file_path, **kwargs)
-            print(f'Finished rendering {file_name}{file_ext}')
+            print(f"Began rendering {file_name}{file_ext}")
+            scene.render_to_video(
+                file_writer, temp_file_path, file_path, audio_file_path, **kwargs
+            )
+            print(f"Finished rendering {file_name}{file_ext}")
         finally:
-            #file_writer.release()
+            # file_writer.release()
             file_writer.close()
             if os.path.exists(temp_file_path):
                 os.remove(temp_file_path)
             if os.path.exists(audio_file_path):
                 os.remove(audio_file_path)
 
-
         SceneManager.reset()
-        #AnimationManager.reset()
-        #scene = SceneManager.instance()
-        #scene.set_render_settings(render_settings)
+        # AnimationManager.reset()
+        # scene = SceneManager.instance()
+        # scene.set_render_settings(render_settings)
 
 
-#@compiled
-def render_all_funcs(module_name, render_settings=None, profile=True, overwrite=True, start_index=0,
-                     max_rendered=-1, output_dir=None, output_path=None, file_extension='mp4', **kwargs):
+# @compiled
+def render_all_funcs(
+    module_name,
+    render_settings=None,
+    profile=True,
+    overwrite=True,
+    start_index=0,
+    max_rendered=-1,
+    output_dir=None,
+    output_path=None,
+    file_extension="mp4",
+    **kwargs,
+):
     def run(output_dir=None, render_settings=None, output_path=None):
         with torch.inference_mode():
             module = sys.modules[module_name]
-            scene_funcs = [a for a in inspect.getmembers(module) if inspect.isfunction(a[1]) and
-                           a[1].__globals__['__file__'] == inspect.getfile(module) and
-                           len(inspect.signature(a[1]).parameters) == 0]
-            scene_funcs = list(sorted(scene_funcs, key=lambda x: x[1].__code__.co_firstlineno))
+            scene_funcs = [
+                a
+                for a in inspect.getmembers(module)
+                if inspect.isfunction(a[1])
+                and a[1].__globals__["__file__"] == inspect.getfile(module)
+                and len(inspect.signature(a[1]).parameters) == 0
+            ]
+            scene_funcs = sorted(
+                scene_funcs, key=lambda x: x[1].__code__.co_firstlineno
+            )
 
             if render_settings is None:
                 render_settings = RENDERING_DEFAULTS.settings
@@ -149,19 +187,20 @@ def render_all_funcs(module_name, render_settings=None, profile=True, overwrite=
             if output_dir is None:
                 output_dir = DIRECTORY_DEFAULTS.output_directory
             output_dir = os.path.join(output_dir, module_name)
-            if start_index < 0:
-                s = start_index + len(scene_funcs)
-            else:
-                s = start_index
-            if max_rendered < 0:
-                e = len(scene_funcs)
-            else:
-                e = s+max_rendered
+            s = start_index + len(scene_funcs) if start_index < 0 else start_index
+            e = len(scene_funcs) if max_rendered < 0 else s + max_rendered
             for i, (func_name, f) in list(enumerate(scene_funcs))[s:e]:
                 scene = SceneManager.reset()
                 scene.set_render_settings(render_settings)
                 f()
-                render_to_file(f'{i}_{func_name}.{file_extension}', output_dir, output_path, render_settings, overwrite, **kwargs)
+                render_to_file(
+                    f"{i}_{func_name}.{file_extension}",
+                    output_dir,
+                    output_path,
+                    render_settings,
+                    overwrite,
+                    **kwargs,
+                )
             return
 
     if profile:

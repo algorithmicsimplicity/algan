@@ -7,7 +7,6 @@ from collections.abc import Generator
 from pathlib import Path
 
 import numpy as np
-
 from manim.typing import PixelArray
 
 from ._show_diff import show_diff_helper
