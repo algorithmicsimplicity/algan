@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import copy
-from typing import Any, Callable, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from algan.constants import rate_funcs
-from dataclasses import dataclass, field
-
 from algan.utils.python_utils import traverse
 
 DEFAULT_RUN_TIME = 2
@@ -109,7 +110,7 @@ class AnimationContext:
     combine_rate_func: bool = False
     record_funcs: bool|None = None
     record_attr_modifications: bool|None = None
-    prev_context: Optional["AnimationContext"] = None
+    prev_context: AnimationContext | None = None
     spawn_at_end: bool|None = None
     new_animation: bool|None = False
     finished: bool = False

@@ -1,20 +1,24 @@
+from __future__ import annotations
+
 import collections
 import math
 import os
 import time
 import wave
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
-from algan.animation.animation_contexts import Sync, AnimationManager, Off
-from algan.defaults.batch_defaults import DEFAULT_BATCH_SIZE_FRAMES, DEFAULT_BATCH_SIZE_ACTORS, \
-    DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING
+from algan.animation.animation_contexts import AnimationManager, Off, Sync
+from algan.defaults.batch_defaults import (
+    DEFAULT_BATCH_SIZE_ACTORS,
+    DEFAULT_BATCH_SIZE_FRAMES,
+    DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING,
+)
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
 from algan.defaults.render_defaults import DEFAULT_RENDER_SETTINGS
 from algan.defaults.style_defaults import DEFAULT_FRAME
-import numpy as np
-
 from algan.rendering.post_processing import bloom_filter
 from algan.utils.memory_utils import ManualMemory
 from algan.utils.tensor_utils import unsquish
@@ -26,7 +30,7 @@ class Scene:
         self.current_time = 0
         self.min_time = 0
         self.max_time = 0
-        if hasattr(background_frame, '__call__'):
+        if callable(background_frame):
             background_frame = background_frame(torch.stack((torch.arange(self.num_pixels_screen_height).view(-1,1).expand(-1,self.num_pixels_screen_width),
                                                 torch.arange(self.num_pixels_screen_width).view(1,-1).expand(self.num_pixels_screen_height, -1)), -1))
         else:
@@ -82,7 +86,7 @@ class Scene:
         return self
 
     def get_num_batches(self, start, end, batch_size):
-        num_frames = int((end - start))
+        num_frames = int(end - start)
         num_batches = (max(num_frames - 1, 0) // batch_size) + 1
         return num_batches
 
@@ -92,14 +96,14 @@ class Scene:
 
     def clear_scene(self, **kwargs):
         with Sync():
-            for actor in list(sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)):
+            for actor in sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True):
                 actor.despawn(**kwargs)
         AnimationManager.wait()
 
     def get_audio(self, actors, start, end):
         active_actors = []
         time_inds = torch.arange(start, end)
-        for actor_id, actor in enumerate(list(sorted(actors, key=lambda x: x.anchor_priority, reverse=True))):
+        for _actor_id, actor in enumerate(sorted(actors, key=lambda x: x.anchor_priority, reverse=True)):
             if end <= actor.spawn_ind or actor.despawn_ind <= start or not hasattr(actor, 'render_audio'):
                 continue
             active_actors.append(actor)
@@ -108,14 +112,14 @@ class Scene:
         if len(active_actors) == 0:
             nt = int((end-start) * self.render_settings.audio_frames_per_second / self.frames_per_second)
             return torch.zeros((nt,)).cpu().numpy()
-        return sum((a.render_audio() for a in active_actors))
+        return sum(a.render_audio() for a in active_actors)
 
     def get_fragments(self, actors, start, end, save_image=False):
         camera = self.camera
         nt = end-start
         active_actors = []
         time_inds = torch.arange(start, end)
-        for actor_id, actor in enumerate(list(sorted(actors, key=lambda x: x.anchor_priority, reverse=True))):
+        for _actor_id, actor in enumerate(sorted(actors, key=lambda x: x.anchor_priority, reverse=True)):
             if end <= actor.spawn_ind or actor.despawn_ind <= start or not actor.is_primitive:
                 continue
             active_actors.append(actor)
@@ -138,7 +142,7 @@ class Scene:
         # Return the values (the lists of grouped items) from the dictionary.
         primitive_collections = []
         for _, (primitive_class, primitives) in grouped_primitives.items():
-            primitive_collections.append(primitive_class(triangle_collection=primitives, reverse_perimeter=any([_.reverse_perimeter for _ in primitives])))
+            primitive_collections.append(primitive_class(triangle_collection=primitives, reverse_perimeter=any(_.reverse_perimeter for _ in primitives)))
             primitive_collections[-1].memory = self.memory
             primitive_collections[-1].scene = self
         self.memory.reset()
@@ -152,7 +156,7 @@ class Scene:
 
     def get_frame(self, i):
         actors = self.actors[-1]
-        for actor_id, actor in enumerate(list(sorted(actors, key=lambda x: x.anchor_priority, reverse=True))):
+        for _actor_id, actor in enumerate(sorted(actors, key=lambda x: x.anchor_priority, reverse=True)):
             actor.set_state_full()
         self.camera.set_state_full()
         return next(self.get_frames_from_fragments(self.get_fragments(actors, i, i+1)))
@@ -181,7 +185,7 @@ class Scene:
             wav_file.setnchannels(1)
             wav_file.setsampwidth(1)
             wav_file.setframerate(self.render_settings.audio_frames_per_second)
-            for scene_num, (actors, (scene_start, scene_end)) in enumerate(zip(self.actors, self.scene_times[-len(self.actors):])):
+            for _scene_num, (actors, (scene_start, scene_end)) in enumerate(zip(self.actors, self.scene_times[-len(self.actors):])):
                 if scene_end < scene_start:
                     continue
                 if scene_end == scene_start and not save_image:
@@ -203,7 +207,7 @@ class Scene:
                     actor_e = min((i+1) * batch_size_actors, scene_end)
                     if actor_s >= scene_end:
                         continue
-                    for actor_id, actor in enumerate(list(sorted(actors, key=lambda x: x.anchor_priority, reverse=True))):
+                    for _actor_id, actor in enumerate(sorted(actors, key=lambda x: x.anchor_priority, reverse=True)):
                         actor.set_state_full(actor_s, actor_e)
 
                     if self.camera.data.time_inds_materialized is None:
@@ -217,12 +221,12 @@ class Scene:
                             continue
                         end = min(actor_s + (i + 1) * batch_size_frames, actor_e)
 
-                        def run():
+                        def run(actors, start, end, save_image):
                             self.get_fragments(actors, start, end, save_image)
                             audio = self.get_audio(actors, start, end)
                             wav_file.writeframes(bytes(((audio+1)*255/2).astype(np.uint8)))
                             torch.cuda.empty_cache()
-                        run()
+                        run(actors, start, end, save_image)
                         e = time.time()
                         print(f'{i}: {start}:{end}, took {e-s} seconds')
                         s = e
@@ -237,19 +241,19 @@ class Scene:
             os.rename(file_path, file_path_out)
             return save_image
         #TODO fix this so we can write audio to the fiile as well.
-        videoclip = VideoFileClip(file_path)
-        try:
-            #audioclip = AudioFileClip("audioname.mp3")
+        # videoclip = VideoFileClip(file_path)
+        # try:
+        #     #audioclip = AudioFileClip("audioname.mp3")
 
-            videoclip = videoclip.set_audio(CompositeAudioClip([effect.audio.subclip(0, videoclip.duration) for effect in sorted(self.effects, key=lambda e: e.spawn_time())]))
+        #     videoclip = videoclip.set_audio(CompositeAudioClip([effect.audio.subclip(0, videoclip.duration) for effect in sorted(self.effects, key=lambda e: e.spawn_time())]))
 
-            if os.path.exists(file_path_out):
-                os.remove(file_path_out)
+        #     if os.path.exists(file_path_out):
+        #         os.remove(file_path_out)
 
-            videoclip.write_videofile(file_path_out, codec='mpeg4')
-        finally:
-            videoclip.close()
-            os.remove(file_path)
+        #     videoclip.write_videofile(file_path_out, codec='mpeg4')
+        # finally:
+        #     videoclip.close()
+        #     os.remove(file_path)
 
     def get_frames_from_fragments(self, fragments, window, frame, anti_alias_level=1):
         device = fragments[0].device if fragments is not None else frame.device
@@ -274,7 +278,7 @@ class Scene:
         if inds is None:
             frame[:] = bgf
             frame = unsquish(frame, 0, -window_height).cpu().flip((-3, -1)).numpy()
-            for i in range(len(frames)):
+            for _ in range(len(frames)):
                 yield frame
             return
 
@@ -324,6 +328,6 @@ class SceneTracker:
         if cls._instance is None:
             if cls._memory is None:
                 #TODO make this work for CPU
-                cls._memory = ManualMemory(((int((torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0))*DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING))))
+                cls._memory = ManualMemory(int((torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0))*DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING))
             cls._instance = Scene(memory=cls._memory)
         return cls._instance

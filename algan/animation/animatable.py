@@ -1,20 +1,25 @@
-from collections import defaultdict
+from __future__ import annotations
+
 import copy
-import functools
+from collections import defaultdict
 from functools import wraps
-import inspect
-from typing import Dict
 
 import torch
-import torch.nn.functional as F
 
-from algan.scene import Scene
-from algan.animation.animation_contexts import Sync, AnimationManager, AnimationContext
+from algan.animation.animation_contexts import AnimationContext, AnimationManager, Sync
 from algan.constants.color import BLACK
-from algan.utils.tensor_utils import broadcast_all, robust_concat, concat_dicts, prepare_kwargs, HANDLED_FUNCTIONS
+from algan.scene import Scene
 from algan.scene_tracker import SceneTracker
 from algan.utils.python_utils import traverse
-from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, cast_to_tensor_single, unsqueeze_dims
+from algan.utils.tensor_utils import (
+    HANDLED_FUNCTIONS,
+    broadcast_all,
+    broadcast_gather,
+    concat_dicts,
+    prepare_kwargs,
+    robust_concat,
+    unsqueeze_dims,
+)
 
 
 class ModificationHistory:
@@ -23,9 +28,9 @@ class ModificationHistory:
     """
 
     def __init__(self):
-        self.function_applications = dict() # contains all animated_functions applied to the mob.
+        self.function_applications = {} # contains all animated_functions applied to the mob.
         self.attribute_modifications = defaultdict(list) # contains every instance that one of the mob's animatable attributes is changed.
-        self.attribute_overwrites = dict() # overwrites are not supported at the moment.
+        self.attribute_overwrites = {} # overwrites are not supported at the moment.
 
     def overwrite_attr_history(self, attr, end_time):
         if attr not in self.attribute_overwrites:
@@ -65,7 +70,7 @@ class ModificationHistory:
 
         funcs = []
 
-        for func_name, (func, modified_attrs, arg_list) in sorted(self.function_applications.items(), key=lambda _: 0 if 'setattr_' in _[0] else (1 if 'update_relative' in _[0] else 2)):
+        for _func_name, (func, _modified_attrs, arg_list) in sorted(self.function_applications.items(), key=lambda _: 0 if 'setattr_' in _[0] else (1 if 'update_relative' in _[0] else 2)):
             animated_args, kwargs, start_time, end_time, rate_funcs = zip(*arg_list)
             kwargs = concat_dicts(kwargs)
             animated_args = concat_dicts(animated_args)
@@ -78,17 +83,17 @@ class ModificationHistory:
             orders = (overlaps * torch.triu(torch.ones_like(overlaps), diagonal=1)).sum(-2)
             unique_orders, uinds = torch.unique(orders, return_inverse=True)
             for order in unique_orders:#[-1:]:
-                def g(x):
+                def g(x, order=order, uinds=uinds):
                     if not isinstance(x, torch.Tensor):
                         return x
                     return x[uinds == order]
                 sub_rate_funcs = [rate_funcs[i] for i in (uinds == order).nonzero()]
-                funcs.append((func, {k: g(v) for k, v in animated_args.items()}, {k: g(v) for k, v in kwargs.items()},
-                              g(start_time), g(end_time), sub_rate_funcs))
+                funcs.append((func, {k: g(v, order, uinds) for k, v in animated_args.items()}, {k: g(v, order, uinds) for k, v in kwargs.items()},
+                              g(start_time, order, uinds), g(end_time, order, uinds), sub_rate_funcs))
         return attrs, funcs
 
 
-def animated_function(function=None, *, animated_args:Dict[str, float]={'t': 0}, unique_args=list()):
+def animated_function(function=None, *, animated_args:dict[str, float]={'t': 0}, unique_args=[]):
     """Decorator that turns a function into an animated function. The animation is created by interpolating
     all args named in the animated_args dict from the value provided in this dict the value passed as an actual argument
     when the function is called. Most commonly, animated_args will just be {'t': 0}, and the function
@@ -104,7 +109,7 @@ def animated_function(function=None, *, animated_args:Dict[str, float]={'t': 0},
         A dictionary with strings as keys and floats as values. The strings are names of arguments which will
         be animated. The arguments will be animated by linearly interpolating their values from the corresponding
         value provided in the animated_args dict to the value they have when the function is called.
-        
+
     unique_args
         A list of strings. This is only for batching, when the function is called with different values for a unique
         argument, they will be batched as two entirely separate functions. Any arguments named in unique_args MUST
@@ -153,13 +158,14 @@ class AnimatableData:
     despawn_time
         (function which yields) the timestamp at which the mob despawned.
     """
+
     def __init__(self, animatable, data_dict_active=None, data_dict_materialized=None, history=None,
                  time_inds_materialized=None, time_inds_active=None, spawn_time=lambda: -1, despawn_time=lambda: -1):
         self.animatable = animatable
         if data_dict_active is None:
-            data_dict_active = dict()
+            data_dict_active = {}
         if data_dict_materialized is None:
-            data_dict_materialized = dict()
+            data_dict_materialized = {}
         if history is None:
             history = ModificationHistory()
         self.data_dict_active = data_dict_active
@@ -206,6 +212,7 @@ class Animatable:
         A set of attribute names which will be treated as animatable. When ever an animatable attribute is modified,
         it will be treated as applying an animated function to this mob.
     """
+
     def __init__(self,
                  scene: Scene | None=None,
                  add_to_scene: bool=True,
@@ -360,8 +367,7 @@ class Animatable:
         return value[time_inds][:, data_inds]
 
     def wait(self, *args, **kwargs):
-        """An animated function that does nothing for one second!
-        """
+        """An animated function that does nothing for one second!"""
         self.animation_manager.context.wait(*args, **kwargs)
 
     def get_default_color(self):
@@ -429,7 +435,7 @@ class Animatable:
         children_clones = [copy.deepcopy(c, memo) for c in children] if copy_recursive else []
 
         child_to_id = {c: i for i, c in enumerate(children)}
-        id_to_child = {i: c for i, c in enumerate(children_clones)}
+        id_to_child = dict(enumerate(children_clones))
 
         for k, v in self.__dict__.items():
             if k in ['video', 'id', 'created', 'destroyed', 'spawn_time', 'despawn_time', 'animation_manager', '_animation_manager', 'time_inds', 'history']:
@@ -536,24 +542,23 @@ class Animatable:
         if make_new_state:
             self.data = AnimatableData(self)
             self.data.spawn_time = self.animation_manager.context.get_current_time()
-        self.data.data_dict_materialized = dict()
+        self.data.data_dict_materialized = {}
         self.data.time_inds_materialized = None
         self.data.time_inds_active = None
         self.data.data_dict = self.data.data_dict_active
         self.data.set_pre_function_application = False
 
     def set_state_pre_function_applications(self, spawn_ind, despawn_ind):
-        """Sets all animatable attribute values to the values they had before any animated_function applications take place.
-        """
+        """Sets all animatable attribute values to the values they had before any animated_function applications take place."""
         fps = self.scene.frames_per_second
         time_inds = torch.arange(spawn_ind, despawn_ind)
         self.despawn_ind = int(self.data.despawn_time() * fps)
         self.spawn_ind = int(self.data.spawn_time() * fps)
         self.despawn_ind = max(self.despawn_ind, self.spawn_ind+1)
 
-        t = ((time_inds / fps))
+        t = (time_inds / fps)
         t = t.unsqueeze(-1)
-        attr_to_values = dict()
+        attr_to_values = {}
         self.t = t
 
         attr_history, func_history = self.data.history.get_history(self)
@@ -575,8 +580,7 @@ class Animatable:
         self.data.set_pre_function_application = True
 
     def set_state_full(self, s, e):
-        """Sets all animatable attribute values to their final values after animated_functions have been applied.
-        """
+        """Sets all animatable attribute values to their final values after animated_functions have been applied."""
         if not self.data.set_pre_function_application:
             self.set_state_pre_function_applications(s, e)
         t = self.t
@@ -600,7 +604,7 @@ class Animatable:
             if self.parent_batch_sizes is not None and z.shape[1] == len(self.parent_batch_sizes):
                 z = torch.repeat_interleave(z, self.parent_batch_sizes, 1)
 
-            def select_kwargs(kwargs):
+            def select_kwargs(kwargs, fa):
                 return {key: broadcast_gather(value, 0, unsqueeze_dims(fa, value, 1), keepdim=True) if
                       isinstance(value, torch.Tensor) else value for key, value in kwargs.items()}
 
