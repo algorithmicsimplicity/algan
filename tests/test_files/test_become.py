@@ -1,4 +1,4 @@
-from algan.mobs.shapes_2d import Circle, Square, Polygon, RegularPolygon
+from algan.mobs.shapes_2d import Circle, RegularPolygon, Square
 from algan.mobs.text import Tex
 from algan.utils.algan_utils import render_all_funcs
 
@@ -13,7 +13,9 @@ def test_become_shapes_2d():
 
 def test_become_text():
     x = Tex("Hello", font_size=90).spawn()
-    x.become(Tex("Holloo", font_size=90)).become(Tex("Hollo", font_size=90)).become(Tex("Hllo", font_size=90)).become(Tex("World", font_size=90))
+    x.become(Tex("Holloo", font_size=90)).become(Tex("Hollo", font_size=90)).become(
+        Tex("Hllo", font_size=90)
+    ).become(Tex("World", font_size=90))
 
 
 render_all_funcs(__name__)

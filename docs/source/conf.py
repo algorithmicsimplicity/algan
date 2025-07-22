@@ -156,7 +156,7 @@ html_theme_options = {
         "color-foreground-secondary": "#ffffffd9",
     },
 }
-html_title = f"Algan v0.1.0"
+html_title = "Algan v0.1.0"
 
 # This specifies any additional css files that will override the theme's
 html_css_files = ["custom.css"]
