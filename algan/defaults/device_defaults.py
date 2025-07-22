@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 
 # DEFAULT_DEVICE will be used for creating and animating mobs, unless overrode.

@@ -1,5 +1,6 @@
-from algan.constants.color import *
+from __future__ import annotations
 
+from algan.constants.color import *
 
 #DEFAULT_SPRITE_COLOR = BLACK
 DEFAULT_BACKGROUND_COLOR = WHITE.mult_rgb(0.12)
