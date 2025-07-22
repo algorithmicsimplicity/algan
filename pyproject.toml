@@ -195,6 +195,11 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
   "F403",
 ]
 
+[tool.ruff]
+exclude = [
+    "algan/external_libraries",
+]
+
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]
 
@@ -207,3 +212,5 @@ convention = "numpy"
 
 [tool.ruff.format]
 docstring-code-format = true
+
+
