@@ -1,20 +1,39 @@
+from __future__ import annotations
+
 import math
 from collections import defaultdict
 
-from scipy.optimize import linear_sum_assignment
 import torch
 import torch.nn.functional as F
 
-from algan.animation.animatable import Animatable, animated_function, ModificationHistory
-from algan.animation.animation_contexts import Seq, Off, Sync, AnimationContext, NoExtra
+from algan.animation.animatable import (
+    Animatable,
+    ModificationHistory,
+    animated_function,
+)
+from algan.animation.animation_contexts import AnimationContext, NoExtra, Off, Seq, Sync
+from algan.constants.rate_funcs import ease_out_exp, identity, inversed
 from algan.constants.spatial import *
-from algan.geometry.geometry import rotate_vector_around_axis, get_rotation_between_3d_vectors, project_point_onto_line, get_rotation_around_axis, map_global_to_local_coords, map_local_to_global_coords, \
-    get_rotation_between_bases
-from algan.constants.rate_funcs import ease_out_exp, inversed, identity
 from algan.defaults.style_defaults import DEFAULT_BUFFER
+from algan.geometry.geometry import (
+    get_rotation_around_axis,
+    get_rotation_between_3d_vectors,
+    get_rotation_between_bases,
+    map_global_to_local_coords,
+    map_local_to_global_coords,
+    project_point_onto_line,
+    rotate_vector_around_axis,
+)
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
-from algan.utils.tensor_utils import dot_product, broadcast_gather, unsqueeze_right, unsquish, squish, broadcast_cross_product, cast_to_tensor
+from algan.utils.tensor_utils import (
+    broadcast_cross_product,
+    broadcast_gather,
+    cast_to_tensor,
+    dot_product,
+    squish,
+    unsquish,
+)
 
 
 class Mob(Animatable):
@@ -56,6 +75,7 @@ class Mob(Animatable):
         render_to_file()
 
     """
+
     def __init__(self, location:torch.Tensor=ORIGIN, basis:torch.Tensor=squish(torch.eye(3)), color:Color|None=None, opacity:float=1, glow:float=0, *args, **kwargs):
         self.register_attrs_as_animatable({'location', 'basis', 'scale_coefficient', 'color', 'opacity', 'max_opacity', 'glow'}, Mob)
         self.recursing = True
@@ -196,13 +216,13 @@ class Mob(Animatable):
                 c.set_time_inds_to(self)
                 change3 = change
                 if c.parent_batch_sizes is not None:
-                    def expand(x):
+                    def expand(x, c):
                         if x.shape[-2] == 1:
                             x = x.expand(*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes),
                                          -1).contiguous()
                         return x
 
-                    change3 = torch.repeat_interleave(expand(change3), c.parent_batch_sizes, -2)
+                    change3 = torch.repeat_interleave(expand(change3, c), c.parent_batch_sizes, -2)
                 c.apply_relative_change(key, change3, interpolation=1, recursive=recursive)
         return self
 
@@ -286,11 +306,11 @@ class Mob(Animatable):
                 c.set_time_inds_to(self)
                 change2 = change
                 if c.parent_batch_sizes is not None:
-                    def expand(x):
+                    def expand(x, c):
                         if x.shape[-2] == 1:
                             x = x.expand(*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes), -1).contiguous()
                         return x
-                    change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
+                    change2 = torch.repeat_interleave(expand(change2, c), c.parent_batch_sizes, -2)
                 c.apply_relative_change(key, change2, interpolation=1, recursive=recursive, relation_key=relation_key)
         return self
 
@@ -353,15 +373,15 @@ class Mob(Animatable):
                 change2 = change
                 interpolation2 = interpolation
                 if c.parent_batch_sizes is not None:
-                    def expand(x):
+                    def expand(x, c):
                         if x.shape[-2] == 1:
                             x = x.expand(*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes),
                                          -1).contiguous()
                         return x
 
-                    change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
+                    change2 = torch.repeat_interleave(expand(change2, c), c.parent_batch_sizes, -2)
                     if isinstance(interpolation2, torch.Tensor):
-                        interpolation2 = torch.repeat_interleave(expand(interpolation2), c.parent_batch_sizes, -2)
+                        interpolation2 = torch.repeat_interleave(expand(interpolation2, c), c.parent_batch_sizes, -2)
                 c.apply_absolute_change(key, change2, interpolation=interpolation2, recursive=recursive)
         return self
 
@@ -527,17 +547,15 @@ class Mob(Animatable):
         This is typically used internally when animation states are reset or recalculated.
         """
         if self.free_cache:
-            self.attr_to_values_full = dict()
-            self.attr_to_values = dict()
+            self.attr_to_values_full = {}
+            self.attr_to_values = {}
             self.time_stamps_full = None
             self.time_stamps = None
             self.time_inds_full = None
             self.time_inds = None
 
     def get_normal(self):
-        """
-        Alias for get_forward_direction()
-        """
+        """Alias for get_forward_direction()"""
         return self.get_forward_direction()
 
     def get_center(self):
@@ -949,15 +967,14 @@ class Mob(Animatable):
             _.data.spawn_time = lambda: -1
 
     def detach_history(self):
-        with Off():
-            with NoExtra(priority_level=1):
-                if self.data.spawn_time() >= 0:
-                    old_self = self.clone(reset_history=False)
-                    old_self.wait((1 / self.scene.frames_per_second) + 1e-5)
-                    old_self.despawn(animate=False)
-                self.refresh_history()
-                self.spawn(animate=False)
-                return self
+        with Off(), NoExtra(priority_level=1):
+            if self.data.spawn_time() >= 0:
+                old_self = self.clone(reset_history=False)
+                old_self.wait((1 / self.scene.frames_per_second) + 1e-5)
+                old_self.despawn(animate=False)
+            self.refresh_history()
+            self.spawn(animate=False)
+            return self
 
     def expand_n_children(self, n):
         curr = len(self.children)

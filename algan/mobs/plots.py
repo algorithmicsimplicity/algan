@@ -1,19 +1,27 @@
-from svgelements import Path, Move, Close, Line
+from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
+from svgelements import Close, Line, Move, Path
+
 from algan.animation.animatable import animated_function
 from algan.animation.animation_contexts import Off, Sync
-from algan.constants.spatial import OUT, LEFT, RIGHT, DOWN, UP, ORIGIN
 from algan.constants.color import *
-from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
+from algan.constants.spatial import DOWN, LEFT, ORIGIN, OUT, RIGHT, UP
 from algan.mobs.group import Group
 from algan.mobs.mob import Mob
 from algan.mobs.renderable import Renderable
-from algan.mobs.shapes_2d import Quad, TriangleTriangulated, Rectangle
+from algan.mobs.shapes_2d import Quad, Rectangle, TriangleTriangulated
+from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
 from algan.rendering.primitives.triangle import TrianglePrimitive
-from algan.utils.tensor_utils import squish, broadcast_all
-from algan.utils.tensor_utils import mean, broadcast_cross_product, interpolate, unsquish
-import torch.nn.functional as F
+from algan.utils.tensor_utils import (
+    broadcast_all,
+    broadcast_cross_product,
+    interpolate,
+    mean,
+    squish,
+    unsquish,
+)
 
 
 class Line2(Quad):
@@ -99,8 +107,8 @@ class Bar(Quad):
 
 class FunctionPlotMob(Mob):
     def __init__(self, func, axes=None, width=0.02, func_color=RED_A, num_points=200, offset=1, scale=1, max_value=None, bar_plot=False, **kwargs):
-        create = kwargs['create'] if 'create' in kwargs else True
-        init = kwargs['init'] if 'init' in kwargs else True
+        create = kwargs.get('create', True)
+        init = kwargs.get('init', True)
         kwargs['create'] = False
         kwargs['init'] = False
         super().__init__(**kwargs)
@@ -176,7 +184,7 @@ class FunctionPlotMob(Mob):
 
 class TriangleVertices2(Renderable):
     def __init__(self, corner_locations, **kwargs):
-        kwargs2 = {k: v for k, v in kwargs.items()}
+        kwargs2 = dict(kwargs.items())
         if 'location' in kwargs2:
             del kwargs2['location']
         kwargs2['location'] = corner_locations.view(-1, 3)

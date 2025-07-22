@@ -1,18 +1,19 @@
+from __future__ import annotations
+
 import math
 
 import torch
 import torch.nn.functional as F
 
-from algan.animation.animation_contexts import Off, Sync
-from algan.constants.spatial import UP, RIGHT
+from algan.animation.animation_contexts import Off
+from algan.constants.spatial import RIGHT, UP
+from algan.defaults.style_defaults import *
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.mob import Mob
 from algan.mobs.renderable import Renderable
 from algan.rendering.primitives.triangle import TrianglePrimitive
-from algan.defaults.style_defaults import *
-from algan.utils.tensor_utils import unsqueeze_left, broadcast_all, cast_to_tensor
-from algan.utils.tensor_utils import mean
+from algan.utils.tensor_utils import broadcast_all, cast_to_tensor, mean
 
 
 class TriangleTriangulated(Mob):
@@ -61,7 +62,7 @@ class TriangleTriangulated(Mob):
 
 class TriangleVertices(Renderable):
     def __init__(self, corner_locations, normals=None, **kwargs):
-        kwargs2 = {k: v for k, v in kwargs.items()}
+        kwargs2 = dict(kwargs.items())
         if 'location' in kwargs2:
             del kwargs2['location']
         kwargs2['location'] = corner_locations.reshape(-1, 3)
@@ -104,6 +105,7 @@ class Polygon(BezierCircuitCubic):
     vertex_locations : torch.Tensor[N, 3]
         3-D coordinates for each of the N vertex points.
     """
+
     def __init__(self, vertex_locations, *args, **kwargs):
         corner_locations = cast_to_tensor(vertex_locations)[0]
         control_points = []
@@ -160,7 +162,7 @@ class Circle(BezierCircuitCubic):
             return torch.stack([x[...,1], -x[...,0]],-1)
 
         def rot_n_quarters(x, n):
-            for i in range(n):
+            for _i in range(n):
                 x = rot90_in_2d(x)
             return x
         control_points = torch.cat([rot_n_quarters(control_points_quarter, i) for i in range(4)], -2)

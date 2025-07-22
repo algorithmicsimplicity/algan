@@ -1,25 +1,37 @@
+from __future__ import annotations
+
 import hashlib
-import math
 import os
 from collections import defaultdict
 from pathlib import Path
 
+import svgelements
 import torch
 import torch.nn.functional as F
-import svgelements
 
-from algan.animation.animation_contexts import Off, Sync
-from algan.constants.rate_funcs import ease_out_exp
-from algan.constants.color import RED, WHITE, GREEN, RED_A
-from algan.constants.spatial import RIGHT, DOWN
+from algan.constants.color import GREEN, RED_A, WHITE
+from algan.constants.spatial import DOWN, RIGHT
 from algan.defaults.device_defaults import DEFAULT_DEVICE
 from algan.defaults.directory_defaults import DEFAULT_DIR
-from algan.geometry.geometry import get_roots_of_cubic, get_roots_of_quadratic, \
-    get_2d_polygon_mask
+from algan.external_libraries.ground.base import get_context
+from algan.external_libraries.sect.triangulation import Triangulation
+from algan.geometry.geometry import (
+    get_2d_polygon_mask,
+    get_roots_of_cubic,
+    get_roots_of_quadratic,
+)
 from algan.mobs.mob import Mob
-from algan.mobs.shapes_2d import Quad, TriangleTriangulated
-from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, expand_as_left, unsquish, \
-    unsqueeze_left, packed_reorder, unpack_tensor
+from algan.mobs.shapes_2d import TriangleTriangulated
+from algan.utils.tensor_utils import (
+    broadcast_gather,
+    dot_product,
+    expand_as_left,
+    packed_reorder,
+    squish,
+    unpack_tensor,
+    unsqueeze_left,
+    unsquish,
+)
 
 
 def get_corners(g, i, j):
@@ -48,8 +60,6 @@ def get_points_per_tile(grid, perimeter_points, max_pp=500):
     return broadcast_gather(torch.cat((perimeter_points, torch.full_like(perimeter_points[...,:1,:], -1e12)), -2), -2, inds.unsqueeze(-1), keepdim=True)
 
 
-from algan.external_libraries.ground.base import get_context
-from algan.external_libraries.sect.triangulation import Triangulation
 
 
 """import triangle as tr
@@ -83,7 +93,7 @@ def triangulate_simple_polygon(polygons):
 
     for grid in polygons:
         grid_triangles = []
-        for i, vertices in enumerate(grid):
+        for _i, vertices in enumerate(grid):
             if len(vertices) == 0:
                 continue
             all_verts = vertices
@@ -107,7 +117,6 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
     tile_size: size of each tile.
     random_perturbation: strength of random perturbation applied to tile corners.
     """
-
     m = (perimeter_points > -1e11).float()
     mn_corner, mx_corner = (perimeter_points * m + (1-m) * 1e12).amin(0)-1e-5, perimeter_points.amax(0)+1e-5
     bounding_width, bounding_height = mx_corner - mn_corner
@@ -141,9 +150,9 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
 
         y = a*x + b
         d1 = dot_product(y, e1, dim=-1, keepdim=True)
-        m1 = (0 <= d1) & (d1 <= dot_product(e1, e1, dim=-1, keepdim=True))
+        m1 = (d1 >= 0) & (d1 <= dot_product(e1, e1, dim=-1, keepdim=True))
         d2 = dot_product(y-s2, x, dim=-1, keepdim=True)
-        m2 = (0 <= d2) & (d2 <= dot_product(x, x, dim=-1, keepdim=True))
+        m2 = (d2 >= 0) & (d2 <= dot_product(x, x, dim=-1, keepdim=True))
 
         return (m1 & m2).float(), y+s1, d1 / dot_product(e1, e1, dim=-1, keepdim=True), d2 / dot_product(x, x, dim=-1, keepdim=True)
 
@@ -242,7 +251,7 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
                         if hit_walls[int_ind].sum() < 1.5:
                             continue
                         sorted_ps, argsort_ps = hit_portion_2[int_ind].view(-1).sort()
-                        argsort_ps = argsort_ps[(~sorted_ps.isnan() & (0 <= sorted_ps) & (sorted_ps <= 1))]
+                        argsort_ps = argsort_ps[(~sorted_ps.isnan() & (sorted_ps >= 0) & (sorted_ps <= 1))]
                         if len(argsort_ps) <= 1:
                             continue
                         cell_to_exits[int_ind.item()].append((argsort_ps[1].item(), hit_portion[int_ind, argsort_ps[1]]))
@@ -287,17 +296,17 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
 
         while True:
             try:
-                path, enter, exit = pee[current_ind]
+                path, enter_, exit_ = pee[current_ind]
             except IndexError:
-                path, enter, exit = pee[current_ind]
+                path, enter_, exit_ = pee[current_ind]
             if first_enter is None:
-                first_enter = enter
+                first_enter = enter_
             polygons[-1].extend(path)
-            if exit[0] > 4.5:
+            if exit_[0] > 4.5:
                 prev_end = path[-1]
                 closest_j = -1
                 closest_dist = 1e12
-                for j, (pathj, enterj, exitj) in enumerate(pee):
+                for j, (pathj, _, _) in enumerate(pee):
                     if j in used_paths + [current_ind]:
                         continue
                     dist = (torch.stack(pathj) - prev_end).norm(p=2,dim=-1).amin(0)
@@ -310,26 +319,24 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
                     first_enter = None
                     polygons.append([])
                     continue
-            s, e = (get_peri_dist(_) for _ in (first_enter, exit))
+            s, e = (get_peri_dist(_) for _ in (first_enter, exit_))
             next_enters = []
-            for j, (pathj, enterj, exitj) in enumerate(pee):
+            for j, (_, enterj, exitj) in enumerate(pee):
                 if j in used_paths + [current_ind]:
                     continue
                 if get_peri_dist(enterj) < -0.5:
                     continue
-                if get_peri_dist(exitj) > 4.5:
-                    if s > -0.5:
-                        continue
+                if get_peri_dist(exitj) > 4.5 and s > -0.5:
+                    continue
                 if s < -0.5:
                     next_enters.append([j, enterj])
                     continue
                 q = get_peri_dist(enterj)
-                ordered = list(sorted([(q, 0), (s, 1), (e, 2)], key=lambda x: x[0]))
-                for i, (v, k) in enumerate(ordered):
-                    if k == 0:
-                        if ordered[(i+1)%len(ordered)][1] == 2:
-                            next_enters.append([j, enterj])
-                            break
+                ordered = sorted([(q, 0), (s, 1), (e, 2)], key=lambda x: x[0])
+                for i, (_v, k) in enumerate(ordered):
+                    if  k == 0 and ordered[(i+1)%len(ordered)][1] == 2:
+                        next_enters.append([j, enterj])
+                        break
                 """for i in range(4):
                     ep = (e - i) % 4
                     if i == 0:
@@ -350,7 +357,7 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
 
             used_paths.append(current_ind)
 
-            def add_corners(s, e):
+            def add_corners(s, e, c, polygons):
                 if e[0] < -0.5 and s[0] > 4.5:
                     return
                 s = s[0] + s[1]
@@ -373,7 +380,7 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
                         break
                     polygons[-1].append(grid4[c, (s[0]-i) % 4])"""
             if len(next_enters) == 0:
-                add_corners(exit, first_enter)
+                add_corners(exit_, first_enter, c, polygons)
                 if len(initial_inds) > 0:
                     current_ind = initial_inds[0]
                     initial_inds = initial_inds[1:]
@@ -387,9 +394,9 @@ def tile_region(perimeter_points, tile_size, random_perturbation=0.0, reverse_po
                 first_enter = None
                 polygons.append([])
                 continue
-            e = get_peri_dist(exit)
-            next_enter = list(sorted(next_enters, key=lambda x: (get_peri_dist(x[1])-e)%4))[-1]
-            add_corners(exit, next_enter[1])
+            e = get_peri_dist(exit_)
+            next_enter = sorted(next_enters, key=lambda x: (get_peri_dist(x[1])-e)%4)[-1]
+            add_corners(exit_, next_enter[1], c, polygons)
             current_ind = next_enter[0]
         total_num_polygons += len(polygons)
 
@@ -427,7 +434,6 @@ def tile_region2(perimeter_points, perimeter_normals=None, tile_size=20, random_
     tile_size: size of each tile.
     random_perturbation: strength of random perturbation applied to tile corners.
     """
-
     m = (perimeter_points > -1e11).float()
     mn_corner, mx_corner = (perimeter_points * m + (1-m) * 1e12).amin(0), perimeter_points.amax(0)
     bounding_width, bounding_height = mx_corner - mn_corner
@@ -601,7 +607,7 @@ class TriangulatedBezierCircuit(Mob):
             mx = x.amax((0, 1), keepdim=True)
             return (mx + mn) / 2
 
-        if not (isinstance(paths, list) or isinstance(paths, tuple)):
+        if not (isinstance(paths, (list, tuple))):
             paths = [paths]
             hash_keys = [hash_keys]
         all_triangles = []
@@ -640,7 +646,7 @@ class TriangulatedBezierCircuit(Mob):
                         just_moved = True
                         points[-1][0][-1] = -2e12
                         continue
-                    elif isinstance(element, svgelements.Line) or isinstance(element, svgelements.Close):
+                    elif isinstance(element, (svgelements.Line, svgelements.Close)):
                         params = (params_to_tensor([element.start, element.end]))
                         points.append(get_points_along_line(params, invert=self.invert))
                     elif isinstance(element, svgelements.CubicBezier):

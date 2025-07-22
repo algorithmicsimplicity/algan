@@ -1,11 +1,16 @@
+from __future__ import annotations
+
 from algan import RIGHT
 from algan.animation.animation_contexts import Off
-from algan.mobs.renderable import Renderable
 from algan.constants.color import *
-from algan.geometry.geometry import get_roots_of_quadratic, get_orthonormal_vector
+from algan.geometry.geometry import get_orthonormal_vector, get_roots_of_quadratic
 from algan.mobs.mob import Mob
-from algan.rendering.primitives.bezier_circuit_with_border_then_fill import BezierCircuitPrimitiveWithBorderFillRendering, evaluate_cubic_bezier_derivative_old, evaluate_cubic_bezier_old2
-
+from algan.mobs.renderable import Renderable
+from algan.rendering.primitives.bezier_circuit_with_border_then_fill import (
+    BezierCircuitPrimitiveWithBorderFillRendering,
+    evaluate_cubic_bezier_derivative_old,
+    evaluate_cubic_bezier_old2,
+)
 from algan.utils.tensor_utils import *
 
 
@@ -14,7 +19,7 @@ class BezierCircuitCubic(Renderable):
                  filled=True, render_with_distance_to_curve=False, add_texture_grid=False, texture_grid_size = 10, **kwargs):
 
         control_points = control_points.view(-1, control_points.shape[-1])
-        kwargs2 = {k: v for k, v in kwargs.items()}
+        kwargs2 = dict(kwargs.items())
 
         if 'color' in kwargs2:
             kwargs2['color'] = kwargs2['color'].reshape(-1,kwargs2['color'].shape[-1]).mean(-2)
@@ -131,10 +136,7 @@ class BezierCircuitCubic(Renderable):
             return None
 
         def split_cubic_bezier_at_perpendiculars(control_points):
-            """
-            splits cubic beziers at the first point where the tangent direction is perpendicular to the starting tangent, or else at the midpoint of the tangent never passes perpendicular
-            """
-
+            """splits cubic beziers at the first point where the tangent direction is perpendicular to the starting tangent, or else at the midpoint of the tangent never passes perpendicular"""
             #<B`(t), B`(0)> == 0
             #  ( -P₀ + 3P₁ - 3P₂ + P₃ )t³ + ( 3P₀ - 6P₁ + 3P₂ )t² + ( -3P₀ + 3P₁ )t + P₀
             #  3( -P₀ + 3P₁ - 3P₂ + P₃ )t^2 + 2( 3P₀ - 6P₁ + 3P₂ )t + ( -3P₀ + 3P₁ )

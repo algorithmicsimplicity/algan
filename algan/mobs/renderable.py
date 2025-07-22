@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 
 from algan.animation.animation_contexts import Off
@@ -5,9 +7,7 @@ from algan.mobs.mob import Mob
 
 
 class Renderable(Mob):
-    """
-    Base class for all objects that appear on screen.
-    """
+    """Base class for all objects that appear on screen."""
 
     def on_create(self):
         with Off():

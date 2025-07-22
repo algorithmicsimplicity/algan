@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 from collections import defaultdict
 
 import torch
 import torch.nn.functional as F
 
 from algan.animation.animatable import animated_function
-from algan.animation.animation_contexts import Off, Sync, Seq, NoExtra
+from algan.animation.animation_contexts import NoExtra, Off, Seq, Sync
 from algan.mobs.mob import Mob
 from algan.mobs.text import Tex
 from algan.utils.tensor_utils import cast_to_tensor
@@ -14,32 +16,31 @@ class NumericDisplay(Mob):
     def __init__(self, value, num_digits=2, **kwargs):
         value = cast_to_tensor(value)
         self.num_digits = num_digits
-        with Off():
-            with NoExtra(priority_level=1):
-                self.placeholder = Tex(f'0.{"".join(["0" for _ in range(num_digits)])}', create=False, init=False, **kwargs)
-                self.placeholder.spawn(animate=False)
+        with Off(), NoExtra(priority_level=1):
+            self.placeholder = Tex(f'0.{"".join(["0" for _ in range(num_digits)])}', create=False, init=False, **kwargs)
+            self.placeholder.spawn(animate=False)
+            ct = self.placeholder.animation_manager.context.current_time
+            self.placeholder.animation_manager.context.rewind(1 / self.placeholder.scene.frames_per_second + 1e-3)
+            self.placeholder.opacity = 0
+            self.placeholder.animation_manager.context.current_time = ct
+
+            self.decimal = self.placeholder[1]
+            self.digit_mobs = []
+            for _ in range(num_digits+1):
+                self.digit_mobs.append(Tex('0123456789', create=False, init=False, **kwargs).spawn(animate=False))
                 ct = self.placeholder.animation_manager.context.current_time
                 self.placeholder.animation_manager.context.rewind(1 / self.placeholder.scene.frames_per_second + 1e-3)
-                self.placeholder.opacity = 0
+                self.digit_mobs[-1].set(opacity=0)
                 self.placeholder.animation_manager.context.current_time = ct
-
-                self.decimal = self.placeholder[1]
-                self.digit_mobs = []
-                for _ in range(num_digits+1):
-                    self.digit_mobs.append(Tex('0123456789', create=False, init=False, **kwargs).spawn(animate=False))
-                    ct = self.placeholder.animation_manager.context.current_time
-                    self.placeholder.animation_manager.context.rewind(1 / self.placeholder.scene.frames_per_second + 1e-3)
-                    self.digit_mobs[-1].set(opacity=0)
-                    self.placeholder.animation_manager.context.current_time = ct
-                for i in range(len(self.digit_mobs)):
-                    self.digit_mobs[i].character_mobs.location = self.placeholder[i+1 if i > 0 else 0].location
-                self._value = value
-                self.update_display(self.value)
-                kwargs2 = {k: v for k, v in kwargs.items()}
-                kwargs2['create'] = False
-                kwargs2['init'] = False
-                self.animatable_attrs = {'value'}
-                super().__init__(**kwargs2)
+            for i in range(len(self.digit_mobs)):
+                self.digit_mobs[i].character_mobs.location = self.placeholder[i+1 if i > 0 else 0].location
+            self._value = value
+            self.update_display(self.value)
+            kwargs2 = dict(kwargs.items())
+            kwargs2['create'] = False
+            kwargs2['init'] = False
+            self.animatable_attrs = {'value'}
+            super().__init__(**kwargs2)
         self.add_children(self.digit_mobs, self.decimal)
         if not ('init' in kwargs and not kwargs['init'] or self.animation_manager.context.delay_init):
             self.init()

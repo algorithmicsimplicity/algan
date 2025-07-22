@@ -1,16 +1,11 @@
-import math
+from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
 
-from algan.animation.animatable import animated_function
-from algan.animation.animation_contexts import Sync
 from algan.constants.color import *
-from algan.constants.spatial import ORIGIN
-from algan.geometry.geometry import map_global_to_local_coords
 from algan.mobs.mob import Mob
 from algan.mobs.shapes_2d import TriangleTriangulated
-from algan.utils.tensor_utils import unsqueeze_left, squish
+from algan.utils.tensor_utils import unsqueeze_left
 
 
 class Surface(Mob):

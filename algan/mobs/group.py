@@ -1,11 +1,13 @@
+from __future__ import annotations
+
 import torch
 
 from algan.animation.animation_contexts import Sync
-from algan.constants.spatial import RIGHT, DOWN
-from algan.mobs.mob import Mob
+from algan.constants.spatial import DOWN, RIGHT
 from algan.defaults.style_defaults import DEFAULT_BUFFER
+from algan.mobs.mob import Mob
 from algan.utils.python_utils import traverse
-from algan.utils.tensor_utils import dot_product, broadcast_gather
+from algan.utils.tensor_utils import broadcast_gather, dot_product
 
 
 class Group(Mob):
@@ -37,6 +39,7 @@ class Group(Mob):
 
         render_to_file()
     """
+
     def __init__(self, mobs, *args, **kwargs):
         def mean(x):
             x = [_ for _ in x if _ is not None]
@@ -47,7 +50,7 @@ class Group(Mob):
             mx = torch.stack([_.amax(-2, keepdim=True) for _ in x], -1).amax(-1)
             return (mn + mx) / 2
         super().__init__(median([mob.location for mob in mobs]), color=mean(list(traverse([mob.color for mob in mobs]))), init=False, *args, **kwargs)
-        if all([_.data.spawn_time() >= 0 for _ in mobs]):
+        if all(_.data.spawn_time() >= 0 for _ in mobs):
             self.spawn(animate=False)
         self.traversable = False
         self.add_children(mobs)

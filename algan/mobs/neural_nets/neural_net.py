@@ -1,8 +1,10 @@
-from algan.animation.animation_contexts import Off, Sync, Seq, Lag
-from algan.constants.spatial import *#ORIGIN, OUT, RIGHT
-from algan.mobs.mob import Mob
-from algan.mobs.shapes_3d import Sphere, Cylinder
+from __future__ import annotations
+
+from algan.animation.animation_contexts import Lag, Off, Seq, Sync
 from algan.constants.rate_funcs import identity
+from algan.constants.spatial import *  #ORIGIN, OUT, RIGHT
+from algan.mobs.mob import Mob
+from algan.mobs.shapes_3d import Cylinder, Sphere
 from algan.utils.tensor_utils import dot_product
 
 
@@ -106,4 +108,3 @@ class NeuralNetMLP(Mob):
                 output.spawn(animate=False)
             output.wave_color(color, direction=self.direction, set_opaque=True)
             return output
-

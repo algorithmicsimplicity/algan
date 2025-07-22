@@ -1,17 +1,23 @@
-import copy
+from __future__ import annotations
 
-import numpy
-import torch.nn.functional as F
-import manim as mn
-from svgelements import Path, Line, Move, Close
+import copy
 import pathlib
 
-from algan.defaults.style_defaults import *
-from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag
-from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit, point_to_tensor2
+import manim as mn
+import numpy
+import torch.nn.functional as F
+from manim.utils.tex import _DEFAULT_PREAMBLE
+from svgelements import Close, Line, Move, Path
+
+from algan.animation.animation_contexts import AnimationContext, Lag, Off, Sync
 from algan.constants.spatial import DOWN, RIGHT
+from algan.defaults.style_defaults import *
 from algan.mobs.group import Group
 from algan.mobs.mob import Mob
+from algan.mobs.triangulated_bezier_circuit import (
+    TriangulatedBezierCircuit,
+    point_to_tensor2,
+)
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
 
@@ -21,7 +27,7 @@ class Text(Mob):
         if 'color' not in kwargs:
             kwargs['color'] = DEFAULT_TEXT_COLOR
 
-        kwargs2 = {k: v for k, v in kwargs.items()}
+        kwargs2 = dict(kwargs.items())
         if 'create' in kwargs2:
             del kwargs2['create']
         if 'init' in kwargs2:
@@ -104,7 +110,7 @@ class Text(Mob):
         s = 0.02 * 90 / 100
         self.convert_ratio = (0.105 * self.font_size / 100) / s
         if self.latex:
-            manim_kwargs = {k: v for k, v in kwargs.items()}
+            manim_kwargs = dict(kwargs.items())
             if 'color' in manim_kwargs:
                 del manim_kwargs['color']
             if 'scale' in manim_kwargs:
@@ -167,7 +173,6 @@ class Text(Mob):
                      self.mx_point), -2) + self.location.unsqueeze(-2)
 
 
-from manim.utils.tex import _DEFAULT_PREAMBLE
 
 
 class Tex(Text):

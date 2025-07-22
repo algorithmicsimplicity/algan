@@ -183,6 +183,9 @@ ignore = [
   # No function calls in defaults
   # ignored because np.array() and straight_path()
   "B008",
+  # Star-arg unpacking after a keyword argument is strongly discouraged
+  # but too risky to change right now
+  "B026",
   # docstring ignores - mostly stylistic
   "D1",
   "D203",
@@ -201,6 +204,7 @@ ignore = [
   "E111",
   "E114",
   "E117",
+  "E741",
   "E501",
 ]
 

@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import torch
+
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.utils.tensor_utils import unsquish
 

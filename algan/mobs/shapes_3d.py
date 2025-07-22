@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 from algan import *
 from algan.mobs.surfaces.surface import Surface
 
 
 class Sphere(Surface):
     def __init__(self, radius=1, **kwargs):
-        l = 0 if 'location' not in kwargs else kwargs['location']
+        l = kwargs.get('location', 0)
         def coords(u):
             u = u[:, :int(len(u) / (PI))]
             u[..., 1:] /= u[..., 1:].amax()
