@@ -1,10 +1,11 @@
-from dataclasses import dataclass, field
-from typing import Tuple
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 
 @dataclass
 class RenderSettings:
-    resolution: Tuple[int, int] # (width, height) in number of pixels
+    resolution: tuple[int, int] # (width, height) in number of pixels
     frames_per_second: int = 30
     anti_alias_level: int = 2
     audio_frames_per_second: int=44100
