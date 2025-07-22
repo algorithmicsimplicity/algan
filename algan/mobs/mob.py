@@ -187,6 +187,15 @@ class Mob(Animatable):
 
         setattr(class_to_attach_to, property_name, prop)
 
+    def get_children(self, generation=0, include_components=True):
+        children = self.children
+        if not include_components:
+            children = [_ for _ in children if _ not in self.components]
+        if generation <= 0:
+            return children
+        children = [_.get_children(generation-1) for _ in children]
+        return [x for l in children for x in l]
+
     def get_descendants(self, include_self: bool = True) -> list['Mob']:
         """Retrieves a list all descendant Mobs in the hierarchy, optionally including itself.
 
@@ -466,8 +475,10 @@ class Mob(Animatable):
                             x = x.expand(torch.Size([*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes),
                                          -1])).contiguous()
                         return x
-
-                    change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
+                    try:
+                        change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
+                    except:
+                        change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
                     if isinstance(interpolation2, torch.Tensor):
                         interpolation2 = torch.repeat_interleave(expand(interpolation2), c.parent_batch_sizes, -2)
                 c.apply_absolute_change(key, change2, interpolation=interpolation2, recursive=recursive)

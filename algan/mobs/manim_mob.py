@@ -5,6 +5,7 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.group import Group
 from algan.utils.tensor_utils import unsquish
+from algan.utils.mob_utils import batch_mobs
 from manim import ImageMobject, VectorizedPoint
 
 
@@ -57,5 +58,5 @@ class ManimMob(BezierCircuitCubic):
                          filled=(not hasattr(manim_mob, 'end')) and (manim_mob.fill_opacity is not None and manim_mob.fill_opacity > 1e-5),
                          empty=empty, **kwargs)
         if len(children) > 0:
-            self.add_children(Group(children))
+            self.add_children(batch_mobs(children))
         self.submobjects = children
