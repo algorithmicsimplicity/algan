@@ -1,27 +1,35 @@
-from typing import overload, Tuple
+from __future__ import annotations
 
-import torch
 import re
 
-from algan.utils.tensor_utils import broadcast, cast_to_tensor
+import torch
+
 from algan.settings.defaults import COMPUTING_DEFAULTS
+from algan.utils.tensor_utils import broadcast, cast_to_tensor
 
 re_hex = re.compile("((?<=#)|(?<=0x))[A-F0-9]{6,8}", re.IGNORECASE)
 
+
 class Color(torch.Tensor):
-    def __new__(cls, rgb:str|Tuple[float], glow=0, opacity=1, *args, **kwargs):
+    def __new__(cls, rgb: str | tuple[float], glow=0, opacity=1, *args, **kwargs):
         if isinstance(rgb, str):
             hex_code = re_hex.search(rgb).group()
             if len(hex_code) == 6:
                 hex_code += "00"
             tmp = int(hex_code, 16)
-            rgb = (((tmp >> 24) & 0xFF) / 255,
-                   ((tmp >> 16) & 0xFF) / 255,
-                   ((tmp >> 8) & 0xFF) / 255)
-        return super().__new__(cls, (*rgb, glow, opacity), *args, **kwargs).to(COMPUTING_DEFAULTS.animation_device)
+            rgb = (
+                ((tmp >> 24) & 0xFF) / 255,
+                ((tmp >> 16) & 0xFF) / 255,
+                ((tmp >> 8) & 0xFF) / 255,
+            )
+        return (
+            super()
+            .__new__(cls, (*rgb, glow, opacity), *args, **kwargs)
+            .to(COMPUTING_DEFAULTS.animation_device)
+        )
 
     def __init__(self, rgb, glow=0, opacity=1, *args, **kwargs):
-        pass#super().__init__((red, green, blue, glow, opacity))
+        pass  # super().__init__((red, green, blue, glow, opacity))
 
     @property
     def opacity(self):
@@ -41,11 +49,11 @@ class Color(torch.Tensor):
 
     @property
     def rgb(self):
-        return self.data[...,:3]
+        return self.data[..., :3]
 
     @rgb.setter
     def rgb(self, value):
-        self.data[...,:3] = value
+        self.data[..., :3] = value
 
     def mult_rgb(self, other):
         orgb = other.rgb if isinstance(other, Color) else other
@@ -75,26 +83,31 @@ class Color(torch.Tensor):
         return (self * 255).to(torch.uint8)
 
     def new_empty(self, *args, **kwargs):
-        return Color((0,0,0), **kwargs)
+        return Color((0, 0, 0), **kwargs)
 
     @staticmethod
     def add_defaults(color):
         if color.shape[-1] < 4:
-            color = torch.cat((color, torch.ones_like(color[...,:1])), -1)
+            color = torch.cat((color, torch.ones_like(color[..., :1])), -1)
         if color.shape[-1] < 5:
-            color = torch.cat((color[...,:-1], torch.zeros_like(color[...,:1]), color[...,-1:]), -1)
+            color = torch.cat(
+                (color[..., :-1], torch.zeros_like(color[..., :1]), color[..., -1:]), -1
+            )
         return color
 
 
 def color_to_texture_map(color):
-    return lambda coords: color.view(([1] * (coords.dim()-1)) + [-1]).expand(list(coords.shape[:-1]) + [-1])
+    return lambda coords: color.view(([1] * (coords.dim() - 1)) + [-1]).expand(
+        list(coords.shape[:-1]) + [-1]
+    )
 
-GLOW = Color((0,0,0),1,0)
-TRANSPARENT = Color((0,0,0), 0, 0)
-#REDS = [Color(*[__ / 255 for __ in _]) for _ in ((249, 113, 123), (225, 69, 81), (213, 27, 41), (172, 13, 24), (139, 0, 10))]
-#YELLOWS = [Color(*[__ / 255 for __ in _]) for _ in ((255,230, 116), (231, 202, 71), (219, 184, 28), (177, 147, 13), (142, 116, 0))]
-#BLUES = [Color(*[__ / 255 for __ in _]) for _ in ((110, 92, 178), (82, 62, 159), (59+20, 35+20, 151+20), (43, 22, 122), (20, 11, 98))]
-#GREENS = [Color(*[__ / 255 for __ in _]) for _ in ((112, 212, 96), (77, 191, 59), (45, 181, 23), (29, 146, 11), (16, 118, 0))]
+
+GLOW = Color((0, 0, 0), 1, 0)
+TRANSPARENT = Color((0, 0, 0), 0, 0)
+# REDS = [Color(*[__ / 255 for __ in _]) for _ in ((249, 113, 123), (225, 69, 81), (213, 27, 41), (172, 13, 24), (139, 0, 10))]
+# YELLOWS = [Color(*[__ / 255 for __ in _]) for _ in ((255,230, 116), (231, 202, 71), (219, 184, 28), (177, 147, 13), (142, 116, 0))]
+# BLUES = [Color(*[__ / 255 for __ in _]) for _ in ((110, 92, 178), (82, 62, 159), (59+20, 35+20, 151+20), (43, 22, 122), (20, 11, 98))]
+# GREENS = [Color(*[__ / 255 for __ in _]) for _ in ((112, 212, 96), (77, 191, 59), (45, 181, 23), (29, 146, 11), (16, 118, 0))]
 
 GRAY_A = Color("#DDDDDD")
 GREY_A = Color("#DDDDDD")
