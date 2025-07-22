@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 from string import ascii_lowercase
 
@@ -5,9 +7,16 @@ import torch
 import torch.nn.functional as F
 
 from algan.constants.spatial import DEGREES_TO_RADIANS, RADIANS_TO_DEGREES
-from algan.utils.tensor_utils import expand_as_left, squish
 from algan.utils.plotting_utils import plot_tensor
-from algan.utils.tensor_utils import broadcast_cross_product, dot_product, unsqueeze_left, broadcast_gather, unsquish
+from algan.utils.tensor_utils import (
+    broadcast_cross_product,
+    broadcast_gather,
+    dot_product,
+    expand_as_left,
+    squish,
+    unsqueeze_left,
+    unsquish,
+)
 
 
 def intersect_line_with_plane(line_direction, plane_point, plane_normal, line_point=0, dim=-1):
@@ -27,13 +36,13 @@ def intersect_line_with_plane_colinear(line_direction, plane_point, plane_co1, p
     return intersect_line_with_plane(line_direction, plane_point, plane_normal, line_point)
 
 
-def intersect_line_with_line(line_point1, line_direction1, line_point2, line_direction2, dim=-1):
-    lp = line_point - plane_point
-    plane_normal = F.normalize(plane_normal, p=2, dim=dim)
-    intersection_distances = -(dot_product(lp, plane_normal, dim) /
-                              dot_product(line_direction, plane_normal, dim))
-    intersection_points = line_point + line_direction * intersection_distances
-    return intersection_points, intersection_distances
+# def intersect_line_with_line(line_point1, line_direction1, line_point2, line_direction2, dim=-1):
+#     lp = line_point - plane_point
+#     plane_normal = F.normalize(plane_normal, p=2, dim=dim)
+#     intersection_distances = -(dot_product(lp, plane_normal, dim) /
+#                               dot_product(line_direction, plane_normal, dim))
+#     intersection_points = line_point + line_direction * intersection_distances
+#     return intersection_points, intersection_distances
 
 
 def get_rotation_around_axis(num_degrees, axis, dim=0):
@@ -132,17 +141,13 @@ def pad_to_length(x, length):
 
 
 def project_point_onto_line(point, line_direction, line_start=0, dim=-1):
-    """
-    Projects point x to the closest point on a line defined by a starting point and a direction
-    """
+    """Projects point x to the closest point on a line defined by a starting point and a direction"""
     line_direction = F.normalize(line_direction, p=2, dim=dim)
     return line_start + line_direction * dot_product(point - line_start, line_direction, dim=dim)
 
 
 def project_point_onto_plane(point, plane_normal, plane_point=0, dim=-1):
-    """
-    Projects point x onto a plane defined by a point and normal direction
-    """
+    """Projects point x onto a plane defined by a point and normal direction"""
     return project_point_onto_line(point, get_orthonormal_vector(plane_normal), plane_point, dim)
 
 
@@ -296,7 +301,7 @@ def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):
 
     """
     bounded_pixels: Tensor[
-    pp: Tensor[frames, Batch[*], num_points, 3] 
+    pp: Tensor[frames, Batch[*], num_points, 3]
     """
 
     dists = torch.cdist(bounded_pixels.float(), pp2d).unsqueeze(-1)
@@ -313,7 +318,7 @@ def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):
 
     def angle(x):
         a = torch.complex(x[..., 0], x[..., 1]).angle()
-        m = (0 <= a).float()
+        m = (a >= 0).float()
         return a * m + (1-m) * (2*math.pi + a)
     #dots1 = dot_product(nearest_perp1, bounded_pixels, dim=-1, keepdim=True)
     #dots2 = dot_product(nearest_perp2, bounded_pixels, dim=-1, keepdim=True)
@@ -336,50 +341,50 @@ def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):
     #plot_tensor((m2.float())[0, 0].view(1,107,96))
 
 
-    nearest_perp = torch.stack((bounded_pixels[..., 1], -bounded_pixels[..., 0]), -1)
+    # nearest_perp = torch.stack((bounded_pixels[..., 1], -bounded_pixels[..., 0]), -1)
 
-    def get_dots(x):
-        d1 = dot_product(x, nearest_par1, dim=-1)
-        d2 = dot_product(x, nearest_par2, dim=-1)
-        return d1, d2
+    # def get_dots(x):
+    #     d1 = dot_product(x, nearest_par1, dim=-1)
+    #     d2 = dot_product(x, nearest_par2, dim=-1)
+    #     return d1, d2
 
-    d1_perp, d2_perp = get_dots(nearest_perp)
-    d1_par, d2_par = get_dots(bounded_pixels)
-    m = (d1_perp.abs() <= 0.1) | (d2_perp.abs() <= 0.1)
-    return ((((d1_perp >= 0) != (d2_perp > 0)) & ~m) | (m & ((d1_par > 0.1) != (d2_par > 0.1)))).float().squeeze(-1)
+    # d1_perp, d2_perp = get_dots(nearest_perp)
+    # d1_par, d2_par = get_dots(bounded_pixels)
+    # m = (d1_perp.abs() <= 0.1) | (d2_perp.abs() <= 0.1)
+    # return ((((d1_perp >= 0) != (d2_perp > 0)) & ~m) | (m & ((d1_par > 0.1) != (d2_par > 0.1)))).float().squeeze(-1)
 
-    def angle(x):
-        a = torch.complex(x[..., 1], x[..., 0]).angle()
-        m = (0 <= a).float()
-        return a * m + (1-m) * (2*math.pi + a)
-    #dots1 = dot_product(nearest_perp1, bounded_pixels, dim=-1, keepdim=True)
-    #dots2 = dot_product(nearest_perp2, bounded_pixels, dim=-1, keepdim=True)
-    a1, a2, ab = [angle(_) for _ in [nearest_par1, nearest_par2, bounded_pixels]]
-    a1 = a1 - 0.1
-    a2 = a2 + 0.1
+    # def angle(x):
+    #     a = torch.complex(x[..., 1], x[..., 0]).angle()
+    #     m = (a >= 0).float()
+    #     return a * m + (1-m) * (2*math.pi + a)
+    # #dots1 = dot_product(nearest_perp1, bounded_pixels, dim=-1, keepdim=True)
+    # #dots2 = dot_product(nearest_perp2, bounded_pixels, dim=-1, keepdim=True)
+    # a1, a2, ab = [angle(_) for _ in [nearest_par1, nearest_par2, bounded_pixels]]
+    # a1 = a1 - 0.1
+    # a2 = a2 + 0.1
 
-    return (((a1 <= ab) & (ab <= a2))).float()#.squeeze(-1)
+    # return ((a1 <= ab) & (ab <= a2)).float()#.squeeze(-1)
 
-    dots = torch.minimum(dots1, dots2)
-    #dots = (dots * m + (1-m) * 1e12).amin(-2)
-    return (dots <= 0).float().squeeze(-1)
+    # dots = torch.minimum(dots1, dots2)
+    # #dots = (dots * m + (1-m) * 1e12).amin(-2)
+    # return (dots <= 0).float().squeeze(-1)
 
-    #dots1 = dot_product(perp1.unsqueeze(-3), bounded_pixels.unsqueeze(-2) - pp2d.unsqueeze(-3), dim=-1, keepdim=True)
-    bounded_pixels = bounded_pixels.float().unsqueeze(-2)
-    parallel = parallel.unsqueeze(-3)
-    perp_dists = (bounded_pixels - dot_product(bounded_pixels, parallel) * parallel).norm(p=2,dim=-1, keepdim=True)
-    max_ind = (perp_dists * m + (1-m) * -1e12).argmax(-2, keepdim=True)
-    dots = dot_product(perp.unsqueeze(-3), bounded_pixels, dim=-1, keepdim=True) - \
-            dot_product(perp, pp2d, dim=-1, keepdim=True).unsqueeze(-3)
+    # #dots1 = dot_product(perp1.unsqueeze(-3), bounded_pixels.unsqueeze(-2) - pp2d.unsqueeze(-3), dim=-1, keepdim=True)
+    # bounded_pixels = bounded_pixels.float().unsqueeze(-2)
+    # parallel = parallel.unsqueeze(-3)
+    # perp_dists = (bounded_pixels - dot_product(bounded_pixels, parallel) * parallel).norm(p=2,dim=-1, keepdim=True)
+    # max_ind = (perp_dists * m + (1-m) * -1e12).argmax(-2, keepdim=True)
+    # dots = dot_product(perp.unsqueeze(-3), bounded_pixels, dim=-1, keepdim=True) - \
+    #         dot_product(perp, pp2d, dim=-1, keepdim=True).unsqueeze(-3)
 
-    #max_ind = (dots.abs() * m + (1-m) * -1e12).argmax(-2, keepdim=True)
+    # #max_ind = (dots.abs() * m + (1-m) * -1e12).argmax(-2, keepdim=True)
 
-    dots = broadcast_gather(dots, -2, max_ind, keepdim=False)
+    # dots = broadcast_gather(dots, -2, max_ind, keepdim=False)
 
-    #md = (dots > 0)
-    return (dots <= 0).float().squeeze(-1)
-    md = ((dots.unsqueeze(-2) * mf + (1-mf) * 1e12).amin(-2, keepdim=False) < 0)
-    return md.float().squeeze(-1)
+    # #md = (dots > 0)
+    # return (dots <= 0).float().squeeze(-1)
+    # md = ((dots.unsqueeze(-2) * mf + (1-mf) * 1e12).amin(-2, keepdim=False) < 0)
+    # return md.float().squeeze(-1)
 
 
 def get_2d_polygon_mask2(polygon_vertices, grid_points, eps=1e-6):
@@ -398,7 +403,7 @@ def get_2d_polygon_mask2(polygon_vertices, grid_points, eps=1e-6):
 
     """
     bounded_pixels: Tensor[
-    pp: Tensor[frames, Batch[*], num_points, 3] 
+    pp: Tensor[frames, Batch[*], num_points, 3]
     """
 
     dists = torch.cdist(bounded_pixels.float(), pp2d).unsqueeze(-1)

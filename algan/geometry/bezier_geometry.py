@@ -1,5 +1,8 @@
-import torch
+from __future__ import annotations
+
 import math  # For math.pi
+
+import torch
 
 # Epsilon for floating point comparisons
 F32_EPSILON_IMAG_ZERO = 1e-4
@@ -66,8 +69,8 @@ def _solve_batched_cubic_pytorch(A_real, B_real, C_real, D_real, device, complex
             solve_lin_mask = C_lin.abs() >= COEFF_EPS
 
             if is_tc2_debug and torch.any(
-                a_is_zero_mask[is_tc2_debug_idx(A_real)] & lin_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]): print(
-                "[DEBUG TC2] In Linear Mask")
+                a_is_zero_mask[is_tc2_debug_idx(A_real)] & lin_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]):
+                print("[DEBUG TC2] In Linear Mask")
 
             if torch.any(solve_lin_mask):
                 sub_roots[lin_mask_sub.nonzero(as_tuple=True)[0][solve_lin_mask], 0] = (
@@ -77,8 +80,8 @@ def _solve_batched_cubic_pytorch(A_real, B_real, C_real, D_real, device, complex
         quad_mask_sub = B_sub.abs() >= COEFF_EPS
         if torch.any(quad_mask_sub):
             if is_tc2_debug and torch.any(
-                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]): print(
-                "[DEBUG TC2] In Quadratic Mask")
+                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]):
+                print("[DEBUG TC2] In Quadratic Mask")
 
             B_q, C_q, D_q = B_sub[quad_mask_sub], C_sub[quad_mask_sub], D_sub[quad_mask_sub]
             if is_tc2_debug and torch.any(
@@ -87,23 +90,23 @@ def _solve_batched_cubic_pytorch(A_real, B_real, C_real, D_real, device, complex
 
             delta_q_real = C_q ** 2 - 4 * B_q * D_q
             if is_tc2_debug and torch.any(
-                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]): print(
-                f"[DEBUG TC2] delta_q_real (before zeroing): {delta_q_real.item()}")
+                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]):
+                print(f"[DEBUG TC2] delta_q_real (before zeroing): {delta_q_real.item()}")
 
             delta_q_real_zeroed_check = delta_q_real.abs() < QUAD_DELTA_EPS
             if is_tc2_debug and torch.any(
-                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]): print(
-                f"[DEBUG TC2] delta_q_real.abs() < QUAD_DELTA_EPS ({QUAD_DELTA_EPS}): {delta_q_real_zeroed_check.item()}")
+                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]):
+                print(f"[DEBUG TC2] delta_q_real.abs() < QUAD_DELTA_EPS ({QUAD_DELTA_EPS}): {delta_q_real_zeroed_check.item()}")
 
             delta_q_real = torch.where(delta_q_real_zeroed_check, torch.zeros_like(delta_q_real), delta_q_real)
             if is_tc2_debug and torch.any(
-                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]): print(
-                f"[DEBUG TC2] delta_q_real (after zeroing): {delta_q_real.item()}")
+                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]):
+                print(f"[DEBUG TC2] delta_q_real (after zeroing): {delta_q_real.item()}")
 
             sqrt_delta_q_cplx = torch.sqrt(delta_q_real.to(complex_dtype))
             if is_tc2_debug and torch.any(
-                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]): print(
-                f"[DEBUG TC2] sqrt_delta_q_cplx: {sqrt_delta_q_cplx.item()}")
+                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]):
+                print(f"[DEBUG TC2] sqrt_delta_q_cplx: {sqrt_delta_q_cplx.item()}")
 
             C_q_cplx, B_q_cplx = C_q.to(complex_dtype), B_q.to(complex_dtype)
             denom = 2 * B_q_cplx
@@ -113,8 +116,8 @@ def _solve_batched_cubic_pytorch(A_real, B_real, C_real, D_real, device, complex
             roots_q1 = (-C_q_cplx + sqrt_delta_q_cplx) / denom_safe
             roots_q2 = (-C_q_cplx - sqrt_delta_q_cplx) / denom_safe
             if is_tc2_debug and torch.any(
-                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]): print(
-                f"[DEBUG TC2] roots_q1: {roots_q1.item()}, roots_q2: {roots_q2.item()}")
+                a_is_zero_mask[is_tc2_debug_idx(A_real)] & quad_mask_sub[is_tc2_debug_idx(B[a_is_zero_mask])]):
+                print(f"[DEBUG TC2] roots_q1: {roots_q1.item()}, roots_q2: {roots_q2.item()}")
 
             # Assign to the correct rows in sub_roots
             quad_indices_in_sub = quad_mask_sub.nonzero(as_tuple=True)[0]
@@ -125,8 +128,8 @@ def _solve_batched_cubic_pytorch(A_real, B_real, C_real, D_real, device, complex
 
     # --- Handle A is non-zero (Cubic) ---
     if torch.any(a_is_not_zero_mask):
-        if is_tc2_debug and torch.any(a_is_not_zero_mask[is_tc2_debug_idx(A_real)]): print(
-            "[DEBUG TC2] In Cubic Mask (ERROR if TC2)")
+        if is_tc2_debug and torch.any(a_is_not_zero_mask[is_tc2_debug_idx(A_real)]):
+            print("[DEBUG TC2] In Cubic Mask (ERROR if TC2)")
 
         # Select only cubic cases for processing
         a_r, b_r, c_r, d_r = A[a_is_not_zero_mask], B[a_is_not_zero_mask], C[a_is_not_zero_mask], D[a_is_not_zero_mask]
@@ -263,17 +266,17 @@ def count_line_bezier_intersections(lines_b, lines_w, bezier_cps):
     t_values[~(real_roots_mask)] = 1e12
     return t_values
 
-    actual_intersections_mask_s = real_roots_mask & valid_t_range_mask
-    return actual_intersections_mask_s.sum(-1, keepdim=True)
+    # actual_intersections_mask_s = real_roots_mask & valid_t_range_mask
+    # return actual_intersections_mask_s.sum(-1, keepdim=True)
 
-    has_valid_root_s = torch.any(actual_intersections_mask_s, dim=-1)
+    # has_valid_root_s = torch.any(actual_intersections_mask_s, dim=-1)
 
-    has_intersection_flat[solvable_mask_flat] = has_valid_root_s
+    # has_intersection_flat[solvable_mask_flat] = has_valid_root_s
 
     #has_intersection = has_intersection_flat.reshape(N_lines, N_beziers)
     #intersections_per_line = torch.sum(has_intersection.int(), dim=1)
 
-    return has_intersection_flat#intersections_per_line
+    # return has_intersection_flat#intersections_per_line
 
 
 tc2_lines_b = None  # Define globally for debug prints in main
