@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 import torch.types
-from algan.mobs.surfaces.surface import Surface
+
 import algan.utils.file_utils as file_utils
+from algan.external_libraries.manim.mobject.types.image_mobject import ImageMobject
+from algan.mobs.surfaces.surface import Surface
 
 
 class ImageMob(Surface):
@@ -19,7 +23,7 @@ class ImageMob(Surface):
 
     """
 
-    def __init__(self, rgba_array_or_file_path:torch.Tensor|str, **kwargs):
+    def __init__(self, rgba_array_or_file_path: torch.Tensor | str, **kwargs):
         submob = rgba_array_or_file_path
         if isinstance(rgba_array_or_file_path, ImageMobject):
             rgba_array = torch.from_numpy(submob.pixel_array).float() / 255
@@ -29,14 +33,18 @@ class ImageMob(Surface):
         h = rgba_array.shape[-3]
         w = rgba_array.shape[-2]
 
-        super().__init__(grid_height=h, grid_width=w, color_texture=rgba_array.transpose(-3,-2).flip(-2),
-                         **kwargs)
+        super().__init__(
+            grid_height=h,
+            grid_width=w,
+            color_texture=rgba_array.transpose(-3, -2).flip(-2),
+            **kwargs,
+        )
         if isinstance(rgba_array_or_file_path, ImageMobject):
             self.scale(torch.tensor((submob.width / 2, submob.height / 2, 1)).float())
             self.move_to(submob.get_center())
 
     def setattr_absolute(self, attr_name, value):
-        if attr_name == 'color':
-            self.glow = value[...,-2:-1]
+        if attr_name == "color":
+            self.glow = value[..., -2:-1]
             return self
         return super().setattr_absolute(attr_name, value)

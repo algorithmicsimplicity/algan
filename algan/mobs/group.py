@@ -1,14 +1,16 @@
+from __future__ import annotations
+
 import math
 
 import torch
 import torch.nn.functional as F
 
-from algan.animation.animation_contexts import Sync, Off
-from algan.constants.spatial import RIGHT, DOWN, ORIGIN
+from algan.animation.animation_contexts import Off, Sync
+from algan.constants.spatial import DOWN, ORIGIN, RIGHT
 from algan.mobs.mob import Mob
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.python_utils import traverse
-from algan.utils.tensor_utils import dot_product, broadcast_gather
+from algan.utils.tensor_utils import broadcast_gather, dot_product
 
 
 def midpoint(x):
@@ -47,6 +49,7 @@ class Group(Mob):
         render_to_file()
 
     """
+
     def __init__(self, *mobs, **kwargs):
         mobs = list(traverse(mobs))
         self.traversable = False
@@ -59,21 +62,32 @@ class Group(Mob):
             x = [_ for _ in x if _ is not None]
             return torch.stack([_.mean(-2, keepdim=True) for _ in x], -1).mean(-1)
 
-
-        super().__init__(self.get_mob_midpoint(), color=mean(list(traverse([mob.color for mob in mobs]))), **kwargs)
-        if all([_.data.spawn_time() >= 0 for _ in mobs]):
+        super().__init__(
+            self.get_mob_midpoint(),
+            color=mean(list(traverse([mob.color for mob in mobs]))),
+            **kwargs,
+        )
+        if all(_.data.spawn_time() >= 0 for _ in mobs):
             self.spawn(animate=False)
         self.add_children(mobs)
 
     def get_mob_midpoint(self):
-        return midpoint(list(traverse([[d.location for d in mob.get_descendants()] for mob in self.mobs])))
+        return midpoint(
+            list(
+                traverse(
+                    [[d.location for d in mob.get_descendants()] for mob in self.mobs]
+                )
+            )
+        )
 
     def __getitem__(self, item):
         mobs = self.mobs[item]
         if isinstance(mobs, Mob):
             return mobs
         if len(mobs) == 0:
-            return Mob(add_to_scene=False) # return a null mob so we can still perform ops on the result, they just won't do anything.
+            return Mob(
+                add_to_scene=False
+            )  # return a null mob so we can still perform ops on the result, they just won't do anything.
         return Group(mobs)
 
     def __setitem__(self, item, value):
@@ -95,13 +109,21 @@ class Group(Mob):
         return self.mobs
 
     def get_boundary_edge_point2(self, direction):
-        points = torch.stack([(m.get_boundary_edge_point(direction)) for m in self.mobs])
+        points = torch.stack(
+            [(m.get_boundary_edge_point(direction)) for m in self.mobs]
+        )
         dots = dot_product(points, direction)
         furthest_ind = dots.argmax(0, keepdim=True)
         return broadcast_gather(points, 0, furthest_ind, keepdim=False)
 
-    def arrange_in_line(self, direction:torch.Tensor=RIGHT, buffer:float=STYLE_DEFAULTS.buffer, start_at_first:bool=False,
-                        equal_displacement:bool=False, alignment_direction:torch.Tensor|None=None):
+    def arrange_in_line(
+        self,
+        direction: torch.Tensor = RIGHT,
+        buffer: float = STYLE_DEFAULTS.buffer,
+        start_at_first: bool = False,
+        equal_displacement: bool = False,
+        alignment_direction: torch.Tensor | None = None,
+    ):
         """Moves the grouped mobs so that they lie along a given line.
 
         Parameters
@@ -125,18 +147,32 @@ class Group(Mob):
             The Group instance itself, allowing for method chaining.
 
         """
-
-        mob_sizes = [(m.get_boundary_in_direction(direction) - m.get_boundary_in_direction(-direction)).norm(p=2,dim=-1, keepdim=True) for m in self.mobs]
+        mob_sizes = [
+            (
+                m.get_boundary_in_direction(direction)
+                - m.get_boundary_in_direction(-direction)
+            ).norm(p=2, dim=-1, keepdim=True)
+            for m in self.mobs
+        ]
         if alignment_direction is not None:
-            alignment_dists = [(m.get_boundary_in_direction(alignment_direction) - m.get_center()).norm(p=2,dim=-1) for m in self.mobs]
+            alignment_dists = [
+                (
+                    m.get_boundary_in_direction(alignment_direction) - m.get_center()
+                ).norm(p=2, dim=-1)
+                for m in self.mobs
+            ]
             max_dist = max(alignment_dists)
             alignment_offsets = [max_dist - _ for _ in alignment_dists]
         if equal_displacement:
             max_size = max(mob_sizes)
             mob_sizes = [max_size for _ in range(len(mob_sizes))]
-        total_size = sum(mob_sizes) + (buffer * (len(mob_sizes)-1))
+        total_size = sum(mob_sizes) + (buffer * (len(mob_sizes) - 1))
 
-        start = (self.mobs[0].location - direction * (mob_sizes[0]/2)) if start_at_first else (self.location - direction * total_size/2)
+        start = (
+            (self.mobs[0].location - direction * (mob_sizes[0] / 2))
+            if start_at_first
+            else (self.location - direction * total_size / 2)
+        )
         with Sync():
             for i, mob in enumerate(self.mobs):
                 start = start + direction * (mob_sizes[i] / 2)
@@ -148,14 +184,21 @@ class Group(Mob):
         return self
 
     def arrange_between_points(self, start, end):
-        dif = end-start
+        dif = end - start
         with Sync():
             for i, mob in enumerate(self.mobs):
-                mob.location = start + dif * ((i+1) / (len(self.mobs)+1))
+                mob.location = start + dif * ((i + 1) / (len(self.mobs) + 1))
         return self
 
-    def arrange_in_grid(self, num_rows:int=None, row_direction:torch.Tensor=RIGHT, column_direction:torch.Tensor=DOWN,
-                        buffer=STYLE_DEFAULTS.buffer, column_buffer=None, tight_axis=None):
+    def arrange_in_grid(
+        self,
+        num_rows: int = None,
+        row_direction: torch.Tensor = RIGHT,
+        column_direction: torch.Tensor = DOWN,
+        buffer=STYLE_DEFAULTS.buffer,
+        column_buffer=None,
+        tight_axis=None,
+    ):
         """Moves the grouped mobs so that they in a given grid.
 
         Parameters
@@ -202,22 +245,56 @@ class Group(Mob):
             num_cols += 1
         row_direction = F.normalize(row_direction, p=2, dim=-1)
         column_direction = F.normalize(column_direction, p=2, dim=-1)
-        buf_dist1 = [max([m.get_length_in_direction(row_direction) for m in self.mobs]) + buffer for _ in range(num_cols)]
-        buf_dist2 = [max([m.get_length_in_direction(column_direction) for m in self.mobs]) + column_buffer for _ in range(num_rows)]
+        buf_dist1 = [
+            max([m.get_length_in_direction(row_direction) for m in self.mobs]) + buffer
+            for _ in range(num_cols)
+        ]
+        buf_dist2 = [
+            max([m.get_length_in_direction(column_direction) for m in self.mobs])
+            + column_buffer
+            for _ in range(num_rows)
+        ]
         if tight_axis is not None:
             if tight_axis == 0:
-                buf_dist1 = [max([self.mobs[i + j * num_cols].get_length_in_direction(row_direction) for j in range(num_rows)]) + column_buffer for i in range(num_cols)]
+                buf_dist1 = [
+                    max(
+                        [
+                            self.mobs[i + j * num_cols].get_length_in_direction(
+                                row_direction
+                            )
+                            for j in range(num_rows)
+                        ]
+                    )
+                    + column_buffer
+                    for i in range(num_cols)
+                ]
             elif tight_axis == 1:
-                buf_dist2 = [max([self.mobs[i + j * num_cols].get_length_in_direction(row_direction) for i in range(num_cols)]) + buffer for j in range(num_rows)]
+                buf_dist2 = [
+                    max(
+                        [
+                            self.mobs[i + j * num_cols].get_length_in_direction(
+                                row_direction
+                            )
+                            for i in range(num_cols)
+                        ]
+                    )
+                    + buffer
+                    for j in range(num_rows)
+                ]
 
-        start = self.location - (row_direction * sum(buf_dist1) * 0.5 + column_direction * sum(buf_dist2)*0.5)
+        start = self.location - (
+            row_direction * sum(buf_dist1) * 0.5
+            + column_direction * sum(buf_dist2) * 0.5
+        )
         with Sync():
             for i, mob in enumerate(self.mobs):
-                x = i%num_cols
-                y = i//num_cols
+                x = i % num_cols
+                y = i // num_cols
                 x_dist = sum(buf_dist1[:x]) + buf_dist1[x] * 0.5
                 y_dist = sum(buf_dist2[:y]) + buf_dist2[y] * 0.5
-                mob.location = start + row_direction * x_dist + column_direction * y_dist
+                mob.location = (
+                    start + row_direction * x_dist + column_direction * y_dist
+                )
         return self
 
     def highlight(self):
