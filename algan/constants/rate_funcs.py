@@ -1,4 +1,4 @@
-import math
+from __future__ import annotations
 
 import torch
 
@@ -18,15 +18,6 @@ def ease_out_quintic(t):
 
 
 def ease_out_exp(t, scale=10):
-    def f(t):
-        return -torch.nn.functional.softplus(-scale*(t-0.5))
-
-    s = f(torch.tensor((0.0,)))
-    e = f(torch.tensor((1.0,)))
-    return (f(t) - s) / (e-s)
-
-
-def ease_out_exp(t, scale=4):
     def f(t):
         return -torch.nn.functional.softplus(-scale*(t-0.5))
 

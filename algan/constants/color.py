@@ -1,12 +1,13 @@
-from typing import overload, Tuple
+from __future__ import annotations
+
+import re
 
 import torch
-import re
 
 re_hex = re.compile("((?<=#)|(?<=0x))[A-F0-9]{6,8}", re.IGNORECASE)
 
 class Color(torch.Tensor):
-    def __new__(cls, rgb:str|Tuple[float], glow=0, opacity=1, *args, **kwargs):
+    def __new__(cls, rgb:str|tuple[float], glow=0, opacity=1, *args, **kwargs):
         if isinstance(rgb, str):
             hex_code = re_hex.search(rgb).group()
             if len(hex_code) == 6:
