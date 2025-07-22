@@ -147,6 +147,8 @@ ignore = [
   # No function calls in defaults
   # ignored because np.array() and straight_path()
   "B008",
+  # Star-arg unpacking after keyword args (not a priority)
+  "B026",
   # docstring ignores - mostly stylistic
   "D1",
   "D203",
@@ -165,6 +167,8 @@ ignore = [
   "E114",
   "E117",
   "E501",
+  # Ambiguous variable names (not a priority right now)
+  "E741",
 ]
 
 # Allow unused variables when underscore-prefixed.
