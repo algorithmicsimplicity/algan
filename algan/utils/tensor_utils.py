@@ -1,14 +1,13 @@
+from __future__ import annotations
+
 import functools
 import inspect
+import re
 from collections import defaultdict
 from math import sqrt
 from string import ascii_lowercase
-from typing import List, Optional
-import re
 
 import torch
-import torch.nn.functional as F
-import torch.nn as nn
 
 from algan.defaults.device_defaults import DEFAULT_DEVICE
 
@@ -47,18 +46,18 @@ def cast_to_tensor(x):
         while x.dim() < 3:
             x = x.unsqueeze(0)
         return x#.view(-1,x.shape[-1])
-    if isinstance(x, list) or isinstance(x, tuple):
+    if isinstance(x, (list, tuple)):
         return torch.cat([cast_to_tensor(_) for _ in x], -2)#[cast_to_tensor(_) for _ in x]
     if x is None:
         x = 0
     try:
         return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1,1,1)
-    except:
+    except (TypeError, ValueError):
         return x
 
 
 def cast_to_tensor_single(x):
-    if isinstance(x, list) or isinstance(x, tuple):
+    if isinstance(x, (list, tuple)):
         return torch.stack(x, -2)#[cast_to_tensor(_) for _ in x]
     if isinstance(x, torch.Tensor):
         return x#.view(-1,x.shape[-1])
@@ -121,18 +120,18 @@ def expand_as_right(x, y, offset:int=0):
     return x.expand(([-1] * (n)) + list(y.shape[n:]))
 
 
-def broadcast(x, y, ignored_dims:List[int]):
+def broadcast(x, y, ignored_dims:list[int]):
     return x.expand([y.shape[i] if (x.shape[i] == 1 and i not in ignored_dims) else -1 for i in range(len(x.shape))])
 
 
-def broadcast_both(x, y, ignored_dims:List[int]):
+def broadcast_both(x, y, ignored_dims:list[int]):
     x = unsqueeze_right(x, y)
     x = broadcast(x, y, ignored_dims=ignored_dims)
     y = broadcast(y, x, ignored_dims=ignored_dims)
     return x, y
 
 
-def broadcast_both_left(x, y, ignored_dims:List[int]):
+def broadcast_both_left(x, y, ignored_dims:list[int]):
     x = unsqueeze_left(x, y)
     y = unsqueeze_left(y, x)
     x = broadcast(x, y, ignored_dims=ignored_dims)
@@ -182,7 +181,7 @@ def squish(x, start:int = 0, end:int = 1):
     return x.reshape(list(x.shape[:start]) + [-1] + list(x.shape[end+1:]))
 
 
-def unsquish(x, dim: int = 0, factor:Optional[int] = None):
+def unsquish(x, dim: int = 0, factor:int | None = None):
     if dim < 0:
         dim = len(x.shape) + dim
     if factor is None:
@@ -324,9 +323,7 @@ def reduce_max_score(x, scores, dim=-1):
 
 
 def robust_concat(xs):
-    """
-    Concatenates multiple tensors together while broadcasting as necessary to ensure shapes match.
-    """
+    """Concatenates multiple tensors together while broadcasting as necessary to ensure shapes match."""
     xs = [cast_to_tensor_single(x) for x in xs]
     max_dim = max([x.dim() for x in xs])
 
@@ -363,12 +360,11 @@ HANDLED_FUNCTIONS = {}
 
 
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
-    """Combine args and kwargs into one dict, using default values where arg is missing
-    """
+    """Combine args and kwargs into one dict, using default values where arg is missing"""
     params = inspect.signature(func).parameters
     arg_names = list(params.keys())[1:]
     kwargs.update({arg_names[i]: args[i] for i in range(len(args))})
-    default_kwargs = {param.name: param.default for param in params.values() if not (param.default is inspect._empty)}
+    default_kwargs = {param.name: param.default for param in params.values() if param.default is not inspect._empty}
     default_kwargs.update(kwargs)
     kwargs = {k: cast_to_tensor(v) if k in initial_args else v for k, v in default_kwargs.items()}
     # func_name needs to be a unique identifier, as all funcs with the same func_name will be put in the same batch.

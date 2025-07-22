@@ -1,14 +1,14 @@
+from __future__ import annotations
+
 import cProfile
-import os.path
-
-from pathlib import Path
-
 import inspect
+import os.path
 import pstats
 import sys
+from pathlib import Path
 
-import torch
 import cv2
+import torch
 
 import algan
 from algan.animation.animation_contexts import AnimationManager, Off
@@ -86,37 +86,30 @@ def render_to_file(file_name=None, output_dir=None, render_settings=None, overwr
 def render_all_funcs(module_name, render_settings=None, profile=False, overwrite=True, start_index=0,
                      max_rendered=-1, output_dir=None, **kwargs):
     def run(output_dir=None, render_settings=None):
-        with torch.no_grad():
-            with torch.inference_mode():
-                module = sys.modules[module_name]
-                scene_funcs = [a for a in inspect.getmembers(module) if inspect.isfunction(a[1]) and
-                               a[1].__globals__['__file__'] == inspect.getfile(module) and
-                               len(inspect.signature(a[1]).parameters) == 0]
-                scene_funcs = list(sorted(scene_funcs, key=lambda x: x[1].__code__.co_firstlineno))
+        with torch.no_grad(), torch.inference_mode():
+            module = sys.modules[module_name]
+            scene_funcs = [a for a in inspect.getmembers(module) if inspect.isfunction(a[1]) and
+                            a[1].__globals__['__file__'] == inspect.getfile(module) and
+                            len(inspect.signature(a[1]).parameters) == 0]
+            scene_funcs = sorted(scene_funcs, key=lambda x: x[1].__code__.co_firstlineno)
 
-                if render_settings is None:
-                    render_settings = algan.defaults.render_defaults.DEFAULT_RENDER_SETTINGS
+            if render_settings is None:
+                render_settings = algan.defaults.render_defaults.DEFAULT_RENDER_SETTINGS
 
-                if output_dir is None:
-                    output_dir = os.path.join(algan.defaults.directory_defaults.DEFAULT_DIR, 'algan_outputs')
-                output_dir = os.path.join(output_dir, module_name)
-                if start_index < 0:
-                    s = start_index + len(scene_funcs)
-                else:
-                    s = start_index
-                if max_rendered < 0:
-                    e = len(scene_funcs)
-                else:
-                    e = s+max_rendered
-                for i, (func_name, f) in list(enumerate(scene_funcs))[s:e]:
-                    SceneTracker.reset()
-                    AnimationManager.reset()
-                    scene = SceneTracker.instance()
-                    scene.set_render_settings(render_settings)
-                    if scene.camera is None:
-                        scene.camera = Camera(False)
-                    f()
-                    render_to_file(f'{i}_{func_name}', output_dir, render_settings, overwrite, **kwargs)
+            if output_dir is None:
+                output_dir = os.path.join(algan.defaults.directory_defaults.DEFAULT_DIR, 'algan_outputs')
+            output_dir = os.path.join(output_dir, module_name)
+            s = start_index + len(scene_funcs) if start_index < 0 else start_index
+            e = len(scene_funcs) if max_rendered < 0 else s + max_rendered
+            for i, (func_name, f) in list(enumerate(scene_funcs))[s:e]:
+                SceneTracker.reset()
+                AnimationManager.reset()
+                scene = SceneTracker.instance()
+                scene.set_render_settings(render_settings)
+                if scene.camera is None:
+                    scene.camera = Camera(False)
+                f()
+                render_to_file(f'{i}_{func_name}', output_dir, render_settings, overwrite, **kwargs)
         return
 
     if profile:

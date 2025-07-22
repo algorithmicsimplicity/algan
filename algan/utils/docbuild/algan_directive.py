@@ -77,9 +77,7 @@ directive:
         that is rendered in a reference block after the source code.
 
 """
-
 from __future__ import annotations
-import os
 
 import csv
 import itertools as it
@@ -97,6 +95,7 @@ from docutils import nodes
 from docutils.parsers.rst import Directive, directives
 from docutils.statemachine import StringList
 
+from algan import *
 from algan.settings.render_settings import QUALITIES
 
 if TYPE_CHECKING:
@@ -109,7 +108,7 @@ __all__ = ["AlganDirective"]
 
 classnamedict: dict[str, int] = {}
 
-from algan import *
+
 
 class SetupMetadata(TypedDict):
     parallel_read_safe: bool

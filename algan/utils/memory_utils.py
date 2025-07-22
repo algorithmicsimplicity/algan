@@ -1,15 +1,18 @@
+from __future__ import annotations
+
 import math
 
 import torch
 
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
 
+
 class InsufficientMemoryException(Exception):
     pass
 
 class ManualMemory:
     def __init__(self, num_bytes):
-        self.is_cpu = DEFAULT_RENDER_DEVICE == torch.device('cpu')
+        self.is_cpu = torch.device('cpu') == DEFAULT_RENDER_DEVICE
         self.data = torch.empty((1 if self.is_cpu else num_bytes,), device=DEFAULT_RENDER_DEVICE, dtype=torch.bool)
         self.current_pointer = 0
         self.stack = []
@@ -25,7 +28,7 @@ class ManualMemory:
     def get_tensor(self, shape, dtype=torch.float):
         if self.is_cpu:
             return torch.empty(shape, dtype=dtype)
-        shape = [_ for _ in shape]
+        shape = list(shape)
         num_bytes = 1
         if dtype in [torch.int, torch.float]:
             num_bytes = 4
