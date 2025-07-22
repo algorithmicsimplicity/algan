@@ -1,14 +1,26 @@
+from __future__ import annotations
+
 import math
 
 import torch
 import torch.nn.functional as F
 
-from algan.constants.color import BLUE, BLACK
+from algan.constants.color import BLACK, BLUE
 from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE
 from algan.geometry.geometry import intersect_line_with_plane
-from algan.rendering.primitives.primitive import InsufficientMemoryException, RenderPrimitive2D
-from algan.utils.tensor_utils import broadcast_all
-from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, expand_as_left, unsquish, unsqueeze_right
+from algan.rendering.primitives.primitive import (
+    InsufficientMemoryException,
+    RenderPrimitive2D,
+)
+from algan.utils.tensor_utils import (
+    broadcast_all,
+    broadcast_gather,
+    dot_product,
+    expand_as_left,
+    squish,
+    unsqueeze_right,
+    unsquish,
+)
 
 
 def evaluate_cubic_bezier_old2(p, t):
@@ -165,7 +177,7 @@ class BezierCircuitPrimitiveWithBorderFillRendering(RenderPrimitive2D):
                     expand_as_left(triangle.portion_of_curve_drawn, triangle.corners),
                                       ) for triangle in triangle_collection)))
             self.mob_center, self.grid_width, self.grid_height, self.basis1, self.basis2 = (
-                ((torch.stack([(__) for __ in _], 1))).to(DEFAULT_RENDER_DEVICE, non_blocking=True) for _ in
+                ((torch.stack(list(_), 1))).to(DEFAULT_RENDER_DEVICE, non_blocking=True) for _ in
                 zip(*(broadcast_all((
                     triangle.mob_center,
                     triangle.grid_height,
@@ -368,7 +380,7 @@ class BezierCircuitPrimitiveWithBorderFillRendering(RenderPrimitive2D):
             n = bounding_box_sizes.amax().log2().int()+1
 
             def update_closest_dist_for_t(t):
-                for i in range(0, 1):
+                for _i in range(0, 1):
                     cubic_control_points = self.expand_verts_to_frags(cubic_control_points_verts, repeats_inds.unsqueeze(-2), -3, out=current_control_points)
 
                     torch.mean(cubic_control_points, -2, keepdim=False, out=current_point)
@@ -404,9 +416,9 @@ class BezierCircuitPrimitiveWithBorderFillRendering(RenderPrimitive2D):
                         eps = 1e-2
                         m_end = t > (1-eps)
                         m_start = t < (eps)
-                        interior_mask = ((dot_product(perp, disps) > 0) )
-                        end_interior_mask = ((dot_product(next_perp, disps) > 0) )
-                        start_interior_mask = ((dot_product(prev_perp, disps) > 0))
+                        interior_mask = (dot_product(perp, disps) > 0 )
+                        end_interior_mask = (dot_product(next_perp, disps) > 0 )
+                        start_interior_mask = (dot_product(prev_perp, disps) > 0)
                         conjunct_mask_end = end_interior_mask & interior_mask
                         disjunct_mask_end = end_interior_mask | interior_mask
                         conjunct_mask_start = start_interior_mask & interior_mask
@@ -545,8 +557,8 @@ class BezierCircuitPrimitiveWithBorderFillRendering(RenderPrimitive2D):
                         m_end = t > (1 - eps)
                         m_start = t < (eps)
                         interior_mask = current_dot_b > 0
-                        end_interior_mask = ((dot_product(next_perp, disps) > 0))
-                        start_interior_mask = ((dot_product(prev_perp, disps) > 0))
+                        end_interior_mask = (dot_product(next_perp, disps) > 0)
+                        start_interior_mask = (dot_product(prev_perp, disps) > 0)
                         conjunct_mask_end = end_interior_mask & interior_mask
                         disjunct_mask_end = end_interior_mask | interior_mask
                         conjunct_mask_start = start_interior_mask & interior_mask
@@ -574,7 +586,6 @@ class BezierCircuitPrimitiveWithBorderFillRendering(RenderPrimitive2D):
 
             interior_mask, border_mask = update_closest_dist_for_t(ts)
 
-            self.memory.reset_pointer
             return interior_mask, border_mask
 
         aa_offsets = torch.linspace(0, 1, anti_alias_level * 2 + 1, device=fragment_x.device)[1:-1:2]
@@ -738,10 +749,7 @@ class BezierCircuitPrimitiveWithBorderFillRendering(RenderPrimitive2D):
         output_frags[:] = 0
         current_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
 
-        if unique_counts.numel() == 0:
-            max_buffer_depth = 1
-        else:
-            max_buffer_depth = unique_counts.amax()
+        max_buffer_depth = 1 if unique_counts.numel() == 0 else unique_counts.amax()
 
         def get_frags(ws, fragment_coords=fragment_coords):
 

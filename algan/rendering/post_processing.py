@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
 
@@ -18,11 +20,11 @@ def bloom_filter(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=11, st
     #d = kernel_size / (min(x.shape[0], x.shape[1])/scale_factor)
     #filter = torch.exp(-1*(torch.linspace(-d, d, kernel_size, device=x.device)**2) * 2 / blur_width)
     d = 1
-    filter = torch.exp(-1*(torch.linspace(-d, d, kernel_size, device=x.device)**2))
-    filter /= filter.sum()
-    filter *= 1
+    filter_ = torch.exp(-1*(torch.linspace(-d, d, kernel_size, device=x.device)**2))
+    filter_ /= filter_.sum()
+    filter_ *= 1
     #filter /= filter.amax()
-    filter_horizontal = filter.view(1, 1,1,kernel_size).expand(xb.shape[-1],-1,-1,-1)
+    filter_horizontal = filter_.view(1, 1,1,kernel_size).expand(xb.shape[-1],-1,-1,-1)
     filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
     #counter_horizontal = torch.ones_like(filter_horizontal)
     #counter_horizontal = counter_horizontal / counter_horizontal.numel()
@@ -39,7 +41,7 @@ def bloom_filter(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=11, st
 
     k = 1#kernel_size * kernel_size * 0.01
     #count = count.permute(-1,0,1)
-    for i in range(num_iterations):
+    for _i in range(num_iterations):
         """xbu = F.unfold(xb.unsqueeze(0), (kernel_size, kernel_size), padding=(p, p)).squeeze(0)
         xbu = unsquish(unsquish(unsquish(xbu, 0, -xb.shape[0]), -1, xb.shape[-1]), 1, kernel_size)
         #a = torch.exp(-dists) * (xbu[-1:])#.clamp(min=1e-5))
@@ -111,6 +113,6 @@ def bloom_filter(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=11, st
     #out = (x[..., :-1] + glow)  # / (1+xb[...,-1:])
     #out = (x[...,:-1] * (1-a) + (a2) * glow)# / (1+xb[...,-1:])
     #out = (x[...,:-1] *(1-a) + a * glow)# / (1+xb[...,-1:])
-    return (((out * 255).clamp_(max=255))).to(xdtype)
+    return ((out * 255).clamp_(max=255)).to(xdtype)
     #return ((out / out.amax().clamp_(min=255)) * 255).to(xdtype)
     #return (x[...,:-1] + xb*strength).clamp_(max=255).to(xdtype)

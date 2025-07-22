@@ -1,12 +1,20 @@
+from __future__ import annotations
+
 import torch
-import torchvision
 import torch.nn.functional as F
+import torchvision
 from torch_scatter import scatter_max
 
-from algan.constants.color import BLUE, BLACK
+from algan.constants.color import BLACK, BLUE
 from algan.geometry.geometry import intersect_line_with_plane
 from algan.utils.memory_utils import InsufficientMemoryException
-from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, unsquish, unsqueeze_right
+from algan.utils.tensor_utils import (
+    broadcast_gather,
+    dot_product,
+    squish,
+    unsqueeze_right,
+    unsquish,
+)
 
 
 class RenderPrimitive:
@@ -88,7 +96,7 @@ class RenderPrimitive:
 
     def expand_verts_to_frags(self, x, repeats_inds, dim=-2, out=None):
         if out is None:
-            xshape = [_ for _ in x.shape]
+            xshape = list(x.shape)
             xshape[dim] = repeats_inds.shape[dim]
             out = self.get_tensor(xshape, x.dtype)
         return broadcast_gather(x, dim, repeats_inds, out=out)
@@ -99,10 +107,7 @@ class RenderPrimitive:
         current_frags = self.get_tensor((len(unique_inds), colors.shape[-1] - 1), torch.float)
         self.memory.save_pointer()
 
-        if unique_counts.numel() == 0:
-            max_buffer_depth = 1
-        else:
-            max_buffer_depth = unique_counts.amax()
+        max_buffer_depth = 1 if unique_counts.numel() == 0 else unique_counts.amax()
 
 
         out = current_frags
@@ -113,13 +118,13 @@ class RenderPrimitive:
         # render invisble objects.
 
         def blend_colors(dists, inds, colors, out):
-            for i in range(max_buffer_depth):
+            for _i in range(max_buffer_depth):
                 max_dist, max_ind = scatter_max(dists, inds, -1, dim_size=out.shape[-2])
-                mask = ((0 < max_dist) & (max_dist < 1e12)).unsqueeze(-1)
+                mask = ((max_dist > 0) & (max_dist < 1e12)).unsqueeze(-1)
 
                 dists.scatter_(-1, max_ind, -1.0)
 
-                def do_write(out):
+                def do_write(out, mask, max_ind, colors):
                     inds_selected = broadcast_gather(inds, -1, max_ind, keepdim=True)
                     c_write = broadcast_gather(colors, -2, max_ind.unsqueeze(-1), keepdim=True)
                     ie = inds_selected.unsqueeze(-1).expand(-1, out.shape[-1])
@@ -130,40 +135,40 @@ class RenderPrimitive:
                     out.scatter_(-2, ie, write)
                     return out
 
-                out = do_write(out)
+                out = do_write(out, mask, max_ind, colors)
             return out
 
         def blend_colors_layerwise(dists, inds, colors, out):
             while True:
                 max_dist, max_ind = scatter_max(dists, inds, -1, dim_size=out.shape[-2])
 
-                def apply_mask(max_ind):
+                def apply_mask(max_ind, max_dist, inds):
                     remaining_inds = torch.arange(inds.shape[-1], device=inds.device)
-                    dump_mask = (max_ind < inds.shape[-1]) & (max_dist < 1e12) & (0 < max_dist)
+                    dump_mask = (max_ind < inds.shape[-1]) & (max_dist < 1e12) & (max_dist > 0)
                     max_ind = max_ind[dump_mask]
                     return remaining_inds, max_ind
 
-                remaining_inds, max_ind = apply_mask(max_ind)
+                remaining_inds, max_ind = apply_mask(max_ind, max_dist, inds)
 
-                def do_write(out):
+                def do_write(out, inds, max_ind, colors):
                     inds_selected = broadcast_gather(inds, -1, max_ind, keepdim=True)
                     c_write = broadcast_gather(colors, -2, max_ind.unsqueeze(-1), keepdim=True)
                     ie = inds_selected.unsqueeze(-1).expand(-1, 3)
                     c_read = broadcast_gather(out, -2, ie, keepdim=True)
                     a = c_write[..., -1:]
-                    out.scatter_(-2, ie, c_read * (1 - a) + a * c_write[..., :-1])
+                    out.scatter_(-2, ie, c_read * (1 - a) + a * (c_write[..., :-1]))
                     return out
 
-                out = do_write(out)
+                out = do_write(out, inds, max_ind, colors)
 
-                def get_rem_inds(remaining_inds):
+                def get_rem_inds(remaining_inds, inds, max_ind):
                     mu = max_ind.clamp_max_(inds.shape[-1] - 1).unique()
                     combined = torch.cat((mu, remaining_inds), -1)
                     uniques, counts = combined.unique(return_counts=True)
                     remaining_inds = uniques[counts == 1]
                     return remaining_inds
 
-                remaining_inds = get_rem_inds(remaining_inds)
+                remaining_inds = get_rem_inds(remaining_inds, inds, max_ind)
 
                 if remaining_inds.shape[-1] <= 1:
                     break
@@ -288,10 +293,7 @@ class RenderPrimitive:
         output_frags[:] = 0
         current_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
 
-        if unique_counts.numel() == 0:
-            max_buffer_depth = 1
-        else:
-            max_buffer_depth = unique_counts.amax()
+        max_buffer_depth = 1 if unique_counts.numel() == 0 else unique_counts.amax()
 
         def get_frags(ws):
 

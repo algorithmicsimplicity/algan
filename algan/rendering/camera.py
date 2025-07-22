@@ -1,11 +1,23 @@
-from algan.animation.animation_contexts import Off, Sync
-from algan.constants.color import *#WHITE
-from algan.constants.spatial import *#CAMERA_ORIGIN
-from algan.scene_tracker import SceneTracker
-from algan.mobs.mob import Mob
-from algan.utils.tensor_utils import expand_as_left, broadcast_gather, squish, unsquish, dot_product
-from algan.geometry.geometry import intersect_line_with_plane, intersect_line_with_plane_colinear
+from __future__ import annotations
+
 import torch.nn.functional as F
+
+from algan.animation.animation_contexts import Off, Sync
+from algan.constants.color import *  #WHITE
+from algan.constants.spatial import *  #CAMERA_ORIGIN
+from algan.geometry.geometry import (
+    intersect_line_with_plane,
+    intersect_line_with_plane_colinear,
+)
+from algan.mobs.mob import Mob
+from algan.scene_tracker import SceneTracker
+from algan.utils.tensor_utils import (
+    broadcast_gather,
+    dot_product,
+    expand_as_left,
+    squish,
+    unsquish,
+)
 
 
 class Camera(Mob):
@@ -123,8 +135,8 @@ class Camera(Mob):
         max_num_pixels = ray_counts.amax((0, 1))
         pixel_inds = squish(self.pixel_inds)[:max_num_pixels].unsqueeze(1).unsqueeze(1).unsqueeze(0)
         # start = spawn_t
-        self.inds = ((((pixel_inds % sizes[...,1:]) + (pixel_inds // sizes[..., 1:]) * self.pixel_inds.shape[1] + (min_coord[...,1:] +
-                    min_coord[...,:1] * self.pixel_inds.shape[1])).clamp_(max=self.pixel_inds.shape[0] * self.pixel_inds.shape[1] - 1)))
+        self.inds = (((pixel_inds % sizes[...,1:]) + (pixel_inds // sizes[..., 1:]) * self.pixel_inds.shape[1] + (min_coord[...,1:] +
+                    min_coord[...,:1] * self.pixel_inds.shape[1])).clamp_(max=self.pixel_inds.shape[0] * self.pixel_inds.shape[1] - 1))
 
         #pixel_coords = self.screen_offset(squish(self.screen))#[..., 1:]
         #pixel_coords = torch.cat((dot_product(pixel_coords, self.get_upwards_direction(), dim=-1),
@@ -137,9 +149,9 @@ class Camera(Mob):
         def in_range(p1, p2):
             l = p2-p1
             d = dot_product(box_points - p1, l, dim=-1)
-            return (0 <= d) & (d <= l.norm(p=2, dim=-1, keepdim=True).square_())
+            return (d >= 0) & (d <= l.norm(p=2, dim=-1, keepdim=True).square_())
 
-        rect_points = ((in_range(rect_corners[..., 0], rect_corners[..., 1]) & in_range(rect_corners[..., 1], rect_corners[..., 2])))
+        rect_points = (in_range(rect_corners[..., 0], rect_corners[..., 1]) & in_range(rect_corners[..., 1], rect_corners[..., 2]))
         num_pixels = rect_points.sum(1)
         self.subframe_sizes = sizes
         si = self.inds#, 0, 1)
@@ -276,8 +288,7 @@ class Camera(Mob):
     def get_corner_pixels(self):
         b = unsquish(self.screen.basis, -1, 3)
         return self.screen.location + b[..., 0, :] * self.corner_x_coords + b[..., 1, :] * self.corner_y_coords
-        self.location, camera.screen.location, camera.screen.basis
-        return self.corner_pixels + self.location + self.get_forward_direction() * self.screen_distance
+        # return self.corner_pixels + self.location + self.get_forward_direction() * self.screen_distance
 
     def get_screen(self):
         return unsquish(squish(self.screen_offsets, 0, 1) + self.location + self.get_forward_direction() * self.screen_distance, 1, self.screen_offsets.shape[1])

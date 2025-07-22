@@ -1,10 +1,19 @@
+from __future__ import annotations
+
 import torch
 
 from algan.constants.color import BLUE
-from algan.defaults.device_defaults import DEFAULT_RENDER_DEVICE, DEFAULT_DEVICE
+from algan.defaults.device_defaults import DEFAULT_DEVICE, DEFAULT_RENDER_DEVICE
 from algan.rendering.primitives.primitive import RenderPrimitive
-from algan.utils.tensor_utils import broadcast_all
-from algan.utils.tensor_utils import dot_product, squish, broadcast_gather, expand_as_left, unsquish, cast_to_tensor
+from algan.utils.tensor_utils import (
+    broadcast_all,
+    broadcast_gather,
+    cast_to_tensor,
+    dot_product,
+    expand_as_left,
+    squish,
+    unsquish,
+)
 
 
 def get_bary_coordinates(triangle_corners, fragment_x, fragment_y, aa_offsets):
@@ -29,9 +38,9 @@ def get_bary_coordinates(triangle_corners, fragment_x, fragment_y, aa_offsets):
     return torch.stack([get_coords(_) for _ in aa_offsets])
 
 
-def interpolate_triangle_corners(self, interpolation_coord, property):
+def interpolate_triangle_corners(self, interpolation_coord, property_):
     ws = interpolation_coord
-    x = property
+    x = property_
     out = self.get_tensor([*x.shape[:-2], x.shape[-1]])
     out[:] = 0
     for i in range(ws.shape[-2]):
@@ -75,8 +84,8 @@ class TrianglePrimitive(RenderPrimitive):
     def get_interpolation_coordinates(self, vertex_corners, fragment_x, fragment_y, aa_offsets, repeats_inds):
         return get_bary_coordinates(self.expand_verts_to_frags(vertex_corners, repeats_inds.unsqueeze(-1), -3), fragment_x, fragment_y, aa_offsets)
 
-    def interpolate_property(self, interpolation_coord, property, repeats_inds):
-        return interpolate_triangle_corners(self, interpolation_coord, self.expand_verts_to_frags(property, repeats_inds.unsqueeze(-1), -3))
+    def interpolate_property(self, interpolation_coord, property_, repeats_inds):
+        return interpolate_triangle_corners(self, interpolation_coord, self.expand_verts_to_frags(property_, repeats_inds.unsqueeze(-1), -3))
 
 
 def get_tangents(x):
@@ -132,9 +141,9 @@ class PolygonPrimitive(RenderPrimitive):
 
         return get_signed_distance(points)
 
-    def interpolate_property(self, interpolation_coord, property, repeats_inds):
+    def interpolate_property(self, interpolation_coord, property_, repeats_inds):
         ws = interpolation_coord
-        x = property
+        x = property_
         x = self.expand_verts_to_frags(x, repeats_inds.unsqueeze(-1), -3)
         out = self.get_tensor([*x.shape[:-2], x.shape[-1]])
         out[:] = 0
