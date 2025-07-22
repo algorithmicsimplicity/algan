@@ -156,6 +156,7 @@ extend-exclude = [
   "build",
   "buck-out",
   "media",
+  "algan/external_libraries",
 ]
 fix = true
 
@@ -191,6 +192,7 @@ ignore = [
   # due to the import * used in manim
   "F403",
   "F405",
+  "F841",
   # Exception too broad (this would require lots of changes + re.escape) for little benefit
   "PT011",
   # as recommended by https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
