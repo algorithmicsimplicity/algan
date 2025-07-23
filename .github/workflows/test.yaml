@@ -34,7 +34,7 @@ jobs:
 
       - name: Run tests
         run: |
-              uvx pytest 
+              pytest 
 
       # - name: Upload coverage to Codecov
       #   uses: codecov/codecov-action@v5
