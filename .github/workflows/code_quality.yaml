@@ -5,8 +5,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      - run: uv lock 
+      - uses: ./.github/actions/install-uv
+      - run: uv lock
   linting:
       name: Ruff Lint
       runs-on: ubuntu-latest
