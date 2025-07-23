@@ -99,7 +99,7 @@ exclude = [
 
 [tool.pytest.ini_options]
 markers = "slow: Mark the test as slow. Can be skipped with --skip_slow"
-addopts = "python3 -m pytest -n 1 --dist=loadgroup --cov=deepinv --junitxml=junit.xml -o junit_family=legacy -v"
+addopts = "uvx pytest -n 1 --dist=loadgroup --cov=deepinv --junitxml=junit.xml -o junit_family=legacy -v"
 
 [tool.isort]
 profile = "black"
