@@ -1,0 +1,11 @@
+name: Install dependencies
+description: |
+  Installs project dependencies using uv.
+  ⚠️ Requires uv to be installed first — use `install-uv` before this.
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install project with dev extras
+      run: uv pip install -e .[dev]
+      shell: bash
