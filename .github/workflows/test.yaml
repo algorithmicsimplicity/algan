@@ -34,11 +34,11 @@ jobs:
 
       - name: Run tests
         run: |
-              uvx pytest --cov=algan --cov-report=xml
+              uvx pytest 
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+      # - name: Upload coverage to Codecov
+      #   uses: codecov/codecov-action@v5
 
-      - name: Upload test results to Codecov
-        if: ${{ !cancelled() }}
-        uses: codecov/test-results-action@v1
+      # - name: Upload test results to Codecov
+      #   if: ${{ !cancelled() }}
+      #   uses: codecov/test-results-action@v1
