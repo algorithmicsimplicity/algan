@@ -34,7 +34,7 @@ jobs:
 
       - name: Run tests
         run: |
-          uvx pytest -n 2 --dist=loadgroup --cov=algan --junitxml=junit.xml -o junit_family=legacy -v
+          uvx pytest
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
