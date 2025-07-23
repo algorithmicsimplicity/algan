@@ -49,7 +49,10 @@ def test_sphere():
 
 
 def test_surface():
-    x = Surface(lambda x: torch.cat((x, torch.zeros_like(x[...,:1])), -1), checkered_color=PURE_GREEN).spawn()
+    x = Surface(
+        lambda x: torch.cat((x, torch.zeros_like(x[..., :1])), -1),
+        checkered_color=PURE_GREEN,
+    ).spawn()
     x.move(RIGHT)
     x.rotate(180, RIGHT)
 
