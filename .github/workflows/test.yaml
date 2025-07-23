@@ -32,6 +32,13 @@ jobs:
       - name: Install repo and dev dependencies
         uses: ./.github/actions/install-deps
 
+      # debug
+      - name: Show pytest path and plugins
+        run: |
+          uvx which pytest
+          uvx pytest --version
+          uvx pytest --plugins || true
+          
       - name: Run tests
         run: |
           uvx pytest
