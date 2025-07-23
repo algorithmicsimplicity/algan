@@ -52,7 +52,7 @@ def test_multi():
 
 
 def test_prespawn():
-    with AnimationContext(prevent_spawn=True):
+    with AnimationContext(spawn_at_end=True):
         x = get_mob()
     for _ in range(10):
         x.move(RIGHT / 10)
