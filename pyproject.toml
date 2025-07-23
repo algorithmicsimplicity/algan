@@ -57,7 +57,7 @@ homepage = "https://github.com/algorithmicsimplicity/algan"
 "X / Twitter" = "https://x.com/algorithmicsimplicity"
 "Discord" = "https://discord.gg/NvarFmvXKm"
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "parameterized>=0.9.0",
     "furo>=2024.8.6",
