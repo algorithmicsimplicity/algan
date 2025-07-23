@@ -32,15 +32,9 @@ jobs:
       - name: Install repo and dev dependencies
         uses: ./.github/actions/install-deps
 
-      # debug
-      - name: Show pytest path and plugins
-        run: |
-          uvx pytest --version
-          uvx pytest --plugins || true
-          
       - name: Run tests
         run: |
-          uvx pytest
+              uvx pytest --cov=algan --cov-report=xml
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
