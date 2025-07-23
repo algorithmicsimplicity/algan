@@ -64,7 +64,6 @@ dev = [
     "gitpython>=3.1.44",
     "matplotlib>=3.9.4",
     "myst-parser>=3.0.1",
-    "pre-commit>=4.1.0",
     "pygithub>=2.5.0",
     "pytest-cov>=6.0.0",
     "pytest-xdist>=2.2,<3.0",
