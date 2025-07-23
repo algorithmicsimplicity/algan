@@ -20,6 +20,10 @@ jobs:
       - name: Install uv
         uses: ./.github/actions/install-uv
 
+      - name: Create venv
+        run: uv venv
+        shell: bash
+
       - name: Install repo and dev dependencies
         uses: ./.github/actions/install-deps
 
