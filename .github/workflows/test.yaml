@@ -28,27 +28,12 @@ jobs:
       - name: Create venv
         run: uv venv
 
-      - name: Activate venv
-        run: echo "VIRTUAL_ENV=$(pwd)/.venv" >> $GITHUB_ENV
-
-      - name: Add venv to PATH
-        run: echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
-
-      - name: Install project with dev extras
-        run: uv pip install -e .[dev]
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
     
       # Debug
-      - name: Show Python version
-        run: python --version
-
-      - name: Show pip version
-        run: pip --version
-
-      - name: Show installed packages
-        run: pip list
-        
       - name: Run tests
-        run: pytest -n 1
+        run: uv run pytest -n 1
 
       # - name: Upload coverage to Codecov
       #   uses: codecov/codecov-action@v5
