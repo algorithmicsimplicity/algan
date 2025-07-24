@@ -34,11 +34,21 @@ jobs:
       - name: Add venv to PATH
         run: echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
 
-      - name: Install repo and dev dependencies
-        uses: ./.github/actions/install-deps
+      - name: Install project with dev extras
+        run: uv pip install -e .[dev]
+    
+      # Debug
+      - name: Show Python version
+        run: python --version
 
+      - name: Show pip version
+        run: pip --version
+
+      - name: Show installed packages
+        run: pip list
+        
       - name: Run tests
-        run: pytest 
+        run: pytest -n 1
 
       # - name: Upload coverage to Codecov
       #   uses: codecov/codecov-action@v5
