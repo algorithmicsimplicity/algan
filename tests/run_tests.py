@@ -7,16 +7,20 @@ import shutil
 from unittest import TestCase
 from parameterized import parameterized
 
-from algan import PREVIEW, HD, RENDERING_DEFAULTS, STYLE_DEFAULTS, COMPUTING_DEFAULTS
+from algan import PREVIEW, HD, RENDERING_DEFAULTS, STYLE_DEFAULTS, COMPUTING_DEFAULTS, DIRECTORY_DEFAULTS
 
 test_file_dir = 'test_files'
 test_files = [[f] for f in os.listdir(test_file_dir) if f.endswith('.py')]
+
+current_file_path = os.path.abspath(__file__)
+cd = os.path.dirname(current_file_path)
 
 rendering_device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 STYLE_DEFAULTS.fade_out_on_scene_end = True
 RENDERING_DEFAULTS.settings = PREVIEW
 COMPUTING_DEFAULTS.render_device = torch.device(rendering_device)
+DIRECTORY_DEFAULTS.base_directory = cd
 
 class TestOverseer(TestCase):
     def setUp(self):
@@ -29,8 +33,9 @@ class TestOverseer(TestCase):
         module_name = f'{test_file_dir}.{module_name}'
 
         importlib.import_module(module_name)
-        test_output_dir = os.path.join('algan_outputs', module_name)
-        expected_output_dir = os.path.join(f'expected_outputs_{rendering_device}', module_name)
+
+        test_output_dir = os.path.join(cd, 'algan_outputs', module_name)
+        expected_output_dir = os.path.join(cd, f'expected_outputs_{rendering_device}', module_name)
         if os.path.exists(expected_output_dir):
             for f in os.listdir(expected_output_dir):
                 if not os.path.exists(os.path.join(test_output_dir, f)):
