@@ -1,5 +1,85 @@
 import torch
 import torch.nn.functional as F
+import torch.fft
+
+
+def fft_conv2d(input_tensor, kernel, padding='same'):
+    """
+    Perform 2D convolution using FFT for better performance with large kernels.
+    
+    Args:
+        input_tensor: Input tensor of shape (C, H, W)
+        kernel: Convolution kernel of shape (C, Kh, Kw) 
+        padding: Padding mode ('same' or 'valid')
+    
+    Returns:
+        Convolved tensor
+    """
+    C, H, W = input_tensor.shape
+    C_k, Kh, Kw = kernel.shape
+    
+    assert C == C_k, "Number of channels must match between input and kernel"
+    
+    # Calculate output size and padding
+    if padding == 'same':
+        pad_h = Kh // 2
+        pad_w = Kw // 2
+        out_h, out_w = H, W
+    else:  # 'valid'
+        pad_h = pad_w = 0
+        out_h, out_w = H - Kh + 1, W - Kw + 1
+
+    # Calculate FFT size (next power of 2 for efficiency)
+    fft_h = 1 << (H + Kh - 1).bit_length()
+    fft_w = 1 << (W + Kw - 1).bit_length()
+    
+    # Pad input and kernel to FFT size
+    input_padded = F.pad(input_tensor, (0, fft_w - W, 0, fft_h - H))
+    kernel_padded = F.pad(kernel, (0, fft_w - Kw, 0, fft_h - Kh))
+    
+    # Perform FFT
+    input_fft = torch.fft.fft2(input_padded, dim=(-2, -1))
+    kernel_fft = torch.fft.fft2(kernel_padded, dim=(-2, -1))
+    
+    # Element-wise multiplication in frequency domain
+    result_fft = input_fft * kernel_fft
+    
+    # Inverse FFT
+    result = torch.fft.ifft2(result_fft, dim=(-2, -1)).real
+    
+    # Extract the valid convolution result
+    if padding == 'same':
+        # Center crop to original size
+        pad_top = (Kh - 1) // 2
+        pad_left = (Kw - 1) // 2
+        result = result[:, pad_top:pad_top + H, pad_left:pad_left + W]
+    else:  # 'valid'
+        result = result[:, :out_h, :out_w]
+    
+    return result
+
+
+def gaussian_kernel_2d(kernel_size, sigma, device):
+    """
+    Create a 2D Gaussian kernel.
+    
+    Args:
+        kernel_size: Size of the kernel (odd number)
+        sigma: Standard deviation of the Gaussian
+        device: Device to create the kernel on
+    
+    Returns:
+        2D Gaussian kernel tensor
+    """
+    # Create 1D Gaussian
+    x = torch.linspace(-(kernel_size - 1) / 2, (kernel_size - 1) / 2, kernel_size, device=device)
+    gauss_1d = torch.exp(-0.5 * (x / sigma) ** 2)
+    gauss_1d = gauss_1d / gauss_1d.sum()
+    
+    # Create 2D kernel by outer product
+    kernel_2d = gauss_1d[:, None] * gauss_1d[None, :]
+    
+    return kernel_2d
 
 
 #TODO fix up this code
@@ -175,13 +255,17 @@ def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=
 
     color = color.permute(-1, 0, 1)
     orig_shape = color.shape[-2:]
+
+    # Downsample for computational efficiency.
     color = F.interpolate(color.unsqueeze(0), scale_factor=1 / scale_factor, mode='bilinear').squeeze(0)
 
+    # Apply the gaussian blur convolutional filter num_iteration times
     for i in range(num_iterations):
         color = F.conv2d(color, filter_horizontal, padding=(0, p), groups=color.shape[0])
         color = F.conv2d(color, filter_vertical, padding=(p, 0), groups=color.shape[0])
 
     color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode='bilinear').squeeze(0)
+
     color = color.permute(1, 2, 0)
 
     out = x.clone()
@@ -212,4 +296,60 @@ def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=
     #w = 1/(1+glow)
     #out = x[...,:-1] * w + (1-w) * color
 
+    return (out * 255).clamp_(min=0, max=255).to(xdtype)
+
+
+def bloom_filter_fft(x, num_iterations=3, kernel_size=51, strength=10, scale_factor=8):
+    """
+    FFT-based bloom filter for better performance with large kernel sizes.
+    
+    Args:
+        x: Input image tensor with shape (..., H, W, C) where C includes glow channel
+        num_iterations: Number of blur iterations
+        kernel_size: Size of the Gaussian blur kernel
+        strength: Glow intensity multiplier
+        scale_factor: Downsampling factor for efficiency
+    
+    Returns:
+        Bloomed image tensor with same shape as input
+    """
+    scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
+    
+    xdtype = x.dtype
+    
+    x = x.to(torch.float) / 255
+    color_channels = [*range(3), 4] if x.shape[-1] == 5 else [*range(3)]
+    color = x[..., color_channels]
+    glow = x[..., 3:4]
+    
+    color = color * glow * strength
+    
+    # Create 2D Gaussian kernel
+    sigma = kernel_size / 4.0  # Standard deviation (kernel_size covers ~6 sigmas)
+    kernel_2d = gaussian_kernel_2d(kernel_size, sigma, x.device)
+    
+    # Prepare for convolution: (C, H, W) format
+    color = color.permute(-1, 0, 1)
+    orig_shape = color.shape[-2:]
+    
+    # Downsample for computational efficiency
+    color = F.interpolate(color.unsqueeze(0), scale_factor=1 / scale_factor, mode='bilinear').squeeze(0)
+    
+    # Expand kernel for each channel
+    kernel_expanded = kernel_2d.unsqueeze(0).expand(color.shape[0], -1, -1)
+    
+    # Apply FFT-based convolution num_iterations times
+    for i in range(num_iterations):
+        color = fft_conv2d(color, kernel_expanded, padding='same')
+    
+    # Upsample back to original resolution
+    color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode='bilinear').squeeze(0)
+    
+    # Convert back to (H, W, C) format
+    color = color.permute(1, 2, 0)
+    
+    # Combine with original image
+    out = x.clone()
+    out[..., color_channels] += color
+    
     return (out * 255).clamp_(min=0, max=255).to(xdtype)
