@@ -81,6 +81,8 @@ class BezierCircuitCubic(Renderable):
         self.register_attrs_as_animatable(['border_width', 'border_color', 'portion_of_curve_drawn'], BezierCircuitCubic)
         self.filled = filled
         self.empty = empty
+        if self.empty:
+            self.color = self.color.set_opacity(0)
 
         texture_triangle_vertices = self.location.squeeze(0)
         if add_texture_grid:
@@ -97,7 +99,7 @@ class BezierCircuitCubic(Renderable):
 
             #control_points = torch.cat((control_points, texture_triangle_vertices), -2)
         self.border_width = cast_to_tensor(border_width)
-        self.border_color = cast_to_tensor(border_color)
+        self.border_color = cast_to_tensor(border_color if not self.empty else border_color.set_opacity(0))
         kwargs['color'] = self.color if self.filled else self.border_color
         with Off():
             self.texture_points = Mob(texture_triangle_vertices, **kwargs)

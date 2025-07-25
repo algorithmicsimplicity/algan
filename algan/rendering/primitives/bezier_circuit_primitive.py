@@ -226,10 +226,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         self.num_segments_per_circuit = num_segments_per_circuit
         border_color, opacity, glow = broadcast_all([border_color, opacity, glow], ignored_dims=[-1])
         self.colors = colors.clone()
-        try:
-            self.colors[..., -2:-1] += glow.unsqueeze(-2)
-        except:
-            self.colors[..., -2:-1] += glow.unsqueeze(-2)
+        self.colors[..., -2:-1] += glow.unsqueeze(-2)
         self.colors[..., -1:] *= opacity.unsqueeze(-2)
         self.normals = normals
         self.border_width, self.border_color, self.portion_of_curve_drawn = border_width, border_color, portion_of_curve_drawn
@@ -797,7 +794,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         inds = inds[m]
         #unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
 
-        mob_center_for_frags = self.expand_verts_to_frags(squish(mob_center, 0, 1).squeeze(-2), object_to_fragment_gather_inds)
+        mob_center_for_frags = self.expand_verts_to_frags(squish(mob_center, 0, 1), object_to_fragment_gather_inds)
         normals_for_frags = self.expand_verts_to_frags(squish(normals,0,1), object_to_fragment_gather_inds)
 
         def expo(x, select=True, gather_inds=object_to_fragment_gather_inds):

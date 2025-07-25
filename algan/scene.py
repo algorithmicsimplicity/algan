@@ -288,10 +288,7 @@ class Scene:
 
         primitive_collections = []
         for _, (primitive_class, primitives) in grouped_primitives.items():
-            try:
-                primitive_collections.append(primitive_class(triangle_collection=primitives))
-            except:
-                primitive_collections.append(primitive_class(triangle_collection=primitives))
+            primitive_collections.append(primitive_class(triangle_collection=primitives))
             primitive_collections[-1].memory = self.memory
             primitive_collections[-1].scene = self
 

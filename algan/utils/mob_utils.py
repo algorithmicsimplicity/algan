@@ -20,10 +20,7 @@ def batch_mobs(mobs, parent_batch_sizes = None):
             parent_batch_sizes = torch.tensor((len(mobs),), dtype=torch.long)
         i = 0
         for j in range(len(parent_batch_sizes)):
-            try:
-                pbs.append(sum(batch_sizes[i:i+parent_batch_sizes[j]]).view(-1) if parent_batch_sizes[j] > 0 else torch.zeros((1,), dtype=torch.long))
-            except AttributeError:
-                pbs.append(sum(batch_sizes[i:i+parent_batch_sizes[j]]).view(-1) if parent_batch_sizes[j] > 0 else torch.zeros((1,), dtype=torch.long))
+            pbs.append(sum(batch_sizes[i:i+parent_batch_sizes[j]]).view(-1) if parent_batch_sizes[j] > 0 else torch.zeros((1,), dtype=torch.long))
 
             i += parent_batch_sizes[j]
 
@@ -32,10 +29,7 @@ def batch_mobs(mobs, parent_batch_sizes = None):
 
         components = []
         for i in range(len(batch_mob.components)):
-            try:
-                components.append(batch_mobs([m.components[i] for m in mobs], torch.ones((child_pbs.sum(),), dtype=torch.long)))
-            except:
-                components.append(batch_mobs([m.components[i] for m in mobs], torch.ones((child_pbs.sum(),), dtype=torch.long)))
+            components.append(batch_mobs([m.components[i] for m in mobs], torch.ones((child_pbs.sum(),), dtype=torch.long)))
 
         batch_mob.components = components
         for i, c in enumerate(mobs[0].components):
@@ -49,9 +43,6 @@ def batch_mobs(mobs, parent_batch_sizes = None):
             components.append(child)
 
         batch_mob.add_children(components)
-        for c in batch_mob.children:
-            if batch_mob.location.shape[-2] != len(c.parent_batch_sizes) or c.parent_batch_sizes.sum() != c.location.shape[-2]:
-                print(' ')
 
         return batch_mob
 

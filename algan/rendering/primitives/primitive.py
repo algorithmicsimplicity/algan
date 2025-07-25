@@ -449,13 +449,14 @@ class RenderPrimitive:
 
         pointer = self.memory.current_pointer
         bounding_box_widths = self.expand_verts_to_frags(bounding_box_sizes[...,:1], repeats_inds, -2)#.clamp_min_(1)
+        bounding_box_widths.clamp_min_(1)
         fragment_inds_float = self.get_tensor(bounding_box_widths.shape)
         fragment_x = self.get_tensor(bounding_box_widths.shape)
         fragment_y = self.get_tensor(bounding_box_widths.shape)
         bounding_corners_rep = self.expand_verts_to_frags(bounding_corners[...,0,:], repeats_inds, -2)
         #fragment_x = self.get_tensor(bounding_box_widths.shape, torch.long)
         # fragment_x[:] = (fragment_inds % bounding_box_widths) + bounding_corners_rep[...,:1]
-        torch.remainder(fragment_inds, bounding_box_widths, out=fragment_x)
+        torch.remainder(fragment_inds, bounding_box_widths, out=fragment_x,)
         torch.add(fragment_x, bounding_corners_rep[...,:1], out=fragment_x)
         #fragment_y = self.get_tensor(bounding_box_widths.shape, torch.long)
         # fragment_y[:] = (fragment_inds // bounding_box_widths) + bounding_corners_rep[...,1:]

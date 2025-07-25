@@ -1,3 +1,4 @@
+import torch
 import cv2
 import importlib
 import numpy as np
@@ -6,13 +7,16 @@ import shutil
 from unittest import TestCase
 from parameterized import parameterized
 
-from algan import PREVIEW, RENDERING_DEFAULTS, SceneManager, STYLE_DEFAULTS
+from algan import PREVIEW, HD, RENDERING_DEFAULTS, SceneManager, STYLE_DEFAULTS, COMPUTING_DEFAULTS
 
 test_file_dir = 'test_files'
 test_files = [[f] for f in os.listdir(test_file_dir) if f.endswith('.py')]
 
+rendering_device = 'cuda'
+
 STYLE_DEFAULTS.fade_out_on_scene_end = True
-RENDERING_DEFAULTS.settings = PREVIEW
+RENDERING_DEFAULTS.settings = HD
+COMPUTING_DEFAULTS.render_device = torch.device(rendering_device)
 
 class TestOverseer(TestCase):
     def setUp(self):
@@ -26,7 +30,7 @@ class TestOverseer(TestCase):
 
         importlib.import_module(module_name)
         test_output_dir = os.path.join('algan_outputs', module_name)
-        expected_output_dir = os.path.join('expected_outputs', module_name)
+        expected_output_dir = os.path.join(f'expected_outputs_{rendering_device}', module_name)
         if os.path.exists(expected_output_dir):
             for f in os.listdir(expected_output_dir):
                 if not os.path.exists(os.path.join(test_output_dir, f)):
