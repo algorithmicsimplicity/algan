@@ -1,7 +1,10 @@
 from collections.abc import Iterable, Sequence
 
 from algan.external_libraries.manim import Tex
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup, VMobject
+from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
+    VGroup,
+    VMobject,
+)
 import numpy as np
 
 
@@ -55,7 +58,7 @@ class Paragraph(VGroup):
         self.consider_spaces_as_chars = kwargs.get("disable_ligatures", False)
         super().__init__()
 
-        lines_str = "\n".join([f'${_}$' for _ in list(text)])
+        lines_str = "\n".join([f"${_}$" for _ in list(text)])
         self.lines_text = Tex(lines_str, line_spacing=line_spacing, **kwargs)
         lines_str_list = lines_str.split("\n")
         self.chars = self._gen_chars(lines_str_list)

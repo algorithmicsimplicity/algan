@@ -50,9 +50,20 @@ import numpy as np
 from typing_extensions import Self
 
 from algan.external_libraries.manim.constants import *
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup, VMobject
-from algan.external_libraries.manim.utils.color import BLACK, BLUE, RED, WHITE, ParsableManimColor
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
+from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
+    VGroup,
+    VMobject,
+)
+from algan.external_libraries.manim.utils.color import (
+    BLACK,
+    BLUE,
+    RED,
+    WHITE,
+    ParsableManimColor,
+)
 from algan.external_libraries.manim.utils.iterables import adjacent_pairs
 from algan.external_libraries.manim.utils.space_ops import (
     angle_of_vector,
@@ -68,7 +79,10 @@ if TYPE_CHECKING:
 
     import algan.external_libraries.manim.mobject.geometry.tips as tips
     from algan.external_libraries.manim.mobject.mobject import Mobject
-    from algan.external_libraries.manim.mobject.text.tex_mobject import SingleStringMathTex, Tex
+    from algan.external_libraries.manim.mobject.text.tex_mobject import (
+        SingleStringMathTex,
+        Tex,
+    )
     from algan.external_libraries.manim.mobject.text.text_mobject import Text
     from algan.external_libraries.manim.typing import (
         Point3D,
@@ -154,7 +168,9 @@ class TipableVMobject(VMobject, metaclass=ConvertToOpenGL):
         """Returns a tip that has been stylistically configured,
         but has not yet been given a position in space.
         """
-        from algan.external_libraries.manim.mobject.geometry.tips import ArrowTriangleFilledTip
+        from algan.external_libraries.manim.mobject.geometry.tips import (
+            ArrowTriangleFilledTip,
+        )
 
         style: dict[str, Any] = {}
 

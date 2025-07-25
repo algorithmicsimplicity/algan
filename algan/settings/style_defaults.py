@@ -2,7 +2,8 @@ from dataclasses import dataclass
 
 from algan.constants.color import *
 
-__all__ = ['STYLE_DEFAULTS']
+__all__ = ["STYLE_DEFAULTS"]
+
 
 @dataclass
 class StyleDefaults:
@@ -11,5 +12,6 @@ class StyleDefaults:
     text_color = WHITE
     buffer = 0.6
     fade_out_on_scene_end = False
+
 
 STYLE_DEFAULTS = StyleDefaults()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-#import moderngl
+# import moderngl
 import numpy as np
 from PIL import Image
 
@@ -12,7 +12,10 @@ from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLM
 from algan.external_libraries.manim.utils.bezier import integer_interpolate, interpolate
 from algan.external_libraries.manim.utils.color import *
 from algan.external_libraries.manim.utils.config_ops import _Data, _Uniforms
-from algan.external_libraries.manim.utils.images import change_to_rgba_array, get_full_raster_image_path
+from algan.external_libraries.manim.utils.images import (
+    change_to_rgba_array,
+    get_full_raster_image_path,
+)
 from algan.external_libraries.manim.utils.iterables import listify
 from algan.external_libraries.manim.utils.space_ops import normalize_along_axis
 

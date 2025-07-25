@@ -21,6 +21,7 @@ class ManimMob(BezierCircuitCubic):
         Passed to :class:`~.BezierCircuitCubic` .
 
     """
+
     def __init__(self, manim_mob, batch=True, **kwargs):
         manim_scale_factor = 1
         children = []
@@ -30,8 +31,10 @@ class ManimMob(BezierCircuitCubic):
                 children.append(mob)
                 continue
             if submob.n_points_per_curve != 4 or submob.n_points_per_cubic_curve != 4:
-                raise NotImplementedError('ManimMob does not support Mobjects which do not have n_points_per_curve == 4')
-            #if isinstance(submob, VectorizedPoint):# or isinstance(submob, ThreeDVMobject):
+                raise NotImplementedError(
+                    "ManimMob does not support Mobjects which do not have n_points_per_curve == 4"
+                )
+            # if isinstance(submob, VectorizedPoint):# or isinstance(submob, ThreeDVMobject):
             #    continue
             children.append(ManimMob(submob, batch=False, **kwargs))
 
@@ -43,7 +46,9 @@ class ManimMob(BezierCircuitCubic):
         else:
             control_points = torch.from_numpy(manim_mob.points)
             if len(control_points) == 1:
-                control_points = control_points.expand(*([-1] * (control_points.dim() - 2)), 4, -1)
+                control_points = control_points.expand(
+                    *([-1] * (control_points.dim() - 2)), 4, -1
+                )
                 empty = True
             control_points = unsquish(control_points.float(), -2, 4)
 
@@ -54,11 +59,22 @@ class ManimMob(BezierCircuitCubic):
             if opacity is not None:
                 a = a * opacity
             return Color(rgb, glow=0, opacity=a)
-        super().__init__(control_points * manim_scale_factor, color=convert_manim_color(manim_mob.fill_color, opacity=manim_mob.fill_opacity), opacity=1,
-                         border_color=convert_manim_color(manim_mob.stroke_color, manim_mob.stroke_opacity),
-                         border_width=manim_mob.stroke_width,
-                         filled=(not hasattr(manim_mob, 'end')) and (manim_mob.fill_opacity is not None and manim_mob.fill_opacity > 1e-5),
-                         empty=empty, **kwargs)
+
+        super().__init__(
+            control_points * manim_scale_factor,
+            color=convert_manim_color(
+                manim_mob.fill_color, opacity=manim_mob.fill_opacity
+            ),
+            opacity=1,
+            border_color=convert_manim_color(
+                manim_mob.stroke_color, manim_mob.stroke_opacity
+            ),
+            border_width=manim_mob.stroke_width,
+            filled=(not hasattr(manim_mob, "end"))
+            and (manim_mob.fill_opacity is not None and manim_mob.fill_opacity > 1e-5),
+            empty=empty,
+            **kwargs,
+        )
         if len(children) > 0:
             self.add_children(batch_mobs(children) if batch else Group(children))
         self.submobjects = children

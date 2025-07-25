@@ -21,7 +21,13 @@ from algan.external_libraries.manim.mobject.geometry.polygram import RoundedRect
 from algan.external_libraries.manim.mobject.mobject import Mobject
 from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
 from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup
-from algan.external_libraries.manim.utils.color import BLACK, RED, YELLOW, ManimColor, ParsableManimColor
+from algan.external_libraries.manim.utils.color import (
+    BLACK,
+    RED,
+    YELLOW,
+    ManimColor,
+    ParsableManimColor,
+)
 
 
 class SurroundingRectangle(RoundedRectangle):

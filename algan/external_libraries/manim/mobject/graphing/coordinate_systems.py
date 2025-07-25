@@ -23,12 +23,21 @@ from algan.external_libraries.manim import config
 from algan.external_libraries.manim.constants import *
 from algan.external_libraries.manim.mobject.geometry.arc import Circle, Dot
 from algan.external_libraries.manim.mobject.geometry.line import Arrow, DashedLine, Line
-from algan.external_libraries.manim.mobject.geometry.polygram import Polygon, Rectangle, RegularPolygon
-from algan.external_libraries.manim.mobject.graphing.functions import ImplicitFunction, ParametricFunction
+from algan.external_libraries.manim.mobject.geometry.polygram import (
+    Polygon,
+    Rectangle,
+    RegularPolygon,
+)
+from algan.external_libraries.manim.mobject.graphing.functions import (
+    ImplicitFunction,
+    ParametricFunction,
+)
 from algan.external_libraries.manim.mobject.graphing.number_line import NumberLine
 from algan.external_libraries.manim.mobject.graphing.scale import LinearBase
 from algan.external_libraries.manim.mobject.mobject import Mobject
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.opengl.opengl_surface import OpenGLSurface
 from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex
 from algan.external_libraries.manim.mobject.three_d.three_dimensions import Surface
@@ -51,7 +60,10 @@ from algan.external_libraries.manim.utils.color import (
     interpolate_color,
     invert_color,
 )
-from algan.external_libraries.manim.utils.config_ops import merge_dicts_recursively, update_dict_recursively
+from algan.external_libraries.manim.utils.config_ops import (
+    merge_dicts_recursively,
+    update_dict_recursively,
+)
 from algan.external_libraries.manim.utils.simple_functions import binary_search
 from algan.external_libraries.manim.utils.space_ops import angle_of_vector
 

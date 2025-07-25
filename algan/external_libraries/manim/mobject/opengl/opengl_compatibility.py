@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from abc import ABCMeta
 
-#from algan.external_libraries.manim import config
-#from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
-#from algan.external_libraries.manim.mobject.opengl.opengl_point_cloud_mobject import OpenGLPMobject
-#from algan.external_libraries.manim.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
+# from algan.external_libraries.manim import config
+# from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
+# from algan.external_libraries.manim.mobject.opengl.opengl_point_cloud_mobject import OpenGLPMobject
+# from algan.external_libraries.manim.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
 
 from ...constants import RendererType
 

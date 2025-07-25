@@ -13,7 +13,9 @@ from isosurfaces import plot_isoline
 
 from algan.external_libraries.manim import config
 from algan.external_libraries.manim.mobject.graphing.scale import LinearBase, _ScaleBase
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.types.vectorized_mobject import VMobject
 
 if TYPE_CHECKING:

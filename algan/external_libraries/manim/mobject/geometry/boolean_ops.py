@@ -9,13 +9,19 @@ from pathops import Path as SkiaPath
 from pathops import PathVerb, difference, intersection, union, xor
 
 from algan.external_libraries.manim import config
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.types.vectorized_mobject import VMobject
 
 if TYPE_CHECKING:
     from typing import Any
 
-    from algan.external_libraries.manim.typing import Point2DLike_Array, Point3D_Array, Point3DLike_Array
+    from algan.external_libraries.manim.typing import (
+        Point2DLike_Array,
+        Point3D_Array,
+        Point3DLike_Array,
+    )
 
 from ...constants import RendererType
 

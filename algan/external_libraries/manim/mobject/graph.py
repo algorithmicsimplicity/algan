@@ -26,7 +26,9 @@ if TYPE_CHECKING:
 from algan.external_libraries.manim.mobject.geometry.arc import Dot, LabeledDot
 from algan.external_libraries.manim.mobject.geometry.line import Line
 from algan.external_libraries.manim.mobject.mobject import Mobject, override_animate
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
 from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex
 from algan.external_libraries.manim.mobject.types.vectorized_mobject import VMobject

@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from typing import (Iterable,
-                    List,
-                    Optional)
+from typing import Iterable, List, Optional
 
-from algan.external_libraries.ground.base import (Context,
-                         Orientation)
+from algan.external_libraries.ground.base import Context, Orientation
 from algan.external_libraries.ground.hints import Point
 from reprit.base import generate_repr
 
@@ -21,18 +18,10 @@ class QuadEdge:
     """
 
     @classmethod
-    def from_endpoints(cls,
-                       start: Point,
-                       end: Point,
-                       *,
-                       context: Context) -> QuadEdge:
+    def from_endpoints(cls, start: Point, end: Point, *, context: Context) -> QuadEdge:
         """Creates new edge from endpoints."""
-        result, opposite = (cls(start,
-                                context=context),
-                            cls(end,
-                                context=context))
-        rotated, triple_rotated = (cls(context=context),
-                                   cls(context=context))
+        result, opposite = (cls(start, context=context), cls(end, context=context))
+        rotated, triple_rotated = (cls(context=context), cls(context=context))
         result._left_from_start = result
         opposite._left_from_start = opposite
         rotated._left_from_start = triple_rotated
@@ -103,23 +92,28 @@ class QuadEdge:
         """
         return self._start
 
-    __slots__ = '_context', '_left_from_start', '_rotated', '_start'
+    __slots__ = "_context", "_left_from_start", "_rotated", "_start"
 
-    def __init__(self,
-                 start: Optional[Point] = None,
-                 left_from_start: Optional[QuadEdge] = None,
-                 rotated: Optional[QuadEdge] = None,
-                 *,
-                 context: Context) -> None:
-        (self._context, self._left_from_start, self._rotated,
-         self._start) = context, left_from_start, rotated, start
+    def __init__(
+        self,
+        start: Optional[Point] = None,
+        left_from_start: Optional[QuadEdge] = None,
+        rotated: Optional[QuadEdge] = None,
+        *,
+        context: Context,
+    ) -> None:
+        (self._context, self._left_from_start, self._rotated, self._start) = (
+            context,
+            left_from_start,
+            rotated,
+            start,
+        )
 
     __repr__ = generate_repr(from_endpoints)
 
     def connect(self, other: QuadEdge) -> QuadEdge:
         """Connects the edge with the other."""
-        result = self.from_endpoints(self.end, other.start,
-                                     context=self.context)
+        result = self.from_endpoints(self.end, other.start, context=self.context)
         result.splice(self.left_from_end)
         result.opposite.splice(other)
         return result
@@ -138,10 +132,12 @@ class QuadEdge:
         alpha = self.left_from_start.rotated
         beta = other.left_from_start.rotated
         self._left_from_start, other._left_from_start = (
-            other.left_from_start, self.left_from_start
+            other.left_from_start,
+            self.left_from_start,
         )
         alpha._left_from_start, beta._left_from_start = (
-            beta.left_from_start, alpha.left_from_start
+            beta.left_from_start,
+            alpha.left_from_start,
         )
 
     def swap(self) -> None:
@@ -161,8 +157,7 @@ class QuadEdge:
 
 
 def edge_to_neighbours(edge: QuadEdge) -> List[QuadEdge]:
-    return (list(_edge_to_incidents(edge))
-            + list(_edge_to_incidents(edge.opposite)))
+    return list(_edge_to_incidents(edge)) + list(_edge_to_incidents(edge.opposite))
 
 
 def edges_with_opposites(edges: Iterable[QuadEdge]) -> Iterable[QuadEdge]:
@@ -172,9 +167,7 @@ def edges_with_opposites(edges: Iterable[QuadEdge]) -> Iterable[QuadEdge]:
 
 
 def _edge_to_incidents(edge: QuadEdge) -> Iterable[QuadEdge]:
-    if (edge.orientation_of(edge.right_from_start.end)
-            is Orientation.CLOCKWISE):
+    if edge.orientation_of(edge.right_from_start.end) is Orientation.CLOCKWISE:
         yield edge.right_from_start
-    if (edge.orientation_of(edge.left_from_start.end)
-            is Orientation.COUNTERCLOCKWISE):
+    if edge.orientation_of(edge.left_from_start.end) is Orientation.COUNTERCLOCKWISE:
         yield edge.left_from_start

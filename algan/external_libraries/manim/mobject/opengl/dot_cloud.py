@@ -5,7 +5,9 @@ __all__ = ["TrueDot", "DotCloud"]
 import numpy as np
 
 from algan.external_libraries.manim.constants import ORIGIN, RIGHT, UP
-from algan.external_libraries.manim.mobject.opengl.opengl_point_cloud_mobject import OpenGLPMobject
+from algan.external_libraries.manim.mobject.opengl.opengl_point_cloud_mobject import (
+    OpenGLPMobject,
+)
 from algan.external_libraries.manim.utils.color import YELLOW
 
 

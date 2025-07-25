@@ -11,15 +11,14 @@ class Context:
     def region_signed_area(self):
         return self._region_signed_area
 
-    __slots__ = '_region_signed_area',
+    __slots__ = ("_region_signed_area",)
 
-    def __init__(self,
-                 region_signed_area) -> None:
+    def __init__(self, region_signed_area) -> None:
         self._region_signed_area = region_signed_area
 
-    __repr__ = generate_repr(__init__,
-                             argument_serializer=serializers.complex_,
-                             with_module_name=True)
+    __repr__ = generate_repr(
+        __init__, argument_serializer=serializers.complex_, with_module_name=True
+    )
 
 
 exact_context = Context(exact_region.signed_area)

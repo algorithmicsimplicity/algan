@@ -24,12 +24,24 @@ import numpy as np
 
 from algan.external_libraries.manim.constants import *
 from algan.external_libraries.manim.mobject.geometry.arc import ArcBetweenPoints
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup, VMobject
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
+from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
+    VGroup,
+    VMobject,
+)
 from algan.external_libraries.manim.utils.color import BLUE, WHITE, ParsableManimColor
-from algan.external_libraries.manim.utils.iterables import adjacent_n_tuples, adjacent_pairs
+from algan.external_libraries.manim.utils.iterables import (
+    adjacent_n_tuples,
+    adjacent_pairs,
+)
 from algan.external_libraries.manim.utils.qhull import QuickHull
-from algan.external_libraries.manim.utils.space_ops import angle_between_vectors, normalize, regular_vertices
+from algan.external_libraries.manim.utils.space_ops import (
+    angle_between_vectors,
+    normalize,
+    regular_vertices,
+)
 
 if TYPE_CHECKING:
     from typing import Any, Literal

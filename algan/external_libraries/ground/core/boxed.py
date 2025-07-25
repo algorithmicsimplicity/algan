@@ -1,13 +1,6 @@
-from typing import (Iterable,
-                    Tuple,
-                    Type)
+from typing import Iterable, Tuple, Type
 
-from .hints import (Box,
-                    Contour,
-                    Point,
-                    Polygon,
-                    Scalar,
-                    Segment)
+from .hints import Box, Contour, Point, Polygon, Scalar, Segment
 
 
 def from_contour(contour: Contour, box_cls: Type[Box]) -> Box:
@@ -19,8 +12,9 @@ def from_contours(contours: Iterable[Contour], box_cls: Type[Box]) -> Box:
     contour = next(iterator)
     min_x, max_x, min_y, max_y = _from_points(contour.vertices)
     for contour in iterator:
-        (contour_min_x, contour_max_x, contour_min_y,
-         contour_max_y) = _from_points(contour.vertices)
+        (contour_min_x, contour_max_x, contour_min_y, contour_max_y) = _from_points(
+            contour.vertices
+        )
         if max_x < contour_max_x:
             max_x = contour_max_x
         if contour_min_x < min_x:
@@ -53,8 +47,9 @@ def from_segments(segments: Iterable[Segment], box_cls: Type[Box]) -> Box:
     segment = next(iterator)
     min_x, max_x, min_y, max_y = _from_segment(segment)
     for segment in iterator:
-        (segment_min_x, segment_max_x, segment_min_y,
-         segment_max_y) = _from_segment(segment)
+        (segment_min_x, segment_max_x, segment_min_y, segment_max_y) = _from_segment(
+            segment
+        )
         if max_x < segment_max_x:
             max_x = segment_max_x
         if segment_min_x < min_x:
@@ -66,8 +61,7 @@ def from_segments(segments: Iterable[Segment], box_cls: Type[Box]) -> Box:
     return box_cls(min_x, max_x, min_y, max_y)
 
 
-def _from_points(points: Iterable[Point]
-                 ) -> Tuple[Scalar, Scalar, Scalar, Scalar]:
+def _from_points(points: Iterable[Point]) -> Tuple[Scalar, Scalar, Scalar, Scalar]:
     iterator = iter(points)
     point = next(iterator)
     max_x = min_x = point.x

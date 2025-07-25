@@ -16,7 +16,8 @@ from algan.external_libraries.manim.mobject.geometry.shape_matchers import (
     SurroundingRectangle,
 )
 from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex, Tex
-#from algan.external_libraries.manim.mobject.text.text_mobject import Text
+
+# from algan.external_libraries.manim.mobject.text.text_mobject import Text
 Text = None
 from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup
 from algan.external_libraries.manim.utils.color import WHITE

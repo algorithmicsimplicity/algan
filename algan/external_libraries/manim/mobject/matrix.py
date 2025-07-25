@@ -45,7 +45,9 @@ from collections.abc import Iterable, Sequence
 import numpy as np
 
 from algan.external_libraries.manim.mobject.mobject import Mobject
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.text.numbers import DecimalNumber, Integer
 from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex, Tex
 

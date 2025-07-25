@@ -9,15 +9,14 @@ PointPointPointLocator = QuaternaryPointFunction[Location]
 
 
 class Context:
-    __slots__ = '_point_point_point_test',
+    __slots__ = ("_point_point_point_test",)
 
-    def __init__(self, point_point_point_test: PointPointPointLocator
-                 ) -> None:
+    def __init__(self, point_point_point_test: PointPointPointLocator) -> None:
         self._point_point_point_test = point_point_point_test
 
-    __repr__ = generate_repr(__init__,
-                             argument_serializer=serializers.complex_,
-                             with_module_name=True)
+    __repr__ = generate_repr(
+        __init__, argument_serializer=serializers.complex_, with_module_name=True
+    )
 
     @property
     def point_point_point_locator(self) -> PointPointPointLocator:

@@ -17,7 +17,10 @@ from algan.external_libraries.manim.mobject.mobject import Mobject
 from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
 from algan.external_libraries.manim.mobject.svg.brace import Brace
 from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex, Tex
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup, VMobject
+from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
+    VGroup,
+    VMobject,
+)
 from algan.external_libraries.manim.utils.color import (
     BLUE_E,
     DARK_GREY,

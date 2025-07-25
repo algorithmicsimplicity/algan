@@ -14,7 +14,9 @@ from algan.external_libraries.manim._config import config
 from algan.external_libraries.manim.mobject.geometry.arc import Arc
 from algan.external_libraries.manim.mobject.geometry.line import Line
 from algan.external_libraries.manim.mobject.mobject import Mobject
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex, Tex
 
 from ...constants import *
