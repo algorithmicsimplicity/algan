@@ -7,15 +7,15 @@ import shutil
 from unittest import TestCase
 from parameterized import parameterized
 
-from algan import PREVIEW, HD, RENDERING_DEFAULTS, SceneManager, STYLE_DEFAULTS, COMPUTING_DEFAULTS
+from algan import PREVIEW, HD, RENDERING_DEFAULTS, STYLE_DEFAULTS, COMPUTING_DEFAULTS
 
 test_file_dir = 'test_files'
 test_files = [[f] for f in os.listdir(test_file_dir) if f.endswith('.py')]
 
-rendering_device = 'cuda'
+rendering_device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 STYLE_DEFAULTS.fade_out_on_scene_end = True
-RENDERING_DEFAULTS.settings = HD
+RENDERING_DEFAULTS.settings = PREVIEW
 COMPUTING_DEFAULTS.render_device = torch.device(rendering_device)
 
 class TestOverseer(TestCase):
