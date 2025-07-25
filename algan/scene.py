@@ -251,7 +251,7 @@ class Scene:
         duration = min(duration, COMPUTING_DEFAULTS.max_animate_batch_size)
         while True:
             selected_actors = [_ for _ in primitive_actors if (_.data.spawn_time() <= (start_time_ind + duration)/self.frames_per_second)]
-            mem_used = sum([_.get_memory_used_per_timestep() * duration for _ in selected_actors])
+            mem_used = sum([_.get_memory_used_per_timestep() * 2 * duration for _ in selected_actors])
             if mem_used <= max_mem_used:
                 break
             duration = duration // 2
@@ -276,8 +276,11 @@ class Scene:
                     component.set_state_to_time_t(time_inds)
                 primitive = actor.get_render_primitives()
                 if primitive is not None:
-                    grouped_primitives[primitive.get_batch_identifier()][0] = primitive.__class__
-                    grouped_primitives[primitive.get_batch_identifier()][1].append(primitive)
+                    if not isinstance(primitive, list):
+                        primitive = [primitive]
+                    for p in primitive:
+                        grouped_primitives[p.get_batch_identifier()][0] = p.__class__
+                        grouped_primitives[p.get_batch_identifier()][1].append(p)
             if not (actor == self.camera or actor == self.camera.screen or actor in self.light_sources):
                 actor.reset_state()
                 for component in actor.components:
@@ -285,7 +288,10 @@ class Scene:
 
         primitive_collections = []
         for _, (primitive_class, primitives) in grouped_primitives.items():
-            primitive_collections.append(primitive_class(triangle_collection=primitives))
+            try:
+                primitive_collections.append(primitive_class(triangle_collection=primitives))
+            except:
+                primitive_collections.append(primitive_class(triangle_collection=primitives))
             primitive_collections[-1].memory = self.memory
             primitive_collections[-1].scene = self
 

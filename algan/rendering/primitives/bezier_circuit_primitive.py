@@ -185,9 +185,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             device = COMPUTING_DEFAULTS.render_device
             logger = LoggerManager.instance().set_class('batching')
             logger.log_message(f'{[_.num_segments_per_circuit for _ in triangle_collection]}')
-            self.num_segments_per_circuit = torch.cat([_.num_segments_per_circuit for _ in triangle_collection]).to(device)
-            self.num_segments_per_object = torch.stack([_.num_segments_per_circuit.sum() for _ in triangle_collection]).to(device)
-            logger.log_message(f'np_o: {self.num_segments_per_object}, np_c: {self.num_segments_per_circuit}')
+            #self.num_segments_per_circuit = torch.cat([_.num_segments_per_circuit for _ in triangle_collection]).to(device)
+            self.num_segments_per_object = torch.cat([_.num_segments_per_circuit.view(-1) for _ in triangle_collection]).to(device)
 
             self.num_texture_points = triangle_collection[0].num_texture_points
             self.filled = triangle_collection[0].filled
@@ -205,14 +204,14 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                     for triangle in triangle_collection)))
 
             self.mob_center, self.grid_width, self.grid_height, self.basis1, self.basis2 = (
-                ((torch.stack([(__) for __ in _], 1))).to(device) for _ in
+                ((torch.cat([(__) for __ in _], 1))).to(device) for _ in
                 zip(*(broadcast_all((
                     triangle.mob_center,
                     triangle.grid_height,
                     triangle.grid_width,
                     triangle.basis1,
                     triangle.basis2,
-                ), [-1]) for triangle in triangle_collection)))
+                ), [-2, -1]) for triangle in triangle_collection)))
             #self.border_width = self.border_width[...,0,:1]
             #self.border_color = self.border_color[...,0,:]
             if self.num_texture_points <= 0:
@@ -227,7 +226,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         self.num_segments_per_circuit = num_segments_per_circuit
         border_color, opacity, glow = broadcast_all([border_color, opacity, glow], ignored_dims=[-1])
         self.colors = colors.clone()
-        self.colors[..., -2:-1] += glow.unsqueeze(-2)
+        try:
+            self.colors[..., -2:-1] += glow.unsqueeze(-2)
+        except:
+            self.colors[..., -2:-1] += glow.unsqueeze(-2)
         self.colors[..., -1:] *= opacity.unsqueeze(-2)
         self.normals = normals
         self.border_width, self.border_color, self.portion_of_curve_drawn = border_width, border_color, portion_of_curve_drawn
@@ -420,7 +422,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         ray_origin = select_time(ray_origin)
         next_segment_inds = select_time(self.next_segment_inds)
         num_segments_per_object = (self.num_segments_per_object)
-        #num_segments_per_circuit = select_time(self.num_segments_per_circuit)
 
         LoggerManager.instance().set_class('rendering').log_message(f'starting rendering with {corners.shape}, {normals.shape}, {mob_center.shape}, '
                                                                     f'{colors.shape}, {ray_origin.shape}')

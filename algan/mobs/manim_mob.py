@@ -6,7 +6,7 @@ from algan.mobs.image_mob import ImageMob
 from algan.mobs.group import Group
 from algan.utils.tensor_utils import unsquish
 from algan.utils.mob_utils import batch_mobs
-from manim import ImageMobject, VectorizedPoint
+from manim import ImageMobject, VectorizedPoint, ThreeDVMobject
 
 
 class ManimMob(BezierCircuitCubic):
@@ -21,7 +21,7 @@ class ManimMob(BezierCircuitCubic):
         Passed to :class:`~.BezierCircuitCubic` .
 
     """
-    def __init__(self, manim_mob, **kwargs):
+    def __init__(self, manim_mob, batch=True, **kwargs):
         manim_scale_factor = 1
         children = []
         for submob in manim_mob.submobjects:
@@ -31,7 +31,9 @@ class ManimMob(BezierCircuitCubic):
                 continue
             if submob.n_points_per_curve != 4 or submob.n_points_per_cubic_curve != 4:
                 raise NotImplementedError('ManimMob does not support Mobjects which do not have n_points_per_curve == 4')
-            children.append(ManimMob(submob, **kwargs))
+            #if isinstance(submob, VectorizedPoint):# or isinstance(submob, ThreeDVMobject):
+            #    continue
+            children.append(ManimMob(submob, batch=False, **kwargs))
 
         empty = False
         if len(manim_mob.points) == 0:
@@ -58,5 +60,5 @@ class ManimMob(BezierCircuitCubic):
                          filled=(not hasattr(manim_mob, 'end')) and (manim_mob.fill_opacity is not None and manim_mob.fill_opacity > 1e-5),
                          empty=empty, **kwargs)
         if len(children) > 0:
-            self.add_children(batch_mobs(children))
+            self.add_children(batch_mobs(children) if batch else Group(children))
         self.submobjects = children

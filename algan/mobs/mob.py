@@ -475,10 +475,8 @@ class Mob(Animatable):
                             x = x.expand(torch.Size([*([-1 for _ in range(x.dim() - 2)]), len(c.parent_batch_sizes),
                                          -1])).contiguous()
                         return x
-                    try:
-                        change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
-                    except:
-                        change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
+
+                    change2 = torch.repeat_interleave(expand(change2), c.parent_batch_sizes, -2)
                     if isinstance(interpolation2, torch.Tensor):
                         interpolation2 = torch.repeat_interleave(expand(interpolation2), c.parent_batch_sizes, -2)
                 c.apply_absolute_change(key, change2, interpolation=interpolation2, recursive=recursive)

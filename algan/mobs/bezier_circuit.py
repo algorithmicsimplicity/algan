@@ -1,3 +1,5 @@
+import gc
+
 import torch
 from algan import RIGHT
 from algan.animation.animation_contexts import Off
@@ -125,14 +127,30 @@ class BezierCircuitCubic(Renderable):
         return n * 4
 
     def get_render_primitives(self):
-        if self.empty:
-            return None
+        #if self.empty:
+        #    return None
         self.texture_points.set_time_inds_to(self)
         self.control_points.set_time_inds_to(self)
-        o, n, g, bw, bc, pc = broadcast_all([self.opacity * self.max_opacity, self.basis, self.glow, self.border_width, self.border_color, self.portion_of_curve_drawn], ignored_dims=[-1])
+
+        vars = broadcast_all([self.opacity * self.max_opacity, self.basis, self.glow, self.border_width, self.border_color, self.portion_of_curve_drawn], ignored_dims=[-1])
+        num_control_points = 4  # cubic beziers
+        if self.control_points.parent_batch_sizes is None:
+            return self._get_render_primitives(unsquish(self.control_points.location, -2, num_control_points), self.texture_points.color,
+                                               self.location, self.basis, *vars)
+        x = self.control_points.location
+        tpc = self.texture_points.color
+        num_segments_per_circuit = self.control_points.parent_batch_sizes // num_control_points
+        return self._get_render_primitives(unsquish((x), -2, num_control_points),
+                                           (tpc),
+                                           self.location,
+                                           self.basis, *vars, num_segments_per_circuit)
+
+    def _get_render_primitives(self, x, tpc, loc, basis, o, n, g, bw, bc, pc, num_segments_per_circuit=None):
+
+
 
         num_control_points = 4 # cubic beziers
-        x = unsquish(self.control_points.location, -2, num_control_points)
+        #x = unsquish(x, -2, num_control_points)
         # assert x.shape == [*, N, num_control_points, 3], where N is number of bezier segments.
         start_points = x[...,:1,:]
         end_points = x[...,-1:,:]
@@ -155,25 +173,29 @@ class BezierCircuitCubic(Renderable):
         # to recover the index in the new concatenated tensor.
         next_segment_inds_offset = next_segment_inds - inds
 
-        starting_inds = circuit_start_mask[0,:,0,0].nonzero()[:,0]
-        num_segments_per_circuit = []
-        if len(starting_inds) == 0:
-            num_segments_per_circuit.append(torch.tensor((circuit_start_mask.shape[-3],), device=next_segment_inds.device, dtype=next_segment_inds.dtype).squeeze())
+        if num_segments_per_circuit is None:
+            starting_inds = circuit_start_mask[0,:,0,0].nonzero()[:,0]
+            num_segments_per_circuit = []
+            if len(starting_inds) == 0:
+                num_segments_per_circuit.append(torch.tensor((circuit_start_mask.shape[-3],), device=next_segment_inds.device, dtype=next_segment_inds.dtype).squeeze())
+            else:
+                for i in range(len(starting_inds)):
+                    num_segments_per_circuit.append((starting_inds[(i+1)] if (i+1) < len(starting_inds) else
+                                                     circuit_start_mask.shape[-3]) - starting_inds[i])
+            num_segments_per_circuit = torch.stack(num_segments_per_circuit, 0)
+            num_segments_per_circuit = torch.tensor([x.shape[-3]], device=x.device, dtype=torch.long)
+            c = tpc.unsqueeze(-3)
+            if self.num_texture_points > c.shape[-2]:
+                c = c.expand([-1, -1, self.num_texture_points, -1])
         else:
-            for i in range(len(starting_inds)):
-                num_segments_per_circuit.append((starting_inds[(i+1)] if (i+1) < len(starting_inds) else
-                                                 circuit_start_mask.shape[-3]) - starting_inds[i])
-        num_segments_per_circuit = torch.stack(num_segments_per_circuit, 0)
+            c = unsquish(tpc, -2, self.num_texture_points)
         LoggerManager.instance().set_class('batching').log_message(f'Making bezier with num_segments_per_circuit: {num_segments_per_circuit}')
         #num_segments_per_circuit = torch.cat((starting_inds, torch.tensor((len(inds)-(starting_inds.amax() if len(starting_inds) > 0 else 0),), device=x.device)), -1)
 
-        c = self.texture_points.color.unsqueeze(-3)
-        if self.num_texture_points > c.shape[-2]:
-            c = c.expand([-1,-1,self.num_texture_points,-1])
 
-        prim = self.render_primitive(x, next_segment_inds_offset, num_segments_per_circuit, c, o, self.basis[..., -3:],
-                                     bw, bc, pc, self.location, cast_to_tensor(self.grid_width),
-                                     cast_to_tensor(self.grid_height), self.basis[...,:3], self.basis[...,3:6],
+        prim = self.render_primitive(x, next_segment_inds_offset, num_segments_per_circuit, c, o, basis[..., -3:],
+                                     bw, bc, pc, loc, cast_to_tensor(self.grid_width).expand(-1,loc.shape[1], -1),
+                                     cast_to_tensor(self.grid_height).expand(-1,loc.shape[1], -1), basis[...,:3], basis[...,3:6],
                                      glow=g, num_texture_points=self.num_texture_points, filled=self.filled, )
         prim.num_texture_points = self.num_texture_points
         return prim
