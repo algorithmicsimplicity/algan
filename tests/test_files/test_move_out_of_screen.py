@@ -14,4 +14,4 @@ def test_move_out_of_screen_triangle():
 def test_move_out_of_screen_bezier():
     move_out_of_screen(Square)
 
-render_all_funcs(__name__)
+# render_all_funcs(__name__)

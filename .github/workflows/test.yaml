@@ -2,6 +2,11 @@ name: Test
 
 on: [push]
 
+# Cancel in-progress runs when pushing a new commit on the PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -22,23 +27,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libpango1.0-dev libcairo2-dev pkg-config
 
+      - name: Install LaTeX dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            texlive-latex-base \
+            texlive-latex-extra \
+            texlive-fonts-recommended \
+            latexmk # or full texlive-full if needed
+
+      - name: Install ffmpeg
+        run: sudo apt-get install -y ffmpeg
+
+      - name: Setup ffmpeg
+        uses: federicocarboni/setup-ffmpeg@v3
+
       - name: Install uv
         uses: ./.github/actions/install-uv
 
       - name: Create venv
         run: uv venv
 
-      - name: Activate venv
-        run: echo "VIRTUAL_ENV=$(pwd)/.venv" >> $GITHUB_ENV
-
-      - name: Add venv to PATH
-        run: echo "$VIRTUAL_ENV/bin" >> $GITHUB_PATH
-
-      - name: Install repo and dev dependencies
-        uses: ./.github/actions/install-deps
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
 
       - name: Run tests
-        run: pytest 
+        run: uv run pytest -n 1
 
       # - name: Upload coverage to Codecov
       #   uses: codecov/codecov-action@v5

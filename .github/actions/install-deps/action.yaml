@@ -7,5 +7,4 @@ runs:
   using: "composite"
   steps:
     - name: Install project with dev extras
-      run: uv pip install -e .[dev]
-      shell: bash
+      run: uv sync --locked --all-extras --dev
