@@ -13,7 +13,9 @@ def test_become_shapes_2d():
 
 def test_become_text():
     x = Tex("Hello", font_size=90).spawn()
-    x.become(Tex("Holloo", font_size=90)).become(Tex("Hollo", font_size=90)).become(Tex("Hllo", font_size=90)).become(Tex("World", font_size=90))
+    x.become(Tex("Holloo", font_size=90)).become(Tex("Hollo", font_size=90)).become(
+        Tex("Hllo", font_size=90)
+    ).become(Tex("World", font_size=90))
 
 
 render_all_funcs(__name__)
