@@ -373,6 +373,7 @@ class Mob(Animatable):
         if recursive == "True":
             for c in self.children:
                 c.set_time_inds_to(self)
+                interpolated_value_c = interpolated_value
                 if c.parent_batch_sizes is not None:
 
                     def expand(x):
@@ -388,15 +389,23 @@ class Mob(Animatable):
                             ).contiguous()
                         return x
 
-                    interpolated_value = torch.repeat_interleave(
-                        expand(interpolated_value), c.parent_batch_sizes, -2
+                    interpolated_value_c = torch.repeat_interleave(
+                        expand(interpolated_value_c), c.parent_batch_sizes, -2
                     )
+
                 c.apply_relative_change(
-                    key, interpolated_value, interpolation=1, recursive=recursive
+                    key, interpolated_value_c, interpolation=1, recursive=recursive
                 )
         return self
 
-    def pulse_color(self, color: torch.Tensor, opacity: bool = None) -> "Mob":
+    def set_opacity_via_color(self, opacity):
+        with Sync():
+            for d in self.get_descendants():
+                d._original_color_set_opacity_via_color = d.color
+                d.set_non_recursive(color=d.color.set_opacity(opacity))
+        return self
+
+    def pulse_color(self, color: torch.Tensor = None, opacity: bool = None) -> "Mob":
         """Animates a color pulse effect.
 
         The Mob's color changes to the target `color` and then animates back to its
@@ -423,7 +432,7 @@ class Mob(Animatable):
 
     def wave_color(
         self,
-        color: torch.Tensor,
+        color: torch.Tensor = None,
         wave_length: float = 2,
         reverse: bool = False,
         direction: torch.Tensor | None = None,
@@ -2849,6 +2858,10 @@ class Mob(Animatable):
         """
         self.batch_size = max(self.batch_size, self.location.shape[1])
         if self.parent_batch_sizes is not None:
+            if len(self.parent_batch_sizes) == 1:
+                self.parent_batch_sizes = torch.ones(
+                    (self.parent_batch_sizes.item(),), dtype=torch.long
+                )
             sub_pbs = self.parent_batch_sizes[data_sub_inds]
             inds = torch.arange(self.batch_size).split(
                 [_.item() for _ in self.parent_batch_sizes]

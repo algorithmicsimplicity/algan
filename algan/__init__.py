@@ -104,6 +104,8 @@ from algan.animation.animation_contexts import *
 from algan.utils.algan_utils import *
 from algan.rendering.lights import *
 
+from algan.animation.manim_animations import *
+
 
 def clear_cache():
     f = os.path.join(DIRECTORY_DEFAULTS.base_directory, "algan_cache")

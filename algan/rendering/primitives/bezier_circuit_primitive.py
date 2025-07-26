@@ -1219,7 +1219,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         window_size = window_width * window_height
 
-        if not self.filled:
+        if self.filled:
+            border_mask *= interior_mask
+        else:
             interior_mask[:] = 0
         # TODO does this need to clip based on x and y instead of inds for window?
         m = (inds < window_size) & ((interior_mask > 0) | (border_mask > 0))

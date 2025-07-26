@@ -1024,10 +1024,10 @@ class Animatable:
             z = broadcast_gather(
                 ar, -1, unsqueeze_dims(fa, ar, -1), keepdim=False
             ).clamp_(min=0, max=1)
-            if self.parent_batch_sizes is not None and z.shape[1] == len(
-                self.parent_batch_sizes
+            if caller.parent_batch_sizes is not None and z.shape[1] == len(
+                caller.parent_batch_sizes
             ):
-                z = torch.repeat_interleave(z, self.parent_batch_sizes, 1)
+                z = torch.repeat_interleave(z, caller.parent_batch_sizes, 1)
 
             def select_kwargs(kwargs):
                 return {

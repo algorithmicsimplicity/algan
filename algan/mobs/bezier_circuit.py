@@ -1,7 +1,7 @@
 import gc
 
 import torch
-from algan import RIGHT
+from algan import RIGHT, PREVIEW
 from algan.animation.animation_contexts import Off
 from algan.logging.logger import LoggerManager
 from algan.mobs.renderable import Renderable
@@ -182,7 +182,9 @@ class BezierCircuitCubic(Renderable):
                 self.opacity * self.max_opacity,
                 self.basis,
                 self.glow,
-                self.border_width,
+                self.border_width
+                * self.scene.render_settings.resolution[1]
+                / PREVIEW.resolution[1],
                 self.border_color,
                 self.portion_of_curve_drawn,
             ],

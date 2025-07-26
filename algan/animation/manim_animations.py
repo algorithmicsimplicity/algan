@@ -1,0 +1,52 @@
+from algan.animation.animation_contexts import *
+from algan.constants.spatial import *
+
+
+def write(bezier_mob, border_width: float = 4, run_time=None, lag_ratio=None):
+    """Plays an animation of the bezier_mob spawning as if being hand-drawn.
+
+    Parameters
+    ----------
+    bezier_mob
+        A mob created by ManimMob(mn.Text("some text")).
+    border_width
+        The width to set the border to for the drawing animation. If set to None the mob's original
+        border_width will be used.
+
+    Returns
+    =======
+    :class:`~.Mob`
+        The Mob instance itself, allowing for method chaining.
+
+    Examples
+    ---------
+
+    .. algan:: Example1MAnimationsWrite
+
+        from algan import *
+
+        x = ManimMob(mn.Text('Hello'))
+        write(x)
+
+        render_to_file()
+
+    """
+    length = len(bezier_mob.children[2])
+    if run_time is None:
+        run_time = 1 if length < 15 else 2
+    if lag_ratio is None:
+        lag_ratio = min(4.0 / max(1.0, length), 0.2)
+
+    with Lag(lag_ratio, run_time=run_time, rate_func=rate_funcs.identity):
+        with Off():
+            bezier_mob.spawn()
+            bezier_mob.portion_of_curve_drawn = 0
+            bezier_mob.set_opacity_via_color(0)
+            if border_width is not None:
+                bezier_mob.border_width = border_width
+        for character in bezier_mob.children[2]:
+            with Seq():
+                character.portion_of_curve_drawn = 1
+                character.set_opacity_via_color(1)
+
+    return bezier_mob
