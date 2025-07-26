@@ -11,7 +11,9 @@ import numpy as np
 from PIL import Image
 from PIL.Image import Resampling
 
-from algan.external_libraries.manim.mobject.geometry.shape_matchers import SurroundingRectangle
+from algan.external_libraries.manim.mobject.geometry.shape_matchers import (
+    SurroundingRectangle,
+)
 
 from ... import config
 from ...constants import *

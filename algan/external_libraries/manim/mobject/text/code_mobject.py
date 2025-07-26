@@ -17,10 +17,17 @@ from pygments.styles import get_all_styles
 
 from algan.external_libraries.manim.constants import *
 from algan.external_libraries.manim.mobject.geometry.arc import Dot
-from algan.external_libraries.manim.mobject.geometry.shape_matchers import SurroundingRectangle
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.geometry.shape_matchers import (
+    SurroundingRectangle,
+)
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.text.formats import Paragraph
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup, VMobject
+from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
+    VGroup,
+    VMobject,
+)
 from algan.external_libraries.manim.typing import StrPath
 from algan.external_libraries.manim.utils.color import WHITE, ManimColor
 

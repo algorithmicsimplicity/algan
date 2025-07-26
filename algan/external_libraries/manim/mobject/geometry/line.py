@@ -20,21 +20,41 @@ import numpy as np
 
 from algan.external_libraries.manim import config
 from algan.external_libraries.manim.constants import *
-from algan.external_libraries.manim.mobject.geometry.arc import Arc, ArcBetweenPoints, Dot, TipableVMobject
+from algan.external_libraries.manim.mobject.geometry.arc import (
+    Arc,
+    ArcBetweenPoints,
+    Dot,
+    TipableVMobject,
+)
 from algan.external_libraries.manim.mobject.geometry.tips import ArrowTriangleFilledTip
 from algan.external_libraries.manim.mobject.mobject import Mobject
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import DashedVMobject, VGroup, VMobject
+from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
+    DashedVMobject,
+    VGroup,
+    VMobject,
+)
 from algan.external_libraries.manim.utils.color import WHITE
-from algan.external_libraries.manim.utils.space_ops import angle_of_vector, line_intersection, normalize
+from algan.external_libraries.manim.utils.space_ops import (
+    angle_of_vector,
+    line_intersection,
+    normalize,
+)
 
 if TYPE_CHECKING:
     from typing import Any
 
     from typing_extensions import Literal, Self, TypeAlias
 
-    from algan.external_libraries.manim.typing import Point2DLike, Point3D, Point3DLike, Vector3D
+    from algan.external_libraries.manim.typing import (
+        Point2DLike,
+        Point3D,
+        Point3DLike,
+        Vector3D,
+    )
     from algan.external_libraries.manim.utils.color import ParsableManimColor
 
     from ..matrix import Matrix  # Avoid circular import

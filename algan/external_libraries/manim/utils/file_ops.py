@@ -33,7 +33,6 @@ if TYPE_CHECKING:
 from algan.external_libraries.manim import config
 
 
-
 def is_mp4_format() -> bool:
     """
     Determines if output format is .mp4
@@ -144,9 +143,7 @@ def add_extension_if_not_present(file_name: Path, extension: str) -> Path:
 
 
 def add_version_before_extension(file_name: Path) -> Path:
-    return file_name.with_name(
-        f"{file_name.stem}_ManimCE_v{file_name.suffix}"
-    )
+    return file_name.with_name(f"{file_name.stem}_ManimCE_v{file_name.suffix}")
 
 
 def guarantee_existence(path: Path) -> Path:

@@ -129,7 +129,7 @@ class OpenGLMobject:
         # Positive shadow up to 1 makes a side opposite the light darker
         shadow: float = 0.0,
         # For shaders
-        render_primitive: int = 0,#moderngl.TRIANGLES,
+        render_primitive: int = 0,  # moderngl.TRIANGLES,
         texture_paths: dict[str, str] | None = None,
         depth_test: bool = False,
         # If true, the mobject will not get rotated according to camera position
@@ -2223,7 +2223,9 @@ class OpenGLMobject:
         :class:`~.BackgroundRectangle`
 
         """
-        from algan.external_libraries.manim.mobject.geometry.shape_matchers import BackgroundRectangle
+        from algan.external_libraries.manim.mobject.geometry.shape_matchers import (
+            BackgroundRectangle,
+        )
 
         self.background_rectangle = BackgroundRectangle(
             self, color=color, fill_opacity=opacity, **kwargs

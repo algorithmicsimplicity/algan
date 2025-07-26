@@ -4,7 +4,8 @@ from importlib.metadata import version
 __version__ = version(__name__)
 
 import os
-os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '1'
+
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import shutil
 import torch
 
@@ -18,18 +19,24 @@ torch.set_grad_enabled(False)
 c = torch.inference_mode()
 c.__enter__()
 
+
 def compile_wrapper(function):
     compiled_function = torch.compile(function, dynamic=True)
+
     def _decorate(func, compiled_func):
         @wraps(func)
         def wrapper_func(*args, **kwargs):
             if COMPUTING_DEFAULTS.compiled:
                 return compiled_func(*args, **kwargs)
             return func(*args, **kwargs)
+
         return wrapper_func
+
     return _decorate(function, compiled_function)
 
+
 try:
+
     @torch.compile
     def _dummy_func(x):
         return x + 1
@@ -37,8 +44,8 @@ try:
     # Test the dummy function
     _dummy_func(torch.tensor(1.0))
 
-    #compiled = torch.compile
-    #print('using torch.compile')
+    # compiled = torch.compile
+    # print('using torch.compile')
     compiled = compile_wrapper
 except:
     compiled = lambda x: x
@@ -51,7 +58,7 @@ class SceneManager:
     _scene_initializer = None
 
     def __init__(self):
-        raise RuntimeError('Call SceneTracker.instance() instead of SceneTracker().')
+        raise RuntimeError("Call SceneTracker.instance() instead of SceneTracker().")
 
     @classmethod
     def set_scene_class(cls, scene_class, scene_initializer):
@@ -68,7 +75,7 @@ class SceneManager:
     def instance(cls):
         if cls._instance is None:
             if cls._memory is None:
-                cls._memory = None#ManualMemory(algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING)
+                cls._memory = None  # ManualMemory(algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING)
             cls._instance = cls._scene_class(memory=cls._memory)
             cls._instance.scene_initializer = cls._scene_initializer
             cls._instance.reset_scene()
@@ -99,14 +106,19 @@ from algan.rendering.lights import *
 
 
 def clear_cache():
-    f = os.path.join(DIRECTORY_DEFAULTS.base_directory, 'algan_cache')
+    f = os.path.join(DIRECTORY_DEFAULTS.base_directory, "algan_cache")
     if os.path.exists(f):
         shutil.rmtree(f)
 
+
 def default_scene_initializer(scene):
     scene.camera = Camera(location=CAMERA_ORIGIN).spawn(animate=False)
-    scene.light_sources = [PointLight(location=scene.camera.location + UP * 1 + RIGHT * 5 + OUT * 1,
-                                     color=WHITE).spawn(animate=False)]
+    scene.light_sources = [
+        PointLight(
+            location=scene.camera.location + UP * 1 + RIGHT * 5 + OUT * 1, color=WHITE
+        ).spawn(animate=False)
+    ]
+
 
 SceneManager.set_scene_class(Scene, default_scene_initializer)
 SceneManager.instance()
@@ -118,5 +130,6 @@ def make_manim_dir():
     for tex_dir in [config.get_dir("tex_dir"), config.get_dir("text_dir")]:
         if not tex_dir.exists():
             tex_dir.mkdir(parents=True)
+
 
 make_manim_dir()

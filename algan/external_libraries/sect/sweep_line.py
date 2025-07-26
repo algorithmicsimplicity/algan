@@ -4,19 +4,19 @@ from functools import partial
 from typing import Optional
 
 from dendroid import red_black
-from algan.external_libraries.ground.base import (Context,
-                         Orientation)
+from algan.external_libraries.ground.base import Context, Orientation
 from reprit.base import generate_repr
 
 from .event import LeftEvent
 
 
 class SweepLine:
-    __slots__ = 'context', '_tree'
+    __slots__ = "context", "_tree"
 
     def __init__(self, context: Context) -> None:
-        self._tree = red_black.set_(key=partial(SweepLineKey,
-                                                context.angle_orientation))
+        self._tree = red_black.set_(
+            key=partial(SweepLineKey, context.angle_orientation)
+        )
 
     __repr__ = generate_repr(__init__)
 
@@ -43,7 +43,7 @@ class SweepLine:
 
 
 class SweepLineKey:
-    __slots__ = 'event', 'orienteer'
+    __slots__ = "event", "orienteer"
 
     def __init__(self, orienteer, event: LeftEvent) -> None:
         self.orienteer, self.event = orienteer, event
@@ -63,10 +63,11 @@ class SweepLineKey:
         other_start_orientation = self.orienteer(start, end, other_start)
         other_end_orientation = self.orienteer(start, end, other_end)
         if other_start_orientation is other_end_orientation:
-            return (other_event.from_first
-                    if other_start_orientation is Orientation.COLLINEAR
-                    else (other_start_orientation
-                          is Orientation.COUNTERCLOCKWISE))
+            return (
+                other_event.from_first
+                if other_start_orientation is Orientation.COLLINEAR
+                else (other_start_orientation is Orientation.COUNTERCLOCKWISE)
+            )
         start_orientation = self.orienteer(other_start, other_end, start)
         end_orientation = self.orienteer(other_start, other_end, end)
         if start_orientation is end_orientation:

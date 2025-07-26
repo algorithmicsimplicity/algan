@@ -14,7 +14,9 @@ class AnimationManager:
     _instance = None
 
     def __init__(self):
-        raise RuntimeError('Call AnimationManager.instance() instead of AnimationManager().')
+        raise RuntimeError(
+            "Call AnimationManager.instance() instead of AnimationManager()."
+        )
 
     @classmethod
     def reset(cls):
@@ -24,8 +26,14 @@ class AnimationManager:
     def instance(cls):
         if cls._instance is None:
             cls._instance = cls.__new__(cls)
-            cls._instance.context = Seq(run_time_unit=1.0, priority_level=0, rate_func=rate_funcs.smooth,
-                                        record_funcs=True, record_attr_modifications=True, spawn_at_end=False)
+            cls._instance.context = Seq(
+                run_time_unit=1.0,
+                priority_level=0,
+                rate_func=rate_funcs.smooth,
+                record_funcs=True,
+                record_attr_modifications=True,
+                spawn_at_end=False,
+            )
             cls._instance.context.begin_time = 0
             cls._instance.context.current_time = 0
             cls._instance.context.end_time = 0
@@ -110,29 +118,29 @@ class AnimationContext:
 
     """
 
-    run_time: float|None = None
-    run_time_unit: float|None = None
-    same_run_time: bool|None = None
-    lag_ratio: float|None = None
-    priority_level: float|None = None
-    rate_func: Callable[[],float]|None = None
-    rate_func_compose: Callable[[],float]|None = None
+    run_time: float | None = None
+    run_time_unit: float | None = None
+    same_run_time: bool | None = None
+    lag_ratio: float | None = None
+    priority_level: float | None = None
+    rate_func: Callable[[], float] | None = None
+    rate_func_compose: Callable[[], float] | None = None
     combine_rate_func: bool = False
-    record_funcs: bool|None = None
-    record_attr_modifications: bool|None = None
+    record_funcs: bool | None = None
+    record_attr_modifications: bool | None = None
     prev_context: Optional["AnimationContext"] = None
-    spawn_at_end: bool|None = None
-    new_animation: bool|None = False
+    spawn_at_end: bool | None = None
+    new_animation: bool | None = False
     finished: bool = False
-    trace_mode: bool|None = None
-    traced_mobs: set|None = None
-    new_mobs: list|None = None
-    child_contexts: list|None = None
+    trace_mode: bool | None = None
+    traced_mobs: set | None = None
+    new_mobs: list | None = None
+    child_contexts: list | None = None
     kwargs: Any = None
-    #traced_mobs: set = field(default_factory=set)
-    #new_mobs: list = field(default_factory=list)
-    #child_contexts: list = field(default_factory=list)
-    #kwargs: Any = field(default_factory=dict)
+    # traced_mobs: set = field(default_factory=set)
+    # new_mobs: list = field(default_factory=list)
+    # child_contexts: list = field(default_factory=list)
+    # kwargs: Any = field(default_factory=dict)
 
     def __post_init__(self):
         if self.traced_mobs is None:
@@ -161,14 +169,29 @@ class AnimationContext:
             if self.__getattribute__(attr) is None:
                 self.__setattr__(attr, self.prev_context.__getattribute__(attr))
 
-        [inherit_missing_value(attr) for attr in ['run_time_unit', 'lag_ratio',
-                                                  'priority_level', 'rate_func', 'rate_func_compose', 'record_funcs', 'record_attr_modifications',
-                                                  'spawn_at_end', 'trace_mode']]
+        [
+            inherit_missing_value(attr)
+            for attr in [
+                "run_time_unit",
+                "lag_ratio",
+                "priority_level",
+                "rate_func",
+                "rate_func_compose",
+                "record_funcs",
+                "record_attr_modifications",
+                "spawn_at_end",
+                "trace_mode",
+            ]
+        ]
 
-        if self.rate_func is not None and not isinstance(self.rate_func, RateFuncWrapper):
+        if self.rate_func is not None and not isinstance(
+            self.rate_func, RateFuncWrapper
+        ):
             self.rate_func = RateFuncWrapper(self.rate_func)
         self.rate_func = copy.deepcopy(self.rate_func)
-        if self.rate_func_compose is not None and not isinstance(self.rate_func_compose, RateFuncWrapper):
+        if self.rate_func_compose is not None and not isinstance(
+            self.rate_func_compose, RateFuncWrapper
+        ):
             self.rate_func_compose = RateFuncWrapper(self.rate_func_compose)
         self.rate_func_compose = copy.deepcopy(self.rate_func_compose)
         new_kwargs = self.kwargs
@@ -200,7 +223,9 @@ class AnimationContext:
             return x
         my_run_time = max(self.end_time - self.begin_time, 1e-6)
         parent_run_time = max(self.end_time_r - self.begin_time_r, 1e-6)
-        return self.begin_time_r + (x-self.begin_time) * (parent_run_time / my_run_time)
+        return self.begin_time_r + (x - self.begin_time) * (
+            parent_run_time / my_run_time
+        )
 
     def add_mob(self, mob):
         self.new_mobs.append(mob)
@@ -209,7 +234,14 @@ class AnimationContext:
         return self
 
     def get_descendants(self, include_self=True):
-        return list(traverse([*([self] if include_self else []), [c.get_descendants() for c in self.child_contexts]]))
+        return list(
+            traverse(
+                [
+                    *([self] if include_self else []),
+                    [c.get_descendants() for c in self.child_contexts],
+                ]
+            )
+        )
 
     def rewind(self, num_frames):
         self.current_time = self.current_time - num_frames
@@ -219,7 +251,7 @@ class AnimationContext:
             self.traced_mobs = self.traced_mobs.union(c.traced_mobs)
         if exc_type is not None:
             return False
-            #raise exc_value
+            # raise exc_value
         if self.ignored:
             return False
 
@@ -253,12 +285,16 @@ class AnimationContext:
             self.begin_time_r = self.begin_time
             self.end_time_r = self.end_time
         if self.combine_rate_func:
+
             def wrap(rate_func):
                 if rate_func is None:
                     return rate_func
-                rate_func.set_full_time(lambda s=self: s.begin_time_r, lambda s=self: s.end_time_r)
+                rate_func.set_full_time(
+                    lambda s=self: s.begin_time_r, lambda s=self: s.end_time_r
+                )
                 rate_func.time_set = True
                 return rate_func
+
             for c in self.get_descendants(include_self=False):
                 wrap(c.rate_func)
                 wrap(c.rate_func_compose)
@@ -267,7 +303,10 @@ class AnimationContext:
         am.context = self.prev_context
         am.context.end_time = max(am.context.end_time, self.end_time_r)
         if self.new_animation:
-            am.context.current_time = self.begin_time_r + (self.end_time_r - self.begin_time_r) * am.context.lag_ratio
+            am.context.current_time = (
+                self.begin_time_r
+                + (self.end_time_r - self.begin_time_r) * am.context.lag_ratio
+            )
         else:
             am.context.current_time = self.current_time
 
@@ -322,12 +361,19 @@ class NoExtra(AnimationContext):
 
 
 class Off(AnimationContext):
-    """Disables animations within its context.
-    """
+    """Disables animations within its context."""
+
     def __init__(self, priority_level=1, **kwargs):
-        if 'record_funcs' not in kwargs:
-            kwargs['record_funcs'] = False
-        super().__init__(lag_ratio=1, run_time_unit=0, run_time=0, priority_level=priority_level, new_animation=True, **kwargs)
+        if "record_funcs" not in kwargs:
+            kwargs["record_funcs"] = False
+        super().__init__(
+            lag_ratio=1,
+            run_time_unit=0,
+            run_time=0,
+            priority_level=priority_level,
+            new_animation=True,
+            **kwargs,
+        )
 
 
 class Lag(AnimationContext):
@@ -340,18 +386,21 @@ class Lag(AnimationContext):
         would wait 10% of the `run_time_unit` for one animation before starting the next.
 
     """
-    def __init__(self, lag_ratio:float, **kwargs):
+
+    def __init__(self, lag_ratio: float, **kwargs):
         super().__init__(lag_ratio=lag_ratio, new_animation=True, **kwargs)
 
 
 class Sync(Lag):
     """Plays all component animations synchronously."""
+
     def __init__(self, **kwargs):
         super().__init__(lag_ratio=0, **kwargs)
 
 
 class Seq(Lag):
     """Plays all component animations sequentially, with the next starting as soon as the current one finishes."""
+
     def __init__(self, **kwargs):
         super().__init__(lag_ratio=1, **kwargs)
 
@@ -366,7 +415,8 @@ class Audio(AnimationContext):
         The segment of script identifying which portion of the audio source to play during this context.
 
     """
-    def __init__(self, script:str, **kwargs):
+
+    def __init__(self, script: str, **kwargs):
         super().__init__(**kwargs)
 
 
@@ -396,5 +446,5 @@ class OnInit(AnimationContext):
 
 class ComposeRateFunc(AnimationContext):
     def __init__(self, rfunc, **kwargs):
-        kwargs['rate_func_compose'] = rfunc
+        kwargs["rate_func_compose"] = rfunc
         super().__init__(**kwargs)

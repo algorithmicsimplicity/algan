@@ -23,9 +23,13 @@ from PIL.Image import Image
 from algan.external_libraries.manim import config
 from algan.external_libraries.manim.constants import *
 from algan.external_libraries.manim.mobject.mobject import Mobject
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
-from algan.external_libraries.manim.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
+from algan.external_libraries.manim.mobject.opengl.opengl_vectorized_mobject import (
+    OpenGLVMobject,
+)
 from algan.external_libraries.manim.mobject.three_d.three_d_utils import (
     get_3d_vmob_gradient_start_and_end_points,
 )
@@ -38,14 +42,22 @@ from algan.external_libraries.manim.utils.bezier import (
     partial_bezier_points,
     proportions_along_bezier_curve_for_point,
 )
-from algan.external_libraries.manim.utils.color import BLACK, WHITE, ManimColor, ParsableManimColor
+from algan.external_libraries.manim.utils.color import (
+    BLACK,
+    WHITE,
+    ManimColor,
+    ParsableManimColor,
+)
 from algan.external_libraries.manim.utils.iterables import (
     make_even,
     resize_array,
     stretch_array_to_length,
     tuplify,
 )
-from algan.external_libraries.manim.utils.space_ops import rotate_vector, shoelace_direction
+from algan.external_libraries.manim.utils.space_ops import (
+    rotate_vector,
+    shoelace_direction,
+)
 
 if TYPE_CHECKING:
     from typing import Any

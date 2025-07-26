@@ -11,9 +11,16 @@ import numpy as np
 
 from algan.external_libraries.manim import config
 from algan.external_libraries.manim.constants import *
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex, SingleStringMathTex, Tex
-#from algan.external_libraries.manim.mobject.text.text_mobject import Text
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
+from algan.external_libraries.manim.mobject.text.tex_mobject import (
+    MathTex,
+    SingleStringMathTex,
+    Tex,
+)
+
+# from algan.external_libraries.manim.mobject.text.text_mobject import Text
 from algan.external_libraries.manim.mobject.types.vectorized_mobject import VMobject
 from algan.external_libraries.manim.mobject.value_tracker import ValueTracker
 

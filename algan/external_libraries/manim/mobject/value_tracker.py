@@ -8,7 +8,9 @@ __all__ = ["ValueTracker", "ComplexValueTracker"]
 import numpy as np
 
 from algan.external_libraries.manim.mobject.mobject import Mobject
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.utils.paths import straight_path
 
 

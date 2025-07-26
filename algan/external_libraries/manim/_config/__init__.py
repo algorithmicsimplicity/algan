@@ -8,7 +8,8 @@ from contextlib import contextmanager
 from typing import Any
 
 from .cli_colors import parse_cli_ctx
-#from .logger_utils import make_logger
+
+# from .logger_utils import make_logger
 from .utils import ManimConfig, ManimFrame, make_config_parser
 
 __all__ = [

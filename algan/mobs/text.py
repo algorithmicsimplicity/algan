@@ -9,7 +9,10 @@ import manim as mn
 from algan.settings.defaults import *
 from algan.settings.style_defaults import *
 from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag, Seq
-from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit, point_to_tensor2
+from algan.mobs.triangulated_bezier_circuit import (
+    TriangulatedBezierCircuit,
+    point_to_tensor2,
+)
 from algan.constants.spatial import DOWN, RIGHT
 from algan.constants.color import *
 from algan.mobs.group import Group
@@ -22,31 +25,39 @@ from algan.utils.tensor_utils import unsquish
 
 class Tex(Mob):
     def __init__(self, text, font_size=24, latex=True, *args, **kwargs):
-        if 'preamble' in kwargs:
-            kwargs['tex_template'] = mn.TexTemplate(preamble=_DEFAULT_PREAMBLE + '\n' + kwargs['preamble'])
-            del kwargs['preamble']
+        if "preamble" in kwargs:
+            kwargs["tex_template"] = mn.TexTemplate(
+                preamble=_DEFAULT_PREAMBLE + "\n" + kwargs["preamble"]
+            )
+            del kwargs["preamble"]
         self.latex = latex
-        #if not self.latex:
+        # if not self.latex:
         #    text = f'\\text{{{text}}}'
         base_font_size = 48
         t = (mn.MathTex if self.latex else mn.Text)(text, font_size=base_font_size)
+
         def maybe_flip(submob):
             x = torch.from_numpy(submob.points).to(COMPUTING_DEFAULTS.animation_device)
             if (not latex) or (not isinstance(submob, mn.VMobjectFromSVGPath)):
                 return x.flip(-2)
             return x
+
         chars = (t.submobjects[0] if latex else t).submobjects
-        p = [unsquish(maybe_flip(_), -2, 4).transpose(-3,-2) for _ in
-             [_ for _ in chars if not isinstance(_, mn.ImageMobject)]]
+        p = [
+            unsquish(maybe_flip(_), -2, 4).transpose(-3, -2)
+            for _ in [_ for _ in chars if not isinstance(_, mn.ImageMobject)]
+        ]
         with Off():
-            self.character_mobs = TriangulatedBezierCircuit(p, invert=False, hash_keys=p,
-                                                            reverse_points=False,
-                                                            *args, **kwargs)
-            self.image_mobs = [ImageMob(_) for _ in chars if isinstance(_, mn.ImageMobject)]
+            self.character_mobs = TriangulatedBezierCircuit(
+                p, invert=False, hash_keys=p, reverse_points=False, *args, **kwargs
+            )
+            self.image_mobs = [
+                ImageMob(_) for _ in chars if isinstance(_, mn.ImageMobject)
+            ]
             super().__init__(*args, **kwargs)
             self.add_children(self.character_mobs, self.image_mobs)
             self.scale(font_size / base_font_size)
-    
+
     def __getitem__(self, item):
         return Group([self.character_mobs[item]])
 
@@ -72,22 +83,34 @@ class Tex(Mob):
     def on_create(self):
         with Off():  # Ensure initial state setting is not recorded as an animation
             self.opacity = 0
-        self._create_recursive(animate=False)  # Mark as created without immediate animation
-        self.wave_color(None, direction=F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1), opacity=1)
+        self._create_recursive(
+            animate=False
+        )  # Mark as created without immediate animation
+        self.wave_color(
+            None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=1
+        )
         return self
         tiles = list(traverse([c.children for c in self.children]))
         with AnimationContext(run_time_unit=2):
-            animate_lagged_by_location(tiles, lambda m: m.spawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
+            animate_lagged_by_location(
+                tiles,
+                lambda m: m.spawn_from_random_direction(),
+                F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
+            )
         return self
 
     def on_destroy(self):
-        #tiles = list(traverse([c.children for c in self.children]))
-        #with AnimationContext(run_time_unit=2):
+        # tiles = list(traverse([c.children for c in self.children]))
+        # with AnimationContext(run_time_unit=2):
         #    animate_lagged_by_location(tiles, lambda m: m.despawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
         with Seq():
-            self.wave_color(None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=0)
+            self.wave_color(
+                None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=0
+            )
             old_ct = self.animation_manager.context.current_time
-            self.animation_manager.context.current_time = self.animation_manager.context.end_time
+            self.animation_manager.context.current_time = (
+                self.animation_manager.context.end_time
+            )
             self._destroy_recursive(animate=False)
             self.animation_manager.context.current_time = old_ct
         return self
@@ -106,19 +129,24 @@ class OldTex(Mob):
         Passed to :class:`~.Mob`.
 
     """
-    def __init__(self, text:str, font_size:float=48, latex=True, debug=False, **kwargs):
-        if 'preamble' in kwargs:
-            kwargs['tex_template'] = mn.TexTemplate(preamble=_DEFAULT_PREAMBLE + '\n' + kwargs['preamble'])
-            del kwargs['preamble']
 
-        if 'color' not in kwargs:
-            kwargs['color'] = STYLE_DEFAULTS.text_color
+    def __init__(
+        self, text: str, font_size: float = 48, latex=True, debug=False, **kwargs
+    ):
+        if "preamble" in kwargs:
+            kwargs["tex_template"] = mn.TexTemplate(
+                preamble=_DEFAULT_PREAMBLE + "\n" + kwargs["preamble"]
+            )
+            del kwargs["preamble"]
+
+        if "color" not in kwargs:
+            kwargs["color"] = STYLE_DEFAULTS.text_color
 
         kwargs2 = {k: v for k, v in kwargs.items()}
-        if 'create' in kwargs2:
-            del kwargs2['create']
-        if 'init' in kwargs2:
-            del kwargs2['init']
+        if "create" in kwargs2:
+            del kwargs2["create"]
+        if "init" in kwargs2:
+            del kwargs2["init"]
         super().__init__(**kwargs2, init=False)
 
         self.debug = debug
@@ -156,13 +184,21 @@ class OldTex(Mob):
     def on_create(self):
         tiles = list(traverse([c.children for c in self.children]))
         with AnimationContext(run_time_unit=2):
-            animate_lagged_by_location(tiles, lambda m: m.spawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
+            animate_lagged_by_location(
+                tiles,
+                lambda m: m.spawn_from_random_direction(),
+                F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
+            )
         return self
 
     def on_destroy(self):
         tiles = list(traverse([c.children for c in self.children]))
         with AnimationContext(run_time_unit=2):
-            animate_lagged_by_location(tiles, lambda m: m.despawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
+            animate_lagged_by_location(
+                tiles,
+                lambda m: m.despawn_from_random_direction(),
+                F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
+            )
         return self
 
     def set_fill_width(self, fill_portion):
@@ -192,47 +228,71 @@ class OldTex(Mob):
         return self
 
     def create_character_mobs(self, text, **kwargs):
-        pathlib.Path('media/tex').mkdir(exist_ok=True, parents=True)
-        #s = 0.105 * self.size / 100
+        pathlib.Path("media/tex").mkdir(exist_ok=True, parents=True)
+        # s = 0.105 * self.size / 100
         s = 0.04 * 45 / 100
         self.convert_ratio = (0.105 * self.font_size / 100) / s
         manim_kwargs = {k: v for k, v in kwargs.items()}
-        if 'color' in manim_kwargs:
-            del manim_kwargs['color']
-        if 'scale' in manim_kwargs:
-            del manim_kwargs['scale']
-        if 'use_cache' in manim_kwargs:
-            del manim_kwargs['use_cache']
-        if 'add_to_scene' in manim_kwargs:
-            del manim_kwargs['add_to_scene']
-        if 'create' in manim_kwargs:
-            del manim_kwargs['create']
+        if "color" in manim_kwargs:
+            del manim_kwargs["color"]
+        if "scale" in manim_kwargs:
+            del manim_kwargs["scale"]
+        if "use_cache" in manim_kwargs:
+            del manim_kwargs["use_cache"]
+        if "add_to_scene" in manim_kwargs:
+            del manim_kwargs["add_to_scene"]
+        if "create" in manim_kwargs:
+            del manim_kwargs["create"]
         text = (mn.MathTex if self.latex else mn.Tex)(text, **manim_kwargs)
 
         def get_rect_as_path(ps):
-            ps = ps[...,:2].astype(numpy.float32)
+            ps = ps[..., :2].astype(numpy.float32)
             ps = numpy.flip(ps, 0)
-            vmob = mn.VMobjectFromSVGPath(Path(Move(ps[0]), Close(ps[0], ps[0]), *([(Line)(ps[i*4], ps[(i+1)*4-1]) for i in range(4)]), Move(ps[0])))
+            vmob = mn.VMobjectFromSVGPath(
+                Path(
+                    Move(ps[0]),
+                    Close(ps[0], ps[0]),
+                    *([(Line)(ps[i * 4], ps[(i + 1) * 4 - 1]) for i in range(4)]),
+                    Move(ps[0]),
+                )
+            )
             vmob.needs_to_reverse = True
             return vmob
 
-        svg_mobs = [[__ if isinstance(__, mn.VMobjectFromSVGPath) else get_rect_as_path(_.original_points[i]) for i, __ in enumerate(_.submobjects)] for _ in text.submobjects]
+        svg_mobs = [
+            [
+                __
+                if isinstance(__, mn.VMobjectFromSVGPath)
+                else get_rect_as_path(_.original_points[i])
+                for i, __ in enumerate(_.submobjects)
+            ]
+            for _ in text.submobjects
+        ]
         svg_mobs = [x for l in svg_mobs for x in l]
 
-        all_points = torch.cat([torch.stack([point_to_tensor2(_.end) for _ in c.path_obj], 0) for c in svg_mobs]).flip(-1)
+        all_points = torch.cat(
+            [
+                torch.stack([point_to_tensor2(_.end) for _ in c.path_obj], 0)
+                for c in svg_mobs
+            ]
+        ).flip(-1)
         mx_point = all_points.amax(0)
         mn_point = all_points.amin(0)
         mean = (mx_point + mn_point) / 2
 
         def update_attr_mean(ele, m):
-            for attr in ['start', 'end', 'control1', 'control2']:
+            for attr in ["start", "end", "control1", "control2"]:
                 if hasattr(ele, attr) and ele.__getattribute__(attr) is not None:
-                    ele.__getattribute__(attr).x = float((ele.__getattribute__(attr).x - m[1].item()) * s)
-                    ele.__getattribute__(attr).y = float(-(ele.__getattribute__(attr).y - m[0].item()) * s)
+                    ele.__getattribute__(attr).x = float(
+                        (ele.__getattribute__(attr).x - m[1].item()) * s
+                    )
+                    ele.__getattribute__(attr).y = float(
+                        -(ele.__getattribute__(attr).y - m[0].item()) * s
+                    )
 
         def normalize(_, m=mean):
             _ = copy.deepcopy(_)
-            _[..., 0] = (_[...,0] - m[1].item()) * s
+            _[..., 0] = (_[..., 0] - m[1].item()) * s
             _[..., 1] = -(_[..., 1] - m[0].item()) * s
             return _
 
@@ -240,20 +300,51 @@ class OldTex(Mob):
             for element in c.path_obj:
                 update_attr_mean(element, mean)
 
-        all_points = torch.cat([torch.stack([point_to_tensor2(_.end) for _ in c.path_obj], 0).flip(-1) for c in svg_mobs])
+        all_points = torch.cat(
+            [
+                torch.stack([point_to_tensor2(_.end) for _ in c.path_obj], 0).flip(-1)
+                for c in svg_mobs
+            ]
+        )
         mx_point = all_points.amax(0)
         mn_point = all_points.amin(0)
         self.mn_point = torch.cat((torch.zeros_like(mn_point[..., :1]), mn_point), -1)
         self.mx_point = torch.cat((torch.zeros_like(mx_point[..., :1]), mx_point), -1)
 
         with Off():
-            self.character_mobs = TriangulatedBezierCircuit([c.path_obj for c in svg_mobs], invert=True, hash_keys=None, reverse_points=hasattr(svg_mobs[0], 'needs_to_reverse'), init=False, **kwargs)
+            self.character_mobs = TriangulatedBezierCircuit(
+                [c.path_obj for c in svg_mobs],
+                invert=True,
+                hash_keys=None,
+                reverse_points=hasattr(svg_mobs[0], "needs_to_reverse"),
+                init=False,
+                **kwargs,
+            )
 
     def get_boundary_points_test(self):
-        return torch.stack((self.mn_point,
-                torch.stack((torch.zeros_like(self.mn_point[..., 0]), self.mn_point[...,1], self.mx_point[...,2]), -1),
-                torch.stack((torch.zeros_like(self.mn_point[..., 0]), self.mx_point[...,1], self.mn_point[...,2]), -1),
-                     self.mx_point), -2) + self.location.unsqueeze(-2)
+        return torch.stack(
+            (
+                self.mn_point,
+                torch.stack(
+                    (
+                        torch.zeros_like(self.mn_point[..., 0]),
+                        self.mn_point[..., 1],
+                        self.mx_point[..., 2],
+                    ),
+                    -1,
+                ),
+                torch.stack(
+                    (
+                        torch.zeros_like(self.mn_point[..., 0]),
+                        self.mx_point[..., 1],
+                        self.mn_point[..., 2],
+                    ),
+                    -1,
+                ),
+                self.mx_point,
+            ),
+            -2,
+        ) + self.location.unsqueeze(-2)
 
 
 from algan.external_libraries.manim.utils.tex import _DEFAULT_PREAMBLE
@@ -270,5 +361,6 @@ class Text(Tex):
         Passed to :class:`~.Text`
 
     """
+
     def __init__(self, text, **kwargs):
         super().__init__(text, latex=False, **kwargs)

@@ -21,7 +21,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 
 from .. import config
 from ..constants import *
