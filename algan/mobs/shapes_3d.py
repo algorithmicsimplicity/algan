@@ -16,6 +16,7 @@ class Sphere(Surface):
         Passed to :class:`~.Surface`
 
     """
+
     def __init__(self, radius=1, *args, **kwargs):
         self.radius = radius
         super().__init__(*args, **kwargs)
@@ -24,8 +25,8 @@ class Sphere(Surface):
         x = coords_2d[..., 0]
         y = coords_2d[..., 1]
 
-        longitude = -torch.pi * (1-x) + x * torch.pi
-        latitude = -torch.pi * 0.5 * (1-y) + y * torch.pi * 0.5
+        longitude = -torch.pi * (1 - x) + x * torch.pi
+        latitude = -torch.pi * 0.5 * (1 - y) + y * torch.pi * 0.5
 
         X = torch.cos(latitude) * torch.cos(longitude)
         Y = torch.sin(latitude)
@@ -51,11 +52,12 @@ class Cone(Surface):
         Passed to :class:`~.Surface`
 
     """
+
     def __init__(self, radius=1, height=1, closed=False, *args, **kwargs):
         self.radius = radius
         self.height = height
-        if 'grid_aspect_ratio' not in kwargs:
-            kwargs['grid_aspect_ratio'] = 1/PI
+        if "grid_aspect_ratio" not in kwargs:
+            kwargs["grid_aspect_ratio"] = 1 / PI
         super().__init__(*args, **kwargs)
         if closed:
             self.cap = Circle(radius=radius).move(DOWN * height * 0.5)
@@ -65,22 +67,41 @@ class Cone(Surface):
         uv[..., 1:] /= uv[..., 1:].amax()
         u = -uv[..., :1]
         v = uv[..., 1:]
-        return torch.cat(((u * torch.pi * 2).sin() * self.radius * v,
-                          (v - 0.5) * self.height,
-                          (u * torch.pi * 2).cos() * self.radius * v), -1)
+        return torch.cat(
+            (
+                (u * torch.pi * 2).sin() * self.radius * v,
+                (v - 0.5) * self.height,
+                (u * torch.pi * 2).cos() * self.radius * v,
+            ),
+            -1,
+        )
 
     def normal_function(self, uv):
         xyz = self.coord_function(uv)
-        xyz[...,1] = 0
+        xyz[..., 1] = 0
         return xyz
 
 
 class Arrow3D(Mob):
-    def __init__(self, start_point, end_point, thickness: float = 0.02, height: float = 0.3, base_radius: float = 0.08, *args, **kwargs):
+    def __init__(
+        self,
+        start_point,
+        end_point,
+        thickness: float = 0.02,
+        height: float = 0.3,
+        base_radius: float = 0.08,
+        *args,
+        **kwargs,
+    ):
         super().__init__()
-        self.tail = Cylinder(radius=thickness, closed=True, *args, **kwargs).move_between_points(start_point, end_point)
-        self.head = Cone(base_radius, height, closed=True, *args, **kwargs).move_to(self.tail
-                        ).move((end_point-start_point) * 0.5)
+        self.tail = Cylinder(
+            radius=thickness, closed=True, *args, **kwargs
+        ).move_between_points(start_point, end_point)
+        self.head = (
+            Cone(base_radius, height, closed=True, *args, **kwargs)
+            .move_to(self.tail)
+            .move((end_point - start_point) * 0.5)
+        )
 
 
 class Cylinder(Surface):
@@ -96,11 +117,12 @@ class Cylinder(Surface):
         Passed to :class:`~.Surface`
 
     """
+
     def __init__(self, radius=1, height=1, closed=False, *args, **kwargs):
         self.radius = radius
         self.height = height
-        if 'grid_aspect_ratio' not in kwargs:
-            kwargs['grid_aspect_ratio'] = 1/PI
+        if "grid_aspect_ratio" not in kwargs:
+            kwargs["grid_aspect_ratio"] = 1 / PI
         super().__init__(*args, **kwargs)
         if closed:
             self.bottom_cap = Circle(radius=radius).move(DOWN * height * 0.5)
@@ -111,27 +133,40 @@ class Cylinder(Surface):
         uv[..., 1:] /= uv[..., 1:].amax()
         u = -uv[..., :1]
         v = uv[..., 1:]
-        return torch.cat(((u * torch.pi * 2).sin() * self.radius,
-                          (v - 0.5) * self.height,
-                          (u * torch.pi * 2).cos() * self.radius), -1)
+        return torch.cat(
+            (
+                (u * torch.pi * 2).sin() * self.radius,
+                (v - 0.5) * self.height,
+                (u * torch.pi * 2).cos() * self.radius,
+            ),
+            -1,
+        )
 
     def normal_function(self, uv):
         xyz = self.coord_function(uv)
-        xyz[...,1] = 0
+        xyz[..., 1] = 0
         return xyz
 
     @animated_function(animated_args={"interpolation": 0})
     def set_start_point(self, point, interpolation=1):
-        offset = self.get_upwards_direction() * self.scale_coefficient[...,1].unsqueeze(-1) * 0.5
+        offset = (
+            self.get_upwards_direction()
+            * self.scale_coefficient[..., 1].unsqueeze(-1)
+            * 0.5
+        )
         current_end = self.location + offset
         current_start = self.location - offset
-        point = current_start * (1-interpolation) + interpolation * point
+        point = current_start * (1 - interpolation) + interpolation * point
         self._move_between_points(point, current_end)
         return self
 
     @animated_function(animated_args={"interpolation": 0})
     def move_between_points(self, start, end, interpolation=1):
-        offset = self.get_upwards_direction() * self.scale_coefficient[..., 1].unsqueeze(-1) * 0.5
+        offset = (
+            self.get_upwards_direction()
+            * self.scale_coefficient[..., 1].unsqueeze(-1)
+            * 0.5
+        )
         current_end = self.location + offset
         current_start = self.location - offset
         start = current_start * (1 - interpolation) + interpolation * start
@@ -142,8 +177,8 @@ class Cylinder(Surface):
     def _move_between_points(self, start, end):
         with Sync():
             s = torch.ones_like(self.scale_coefficient)
-            s[...,1] = ((end-start).norm(p=2,dim=-1) / self.scale_coefficient[...,1])
+            s[..., 1] = (end - start).norm(p=2, dim=-1) / self.scale_coefficient[..., 1]
             self.move_to((start + end) * 0.5)
-            self.look(F.normalize(end-start, p=2, dim=-1), axis=1)
+            self.look(F.normalize(end - start, p=2, dim=-1), axis=1)
             self.scale(s)
         return self

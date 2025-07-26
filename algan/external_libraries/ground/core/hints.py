@@ -1,24 +1,19 @@
 from abc import abstractmethod
 from numbers import Real
-from typing import (Callable,
-                    Sequence,
-                    TypeVar,
-                    Union)
+from typing import Callable, Sequence, TypeVar, Union
 
-#from symba.base import Expression
+# from symba.base import Expression
 
 try:
-    from typing import (Protocol,
-                        runtime_checkable)
+    from typing import Protocol, runtime_checkable
 except ImportError:
-    from typing_extensions import (Protocol,
-                                   runtime_checkable)
+    from typing_extensions import Protocol, runtime_checkable
 
-#Scalar = TypeVar('Scalar', Expression, Real)
-#SquareRooter = Callable[[Scalar], Scalar]
+# Scalar = TypeVar('Scalar', Expression, Real)
+# SquareRooter = Callable[[Scalar], Scalar]
 
 
-#@runtime_checkable
+# @runtime_checkable
 class Point(Protocol):
     """
     **Point** is a minimal element of the plane
@@ -27,10 +22,11 @@ class Point(Protocol):
     Points considered to be sorted lexicographically,
     with abscissas being compared first.
     """
+
     __slots__ = ()
 
     @abstractmethod
-    def __new__(cls, x, y) -> 'Point':
+    def __new__(cls, x, y) -> "Point":
         """Constructs point given its coordinates."""
 
     @property
@@ -44,11 +40,11 @@ class Point(Protocol):
         """Ordinate of the point."""
 
     @abstractmethod
-    def __ge__(self, other: 'Point') -> bool:
+    def __ge__(self, other: "Point") -> bool:
         """Checks if the point is greater than or equal to the other."""
 
     @abstractmethod
-    def __gt__(self, other: 'Point') -> bool:
+    def __gt__(self, other: "Point") -> bool:
         """Checks if the point is greater than the other."""
 
     @abstractmethod
@@ -56,33 +52,36 @@ class Point(Protocol):
         """Returns hash value of the point."""
 
     @abstractmethod
-    def __le__(self, other: 'Point') -> bool:
+    def __le__(self, other: "Point") -> bool:
         """Checks if the point is less than or equal to the other."""
 
     @abstractmethod
-    def __lt__(self, other: 'Point') -> bool:
+    def __lt__(self, other: "Point") -> bool:
         """Checks if the point is less than the other."""
 
 
-Range = TypeVar('Range')
+Range = TypeVar("Range")
 QuaternaryPointFunction = Callable[[Point, Point, Point, Point], Range]
 TernaryPointFunction = Callable[[Point, Point, Point], Range]
 
 
-#@runtime_checkable
+# @runtime_checkable
 class Box(Protocol):
     """
     **Box** is a limited closed region
     defined by axis-aligned rectangular contour.
     """
+
     __slots__ = ()
 
     @abstractmethod
-    def __new__(cls,
-                min_x,
-                max_x,
-                min_y,
-                max_y,) -> 'Box':
+    def __new__(
+        cls,
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+    ) -> "Box":
         """Constructs box given its coordinates limits."""
 
     @property
@@ -109,6 +108,7 @@ class Box(Protocol):
 @runtime_checkable
 class Empty(Protocol):
     """Represents an empty set of points."""
+
     __slots__ = ()
 
     @abstractmethod
@@ -116,7 +116,7 @@ class Empty(Protocol):
         """Constructs empty geometry."""
 
 
-_T = TypeVar('_T')
+_T = TypeVar("_T")
 Maybe = Union[Empty, _T]
 
 
@@ -126,10 +126,11 @@ class Multipoint(Protocol):
     **Multipoint** is a discrete geometry
     that represents non-empty set of unique points.
     """
+
     __slots__ = ()
 
     @abstractmethod
-    def __new__(cls, points: Sequence[Point]) -> 'Multipoint':
+    def __new__(cls, points: Sequence[Point]) -> "Multipoint":
         """Constructs multipoint given its points."""
 
     @property
@@ -145,10 +146,11 @@ class Segment(Protocol):
     a limited continuous part of the line containing more than one point
     defined by a pair of unequal points (called *segment's endpoints*).
     """
+
     __slots__ = ()
 
     @abstractmethod
-    def __new__(cls, start: Point, end: Point) -> 'Segment':
+    def __new__(cls, start: Point, end: Point) -> "Segment":
         """Constructs segment given its endpoints."""
 
     @property
@@ -168,10 +170,11 @@ class Multisegment(Protocol):
     **Multisegment** is a linear geometry that represents set of two or more
     non-crossing and non-overlapping segments.
     """
+
     __slots__ = ()
 
     @abstractmethod
-    def __new__(cls, segments: Sequence[Segment]) -> 'Multisegment':
+    def __new__(cls, segments: Sequence[Segment]) -> "Multisegment":
         """Constructs multisegment given its segments."""
 
     @property
@@ -186,10 +189,11 @@ class Contour(Protocol):
     **Contour** is a linear geometry that represents closed simple polyline
     defined by a sequence of points (called *contour's vertices*).
     """
+
     __slots__ = ()
 
     @abstractmethod
-    def __new__(cls, vertices: Sequence[Point]) -> 'Contour':
+    def __new__(cls, vertices: Sequence[Point]) -> "Contour":
         """Constructs contour given its vertices."""
 
     @property
@@ -205,10 +209,11 @@ class Polygon(Protocol):
     defined by the pair of outer contour (called *polygon's border*)
     and possibly empty sequence of inner contours (called *polygon's holes*).
     """
+
     __slots__ = ()
 
     @abstractmethod
-    def __new__(cls, border: Contour, holes: Sequence[Contour]) -> 'Polygon':
+    def __new__(cls, border: Contour, holes: Sequence[Contour]) -> "Polygon":
         """Constructs polygon given its border and holes."""
 
     @property
@@ -228,10 +233,11 @@ class Multipolygon(Protocol):
     **Multipolygon** is a shaped geometry that represents set of two or more
     non-overlapping polygons intersecting only in discrete set of points.
     """
+
     __slots__ = ()
 
     @abstractmethod
-    def __new__(cls, polygons: Sequence[Polygon]) -> 'Multipolygon':
+    def __new__(cls, polygons: Sequence[Polygon]) -> "Multipolygon":
         """Constructs multipolygon given its polygons."""
 
     @property
@@ -245,19 +251,20 @@ Shaped = Union[Polygon, Multipolygon]
 
 Scalar = None
 
+
 @runtime_checkable
 class Mix(Protocol):
     """
     **Mix** is a set of two or more non-empty geometries
     with different dimensions.
     """
+
     __slots__ = ()
 
     @abstractmethod
-    def __new__(cls,
-                discrete: Maybe[Multipoint],
-                linear: Maybe[Linear],
-                shaped: Maybe[Shaped]) -> 'Mix':
+    def __new__(
+        cls, discrete: Maybe[Multipoint], linear: Maybe[Linear], shaped: Maybe[Shaped]
+    ) -> "Mix":
         """Constructs mix given its components."""
 
     @property

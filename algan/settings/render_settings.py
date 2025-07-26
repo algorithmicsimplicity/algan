@@ -28,11 +28,13 @@ class RenderSettings:
         render_to_file(render_settings=RenderSettings((1000, 1000), 100, 1))
 
     """
+
     resolution: Tuple[int, int]
     frames_per_second: int = 30
     anti_alias_level: int = 2
-    audio_frames_per_second: int=44100
+    audio_frames_per_second: int = 44100
     save_image: bool = False
+
 
 THUMBNAIL = RenderSettings((1280, 720), 1, save_image=True)
 
@@ -51,7 +53,7 @@ MD = RenderSettings((1280, 720), 30)
 HD = RenderSettings((1920, 1080), 30)
 
 # Render at (2560, 1440) resolution, 60 fps.
-PRODUCTION = RenderSettings((2560, 1440),60)
+PRODUCTION = RenderSettings((2560, 1440), 60)
 
 # Render at (3840, 2160) resolution, 60 fps.
 UHD = RenderSettings((3840, 2160), 60)

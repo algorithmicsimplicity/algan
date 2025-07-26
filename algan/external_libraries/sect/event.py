@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from abc import (ABC,
-                 abstractmethod)
+from abc import ABC, abstractmethod
 from reprlib import recursive_repr
 from typing import Optional
 
@@ -41,10 +40,10 @@ class LeftEvent(Event):
 
     @classmethod
     def from_segment_endpoints(
-            cls,
-            endpoints: SegmentEndpoints,
-            from_first: bool,
-            is_counterclockwise_contour: bool
+        cls,
+        endpoints: SegmentEndpoints,
+        from_first: bool,
+        is_counterclockwise_contour: bool,
     ) -> LeftEvent:
         start, end = endpoints
         interior_to_left = is_counterclockwise_contour
@@ -55,15 +54,24 @@ class LeftEvent(Event):
         result.right = RightEvent(end, result)
         return result
 
-    __slots__ = ('edge', 'interior_to_left', 'is_overlap',
-                 'other_interior_to_left', 'right', '_from_first', '_start')
+    __slots__ = (
+        "edge",
+        "interior_to_left",
+        "is_overlap",
+        "other_interior_to_left",
+        "right",
+        "_from_first",
+        "_start",
+    )
 
-    def __init__(self,
-                 start: Point,
-                 right: Optional[RightEvent],
-                 from_first: bool,
-                 interior_to_left: bool,
-                 edge: Optional[QuadEdge] = None) -> None:
+    def __init__(
+        self,
+        start: Point,
+        right: Optional[RightEvent],
+        from_first: bool,
+        interior_to_left: bool,
+        edge: Optional[QuadEdge] = None,
+    ) -> None:
         self.right, self._from_first, self._start = right, from_first, start
         self.interior_to_left = interior_to_left
         self.edge = edge
@@ -92,15 +100,16 @@ class LeftEvent(Event):
         return self._start
 
     def divide(self, point: Point) -> LeftEvent:
-        tail = self.right.left = LeftEvent(point, self.right, True,
-                                           self.interior_to_left, self.edge)
+        tail = self.right.left = LeftEvent(
+            point, self.right, True, self.interior_to_left, self.edge
+        )
         self.right = RightEvent(point, self)
         return tail
 
 
 class RightEvent(Event):
     is_left = False
-    __slots__ = 'left', '_start'
+    __slots__ = "left", "_start"
 
     def __init__(self, start: Point, left: LeftEvent) -> None:
         self.left, self._start = left, start

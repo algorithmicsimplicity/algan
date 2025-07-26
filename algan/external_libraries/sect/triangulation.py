@@ -2,30 +2,21 @@ from __future__ import annotations
 
 from collections import deque
 from functools import partial
-from itertools import (accumulate,
-                       chain,
-                       repeat)
-from typing import (Callable,
-                    Dict,
-                    Iterable,
-                    List,
-                    Optional,
-                    Sequence,
-                    Set,
-                    Type)
+from itertools import accumulate, chain, repeat
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Type
 
 from decision.partition import coin_change
-from algan.external_libraries.ground.base import (Context,
-                         Location,
-                         Orientation,
-                         Relation)
-from algan.external_libraries.ground.hints import (Contour,
-                          Point,
-                          Polygon,
-                          Segment)
+from algan.external_libraries.ground.base import (
+    Context,
+    Location,
+    Orientation,
+    Relation,
+)
+from algan.external_libraries.ground.hints import Contour, Point, Polygon, Segment
 from reprit.base import generate_repr
 
 flatten = chain.from_iterable
+
 
 def pairwise(iterable):
     iterator = iter(iterable)
@@ -34,30 +25,32 @@ def pairwise(iterable):
         yield element, next_element
         element = next_element
 
+
 from .events_queue import EventsQueue
-from .hints import (PointInCircleLocator,
-                    SegmentsRelater)
-from .quad_edge import (QuadEdge,
-                        edge_to_neighbours,
-                        edges_with_opposites)
-from .utils import (ceil_log2,
-                    complete_vertices,
-                    contour_to_oriented_edges_endpoints,
-                    normalize_contour_vertices,
-                    to_distinct,
-                    to_endpoints)
+from .hints import PointInCircleLocator, SegmentsRelater
+from .quad_edge import QuadEdge, edge_to_neighbours, edges_with_opposites
+from .utils import (
+    ceil_log2,
+    complete_vertices,
+    contour_to_oriented_edges_endpoints,
+    normalize_contour_vertices,
+    to_distinct,
+    to_endpoints,
+)
 
 
 class Triangulation:
     """Represents triangulation."""
 
     @classmethod
-    def constrained_delaunay(cls,
-                             polygon: Polygon,
-                             *,
-                             extra_constraints: Sequence[Segment] = (),
-                             extra_points: Sequence[Point] = (),
-                             context: Context) -> Triangulation:
+    def constrained_delaunay(
+        cls,
+        polygon: Polygon,
+        *,
+        extra_constraints: Sequence[Segment] = (),
+        extra_points: Sequence[Point] = (),
+        context: Context,
+    ) -> Triangulation:
         """
         Constructs constrained Delaunay triangulation of given polygon
         (with potentially extra points and constraints).
@@ -84,10 +77,12 @@ class Triangulation:
 
         .. code-block:: python
 
-            vertices_count = (len(polygon.border.vertices)
-                              + sum(len(hole.vertices)
-                                    for hole in polygon.holes)
-                              + len(extra_points) + len(extra_constraints))
+            vertices_count = (
+                len(polygon.border.vertices)
+                + sum(len(hole.vertices) for hole in polygon.holes)
+                + len(extra_points)
+                + len(extra_constraints)
+            )
 
         Reference:
             http://www.sccg.sk/~samuelcik/dgs/quad_edge.pdf
@@ -108,31 +103,36 @@ class Triangulation:
         border, holes = polygon.border, polygon.holes
         if extra_points:
             border, holes, extra_points = complete_vertices(
-                    border, holes, extra_points, context
+                border, holes, extra_points, context
             )
-        result = cls.delaunay(list(chain(border.vertices,
-                                         flatten(hole.vertices
-                                                 for hole in holes),
-                                         extra_points)),
-                              context=context)
+        result = cls.delaunay(
+            list(
+                chain(
+                    border.vertices,
+                    flatten(hole.vertices for hole in holes),
+                    extra_points,
+                )
+            ),
+            context=context,
+        )
         border_edges = context.contour_segments(border)
-        constrain(result, chain(border_edges,
-                                flatten(map(context.contour_segments, holes)),
-                                extra_constraints))
+        constrain(
+            result,
+            chain(
+                border_edges,
+                flatten(map(context.contour_segments, holes)),
+                extra_constraints,
+            ),
+        )
         bound(result, border_edges)
         cut(result, holes)
         result._triangular_holes_vertices.update(
-                frozenset(hole.vertices)
-                for hole in holes
-                if len(hole.vertices) == 3
+            frozenset(hole.vertices) for hole in holes if len(hole.vertices) == 3
         )
         return result
 
     @classmethod
-    def delaunay(cls,
-                 points: Sequence[Point],
-                 *,
-                 context: Context) -> Triangulation:
+    def delaunay(cls, points: Sequence[Point], *, context: Context) -> Triangulation:
         """
         Constructs Delaunay triangulation of given points.
 
@@ -151,24 +151,24 @@ class Triangulation:
         """
         points = sorted(to_distinct(points))
         lengths = coin_change(len(points), base_cases)
-        result = [cls._initialize_triangulation(points[start:stop], context)
-                  for start, stop in pairwise(accumulate((0,) + lengths))]
+        result = [
+            cls._initialize_triangulation(points[start:stop], context)
+            for start, stop in pairwise(accumulate((0,) + lengths))
+        ]
         for _ in repeat(None, ceil_log2(len(result))):
             parts_to_merge_count = len(result) // 2 * 2
-            result = ([merge(result[offset], result[offset + 1])
-                       for offset in range(0, parts_to_merge_count, 2)]
-                      + result[parts_to_merge_count:])
+            result = [
+                merge(result[offset], result[offset + 1])
+                for offset in range(0, parts_to_merge_count, 2)
+            ] + result[parts_to_merge_count:]
         return result[0]
 
-    __slots__ = ('context', 'left_side', 'right_side',
-                 '_triangular_holes_vertices')
+    __slots__ = ("context", "left_side", "right_side", "_triangular_holes_vertices")
 
-    def __init__(self,
-                 left_side: QuadEdge,
-                 right_side: QuadEdge,
-                 context: Context) -> None:
-        self.context, self.left_side, self.right_side = (context, left_side,
-                                                         right_side)
+    def __init__(
+        self, left_side: QuadEdge, right_side: QuadEdge, context: Context
+    ) -> None:
+        self.context, self.left_side, self.right_side = (context, left_side, right_side)
         self._triangular_holes_vertices = set()
 
     __repr__ = generate_repr(__init__)
@@ -184,70 +184,84 @@ class Triangulation:
     def triangles(self) -> List[Contour]:
         """Returns triangles of the triangulation."""
         vertices_sets = to_distinct(
-                frozenset((edge.start, edge.end, edge.left_from_start.end))
-                for edge in to_edges(self)
-                if (edge.left_from_start.end
-                    == edge.opposite.right_from_start.end
-                    and (edge.orientation_of(edge.left_from_start.end)
-                         is Orientation.COUNTERCLOCKWISE))
+            frozenset((edge.start, edge.end, edge.left_from_start.end))
+            for edge in to_edges(self)
+            if (
+                edge.left_from_start.end == edge.opposite.right_from_start.end
+                and (
+                    edge.orientation_of(edge.left_from_start.end)
+                    is Orientation.COUNTERCLOCKWISE
+                )
+            )
         )
-        contour_cls, orienteer = (self.context.contour_cls,
-                                  self.context.angle_orientation)
-        return [contour_cls(normalize_contour_vertices(list(vertices),
-                                                       orienteer))
-                for vertices in vertices_sets
-                if vertices not in self._triangular_holes_vertices]
+        contour_cls, orienteer = (
+            self.context.contour_cls,
+            self.context.angle_orientation,
+        )
+        return [
+            contour_cls(normalize_contour_vertices(list(vertices), orienteer))
+            for vertices in vertices_sets
+            if vertices not in self._triangular_holes_vertices
+        ]
 
     @classmethod
-    def _initialize_triangulation(cls,
-                                  points: Sequence[Point],
-                                  context: Context) -> Triangulation:
+    def _initialize_triangulation(
+        cls, points: Sequence[Point], context: Context
+    ) -> Triangulation:
         return base_cases[len(points)](cls, points, context)
 
 
-def bound(triangulation: Triangulation,
-          border_edges: Sequence[Segment]) -> None:
+def bound(triangulation: Triangulation, border_edges: Sequence[Segment]) -> None:
     border_endpoints = {to_endpoints(edge) for edge in border_edges}
-    non_boundary = {edge
-                    for edge in to_unique_boundary_edges(triangulation)
-                    if to_endpoints(edge) not in border_endpoints}
+    non_boundary = {
+        edge
+        for edge in to_unique_boundary_edges(triangulation)
+        if to_endpoints(edge) not in border_endpoints
+    }
     while non_boundary:
         edge = non_boundary.pop()
         candidates = edge_to_neighbours(edge)
         triangulation.delete(edge)
-        non_boundary.update(candidate
-                            for candidate in candidates
-                            if to_endpoints(candidate) not in border_endpoints)
+        non_boundary.update(
+            candidate
+            for candidate in candidates
+            if to_endpoints(candidate) not in border_endpoints
+        )
 
 
-def connect(base_edge: QuadEdge,
-            point_in_circle_locator: PointInCircleLocator) -> None:
+def connect(base_edge: QuadEdge, point_in_circle_locator: PointInCircleLocator) -> None:
     while True:
         left_candidate, right_candidate = (
             to_left_candidate(base_edge, point_in_circle_locator),
-            to_right_candidate(base_edge, point_in_circle_locator)
+            to_right_candidate(base_edge, point_in_circle_locator),
         )
         if left_candidate is right_candidate is None:
             break
         base_edge = (
             right_candidate.connect(base_edge.opposite)
-            if (left_candidate is None
+            if (
+                left_candidate is None
                 or right_candidate is not None
-                and (point_in_circle_locator(right_candidate.end,
-                                             left_candidate.end, base_edge.end,
-                                             base_edge.start)
-                     is Location.INTERIOR))
+                and (
+                    point_in_circle_locator(
+                        right_candidate.end,
+                        left_candidate.end,
+                        base_edge.end,
+                        base_edge.start,
+                    )
+                    is Location.INTERIOR
+                )
+            )
             else base_edge.opposite.connect(left_candidate.opposite)
         )
 
 
-def constrain(triangulation: Triangulation,
-              constraints: Iterable[Segment]) -> None:
+def constrain(triangulation: Triangulation, constraints: Iterable[Segment]) -> None:
     endpoints = {to_endpoints(edge) for edge in to_edges(triangulation)}
     inner_edges = to_unique_inner_edges(triangulation)
     point_in_circle_locator, segments_relater = (
         triangulation.context.locate_point_in_point_point_point_circle,
-        triangulation.context.segments_relation
+        triangulation.context.segments_relation,
     )
     for constraint in constraints:
         constraint_endpoints = to_endpoints(constraint)
@@ -257,10 +271,10 @@ def constrain(triangulation: Triangulation,
         inner_edges.difference_update(crossings)
         endpoints.difference_update(to_endpoints(edge) for edge in crossings)
         new_edges = resolve_crossings(crossings, constraint, segments_relater)
-        set_criterion({edge
-                       for edge in new_edges
-                       if to_endpoints(edge) != constraint_endpoints},
-                      point_in_circle_locator)
+        set_criterion(
+            {edge for edge in new_edges if to_endpoints(edge) != constraint_endpoints},
+            point_in_circle_locator,
+        )
         endpoints.update(to_endpoints(edge) for edge in new_edges)
         inner_edges.update(new_edges)
 
@@ -270,53 +284,65 @@ def cut(triangulation: Triangulation, holes: Sequence[Contour]) -> None:
         return
     events_queue = EventsQueue(triangulation.context)
     for edge in to_unique_inner_edges(triangulation):
-        events_queue.register_edge(edge,
-                                   from_first=True,
-                                   is_counterclockwise_contour=True)
+        events_queue.register_edge(
+            edge, from_first=True, is_counterclockwise_contour=True
+        )
     orienteer = triangulation.context.angle_orientation
     for hole in holes:
         for endpoints in contour_to_oriented_edges_endpoints(
-                hole,
-                clockwise=True,
-                orienteer=orienteer
+            hole, clockwise=True, orienteer=orienteer
         ):
-            events_queue.register_segment(endpoints,
-                                          from_first=False,
-                                          is_counterclockwise_contour=False)
+            events_queue.register_segment(
+                endpoints, from_first=False, is_counterclockwise_contour=False
+            )
     for event in events_queue.sweep():
         if event.from_first and event.inside:
             triangulation.delete(event.edge)
 
 
-def detect_crossings(inner_edges: Iterable[QuadEdge],
-                     constraint: Segment,
-                     segments_relater: SegmentsRelater) -> List[QuadEdge]:
-    return [edge
-            for edge in inner_edges
-            if segments_relater(edge, constraint) is Relation.CROSS]
+def detect_crossings(
+    inner_edges: Iterable[QuadEdge],
+    constraint: Segment,
+    segments_relater: SegmentsRelater,
+) -> List[QuadEdge]:
+    return [
+        edge
+        for edge in inner_edges
+        if segments_relater(edge, constraint) is Relation.CROSS
+    ]
 
 
-def edge_should_be_swapped(edge: QuadEdge,
-                           point_in_circle_locator: PointInCircleLocator
-                           ) -> bool:
-    return (is_convex_quadrilateral_diagonal(edge)
-            and (point_in_circle_locator(edge.right_from_start.end,
-                                         edge.start, edge.end,
-                                         edge.left_from_start.end)
-                 is Location.INTERIOR
-                 or (point_in_circle_locator(edge.left_from_start.end,
-                                             edge.end, edge.start,
-                                             edge.right_from_start.end)
-                     is Location.INTERIOR)))
+def edge_should_be_swapped(
+    edge: QuadEdge, point_in_circle_locator: PointInCircleLocator
+) -> bool:
+    return is_convex_quadrilateral_diagonal(edge) and (
+        point_in_circle_locator(
+            edge.right_from_start.end, edge.start, edge.end, edge.left_from_start.end
+        )
+        is Location.INTERIOR
+        or (
+            point_in_circle_locator(
+                edge.left_from_start.end,
+                edge.end,
+                edge.start,
+                edge.right_from_start.end,
+            )
+            is Location.INTERIOR
+        )
+    )
 
 
 def find_base_edge(first: Triangulation, second: Triangulation) -> QuadEdge:
     while True:
-        if (first.right_side.orientation_of(second.left_side.start)
-                is Orientation.COUNTERCLOCKWISE):
+        if (
+            first.right_side.orientation_of(second.left_side.start)
+            is Orientation.COUNTERCLOCKWISE
+        ):
             first.right_side = first.right_side.left_from_end
-        elif (second.left_side.orientation_of(first.right_side.start)
-              is Orientation.CLOCKWISE):
+        elif (
+            second.left_side.orientation_of(first.right_side.start)
+            is Orientation.CLOCKWISE
+        ):
             second.left_side = second.left_side.right_from_end
         else:
             break
@@ -329,29 +355,28 @@ def find_base_edge(first: Triangulation, second: Triangulation) -> QuadEdge:
 
 
 def is_convex_quadrilateral_diagonal(edge: QuadEdge) -> bool:
-    return (edge.right_from_start.orientation_of(edge.end)
-            is Orientation.COUNTERCLOCKWISE
-            is edge.right_from_end.opposite.orientation_of(
-                    edge.left_from_start.end
-            )
-            is edge.left_from_end.orientation_of(edge.start)
-            is edge.left_from_start.opposite.orientation_of(
-                    edge.right_from_start.end
-            ))
+    return (
+        edge.right_from_start.orientation_of(edge.end)
+        is Orientation.COUNTERCLOCKWISE
+        is edge.right_from_end.opposite.orientation_of(edge.left_from_start.end)
+        is edge.left_from_end.orientation_of(edge.start)
+        is edge.left_from_start.opposite.orientation_of(edge.right_from_start.end)
+    )
 
 
 def merge(first: Triangulation, second: Triangulation) -> Triangulation:
-    connect(find_base_edge(first, second),
-            first.context.locate_point_in_point_point_point_circle)
+    connect(
+        find_base_edge(first, second),
+        first.context.locate_point_in_point_point_point_circle,
+    )
     return type(first)(first.left_side, second.right_side, first.context)
 
 
-def resolve_crossings(crossings: List[QuadEdge],
-                      constraint: Segment,
-                      segments_relater: SegmentsRelater) -> List[QuadEdge]:
+def resolve_crossings(
+    crossings: List[QuadEdge], constraint: Segment, segments_relater: SegmentsRelater
+) -> List[QuadEdge]:
     result = []
-    crossings = deque(crossings,
-                      maxlen=len(crossings))
+    crossings = deque(crossings, maxlen=len(crossings))
     while crossings:
         edge = crossings.popleft()
         if is_convex_quadrilateral_diagonal(edge):
@@ -365,8 +390,9 @@ def resolve_crossings(crossings: List[QuadEdge],
     return result
 
 
-def set_criterion(target_edges: Set[QuadEdge],
-                  point_in_circle_locator: PointInCircleLocator) -> None:
+def set_criterion(
+    target_edges: Set[QuadEdge], point_in_circle_locator: PointInCircleLocator
+) -> None:
     while True:
         edges_to_swap = {
             edge
@@ -388,43 +414,41 @@ def to_edges(triangulation: Triangulation) -> Iterable[QuadEdge]:
     return edges_with_opposites(to_unique_edges(triangulation))
 
 
-def to_left_candidate(base_edge: QuadEdge,
-                      point_in_circle_locator: PointInCircleLocator
-                      ) -> Optional[QuadEdge]:
+def to_left_candidate(
+    base_edge: QuadEdge, point_in_circle_locator: PointInCircleLocator
+) -> Optional[QuadEdge]:
     result = base_edge.opposite.left_from_start
     if base_edge.orientation_of(result.end) is not Orientation.CLOCKWISE:
         return None
-    while (point_in_circle_locator(result.left_from_start.end,
-                                   base_edge.end, base_edge.start, result.end)
-           is Location.INTERIOR
-           and (base_edge.orientation_of(result.left_from_start.end)
-                is Orientation.CLOCKWISE)):
+    while point_in_circle_locator(
+        result.left_from_start.end, base_edge.end, base_edge.start, result.end
+    ) is Location.INTERIOR and (
+        base_edge.orientation_of(result.left_from_start.end) is Orientation.CLOCKWISE
+    ):
         next_candidate = result.left_from_start
         result.delete()
         result = next_candidate
     return result
 
 
-def to_right_candidate(base_edge: QuadEdge,
-                       point_in_circle_locator: PointInCircleLocator
-                       ) -> Optional[QuadEdge]:
+def to_right_candidate(
+    base_edge: QuadEdge, point_in_circle_locator: PointInCircleLocator
+) -> Optional[QuadEdge]:
     result = base_edge.right_from_start
-    if (base_edge.orientation_of(result.end)
-            is not Orientation.CLOCKWISE):
+    if base_edge.orientation_of(result.end) is not Orientation.CLOCKWISE:
         return None
-    while (point_in_circle_locator(result.right_from_start.end,
-                                   base_edge.end, base_edge.start, result.end)
-           is Location.INTERIOR
-           and (base_edge.orientation_of(result.right_from_start.end)
-                is Orientation.CLOCKWISE)):
+    while point_in_circle_locator(
+        result.right_from_start.end, base_edge.end, base_edge.start, result.end
+    ) is Location.INTERIOR and (
+        base_edge.orientation_of(result.right_from_start.end) is Orientation.CLOCKWISE
+    ):
         next_candidate = result.right_from_start
         result.delete()
         result = next_candidate
     return result
 
 
-def to_unique_boundary_edges(triangulation: Triangulation
-                             ) -> Iterable[QuadEdge]:
+def to_unique_boundary_edges(triangulation: Triangulation) -> Iterable[QuadEdge]:
     start = triangulation.left_side
     edge = start
     while True:
@@ -436,8 +460,7 @@ def to_unique_boundary_edges(triangulation: Triangulation
 
 def to_unique_edges(triangulation: Triangulation) -> Iterable[QuadEdge]:
     visited_edges = set()
-    is_visited, visit_multiple = (visited_edges.__contains__,
-                                  visited_edges.update)
+    is_visited, visit_multiple = (visited_edges.__contains__, visited_edges.update)
     queue = [triangulation.left_side, triangulation.right_side]
     while queue:
         edge = queue.pop()
@@ -445,40 +468,44 @@ def to_unique_edges(triangulation: Triangulation) -> Iterable[QuadEdge]:
             continue
         yield edge
         visit_multiple((edge, edge.opposite))
-        queue.extend((edge.left_from_start, edge.left_from_end,
-                      edge.right_from_start, edge.right_from_end))
+        queue.extend(
+            (
+                edge.left_from_start,
+                edge.left_from_end,
+                edge.right_from_start,
+                edge.right_from_end,
+            )
+        )
 
 
 def to_unique_inner_edges(triangulation: Triangulation) -> Set[QuadEdge]:
-    return (set(to_unique_edges(triangulation))
-            .difference(to_boundary_edges(triangulation)))
+    return set(to_unique_edges(triangulation)).difference(
+        to_boundary_edges(triangulation)
+    )
 
 
-BaseCase = Callable[
-    [Type[Triangulation], Sequence[Point], Context], Triangulation
-]
+BaseCase = Callable[[Type[Triangulation], Sequence[Point], Context], Triangulation]
 base_cases = {}  # type: Dict[int, BaseCase]
 register_base_case = partial(partial, base_cases.setdefault)
 
 
 @register_base_case(2)
-def triangulate_two_points(cls: Type[Triangulation],
-                           sorted_points: Sequence[Point],
-                           context: Context) -> Triangulation:
-    first_edge = QuadEdge.from_endpoints(*sorted_points,
-                                         context=context)
+def triangulate_two_points(
+    cls: Type[Triangulation], sorted_points: Sequence[Point], context: Context
+) -> Triangulation:
+    first_edge = QuadEdge.from_endpoints(*sorted_points, context=context)
     return cls(first_edge, first_edge.opposite, context)
 
 
 @register_base_case(3)
-def triangulate_three_points(cls: Type[Triangulation],
-                             sorted_points: Sequence[Point],
-                             context: Context) -> Triangulation:
+def triangulate_three_points(
+    cls: Type[Triangulation], sorted_points: Sequence[Point], context: Context
+) -> Triangulation:
     left_point, mid_point, right_point = sorted_points
-    first_edge, second_edge = (QuadEdge.from_endpoints(left_point, mid_point,
-                                                       context=context),
-                               QuadEdge.from_endpoints(mid_point, right_point,
-                                                       context=context))
+    first_edge, second_edge = (
+        QuadEdge.from_endpoints(left_point, mid_point, context=context),
+        QuadEdge.from_endpoints(mid_point, right_point, context=context),
+    )
     first_edge.opposite.splice(second_edge)
     orientation = first_edge.orientation_of(right_point)
     if orientation is Orientation.COUNTERCLOCKWISE:

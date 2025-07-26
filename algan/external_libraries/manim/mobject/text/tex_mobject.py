@@ -12,7 +12,11 @@ r"""Mobjects representing text rendered using LaTeX.
 
 from __future__ import annotations
 
-from algan.external_libraries.manim.utils.color import BLACK, ManimColor, ParsableManimColor
+from algan.external_libraries.manim.utils.color import (
+    BLACK,
+    ManimColor,
+    ParsableManimColor,
+)
 
 __all__ = [
     "SingleStringMathTex",
@@ -34,7 +38,10 @@ from algan.external_libraries.manim import config
 from algan.external_libraries.manim.constants import *
 from algan.external_libraries.manim.mobject.geometry.line import Line
 from algan.external_libraries.manim.mobject.svg.svg_mobject import SVGMobject
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup, VMobject
+from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
+    VGroup,
+    VMobject,
+)
 from algan.external_libraries.manim.utils.tex import TexTemplate
 from algan.external_libraries.manim.utils.tex_file_writing import tex_to_svg_file
 

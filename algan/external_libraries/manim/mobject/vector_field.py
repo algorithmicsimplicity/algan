@@ -18,7 +18,9 @@ import numpy as np
 from PIL import Image
 
 from algan.external_libraries.manim.mobject.geometry.line import Vector
-from algan.external_libraries.manim.mobject.graphing.coordinate_systems import CoordinateSystem
+from algan.external_libraries.manim.mobject.graphing.coordinate_systems import (
+    CoordinateSystem,
+)
 
 from .. import config
 from ..constants import OUT, RIGHT, UP, RendererType
@@ -849,7 +851,6 @@ class StreamLines(VectorField):
                     line.set_stroke(width=self.stroke_width, opacity=opacity)
             self.add(line)
         self.stream_lines = [*self.submobjects]
-
 
 
 # TODO: Variant of StreamLines that is able to respond to changes in the vector field function

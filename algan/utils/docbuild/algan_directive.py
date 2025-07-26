@@ -112,6 +112,7 @@ classnamedict: dict[str, int] = {}
 
 from algan import *
 
+
 class SetupMetadata(TypedDict):
     parallel_read_safe: bool
     parallel_write_safe: bool
@@ -189,7 +190,7 @@ class AlganDirective(Directive):
             "skip-manim" in self.state.document.settings.env.app.builder.tags
             or self.state.document.settings.env.app.builder.name == "gettext"
         )
-        #should_skip = True
+        # should_skip = True
         if should_skip:
             clsname = self.arguments[0]
             node = SkipManimNode()
@@ -244,9 +245,9 @@ class AlganDirective(Directive):
             quality = f"{self.options['quality']}_quality"
         else:
             quality = "example_quality"
-        frame_rate = QUALITIES[quality].frames_per_second#["frame_rate"]
-        pixel_height = QUALITIES[quality].resolution[1]#["pixel_height"]
-        pixel_width = QUALITIES[quality].resolution[0]#["pixel_width"]
+        frame_rate = QUALITIES[quality].frames_per_second  # ["frame_rate"]
+        pixel_height = QUALITIES[quality].resolution[1]  # ["pixel_height"]
+        pixel_width = QUALITIES[quality].resolution[0]  # ["pixel_width"]
 
         state_machine = self.state_machine
         document = state_machine.document
@@ -306,15 +307,19 @@ class AlganDirective(Directive):
         try:
             with tempconfig(example_config):
                 video_dir = config.get_dir("video_dir")
-                algan.defaults.directory_defaults.DEFAULT_DIRECTORY = Path(__file__).parent.resolve()
-                algan.defaults.directory_defaults.DEFAULT_OUTPUT_FILENAME = f'{output_file}'
+                algan.defaults.directory_defaults.DEFAULT_DIRECTORY = Path(
+                    __file__
+                ).parent.resolve()
+                algan.defaults.directory_defaults.DEFAULT_OUTPUT_FILENAME = (
+                    f"{output_file}"
+                )
                 algan.defaults.directory_defaults.DEFAULT_OUTPUT_DIRECTORY = video_dir
                 algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_FRAMES = 1
                 algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_ACTORS = 10
                 run_time = timeit(lambda: exec("\n".join(code), globals()), number=1)
                 images_dir = config.get_dir("images_dir")
         except Exception as e:
-            #raise e
+            # raise e
             traceback.print_exc()
             raise RuntimeError(f"Error while rendering example {clsname}") from e
 

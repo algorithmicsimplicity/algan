@@ -70,7 +70,9 @@ from typing import Callable
 
 from algan.external_libraries.manim.mobject.geometry.line import Line
 from algan.external_libraries.manim.mobject.geometry.polygram import Polygon
-from algan.external_libraries.manim.mobject.geometry.shape_matchers import BackgroundRectangle
+from algan.external_libraries.manim.mobject.geometry.shape_matchers import (
+    BackgroundRectangle,
+)
 from algan.external_libraries.manim.mobject.text.numbers import DecimalNumber, Integer
 from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex
 from algan.external_libraries.manim.mobject.text.formats import Paragraph

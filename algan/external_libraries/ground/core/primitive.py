@@ -1,10 +1,11 @@
-from numbers import (Rational,
-                     Real)
+from numbers import Rational, Real
 from typing import Type
 
 from fractions import Fraction
 
-from .hints import (Point,)
+from .hints import (
+    Point,
+)
 
 
 def rationalize(value):
@@ -18,8 +19,7 @@ def square(value):
     return value * value
 
 
-def to_rational_point(point,
-                      point_cls):
+def to_rational_point(point, point_cls):
     return point_cls(rationalize(point.x), rationalize(point.y))
 
 

@@ -4,7 +4,7 @@ from algan.utils.python_utils import traverse
 from algan.animation.animation_contexts import *
 
 
-def batch_mobs(mobs, parent_batch_sizes = None):
+def batch_mobs(mobs, parent_batch_sizes=None):
     mobs = list(traverse(mobs))
     if len(mobs) == 0:
         return None
@@ -12,7 +12,13 @@ def batch_mobs(mobs, parent_batch_sizes = None):
     with Off(record_funcs=False, record_attr_modifications=False):
         batch_mob = mobs[0].clone(reset_history=True, recursive=False, clone_data=True)
         for attr in batch_mob.animatable_attrs:
-            batch_mob.data.data_dict[attr] = torch.cat([_.__getattribute__(attr).expand(-1,_.location.shape[-2], -1) for _ in mobs], -2)
+            batch_mob.data.data_dict[attr] = torch.cat(
+                [
+                    _.__getattribute__(attr).expand(-1, _.location.shape[-2], -1)
+                    for _ in mobs
+                ],
+                -2,
+            )
 
         batch_sizes = [torch.tensor((_.location.shape[-2],)).view(-1) for _ in mobs]
         pbs = []
@@ -20,7 +26,11 @@ def batch_mobs(mobs, parent_batch_sizes = None):
             parent_batch_sizes = torch.tensor((len(mobs),), dtype=torch.long)
         i = 0
         for j in range(len(parent_batch_sizes)):
-            pbs.append(sum(batch_sizes[i:i+parent_batch_sizes[j]]).view(-1) if parent_batch_sizes[j] > 0 else torch.zeros((1,), dtype=torch.long))
+            pbs.append(
+                sum(batch_sizes[i : i + parent_batch_sizes[j]]).view(-1)
+                if parent_batch_sizes[j] > 0
+                else torch.zeros((1,), dtype=torch.long)
+            )
 
             i += parent_batch_sizes[j]
 
@@ -29,7 +39,12 @@ def batch_mobs(mobs, parent_batch_sizes = None):
 
         components = []
         for i in range(len(batch_mob.components)):
-            components.append(batch_mobs([m.components[i] for m in mobs], torch.ones((child_pbs.sum(),), dtype=torch.long)))
+            components.append(
+                batch_mobs(
+                    [m.components[i] for m in mobs],
+                    torch.ones((child_pbs.sum(),), dtype=torch.long),
+                )
+            )
 
         batch_mob.components = components
         for i, c in enumerate(mobs[0].components):
@@ -45,4 +60,3 @@ def batch_mobs(mobs, parent_batch_sizes = None):
         batch_mob.add_children(components)
 
         return batch_mob
-

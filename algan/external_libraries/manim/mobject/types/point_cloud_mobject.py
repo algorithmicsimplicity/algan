@@ -8,8 +8,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
-from algan.external_libraries.manim.mobject.opengl.opengl_point_cloud_mobject import OpenGLPMobject
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
+from algan.external_libraries.manim.mobject.opengl.opengl_point_cloud_mobject import (
+    OpenGLPMobject,
+)
 
 from ...constants import *
 from ...mobject.mobject import Mobject

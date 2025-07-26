@@ -307,7 +307,6 @@ def print_tex_error(
     error_start_index: int,
     tex_source: Sequence[str],
 ) -> None:
-
     # TeX errors eventually contain a line beginning 'l.xxx` where xxx is the line number that caused the compilation
     # failure. This code finds the next such line after the error current error message
     line_of_tex_error = (

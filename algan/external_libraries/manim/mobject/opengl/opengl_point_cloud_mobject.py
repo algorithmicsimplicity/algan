@@ -2,13 +2,19 @@ from __future__ import annotations
 
 __all__ = ["OpenGLPMobject", "OpenGLPGroup", "OpenGLPMPoint"]
 
-#import moderngl
+# import moderngl
 import numpy as np
 
 from algan.external_libraries.manim.constants import *
 from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject
 from algan.external_libraries.manim.utils.bezier import interpolate
-from algan.external_libraries.manim.utils.color import BLACK, WHITE, YELLOW, color_gradient, color_to_rgba
+from algan.external_libraries.manim.utils.color import (
+    BLACK,
+    WHITE,
+    YELLOW,
+    color_gradient,
+    color_to_rgba,
+)
 from algan.external_libraries.manim.utils.config_ops import _Uniforms
 from algan.external_libraries.manim.utils.iterables import resize_with_interpolation
 
@@ -26,9 +32,7 @@ class OpenGLPMobject(OpenGLMobject):
 
     point_radius = _Uniforms()
 
-    def __init__(
-        self, stroke_width=2.0, color=YELLOW, render_primitive=1, **kwargs
-    ):
+    def __init__(self, stroke_width=2.0, color=YELLOW, render_primitive=1, **kwargs):
         self.stroke_width = stroke_width
         super().__init__(color=color, render_primitive=render_primitive, **kwargs)
         self.point_radius = (

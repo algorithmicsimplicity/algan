@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from algan.external_libraries.manim.mobject.mobject import Mobject
-from algan.external_libraries.manim.mobject.opengl.opengl_vectorized_mobject import OpenGLVMobject
+from algan.external_libraries.manim.mobject.opengl.opengl_vectorized_mobject import (
+    OpenGLVMobject,
+)
 
 __all__ = ["NumberLine", "UnitInterval"]
 
@@ -23,7 +25,10 @@ from algan.external_libraries.manim.mobject.geometry.line import Line
 from algan.external_libraries.manim.mobject.graphing.scale import LinearBase, _ScaleBase
 from algan.external_libraries.manim.mobject.text.numbers import DecimalNumber
 from algan.external_libraries.manim.mobject.text.tex_mobject import MathTex, Tex
-from algan.external_libraries.manim.mobject.types.vectorized_mobject import VGroup, VMobject
+from algan.external_libraries.manim.mobject.types.vectorized_mobject import (
+    VGroup,
+    VMobject,
+)
 from algan.external_libraries.manim.utils.bezier import interpolate
 from algan.external_libraries.manim.utils.config_ops import merge_dicts_recursively
 from algan.external_libraries.manim.utils.space_ops import normalize

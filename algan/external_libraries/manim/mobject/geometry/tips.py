@@ -20,7 +20,9 @@ import numpy as np
 from algan.external_libraries.manim.constants import *
 from algan.external_libraries.manim.mobject.geometry.arc import Circle
 from algan.external_libraries.manim.mobject.geometry.polygram import Square, Triangle
-from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import ConvertToOpenGL
+from algan.external_libraries.manim.mobject.opengl.opengl_compatibility import (
+    ConvertToOpenGL,
+)
 from algan.external_libraries.manim.mobject.types.vectorized_mobject import VMobject
 from algan.external_libraries.manim.utils.space_ops import angle_of_vector
 

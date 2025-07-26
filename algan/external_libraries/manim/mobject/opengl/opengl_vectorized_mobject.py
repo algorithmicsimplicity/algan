@@ -6,12 +6,15 @@ from collections.abc import Iterable, Sequence
 from functools import reduce, wraps
 from typing import Callable
 
-#import moderngl
+# import moderngl
 import numpy as np
 
 from algan.external_libraries.manim import config
 from algan.external_libraries.manim.constants import *
-from algan.external_libraries.manim.mobject.opengl.opengl_mobject import OpenGLMobject, OpenGLPoint
+from algan.external_libraries.manim.mobject.opengl.opengl_mobject import (
+    OpenGLMobject,
+    OpenGLPoint,
+)
 from algan.external_libraries.manim.utils.bezier import (
     bezier,
     bezier_remap,
@@ -22,9 +25,18 @@ from algan.external_libraries.manim.utils.bezier import (
     partial_bezier_points,
     proportions_along_bezier_curve_for_point,
 )
-from algan.external_libraries.manim.utils.color import BLACK, WHITE, ManimColor, ParsableManimColor
+from algan.external_libraries.manim.utils.color import (
+    BLACK,
+    WHITE,
+    ManimColor,
+    ParsableManimColor,
+)
 from algan.external_libraries.manim.utils.config_ops import _Data
-from algan.external_libraries.manim.utils.iterables import make_even, resize_with_interpolation, tuplify
+from algan.external_libraries.manim.utils.iterables import (
+    make_even,
+    resize_with_interpolation,
+    tuplify,
+)
 from algan.external_libraries.manim.utils.space_ops import (
     angle_between_vectors,
     cross2d,

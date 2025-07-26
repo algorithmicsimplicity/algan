@@ -39,7 +39,8 @@ from .mobject.text.tex_mobject import *
 from .mobject.text.code_mobject import *
 from .mobject.text.numbers import *
 from .mobject.table import *
-#from .mobject.text.text_mobject import *
+
+# from .mobject.text.text_mobject import *
 from .mobject.three_d.polyhedra import *
 from .mobject.three_d.three_d_utils import *
 from .mobject.three_d.three_dimensions import *
@@ -48,4 +49,3 @@ from .mobject.types.point_cloud_mobject import *
 from .mobject.types.vectorized_mobject import *
 from .mobject.value_tracker import *
 from .mobject.vector_field import *
-

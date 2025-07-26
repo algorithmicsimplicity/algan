@@ -1,14 +1,13 @@
-from typing import (Callable,
-                    Type)
+from typing import Callable, Type
 
-from algan.external_libraries.ground.core.hints import (Multisegment,
-                               Point,)
+from algan.external_libraries.ground.core.hints import (
+    Multisegment,
+    Point,
+)
 from algan.external_libraries.ground.core.primitive import rationalize
 
 
-def centroid(multisegment: Multisegment,
-             point_cls: Type[Point],
-             sqrt) -> Point:
+def centroid(multisegment: Multisegment, point_cls: Type[Point], sqrt) -> Point:
     accumulated_x = accumulated_y = accumulated_length = 0
     for segment in multisegment.segments:
         start, end = segment.start, segment.end
@@ -19,5 +18,4 @@ def centroid(multisegment: Multisegment,
         accumulated_y += (start_y + end_y) * length
         accumulated_length += length
     inverted_divisor = 1 / (2 * accumulated_length)
-    return point_cls(accumulated_x * inverted_divisor,
-                     accumulated_y * inverted_divisor)
+    return point_cls(accumulated_x * inverted_divisor, accumulated_y * inverted_divisor)
