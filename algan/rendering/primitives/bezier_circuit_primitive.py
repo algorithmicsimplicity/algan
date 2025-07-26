@@ -1104,20 +1104,36 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         local_dist = torch.where(dist_invalid_mask, posinf, local_dist, out=local_dist)
 
         # Handle portion_of_curve_drawn
-        #self.expand_verts_to_frags(self.portion_of_curve_drawn)
-        num_vertices_per_object = num_segments_per_object.view(-1,1) * self.num_sampled_points
+        # self.expand_verts_to_frags(self.portion_of_curve_drawn)
+        num_vertices_per_object = (
+            num_segments_per_object.view(-1, 1) * self.num_sampled_points
+        )
         num_vertices_per_object += 1
-        threshold_for_drawing = torch.repeat_interleave(portion_of_curve_drawn * num_vertices_per_object, num_segments_per_object, -2)
-        threshold_for_drawing = threshold_for_drawing.unsqueeze(-2)#.expand(-1,-1,self.num_sampled_points, -1)
+        threshold_for_drawing = torch.repeat_interleave(
+            portion_of_curve_drawn * num_vertices_per_object,
+            num_segments_per_object,
+            -2,
+        )
+        threshold_for_drawing = threshold_for_drawing.unsqueeze(
+            -2
+        )  # .expand(-1,-1,self.num_sampled_points, -1)
 
-        vertex_number = torch.arange(threshold_for_drawing.shape[-3] * self.num_sampled_points, device=self.num_sampled_points.device)
+        vertex_number = torch.arange(
+            threshold_for_drawing.shape[-3] * self.num_sampled_points,
+            device=self.num_sampled_points.device,
+        )
         vertex_offsets = num_segments_per_object * self.num_sampled_points
         vertex_offsets = vertex_offsets.cumsum(-1) - vertex_offsets
-        vertex_offsets = torch.repeat_interleave(vertex_offsets, num_segments_per_object * self.num_sampled_points, -1)
+        vertex_offsets = torch.repeat_interleave(
+            vertex_offsets, num_segments_per_object * self.num_sampled_points, -1
+        )
         vertex_number -= vertex_offsets
-        vertex_number = unsquish(vertex_number, 0, self.num_sampled_points).unsqueeze(-1)
-        local_dist = torch.where(vertex_number >= threshold_for_drawing, posinf, local_dist, out=local_dist)
-
+        vertex_number = unsquish(vertex_number, 0, self.num_sampled_points).unsqueeze(
+            -1
+        )
+        local_dist = torch.where(
+            vertex_number >= threshold_for_drawing, posinf, local_dist, out=local_dist
+        )
 
         self.memory.current_pointer = pointer
         # global_dists = torch.empty((fragment_x.shape[-2],), device=control_points.device)
