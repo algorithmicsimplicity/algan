@@ -30,6 +30,8 @@ def render_to_file(
     render_settings=None,
     overwrite=True,
     codec=None,
+    audio_codec=None,
+    audio_fps=44100,
     file_extension=None,
     background_color=None,
     ffmpeg_params=None,
@@ -85,6 +87,14 @@ def render_to_file(
             background_color = STYLE_DEFAULTS.background_color
         scene.background_frame = scene.background_color = background_color
 
+        if animate_fade_out is None:
+            animate_fade_out = STYLE_DEFAULTS.fade_out_on_scene_end
+        if animate_fade_out:
+            scene.clear_scene()
+        else:
+            with Off():
+                scene.clear_scene(animate=False)
+
         if file_ext == "":
             file_ext = ".mov" if scene.background_is_transparent() else ".mp4"
         if file_extension is not None:
@@ -101,12 +111,20 @@ def render_to_file(
 
         if codec is None:
             codec = "png" if scene.background_is_transparent() else "libx264"
+        if audio_codec is None:
+            audio_codec = "mp3"
         if ffmpeg_params is None:
             ffmpeg_params = (
                 ["-crf", "15", "-preset", "veryslow"]
                 if not scene.background_is_transparent()
                 else []
             )
+
+        print(f"Began rendering {file_name}{file_ext}")
+        audiofile = scene.render_audio_to_file(audio_file_path, audio_fps)
+        if audiofile is not None:
+            print("Audio rendered, now rendering video")
+
         try:
             file_writer = FFMPEG_VideoWriter(
                 temp_file_path,
@@ -115,6 +133,8 @@ def render_to_file(
                 fps=render_settings.frames_per_second,
                 with_mask=scene.background_is_transparent(),
                 ffmpeg_params=ffmpeg_params,
+                audiofile=audiofile,
+                audio_codec=audio_codec,
             )
         except TypeError:
             file_writer = FFMPEG_VideoWriter(
@@ -124,20 +144,12 @@ def render_to_file(
                 fps=render_settings.frames_per_second,
                 withmask=scene.background_is_transparent(),
                 ffmpeg_params=ffmpeg_params,
+                audiofile=audiofile,
+                audio_codec=audio_codec,
             )
 
         try:
-            if animate_fade_out is None:
-                animate_fade_out = STYLE_DEFAULTS.fade_out_on_scene_end
-            if animate_fade_out:
-                scene.clear_scene()
-            else:
-                with Off():
-                    scene.clear_scene(animate=False)
-            print(f"Began rendering {file_name}{file_ext}")
-            scene.render_to_video(
-                file_writer, temp_file_path, file_path, audio_file_path, **kwargs
-            )
+            scene.render_to_video(file_writer, temp_file_path, file_path, **kwargs)
             print(f"Finished rendering {file_name}{file_ext}")
         finally:
             # file_writer.release()

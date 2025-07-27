@@ -8,6 +8,7 @@ import warnings
 
 import torch
 import torch.nn.functional as F
+from moviepy import CompositeAudioClip
 
 import algan
 from algan.logging.logger import LoggerManager
@@ -160,30 +161,22 @@ class Scene:
                 if actor.data.spawn_time() >= 0:
                     actor.despawn(**kwargs)
 
-    def get_audio(self, actors, start, end):
-        active_actors = []
-        time_inds = torch.arange(start, end)
-        for actor_id, actor in enumerate(
-            list(sorted(actors, key=lambda x: x.anchor_priority, reverse=True))
-        ):
-            if (
-                (not hasattr(actor, "spawn_ind"))
-                or end <= actor.spawn_ind
-                or actor.despawn_ind <= start
-                or not hasattr(actor, "render_audio")
-            ):
-                continue
-            active_actors.append(actor)
-            actor.set_state_to_time_t(time_inds)
+    def render_audio_to_file(self, file_path, frames_per_second=44100):
+        if len(self.effects) == 0:
+            return None
 
-        if len(active_actors) == 0:
-            nt = int(
-                (end - start)
-                * self.render_settings.audio_frames_per_second
-                / self.frames_per_second
+        clips_to_compose = []
+        for audio_effect in self.effects:
+            timed_clip = audio_effect.audio_clip.with_start(
+                audio_effect.start_time_func()
             )
-            return torch.zeros((nt,)).cpu().numpy()
-        return sum((a.render_audio() for a in active_actors))
+            clips_to_compose.append(timed_clip)
+
+        audio_clip = CompositeAudioClip(clips_to_compose)
+        audio_clip.duration = AnimationManager.instance().context.end_time
+        audio_clip.write_audiofile(file_path, fps=frames_per_second)
+        audio_clip.close()
+        return file_path
 
     @compiled
     def render_primitive_batch(
@@ -301,6 +294,7 @@ class Scene:
 
     def reset_scene(self):
         self.actors = [[]]
+        self.effects = []
         self.scene_initializer(self)
 
     def set_render_settings(self, render_settings):
@@ -414,9 +408,6 @@ class Scene:
         file_writer,
         file_path,
         file_path_out,
-        audio_file_path,
-        batch_size_actors=None,
-        batch_size_frames=None,
         post_processes=[bloom_filter],
         background_color=None,
     ):
@@ -449,17 +440,11 @@ class Scene:
         save_image = False
 
         self.has_any_active_actors = False
-        with (
-            Off(
-                record_attr_modifications=False,
-                record_funcs=False,
-                priority_level=math.inf,
-            ),
-            wave.open(audio_file_path, "wb") as wav_file,
+        with Off(
+            record_attr_modifications=False,
+            record_funcs=False,
+            priority_level=math.inf,
         ):
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(1)
-            wav_file.setframerate(self.render_settings.audio_frames_per_second)
             for scene_num, (actors, (scene_start, scene_end)) in enumerate(
                 zip(self.actors, self.scene_times[-len(self.actors) :])
             ):
@@ -506,10 +491,6 @@ class Scene:
                             transparent_background,
                             background_color,
                         )
-                        audio = self.get_audio(actors, current_time_ind, new_time_ind)
-                        wav_file.writeframes(
-                            bytes(((audio + 1) * 255 / 2).astype(np.uint8))
-                        )
                         e = time.time()
                         print(
                             f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
@@ -522,37 +503,15 @@ class Scene:
         self.background_frame = self.original_background_frame
 
         file_writer.close()
-        if True:  # len(self.effects) == 0:
-            if os.path.exists(file_path_out):
-                os.remove(file_path_out)
-            os.rename(file_path, file_path_out)
-            if not self.has_any_active_actors:
-                warnings.warn(
-                    "You rendered an empty scene! Did you forget to spawn() your Mobs?",
-                    EmptySceneWarning,
-                )
-            return save_image
-        # TODO fix this so we can write audio to the fiie as well.
-        videoclip = VideoFileClip(file_path)
-        try:
-            # audioclip = AudioFileClip("audioname.mp3")
-
-            videoclip = videoclip.set_audio(
-                CompositeAudioClip(
-                    [
-                        effect.audio.subclip(0, videoclip.duration)
-                        for effect in sorted(self.effects, key=lambda e: e.spawn_time())
-                    ]
-                )
+        if os.path.exists(file_path_out):
+            os.remove(file_path_out)
+        os.rename(file_path, file_path_out)
+        if not self.has_any_active_actors:
+            warnings.warn(
+                "You rendered an empty scene! Did you forget to spawn() your Mobs?",
+                EmptySceneWarning,
             )
-
-            if os.path.exists(file_path_out):
-                os.remove(file_path_out)
-
-            videoclip.write_videofile(file_path_out, codec="mpeg4")
-        finally:
-            videoclip.close()
-            os.remove(file_path)
+        return save_image
 
     @torch.compiler.disable(recursive=True)
     def get_frames_from_fragments(self, fragments, window, frame, anti_alias_level=1):

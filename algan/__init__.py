@@ -58,7 +58,7 @@ class SceneManager:
     _scene_initializer = None
 
     def __init__(self):
-        raise RuntimeError("Call SceneTracker.instance() instead of SceneTracker().")
+        raise RuntimeError("Call SceneManager.instance() instead of SceneManager().")
 
     @classmethod
     def set_scene_class(cls, scene_class, scene_initializer):

@@ -1,6 +1,10 @@
 import copy
 from typing import Any, Callable, Optional
 
+from moviepy import AudioFileClip
+
+from algan import SceneManager
+from algan.sound.audio_effect import AudioEffect, AudioManager
 from algan.constants import rate_funcs
 from dataclasses import dataclass, field
 
@@ -406,8 +410,34 @@ class Seq(Lag):
 
 
 class Audio(AnimationContext):
-    """Plays the portion of the audio source assosciated with the given script segment over the course of this context.
-    This context's run_time will automatically be set to the duration of the played audio segment.
+    """Plays audio sound from a file.
+    This context's run_time will automatically be set to the duration of the played audio.
+
+    Parameters
+    ----------
+    file_path
+        Path to the file which contains the audio.
+
+    """
+
+    def __init__(self, file_path_or_clip: str, **kwargs):
+        audio_clip = file_path_or_clip
+        if isinstance(file_path_or_clip, str):
+            audio_clip = AudioFileClip(file_path_or_clip)
+        kwargs["run_time"] = audio_clip.duration
+        super().__init__(**kwargs)
+        self.audio_clip = audio_clip
+
+    def __enter__(self):
+        super().__enter__()
+        SceneManager.instance().add_effect(
+            AudioEffect(self.audio_clip, self.get_current_time())
+        )
+
+
+class Speech(Audio):
+    """Plays audio sound assosciated the given script over the course of this context.
+    This context's run_time will automatically be set to the duration of the played audio.
 
     Parameters
     ----------
@@ -416,8 +446,8 @@ class Audio(AnimationContext):
 
     """
 
-    def __init__(self, script: str, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, script, **kwargs):
+        super().__init__(AudioManager.get_speech(script), **kwargs)
 
 
 class SlideShow(Seq):
