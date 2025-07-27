@@ -106,7 +106,10 @@ markers = "slow: Mark the test as slow. Can be skipped with --skip_slow"
 profile = "black"
 
 [tool.coverage.run]
-omit = ["*tests*"]
+omit = [
+    "*tests*",
+    "algan/external_libraries"
+]
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover"]

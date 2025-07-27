@@ -24,6 +24,7 @@ cd = os.path.dirname(current_file_path)
 
 rendering_device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 STYLE_DEFAULTS.fade_out_on_scene_end = True
 RENDERING_DEFAULTS.settings = PREVIEW
 COMPUTING_DEFAULTS.render_device = torch.device(rendering_device)

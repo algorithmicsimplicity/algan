@@ -872,6 +872,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         torch.lt(local_window_y, line_end_y, out=horizontal_mask)
         torch.lt(local_window_y, line_start_y, out=horizontal_upper_mask)
         torch.not_equal(horizontal_mask, horizontal_upper_mask, out=horizontal_mask)
+        # torch.logical_or(horizontal_mask, torch.eq(line_start_y, line_end_y), out=horizontal_mask)
         self.memory.current_pointer = horizontal_mask_upper_pointer
 
         LoggerManager.instance().set_class("rendering").log_message(
@@ -893,19 +894,54 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                            + (local_window_y - line_start_y) * line_segments[..., :1]) < 0)"""
 
         pointer = self.memory.current_pointer
-        temp_y = self.get_tensor(local_window_y.shape, dtype=torch.float)
-        temp_x = self.get_tensor(local_window_x.shape, dtype=torch.float)
-        torch.subtract(local_window_x, line_start_x, out=temp_x)
+        # temp_y = self.get_tensor(local_window_y.shape, dtype=torch.float)
+        # temp_x = self.get_tensor(local_window_x.shape, dtype=torch.float)
+        row_y = self.get_tensor(
+            [*local_window_y.shape[:-1], local_window_size], dtype=torch.float
+        )
+        row_y[:] = unsquish(local_window_y, -1, local_window_size)[..., 0]
+        row_y -= line_start_y
+        # intersecting_inds = ((row_y / line_segments[...,1:]) * line_segments[...,:1]).round().long()
+        row_y /= line_segments[..., 1:]
+        row_y *= line_segments[..., :1]
+        row_y.round_()
+        intersecting_inds = self.get_tensor(
+            [*local_window_y.shape[:-1], local_window_size], dtype=torch.long
+        )
+        intersecting_inds[:] = row_y
+        intersecting_inds += half_local_window_size
+        intersect_mask[:] = False
+        vals = self.get_tensor(
+            [*local_window_y.shape[:-1], local_window_size], dtype=torch.bool
+        )
+        temp_bool = self.get_tensor(
+            [*local_window_y.shape[:-1], local_window_size], dtype=torch.bool
+        )
+        vals = torch.less_equal(
+            torch.tensor((0,), device=intersecting_inds.device),
+            intersecting_inds,
+            out=vals,
+        )
+        temp_bool = torch.lt(intersecting_inds, local_window_size, out=temp_bool)
+        vals = torch.where(
+            temp_bool, vals, torch.tensor((False,), device=vals.device), out=vals
+        )
+        intersecting_inds.clamp_(min=0, max=local_window_size - 1)
+        unsquish(intersect_mask, -1, local_window_size).scatter_(
+            -1, intersecting_inds.unsqueeze(-1), vals.unsqueeze(-1)
+        )
+        """torch.subtract(local_window_x, line_start_x, out=temp_x)
         torch.multiply(temp_x, line_segments[..., 1:], out=temp_x)
         torch.subtract(local_window_y, line_start_y, out=temp_y)
         torch.multiply(temp_y, line_segments[..., :1], out=temp_y)
         torch.gt(temp_x, temp_y, out=intersect_mask)
         intersect_mask2 = self.get_tensor(local_window_x.shape, dtype=torch.bool)
-        temp_x += line_segments[..., 1:]
+        temp_x += line_segments[..., 1:] * 1.5
         torch.gt(temp_x, temp_y, out=intersect_mask2)
-        torch.not_equal(intersect_mask, intersect_mask2, out=intersect_mask)
+        torch.not_equal(intersect_mask, intersect_mask2, out=intersect_mask)"""
         # Free temp_x and temp_y as they're no longer needed
         self.memory.current_pointer = pointer
+        # intersect_mask[:] = True
 
         # local_intersection_counts = (horizontal_mask & intersect_mask).float()
         torch.logical_and(
@@ -1162,7 +1198,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             squish(border_width, 0, 1), object_to_fragment_gather_inds
         )
         global_dists -= 1e-3
-        torch.less_equal(global_dists.unsqueeze(-1), border_mask, out=border_mask)
 
         # Count the number of intersections in the horizontal ray to this pixel's left.
         left_intersection_counts = torch.cumsum(
@@ -1205,6 +1240,21 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             left_intersection_counts, 1, out=left_intersection_counts
         ).unsqueeze(-1)
 
+        if self.filled:
+            bool_interior_mask = self.get_tensor(interior_mask.shape, torch.bool)
+            min_border = self.get_tensor(border_mask.shape, border_mask.dtype)
+            min_border = torch.minimum(
+                border_mask,
+                torch.tensor((1.5,), dtype=torch.float, device=min_border.device),
+                out=min_border,
+            )
+            bool_interior_mask[:] = interior_mask
+            border_mask = torch.where(
+                bool_interior_mask, border_mask, min_border, out=border_mask
+            )
+            self.memory.current_pointer = pointer
+        torch.less_equal(global_dists.unsqueeze(-1), border_mask, out=border_mask)
+
         # fragment_coords = torch.cat((fragment_x, fragment_y), -1).float()
 
         LoggerManager.instance().set_class("rendering").log_message(
@@ -1220,7 +1270,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         window_size = window_width * window_height
 
         if self.filled:
-            border_mask *= interior_mask
+            pass  # border_mask *= interior_mask
         else:
             interior_mask[:] = 0
         # TODO does this need to clip based on x and y instead of inds for window?
