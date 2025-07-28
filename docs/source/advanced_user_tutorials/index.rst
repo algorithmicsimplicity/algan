@@ -7,6 +7,7 @@ Tutorials for advanced techniques that you won't need for most use-cases.
    :caption: Table of Contents
    :maxdepth: 2
 
+   audio_and_speech
    images_and_textures
    lights_camera_action
    shaders_and_materials
