@@ -21,7 +21,7 @@ cd = os.path.dirname(current_file_path)
 test_file_dir = os.path.join(cd, "test_files")
 test_files = [[f] for f in os.listdir(test_file_dir) if f.endswith(".py")]
 
-rendering_device = "cpu"#"cuda" if torch.cuda.is_available() else "cpu"
+rendering_device = "cpu"  # "cuda" if torch.cuda.is_available() else "cpu"
 
 
 STYLE_DEFAULTS.fade_out_on_scene_end = True

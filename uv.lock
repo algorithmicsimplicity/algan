@@ -50,6 +50,7 @@ dependencies = [
     { name = "decision" },
     { name = "decorator" },
     { name = "dendroid" },
+    { name = "forcealign" },
     { name = "isosurfaces" },
     { name = "manim" },
     { name = "mapbox-earcut" },
@@ -60,6 +61,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "prioq" },
     { name = "pygments" },
+    { name = "pyttsx3" },
     { name = "reprit" },
     { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -71,7 +73,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "forcealign" },
     { name = "furo" },
     { name = "gitpython" },
     { name = "matplotlib" },
@@ -81,7 +82,6 @@ dev = [
     { name = "pygithub" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
-    { name = "pyttsx3" },
     { name = "requests" },
     { name = "ruff" },
     { name = "sphinx" },
@@ -94,10 +94,6 @@ dev = [
     { name = "types-pillow" },
     { name = "types-pygments" },
 ]
-speech = [
-    { name = "forcealign" },
-    { name = "pyttsx3" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -108,7 +104,7 @@ requires-dist = [
     { name = "decision", specifier = ">=0.3.0" },
     { name = "decorator", specifier = ">=4.3.2" },
     { name = "dendroid", specifier = ">=1.6.0" },
-    { name = "forcealign", marker = "extra == 'speech'", specifier = ">=1.1.0" },
+    { name = "forcealign", specifier = ">=1.1.0" },
     { name = "furo", marker = "extra == 'dev'", specifier = ">=2024.8.6" },
     { name = "gitpython", marker = "extra == 'dev'", specifier = ">=3.1.44" },
     { name = "isosurfaces", specifier = ">=0.1.0" },
@@ -126,7 +122,7 @@ requires-dist = [
     { name = "pygments", specifier = ">=2.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=2.2,<3.0" },
-    { name = "pyttsx3", marker = "extra == 'speech'", specifier = ">=2.0" },
+    { name = "pyttsx3", specifier = ">=2.0" },
     { name = "reprit", specifier = ">=0.9.0" },
     { name = "requests", marker = "extra == 'dev'", specifier = ">=2.32.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9.3" },
@@ -145,7 +141,7 @@ requires-dist = [
     { name = "types-pillow", marker = "extra == 'dev'", specifier = ">=10.2.0.20240822" },
     { name = "types-pygments", marker = "extra == 'dev'", specifier = ">=2.19.0.20250107" },
 ]
-provides-extras = ["speech", "dev"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "av"
