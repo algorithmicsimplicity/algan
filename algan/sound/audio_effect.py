@@ -1,3 +1,6 @@
+from algan.utils.audio_utils import get_pyttsx_speech_generator
+
+
 class AudioManager:
     _speech_generator = None
 
@@ -11,9 +14,7 @@ class AudioManager:
     @classmethod
     def get_speech(cls, script):
         if cls._speech_generator is None:
-            raise RuntimeError(
-                "No speech source has been set! Please configure a speech source using AudioManager.set_speech_source"
-            )
+            return get_pyttsx_speech_generator(script)
         return cls._speech_generator(script)
 
 

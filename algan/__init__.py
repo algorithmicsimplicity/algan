@@ -108,7 +108,7 @@ from algan.animation.manim_animations import *
 
 
 def clear_cache():
-    f = os.path.join(DIRECTORY_DEFAULTS.base_directory, "algan_cache")
+    f = DIRECTORY_DEFAULTS.cache_directory
     if os.path.exists(f):
         shutil.rmtree(f)
 

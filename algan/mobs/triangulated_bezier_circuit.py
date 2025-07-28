@@ -871,8 +871,7 @@ class TriangulatedBezierCircuit(Mob):
                 hasher.update(hash_bytes.encode())
                 hash_bytes = hasher.hexdigest()[:32]
                 file_path = os.path.join(
-                    DIRECTORY_DEFAULTS.base_directory,
-                    "algan_cache",
+                    DIRECTORY_DEFAULTS.cache_directory,
                     f"{hash_bytes}.txt",
                 )
                 if os.path.exists(file_path):

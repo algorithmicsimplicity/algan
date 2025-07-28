@@ -1,3 +1,5 @@
+import os
+
 import torch
 import sys
 from dataclasses import dataclass
@@ -33,6 +35,7 @@ print(f"Rendering device set to {COMPUTING_DEFAULTS.render_device}")
 @dataclass
 class DirectoryDefaults:
     base_directory = sys.path[0]
+    cache_directory = os.path.join(base_directory, "algan_cache")
     output_filename = "algan_render_output"
     output_directory = "algan_outputs"
     output_path = None
