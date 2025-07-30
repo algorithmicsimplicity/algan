@@ -126,6 +126,7 @@ class Mob(Animatable):
             ],
             Mob,
         )
+        self.singleton_batch_indexing = False
         self.recursing = True
         self.exclude_from_boundary = False
         super().__init__(*args, **kwargs)
@@ -2858,7 +2859,7 @@ class Mob(Animatable):
         """
         self.batch_size = max(self.batch_size, self.location.shape[1])
         if self.parent_batch_sizes is not None:
-            if len(self.parent_batch_sizes) == 1:
+            if self.singleton_batch_indexing and len(self.parent_batch_sizes) == 1:
                 self.parent_batch_sizes = torch.ones(
                     (self.parent_batch_sizes.item(),), dtype=torch.long
                 )

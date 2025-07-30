@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from moviepy import CompositeAudioClip
 
 import algan
+from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.logging.logger import LoggerManager
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
@@ -388,12 +389,37 @@ class Scene:
                     component.reset_state()
 
         primitive_collections = []
+        max_bezier_batch_size = 1000
         for _, (primitive_class, primitives) in grouped_primitives.items():
-            primitive_collections.append(
-                primitive_class(triangle_collection=primitives)
-            )
-            primitive_collections[-1].memory = self.memory
-            primitive_collections[-1].scene = self
+            if primitive_class is BezierCircuitPrimitive:
+                counts = torch.tensor([_.corners.shape[1] for _ in primitives]).cumsum(
+                    0
+                )
+                num_sub_batches = (counts[-1] // max_bezier_batch_size) + 1
+                current_ind = 0
+                for i in range(num_sub_batches):
+                    inds = (counts > max_bezier_batch_size).nonzero()
+                    if len(inds) == 0:
+                        next_ind = len(primitives)
+                    else:
+                        next_ind = max(inds[0], current_ind + 1)
+                    primitive_collections.append(
+                        primitive_class(
+                            triangle_collection=primitives[current_ind:next_ind]
+                        )
+                    )
+                    current_ind = next_ind
+                    primitive_collections[-1].memory = self.memory
+                    primitive_collections[-1].scene = self
+                    if current_ind >= len(primitives):
+                        break
+                    counts -= counts[current_ind - 1]
+            else:
+                primitive_collections.append(
+                    primitive_class(triangle_collection=primitives)
+                )
+                primitive_collections[-1].memory = self.memory
+                primitive_collections[-1].scene = self
 
         return primitive_collections, start_time_ind + duration
 

@@ -22,7 +22,7 @@ class ManimMob(BezierCircuitCubic):
 
     """
 
-    def __init__(self, manim_mob, batch=True, **kwargs):
+    def __init__(self, manim_mob, batch=False, **kwargs):
         manim_scale_factor = 1
         children = []
         for submob in manim_mob.submobjects:
@@ -69,12 +69,13 @@ class ManimMob(BezierCircuitCubic):
             border_color=convert_manim_color(
                 manim_mob.stroke_color, manim_mob.stroke_opacity
             ),
-            border_width=manim_mob.stroke_width,
+            border_width=manim_mob.stroke_width * 0.5,
             filled=(not hasattr(manim_mob, "end"))
             and (manim_mob.fill_opacity is not None and manim_mob.fill_opacity > 1e-5),
             empty=empty,
             **kwargs,
         )
+        self.singleton_batch_indexing = True
         if len(children) > 0:
             self.add_children(batch_mobs(children) if batch else Group(children))
         self.submobjects = children

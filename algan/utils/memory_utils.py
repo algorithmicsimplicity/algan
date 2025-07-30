@@ -2,6 +2,7 @@ import math
 import traceback
 
 import torch
+import numpy as np
 
 from algan.logging.logger import LoggerManager
 from algan.settings.defaults import COMPUTING_DEFAULTS
@@ -54,9 +55,10 @@ class ManualMemory:
             get_num_available_bytes(device) * portion_of_available_memory_used
         )
         self.data = torch.empty((num_bytes,), device=device, dtype=torch.bool)
+        self.length = len(self.data)
 
     def __len__(self):
-        return len(self.data)
+        return self.length
 
     def get_percent_used(self):
         return self.current_pointer / len(self)
@@ -65,33 +67,60 @@ class ManualMemory:
         return len(self) - self.current_pointer
 
     def get_tensor(self, shape, dtype=torch.float):
-        shape = [_ for _ in shape]
-        num_bytes = 1
-        if dtype in [torch.int, torch.float]:
-            num_bytes = 4
-        elif dtype in [torch.long, torch.double]:
-            num_bytes = 8
-        shape[-1] = shape[-1] * num_bytes
+        def get_shape(shape):
+            shape = [_ for _ in shape]
+            num_bytes = 1
+            if dtype in [torch.int, torch.float]:
+                num_bytes = 4
+            elif dtype in [torch.long, torch.double]:
+                num_bytes = 8
+            shape[-1] = shape[-1] * num_bytes
+            return shape, num_bytes
 
-        remainder = self.current_pointer % num_bytes
-        byte_align_offset = (num_bytes - remainder) if (remainder > 0) else 0
+        shape, num_bytes = get_shape(shape)
 
-        numel = torch.tensor(shape).prod() + byte_align_offset
-        if (self.current_pointer + numel) >= len(self):
-            logger = LoggerManager.instance().set_class("memory")
-            logger.log_message(
-                f"Manual Memory OOM, tried to allocate {numel} bytes, memory is already {self.get_percent_used()} full."
-            )
+        pointer = self.current_pointer
 
-            raise InsufficientMemoryException
+        def get_bap():
+            remainder = pointer % num_bytes
+            byte_align_offset = (num_bytes - remainder) if (remainder > 0) else 0
+            return byte_align_offset
 
-        x = self.data[
-            self.current_pointer + byte_align_offset : self.current_pointer + numel
-        ]
-        self.current_pointer = self.current_pointer + numel.item()
-        self.max_pointer = max(self.max_pointer, self.current_pointer)
-        x = x.view(shape).view(dtype)
-        return x
+        byte_align_offset = get_bap()
+
+        def get_numel():
+            # return np.prod(shape) +  byte_align_offset
+            nu = shape[0]
+            for x in shape[1:]:
+                nu *= x
+            return nu
+
+        numel = get_numel()
+        pointer = pointer + byte_align_offset
+        new_pointer = pointer + numel
+
+        def error_check():
+            if new_pointer > len(self):
+                # logger = LoggerManager.instance().set_class("memory")
+                # logger.log_message(
+                #    f"Manual Memory OOM, tried to allocate {numel} bytes, memory is already {self.get_percent_used()} full."
+                # )
+                raise InsufficientMemoryException
+
+        error_check()
+
+        def get_x():
+            x = self.data[pointer:new_pointer]
+            return x
+
+        def get_data():
+            x = get_x()
+            self.current_pointer = new_pointer
+            self.max_pointer = max(self.max_pointer, new_pointer)
+            x = x.view(shape).view(dtype)
+            return x
+
+        return get_data()
 
     def reset(self):
         self.current_pointer = 0

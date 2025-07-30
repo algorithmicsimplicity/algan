@@ -783,7 +783,7 @@ class RenderPrimitive:
             )
 
         repeats = bounding_box_num_pixels.view(-1)
-        num_frags = repeats.sum()
+        num_frags = repeats.sum().item()
         inds = self.get_tensor(
             [*bounding_box_sizes.shape[:-2], num_frags, 1], torch.long
         )

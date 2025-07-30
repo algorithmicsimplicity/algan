@@ -50,7 +50,6 @@ class Group(Mob):
 
     def __init__(self, *mobs, **kwargs):
         mobs = list(traverse(mobs))
-        self.traversable = False
         self.mobs = mobs
         if len(mobs) == 0:
             super().__init__(ORIGIN, **kwargs)
@@ -65,6 +64,7 @@ class Group(Mob):
             color=mean(list(traverse([mob.color for mob in mobs]))),
             **kwargs,
         )
+        self.traversable = False
         if all([_.data.spawn_time() >= 0 for _ in mobs]):
             self.spawn(animate=False)
         self.add_children(mobs)
