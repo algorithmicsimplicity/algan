@@ -22,7 +22,7 @@ class ManimMob(BezierCircuitCubic):
 
     """
 
-    def __init__(self, manim_mob, batch=True, **kwargs):
+    def __init__(self, manim_mob, batch=False, **kwargs):
         manim_scale_factor = 1
         children = []
         for submob in manim_mob.submobjects:
