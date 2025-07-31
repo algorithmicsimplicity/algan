@@ -968,7 +968,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         # object_bounding_box_dimensions_for_segments = torch.repeat_interleave(object_bounding_box_dimensions, num_segments_per_object, -2,).unsqueeze(-1)
         object_bounding_box_dimensions_for_segments = (
             broadcast_gather(
-                object_bounding_box_dimensions, -2, self.segment_to_object_scatter_inds
+                object_bounding_box_dimensions, -2, self.segment_to_object_scatter_inds, keepdim=True,
             )
         ).unsqueeze(-1)
         """object_bounding_box_dimensions_for_segments = self.get_tensor([*object_bounding_box_dimensions.shape[:-2],
@@ -987,6 +987,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 object_bounding_corners_bottom_left,
                 -2,
                 self.segment_to_object_scatter_inds,
+                keepdim=True,
             )
         ).unsqueeze(-1)
         # bbox_x = local_window_x - object_bounding_corners_bottom_left_for_segments[...,:1,:]
@@ -1023,7 +1024,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         #                        ).clamp_(min=torch.zeros_like(bbox_num_pixels),
         #                                 max=bbox_num_pixels - 1)
         local_to_bbox_inds = self.get_tensor(bbox_x.shape, dtype=torch.long)
-        torch.clamp_min(bbox_x, 0, out=local_to_bbox_inds)
+        try:
+            torch.clamp_min(bbox_x, 0, out=local_to_bbox_inds)
+        except:
+            torch.clamp_min(bbox_x, 0, out=local_to_bbox_inds)
         torch.addcmul(
             local_to_bbox_inds,
             object_bounding_box_dimensions_for_segments[..., :1, :],
@@ -1059,6 +1063,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 unsquish(offsets, 0, -corners.shape[0]),
                 -2,
                 self.segment_to_object_scatter_inds,
+                keepdim=True,
             ).unsqueeze(-1),
             0,
             1,
@@ -1164,6 +1169,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             portion_of_curve_drawn * num_vertices_per_object,
             -2,
             self.segment_to_object_scatter_inds,
+            keepdim=True,
         )
         threshold_for_drawing = threshold_for_drawing.unsqueeze(
             -2

@@ -389,7 +389,7 @@ class Scene:
                     component.reset_state()
 
         primitive_collections = []
-        max_bezier_batch_size = 1000
+        max_bezier_batch_size = 500
         for _, (primitive_class, primitives) in grouped_primitives.items():
             if primitive_class is BezierCircuitPrimitive:
                 counts = torch.tensor([_.corners.shape[1] for _ in primitives]).cumsum(

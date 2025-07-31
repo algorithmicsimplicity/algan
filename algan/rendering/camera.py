@@ -58,6 +58,13 @@ class Camera(Mob):
             # self.animatable_attrs.update({'light_source_location'})
             self.spawn(animate=False)
 
+    #def set_screen_distance(self, distance):
+    #    old_dist = dot_product(self.screen.location, self.get_forward_direction())
+    #    with Sync():
+    #        self.screen.move_to(self.location + self.get_forward_direction() * distance)
+    #        self.screen.scale(distance / old_dist)
+    #    return self
+
     def set_euler_angles(self, angle_1, angle_2, angle_3):
         with Sync():
             self.orbit_around_line(ORIGIN, RIGHT, num_degrees=angle_1)
