@@ -1489,8 +1489,40 @@ class Mob(Animatable):
         -------
         :class:`~.Mob`
             The Mob instance itself, allowing for method chaining.
+
         """
         return self.move(self.get_displacement_to_boundary(mob, direction))
+
+    def move_to_screen_position(self, x, y):
+        """Moves the mob so that it appears at coordinate (x, y) on the screen.
+
+        Parameters
+        ----------
+        x
+            Horizontal position given between 0 (left edge) and 1 (right edge).
+        y
+            Vertical position given between 0 (bottom edge) and 1 (top edge).
+
+        Returns
+        -------
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
+
+        """
+        with Off():
+            clone = self.clone(add_to_scene=False)
+            clone.move_to_corner(DOWN, LEFT)
+            bottom_left = clone.location
+            clone.move_to_corner(UP, LEFT)
+            top_left = clone.location
+            clone.move_to_corner(UP, RIGHT)
+            top_right = clone.location
+            clone.move_to_corner(DOWN, RIGHT)
+            bottom_right = clone.location
+            vertical_bottom = bottom_left * (1-x) + x * bottom_right
+            vertical_top = top_left * (1-x) + x * top_right
+            new_loc = vertical_bottom * (1-y) + y * vertical_top
+        return self.move_to(new_loc)
 
     def move_to_edge(self, edge: torch.Tensor, buffer: float = DEFAULT_BUFFER) -> "Mob":
         """Moves the Mob to an edge of the screen.

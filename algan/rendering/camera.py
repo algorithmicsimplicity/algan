@@ -59,9 +59,18 @@ class Camera(Mob):
             self.spawn(animate=False)
 
     def set_to_orthographic(self):
+        """Changes the camera to be orthographic, useful for showing 2-D scenes without perspective.
+        """
         return self.set_distance_to_screen(1e5)
 
     def set_distance_to_screen(self, distance):
+        """Moves the camera focus to be the given distance away from its screen, thereby changing the perspective.
+
+        Parameters
+        ----------
+        distance
+            The camera focus will be set to be this distance away from the screen.
+        """
         self.set_non_recursive(location=self.screen.location - self.get_forward_direction() * distance)
         return self
 
