@@ -58,6 +58,22 @@ class Camera(Mob):
             # self.animatable_attrs.update({'light_source_location'})
             self.spawn(animate=False)
 
+    def set_to_orthographic(self):
+        """Changes the camera to be orthographic, useful for showing 2-D scenes without perspective.
+        """
+        return self.set_distance_to_screen(1e5)
+
+    def set_distance_to_screen(self, distance):
+        """Moves the camera focus to be the given distance away from its screen, thereby changing the perspective.
+
+        Parameters
+        ----------
+        distance
+            The camera focus will be set to be this distance away from the screen.
+        """
+        self.set_non_recursive(location=self.screen.location - self.get_forward_direction() * distance)
+        return self
+
     def set_euler_angles(self, angle_1, angle_2, angle_3):
         with Sync():
             self.orbit_around_line(ORIGIN, RIGHT, num_degrees=angle_1)

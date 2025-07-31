@@ -112,6 +112,7 @@ class BezierCircuitCubic(Renderable):
         self.empty = empty
         if self.empty:
             self.color = self.color.set_opacity(0)
+            self.border_width = 0
 
         texture_triangle_vertices = self.location.squeeze(0)
         if add_texture_grid:
@@ -172,8 +173,8 @@ class BezierCircuitCubic(Renderable):
         return n * 4
 
     def get_render_primitives(self):
-        # if self.empty:
-        #    return None
+        if self.empty:
+            return None
         self.texture_points.set_time_inds_to(self)
         self.control_points.set_time_inds_to(self)
 

@@ -572,7 +572,7 @@ class RenderPrimitive:
         max_tensor = self.get_tensor([2], dtype=bounding_corners.dtype)
         max_tensor[0] = end_x
         max_tensor[1] = end_y
-        bounding_corners.clamp_(min=min_tensor, max=max_tensor)
+        bounding_corners = torch.clamp(bounding_corners, min=min_tensor, max=max_tensor, out=self.get_tensor(bounding_corners.shape, bounding_corners.dtype))
         # bounding_box_sizes = (bounding_corners[..., 1, :] - bounding_corners[..., 0, :])
         bounding_box_sizes = self.get_tensor(
             bounding_corners[..., 1, :].shape, dtype=bounding_corners.dtype
@@ -783,7 +783,7 @@ class RenderPrimitive:
             )
 
         repeats = bounding_box_num_pixels.view(-1)
-        num_frags = repeats.sum()
+        num_frags = repeats.sum().item()
         inds = self.get_tensor(
             [*bounding_box_sizes.shape[:-2], num_frags, 1], torch.long
         )

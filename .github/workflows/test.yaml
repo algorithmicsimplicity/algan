@@ -1,6 +1,10 @@
 name: Test
 
-on: [push]
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
 
 # Cancel in-progress runs when pushing a new commit on the PR
 concurrency:

@@ -40,7 +40,7 @@ wheels = [
 
 [[package]]
 name = "algan"
-version = "0.0.60"
+version = "0.0.63"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

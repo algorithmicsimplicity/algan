@@ -30,9 +30,18 @@ class Color(torch.Tensor):
     def __init__(self, rgb, glow=0, opacity=1, *args, **kwargs):
         pass  # super().__init__((red, green, blue, glow, opacity))
 
+    def __eq__(self, other):
+        eq = super().__eq__(other)
+        if self.numel() == 5 and other.numel() == 5:
+            return eq.all().item()
+        return eq
+
     @property
     def opacity(self):
-        return self.data[..., -1:]
+        opacity = self.data[..., -1:]
+        if opacity.numel() == 1:
+            opacity = opacity.item()
+        return opacity
 
     @opacity.setter
     def opacity(self, value):
@@ -40,7 +49,13 @@ class Color(torch.Tensor):
 
     @property
     def glow(self):
-        return self.data[..., -2:-1]
+        glow = self.data[..., -2:-1]
+        if glow.numel() == 1:
+            glow = glow.item()
+        return glow
+
+    def is_transparent(self):
+        return self.opacity < 1
 
     @glow.setter
     def glow(self, value):
