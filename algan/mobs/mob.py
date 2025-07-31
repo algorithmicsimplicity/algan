@@ -1519,9 +1519,9 @@ class Mob(Animatable):
             top_right = clone.location
             clone.move_to_corner(DOWN, RIGHT)
             bottom_right = clone.location
-            vertical_bottom = bottom_left * (1-x) + x * bottom_right
-            vertical_top = top_left * (1-x) + x * top_right
-            new_loc = vertical_bottom * (1-y) + y * vertical_top
+            vertical_bottom = bottom_left * (1 - x) + x * bottom_right
+            vertical_top = top_left * (1 - x) + x * top_right
+            new_loc = vertical_bottom * (1 - y) + y * vertical_top
         return self.move_to(new_loc)
 
     def move_to_edge(self, edge: torch.Tensor, buffer: float = DEFAULT_BUFFER) -> "Mob":

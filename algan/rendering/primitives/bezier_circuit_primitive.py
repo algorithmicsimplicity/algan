@@ -968,7 +968,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         # object_bounding_box_dimensions_for_segments = torch.repeat_interleave(object_bounding_box_dimensions, num_segments_per_object, -2,).unsqueeze(-1)
         object_bounding_box_dimensions_for_segments = (
             broadcast_gather(
-                object_bounding_box_dimensions, -2, self.segment_to_object_scatter_inds, keepdim=True,
+                object_bounding_box_dimensions,
+                -2,
+                self.segment_to_object_scatter_inds,
+                keepdim=True,
             )
         ).unsqueeze(-1)
         """object_bounding_box_dimensions_for_segments = self.get_tensor([*object_bounding_box_dimensions.shape[:-2],
