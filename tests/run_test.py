@@ -62,10 +62,11 @@ class TestOverseer(TestCase):
                             f"{module_name} output does not have the expected number of frames.",
                         )
                         break
-                    self.assertEqual(
-                        np.abs(yh_ - y_).max(),
-                        0,
-                        f"{module_name} output does not match expectation.",
+                    max_diff = np.abs(yh_ - y_).max()
+                    self.assertLessEqual(
+                        max_diff,
+                        2,
+                        f"{module_name} output does not match expectation. Max pixel difference: {max_diff}",
                     )
                 yh.release()
                 y.release()

@@ -300,10 +300,9 @@ class Mob(Animatable):
 
         """
         time_inds = mob.data
-        if (
-            self.data.time_inds_materialized is None
-            and time_inds.time_inds_materialized is not None
-        ):
+        if (time_inds.time_inds_materialized is not None and
+            (self.data.time_inds_materialized is None or
+             (self.data.time_inds_materialized[0] != time_inds.time_inds_materialized[0]))):
             self.data.animatable.set_state_pre_function_applications(
                 time_inds.time_inds_materialized.amin(),
                 time_inds.time_inds_materialized.amax() + 1,
