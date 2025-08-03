@@ -1,4 +1,5 @@
 import math
+from functools import wraps
 
 import torch
 import torch.nn.functional as F
@@ -209,50 +210,94 @@ def rasterize_axis_aligned_parallelogram(
 ):
     # Inputs must be a parallelogram with its top and bottom sides aligned with the x-axis (flat horizontal lines)
     # and corresponding horizontal_mask set to True, or else its left and right sides aligned with the y-axis (flat vertical lines).
-    width_sign_mask = widths >= 0
-    widths = widths.abs_()
-    widths = (widths + 1).ceil()
-    bottom_left_corners = torch.minimum(start_corner_1, start_corner_2)
-    top_left_corners = torch.maximum(start_corner_1, start_corner_2)
+    #horizontal_mask = torch.full_like(horizontal_mask, True)
+    bottom_left_corners = start_corner_1#torch.minimum(start_corner_1, start_corner_2)
+    top_left_corners = start_corner_2#torch.maximum(start_corner_1, start_corner_2)
     heights = torch.where(
         horizontal_mask,
         top_left_corners[..., 1:] - bottom_left_corners[..., 1:],
         top_left_corners[..., :1] - bottom_left_corners[..., :1],
-    ).ceil()
+    )#.abs().ceil()
     orig_heights = heights
     heights = torch.where(horizontal_mask, heights, widths)
     widths = torch.where(horizontal_mask, widths, orig_heights)
-    n = (heights * widths).long().view(-1)
-    inds = batch_arange(n)
-    widths_n = torch.repeat_interleave(widths, n)
+
+    width_sign_mask = widths >= 0
+    height_sign_mask = heights >= 0
+    widths = widths.abs_().ceil_() + 1
+    heights = heights.abs_().ceil_()
+
+    n = (heights * widths).long().amax(0).view(-1)
+    fragment_to_segment_inds = torch.repeat_interleave(torch.arange(n.shape[0], device=n.device), n)
+    inds = batch_arange(n).unsqueeze(-1)
+    widths_n = torch.repeat_interleave(widths, n, -2)
     ind_x = inds % widths_n
     ind_y = inds // widths_n
+    ind_x = torch.where(torch.repeat_interleave(width_sign_mask, n, -2), ind_x, -(ind_x+1))
+    ind_y = torch.where(torch.repeat_interleave(height_sign_mask, n, -2), ind_y, -(ind_y + 1))
     slope = torch.where(
         horizontal_mask,
-        (top_left_corners[..., :1] - bottom_left_corners[..., :1]),
-        (top_left_corners[..., 1:] - bottom_left_corners[..., 1:]),
+        (start_corner_2[..., :1] - start_corner_1[..., :1]),
+        (start_corner_2[..., 1:] - start_corner_1[..., 1:]),
     ) / (heights + 1e-4)
 
-    horizontal_mask_n = torch.repeat_interleave(horizontal_mask, n)
-    slope_n = torch.repeat_interleave(slope, n)
-    ind_x = torch.where(horizontal_mask_n, ind_x + (slope_n * ind_y).floor(), ind_x)
-    ind_y = torch.where(horizontal_mask_n, ind_y + (slope_n * ind_x).floor(), ind_y)
+    slope = torch.where(height_sign_mask, slope, -slope)
 
-    bottom_left_corners[..., :1] = torch.where(
+    horizontal_mask_n = torch.repeat_interleave(horizontal_mask, n, -2)
+    slope_n = torch.repeat_interleave(slope, n, -2)
+    ind_x = torch.where(horizontal_mask_n, ind_x + (slope_n * ind_y).floor(), ind_x)
+    #ind_y = torch.where(horizontal_mask_n, ind_y, ind_y + (slope_n * ind_x).floor())
+
+    """bottom_left_corners[..., :1] = torch.where(
         horizontal_mask & ~width_sign_mask,
-        bottom_left_corners[..., :1] - widths,
+        bottom_left_corners[..., :1],# - (widths),
         bottom_left_corners[..., :1],
     )
     bottom_left_corners[..., 1:] = torch.where(
         ~horizontal_mask & ~width_sign_mask,
-        bottom_left_corners[..., :1] - heights,
+        bottom_left_corners[..., 1:],# - (heights),
         bottom_left_corners[..., 1:],
-    )
-    ind_x += torch.repeat_interleave(bottom_left_corners[..., 0].floor(), n)
-    ind_y += torch.repeat_interleave(bottom_left_corners[..., 1].floor(), n)
-    return ind_x, ind_y
+    )"""
+
+    bottom_left_corners_n = torch.repeat_interleave(bottom_left_corners, n, -2)
+    ind_x += bottom_left_corners_n[..., :1].floor()
+    ind_y += bottom_left_corners_n[..., 1:].floor()
+    local_dists = torch.zeros_like(ind_x)#((ind_x - bottom_left_corners[..., :1]).square_() + (ind_y - bottom_left_corners[..., 1:]).square_()).sqrt_()
+    return ind_x.int(), ind_y.int(), fragment_to_segment_inds.unsqueeze(-1), local_dists
 
 
+def rasterize_rectangle(corner1, edge1, edge2):
+    quadrant_mask = edge1 >= 0
+    #++ -> corner1 + edge2, corner1, corner1 + edge1
+    #+- -> corner1 + edge2 + edge1, corner1 + edge2, corner1
+    #-- -> corner1 + edge1, corner1 + edge1 + edge2, corner1 + edge2
+    #-+ -> corner1, corner1 + edge1, corner1 + edge1 + edge2
+    corners = [corner1, corner1 + edge1, corner1 + edge1 + edge2, corner1 + edge2]
+    m1 = quadrant_mask[...,:1]
+    m2 = quadrant_mask[...,1:]
+    c1 = torch.where(m1, torch.where(m2, corners[3], corners[2]), torch.where(m2, corners[0], corners[1]))
+    c2 = torch.where(m1, torch.where(m2, corners[0], corners[3]), torch.where(m2, corners[1], corners[2]))
+    c3 = torch.where(m1, torch.where(m2, corners[1], corners[0]), torch.where(m2, corners[2], corners[3]))
+
+    y =
+    c2 - c1
+    raise NotImplementedError
+
+
+def squish_batch_dims(func, start=1, end=-1):
+    @wraps(func)
+    def wrapper_func(*args, **kwargs):
+        def s(x):
+            if not isinstance(x, torch.Tensor):
+                return x
+            return x.view([*x.shape[:start], math.prod(x.shape[start:end]), *x.shape[end:]])
+        args = [s(_) for _ in args]
+        kwargs = {k: s(v) for k, v in kwargs.items()}
+        return func(*args, **kwargs)
+    return wrapper_func
+
+
+@squish_batch_dims
 def rasterize_polygon_border(vertices, next_vertices, next_perpendiculars, widths):
     line_segments = next_vertices - vertices
     line_perpendiculars = torch.stack(
@@ -276,9 +321,28 @@ def rasterize_polygon_border(vertices, next_vertices, next_perpendiculars, width
     dots_horizontal = [
         (
             -dot_product(line_segments, end_corner - vertices) / line_segments[..., :1]
-        ).nan_to_num_(1e12)
+        ).nan_to_num_(1e12, 1e12, -1e12)
         for end_corner in end_corners
     ]
+
+    line_dir = start_corners[1] - start_corners[0]
+    line_norm = line_dir.norm(p=2, dim=-1, keepdim=True)
+    line_dir_normed = F.normalize(line_dir, p=2, dim=-1) / (line_norm + 1e-6)
+
+    def expand_along_line(projected_points):
+        dots = [dot_product(p - start_corners[0], line_dir_normed) for p in projected_points]
+        min_dots = torch.minimum(*dots).clamp_max_(0)
+        max_dots = torch.maximum(*dots).clamp_min_(1)
+        return start_corners[0] + min_dots * line_dir, start_corners[0] + max_dots * line_dir
+
+    def proj_along_axis(x, d, axis=0):
+        x = x.clone()
+        x[..., axis:axis+1] += d
+        return x
+
+    proj_horizontal = [proj_along_axis(ec, d, 0) for ec, d in zip(end_corners, dots_horizontal)]
+    expanded_start_horizontal = expand_along_line(proj_horizontal)
+
     a_horizontal = torch.where(
         dots_horizontal[0].abs() >= dots_horizontal[1].abs(),
         dots_horizontal[0],
@@ -287,9 +351,13 @@ def rasterize_polygon_border(vertices, next_vertices, next_perpendiculars, width
     dots_vertical = [
         (
             -dot_product(line_segments, end_corner - vertices) / line_segments[..., 1:]
-        ).nan_to_num_(1e12)
+        ).nan_to_num_(1e12, 1e12, -1e12)
         for end_corner in end_corners
     ]
+
+    proj_vertical = [proj_along_axis(ec, d, 1) for ec, d in zip(end_corners, dots_vertical)]
+    expanded_start_vertical = expand_along_line(proj_vertical)
+
     a_vertical = torch.where(
         dots_vertical[0].abs() >= dots_vertical[1].abs(),
         dots_vertical[0],
@@ -297,28 +365,54 @@ def rasterize_polygon_border(vertices, next_vertices, next_perpendiculars, width
     )
 
     horizontal_mask = a_horizontal.abs() < a_vertical.abs()
+    horizontal_mask = torch.full_like(horizontal_mask, True)
     horizontal_widths = torch.where(horizontal_mask, a_horizontal, a_vertical)
-    max_width = widths.max() + 1
+
+    start_corners = [torch.where(horizontal_mask, h, v) for h, v in (expanded_start_horizontal, expanded_start_vertical)]
+
+    max_width = widths.max()
     horizontal_widths.clamp_(min=-max_width, max=max_width)
 
     return rasterize_axis_aligned_parallelogram(
         *[
-            _.view(-1, _.shape[-1])
-            for _ in start_corners + [horizontal_widths, horizontal_mask]
+            _#.view(-1, _.shape[-1])
+            for _ in start_corners + [-horizontal_widths, horizontal_mask]
         ]
     )
 
-    num_fragments_per_vertex = ((max_a - min_a) * (widths * 2 + 1)).amax(0)
-    offsets = num_fragments_per_vertex.cumsum(0)
-    num_fragments = offsets[-1]
-    offsets -= num_fragments_per_vertex
-    inds = torch.arange(num_fragments)
-    inds -= torch.repeat_interleave(offsets, num_fragments_per_vertex, 0)
+
+@squish_batch_dims
+def rasterize_polygon(vertices, next_vertices, num_vertices_per_object):
+    num_vertices_per_object = num_vertices_per_object.view(-1)
+    y_ranges = (next_vertices[...,1].ceil().int() - vertices[...,1].ceil().int()).abs().amax(0)
+    fragment_to_object_inds = torch.repeat_interleave(torch.arange(num_vertices_per_object.shape[0], device=vertices.device), num_vertices_per_object)
+    fragment_to_object_inds = torch.repeat_interleave(fragment_to_object_inds, y_ranges)
+    inds_y = batch_arange(y_ranges).unsqueeze(-1)
+    vertices = torch.repeat_interleave(vertices, y_ranges, -2)
+    next_vertices = torch.repeat_interleave(next_vertices, y_ranges, -2)
+    inds_y = torch.where(next_vertices[...,1:] < vertices[...,1:], -(inds_y+1), inds_y)
+    slopes = (next_vertices[...,:1] - vertices[...,:1]) / (next_vertices[...,1:] - vertices[...,1:])
+    inds_x = (slopes * inds_y).round().int()
+    inf = 10000000000
+    inds_x.nan_to_num_(inf, inf, -inf)
+    widths = (next_vertices[...,:1] - vertices[...,:1]).abs().floor().int()
+    inds_x.clamp_(min=-widths, max=widths)
+    inds_y += vertices[...,1:].ceil().int()
+    inds_x += vertices[..., :1].ceil().int()
+    min_y = torch.minimum(vertices[...,1:], next_vertices[...,1:])
+    max_y = torch.maximum(vertices[...,1:], next_vertices[...,1:])
+    m = (min_y <= inds_y) & (inds_y <= max_y)
+    inds_y = torch.where(m, inds_y, torch.full_like(inds_y, inf))
+    return inds_x, inds_y, fragment_to_object_inds.unsqueeze(-1)
 
 
-def resterize_polygon(vertices, next_vertices):
-    # TODO
-    pass
+def scatter_screen_inds_into_bounding_box(x, screen_ind_x, screen_ind_y, values, bounding_box_bottom_left_corner, bounding_box_width, offset):
+    screen_ind_x -= bounding_box_bottom_left_corner[...,:1]
+    screen_ind_y -= bounding_box_bottom_left_corner[..., 1:]
+    bbox_ind = screen_ind_x + screen_ind_y * bounding_box_width
+    bbox_ind += offset
+    x.scatter_(-2, bbox_ind, values)
+    return x
 
 
 class BezierCircuitPrimitive(RenderPrimitive2D):

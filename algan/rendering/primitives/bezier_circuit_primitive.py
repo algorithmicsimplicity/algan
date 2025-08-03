@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from algan.constants.color import BLUE, BLACK
 from algan.logging.logger import LoggerManager
+from algan.rendering.primitives.bezier_circuit_primitive_new_TODO import rasterize_polygon, rasterize_polygon_border
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.geometry.geometry import (
     intersect_line_with_plane,
@@ -746,6 +747,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         )
         next_polygon_vertices[..., -1, :] = next_segments[..., 0, :]
         self.memory.reset_pointer()
+
+
+
         # line_segments = next_polygon_vertices - polygon_vertices
         line_segments = self.get_tensor(
             polygon_vertices.shape, dtype=polygon_vertices.dtype
@@ -958,124 +962,123 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         )
         self.memory.current_pointer = horizontal_mask_pointer
 
-        """local_to_global_inds = ((polygon_vertices_int[...,:1] + local_window_x).clamp_min(1) +
-                                (polygon_vertices_int[...,1:] + local_window_y) * bounding_box_widths.unsqueeze(-1)
-                                ).clamp_(min=torch.zeros_like(bounding_box_num_pixels.unsqueeze(-1)), max=bounding_box_num_pixels.unsqueeze(-1)-1)"""
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"attempting repeat interleave {object_bounding_box_dimensions}, {num_segments_per_object}"
-        # )
-        # object_bounding_box_dimensions_for_segments = torch.repeat_interleave(object_bounding_box_dimensions, num_segments_per_object, -2,).unsqueeze(-1)
-        object_bounding_box_dimensions_for_segments = (
-            broadcast_gather(
-                object_bounding_box_dimensions,
-                -2,
-                self.segment_to_object_scatter_inds,
-                keepdim=True,
-            )
-        ).unsqueeze(-1)
-        """object_bounding_box_dimensions_for_segments = self.get_tensor([*object_bounding_box_dimensions.shape[:-2],
-                                                                       num_segments_per_object.sum(),
-                                                                       object_bounding_box_dimensions.shape[-1]], dtype=torch.long)
-        object_bounding_box_dimensions_for_segments = self.expand_verts_to_frags(object_bounding_box_dimensions,
-                                                    num_segments_per_object.unsqueeze(-1),
-                                                    out=object_bounding_box_dimensions_for_segments).unsqueeze(-1)"""
+        local_window_x, local_window_y, local_window_fragment_to_object_inds = rasterize_polygon(polygon_vertices, next_polygon_vertices, num_segments_per_object * self.num_sampled_points)
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"attempting repeat interleave2 {object_bounding_corners_bottom_left}, {num_segments_per_object}"
-        # )
-        # object_bounding_corners_bottom_left_for_segments = torch.repeat_interleave(object_bounding_corners_bottom_left, num_segments_per_object, -2).unsqueeze(-1)
-        object_bounding_corners_bottom_left_for_segments = (
-            broadcast_gather(
-                object_bounding_corners_bottom_left,
-                -2,
-                self.segment_to_object_scatter_inds,
-                keepdim=True,
+
+        def get_local_to_global_inds(local_window_x, local_window_y, local_window_fragment_to_object_inds):
+            object_bounding_box_dimensions_for_segments = (
+                broadcast_gather(
+                    object_bounding_box_dimensions,
+                    -2,
+                    local_window_fragment_to_object_inds,
+                    keepdim=True,
+                )
+            )#.unsqueeze(-1)
+            """object_bounding_box_dimensions_for_segments = self.get_tensor([*object_bounding_box_dimensions.shape[:-2],
+                                                                           num_segments_per_object.sum(),
+                                                                           object_bounding_box_dimensions.shape[-1]], dtype=torch.long)
+            object_bounding_box_dimensions_for_segments = self.expand_verts_to_frags(object_bounding_box_dimensions,
+                                                        num_segments_per_object.unsqueeze(-1),
+                                                        out=object_bounding_box_dimensions_for_segments).unsqueeze(-1)"""
+
+            # LoggerManager.instance().set_class("rendering").log_message(
+            #    f"attempting repeat interleave2 {object_bounding_corners_bottom_left}, {num_segments_per_object}"
+            # )
+            # object_bounding_corners_bottom_left_for_segments = torch.repeat_interleave(object_bounding_corners_bottom_left, num_segments_per_object, -2).unsqueeze(-1)
+            object_bounding_corners_bottom_left_for_segments = (
+                broadcast_gather(
+                    object_bounding_corners_bottom_left,
+                    -2,
+                    local_window_fragment_to_object_inds,
+                    keepdim=True,
+                )
+            )#.unsqueeze(-1)
+            # bbox_x = local_window_x - object_bounding_corners_bottom_left_for_segments[...,:1,:]
+            # bbox_y = local_window_y - object_bounding_corners_bottom_left_for_segments[...,1:,:]
+            # pointer = self.memory.current_pointer
+            bbox_x = self.get_tensor(local_window_x.shape, dtype=torch.long)
+            torch.subtract(
+                local_window_x,
+                object_bounding_corners_bottom_left_for_segments[..., :1],
+                out=bbox_x,
             )
-        ).unsqueeze(-1)
-        # bbox_x = local_window_x - object_bounding_corners_bottom_left_for_segments[...,:1,:]
-        # bbox_y = local_window_y - object_bounding_corners_bottom_left_for_segments[...,1:,:]
-        # pointer = self.memory.current_pointer
-        bbox_x = self.get_tensor(local_window_x.shape, dtype=torch.long)
-        torch.subtract(
-            local_window_x,
-            object_bounding_corners_bottom_left_for_segments[..., :1, :],
-            out=bbox_x,
-        )
-        bbox_y = self.get_tensor(local_window_y.shape, dtype=torch.long)
-        torch.subtract(
-            local_window_y,
-            object_bounding_corners_bottom_left_for_segments[..., 1:, :],
-            out=bbox_y,
-        )
-        # bbox_num_pixels = object_bounding_box_dimensions_for_segments.prod(-2, keepdim=True)
-        bbox_num_pixels = self.get_tensor(
-            [
-                *object_bounding_box_dimensions_for_segments.shape[:-2],
+            bbox_y = self.get_tensor(local_window_y.shape, dtype=torch.long)
+            torch.subtract(
+                local_window_y,
+                object_bounding_corners_bottom_left_for_segments[..., 1:],
+                out=bbox_y,
+            )
+            # bbox_num_pixels = object_bounding_box_dimensions_for_segments.prod(-2, keepdim=True)
+            bbox_num_pixels = self.get_tensor(
+                [
+                    *object_bounding_box_dimensions_for_segments.shape[:-1],
+                    1,
+                ],
+                dtype=object_bounding_box_dimensions_for_segments.dtype,
+            )
+            torch.prod(
+                object_bounding_box_dimensions_for_segments,
+                -1,
+                keepdim=True,
+                out=bbox_num_pixels,
+            )
+            # local_to_bbox_inds = (bbox_x.clamp_min(0) + bbox_y * object_bounding_box_dimensions_for_segments[...,:1,:]
+            #                        ).clamp_(min=torch.zeros_like(bbox_num_pixels),
+            #                                 max=bbox_num_pixels - 1)
+            local_to_bbox_inds = self.get_tensor(bbox_x.shape, dtype=torch.long)
+            torch.clamp_min(bbox_x, 0, out=local_to_bbox_inds)
+            torch.addcmul(
+                local_to_bbox_inds,
+                object_bounding_box_dimensions_for_segments[..., :1],
+                bbox_y,
+                value=1,
+                out=local_to_bbox_inds,
+            )
+            local_to_bbox_inds.clamp_min_(0)
+            local_to_bbox_inds.clamp_max_(bbox_num_pixels - 1)
+
+            # LoggerManager.instance().set_class("rendering").log_message(
+            #    f"got local_to_bbox"
+            # )
+            # local_to_bbox_inds scatters from local_window into object level bounding box.
+            # Now we need to add offsets so that inds from different objects end up in different output frames.
+            # offsets = object_bounding_box_dimensions.prod(-1, keepdims=True).view(-1,1)
+            # offsets = offsets.cumsum(-2)  - offsets
+            offsets = self.get_tensor(
+                [*object_bounding_box_dimensions.shape[:-1], 1], dtype=torch.long
+            )
+            torch.prod(object_bounding_box_dimensions, -1, keepdim=True, out=offsets)
+            offsets = offsets.view(-1, 1)
+            temp_offsets = self.get_tensor(offsets.shape, dtype=torch.long)
+            temp_offsets.copy_(offsets)
+            torch.cumsum(offsets, -2, out=offsets)
+            offsets -= temp_offsets
+            # LoggerManager.instance().set_class("rendering").log_message(
+            #    f"attempting repeat interleave3 {offsets} {corners.shape[0]}"
+            # )
+            # offsets_for_segments = squish(torch.repeat_interleave(unsquish(offsets, 0, -corners.shape[0]), num_segments_per_object, -2).unsqueeze(-1), 0, 1)
+            offsets_for_segments = squish(
+                broadcast_gather(
+                    unsquish(offsets, 0, -corners.shape[0]),
+                    -2,
+                    local_window_fragment_to_object_inds,
+                    keepdim=True,
+                ),
+                0,
                 1,
-                object_bounding_box_dimensions_for_segments.shape[-1],
-            ],
-            dtype=object_bounding_box_dimensions_for_segments.dtype,
-        )
-        torch.prod(
-            object_bounding_box_dimensions_for_segments,
-            -2,
-            keepdim=True,
-            out=bbox_num_pixels,
-        )
-        # local_to_bbox_inds = (bbox_x.clamp_min(0) + bbox_y * object_bounding_box_dimensions_for_segments[...,:1,:]
-        #                        ).clamp_(min=torch.zeros_like(bbox_num_pixels),
-        #                                 max=bbox_num_pixels - 1)
-        local_to_bbox_inds = self.get_tensor(bbox_x.shape, dtype=torch.long)
-        try:
-            torch.clamp_min(bbox_x, 0, out=local_to_bbox_inds)
-        except:
-            torch.clamp_min(bbox_x, 0, out=local_to_bbox_inds)
-        torch.addcmul(
-            local_to_bbox_inds,
-            object_bounding_box_dimensions_for_segments[..., :1, :],
-            bbox_y,
-            value=1,
-            out=local_to_bbox_inds,
-        )
-        local_to_bbox_inds.clamp_min_(0)
-        local_to_bbox_inds.clamp_max_(bbox_num_pixels - 1)
+            )
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"got local_to_bbox"
-        # )
-        # local_to_bbox_inds scatters from local_window into object level bounding box.
-        # Now we need to add offsets so that inds from different objects end up in different output frames.
-        # offsets = object_bounding_box_dimensions.prod(-1, keepdims=True).view(-1,1)
-        # offsets = offsets.cumsum(-2)  - offsets
-        offsets = self.get_tensor(
-            [*object_bounding_box_dimensions.shape[:-1], 1], dtype=torch.long
-        )
-        torch.prod(object_bounding_box_dimensions, -1, keepdim=True, out=offsets)
-        offsets = offsets.view(-1, 1)
-        temp_offsets = self.get_tensor(offsets.shape, dtype=torch.long)
-        temp_offsets.copy_(offsets)
-        torch.cumsum(offsets, -2, out=offsets)
-        offsets -= temp_offsets
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"attempting repeat interleave3 {offsets} {corners.shape[0]}"
-        # )
-        # offsets_for_segments = squish(torch.repeat_interleave(unsquish(offsets, 0, -corners.shape[0]), num_segments_per_object, -2).unsqueeze(-1), 0, 1)
-        offsets_for_segments = squish(
-            broadcast_gather(
-                unsquish(offsets, 0, -corners.shape[0]),
-                -2,
-                self.segment_to_object_scatter_inds,
-                keepdim=True,
-            ).unsqueeze(-1),
-            0,
-            1,
-        )
-        local_to_global_inds = squish(local_to_bbox_inds, 0, 1)
-        local_to_global_inds += offsets_for_segments.view(-1, 1, 1)
-        local_to_global_inds = local_to_global_inds.view(-1)
+            local_to_global_inds = squish(local_to_bbox_inds, 0, 1)
+            local_to_global_inds += offsets_for_segments
+            local_to_global_inds = local_to_global_inds.view(-1)
 
-        local_to_global_inds.clamp_(min=0, max=fragment_x.shape[-2] - 1)
+            local_to_global_inds.clamp_(min=0, max=fragment_x.shape[-2] - 1)
+            return local_to_global_inds, bbox_x, bbox_y, object_bounding_box_dimensions_for_segments, offsets
+
+        (local_to_global_inds, bbox_x,
+            bbox_y, object_bounding_box_dimensions_for_segments, offsets
+         ) = get_local_to_global_inds(local_window_x, local_window_y, local_window_fragment_to_object_inds)
 
         # LoggerManager.instance().set_class("rendering").log_message(
         #    f"got local to global"
@@ -1089,14 +1092,14 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         temp_bool = self.get_tensor(bbox_x.shape, dtype=torch.bool)
         torch.greater_equal(
             bbox_x,
-            object_bounding_box_dimensions_for_segments[..., :1, :],
+            object_bounding_box_dimensions_for_segments[..., :1],
             out=invalid_mask,
         )
         torch.lt(bbox_y, 0, out=temp_bool)
         torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
         torch.gt(
             bbox_y,
-            object_bounding_box_dimensions_for_segments[..., 1:, :],
+            object_bounding_box_dimensions_for_segments[..., 1:],
             out=temp_bool,
         )
         torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
@@ -1108,6 +1111,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         # to count intersections, we will cull negative x inds later.
         zero = self.get_tensor([1])
         zero[:] = 0
+        local_intersection_counts = torch.ones(local_window_y.shape, dtype=torch.float, device=local_window_y.device)
         local_intersection_counts = torch.where(
             invalid_mask, zero, local_intersection_counts, out=local_intersection_counts
         )
@@ -1123,46 +1127,49 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         global_intersection_counts = torch.scatter_add(
             out, -1, local_to_global_inds, local_intersection_counts.view(-1), out=out
         )
+
         # self.memory.current_pointer = local_intersection_counts_pointer
 
         # Now do border mask.
         # local_window_xy = torch.stack((local_window_x, local_window_y), -1)
-        local_window_xy = self.get_tensor([*local_window_x.shape, 2], dtype=torch.long)
-        local_window_xy[..., 0] = local_window_x
-        local_window_xy[..., 1] = local_window_y
-        local_proj_onto_line = project_point_onto_line_segment(
-            local_window_xy,
-            polygon_vertices.unsqueeze(-2),
-            next_polygon_vertices.unsqueeze(-2),
-            memory=self.memory,
-        )
-
-        # local_dist = (local_window_xy - local_proj_onto_line).norm(p=2, dim=-1)
-        local_window_xy_centered = torch.subtract(
-            local_window_xy, local_proj_onto_line, out=local_proj_onto_line
-        )
 
         global_dists = self.get_tensor([fragment_x.shape[-2]], dtype=torch.float)
         global_dists[:] = 1e12
         local_dist_pointer = self.memory.current_pointer
-        local_dist = self.get_tensor(local_window_x.shape, dtype=torch.float)
-        local_dist = torch.norm(local_window_xy_centered, p=2, dim=-1, out=local_dist)
 
-        # dist_invalid_mask = invalid_mask | (bbox_x < 0)
-        pointer = self.memory.current_pointer
-        dist_invalid_mask = self.get_tensor(invalid_mask.shape, dtype=torch.bool)
-        torch.lt(bbox_x, 0, out=dist_invalid_mask)
-        torch.logical_or(dist_invalid_mask, invalid_mask, out=dist_invalid_mask)
+        next_polygon_perpendiculars = next_polygon_vertices.roll(shifts=-1, dims=-2)
+        next_segments = broadcast_gather(
+            next_polygon_vertices, -3, next_segment_inds, keepdim=True, out=self.memory
+        )
+        next_polygon_perpendiculars[..., -1, :] = next_segments[..., 0, :]
+        next_polygon_perpendiculars = (
+                next_polygon_perpendiculars - next_polygon_vertices
+        )
+        next_polygon_perpendiculars = torch.stack(
+            (-next_polygon_perpendiculars[..., 1], next_polygon_perpendiculars[..., 0]),
+            dim=-1,
+        )
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"got dist_invalid mask"
-        # )
+        border_width_o = broadcast_gather(
+            border_width, -2, self.segment_to_object_scatter_inds
+        )
+        (local_window_x, local_window_y, local_window_fragment_to_segment_inds, local_dist
+        ) = rasterize_polygon_border(
+            polygon_vertices,
+            next_polygon_vertices,
+            next_polygon_perpendiculars,
+            border_width_o.expand(-1,-1,polygon_vertices.shape[-2]).clone().unsqueeze(-1),
+        )
 
-        posinf = zero
-        posinf[:] = 1e12
-        local_dist = torch.where(dist_invalid_mask, posinf, local_dist, out=local_dist)
+        local_window_fragment_to_segment_inds //= self.num_sampled_points
 
-        # Handle portion_of_curve_drawn
+        local_window_fragment_to_object_inds =  broadcast_gather(self.segment_to_object_scatter_inds, -2, local_window_fragment_to_segment_inds, keepdim=True)
+
+        (local_to_global_inds, bbox_x,
+         bbox_y, object_bounding_box_dimensions_for_segments, _
+         ) = get_local_to_global_inds(local_window_x, local_window_y, local_window_fragment_to_object_inds)
+
+                # Handle portion_of_curve_drawn
         # self.expand_verts_to_frags(self.portion_of_curve_drawn)
         num_vertices_per_object = (
             num_segments_per_object.view(-1, 1) * self.num_sampled_points
@@ -1197,20 +1204,19 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         vertex_number = unsquish(vertex_number, 0, self.num_sampled_points).unsqueeze(
             -1
         )
-        local_dist = torch.where(
-            vertex_number >= threshold_for_drawing, posinf, local_dist, out=local_dist
-        )
+        posinf = zero
+        posinf[:] = 1e12
+        #local_dist = torch.where(
+        #    vertex_number >= threshold_for_drawing, posinf, local_dist, out=local_dist
+        #)
 
         self.memory.current_pointer = pointer
         # global_dists = torch.empty((fragment_x.shape[-2],), device=control_points.device)
-        """global_dists = torch_scatter.scatter_min(local_dist.view(-1),
-                                                               local_to_global_inds.clamp(min=0,
-                                                                                          max=fragment_x.shape[-2] - 1),
-                                                               -1, out=global_dists)[0]"""
 
         # LoggerManager.instance().set_class("rendering").log_message(
         #    f"attempting scatter_reduce"
         # )
+
         global_dists = torch.scatter_reduce(
             global_dists,
             -1,
@@ -1270,7 +1276,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             left_intersection_counts, 1, out=left_intersection_counts
         ).unsqueeze(-1)
 
-        if self.filled:
+        if False:#self.filled:
             bool_interior_mask = self.get_tensor(interior_mask.shape, torch.bool)
             min_border = self.get_tensor(border_mask.shape, border_mask.dtype)
             min_border = torch.minimum(
@@ -1284,6 +1290,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             )
             self.memory.current_pointer = pointer
         torch.less_equal(global_dists.unsqueeze(-1), border_mask, out=border_mask)
+        #border_mask = torch.zeros_like(interior_mask)
 
         # fragment_coords = torch.cat((fragment_x, fragment_y), -1).float()
 
