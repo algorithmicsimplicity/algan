@@ -85,6 +85,8 @@ class ModificationHistory:
         end_time = animation_context.get_current_end_time()
         rate_func = animation_context.rate_func
         rate_func_compose = animation_context.rate_func_compose
+        prio = 1 if (animation_context.updater is not None and animation_context.updater) else 0
+        func_name = f'{prio}_{func_name}'
 
         if func_name not in self.function_applications:
             self.function_applications[func_name] = [func, [], [], -1]
@@ -99,7 +101,7 @@ class ModificationHistory:
             ]
         )
         self.function_applications[func_name][3] = (
-            AnimationManager.get_execution_count()
+            AnimationManager.get_execution_count() + prio * 1e12
         )
         self.most_recent_function_added = self.function_applications[func_name][2][-1]
 
@@ -148,7 +150,7 @@ class ModificationHistory:
         for func_name, (func, modified_attrs, arg_list, execution_order) in sorted(
             self.function_applications.items(),
             key=lambda _: (
-                0 if "setattr_" in _[0] else (1 if "update_relative" in _[0] else 2)
+                0 if "setattr_" in _[0] else (1 if "update_relative" in _[0] else (2 if _[0][0] == '0' else 3))
             ),
         ):  # , _[1][-1])):
             (
@@ -510,9 +512,13 @@ class Animatable:
 
         """
         start_pointer = self.animation_manager.context.get_current_time()
-        with AnimationContext(record_funcs=True):
+        start_time = self.animation_manager.context.current_time
+        end_time = self.animation_manager.context.end_time
+        with AnimationContext(record_funcs=True, updater=True):
             self.animate_function_of_time(update_function, *args, **kwargs)
         self.passive_animations.append(self.data.history.most_recent_function_added)
+        self.animation_manager.context.current_time = start_time
+        self.animation_manager.context.end_time = end_time
         self._passive_animation_functions.append(
             lambda mob, t: update_function(mob, cast_to_tensor(t), *args, **kwargs)
         )

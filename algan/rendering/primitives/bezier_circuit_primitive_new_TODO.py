@@ -199,7 +199,7 @@ def solve_cubic_bezier_second_derivative_equal_to_0(p):
 
 def batch_arange(lengths):
     offsets = lengths.cumsum(0)
-    n = offsets[-1]
+    n = offsets[-1].clone()
     offsets -= lengths
     offsets = torch.repeat_interleave(offsets, lengths)
     return torch.arange(n, device=lengths.device) - offsets
@@ -266,7 +266,7 @@ def rasterize_axis_aligned_parallelogram(
     return ind_x.int(), ind_y.int(), fragment_to_segment_inds.unsqueeze(-1), local_dists
 
 
-def rasterize_rectangle(corner1, edge1, edge2):
+def rasterize_rectangle_no_duplicates(corner1, edge1, edge2):
     quadrant_mask = edge1 >= 0
     #++ -> corner1 + edge2, corner1, corner1 + edge1
     #+- -> corner1 + edge2 + edge1, corner1 + edge2, corner1
@@ -279,9 +279,164 @@ def rasterize_rectangle(corner1, edge1, edge2):
     c2 = torch.where(m1, torch.where(m2, corners[0], corners[3]), torch.where(m2, corners[1], corners[2]))
     c3 = torch.where(m1, torch.where(m2, corners[1], corners[0]), torch.where(m2, corners[2], corners[3]))
 
-    y =
     c2 - c1
     raise NotImplementedError
+
+
+def get_distance_to_line_segment(points, p1, p2, memory=None):
+    projected_points = project_point_onto_line_segment(
+        points,
+        p1, p2,
+        memory=None
+    )
+    return (points - projected_points).norm(p=2,dim=-1, keepdim=True)
+
+    # local_dist = (local_window_xy - local_proj_onto_line).norm(p=2, dim=-1)
+    local_window_xy_centered = torch.subtract(
+        local_window_xy, local_proj_onto_line, out=local_proj_onto_line
+    )
+
+    global_dists = self.get_tensor([fragment_x.shape[-2]], dtype=torch.float)
+    global_dists[:] = 1e12
+    local_dist_pointer = self.memory.current_pointer
+    local_dist = self.get_tensor(local_window_x.shape, dtype=torch.float)
+    local_dist = torch.norm(local_window_xy_centered, p=2, dim=-1, out=local_dist)
+
+
+def rasterize_rectangle_by_grid_transform(c1, c2, edge2):
+    """Rasterizes a batch of 2D rectangles using a grid transformation method.
+
+    This algorithm creates a dense grid in the rectangle's local (u,v) space
+    and transforms these points into world coordinates. It guarantees full coverage
+    but may produce duplicate points.
+
+    Parameters
+    ----------
+    rectangle : (torch.Tensor)
+        A tensor of shape [n, 5] where n is the
+        batch size. Each row contains the parameters of a rectangle:
+        [c1_x, c1_y, c2_x, c2_y, height], where (c1_x, c1_y) is the first
+        corner, (c2_x, c2_y) is an adjacent corner, and height is the
+        perpendicular distance to the opposite edge.
+
+    Returns
+    -------
+    torch.Tensor
+        A tensor of shape [m, 2] containing the integer
+        coordinates of all points inside the rectangles. 'm' is the
+        total number of such points (including duplicates).
+    """
+    device = c1.device
+    n = c1.shape[1]
+
+    # === 1. Vectorized Calculation of Edge Vectors ===
+
+    edge1 = c2 - c1
+
+    # Add a small epsilon to prevent division by zero for zero-length edges
+    edge1_len = torch.norm(edge1, dim=-1, keepdim=True)
+    #edge1_len_safe = edge1_len + 1e-9
+    #edge1_norm = edge1 / edge1_len_safe.unsqueeze(1)
+
+    #perp_vec = torch.stack([-edge1_norm[:, 1], edge1_norm[:, 0]], dim=1)
+    #edge2 = perp_vec * heights.unsqueeze(1)
+
+    # === 2. Determine Grid Density for Each Parallelogram ===
+    # We need enough steps along each edge to not miss any integer grid lines.
+    # The number of steps is the ceiling of the vector's norm (its length).
+    edge2_len = torch.norm(edge2, dim=-1, keepdim=True)  # heights are the lengths of edge2
+
+    # Use clamp(min=1) to handle degenerate zero-area rectangle
+    sqrt_2 = math.sqrt(2)
+    num_u_steps = torch.ceil(edge1_len.amax(0) * sqrt_2).long() + 1
+    num_v_steps = torch.ceil(edge2_len.amax(0) * sqrt_2).long() + 1
+
+    # === 3. Vectorized Generation of (u,v) Coordinates ===
+    # This section creates a "ragged" tensor of grid coordinates without loops.
+    num_points_per_para = (num_u_steps * num_v_steps).long().view(-1)
+    total_points = num_points_per_para.sum()
+
+    # Create an index mapping each final point back to its original parallelogram
+    para_indices = torch.repeat_interleave(torch.arange(n, device=device), num_points_per_para)
+
+    # Generate local grid indices (0, 1, 2, ...) for each parallelogram's flattened grid
+    end_indices = torch.cumsum(num_points_per_para, dim=0)
+    start_indices = end_indices - num_points_per_para
+    local_indices = (torch.arange(total_points, device=device) - torch.repeat_interleave(start_indices,
+                                                                                        num_points_per_para)).unsqueeze(-1)
+
+    # Gather the number of u-steps corresponding to each point
+    u_steps_for_points = num_u_steps[para_indices]
+
+    # Calculate the u and v indices for each point within its local grid
+    u_idx = local_indices % u_steps_for_points
+    v_idx = local_indices // u_steps_for_points
+
+    # Convert indices to normalized [0, 1] coordinates
+    # Denominator is clamped to 1 to avoid division by zero if a dimension has only one step
+    u = u_idx / (num_u_steps[para_indices] - 1).clamp(min=1).float()
+    v = v_idx / (num_v_steps[para_indices] - 1).clamp(min=1).float()
+
+    # === 4. Transform Grid Points to World Coordinates ===
+    # Gather the geometric data for each point using the parallelogram index
+    c1_mapped = c1[:, para_indices]
+    edge1_mapped = edge1[:, para_indices]
+    edge2_mapped = edge2[:, para_indices]
+
+    # Apply the transformation: P = C1 + u * Edge1 + v * Edge2
+    # u and v need to be unsqueezed to correctly broadcast with the [M, 2] edge vectors
+    points_float = c1_mapped + u * edge1_mapped + v * edge2_mapped
+
+    # === 5. Round to Get Final Integer Coordinates ===
+    # Rounding is used instead of flooring/ceiling to get the nearest integer coordinate.
+    # This provides good coverage centered on the parallelogram's area.
+    points = torch.round(points_float).int()
+
+    #local_dists = torch.zeros_like(ind_x, dtype=torch.float)  # ((ind_x - bottom_left_corners[..., :1]).square_() + (ind_y - bottom_left_corners[..., 1:]).square_()).sqrt_()
+    return points, para_indices
+
+
+if __name__ == '__main__':
+    # A batch of three rectangle to test various cases
+    # 1. A simple axis-aligned rectangle
+    # 2. A thin, long parallelogram at a 45-degree angle
+    # 3. A general parallelogram
+    rectangle_batch = torch.tensor([
+        [1.0, 1.0, 6.0, 1.0, 3.0],  # A 5x3 rectangle. ||E1||=5, ||E2||=3.
+        [10.0, 10.0, 10.707, 10.707, 10.0],  # Thin (width=1) and long (height=10) at 45 deg
+        [20.0, 5.0, 23.0, 6.0, 4.0]  # Slanted parallelogram
+    ])
+
+    # Move to GPU if available
+    if torch.cuda.is_available():
+        rectangle_batch = rectangle_batch.cuda()
+        print("Running on GPU")
+    else:
+        print("Running on CPU")
+
+    print("\n--- Running Grid Transform Rasterizer (allows duplicates) ---")
+    rasterized_points = rasterize_rectangle_by_grid_transform(rectangle_batch)
+
+    # For inspection, let's also find the unique points
+    unique_points = torch.unique(rasterized_points, dim=0)
+
+    print(f"\nInput rectangle (Batch of {rectangle_batch.shape[0]}):")
+    print(rectangle_batch)
+    print(f"\nTotal Rasterized Points Generated (with duplicates): {rasterized_points.shape[0]}")
+    print(f"Number of Unique Points Found: {unique_points.shape[0]}")
+
+    print("\nRasterized Points (showing first 50):")
+    print(rasterized_points[:50])
+
+    print("\nUnique Rasterized Points (showing first 50):")
+    print(unique_points[:50])
+
+    # Verify the coverage for the first parallelogram (rectangle from [1,1] to [6,4])
+    # Expected unique points: x in [1..6], y in [1..4]. Total = 6*4 = 24.
+    p1_mask = (unique_points[:, 0] >= 1) & (unique_points[:, 0] <= 6) & \
+              (unique_points[:, 1] >= 1) & (unique_points[:, 1] <= 4)
+    count_p1_unique = p1_mask.sum()
+    print(f"\nUnique points found within the bounds of the first parallelogram: {count_p1_unique} (Expected: ~24)")
 
 
 def squish_batch_dims(func, start=1, end=-1):
@@ -297,22 +452,33 @@ def squish_batch_dims(func, start=1, end=-1):
     return wrapper_func
 
 
-@squish_batch_dims
+#@squish_batch_dims
 def rasterize_polygon_border(vertices, next_vertices, next_perpendiculars, widths):
     line_segments = next_vertices - vertices
+    line_segments = F.normalize(line_segments, p=2, dim=-1)
+    null_mask = (next_vertices - vertices).norm(p=1, dim=-1, keepdim=True) < 1e-5
+    line_segments = torch.where(null_mask, torch.full_like(line_segments, 1/math.sqrt(2)), line_segments)
     line_perpendiculars = torch.stack(
         (-line_segments[..., 1], line_segments[..., 0]), -1
     )
-    line_perpendiculars = F.normalize(line_perpendiculars, p=2, dim=-1)
     line_perpendiculars *= widths
     next_perpendiculars = F.normalize(next_perpendiculars, p=2, dim=-1)
     next_perpendiculars *= widths
     start_corners = [vertices + line_perpendiculars, vertices - line_perpendiculars]
+    start_corners = [torch.where(null_mask, start_corner - line_segments * widths, start_corner) for start_corner in start_corners]
 
     end_corners = [
         next_vertices + next_perpendiculars,
         next_vertices - next_perpendiculars,
     ]
+
+    dots = [dot_product(end_corner - vertices, line_segments) for end_corner in end_corners]
+    max_dot = torch.where(dots[0].abs() >= dots[1].abs(), dots[0], dots[1])
+    max_dot = torch.where(null_mask, widths*4, max_dot)
+    edge = (max_dot * line_segments)
+    points, inds = rasterize_rectangle_by_grid_transform(*start_corners, edge)
+    local_distance = get_distance_to_line_segment(points, vertices[:, inds], next_vertices[:,inds])
+    return points[...,:1], points[...,1:], inds.unsqueeze(-1), local_distance
 
     # dot_product(line_segments, end_corner + a * e1) = 0
     # dot_product(line_segments, end_corner) + a * line_segments[...,:1] = 0
@@ -381,7 +547,7 @@ def rasterize_polygon_border(vertices, next_vertices, next_perpendiculars, width
     )
 
 
-@squish_batch_dims
+#@squish_batch_dims
 def rasterize_polygon(vertices, next_vertices, num_vertices_per_object):
     num_vertices_per_object = num_vertices_per_object.view(-1)
     y_ranges = (next_vertices[...,1].ceil().int() - vertices[...,1].ceil().int()).abs().amax(0)
@@ -401,7 +567,7 @@ def rasterize_polygon(vertices, next_vertices, num_vertices_per_object):
     inds_x += vertices[..., :1].ceil().int()
     min_y = torch.minimum(vertices[...,1:], next_vertices[...,1:])
     max_y = torch.maximum(vertices[...,1:], next_vertices[...,1:])
-    m = (min_y <= inds_y) & (inds_y <= max_y)
+    m = (inds_y < min_y) != (inds_y < max_y)
     inds_y = torch.where(m, inds_y, torch.full_like(inds_y, inf))
     return inds_x, inds_y, fragment_to_object_inds.unsqueeze(-1)
 

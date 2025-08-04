@@ -140,6 +140,7 @@ class AnimationContext:
     traced_mobs: set | None = None
     new_mobs: list | None = None
     child_contexts: list | None = None
+    updater: bool | None = None
     kwargs: Any = None
     # traced_mobs: set = field(default_factory=set)
     # new_mobs: list = field(default_factory=list)
@@ -185,6 +186,7 @@ class AnimationContext:
                 "record_attr_modifications",
                 "spawn_at_end",
                 "trace_mode",
+                "updater"
             ]
         ]
 
