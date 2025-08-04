@@ -1003,7 +1003,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             border_width, -2, self.segment_to_object_scatter_inds
         )
         border_width_o = torch.repeat_interleave(border_width_o, self.num_samples_per_segment, -2)
-        (local_window_x, local_window_y, local_window_fragment_to_segment_inds, local_dist
+        (local_window_x, local_window_y, local_window_fragment_to_sample_inds, local_dist
         ) = rasterize_polygon_border(
             polygon_vertices,
             next_polygon_vertices,
@@ -1011,19 +1011,50 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             border_width_o,
         )
 
-        local_window_fragment_to_segment_inds //= self.num_sampled_points
+        sample_to_object_ind = torch.repeat_interleave(torch.arange(num_samples_per_object.shape[0], device=num_samples_per_object.device),
+                                                                       num_samples_per_object)
+        #local_window_fragment_to_sample_inds //= self.num_sampled_points
+        local_window_fragment_to_object_inds = broadcast_gather(sample_to_object_ind.view(1,-1,1), -2,
+                                                                local_window_fragment_to_sample_inds, keepdim=True)
 
-        local_window_fragment_to_object_inds =  broadcast_gather(self.segment_to_object_scatter_inds, -2, local_window_fragment_to_segment_inds, keepdim=True)
+        #local_window_fragment_to_object_inds =  broadcast_gather(self.segment_to_object_scatter_inds, -2, local_window_fragment_to_segment_inds, keepdim=True)
 
         (local_to_global_inds, bbox_x,
          bbox_y, object_bounding_box_dimensions_for_segments, _
          ) = get_local_to_global_inds(local_window_x, local_window_y, local_window_fragment_to_object_inds)
 
+        invalid_mask = self.get_tensor(bbox_x.shape, dtype=torch.bool)
+        pointer = self.memory.current_pointer
+        temp_bool = self.get_tensor(bbox_x.shape, dtype=torch.bool)
+        torch.greater_equal(
+            bbox_x,
+            object_bounding_box_dimensions_for_segments[..., :1],
+            out=invalid_mask,
+        )
+        torch.lt(bbox_y, 0, out=temp_bool)
+        torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
+        torch.gt(
+            bbox_y,
+            object_bounding_box_dimensions_for_segments[..., 1:],
+            out=temp_bool,
+        )
+        torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
+        torch.lt(bbox_x, 0, out=temp_bool)
+        dist_invalid_mask = torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
+        self.memory.current_pointer = pointer
+
+        # LoggerManager.instance().set_class("rendering").log_message(
+        #    f"got dist_invalid mask"
+        # )
+
+        posinf = zero
+        posinf[:] = 1e12
+        local_dist = torch.where(dist_invalid_mask, posinf, local_dist, out=local_dist)
+
                 # Handle portion_of_curve_drawn
         # self.expand_verts_to_frags(self.portion_of_curve_drawn)
-        num_vertices_per_object = (
-            num_segments_per_object.view(-1, 1) * self.num_sampled_points
-        )
+
+        """num_vertices_per_object = num_samples_per_object.view(-1, 1)
         num_vertices_per_object += 1
         threshold_for_drawing = broadcast_gather(
             portion_of_curve_drawn * num_vertices_per_object,
@@ -1060,12 +1091,13 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         #    vertex_number >= threshold_for_drawing, posinf, local_dist, out=local_dist
         #)
 
-        self.memory.current_pointer = pointer
         # global_dists = torch.empty((fragment_x.shape[-2],), device=control_points.device)
 
         # LoggerManager.instance().set_class("rendering").log_message(
         #    f"attempting scatter_reduce"
         # )
+        """
+        self.memory.current_pointer = pointer
 
         global_dists = torch.scatter_reduce(
             global_dists,

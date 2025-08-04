@@ -7,7 +7,7 @@ def move_out_of_screen(mob_func):
             mob = mob_func().spawn()
             with Sync(run_time=3):
                 mob.rotate(720, OUT)
-                mob.move_out_of_screen(dir)
+                mob.move_out_of_screen(dir, despawn=False)
 
 
 def test_move_out_of_screen_triangle():
