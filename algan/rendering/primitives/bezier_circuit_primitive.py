@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn.functional as F
 
+from algan import compiled
 from algan.constants.color import BLUE, BLACK
 from algan.logging.logger import LoggerManager
 from algan.rendering.primitives.bezier_circuit_primitive_new_TODO import rasterize_polygon, rasterize_polygon_border, \
@@ -429,10 +430,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 pass
                 # logger.log_message(f"{name} {var.shape},\n{var.dtype},\n {var}\n")
 
-            log_var("segment_to_object_scatter_inds", segment_to_object_scatter_inds)
+            #log_var("segment_to_object_scatter_inds", segment_to_object_scatter_inds)
             arange_num_segments_per_oject = arange_num_segments_per_oject.view(1, -1, 1)
-            log_var("arange_num_segments_per_oject", arange_num_segments_per_oject)
-            log_var("x0", x[..., 0])
+            #log_var("arange_num_segments_per_oject", arange_num_segments_per_oject)
+            #log_var("x0", x[..., 0])
             object_bounding_corners_bottom_left = (
                 broadcast_scatter(
                     arange_num_segments_per_oject,
@@ -446,10 +447,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 min=torch.tensor((start_x, start_y), device=x.device),
                 max=torch.tensor((end_x, end_y), device=x.device),
             )
-            log_var(
-                "object_bounding_corners_bottom_left",
-                object_bounding_corners_bottom_left,
-            )
+            #log_var(
+            #    "object_bounding_corners_bottom_left",
+            #    object_bounding_corners_bottom_left,
+            #)
             object_bounding_corners_top_right = (
                 broadcast_scatter(
                     arange_num_segments_per_oject,
@@ -463,9 +464,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 min=torch.tensor((start_x, start_y), device=x.device),
                 max=torch.tensor((end_x, end_y), device=x.device),
             )
-            log_var(
-                "object_bounding_corners_top_right", object_bounding_corners_top_right
-            )
+            #log_var(
+            #    "object_bounding_corners_top_right", object_bounding_corners_top_right
+            #)
 
             # object_bounding_box_dimensions = object_bounding_corners_top_right - object_bounding_corners_bottom_left
             object_bounding_box_dimensions = self.get_tensor(
@@ -488,8 +489,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 out=object_bounding_box_num_pixels,
             )
 
-            log_var("object_bounding_box_dimensions", object_bounding_box_dimensions)
-            log_var("object_bounding_box_num_pixels", object_bounding_box_num_pixels)
+            #log_var("object_bounding_box_dimensions", object_bounding_box_dimensions)
+            #log_var("object_bounding_box_num_pixels", object_bounding_box_num_pixels)
             # num_fragments = object_bounding_box_num_pixels.long().sum()
             num_fragments = torch.sum(object_bounding_box_num_pixels).item()
             self.num_fragments_fill = num_fragments / len(
@@ -684,6 +685,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             + num_fragments_border_samples * 128
         )
 
+    #@compiled
     def render_(
         self,
         time_start,

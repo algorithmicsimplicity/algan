@@ -1159,6 +1159,26 @@ class Mob(Animatable):
             -2,
         )
 
+    def _select_in_direction(self, points, direction):
+        ind = dot_product(
+            points, direction, dim=-1, keepdim=True
+        ).argmax(-2, keepdim=True)
+        return broadcast_gather(points, -2, ind, keepdim=True)
+
+    def get_boundary_edge_point_recursive(self, direction):
+        num_children = len(self.children)
+        if num_children == 0:
+            return self._select_in_direction(self.get_boundary_points(), direction)
+        elif num_children == 1:
+            return self.children[0].get_boundary_edge_point_recursive(direction)
+        return self._select_in_direction(torch.cat([
+                child.get_boundary_edge_point_recursive(direction)
+                for child in self.children
+                if not child.exclude_from_boundary
+            ],
+            -2,
+            ), direction)
+
     def get_boundary_edge_point(self, direction: torch.Tensor) -> torch.Tensor:
         """Finds the point on the Mob's recursive boundary that is furthest in a given direction.
 
@@ -1174,8 +1194,10 @@ class Mob(Animatable):
             The 3-D coordinate of the boundary point furthest in `direction`.
 
         """
+        return self.get_boundary_edge_point_recursive(direction)
         all_boundary_points = self.get_boundary_points_recursive()
         # Project all boundary points onto the direction vector and find the one with max projection
+        #best_index = (all_boundary_points.unsqueeze(-2) @ direction.unsqueeze(-1)).squeeze(-1).argmax(-2, keepdim=True)
         best_index = dot_product(
             all_boundary_points, direction, dim=-1, keepdim=True
         ).argmax(-2, keepdim=True)

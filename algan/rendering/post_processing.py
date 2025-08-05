@@ -270,6 +270,9 @@ def bloom_filter_premultiply(
 
 
 def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
+    #return x
+    #if x[...,3:4].amax() <= 1e-5:
+    #    return x
     scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
 
     xdtype = x.dtype

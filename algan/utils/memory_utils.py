@@ -54,7 +54,7 @@ class ManualMemory:
         num_bytes = int(
             get_num_available_bytes(device) * portion_of_available_memory_used
         )
-        self.data = torch.empty((num_bytes,), device=device, dtype=torch.bool)
+        self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
         self.length = len(self.data)
 
     def __len__(self):
@@ -66,6 +66,7 @@ class ManualMemory:
     def get_num_bytes_remaining(self):
         return len(self) - self.current_pointer
 
+    @torch.compiler.disable(recursive=True)
     def get_tensor(self, shape, dtype=torch.float):
         def get_shape(shape):
             shape = [_ for _ in shape]

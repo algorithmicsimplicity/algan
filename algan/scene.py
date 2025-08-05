@@ -179,7 +179,7 @@ class Scene:
         audio_clip.close()
         return file_path
 
-    @compiled
+    #@compiled
     def render_primitive_batch(
         self,
         primitive_batch,
@@ -190,97 +190,99 @@ class Scene:
         transparent_background=False,
         background_color=None,
     ):
-        time_inds = torch.arange(start_ind, end_ind)
-        camera = self.camera
-        camera.screen.set_state_to_time_t(time_inds)
-        camera.set_state_to_time_t(time_inds)
-        camera.screen_width = (
-            self.num_pixels_screen_width * self.render_settings.anti_alias_level
-        )
-        camera.screen_height = (
-            self.num_pixels_screen_height * self.render_settings.anti_alias_level
-        )
-        for l in self.light_sources:
-            l.set_state_to_time_t(time_inds)
-            l.origin = l.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
-            l.light_color = (
-                (l.color[..., :-1] * l.color[..., -1:] * l.opacity)
-                .unsqueeze(-2)
-                .to(COMPUTING_DEFAULTS.render_device)
+        with torch.no_grad():
+            time_inds = torch.arange(start_ind, end_ind)
+            camera = self.camera
+            camera.screen.set_state_to_time_t(time_inds)
+            camera.set_state_to_time_t(time_inds)
+            camera.screen_width = (
+                self.num_pixels_screen_width * self.render_settings.anti_alias_level
             )
-
-        gc.collect()
-        empty_cache()
-        self.memory = ManualMemory(
-            COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering
-        )
-        logger = LoggerManager.instance().set_class("batching")
-        for primitive in primitive_batch:
-            logger.log_message(
-                f"Pre-projecting primitive {primitive} with corners.shape: {primitive.corners.shape},"
-                f"camera.location.shape: {camera.location.shape}, camera.ray_origin.shape: {camera.ray_origin.shape},"
-                f"light_source.location.shape: {self.light_sources[0].location.shape}, "
-                f"light_source.origin: {self.light_sources[0].origin.shape}"
+            camera.screen_height = (
+                self.num_pixels_screen_height * self.render_settings.anti_alias_level
             )
-            primitive.memory = self.memory
-            primitive.project_to_screen(camera, self.light_sources)
-
-        current_ind = start_ind
-        start_pointer = self.memory.current_pointer
-        while True:
-            duration = end_ind - current_ind
-            while True:
-                mem_used = sum(
-                    [
-                        _.get_memory_used(
-                            current_ind - start_ind, current_ind + duration - start_ind
-                        )
-                        for _ in primitive_batch
-                    ]
+            for l in self.light_sources:
+                l.set_state_to_time_t(time_inds)
+                l.origin = l.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
+                l.light_color = (
+                    (l.color[..., :-1] * l.color[..., -1:] * l.opacity)
+                    .unsqueeze(-2)
+                    .to(COMPUTING_DEFAULTS.render_device)
                 )
-                if mem_used <= self.memory.get_num_bytes_remaining():
-                    break
-                duration = duration // 2
-                if duration <= 1:
-                    duration = 1
-                    break
-            new_ind = current_ind + duration
 
-            # time_inds = torch.arange(current_ind, new_ind)
-            # camera.set_state_to_time_t(time_inds)
-            # camera.screen.set_state_to_time_t(time_inds)
-            # for l in self.light_sources:
-            #    l.set_state_to_time_t(time_inds)
-
-            primitive_batch[0].render(
-                primitive_batch,
-                self,
-                save_image,
-                self.num_pixels_screen_width,
-                self.num_pixels_screen_height,
-                current_ind - start_ind,
-                new_ind - start_ind,
-                self.background_frame if background_color is None else background_color,
-                transparent_background,
-                camera.ray_origin,
-                camera.screen_point,
-                camera.screen_basis,
-                anti_alias_level=self.render_settings.anti_alias_level,
-                light_sources=self.light_sources,
-                memory=self.memory,
-                post_processes=post_processes,
+            gc.collect()
+            empty_cache()
+            torch.compiler.cudagraph_mark_step_begin()
+            self.memory = ManualMemory(
+                COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering
             )
+            logger = LoggerManager.instance().set_class("batching")
+            for primitive in primitive_batch:
+                #logger.log_message(
+                #    f"Pre-projecting primitive {primitive} with corners.shape: {primitive.corners.shape},"
+                #    f"camera.location.shape: {camera.location.shape}, camera.ray_origin.shape: {camera.ray_origin.shape},"
+                #    f"light_source.location.shape: {self.light_sources[0].location.shape}, "
+                #    f"light_source.origin: {self.light_sources[0].origin.shape}"
+                #)
+                primitive.memory = self.memory
+                primitive.project_to_screen(camera, self.light_sources)
 
-            self.memory.current_pointer = start_pointer
-            self.memory.max_pointer = start_pointer
-            current_ind = new_ind
-            if current_ind >= end_ind:
-                break
+            current_ind = start_ind
+            start_pointer = self.memory.current_pointer
+            while True:
+                duration = end_ind - current_ind
+                while True:
+                    mem_used = sum(
+                        [
+                            _.get_memory_used(
+                                current_ind - start_ind, current_ind + duration - start_ind
+                            )
+                            for _ in primitive_batch
+                        ]
+                    )
+                    if mem_used <= self.memory.get_num_bytes_remaining():
+                        break
+                    duration = duration // 2
+                    if duration <= 1:
+                        duration = 1
+                        break
+                new_ind = current_ind + duration
 
-        self.memory.data = None
-        self.memory = None
-        for actor in [self.camera, self.camera.screen, *self.light_sources]:
-            actor.reset_state()
+                # time_inds = torch.arange(current_ind, new_ind)
+                # camera.set_state_to_time_t(time_inds)
+                # camera.screen.set_state_to_time_t(time_inds)
+                # for l in self.light_sources:
+                #    l.set_state_to_time_t(time_inds)
+
+                primitive_batch[0].render(
+                    primitive_batch,
+                    self,
+                    save_image,
+                    self.num_pixels_screen_width,
+                    self.num_pixels_screen_height,
+                    current_ind - start_ind,
+                    new_ind - start_ind,
+                    self.background_frame if background_color is None else background_color,
+                    transparent_background,
+                    camera.ray_origin,
+                    camera.screen_point,
+                    camera.screen_basis,
+                    anti_alias_level=self.render_settings.anti_alias_level,
+                    light_sources=self.light_sources,
+                    memory=self.memory,
+                    post_processes=post_processes,
+                )
+
+                self.memory.current_pointer = start_pointer
+                self.memory.max_pointer = start_pointer
+                current_ind = new_ind
+                if current_ind >= end_ind:
+                    break
+
+            self.memory.data = None
+            self.memory = None
+            for actor in [self.camera, self.camera.screen, *self.light_sources]:
+                actor.reset_state()
 
     def get_frame(self, i):
         actors = self.actors[-1]

@@ -980,7 +980,7 @@ class Animatable:
         self.data.time_inds_materialized = time_inds
         self.data.set_pre_function_application = True
 
-    @compiled
+    #@compiled
     def set_state_full(self, s, e):
         """Sets all animatable attribute values to their final values after animated_functions have been applied."""
         if self.already_set_state:

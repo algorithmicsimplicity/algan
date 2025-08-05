@@ -10,6 +10,13 @@ from algan.constants.math import GIGABYTES
 
 __all__ = ["COMPUTING_DEFAULTS", "DIRECTORY_DEFAULTS", "RENDERING_DEFAULTS"]
 
+cuda_available = False
+if torch.cuda.is_available():
+    try:
+        torch.zeros((2,)).cuda() + 1
+        cuda_available = True
+    except:
+        pass
 
 @dataclass
 class ComputingDefaults:
@@ -21,7 +28,7 @@ class ComputingDefaults:
     animation_device = torch.device("cpu")
     render_device = torch.device(
         "cuda"
-        if torch.cuda.is_available()
+        if cuda_available
         else ("mps" if torch.mps.is_available() else "cpu")
     )
 

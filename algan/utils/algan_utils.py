@@ -1,5 +1,6 @@
 import cProfile
 import os.path
+import time
 
 from pathlib import Path
 
@@ -226,12 +227,18 @@ def render_all_funcs(
 
     if profile:
         pr = cProfile.Profile()
+        start = time.time()
         pr.enable()
         out = run(output_dir, render_settings, output_path)
         pr.disable()
+        end = time.time()
 
+        with open('profiler_dump.txt', 'w') as f:
+            ps = pstats.Stats(pr, stream=f).sort_stats(pstats.SortKey.CUMULATIVE)
+            ps.print_stats()
         ps = pstats.Stats(pr).sort_stats(pstats.SortKey.CUMULATIVE)
         ps.print_stats()
+        print(f'took {end-start} seconds.')
         return out
     else:
         return run(output_dir, render_settings, output_path)

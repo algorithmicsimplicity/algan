@@ -8,20 +8,61 @@ import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import shutil
 import torch
-
-from algan.settings.defaults import *
-from algan.settings.style_defaults import *
-from algan.settings.logging_defaults import *
-
-from algan.utils.memory_utils import ManualMemory
-
 torch.set_grad_enabled(False)
 c = torch.inference_mode()
 c.__enter__()
+#import openvino.torch
+#import torch_tensorrt
+
+
+def exported(function=None, *, example_inputs=None, dynamic_shapes=None):
+    def _decorate(func):
+        class ModuleWrapper(torch.nn.Module):
+            def __init__(self, func):
+                super().__init__()
+                self.forward = func
+
+            #def forward(self, *args, **kwargs):
+            #    return self.func(*args, **kwargs)
+
+        mod = ModuleWrapper(func)
+        #mod.forward = func
+        ep = torch.export.export_for_inference(mod, example_inputs, dynamic_shapes=dynamic_shapes, strict=False,)
+        return ep.module()
+        @wraps(func)
+        def wrapper_func(*args, **kwargs):
+            return ep.module()(*args, **kwargs)
+        return wrapper_func
+    if function:
+        return _decorate(function)
+    return _decorate
+
+'''default_compile_operation = lambda x: torch.compile(x, dynamic=False, fullgraph=False, backend="tensorrt",
+                                                    options={"min_block_size": 1,
+                                                             "use_python_runtime": True, }
+                                                    )#"onnxrt")# mode="reduce-overhead")#backend='cudagraphs')'''
+default_compile_operation = lambda x: torch.compile(x, dynamic=True, fullgraph=False)
+
+
+class CudaStream():
+    def __enter__(self):
+        self.stream = None
+        if False:#COMPUTING_DEFAULTS.compiled:
+            self.stream = torch.cuda.Stream()
+            self.stream.wait_stream(torch.cuda.default_stream(torch.device('cuda')))
+            self.context = torch.cuda.stream(self.stream)
+            self.context.__enter__()
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):
+        if exc_type is not None:
+            return False
+        if self.stream is not None:
+            return self.context.__exit__(exc_type, exc_value, exc_traceback)
+        return True
 
 
 def compile_wrapper(function):
-    compiled_function = torch.compile(function, dynamic=True)
+    compiled_function = default_compile_operation(function)
 
     def _decorate(func, compiled_func):
         @wraps(func)
@@ -36,19 +77,30 @@ def compile_wrapper(function):
 
 
 try:
-
-    @torch.compile
+    @default_compile_operation
     def _dummy_func(x):
-        return x + 1
+        with torch.no_grad():
+            return x + 1
 
     # Test the dummy function
-    _dummy_func(torch.tensor(1.0))
+    with torch.no_grad():
+        _dummy_func(torch.tensor(1.0))
 
     # compiled = torch.compile
     # print('using torch.compile')
-    compiled = compile_wrapper
-except:
     compiled = lambda x: x
+    cuda_compiled = compile_wrapper
+except Exception as e:
+    #raise e
+    #print('PyTorch Compilation is unavailable, most likely due to running on Windows OS.')
+    compiled = lambda x: x
+    cuda_compiled = lambda x: x
+
+from algan.settings.defaults import *
+from algan.settings.style_defaults import *
+from algan.settings.logging_defaults import *
+
+from algan.utils.memory_utils import ManualMemory
 
 
 class SceneManager:

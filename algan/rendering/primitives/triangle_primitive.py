@@ -1,6 +1,7 @@
 import torch
+from torch.export.dynamic_shapes import Dim
 
-import algan
+from algan import compiled, exported, cuda_compiled, CudaStream
 from algan.constants.color import BLUE
 from algan.settings.defaults import *
 from algan.rendering.primitives.primitive import RenderPrimitive
@@ -15,50 +16,67 @@ from algan.utils.tensor_utils import (
 )
 
 
-def get_bary_coordinates(triangle_corners, fragment_x, fragment_y, aa_offsets):
-    cs = triangle_corners
-    fragment_x -= cs[..., 2, 0].unsqueeze(-1)
-    fragment_y -= cs[..., 2, 1].unsqueeze(-1)
-    # y23 = (cs[..., 1, 1] - cs[..., 2, 1]).unsqueeze(-1)
-    y23 = torch.subtract(cs[..., 1, 1], cs[..., 2, 1], out=cs[..., 1, 1]).unsqueeze(-1)
-    # x13 = (cs[..., 0, 0] - cs[..., 2, 0]).unsqueeze(-1)
-    x13 = torch.subtract(cs[..., 0, 0], cs[..., 2, 0], out=cs[..., 0, 0]).unsqueeze(-1)
-    # x32 = (cs[..., 2, 0] - cs[..., 1, 0]).unsqueeze(-1)
-    x32 = torch.subtract(cs[..., 2, 0], cs[..., 1, 0], out=cs[..., 2, 0]).unsqueeze(-1)
-    # y13 = (cs[..., 0, 1] - cs[..., 2, 1]).unsqueeze(-1)
-    y13 = torch.subtract(cs[..., 0, 1], cs[..., 2, 1], out=cs[..., 1, 0]).unsqueeze(-1)
-    # y31 = (cs[..., 2, 1] - cs[..., 0, 1]).unsqueeze(-1)
-    y31 = torch.subtract(cs[..., 2, 1], cs[..., 0, 1], out=cs[..., 0, 1]).unsqueeze(-1)
-    # denom = (y23 * x13 + x32 * y13)
-    # inv_denom = 1 / denom
-    denom = torch.mul(y23, x13, out=cs[..., 2, 1].unsqueeze(-1))
-    denom = torch.addcmul(denom, x32, y13, value=1, out=denom)
-    inv_denom = torch.div(1, denom, out=denom)
+#@compiled
+t = 2
+num_frag = 100000
+#@exported(example_inputs=(torch.randn((t, num_frag, 3, 2)), torch.randn((t, num_frag, 1)), torch.randn((t, num_frag, 1))),
+#          dynamic_shapes=[(Dim.AUTO, Dim.AUTO, Dim.STATIC, Dim.STATIC), (Dim.AUTO, Dim.AUTO, Dim.STATIC), (Dim.AUTO, Dim.AUTO, Dim.STATIC)])
+@cuda_compiled
+def _get_bary_coordinates_part_1(triangle_corners, fragment_x, fragment_y):
+    #stream = torch.cuda.Stream()
+    #with torch.cuda.stream(stream):
+    with CudaStream():
+        cs = triangle_corners
+        fragment_x -= cs[..., 2, 0].unsqueeze(-1)
+        fragment_y -= cs[..., 2, 1].unsqueeze(-1)
+        # y23 = (cs[..., 1, 1] - cs[..., 2, 1]).unsqueeze(-1)
+        y23 = torch.subtract(cs[..., 1, 1], cs[..., 2, 1], out=cs[..., 1, 1]).unsqueeze(-1)
+        # x13 = (cs[..., 0, 0] - cs[..., 2, 0]).unsqueeze(-1)
+        x13 = torch.subtract(cs[..., 0, 0], cs[..., 2, 0], out=cs[..., 0, 0]).unsqueeze(-1)
+        # x32 = (cs[..., 2, 0] - cs[..., 1, 0]).unsqueeze(-1)
+        x32 = torch.subtract(cs[..., 2, 0], cs[..., 1, 0], out=cs[..., 2, 0]).unsqueeze(-1)
+        # y13 = (cs[..., 0, 1] - cs[..., 2, 1]).unsqueeze(-1)
+        y13 = torch.subtract(cs[..., 0, 1], cs[..., 2, 1], out=cs[..., 1, 0]).unsqueeze(-1)
+        # y31 = (cs[..., 2, 1] - cs[..., 0, 1]).unsqueeze(-1)
+        y31 = torch.subtract(cs[..., 2, 1], cs[..., 0, 1], out=cs[..., 0, 1]).unsqueeze(-1)
+        # denom = (y23 * x13 + x32 * y13)
+        # inv_denom = 1 / denom
+        denom = torch.mul(y23, x13, out=cs[..., 2, 1].unsqueeze(-1))
+        denom = torch.addcmul(denom, x32, y13, value=1, out=denom)
+        inv_denom = torch.div(1, denom, out=denom)
+        return denom, inv_denom, x13, x32, y13, y31, y23
 
-    def get_coords(anti_alias_offset, out=None):
-        px3 = fragment_x  # + anti_alias_offset[0]
-        py3 = fragment_y  # + anti_alias_offset[1]
 
-        # w2 = (((x13 * py3) + y31 * px3) * inv_denom).nan_to_num_(nan=-1.0)
-        w2 = torch.mul(y31, px3, out=y31)
-        w2 = torch.addcmul(w2, x13, py3, out=w2)
-        w2 *= inv_denom
-        # w1 = (((x32 * py3) + y23 * px3) * inv_denom).nan_to_num_(nan=-1.0)
-        w1 = torch.mul(x32, py3, out=x13)
-        w1 = torch.addcmul(w1, y23, px3, out=w1)
-        w1 *= inv_denom
-        # w3 = (1 - (w1 + w2))
-        w3 = torch.add(w1, w2, out=y13)
-        w3 *= -1
-        w3 += 1
-        # We carefully wrote w1, w2, w3 into the first 3 positions of cs, so we can just return that and save ourselves a stack.
-        return cs.view(*cs.shape[:-2], -1)[..., :3].unsqueeze(-1)
+def _get_bary_coordinates_part_2(fragment_x, fragment_y, inv_denom, x13, x32, y13, y31, y23):
+    px3 = fragment_x  # + anti_alias_offset[0]
+    py3 = fragment_y  # + anti_alias_offset[1]
+
+    # w2 = (((x13 * py3) + y31 * px3) * inv_denom).nan_to_num_(nan=-1.0)
+    w2 = torch.mul(y31, px3, out=y31)
+    w2 = torch.addcmul(w2, x13, py3, out=w2)
+    w2 *= inv_denom
+    # w1 = (((x32 * py3) + y23 * px3) * inv_denom).nan_to_num_(nan=-1.0)
+    w1 = torch.mul(x32, py3, out=x13)
+    w1 = torch.addcmul(w1, y23, px3, out=w1)
+    w1 *= inv_denom
+    # w3 = (1 - (w1 + w2))
+    w3 = torch.add(w1, w2, out=y13)
+    w3 *= -1
+    w3 += 1
+
+
+def get_bary_coordinates(triangle_corners, fragment_x, fragment_y):
+    denom, inv_denom, x13, x32, y13, y31, y23 = _get_bary_coordinates_part_1(triangle_corners, fragment_x, fragment_y)
+    _get_bary_coordinates_part_2(fragment_x, fragment_y, inv_denom, x13, x32, y13, y31, y23)
+
+
+    # We carefully wrote w1, w2, w3 into the first 3 positions of cs, so we can just return that and save ourselves a stack.
+    return triangle_corners.view(*triangle_corners.shape[:-2], -1)[..., :3].unsqueeze(-1)
         # return torch.stack((w1, w2, w3), -2)
 
-    return get_coords(aa_offsets)
-    # return torch.stack([get_coords(_) for _ in aa_offsets])
 
-
+#@compiled
+@cuda_compiled
 def interpolate_triangle_corners(self, interpolation_coord, property):
     ws = interpolation_coord
     x = property
@@ -144,8 +162,9 @@ class TrianglePrimitive(RenderPrimitive):
     def get_interpolation_coordinates(
         self, vertex_corners, fragment_x, fragment_y, aa_offsets
     ):
-        return get_bary_coordinates(vertex_corners, fragment_x, fragment_y, aa_offsets)
+        return get_bary_coordinates(vertex_corners, fragment_x, fragment_y)
 
+    #@compiled
     def interpolate_property(self, interpolation_coord, property, repeats_inds):
         return interpolate_triangle_corners(
             self,

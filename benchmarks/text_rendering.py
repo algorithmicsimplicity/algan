@@ -2,9 +2,9 @@ from algan import *
 import manim as mn
 
 
-def render_static_triangles():
-    mobs = Group([Sphere() for _ in range(9)]).arrange_in_grid().spawn()
-    mobs.wait(10)
+def render_static_text():
+    mobs = Group([ManimMob(mn.Text('a')) for _ in range(250)]).arrange_in_grid().scale(1/10).spawn()
+    mobs.wait(2)
 
 
 #COMPUTING_DEFAULTS.compiled = False
