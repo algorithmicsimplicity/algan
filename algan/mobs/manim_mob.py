@@ -69,7 +69,7 @@ class ManimMob(BezierCircuitCubic):
             border_color=convert_manim_color(
                 manim_mob.stroke_color, manim_mob.stroke_opacity
             ),
-            border_width=manim_mob.stroke_width * 0.5,
+            border_width=manim_mob.stroke_width,
             filled=(not hasattr(manim_mob, "end"))
             and (manim_mob.fill_opacity is not None and manim_mob.fill_opacity > 1e-5),
             empty=empty,

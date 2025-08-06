@@ -57,13 +57,16 @@ class Group(Mob):
 
         def mean(x):
             x = [_ for _ in x if _ is not None]
+            if len(x) == 0:
+                return None
             return torch.stack([_.mean(-2, keepdim=True) for _ in x], -1).mean(-1)
 
         super().__init__(
             self.get_mob_midpoint(),
-            color=mean(list(traverse([mob.color for mob in mobs]))),
+            color=mean(list(traverse([mob.color for mob in mobs if hasattr(mob, 'color')]))),
             **kwargs,
         )
+
         self.traversable = False
         if all([_.data.spawn_time() >= 0 for _ in mobs]):
             self.spawn(animate=False)
