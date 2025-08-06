@@ -1,6 +1,7 @@
 import torch.types
 from algan.mobs.surfaces.surface import Surface
 import algan.utils.file_utils as file_utils
+from manim import ImageMobject
 
 
 class ImageMob(Surface):
