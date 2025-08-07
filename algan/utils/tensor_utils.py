@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from algan import cuda_compiled, CudaStream
+from algan import cuda_compiled, CudaStream, not_compiled
 from algan.settings.defaults import *
 
 try:
@@ -51,7 +51,7 @@ def _cast_to_tensor_recursive(x):
         return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
 
 
-@torch.compiler.disable(recursive=True)
+@not_compiled
 def cast_to_tensor(x):
     """
     Converts scalars or lists of scalars into tensors, and combines lists of tensors into a single tensor.
@@ -188,7 +188,7 @@ def unsqueeze_until_dim(x, dim, insert_dim=0):
     return x
 
 
-@torch.compiler.disable(recursive=True)
+@not_compiled#@torch.compiler.disable(recursive=True)
 def broadcast_all(xs, ignored_dims=[]):
     max_dim = max([_.dim() if hasattr(_, "dim") else 0 for _ in xs])
     ignored_dims = [_ if _ >= 0 else _ + max_dim for _ in ignored_dims]
@@ -209,15 +209,25 @@ def broadcast_all(xs, ignored_dims=[]):
 
 
 #@cuda_compiled
-@torch.compiler.disable(recursive=True)
-def broadcast_gather(src, dim: int, ind, keepdim=False, out=None, **kwargs):
-    ind, src = broadcast_both_left(
-        ind, src, ignored_dims=[dim if dim >= 0 else len(src.shape) + dim]
-    )
+@not_compiled#@torch.compiler.disable(recursive=True)
+def broadcast_gather(src, dim: int, ind, keepdim=True, out=None, **kwargs):
+    src_shape = src.shape
+    ind_shape = ind.shape
+    if src.dim() < ind.dim():
+        src_shape = [*([1] * (ind.dim() - src.dim())), *src.shape]
+    elif ind.dim() < src.dim():
+        ind_shape = [*([1] * (src.dim() - ind.dim())), *ind.shape]
     if hasattr(out, "get_tensor"):
-        out_shape = [_ for _ in ind.shape]
+        out_shape = [max(s, i) for s, i in zip(src_shape, ind_shape)]
+        out_shape[dim] = ind_shape[dim]
         out = out.get_tensor(out_shape, dtype=src.dtype)
-    out = torch.gather(src, dim, ind, out=out, **kwargs)
+    if ind.squeeze().dim() <= 1 and ind_shape[dim] == max(ind.shape):
+        out = torch.index_select(src, dim, ind.view(-1), out=out)
+    else:
+        ind, src = broadcast_both_left(
+            ind, src, ignored_dims=[dim if dim >= 0 else len(src.shape) + dim]
+        )
+        out = torch.gather(src, dim, ind, out=out, **kwargs)
     if not keepdim:
         out = out.squeeze(dim)
     return out

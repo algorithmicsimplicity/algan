@@ -1,11 +1,13 @@
 import math
-from functools import wraps
 
 import torch
 import torch.nn.functional as F
 
+from algan import compiled
 from algan.constants.color import BLUE, BLACK
 from algan.logging.logger import LoggerManager
+from algan.rendering.primitives.bezier_circuit_primitive_new_TODO import rasterize_polygon, rasterize_polygon_border, \
+    batch_arange
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.geometry.geometry import (
     intersect_line_with_plane,
@@ -58,6 +60,51 @@ def evaluate_cubic_bezier_old(p, t, out, mem):
     out[:] += 3 * ((1 - t) ** 2) * t * p[..., 1, :]
     out[:] += 3 * (1 - t) * t * t * p[..., 2, :]
     out[:] += (t**3) * p[..., 3, :]
+    return out
+
+
+def evaluate_cubic_bezier_new(p, t, out, mem, i=-1):
+    p0 = p[..., 0, :]
+    p1 = p[..., 1, :]
+    p2 = p[..., 2, :]
+    p3 = p[..., 3, :]
+    mem.save_pointer()
+    temp_t = mem.get_tensor(t.shape)
+    temp_t_2 = mem.get_tensor(t.shape)
+    temp = mem.get_tensor(out.shape)
+    _1_m_t = torch.subtract(1, t, out=temp_t)
+    _1_m_t3 = torch.pow(_1_m_t, 3, out=temp_t)
+    _1_m_t3p0 = torch.mul(p0, _1_m_t3, out=out)
+    if i == 0:
+        return out
+    # out[:] = ((1 - t) ** 3) * p[..., 0, :]
+    tp1 = torch.mul(t, p1, out=temp)
+    _1_m_t = torch.subtract(1, t, out=temp_t)
+    _1_m_t2 = torch.pow(_1_m_t, 2, out=_1_m_t)
+    torch.addcmul(_1_m_t3p0, _1_m_t2, tp1, value=3, out=out)
+    # out[:] += 3 * ((1 - t) ** 2) * t * p[..., 1, :]
+    if i == 1:
+        return out
+    # Is this a Pytorch bug?
+    # torch.square(t, out=temp[...,:1])
+    temp_t[:] = t
+    temp_t.square_()
+    # torch.subtract(1,t,out=temp2[...,:1])
+    temp_t_2[:] = t
+    temp_t_2 *= -1
+    temp_t_2 += 1
+    temp_t *= temp_t_2
+    # torch.mul(temp[...,:1],temp2[...,:1],out=temp[...,:1])
+    torch.addcmul(out, temp_t, p2, value=3, out=out)
+    # out[:] += 3 * (1 - t) * t * t * p[..., 2, :]
+    if i == 2:
+        return out
+    # torch.pow(t, 3, out=temp[...,:1])
+    temp_t[:] = t
+    temp_t **= 3
+    torch.addcmul(out, temp_t, p3, out=out)
+    # out[:] += (t ** 3) * p[..., 3, :]
+    mem.reset_pointer()
     return out
 
 
@@ -197,364 +244,6 @@ def solve_cubic_bezier_second_derivative_equal_to_0(p):
     return t
 
 
-def batch_arange(lengths, memory=None):
-    if memory is None:
-        offsets = lengths.cumsum(0)
-        n = offsets[-1].clone()
-        offsets -= lengths
-        offsets = torch.repeat_interleave(offsets, lengths, output_size=n)
-        return torch.arange(n, device=lengths.device) - offsets
-
-    start_pointer = memory.current_pointer
-    start_reverse_pointer = memory.current_reverse_pointer
-    offsets = torch.cumsum(lengths, 0, out=memory.get_tensor(lengths.shape, lengths.dtype))
-    n = offsets[-1].clone()
-    offsets -= lengths
-    offsets = torch.repeat_interleave(offsets, lengths, output_size=n)
-    inds = torch.arange(n, device=lengths.device, out=memory.get_tensor((n,), dtype=torch.long, persist=True))
-    inds -= offsets
-    memory.current_pointer = start_pointer
-    inds = memory.cast(inds, torch.int)
-    memory.current_reverse_pointer = start_reverse_pointer
-    return inds
-
-
-def rasterize_axis_aligned_parallelogram(
-    start_corner_1, start_corner_2, widths, horizontal_mask
-):
-    # Inputs must be a parallelogram with its top and bottom sides aligned with the x-axis (flat horizontal lines)
-    # and corresponding horizontal_mask set to True, or else its left and right sides aligned with the y-axis (flat vertical lines).
-    #horizontal_mask = torch.full_like(horizontal_mask, True)
-    bottom_left_corners = start_corner_1#torch.minimum(start_corner_1, start_corner_2)
-    top_left_corners = start_corner_2#torch.maximum(start_corner_1, start_corner_2)
-    heights = torch.where(
-        horizontal_mask,
-        top_left_corners[..., 1:] - bottom_left_corners[..., 1:],
-        top_left_corners[..., :1] - bottom_left_corners[..., :1],
-    )#.abs().ceil()
-    orig_heights = heights
-    heights = torch.where(horizontal_mask, heights, widths)
-    widths = torch.where(horizontal_mask, widths, orig_heights)
-
-    width_sign_mask = widths >= 0
-    height_sign_mask = heights >= 0
-    widths = widths.abs_().ceil_() + 1
-    heights = heights.abs_().ceil_()
-
-    n = (heights * widths).long().amax(0).view(-1)
-    fragment_to_segment_inds = torch.repeat_interleave(torch.arange(n.shape[0], device=n.device), n)
-    inds = batch_arange(n).unsqueeze(-1)
-    widths_n = torch.repeat_interleave(widths, n, -2)
-    ind_x = inds % widths_n
-    ind_y = inds // widths_n
-    ind_x = torch.where(torch.repeat_interleave(width_sign_mask, n, -2), ind_x, -(ind_x+1))
-    ind_y = torch.where(torch.repeat_interleave(height_sign_mask, n, -2), ind_y, -(ind_y + 1))
-    slope = torch.where(
-        horizontal_mask,
-        (start_corner_2[..., :1] - start_corner_1[..., :1]),
-        (start_corner_2[..., 1:] - start_corner_1[..., 1:]),
-    ) / (heights + 1e-4)
-
-    slope = torch.where(height_sign_mask, slope, -slope)
-
-    horizontal_mask_n = torch.repeat_interleave(horizontal_mask, n, -2)
-    slope_n = torch.repeat_interleave(slope, n, -2)
-    ind_x = torch.where(horizontal_mask_n, ind_x + (slope_n * ind_y).floor(), ind_x)
-    #ind_y = torch.where(horizontal_mask_n, ind_y, ind_y + (slope_n * ind_x).floor())
-
-    """bottom_left_corners[..., :1] = torch.where(
-        horizontal_mask & ~width_sign_mask,
-        bottom_left_corners[..., :1],# - (widths),
-        bottom_left_corners[..., :1],
-    )
-    bottom_left_corners[..., 1:] = torch.where(
-        ~horizontal_mask & ~width_sign_mask,
-        bottom_left_corners[..., 1:],# - (heights),
-        bottom_left_corners[..., 1:],
-    )"""
-
-    bottom_left_corners_n = torch.repeat_interleave(bottom_left_corners, n, -2)
-    ind_x += bottom_left_corners_n[..., :1].floor()
-    ind_y += bottom_left_corners_n[..., 1:].floor()
-    local_dists = torch.zeros_like(ind_x)#((ind_x - bottom_left_corners[..., :1]).square_() + (ind_y - bottom_left_corners[..., 1:]).square_()).sqrt_()
-    return ind_x.int(), ind_y.int(), fragment_to_segment_inds.unsqueeze(-1), local_dists
-
-
-def rasterize_rectangle_no_duplicates(corner1, edge1, edge2):
-    quadrant_mask = edge1 >= 0
-    #++ -> corner1 + edge2, corner1, corner1 + edge1
-    #+- -> corner1 + edge2 + edge1, corner1 + edge2, corner1
-    #-- -> corner1 + edge1, corner1 + edge1 + edge2, corner1 + edge2
-    #-+ -> corner1, corner1 + edge1, corner1 + edge1 + edge2
-    corners = [corner1, corner1 + edge1, corner1 + edge1 + edge2, corner1 + edge2]
-    m1 = quadrant_mask[...,:1]
-    m2 = quadrant_mask[...,1:]
-    c1 = torch.where(m1, torch.where(m2, corners[3], corners[2]), torch.where(m2, corners[0], corners[1]))
-    c2 = torch.where(m1, torch.where(m2, corners[0], corners[3]), torch.where(m2, corners[1], corners[2]))
-    c3 = torch.where(m1, torch.where(m2, corners[1], corners[0]), torch.where(m2, corners[2], corners[3]))
-
-    c2 - c1
-    raise NotImplementedError
-
-
-def get_distance_to_line_segment(points, p1, p2, memory=None):
-    projected_points = project_point_onto_line_segment(
-        points,
-        p1, p2,
-        memory=memory
-    )
-    disps = torch.sub(points, projected_points, out=projected_points)
-    return torch.norm(disps, p=1, dim=-1, keepdim=True, out=memory.get_tensor([*disps.shape[:-1], 1], persist=True))
-
-
-def rasterize_rectangle_by_grid_transform(c1, c2, edge2, memory):
-    """Rasterizes a batch of 2D rectangles using a grid transformation method.
-
-    This algorithm creates a dense grid in the rectangle's local (u,v) space
-    and transforms these points into world coordinates. It guarantees full coverage
-    but may produce duplicate points.
-
-    Parameters
-    ----------
-    rectangle : (torch.Tensor)
-        A tensor of shape [n, 5] where n is the
-        batch size. Each row contains the parameters of a rectangle:
-        [c1_x, c1_y, c2_x, c2_y, height], where (c1_x, c1_y) is the first
-        corner, (c2_x, c2_y) is an adjacent corner, and height is the
-        perpendicular distance to the opposite edge.
-
-    Returns
-    -------
-    torch.Tensor
-        A tensor of shape [m, 2] containing the integer
-        coordinates of all points inside the rectangles. 'm' is the
-        total number of such points (including duplicates).
-    """
-    device = c1.device
-    n = c1.shape[1]
-
-    with memory.temp():
-        edge1 = torch.sub(c2, c1, out=memory.get_tensor(c1.shape))
-
-        # === Determine Grid Density for Each Parallelogram ===
-        # We need enough steps along each edge to not miss any integer grid lines.
-        # The number of steps is the ceiling of the vector's norm times sqrt(2).
-        sqrt_2 = math.sqrt(2)
-
-        def get_num_steps(edge):
-            edge_len = torch.norm(edge, p=2, dim=-1, keepdim=True, out=memory.get_tensor([*c1.shape[:-1], 1]))
-            max_len = torch.amax(edge_len, 0, out=memory.get_tensor(edge_len.shape[1:]))
-            max_len *= sqrt_2
-            max_len.ceil_()
-            max_len = memory.cast(max_len, torch.int)
-            max_len += 1
-            return max_len
-
-        num_steps = [get_num_steps(edge) for edge in [edge1, edge2]]
-        num_points_per_para = torch.mul(num_steps[0], num_steps[1], out=memory.get_tensor(num_steps[0].shape, torch.int)).view(-1)
-
-        total_points = num_points_per_para.sum()
-
-        # Create an index mapping each final point back to its original parallelogram
-        para_indices = torch.repeat_interleave(torch.arange(n, device=device), num_points_per_para).unsqueeze(-1)
-
-        # Generate local grid indices (0, 1, 2, ...) for each parallelogram's flattened grid
-        end_indices = torch.cumsum(num_points_per_para, dim=0, out=memory.get_tensor(num_points_per_para.shape, dtype=torch.int))
-        start_indices = torch.sub(end_indices, num_points_per_para, out=end_indices)
-        local_indices = torch.arange(total_points, device=device, out=memory.get_tensor((total_points,), torch.long))
-        local_indices -= torch.repeat_interleave(start_indices, num_points_per_para)
-        local_indices = local_indices.unsqueeze(-1)
-
-        # Gather the number of u-steps corresponding to each point
-        steps_for_points = [broadcast_gather(ns, 0, para_indices, keepdim=True, out=memory) for ns in num_steps]
-
-        # Calculate the u and v indices for each point within its local grid
-        u_idx = torch.remainder(local_indices, steps_for_points[0], out=memory.get_tensor(local_indices.shape, torch.int))
-        v_idx = torch.floor_divide(local_indices, steps_for_points[0], out=memory.get_tensor(local_indices.shape, torch.int))
-
-        # Convert indices to normalized [0, 1] coordinates
-        # Denominator is clamped to 1 to avoid division by zero if a dimension has only one step
-        for sp in steps_for_points:
-            sp -= 1
-            sp.clamp_min_(1)
-        u = torch.divide(u_idx, steps_for_points[0], out=u_idx.view(torch.float))
-        edge1_mapped = temp = broadcast_gather(edge1, -2, para_indices, out=memory)
-        c1_mapped = broadcast_gather(c1, -2, para_indices, out=memory)#.get_tensor(temp.shape, persist=True))
-        torch.addcmul(c1_mapped, edge1_mapped, u, out=c1_mapped)
-        v = torch.divide(v_idx, steps_for_points[1], out=v_idx.view(torch.float))
-        edge2_mapped = broadcast_gather(edge2, -2, para_indices, out=temp)
-        points = torch.addcmul(c1_mapped, edge2_mapped, v, out=c1_mapped)
-        points.round_()
-        points = memory.cast(points, torch.int, persist=True)
-        return points, para_indices
-
-
-def rasterize_polygon_border(vertices, next_vertices, next_perpendiculars, widths, memory):
-    vshape = vertices.shape
-    persist_pointer = memory.current_reverse_pointer
-    with memory.temp():
-        line_segments_orig = torch.sub(next_vertices, vertices, out=memory.get_tensor(vshape))
-        line_segments = memory.clone(line_segments_orig)
-        line_lengths = torch.norm(line_segments, p=1, dim=-1, keepdim=True, out=memory.get_tensor([*vshape[:-1], 1]))
-        eps = 1e-5
-        null_mask = torch.lt(line_lengths, eps, out=memory.get_tensor(line_lengths.shape, torch.bool))
-        line_lengths.clamp_min_(eps)
-        line_segments /= line_lengths
-        line_segments = torch.where(null_mask, torch.tensor((1/math.sqrt(2),), device=vertices.device), line_segments, out=line_segments)
-        line_perpendiculars = memory.get_tensor(line_segments.shape)
-        line_perpendiculars[..., 1] = line_segments[...,0]
-        line_perpendiculars[..., 0] = torch.mul(line_segments[..., 1], -1, out=line_perpendiculars[..., 0])
-        line_perpendiculars *= widths
-        start_corners = memory.get_tensor([2, *vshape])
-        start_corners[0] = torch.add(vertices, line_perpendiculars, out=start_corners[0])
-        start_corners[1] = torch.sub(vertices, line_perpendiculars, out=start_corners[1])
-        #start_corners = [vertices + line_perpendiculars, vertices - line_perpendiculars]
-        null_start = memory.get_tensor(vshape)
-        line_segments_width = torch.mul(line_segments, widths, out=memory.get_tensor(vshape))
-        for start_corner in start_corners:
-            null_start = torch.sub(start_corner, line_segments_width, out=null_start)
-            torch.where(null_mask, null_start, start_corner, out=start_corner)
-
-        next_perpendiculars = F.normalize(next_perpendiculars, p=2, dim=-1, out=next_perpendiculars)
-        next_perpendiculars *= widths
-        end_corners = [
-            torch.add(line_segments_orig, next_perpendiculars, out=null_start),
-            torch.sub(line_segments_orig, next_perpendiculars, out=line_segments_width)
-        ]
-
-        dots = [dot_product(end_corners[i], line_segments, out=next_perpendiculars[...,i:i+1]) for i in range(2)]
-        dot_abs = [torch.abs(dots[i], out=end_corners[0][...,i:i+1]) for i in range(2)]
-        max_dot = torch.where(dot_abs[0] >= dot_abs[1], dots[0], dots[1], out=dots[0])
-        widths *= 2 # TODO check the minimum value needed here.
-        max_dot = torch.where(null_mask, widths, max_dot, out=max_dot)
-        edge = torch.mul(max_dot, line_segments, out=line_segments)
-        points, inds = rasterize_rectangle_by_grid_transform(*start_corners, edge, memory)
-        local_distance = get_distance_to_line_segment(points, broadcast_gather(vertices, -2, inds, out=memory), broadcast_gather(next_vertices, -2, inds, out=memory), memory)
-    points = memory.clone(points)
-    local_distance = memory.clone(local_distance)
-    memory.current_reverse_pointer = persist_pointer
-    return points[...,:1], points[...,1:], inds, local_distance
-
-
-class TensorExpander:
-    def __init__(self, num_repeats=None, expand_gather_inds=None, dim=None, memory=None):
-        if num_repeats is not None and expand_gather_inds is None:
-            expand_gather_inds = torch.repeat_interleave(torch.arange(len(num_repeats), device=num_repeats.device), num_repeats)
-        self.expand_gather_inds = expand_gather_inds
-        self.num_repeats = num_repeats
-        self.dim = dim
-        self.memory = memory
-
-    def __call__(self, x, dim=None):
-        d = self.dim
-        if dim is not None:
-            d = dim
-        #return torch.repeat_interleave(x, self.num_repeats, d)
-        if d < 0:
-            d = d + x.dim()
-        inds = self.expand_gather_inds
-        for i in range(x.dim() - (d+1)):
-            inds = inds.unsqueeze(-1)
-        return broadcast_gather(x, d, inds, out=self.memory)
-
-
-#@squish_batch_dims
-def rasterize_polygon(vertices, next_vertices, num_vertices_per_object, memory):
-    num_vertices_per_object = num_vertices_per_object.view(-1)
-    v_y = vertices[...,1:]
-    nv_y = next_vertices[...,1:]
-    v_x = vertices[...,:1]
-    nv_x = next_vertices[...,:1]
-    reverse_pointer = memory.current_reverse_pointer
-    with memory.temp():
-        vshape = v_x.shape
-        vertex_vars = memory.get_tensor([4, *vshape])
-        slopes = memory.get_tensor(vshape)
-        with memory.temp():
-            rises = torch.sub(nv_y, v_y, out=slopes)
-            runs = torch.sub(nv_x, v_x, out=memory.get_tensor(vshape))
-            slopes = torch.div(runs, rises, out=slopes)
-
-        min_y = torch.minimum(nv_y, v_y, out=vertex_vars[1])
-        max_y = torch.maximum(nv_y, v_y, out=vertex_vars[2])
-        widths = torch.sub(nv_x, v_x, out=vertex_vars[3])
-        widths = widths.abs_().floor_()
-        widths = memory.cast(widths, torch.int)
-        temp = memory.get_tensor(widths.shape, torch.int)
-        temp[:] = widths
-        widths = temp
-
-        pos_slope_mask = torch.lt(nv_y, v_y, out=memory.get_tensor(vshape, dtype=torch.bool))
-
-        vertices_y = memory.get_tensor(vshape[:-1], torch.int)
-        with memory.temp():
-            temp_vertices_y = memory.get_tensor(vshape[:-1], torch.int)
-            temp_next_vertices_y = memory.get_tensor(vshape[:-1], torch.int)
-            next_vertices_y = memory.get_tensor(vshape[:-1], torch.float)
-            next_vertices_y_int = torch.ceil(nv_y.squeeze(-1), out=next_vertices_y)
-            temp_next_vertices_y[:] = next_vertices_y_int
-            next_vertices_y_int = temp_next_vertices_y
-
-            vertices_y_int = torch.ceil(v_y.squeeze(-1), out=next_vertices_y)
-            temp_vertices_y[:] = vertices_y_int
-            vertices_y_int = temp_vertices_y
-
-            y_ranges = torch.sub(next_vertices_y_int, vertices_y_int, out=vertices_y)
-            y_ranges.abs_()
-            y_ranges = torch.amax(y_ranges, 0, out=vertices_y[0])
-
-        expa = TensorExpander(num_repeats=y_ranges, dim=-2, memory=memory)
-
-        vertex_vars_n = expa(vertex_vars[:-1])
-        slopes_n, min_y_n, max_y_n = vertex_vars_n
-
-        #y_ranges = (next_vertices[...,1].ceil().int() - vertices[...,1].ceil().int()).abs().amax(0)
-        fragment_to_object_inds = torch.repeat_interleave(torch.arange(num_vertices_per_object.shape[0], device=vertices.device), num_vertices_per_object)
-        fragment_to_object_inds = torch.repeat_interleave(fragment_to_object_inds, y_ranges)
-        inds_y = batch_arange(y_ranges, memory).unsqueeze(-1)
-        inds_y_neg = torch.add(inds_y, 1, out=memory.get_tensor(inds_y.shape, inds_y.dtype))
-        inds_y_neg *= -1
-        vertices = torch.ceil(vertices, out=memory.get_tensor(vertices.shape))
-        vertices = memory.cast(vertices, torch.int)
-        vertices_n = expa(vertices)
-        pos_slope_mask_n = expa(pos_slope_mask)
-        widths_n = expa(widths)
-        #next_vertices = torch.repeat_interleave(next_vertices, y_ranges, -2)
-        inds_y = torch.where(pos_slope_mask_n, inds_y_neg, inds_y)
-        inds_x = torch.mul(inds_y, slopes_n, out=memory.get_tensor(inds_y.shape)).round_()
-        inds_x = memory.cast(inds_x, torch.int, persist=True)
-
-        inf = torch.tensor(1000000000, device=v_x.device, dtype=torch.int)
-        inds_x.nan_to_num_(inf, inf, -inf)
-        inds_x.clamp_max_(widths_n)
-        widths_n *= -1
-        inds_x.clamp_min_(widths_n)
-        inds_y += vertices_n[...,1:]#.ceil().int()
-        inds_x += vertices_n[..., :1]#.ceil().int()
-        #min_y = torch.minimum(vertices[...,1:], next_vertices[...,1:])
-        #max_y = torch.maximum(vertices[...,1:], next_vertices[...,1:])
-        m = torch.lt(inds_y, min_y_n, out=memory.get_tensor(inds_y.shape, torch.bool))
-        m2 = torch.lt(inds_y, max_y_n, out=memory.get_tensor(inds_y.shape, torch.bool))
-        m = torch.not_equal(m, m2, out=m)
-        #m = (inds_y < min_y) != (inds_y < max_y)
-        inds_y = torch.where(m, inds_y, inf, out=memory.get_tensor(inds_y.shape, inds_y.dtype, persist=True))
-        #inds_y = torch.where(m, inds_y, torch.full_like(inds_y, inf))
-    # Move inds_x out of persistent memory.
-    inds_x = memory.clone(inds_x)
-    inds_y = memory.clone(inds_y)
-    memory.current_reverse_pointer = reverse_pointer
-    return inds_x, inds_y, fragment_to_object_inds.unsqueeze(-1)
-
-
-def scatter_screen_inds_into_bounding_box(x, screen_ind_x, screen_ind_y, values, bounding_box_bottom_left_corner, bounding_box_width, offset):
-    screen_ind_x -= bounding_box_bottom_left_corner[...,:1]
-    screen_ind_y -= bounding_box_bottom_left_corner[..., 1:]
-    bbox_ind = screen_ind_x + screen_ind_y * bounding_box_width
-    bbox_ind += offset
-    x.scatter_(-2, bbox_ind, values)
-    return x
-
-
 class BezierCircuitPrimitive(RenderPrimitive2D):
     def __init__(
         self,
@@ -641,8 +330,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                         broadcast_all(
                             (
                                 triangle.mob_center,
-                                triangle.grid_height,
-                                triangle.grid_width,
+                                triangle.grid_height.int(),
+                                triangle.grid_width.int(),
                                 triangle.basis1,
                                 triangle.basis2,
                             ),
@@ -658,7 +347,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 self.colors = self.colors  # [..., 0, :]
             else:
                 self.colors = self.colors[..., (-self.num_texture_points) :, :]
-            self.padding = max(self.border_width.amax().ceil().long() + 1, 5)
+            self.padding = max(self.border_width.amax().ceil().long() + 1, 2)
             # self.portion_of_curve_drawn = self.portion_of_curve_drawn[...,0,:1]
             return
         self.corners = corners
@@ -741,10 +430,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 pass
                 # logger.log_message(f"{name} {var.shape},\n{var.dtype},\n {var}\n")
 
-            log_var("segment_to_object_scatter_inds", segment_to_object_scatter_inds)
+            #log_var("segment_to_object_scatter_inds", segment_to_object_scatter_inds)
             arange_num_segments_per_oject = arange_num_segments_per_oject.view(1, -1, 1)
-            log_var("arange_num_segments_per_oject", arange_num_segments_per_oject)
-            log_var("x0", x[..., 0])
+            #log_var("arange_num_segments_per_oject", arange_num_segments_per_oject)
+            #log_var("x0", x[..., 0])
             object_bounding_corners_bottom_left = (
                 broadcast_scatter(
                     arange_num_segments_per_oject,
@@ -758,10 +447,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 min=torch.tensor((start_x, start_y), device=x.device),
                 max=torch.tensor((end_x, end_y), device=x.device),
             )
-            log_var(
-                "object_bounding_corners_bottom_left",
-                object_bounding_corners_bottom_left,
-            )
+            #log_var(
+            #    "object_bounding_corners_bottom_left",
+            #    object_bounding_corners_bottom_left,
+            #)
             object_bounding_corners_top_right = (
                 broadcast_scatter(
                     arange_num_segments_per_oject,
@@ -775,9 +464,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 min=torch.tensor((start_x, start_y), device=x.device),
                 max=torch.tensor((end_x, end_y), device=x.device),
             )
-            log_var(
-                "object_bounding_corners_top_right", object_bounding_corners_top_right
-            )
+            #log_var(
+            #    "object_bounding_corners_top_right", object_bounding_corners_top_right
+            #)
 
             # object_bounding_box_dimensions = object_bounding_corners_top_right - object_bounding_corners_bottom_left
             object_bounding_box_dimensions = self.get_tensor(
@@ -800,8 +489,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 out=object_bounding_box_num_pixels,
             )
 
-            log_var("object_bounding_box_dimensions", object_bounding_box_dimensions)
-            log_var("object_bounding_box_num_pixels", object_bounding_box_num_pixels)
+            #log_var("object_bounding_box_dimensions", object_bounding_box_dimensions)
+            #log_var("object_bounding_box_num_pixels", object_bounding_box_num_pixels)
             # num_fragments = object_bounding_box_num_pixels.long().sum()
             num_fragments = torch.sum(object_bounding_box_num_pixels).item()
             self.num_fragments_fill = num_fragments / len(
@@ -973,6 +662,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             [*control_point_norms.shape[:-1]], dtype=control_points.dtype
         )
         torch.sum(control_point_norms, -1, out=control_net_lengths)
+        self.num_samples_per_segment = (control_net_lengths.amax(0) * 0.25).ceil().long().clamp_min_(1)
         maximum_net_length = control_net_lengths.amax()
         self.num_sampled_points = (
             (maximum_net_length * 0.25).ceil().long().clamp_min_(1)
@@ -995,6 +685,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             + num_fragments_border_samples * 128
         )
 
+    #@compiled
     def render_(
         self,
         time_start,
@@ -1056,6 +747,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         bounding_corners = select_time(self.bounding_corners)
 
+        initial_pointer = self.memory.current_pointer
+        initial_persist_pointer = self.memory.current_reverse_pointer
         (
             fragment_x,
             fragment_y,
@@ -1070,26 +763,21 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         if fragment_x.numel() == 0:
             return None
-        inds = self.get_tensor(fragment_x.shape, dtype=torch.int)
-        inds_pointer = self.memory.current_pointer
 
+        memory = self.memory
+        fragment_x = memory.clone(fragment_x, persist=True)
+        fragment_y = memory.clone(fragment_y, persist=True)
         # LoggerManager.instance().set_class("rendering").log_message(
         #    f"got bounding boxes"
         # )
         control_points = corners
+        control_points = torch.repeat_interleave(control_points, self.num_samples_per_segment, 1)
         # t = torch.linspace(0, 1, self.num_sampled_points, device=control_points.device)
-        polygon_vertices = self.get_tensor(
-            [
-                *control_points.shape[:-2],
-                self.num_sampled_points,
-                control_points.shape[-1],
-            ]
-        )
+        polygon_vertices = self.get_tensor([*control_points.shape[:-2], control_points.shape[-1]])
         self.memory.save_pointer()
-        t = self.get_tensor([self.num_sampled_points], dtype=torch.float)
-        torch.linspace(0, 1, self.num_sampled_points, device=t.device, out=t)
-        ##polygon_vertices = self.get_tensor((*control_points.shape[:3], num_sampled_points, 2))
-        polygon_vertices = evaluate_cubic_bezier(
+        t = batch_arange(self.num_samples_per_segment) / torch.repeat_interleave(self.num_samples_per_segment, self.num_samples_per_segment)
+
+        polygon_vertices = evaluate_cubic_bezier_new(
             control_points, t.unsqueeze(-1), polygon_vertices, self.memory
         )
 
@@ -1100,11 +788,24 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         # Change the last next_vertice from the start of this segment to the start of the next segment.
         # next_segments = broadcast_gather(polygon_vertices, -3, next_segment_inds, keepdim=True)
-        next_segments = broadcast_gather(
-            polygon_vertices, -3, next_segment_inds, keepdim=True, out=self.memory
+        segment_start_inds = self.num_samples_per_segment.cumsum(-1) - self.num_samples_per_segment
+        segment_end_inds = segment_start_inds - 1
+        segment_end_inds[0] = polygon_vertices.shape[-2]-1
+        segment_end_inds = torch.roll(segment_end_inds, -1, -1)
+        next_segment_inds = segment_start_inds[next_segment_inds].squeeze(-1)
+        next_polygon_vertices[:,segment_end_inds] = broadcast_gather(polygon_vertices, -2, next_segment_inds, keepdim=True, out=self.memory)
+
+        next_polygon_perpendiculars = next_polygon_vertices.roll(shifts=-1, dims=-2)
+        next_polygon_perpendiculars[:,segment_end_inds] = broadcast_gather(next_polygon_vertices, -2, next_segment_inds, keepdim=True, out=self.memory)
+
+        next_polygon_perpendiculars = next_polygon_perpendiculars - next_polygon_vertices
+        next_polygon_perpendiculars = torch.stack(
+            (-next_polygon_perpendiculars[..., 1], next_polygon_perpendiculars[..., 0]),
+            dim=-1,
         )
-        next_polygon_vertices[..., -1, :] = next_segments[..., 0, :]
+
         self.memory.reset_pointer()
+
         # line_segments = next_polygon_vertices - polygon_vertices
         line_segments = self.get_tensor(
             polygon_vertices.shape, dtype=polygon_vertices.dtype
@@ -1135,140 +836,116 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         if self.filled:
             if line_segment_lengths.amax() < 0.1:
                 return None
-            half_local_window_size = max(
-                border_width.amax().ceil().long(),
-                line_segment_lengths.amax().ceil().long(),
-            )
         else:
             if (border_width.amax() < 0.1) | (line_segment_lengths.amax() < 0.1):
                 return None
-            half_local_window_size = border_width.amax().ceil().long()
-        half_local_window_size = half_local_window_size.item()
-        local_window_size = half_local_window_size * 2 + 1
-        # if local_window_size > 50:
-        #    raise RuntimeError(
-        #        "Filled Bezier Circuit is not closed, make sure that the starting and ending points"
-        #        "of your Bezier circuits are the same, or else set filled=False."
-        #    )
 
         self.memory.reset_pointer()
 
-        next_polygon_perpendiculars = next_polygon_vertices.roll(shifts=-1, dims=-2)
-        next_segments = broadcast_gather(
-            next_polygon_vertices, -3, next_segment_inds, keepdim=True, out=self.memory
-        )
-        next_polygon_perpendiculars[..., -1, :] = next_segments[..., 0, :]
-        next_polygon_perpendiculars = (
-            next_polygon_perpendiculars - next_polygon_vertices
-        )
-        next_polygon_perpendiculars = torch.stack(
-            (-next_polygon_perpendiculars[..., 1], next_polygon_perpendiculars[..., 0]),
-            dim=-1,
-        )
+        num_samples_per_object = torch.stack([sum(_) for _ in self.num_samples_per_segment.split([__ for __ in num_segments_per_object])])
+        local_window_x, local_window_y, local_window_fragment_to_object_inds = rasterize_polygon(polygon_vertices, next_polygon_vertices, num_samples_per_object, self.memory)
 
-        border_width_o = broadcast_gather(
-            border_width, -2, self.segment_to_object_scatter_inds
-        )
-        local_fragment_x, local_fragment_y = rasterize_polygon_border(
-            polygon_vertices,
-            next_polygon_vertices,
-            next_polygon_perpendiculars,
-            border_width_o.unsqueeze(-1),
-        )
+        def get_local_to_global_inds(local_window_x, local_window_y, local_window_fragment_to_object_inds):
+            object_bounding_box_dimensions_for_segments = (
+                broadcast_gather(
+                    object_bounding_box_dimensions,
+                    -2,
+                    local_window_fragment_to_object_inds,
+                    keepdim=True,
+                )
+            )#.unsqueeze(-1)
 
-        # self.memory.save_pointer()
+            object_bounding_corners_bottom_left_for_segments = (
+                broadcast_gather(
+                    object_bounding_corners_bottom_left,
+                    -2,
+                    local_window_fragment_to_object_inds,
+                    keepdim=True,
+                )
+            )#.unsqueeze(-1)
 
-        object_bounding_box_dimensions_for_segments = (
-            broadcast_gather(
-                object_bounding_box_dimensions, -2, self.segment_to_object_scatter_inds
+            bbox_x = self.get_tensor(local_window_x.shape, dtype=torch.long)
+            torch.subtract(
+                local_window_x,
+                object_bounding_corners_bottom_left_for_segments[..., :1],
+                out=bbox_x,
             )
-        ).unsqueeze(-1)
-        object_bounding_corners_bottom_left_for_segments = (
-            broadcast_gather(
-                object_bounding_corners_bottom_left,
-                -2,
-                self.segment_to_object_scatter_inds,
+            bbox_y = self.get_tensor(local_window_y.shape, dtype=torch.long)
+            torch.subtract(
+                local_window_y,
+                object_bounding_corners_bottom_left_for_segments[..., 1:],
+                out=bbox_y,
             )
-        ).unsqueeze(-1)
-        # bbox_x = local_window_x - object_bounding_corners_bottom_left_for_segments[...,:1,:]
-        # bbox_y = local_window_y - object_bounding_corners_bottom_left_for_segments[...,1:,:]
-        # pointer = self.memory.current_pointer
-        bbox_x = self.get_tensor(local_window_x.shape, dtype=torch.long)
-        torch.subtract(
-            local_window_x,
-            object_bounding_corners_bottom_left_for_segments[..., :1, :],
-            out=bbox_x,
-        )
-        bbox_y = self.get_tensor(local_window_y.shape, dtype=torch.long)
-        torch.subtract(
-            local_window_y,
-            object_bounding_corners_bottom_left_for_segments[..., 1:, :],
-            out=bbox_y,
-        )
-        # bbox_num_pixels = object_bounding_box_dimensions_for_segments.prod(-2, keepdim=True)
-        bbox_num_pixels = self.get_tensor(
-            [
-                *object_bounding_box_dimensions_for_segments.shape[:-2],
+            # bbox_num_pixels = object_bounding_box_dimensions_for_segments.prod(-2, keepdim=True)
+            bbox_num_pixels = self.get_tensor(
+                [
+                    *object_bounding_box_dimensions_for_segments.shape[:-1],
+                    1,
+                ],
+                dtype=object_bounding_box_dimensions_for_segments.dtype,
+            )
+            torch.prod(
+                object_bounding_box_dimensions_for_segments,
+                -1,
+                keepdim=True,
+                out=bbox_num_pixels,
+            )
+            # local_to_bbox_inds = (bbox_x.clamp_min(0) + bbox_y * object_bounding_box_dimensions_for_segments[...,:1,:]
+            #                        ).clamp_(min=torch.zeros_like(bbox_num_pixels),
+            #                                 max=bbox_num_pixels - 1)
+            local_to_bbox_inds = self.get_tensor(bbox_x.shape, dtype=torch.long)
+            torch.clamp_min(bbox_x, 0, out=local_to_bbox_inds)
+            torch.addcmul(
+                local_to_bbox_inds,
+                object_bounding_box_dimensions_for_segments[..., :1],
+                bbox_y,
+                value=1,
+                out=local_to_bbox_inds,
+            )
+            local_to_bbox_inds.clamp_min_(0)
+            local_to_bbox_inds.clamp_max_(bbox_num_pixels - 1)
+
+            # LoggerManager.instance().set_class("rendering").log_message(
+            #    f"got local_to_bbox"
+            # )
+            # local_to_bbox_inds scatters from local_window into object level bounding box.
+            # Now we need to add offsets so that inds from different objects end up in different output frames.
+            # offsets = object_bounding_box_dimensions.prod(-1, keepdims=True).view(-1,1)
+            # offsets = offsets.cumsum(-2)  - offsets
+            offsets = self.get_tensor(
+                [*object_bounding_box_dimensions.shape[:-1], 1], dtype=torch.long
+            )
+            torch.prod(object_bounding_box_dimensions, -1, keepdim=True, out=offsets)
+            offsets = offsets.view(-1, 1)
+            temp_offsets = self.get_tensor(offsets.shape, dtype=torch.long)
+            temp_offsets.copy_(offsets)
+            torch.cumsum(offsets, -2, out=offsets)
+            offsets -= temp_offsets
+            # LoggerManager.instance().set_class("rendering").log_message(
+            #    f"attempting repeat interleave3 {offsets} {corners.shape[0]}"
+            # )
+            # offsets_for_segments = squish(torch.repeat_interleave(unsquish(offsets, 0, -corners.shape[0]), num_segments_per_object, -2).unsqueeze(-1), 0, 1)
+            offsets_for_segments = squish(
+                broadcast_gather(
+                    unsquish(offsets, 0, -corners.shape[0]),
+                    -2,
+                    local_window_fragment_to_object_inds,
+                    keepdim=True,
+                ),
+                0,
                 1,
-                object_bounding_box_dimensions_for_segments.shape[-1],
-            ],
-            dtype=object_bounding_box_dimensions_for_segments.dtype,
-        )
-        torch.prod(
-            object_bounding_box_dimensions_for_segments,
-            -2,
-            keepdim=True,
-            out=bbox_num_pixels,
-        )
-        # local_to_bbox_inds = (bbox_x.clamp_min(0) + bbox_y * object_bounding_box_dimensions_for_segments[...,:1,:]
-        #                        ).clamp_(min=torch.zeros_like(bbox_num_pixels),
-        #                                 max=bbox_num_pixels - 1)
-        local_to_bbox_inds = self.get_tensor(bbox_x.shape, dtype=torch.long)
-        torch.clamp_min(bbox_x, 0, out=local_to_bbox_inds)
-        torch.addcmul(
-            local_to_bbox_inds,
-            object_bounding_box_dimensions_for_segments[..., :1, :],
-            bbox_y,
-            value=1,
-            out=local_to_bbox_inds,
-        )
-        local_to_bbox_inds.clamp_min_(0)
-        local_to_bbox_inds.clamp_max_(bbox_num_pixels - 1)
+            )
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"got local_to_bbox"
-        # )
-        # local_to_bbox_inds scatters from local_window into object level bounding box.
-        # Now we need to add offsets so that inds from different objects end up in different output frames.
-        # offsets = object_bounding_box_dimensions.prod(-1, keepdims=True).view(-1,1)
-        # offsets = offsets.cumsum(-2)  - offsets
-        offsets = self.get_tensor(
-            [*object_bounding_box_dimensions.shape[:-1], 1], dtype=torch.long
-        )
-        torch.prod(object_bounding_box_dimensions, -1, keepdim=True, out=offsets)
-        offsets = offsets.view(-1, 1)
-        temp_offsets = self.get_tensor(offsets.shape, dtype=torch.long)
-        temp_offsets.copy_(offsets)
-        torch.cumsum(offsets, -2, out=offsets)
-        offsets -= temp_offsets
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"attempting repeat interleave3 {offsets} {corners.shape[0]}"
-        # )
-        # offsets_for_segments = squish(torch.repeat_interleave(unsquish(offsets, 0, -corners.shape[0]), num_segments_per_object, -2).unsqueeze(-1), 0, 1)
-        offsets_for_segments = squish(
-            broadcast_gather(
-                unsquish(offsets, 0, -corners.shape[0]),
-                -2,
-                self.segment_to_object_scatter_inds,
-            ).unsqueeze(-1),
-            0,
-            1,
-        )
-        local_to_global_inds = squish(local_to_bbox_inds, 0, 1)
-        local_to_global_inds += offsets_for_segments.view(-1, 1, 1)
-        local_to_global_inds = local_to_global_inds.view(-1)
+            local_to_global_inds = squish(local_to_bbox_inds, 0, 1)
+            local_to_global_inds += offsets_for_segments
+            local_to_global_inds = local_to_global_inds.view(-1)
 
-        local_to_global_inds.clamp_(min=0, max=fragment_x.shape[-2] - 1)
+            local_to_global_inds.clamp_(min=0, max=fragment_x.shape[-2] - 1)
+            return local_to_global_inds, bbox_x, bbox_y, object_bounding_box_dimensions_for_segments, offsets
+
+        (local_to_global_inds, bbox_x,
+            bbox_y, object_bounding_box_dimensions_for_segments, offsets
+         ) = get_local_to_global_inds(local_window_x, local_window_y, local_window_fragment_to_object_inds)
 
         # LoggerManager.instance().set_class("rendering").log_message(
         #    f"got local to global"
@@ -1282,14 +959,14 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         temp_bool = self.get_tensor(bbox_x.shape, dtype=torch.bool)
         torch.greater_equal(
             bbox_x,
-            object_bounding_box_dimensions_for_segments[..., :1, :],
+            object_bounding_box_dimensions_for_segments[..., :1],
             out=invalid_mask,
         )
         torch.lt(bbox_y, 0, out=temp_bool)
         torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
         torch.gt(
             bbox_y,
-            object_bounding_box_dimensions_for_segments[..., 1:, :],
+            object_bounding_box_dimensions_for_segments[..., 1:],
             out=temp_bool,
         )
         torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
@@ -1301,6 +978,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         # to count intersections, we will cull negative x inds later.
         zero = self.get_tensor([1])
         zero[:] = 0
+        local_intersection_counts = torch.ones(local_window_y.shape, dtype=torch.float, device=local_window_y.device)
         local_intersection_counts = torch.where(
             invalid_mask, zero, local_intersection_counts, out=local_intersection_counts
         )
@@ -1316,36 +994,60 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         global_intersection_counts = torch.scatter_add(
             out, -1, local_to_global_inds, local_intersection_counts.view(-1), out=out
         )
+
         # self.memory.current_pointer = local_intersection_counts_pointer
 
         # Now do border mask.
         # local_window_xy = torch.stack((local_window_x, local_window_y), -1)
-        local_window_xy = self.get_tensor([*local_window_x.shape, 2], dtype=torch.long)
-        local_window_xy[..., 0] = local_window_x
-        local_window_xy[..., 1] = local_window_y
-        local_proj_onto_line = project_point_onto_line_segment(
-            local_window_xy,
-            polygon_vertices.unsqueeze(-2),
-            next_polygon_vertices.unsqueeze(-2),
-            memory=self.memory,
-        )
-
-        # local_dist = (local_window_xy - local_proj_onto_line).norm(p=2, dim=-1)
-        local_window_xy_centered = torch.subtract(
-            local_window_xy, local_proj_onto_line, out=local_proj_onto_line
-        )
 
         global_dists = self.get_tensor([fragment_x.shape[-2]], dtype=torch.float)
         global_dists[:] = 1e12
         local_dist_pointer = self.memory.current_pointer
-        local_dist = self.get_tensor(local_window_x.shape, dtype=torch.float)
-        local_dist = torch.norm(local_window_xy_centered, p=2, dim=-1, out=local_dist)
 
-        # dist_invalid_mask = invalid_mask | (bbox_x < 0)
+        border_width_o = broadcast_gather(
+            border_width, -2, self.segment_to_object_scatter_inds
+        )
+        border_width_o = torch.repeat_interleave(border_width_o, self.num_samples_per_segment, -2)
+        (local_window_x, local_window_y, local_window_fragment_to_sample_inds, local_dist
+        ) = rasterize_polygon_border(
+            polygon_vertices,
+            next_polygon_vertices,
+            next_polygon_perpendiculars,
+            border_width_o,
+            self.memory
+        )
+
+        sample_to_object_ind = torch.repeat_interleave(torch.arange(num_samples_per_object.shape[0], device=num_samples_per_object.device),
+                                                                       num_samples_per_object)
+        #local_window_fragment_to_sample_inds //= self.num_sampled_points
+        local_window_fragment_to_object_inds = broadcast_gather(sample_to_object_ind.view(1,-1,1), -2,
+                                                                local_window_fragment_to_sample_inds, keepdim=True)
+
+        #local_window_fragment_to_object_inds =  broadcast_gather(self.segment_to_object_scatter_inds, -2, local_window_fragment_to_segment_inds, keepdim=True)
+
+        (local_to_global_inds, bbox_x,
+         bbox_y, object_bounding_box_dimensions_for_segments, _
+         ) = get_local_to_global_inds(local_window_x, local_window_y, local_window_fragment_to_object_inds)
+
+        invalid_mask = self.get_tensor(bbox_x.shape, dtype=torch.bool)
         pointer = self.memory.current_pointer
-        dist_invalid_mask = self.get_tensor(invalid_mask.shape, dtype=torch.bool)
-        torch.lt(bbox_x, 0, out=dist_invalid_mask)
-        torch.logical_or(dist_invalid_mask, invalid_mask, out=dist_invalid_mask)
+        temp_bool = self.get_tensor(bbox_x.shape, dtype=torch.bool)
+        torch.greater_equal(
+            bbox_x,
+            object_bounding_box_dimensions_for_segments[..., :1],
+            out=invalid_mask,
+        )
+        torch.lt(bbox_y, 0, out=temp_bool)
+        torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
+        torch.gt(
+            bbox_y,
+            object_bounding_box_dimensions_for_segments[..., 1:],
+            out=temp_bool,
+        )
+        torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
+        torch.lt(bbox_x, 0, out=temp_bool)
+        dist_invalid_mask = torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
+        self.memory.current_pointer = pointer
 
         # LoggerManager.instance().set_class("rendering").log_message(
         #    f"got dist_invalid mask"
@@ -1355,16 +1057,16 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         posinf[:] = 1e12
         local_dist = torch.where(dist_invalid_mask, posinf, local_dist, out=local_dist)
 
-        # Handle portion_of_curve_drawn
+                # Handle portion_of_curve_drawn
         # self.expand_verts_to_frags(self.portion_of_curve_drawn)
-        num_vertices_per_object = (
-            num_segments_per_object.view(-1, 1) * self.num_sampled_points
-        )
+
+        """num_vertices_per_object = num_samples_per_object.view(-1, 1)
         num_vertices_per_object += 1
         threshold_for_drawing = broadcast_gather(
             portion_of_curve_drawn * num_vertices_per_object,
             -2,
             self.segment_to_object_scatter_inds,
+            keepdim=True,
         )
         threshold_for_drawing = threshold_for_drawing.unsqueeze(
             -2
@@ -1389,20 +1091,20 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         vertex_number = unsquish(vertex_number, 0, self.num_sampled_points).unsqueeze(
             -1
         )
-        local_dist = torch.where(
-            vertex_number >= threshold_for_drawing, posinf, local_dist, out=local_dist
-        )
+        posinf = zero
+        posinf[:] = 1e12
+        #local_dist = torch.where(
+        #    vertex_number >= threshold_for_drawing, posinf, local_dist, out=local_dist
+        #)
 
-        self.memory.current_pointer = pointer
         # global_dists = torch.empty((fragment_x.shape[-2],), device=control_points.device)
-        """global_dists = torch_scatter.scatter_min(local_dist.view(-1),
-                                                               local_to_global_inds.clamp(min=0,
-                                                                                          max=fragment_x.shape[-2] - 1),
-                                                               -1, out=global_dists)[0]"""
 
         # LoggerManager.instance().set_class("rendering").log_message(
         #    f"attempting scatter_reduce"
         # )
+        """
+        self.memory.current_pointer = pointer
+
         global_dists = torch.scatter_reduce(
             global_dists,
             -1,
@@ -1476,6 +1178,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             )
             self.memory.current_pointer = pointer
         torch.less_equal(global_dists.unsqueeze(-1), border_mask, out=border_mask)
+        #border_mask = torch.zeros_like(interior_mask)
 
         # fragment_coords = torch.cat((fragment_x, fragment_y), -1).float()
 
@@ -1485,7 +1188,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         # TODO subtract window_start from x and y (so they are 0 centered.
         # inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
-        torch.multiply(fragment_y, window_width, out=inds)
+        interior_mask = memory.clone(interior_mask, persist=True)
+        border_mask = memory.clone(border_mask, persist=True)
+        memory.current_pointer = initial_pointer
+        inds = torch.multiply(fragment_y, window_width, out=self.get_tensor(fragment_x.shape, dtype=torch.int))
         inds -= start_y * window_width + start_x
         inds += fragment_x
 
@@ -1496,20 +1202,29 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         else:
             interior_mask[:] = 0
         # TODO does this need to clip based on x and y instead of inds for window?
-        m = (inds < window_size) & ((interior_mask > 0) | (border_mask > 0))
-        m = m.reshape(-1)
-        border_mask = border_mask.view(-1)[m].unsqueeze(-1)
+        #m = (inds < window_size) & ((interior_mask > 0) | (border_mask > 0))
+        #m = m.reshape(-1)
+        m1 = torch.gt(interior_mask, 0, out=memory.get_tensor(interior_mask.shape, torch.bool))
+        m2 = torch.gt(border_mask, 0, out=memory.get_tensor(interior_mask.shape, torch.bool))
+        m = torch.logical_or(m1, m2, out=memory.get_tensor(m1.shape, m1.dtype, persist=True)).view(-1)
+        num_masked_frags = m.sum()
+        border_mask = torch.masked_select(border_mask.view(-1), m, out=memory.get_tensor((num_masked_frags,), border_mask.dtype, persist=True)).unsqueeze(-1)
+
         # g_offsets = torch.arange(0, corners.shape[0], device=inds.device) * window_size
         g_offsets = self.get_tensor([corners.shape[0]], dtype=torch.long)
         torch.arange(0, corners.shape[0], device=g_offsets.device, out=g_offsets)
         g_offsets *= window_size
-        frame_to_fragment_gather_inds = object_to_fragment_gather_inds // num_objects
+        object_to_fragment_gather_inds = memory.clone(object_to_fragment_gather_inds, persist=True)
+        frame_to_fragment_gather_inds = torch.floor_divide(object_to_fragment_gather_inds, num_objects, out=memory.get_tensor(object_to_fragment_gather_inds.shape, object_to_fragment_gather_inds.dtype, persist=True))
         g_offsets = self.expand_verts_to_frags(
             g_offsets.unsqueeze(-1), frame_to_fragment_gather_inds
         )
-        inds = inds + g_offsets
-        inds = inds.view(-1)
-        inds = inds[m]
+        inds = memory.cast(inds, torch.long)
+        inds += g_offsets
+        inds = torch.masked_select(inds.view(-1), m, out=memory.get_tensor((num_masked_frags,), inds.dtype, persist=True))
+        memory.current_pointer = initial_pointer
+        inds = memory.clone(inds)
+        initial_pointer = memory.current_pointer
         # unique_inds, unique_inds_inverse, unique_counts = inds.unique(return_inverse=True, return_counts=True)
 
         mob_center_for_frags = self.expand_verts_to_frags(
@@ -1519,13 +1234,13 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             squish(normals, 0, 1), object_to_fragment_gather_inds
         )
 
-        def expo(x, select=True, gather_inds=object_to_fragment_gather_inds):
+        def expo(x, select=True, gather_inds=object_to_fragment_gather_inds, persist=False):
             if select:
                 x = select_time(x)
             x = x.view(-1, x.shape[-1])
-            return self.expand_verts_to_frags(x, gather_inds)
+            return self.expand_verts_to_frags(x, gather_inds, persist=persist)
 
-        screen_basis = unsquish(
+        '''screen_basis = unsquish(
             expo(
                 squish(screen_basis, -2, -1),
                 False,
@@ -1533,71 +1248,54 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             ),
             -1,
             3,
-        )
+        )'''
         screen_point = expo(
             screen_point, False, gather_inds=frame_to_fragment_gather_inds
         )
-        ray_origin = expo(ray_origin, False, gather_inds=frame_to_fragment_gather_inds)
+        ray_origin = expo(ray_origin, False, gather_inds=frame_to_fragment_gather_inds, persist=True)
         # screen_basis = screen_basis / screen_basis.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-6)
-        screen_basis_norm = self.get_tensor(
-            [*screen_basis.shape[:-1], 1], dtype=screen_basis.dtype
-        )
-        torch.norm(screen_basis, p=2, dim=-1, keepdim=True, out=screen_basis_norm)
-        screen_basis_norm_sq = self.get_tensor(
-            screen_basis_norm.shape, dtype=screen_basis.dtype
-        )
-        torch.square(screen_basis_norm, out=screen_basis_norm_sq)
+        screen_basis_norm = torch.norm(screen_basis[...,:2,:], p=2, dim=-1, keepdim=True, out=self.get_tensor([*screen_basis.shape[:-2], 2, 1], persist=True))
+        #screen_basis_norm_sq = self.get_tensor(
+        #    screen_basis_norm.shape, dtype=screen_basis.dtype
+        #)
+        screen_basis_norm_sq = torch.square(screen_basis_norm, out=screen_basis_norm)
         screen_basis_norm_sq.clamp_min_(1e-6)
-        torch.div(screen_basis, screen_basis_norm_sq, out=screen_basis)
-        ray_direction = F.normalize(
-            (
-                screen_point
-                + ((fragment_x - screen_width * 0.5) / (screen_height * 0.5))
-                * screen_basis[..., 0, :]
-                + ((fragment_y - screen_height * 0.5) / (screen_height * 0.5))
-                * screen_basis[..., 1, :]
-            )
-            - ray_origin,
-            p=2,
-            dim=-1,
-        )
-        dists = self.raycast_onto_plane(
-            ray_origin, ray_direction, mob_center_for_frags, normals_for_frags
-        )
+        screen_basis = torch.div(screen_basis[...,:2,:], screen_basis_norm_sq, out=memory.get_tensor([*screen_basis.shape[:-2], 2, 3], persist=True))
+        screen_basis = unsquish(expo(squish(screen_basis, -2, -1), False, gather_inds=frame_to_fragment_gather_inds, persist=True), -1, 3)
+
+        fragment_x = torch.sub(fragment_x, screen_width * 0.5, out=memory.get_tensor(fragment_x.shape))
+        #fragment_x -= screen_width * 0.5
+        #fragment_x /=  screen_height * 0.5
+
+        #fragment_y -= screen_height * 0.5
+        fragment_y = torch.sub(fragment_y, screen_height * 0.5, out=memory.get_tensor(fragment_y.shape))
+        s = 2/screen_height
+        #fragment_y /= screen_height * 0.5
+
+        ray_direction = torch.addcmul(screen_point, fragment_x, screen_basis[...,0,:], value=s, out=screen_point)
+        ray_direction = torch.addcmul(ray_direction, fragment_y, screen_basis[...,1,:], value=s, out=ray_direction)
+        ray_direction -= ray_origin
+        ray_direction = F.normalize(ray_direction, p=2, dim=-1, out=ray_direction)
+
+        dists = memory.get_tensor([*ray_origin.shape[:-1], 1])
+        with memory.temp():
+            plane_dir = torch.sub(mob_center_for_frags, ray_origin, out=memory.get_tensor(ray_origin.shape))
+            dot1 = dot_product(plane_dir, normals_for_frags, out=memory.get_tensor([*ray_origin.shape[:-1], 1]))
+            dot1 *= -1
+            dot2 = dot_product(ray_direction, normals_for_frags, out=memory.get_tensor([*ray_origin.shape[:-1], 1]))
+            dists = torch.divide(dot1, dot2, out=dot1)
+        dists.nan_to_num_()
+
         if self.num_texture_points > 0:
+            texture_start_pointer = memory.current_pointer
             # LoggerManager.instance().set_class("rendering").log_message(
             #    f"starting coloring process {dists.shape},"
             # )
-            proj_onto_mobs = ray_origin + dists * ray_direction
-            mob_centers = expo(self.mob_center)
-            mob_basis1 = expo(self.basis1)
-            mob_basis2 = expo(self.basis2)
-            # grid_width = expo(self.grid_width).long()
-            grid_width = self.get_tensor(expo(self.grid_width).shape, dtype=torch.long)
-            grid_height = self.get_tensor(
-                expo(self.grid_height).shape, dtype=torch.long
-            )
-            grid_width_float = self.get_tensor(
-                expo(self.grid_width).shape, dtype=torch.float
-            )
-            grid_height_float = self.get_tensor(
-                expo(self.grid_height).shape, dtype=torch.float
-            )
-            grid_width_float[:] = expo(self.grid_width)
-            grid_height_float[:] = expo(self.grid_height)
-            grid_width[:] = grid_width_float
-            grid_height[:] = grid_height_float
-            # Free float versions as they're no longer needed
-            float_size = grid_height_float.numel() * grid_height_float.element_size()
-            self.memory.current_pointer -= float_size  # Free grid_height_float
-            float_size = grid_width_float.numel() * grid_width_float.element_size()
-            self.memory.current_pointer -= float_size  # Free grid_width_float
-            # disps_from_mobs = proj_onto_mobs - mob_centers
-            disps_from_mobs = self.get_tensor(
-                proj_onto_mobs.shape, dtype=proj_onto_mobs.dtype
-            )
-            torch.subtract(proj_onto_mobs, mob_centers, out=disps_from_mobs)
-            # offsets = expo((torch.arange(self.mob_center.shape[1]*(time_end - time_start), device=self.colors.device)*self.colors.shape[-2]).view(1,-1,1,1))
+            proj_onto_mobs = torch.addcmul(ray_origin, dists, ray_direction, out=ray_direction)
+            memory.current_reverse_pointer = initial_persist_pointer
+            with memory.temp():
+                mob_centers = expo(self.mob_center)
+                disps_from_mobs = torch.subtract(proj_onto_mobs, mob_centers, out=proj_onto_mobs)
             arange_size = self.mob_center.shape[1] * (time_end - time_start)
             arange_offsets = self.get_tensor([arange_size], dtype=torch.long)
             torch.arange(arange_size, device=arange_offsets.device, out=arange_offsets)
@@ -1605,7 +1303,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             offsets = expo(arange_offsets.view(1, -1, 1, 1))
 
             def get_c(b):
-                dot_out = self.get_tensor([*b.shape[:-1], 1])
+                dot_out = self.get_tensor([*b.shape[:-1], 1], persist=True)
                 # c = dot_product(F.normalize(b, p=2, dim=-1), disps_from_mobs) / b.norm(p=2, dim=-1, keepdim=True)
                 # b_normalized = F.normalize(b, p=2, dim=-1)
                 dot_result = dot_product(b, disps_from_mobs, out=dot_out)
@@ -1618,14 +1316,20 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 return c
 
             # x = (get_c(mob_basis2) * (grid_height)).clamp_max_(grid_height-1).clamp_min_(0)
-            x = get_c(mob_basis2)
+            grid_height = expo(self.grid_height)
+            with memory.temp():
+                mob_basis2 = expo(self.basis2)
+                x = get_c(mob_basis2)
             x *= grid_height
-            x = x.clamp_max_(grid_height - 1).clamp_min_(0)
+            x.clamp_max_(grid_height - 1).clamp_min_(0)
 
             # y = (get_c(mob_basis1) * grid_width).clamp_max_(grid_width-1).clamp_min_(0)
-            y = get_c(mob_basis1)
+            with memory.temp():
+                grid_width = expo(self.grid_width)
+                mob_basis1 = expo(self.basis1)
+                y = get_c(mob_basis1)
             y *= grid_width
-            y = y.clamp_max_(grid_width - 1).clamp_min_(0)
+            y.clamp_max_(grid_width - 1).clamp_min_(0)
 
             # xr = x % 1
             xr = self.get_tensor(x.shape, dtype=x.dtype)
@@ -1634,81 +1338,62 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             yr = self.get_tensor(y.shape, dtype=y.dtype)
             torch.remainder(y, 1, out=yr)
             # w1 = (1-xr) * (1-yr)
-            w1 = self.get_tensor(xr.shape, dtype=xr.dtype)
-            w2 = self.get_tensor(xr.shape, dtype=xr.dtype)
-            w3 = self.get_tensor(xr.shape, dtype=xr.dtype)
-            w4 = self.get_tensor(xr.shape, dtype=xr.dtype)
-            temp2 = self.get_tensor(yr.shape, dtype=yr.dtype)
-            temp1 = self.get_tensor(xr.shape, dtype=xr.dtype)
-            torch.subtract(1, xr, out=temp1)
-            torch.subtract(1, yr, out=temp2)
-            torch.mul(temp1, temp2, out=w1)
-            # w2 = xr * (1-yr)
-            torch.mul(xr, temp2, out=w2)
-            # w3 = (1-xr)*yr
-            torch.mul(temp1, yr, out=w3)
-            # w4 = xr * yr
-            torch.mul(xr, yr, out=w4)
-            # Free temp1 and temp2 as they're no longer needed
-            temp_size = temp1.numel() * temp1.element_size()
-            self.memory.current_pointer -= temp_size  # Free temp1
-            temp_size = temp2.numel() * temp2.element_size()
-            self.memory.current_pointer -= temp_size  # Free temp2
+            w4 = torch.mul(xr, yr, out=self.get_tensor(xr.shape, dtype=xr.dtype))
+            one = torch.tensor(1, device=x.device)
+            minus_one = -1 * one
+            minus_xr = torch.addcmul(one, xr, minus_one, out=self.get_tensor(x.shape))
+            w3 = torch.mul(minus_xr, yr, out=yr)
+            with memory.temp():
+                minus_yr = torch.addcmul(one, yr, minus_one, out=self.get_tensor(x.shape))
+                w2 = torch.mul(xr, minus_yr, out=xr)
+                w1 = torch.mul(minus_yr, minus_xr, out=minus_xr)
 
             # x_floor = (x).floor().long()
-            x_floor = self.get_tensor(x.shape, dtype=torch.long)
-            x_ciel = self.get_tensor(x.shape, dtype=torch.long)
-            y_floor = self.get_tensor(y.shape, dtype=torch.long)
-            y_ciel = self.get_tensor(y.shape, dtype=torch.long)
-            y_ciel_float = self.get_tensor(y.shape, dtype=y.dtype)
-            y_floor_float = self.get_tensor(y.shape, dtype=y.dtype)
-            x_ciel_float = self.get_tensor(x.shape, dtype=x.dtype)
-            x_floor_float = self.get_tensor(x.shape, dtype=x.dtype)
-            torch.floor(x, out=x_floor_float)
-            x_floor[:] = x_floor_float
-            # x_ciel = (x).ceil().long()
-            torch.ceil(x, out=x_ciel_float)
-            x_ciel[:] = x_ciel_float
-            # y_floor = (y).floor().long()
-            torch.floor(y, out=y_floor_float)
-            y_floor[:] = y_floor_float
-            # y_ciel = (y).ceil().long()
-            torch.ceil(y, out=y_ciel_float)
-            y_ciel[:] = y_ciel_float
-            # Free float versions as they're no longer needed
-            float_size = y_ciel_float.numel() * y_ciel_float.element_size()
-            self.memory.current_pointer -= float_size  # Free y_ciel_float
-            float_size = y_floor_float.numel() * y_floor_float.element_size()
-            self.memory.current_pointer -= float_size  # Free y_floor_float
-            float_size = x_ciel_float.numel() * x_ciel_float.element_size()
-            self.memory.current_pointer -= float_size  # Free x_ciel_float
-            float_size = x_floor_float.numel() * x_floor_float.element_size()
-            self.memory.current_pointer -= float_size  # Free x_floor_float
+            x_floor = self.get_tensor(x.shape, dtype=torch.int)
+            x_ceil = self.get_tensor(x.shape, dtype=torch.int)
+            y_floor = self.get_tensor(y.shape, dtype=torch.int)
+            y_ceil = self.get_tensor(y.shape, dtype=torch.int)
+            with memory.temp():
+                temp = self.get_tensor(y.shape, dtype=y.dtype)
+                x_floor_float = torch.floor(x, out=temp).to(x_floor) # out=x_floor
+                x_floor[:] = x_floor_float
+                x_ceil_float = torch.ceil(x, out=temp)
+                x_ceil[:] = x_ceil_float
+                y_floor_float = torch.floor(y, out=temp)
+                y_floor[:] = y_floor_float
+                y_ceil_float = torch.ceil(y, out=temp)
+                y_ceil[:] = y_ceil_float
 
             colos = squish(select_time(self.colors), 0, 2)
             interpolated_colors = 0
-            temp_long = self.get_tensor(w1.shape, torch.long)
+            temp_long = self.get_tensor(w1.shape, torch.int)
             sum_w = self.get_tensor(w1.shape, w1.dtype)
             sum_w[:] = 0
             gathered_colors = self.get_tensor([*w1.shape[:-1], 5], w1.dtype)
-            interpolated_colors = self.get_tensor([*w1.shape[:-1], 5], w1.dtype)
+            memory.current_reverse_pointer = initial_persist_pointer
+            interpolated_colors = self.get_tensor([*w1.shape[:-1], 5], w1.dtype, persist=True)
             interpolated_colors[:] = 0
             for w, x, y in [
                 (w1, x_floor, y_floor),
-                (w2, x_ciel, y_floor),
-                (w3, x_floor, y_ciel),
-                (w4, x_ciel, y_ciel),
+                (w2, x_ceil, y_floor),
+                (w3, x_floor, y_ceil),
+                (w4, x_ceil, y_ceil),
             ]:
                 x = torch.addcmul(x, y, grid_height, out=temp_long)
                 # x = x + y * grid_height
                 x += offsets
                 sum_w = torch.add(w, sum_w, out=sum_w)
-                c = broadcast_gather(colos, -2, x, out=gathered_colors, keepdim=True)
+                with memory.temp():
+                    c = broadcast_gather(colos, -2, memory.cast(x, torch.long), out=gathered_colors, keepdim=True)
                 interpolated_colors = torch.addcmul(
                     interpolated_colors, c, w, out=interpolated_colors
                 )
             interpolated_colors /= sum_w
+            memory.current_pointer = texture_start_pointer
+            interpolated_colors = memory.clone(interpolated_colors)
+            memory.current_reverse_pointer = initial_persist_pointer
         else:
+            memory.current_reverse_pointer = initial_persist_pointer
             interpolated_colors = self.expand_verts_to_frags(
                 squish(colors, 0, 1), object_to_fragment_gather_inds, -2
             )
@@ -1723,26 +1408,27 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         def get_frags(ws, fragment_coords=None):
             def get_colors():
                 colors = interpolated_colors
-                colors = colors.reshape(-1, colors.shape[-1])
-                colors = colors[m]
+                colors = colors.view(-1, colors.shape[-1])
+                colors = torch.masked_select(colors, m.unsqueeze(-1), out=memory.get_tensor((num_masked_frags * colors.shape[-1],), persist=True)).view(-1,colors.shape[-1])
+                #colors = colors[m]
 
                 if self.filled:
                     border_colors_frags = self.expand_verts_to_frags(
                         squish(border_colors, 0, 1), object_to_fragment_gather_inds
                     )
-                    border_colors_frags = border_colors_frags.reshape(
+                    border_colors_frags = border_colors_frags.view(
                         -1, border_colors_frags.shape[-1]
                     )
-                    border_colors_frags = border_colors_frags[m]
-                    colors[..., :] = (
-                        colors[..., :] * (1 - border_mask)
-                        + border_mask * border_colors_frags
-                    )
+                    #border_colors_frags = border_colors_frags[m]
+                    border_colors_frags = torch.masked_select(border_colors_frags, m.unsqueeze(-1),
+                                        out=memory.get_tensor((num_masked_frags * colors.shape[-1],))).view(-1, colors.shape[-1])
+                    colors = torch.where(memory.cast(border_mask, torch.bool), border_colors_frags, colors, out=colors)
                 return colors
 
             colors = get_colors()
-            dists2 = dists.reshape(-1)
-            dists2 = dists2[m]
+            dists2 = dists.view(-1)
+            dists2 = torch.masked_select(dists2, m, out=memory.get_tensor((num_masked_frags,), persist=True))
+            #dists2 = dists2[m]
 
             return colors, dists2
 
@@ -1750,5 +1436,5 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         # LoggerManager.instance().set_class("rendering").log_message(
         #    f"finished getting frags {colors.shape},"
         # )
-        self.memory.current_pointer = inds_pointer
+        self.memory.current_pointer = initial_pointer
         return colors, dists, inds

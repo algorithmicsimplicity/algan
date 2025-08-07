@@ -80,9 +80,9 @@ def get_bary_coordinates(triangle_corners, fragment_x, fragment_y):
 def interpolate_triangle_corners(self, interpolation_coord, property):
     ws = interpolation_coord
     x = property
-    out = self.get_tensor([*x.shape[:-2], x.shape[-1]])
-    out[:] = 0
-    for i in range(ws.shape[-2]):
+    out = self.get_tensor([*x.shape[:-2], x.shape[-1]], persist=True)
+    torch.mul(x[..., 0, :], ws[..., 0, :], out=out)
+    for i in range(1, ws.shape[-2]):
         torch.addcmul(out, x[..., i, :], ws[..., i, :], out=out)
     return out
 
@@ -169,7 +169,7 @@ class TrianglePrimitive(RenderPrimitive):
         return interpolate_triangle_corners(
             self,
             interpolation_coord,
-            self.expand_verts_to_frags(property, repeats_inds.unsqueeze(-1), -3),
+            self.expand_verts_to_frags(property, repeats_inds.unsqueeze(-1), -3, persist=True),
         )
 
 

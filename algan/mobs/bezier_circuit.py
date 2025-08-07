@@ -10,8 +10,6 @@ from algan.geometry.geometry import get_roots_of_quadratic, get_orthonormal_vect
 from algan.mobs.mob import Mob
 from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
-    evaluate_cubic_bezier_derivative_old,
-    evaluate_cubic_bezier_old2,
 )
 
 from algan.utils.tensor_utils import *
@@ -267,7 +265,7 @@ class BezierCircuitCubic(Renderable):
                         )
                         - starting_inds[i]
                     )
-            num_segments_per_circuit = torch.stack(num_segments_per_circuit, 0)
+            #num_segments_per_circuit = torch.stack(num_segments_per_circuit, 0)
             num_segments_per_circuit = torch.tensor(
                 [x.shape[-3]], device=x.device, dtype=torch.long
             )
@@ -276,9 +274,9 @@ class BezierCircuitCubic(Renderable):
                 c = c.expand([-1, -1, self.num_texture_points, -1])
         else:
             c = unsquish(tpc, -2, self.num_texture_points)
-        LoggerManager.instance().set_class("batching").log_message(
-            f"Making bezier with num_segments_per_circuit: {num_segments_per_circuit}"
-        )
+        #LoggerManager.instance().set_class("batching").log_message(
+        #    f"Making bezier with num_segments_per_circuit: {num_segments_per_circuit}"
+        #)
         # num_segments_per_circuit = torch.cat((starting_inds, torch.tensor((len(inds)-(starting_inds.amax() if len(starting_inds) > 0 else 0),), device=x.device)), -1)
 
         prim = self.render_primitive(

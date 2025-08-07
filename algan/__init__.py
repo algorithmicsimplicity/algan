@@ -89,12 +89,14 @@ try:
     # compiled = torch.compile
     # print('using torch.compile')
     compiled = lambda x: x
-    cuda_compiled = compile_wrapper
+    cuda_compiled = lambda x: x#compile_wrapper
 except Exception as e:
     #raise e
     #print('PyTorch Compilation is unavailable, most likely due to running on Windows OS.')
     compiled = lambda x: x
     cuda_compiled = lambda x: x
+#not_compiled = torch.compiler.disable(recursive=True)
+not_compiled = lambda x: x
 
 from algan.settings.defaults import *
 from algan.settings.style_defaults import *

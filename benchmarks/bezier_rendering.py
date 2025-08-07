@@ -3,8 +3,10 @@ import manim as mn
 
 
 def render_static_beziers():
-    mobs = ManimMob(mn.Text("abcdefir\nsbmbbkl")).scale(2).spawn()
-    mobs.wait(2)
+    with Off():
+        mobs = ManimMob(mn.Text("abcdefir\nsbmbbkl\nmbnmcllc\nqwereqtqet", stroke_color=mn.RED, stroke_width=6)).scale(2).spawn()
+    mobs.wait(1)
 
 
-render_all_funcs(__name__, HD)
+LOGGING_DEFAULTS.verbosity = 'max'
+render_all_funcs(__name__, UHD)

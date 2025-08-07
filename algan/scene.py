@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from moviepy import CompositeAudioClip
 
 import algan
+from algan import not_compiled
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.logging.logger import LoggerManager
 from algan.settings.defaults import *
@@ -216,7 +217,7 @@ class Scene:
             self.memory = ManualMemory(
                 COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering
             )
-            logger = LoggerManager.instance().set_class("batching")
+            #logger = LoggerManager.instance().set_class("batching")
             for primitive in primitive_batch:
                 #logger.log_message(
                 #    f"Pre-projecting primitive {primitive} with corners.shape: {primitive.corners.shape},"
@@ -239,7 +240,7 @@ class Scene:
                             )
                             for _ in primitive_batch
                         ]
-                    )
+                    ) + (self.num_pixels_screen_width * self.num_pixels_screen_height * 5)
                     if mem_used <= self.memory.get_num_bytes_remaining():
                         break
                     duration = duration // 2
@@ -349,10 +350,10 @@ class Scene:
             if duration <= 1:
                 duration = 1
                 break
-        logger = LoggerManager.instance().set_class("batching")
-        logger.log_message(
-            f"Fetching batch of primitives from {start_time_ind}:{start_time_ind + duration}."
-        )
+        #logger = LoggerManager.instance().set_class("batching")
+        #logger.log_message(
+        #    f"Fetching batch of primitives from {start_time_ind}:{start_time_ind + duration}."
+        #)
         actors = [
             _
             for _ in actors
@@ -391,7 +392,7 @@ class Scene:
                     component.reset_state()
 
         primitive_collections = []
-        max_bezier_batch_size = 500
+        max_bezier_batch_size = 50000
         for _, (primitive_class, primitives) in grouped_primitives.items():
             if primitive_class is BezierCircuitPrimitive:
                 counts = torch.tensor([_.corners.shape[1] for _ in primitives]).cumsum(
@@ -541,7 +542,7 @@ class Scene:
             )
         return save_image
 
-    @torch.compiler.disable(recursive=True)
+    @not_compiled  #@torch.compiler.disable(recursive=True)
     def get_frames_from_fragments(self, fragments, window, frame, anti_alias_level=1):
         device = fragments[0].device if fragments is not None else frame.device
         bgf = self.background_frame
