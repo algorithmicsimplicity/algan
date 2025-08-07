@@ -104,6 +104,7 @@ class ManualMemory:
 
     @not_compiled
     def get_tensor(self, shape, dtype=torch.float, persist=False):
+        #return torch.empty(shape, dtype=dtype, device=self.data.device)
         reverse = persist
         def get_shape(shape):
             shape = [_ for _ in shape]

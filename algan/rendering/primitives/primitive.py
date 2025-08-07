@@ -171,12 +171,7 @@ class RenderPrimitive:
         self.pre_post_pointers = self.memory.get_pointers()
         frame_out = frames
         if anti_alias_level > 1:
-            frame_out = (
-                F.avg_pool2d(frame_out.cpu().float().permute(2, 0, 1), anti_alias_level)
-                .permute(1, 2, 0)
-                .to(torch.uint8)
-            ).to(frame_out.device)
-            """aa_frame_out = self.get_tensor([frame_out.shape[0] // anti_alias_level,
+            aa_frame_out = self.get_tensor([frame_out.shape[0] // anti_alias_level,
                                             frame_out.shape[1] // anti_alias_level, frame_out.shape[2]], dtype=torch.uint8)
             with self.memory.temp():
                 frame_temp = self.get_tensor([frame_out.shape[0] // anti_alias_level,
@@ -188,8 +183,8 @@ class RenderPrimitive:
                             continue
                         frame_temp[:] += frame_out[i::anti_alias_level, j::anti_alias_level]
                 frame_temp /= (anti_alias_level * anti_alias_level)
-            aa_frame_out[:] = frame_temp
-            frame_out = aa_frame_out"""
+                aa_frame_out[:] = frame_temp
+            frame_out = aa_frame_out
         num_channels = frame_out.shape[-1]
         for p in post_processes:
             frame_out = p(frame_out)
@@ -849,9 +844,9 @@ class RenderPrimitive:
             bounding_box_sizes[..., :1], repeats_inds, -2
         )  # .clamp_min_(1)
         bounding_box_widths.clamp_min_(1)
-        fragment_inds_float = self.get_tensor(bounding_box_widths.shape)
-        fragment_x = self.get_tensor(bounding_box_widths.shape)
-        fragment_y = self.get_tensor(bounding_box_widths.shape)
+        fragment_inds_int = self.get_tensor(bounding_box_widths.shape, torch.int)
+        fragment_x = self.get_tensor(bounding_box_widths.shape, torch.int)
+        fragment_y = self.get_tensor(bounding_box_widths.shape, torch.int)
         bounding_corners_rep = self.expand_verts_to_frags(
             bounding_corners[..., 0, :], repeats_inds, -2
         )
@@ -873,14 +868,16 @@ class RenderPrimitive:
         # aa_offsets = torch.linspace(0, 1, anti_alias_level * 2 + 1, device=fragment_x.device)[1:-1:2]
         # aa_offsets = squish(torch.stack((aa_offsets.view(-1, 1).expand([-1, len(aa_offsets)]), aa_offsets.view(1, -1).expand([len(aa_offsets), -1])), -1))
         # inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
-        torch.mul(fragment_y, window_width, out=fragment_inds_float)
-        fragment_inds_float += fragment_x
-        fragment_inds_float -= start_y * window_width + start_x
-        all_ws = self.get_interpolation_coordinates(
-            corners_locs, fragment_x, fragment_y, None
-        )
-        torch.round(fragment_inds_float, out=fragment_inds_float)
-        inds = memory.cast(fragment_inds_float, torch.long, persist=True)
+        torch.mul(fragment_y, window_width, out=fragment_inds_int)
+        fragment_inds_int += fragment_x
+        fragment_inds_int -= start_y * window_width + start_x
+        with memory.temp():
+            fragment_x = memory.cast(fragment_x, torch.float)
+            fragment_y = memory.cast(fragment_y, torch.float)
+            all_ws = self.get_interpolation_coordinates(
+                corners_locs, fragment_x, fragment_y, None
+            )
+        inds = memory.cast(fragment_inds_int, torch.long, persist=True)
         self.memory.current_pointer = pointer
 
         #
