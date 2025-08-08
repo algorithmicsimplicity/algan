@@ -1,6 +1,6 @@
 import torch
 
-from algan.constants.color import Color
+from algan.constants.color import Color, BLACK
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.group import Group
@@ -53,6 +53,8 @@ class ManimMob(BezierCircuitCubic):
             control_points = unsquish(control_points.float(), -2, 4)
 
         def convert_manim_color(manim_color, opacity):
+            if manim_color is None:
+                return BLACK
             rgba = manim_color.to_rgba()
             rgb = rgba[:3]
             a = rgba[-1]

@@ -26,7 +26,7 @@ from algan.constants.spatial import *
 from algan.animation.animation_contexts import Sync, AnimationManager, Off
 import numpy as np
 
-from algan.rendering.post_processing import bloom_filter
+from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.utils.memory_utils import get_num_available_bytes, ManualMemory, empty_cache
 from algan.utils.tensor_utils import unsquish
@@ -213,10 +213,11 @@ class Scene:
 
             gc.collect()
             empty_cache()
-            torch.compiler.cudagraph_mark_step_begin()
+            #torch.compiler.cudagraph_mark_step_begin()
             self.memory = ManualMemory(
                 COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering
             )
+            self.memory.scene = self
             #logger = LoggerManager.instance().set_class("batching")
             for primitive in primitive_batch:
                 #logger.log_message(
@@ -254,7 +255,7 @@ class Scene:
                 # camera.screen.set_state_to_time_t(time_inds)
                 # for l in self.light_sources:
                 #    l.set_state_to_time_t(time_inds)
-
+                print(f'rendering batch with duration {duration}')
                 primitive_batch[0].render(
                     primitive_batch,
                     self,

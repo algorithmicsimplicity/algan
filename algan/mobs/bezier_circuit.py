@@ -167,11 +167,11 @@ class BezierCircuitCubic(Renderable):
             + self.texture_points.location.shape[-2] * 5
             + self.location.shape[-2] * (6)
         )
-        return n * 4
+        return n * (4+9)
 
     def get_render_primitives(self):
-        # if self.empty:
-        #    return None
+        if self.empty:
+            return None
         self.texture_points.set_time_inds_to(self)
         self.control_points.set_time_inds_to(self)
 

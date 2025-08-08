@@ -10,4 +10,6 @@ def render_static_triangulated_text():
 
 LOGGING_DEFAULTS.verbosity = 'max'
 #COMPUTING_DEFAULTS.max_animate_batch_size = 1
-render_all_funcs(__name__, UHD)
+q = UHD
+q.anti_alias_level = 1
+render_all_funcs(__name__, q)

@@ -101,7 +101,10 @@ def get_distance_to_line_segment(points, p1, p2, memory=None):
         memory=memory
     )
     disps = torch.sub(points, projected_points, out=projected_points)
-    return torch.norm(disps, p=1, dim=-1, keepdim=True, out=memory.get_tensor([*disps.shape[:-1], 1], persist=True))
+    disps.square_()
+    dists = torch.sum(disps, -1, keepdim=True, out=memory.get_tensor([*disps.shape[:-1], 1], persist=True))
+    return dists
+    #return torch.zeros_like(dists)
 
 
 def rasterize_rectangle_by_grid_transform(c1, c2, edge2, memory):
@@ -135,8 +138,12 @@ def rasterize_rectangle_by_grid_transform(c1, c2, edge2, memory):
 
         # === Determine Grid Density for Each Parallelogram ===
         # We need enough steps along each edge to not miss any integer grid lines.
-        # The number of steps is the ceiling of the vector's norm times sqrt(2).
-        sqrt_2 = math.sqrt(2)
+        # The theoretical number of steps for right-angled rectangles is the
+        # ceiling of the vector's norm times sqrt(2),
+        # but in practice we need a bit of leeway, so we use 1.75 to be safe.
+        sqrt_2 = 1.75#
+
+        padding = 1
 
         def get_num_steps(edge):
             edge_len = torch.norm(edge, p=2, dim=-1, keepdim=True, out=memory.get_tensor([*c1.shape[:-1], 1]))
@@ -144,7 +151,7 @@ def rasterize_rectangle_by_grid_transform(c1, c2, edge2, memory):
             max_len *= sqrt_2
             max_len.ceil_()
             max_len = memory.cast(max_len, torch.int)
-            max_len += 1
+            max_len += padding * 2
             return max_len
 
         num_steps = [get_num_steps(edge) for edge in [edge1, edge2]]
@@ -167,11 +174,14 @@ def rasterize_rectangle_by_grid_transform(c1, c2, edge2, memory):
 
         # Calculate the u and v indices for each point within its local grid
         u_idx = torch.remainder(local_indices, steps_for_points[0], out=memory.get_tensor(local_indices.shape, torch.int))
+        u_idx -= padding
         v_idx = torch.floor_divide(local_indices, steps_for_points[0], out=memory.get_tensor(local_indices.shape, torch.int))
+        v_idx -= padding
 
         # Convert indices to normalized [0, 1] coordinates
         # Denominator is clamped to 1 to avoid division by zero if a dimension has only one step
         for sp in steps_for_points:
+            sp -= padding * 2
             sp -= 1
             sp.clamp_min_(1)
         u = torch.divide(u_idx, steps_for_points[0], out=u_idx.view(torch.float))
@@ -448,7 +458,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 self.colors = self.colors  # [..., 0, :]
             else:
                 self.colors = self.colors[..., (-self.num_texture_points) :, :]
-            self.padding = max(self.border_width.amax().ceil().long() + 1, 2)
+            self.padding = max(self.border_width.amax().ceil().long()+1, 2)
             # self.portion_of_curve_drawn = self.portion_of_curve_drawn[...,0,:1]
             return
         self.corners = corners
@@ -772,7 +782,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         return f"{__class__}_{self.num_texture_points}_{self.filled}"
 
     def get_memory_used_per_timestep(self):
-        return self.num_fragments_fill * (128 + 32)
+        return self.num_fragments_fill * 256
 
     #@compiled
     def render_(
@@ -1210,7 +1220,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         border_mask = self.expand_verts_to_frags(
             squish(border_width, 0, 1), object_to_fragment_gather_inds
         )
-        global_dists -= 1e-3
+        #global_dists -= 1e-3
 
         # Count the number of intersections in the horizontal ray to this pixel's left.
         left_intersection_counts = torch.cumsum(
@@ -1253,20 +1263,13 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             left_intersection_counts, 1, out=left_intersection_counts
         ).unsqueeze(-1)
 
+        global_dists = global_dists.unsqueeze(-1)
         if self.filled:
-            bool_interior_mask = self.get_tensor(interior_mask.shape, torch.bool)
-            min_border = self.get_tensor(border_mask.shape, border_mask.dtype)
-            min_border = torch.minimum(
-                border_mask,
-                torch.tensor((1.5,), dtype=torch.float, device=min_border.device),
-                out=min_border,
-            )
-            bool_interior_mask[:] = interior_mask
-            border_mask = torch.where(
-                bool_interior_mask, border_mask, min_border, out=border_mask
-            )
+            with memory.temp():
+                outline = torch.lt(global_dists, 0.6 + 1e-3, out=memory.get_tensor(global_dists.shape))#, torch.bool))
+                interior_mask = torch.maximum(interior_mask, outline, out=interior_mask)
             self.memory.current_pointer = pointer
-        torch.less_equal(global_dists.unsqueeze(-1), border_mask, out=border_mask)
+        border_mask = torch.lt(global_dists, border_mask.square_(), out=memory.get_tensor(border_mask.shape, torch.bool))
         #border_mask = torch.zeros_like(interior_mask)
 
         # fragment_coords = torch.cat((fragment_x, fragment_y), -1).float()
@@ -1294,7 +1297,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         #m = (inds < window_size) & ((interior_mask > 0) | (border_mask > 0))
         #m = m.reshape(-1)
         m1 = torch.gt(interior_mask, 0, out=memory.get_tensor(interior_mask.shape, torch.bool))
-        m2 = torch.gt(border_mask, 0, out=memory.get_tensor(interior_mask.shape, torch.bool))
+        m2 = memory.clone(border_mask)#torch.gt(border_mask, 0, out=memory.get_tensor(interior_mask.shape, torch.bool))
         m = torch.logical_or(m1, m2, out=memory.get_tensor(m1.shape, m1.dtype, persist=True)).view(-1)
         num_masked_frags = m.sum()
         border_mask = torch.masked_select(border_mask.view(-1), m, out=memory.get_tensor((num_masked_frags,), border_mask.dtype, persist=True)).unsqueeze(-1)
@@ -1374,9 +1377,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             dot2 = dot_product(ray_direction, normals_for_frags, out=dists)
             dists = torch.divide(dot1, dot2, out=dot2)
         dists.nan_to_num_()
-
-        if self.num_texture_points > 0:
-            texture_start_pointer = memory.current_pointer
+        texture_start_pointer = memory.current_pointer
+        if self.num_texture_points > 1:
             # LoggerManager.instance().set_class("rendering").log_message(
             #    f"starting coloring process {dists.shape},"
             # )
@@ -1427,15 +1429,13 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             yr = self.get_tensor(y.shape, dtype=y.dtype)
             torch.remainder(y, 1, out=yr)
             # w1 = (1-xr) * (1-yr)
-            w4 = torch.mul(xr, yr, out=self.get_tensor(xr.shape, dtype=xr.dtype))
-            one = torch.tensor(1, device=x.device)
-            minus_one = -1 * one
-            minus_xr = torch.addcmul(one, xr, minus_one, out=self.get_tensor(x.shape))
-            w3 = torch.mul(minus_xr, yr, out=yr)
-            with memory.temp():
-                minus_yr = torch.addcmul(one, yr, minus_one, out=self.get_tensor(x.shape))
-                w2 = torch.mul(xr, minus_yr, out=xr)
-                w1 = torch.mul(minus_yr, minus_xr, out=minus_xr)
+            w4 = torch.mul(xr, yr, out=self.get_tensor(xr.shape))
+            minus_xr = torch.sub(1, xr, out=self.get_tensor(xr.shape))
+            w3 = torch.mul(minus_xr, yr, out=self.get_tensor(xr.shape))
+            #with memory.temp():
+            minus_yr = torch.sub(1, yr, out=yr)
+            w2 = torch.mul(xr, minus_yr, out=xr)
+            w1 = torch.mul(minus_yr, minus_xr, out=minus_yr)
 
             # x_floor = (x).floor().long()
             x_floor = self.get_tensor(x.shape, dtype=torch.int)
@@ -1443,8 +1443,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             y_floor = self.get_tensor(y.shape, dtype=torch.int)
             y_ceil = self.get_tensor(y.shape, dtype=torch.int)
             with memory.temp():
-                temp = self.get_tensor(y.shape, dtype=y.dtype)
-                x_floor_float = torch.floor(x, out=temp).to(x_floor) # out=x_floor
+                temp = self.get_tensor(y.shape)
+                x_floor_float = torch.floor(x, out=temp)
                 x_floor[:] = x_floor_float
                 x_ceil_float = torch.ceil(x, out=temp)
                 x_ceil[:] = x_ceil_float
@@ -1482,9 +1482,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             interpolated_colors = memory.clone(interpolated_colors)
             memory.current_reverse_pointer = initial_persist_pointer
         else:
+            memory.current_pointer = texture_start_pointer
             memory.current_reverse_pointer = initial_persist_pointer
             interpolated_colors = self.expand_verts_to_frags(
-                squish(colors, 0, 1), object_to_fragment_gather_inds, -2
+                colors.view(-1,colors.shape[-1]), object_to_fragment_gather_inds, -2
             )
 
         # LoggerManager.instance().set_class("rendering").log_message(

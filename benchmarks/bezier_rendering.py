@@ -9,4 +9,6 @@ def render_static_beziers():
 
 
 LOGGING_DEFAULTS.verbosity = 'max'
-render_all_funcs(__name__, UHD)
+q = UHD
+q.anti_alias_level = 1
+render_all_funcs(__name__, q)

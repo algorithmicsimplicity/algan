@@ -7,9 +7,11 @@ import traceback
 import gc
 
 from algan import compiled, exported, cuda_compiled, CudaStream, not_compiled
+from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.constants.color import BLUE, BLACK, WHITE
 from algan.geometry.geometry import intersect_line_with_plane
 from algan.logging.logger import LoggerManager
+from algan.rendering.post_processing.anti_aliasing.fxaa import fxaa
 from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.utils.tensor_utils import (
     dot_product,
@@ -17,12 +19,54 @@ from algan.utils.tensor_utils import (
     broadcast_gather,
     unsquish,
     unsqueeze_right,
-    scatter_arg_max,
 )
+
+
+try:
+    from torch_scatter import scatter_max as scatter_max_op
+except ModuleNotFoundError:
+    scatter_max_op = None
 
 
 class OutOfRenderMemory(Exception):
     pass
+
+
+#@torch.compiler.disable(recursive=True)
+@cuda_compiled
+def scatter_arg_max(x, inds, dim=-1, dim_size=None):
+    #stream = torch.cuda.Stream()
+    #with torch.cuda.stream(stream):
+    with CudaStream():
+        if len(inds) == 0:
+            return None, None
+        if scatter_max_op is not None and COMPUTING_DEFAULTS.use_torch_scatter:
+            return scatter_max_op(x, inds, -1, dim_size=dim_size)
+        inds = inds.clone()
+        x = x.view(-1)
+        out_dims = [*x.shape]
+        out_dims[dim] = dim_size if dim_size is not None else inds.amax() + 1
+        out = torch.zeros(out_dims, device=x.device)
+        max_vals = torch.scatter_reduce(out, dim, inds, x, "amax", include_self=False)
+        max_vals_gathered = broadcast_gather(max_vals, dim, inds)
+        m = x >= max_vals_gathered - 1e-6
+        inds[~m] = -1
+        #inds = torch.where(m, inds, -1)
+
+        sorted_inds, sorted_indices = torch.sort(inds)
+        is_new_mask = torch.cat(
+            [torch.tensor([True], device=x.device), torch.diff(sorted_inds) != 0]
+        )
+
+        argmax_inds = sorted_indices[is_new_mask]
+        if sorted_inds[0] == -1:
+            if len(argmax_inds) == 1:
+                argmax_inds = argmax_inds[:0]
+            elif len(argmax_inds) > 1:
+                argmax_inds = argmax_inds[1:]  # sorted_indices[is_new_mask]
+
+        max_vals = broadcast_gather(x, -1, argmax_inds)
+        return max_vals, argmax_inds
 
 
 dummy_dists = torch.randn((100, 1))
@@ -122,12 +166,12 @@ class RenderPrimitive:
         return f"{self.__class__}"
 
     def get_memory_used_per_timestep(self):
-        return self.num_fragments_per_frame * 32
+        return self.num_fragments_per_frame * 128
 
     def get_memory_used(self, start_ind, end_ind):
         # The blending process uses, for each fragment, 1 4-channel color and 1 5-channel color (9 floats), and one index (long), so 9*4+1*8 bytes.
         mem_used_for_blending = self.num_fragments_per_frame * (9 * 4 + 8) * 2 # * 3 for buffers
-        return (self.get_memory_used_per_timestep() + mem_used_for_blending) * (
+        return max(self.get_memory_used_per_timestep(), mem_used_for_blending) * (
             end_ind - start_ind
         )
 
@@ -185,6 +229,8 @@ class RenderPrimitive:
                 frame_temp /= (anti_alias_level * anti_alias_level)
                 aa_frame_out[:] = frame_temp
             frame_out = aa_frame_out
+        if self.memory.scene.render_settings.fxaa:
+            frame_out = (fxaa(frame_out.float().permute(-1,0,1).unsqueeze(0)).squeeze(0).permute(1,2,0)).to(torch.uint8)
         num_channels = frame_out.shape[-1]
         for p in post_processes:
             frame_out = p(frame_out)

@@ -128,7 +128,7 @@ class TriangleVertices(Renderable):
         for _ in self.get_shader_params().values():
             num_vars += _.shape[-1]
         # 4 bytes per float
-        return n * num_vars * 4
+        return n * (num_vars * 4 + 10)
 
     def get_default_color(self):
         return PURE_RED

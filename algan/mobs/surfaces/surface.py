@@ -135,13 +135,13 @@ class Surface(Renderable):
         self.ignore_wave_animations = True
 
     def get_memory_used_per_timestep(self):
-        n = self.location.shape[-2] * 1.51
+        n = self.grid.location.shape[-2] * 1.51
         # 3 (location) + 5 (color) + 3 (normal) = 11 floats
         num_vars = 11
         for _ in self.get_shader_params().values():
             num_vars += _.shape[-1]
         # 4 bytes per float
-        return int(n * num_vars * 4)
+        return int(n * (num_vars * 4 + 10))
 
     def get_render_primitives(self):
         self.grid.set_time_inds_to(self)

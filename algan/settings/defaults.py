@@ -23,7 +23,7 @@ class ComputingDefaults:
     compiled: bool = False
     portion_of_memory_used_for_animating: float = 0.2
     portion_of_memory_used_for_rendering: float = 0.6
-    max_animate_batch_size = 1000
+    max_animate_batch_size = 10000
     max_cpu_memory_used = 2 * GIGABYTES
     animation_device = torch.device("cpu")
     render_device = torch.device(
@@ -31,6 +31,7 @@ class ComputingDefaults:
         if cuda_available
         else ("mps" if torch.mps.is_available() else "cpu")
     )
+    use_torch_scatter = True
 
 
 COMPUTING_DEFAULTS = ComputingDefaults()

@@ -14,11 +14,6 @@ import torch.nn as nn
 from algan import cuda_compiled, CudaStream, not_compiled
 from algan.settings.defaults import *
 
-try:
-    from torch_scatter import scatter_max as scatter_max_op
-except ModuleNotFoundError:
-    scatter_max_op = None
-
 
 def packed_reorder(x, counts, ids):
     # packed_counts = scatter_add(counts, ids, 0)
@@ -488,39 +483,3 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     )
     return kwargs
 
-
-#@torch.compiler.disable(recursive=True)
-@cuda_compiled
-def scatter_arg_max(x, inds, dim=-1, dim_size=None):
-    #stream = torch.cuda.Stream()
-    #with torch.cuda.stream(stream):
-    with CudaStream():
-        if len(inds) == 0:
-            return None, None
-        if scatter_max_op is not None:
-            return scatter_max_op(x, inds, -1, dim_size=dim_size)
-        inds = inds.clone()
-        x = x.view(-1)
-        out_dims = [*x.shape]
-        out_dims[dim] = dim_size if dim_size is not None else inds.amax() + 1
-        out = torch.zeros(out_dims, device=x.device)
-        max_vals = torch.scatter_reduce(out, dim, inds, x, "amax", include_self=False)
-        max_vals_gathered = broadcast_gather(max_vals, dim, inds)
-        m = x >= max_vals_gathered - 1e-6
-        inds[~m] = -1
-        #inds = torch.where(m, inds, -1)
-
-        sorted_inds, sorted_indices = torch.sort(inds)
-        is_new_mask = torch.cat(
-            [torch.tensor([True], device=x.device), torch.diff(sorted_inds) != 0]
-        )
-
-        argmax_inds = sorted_indices[is_new_mask]
-        if sorted_inds[0] == -1:
-            if len(argmax_inds) == 1:
-                argmax_inds = argmax_inds[:0]
-            elif len(argmax_inds) > 1:
-                argmax_inds = argmax_inds[1:]  # sorted_indices[is_new_mask]
-
-        max_vals = broadcast_gather(x, -1, argmax_inds)
-        return max_vals, argmax_inds
