@@ -9,8 +9,7 @@ import gc
 from algan import compiled, exported, cuda_compiled, CudaStream, not_compiled
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.constants.color import BLUE, BLACK, WHITE
-from algan.geometry.geometry import intersect_line_with_plane
-from algan.logging.logger import LoggerManager
+from algan.geometry.geometry import intersect_line_with_plane, distance
 from algan.rendering.post_processing.anti_aliasing.fxaa import fxaa
 from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.utils.tensor_utils import (
@@ -80,11 +79,15 @@ dynamic_shapes = [
 
 
 @cuda_compiled
-def do_write(out, c_write, max_dist, dists, max_ind, c_read, ie):
+def do_write(out, c_write, max_dist, dists, max_ind, c_read, ie, memory):
     #stream = torch.cuda.Stream()
     #with torch.cuda.stream(stream):
     with CudaStream():
-        mask = ((0 < max_dist) & (max_dist < 1e12)).unsqueeze(-1)
+        with memory.temp():
+            mask1 = torch.lt(torch.tensor((0.0,), device=c_write.device), max_dist, out=memory.get_tensor(max_dist.shape, torch.bool))
+            mask2 = torch.lt(max_dist, 1e12, out=memory.get_tensor(max_dist.shape, torch.bool))
+            mask = torch.logical_and(mask1, mask2, out=mask1).unsqueeze(-1)
+            #mask = ((0 < max_dist) & (max_dist < 1e12)).unsqueeze(-1)
 
         dists.scatter_(-1, max_ind, -1.0)
         a = c_write[..., -1:]
@@ -121,7 +124,7 @@ def do_write(out, c_write, max_dist, dists, max_ind, c_read, ie):
 
 #@exported(example_inputs=example_inputs, dynamic_shapes=dynamic_shapes)
 #@cuda_compiled
-def blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, inds_selected_, c_write_, c_read_):
+def blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, inds_selected_, c_write_, c_read_, memory):
     inds_selected = broadcast_gather(
         inds,
         -1,
@@ -141,7 +144,7 @@ def blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, in
         out, -2, ie, out=c_read_[: len(max_ind)], keepdim=True
     )
 
-    out = do_write(out, c_write, max_dist, dists, max_ind, c_read, ie)
+    out = do_write(out, c_write, max_dist, dists, max_ind, c_read, ie, memory)
     return out
 
 
@@ -166,14 +169,15 @@ class RenderPrimitive:
         return f"{self.__class__}"
 
     def get_memory_used_per_timestep(self):
-        return self.num_fragments_per_frame * 128
+        return self.num_fragments_per_frame * (128)
+
+    def get_memory_used_for_blending(self, start_ind, end_ind):
+        mem_used_for_blending = self.num_fragments_per_frame * (9 * 4 + 8) * 2  # * 3 for buffers
+        return mem_used_for_blending * (end_ind - start_ind)
 
     def get_memory_used(self, start_ind, end_ind):
         # The blending process uses, for each fragment, 1 4-channel color and 1 5-channel color (9 floats), and one index (long), so 9*4+1*8 bytes.
-        mem_used_for_blending = self.num_fragments_per_frame * (9 * 4 + 8) * 2 # * 3 for buffers
-        return max(self.get_memory_used_per_timestep(), mem_used_for_blending) * (
-            end_ind - start_ind
-        )
+        return self.get_memory_used_per_timestep() * (end_ind - start_ind)
 
     def render(
         self,
@@ -350,13 +354,10 @@ class RenderPrimitive:
                 frames = scene.get_frames_from_fragments(
                     frags, window, out, anti_alias_level=kwargs["anti_alias_level"]
                 )
-                self.memory.set_pointers(out_pointers)
+            self.memory.set_pointers(out_pointers)
             if (window[2] - window[0]) == kwargs["screen_width"] and (
                 window[3] - window[1]
             ) == kwargs["screen_height"]:
-                LoggerManager.instance().set_class("rendering").log_message(
-                    f"beginning save_frames,"
-                )
                 self.save_frames(
                     frames,
                     save_image,
@@ -368,8 +369,6 @@ class RenderPrimitive:
             else:
                 self.memory.set_pointers(out_pointers)
         except (InsufficientMemoryException, torch.OutOfMemoryError):
-            print(f'splitting to t={(time_end - time_start)//2}, frame={(window[0] + window[2]) // 2},'
-                  f' {(window[1] + window[3]) // 2}')
             self.memory.set_pointers(original_pointers)
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
@@ -561,7 +560,7 @@ class RenderPrimitive:
                     if max_ind is None:
                         break
 
-                    blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, inds_selected_, c_write_, c_read_)
+                    blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, inds_selected_, c_write_, c_read_, self.memory)
                 self.memory.current_pointer = original_pointer
                 return out
 
@@ -649,19 +648,23 @@ class RenderPrimitive:
         screen_width,
         screen_height,
         window_coords=None,
+            memory=None,
     ):
-        rays = F.normalize(x - ray_origin, p=2, dim=-1)
-        projected_corners, _ = intersect_line_with_plane(
-            rays, screen_point, screen_basis[..., -1:, :], ray_origin
-        )
+
+        with memory.temp():
+            rays = torch.sub(x, ray_origin, out=memory.get_tensor(x.shape))
+            rays = F.normalize(rays, p=2, dim=-1, out=rays)
+            projected_corners, _ = intersect_line_with_plane(
+                rays, screen_point, screen_basis[..., -1:, :], ray_origin
+            )
         projected_corners.nan_to_num_()
-        projected_distances = (x - ray_origin).norm(p=2, dim=-1, keepdim=True)
+        projected_distances = distance(x, ray_origin)
         projected_corners -= screen_point
         corners_2d = dot_product(
             projected_corners.unsqueeze(-2),
             screen_basis[..., :-1, :].unsqueeze(-3),
             -1,
-            keepdim=False,
+            keepdim=False, out=memory
         )
         corners_2d.nan_to_num_()
 
@@ -670,7 +673,7 @@ class RenderPrimitive:
         corners_2d[..., 1] += screen_height // 2
 
         corners = corners_2d
-        corners_int = corners.int()
+        corners_int = memory.cast(corners, torch.int)
 
         # bounding_corners = torch.stack(((corners_int.amin(-2) - self.padding),
         #                                 (corners_int.amax(-2) + self.padding)),
@@ -724,17 +727,18 @@ class RenderPrimitive:
             d = -1
             if hasattr(self, "shader") and self.shader is not None:
                 for light_source in light_sources:
-                    self.colors[..., :d] = self.shader(
-                        self.corners,
-                        self.normals,
-                        self.colors[..., :d],
-                        ray_origin,
-                        light_source.origin,
-                        light_source.light_color,
-                        light_intensity,
-                        ambient_light_intensity,
-                        *self.shader_param_values,
-                    )
+                    with self.memory.temp():
+                        self.colors[..., :d] = self.shader(self.memory,
+                            self.corners,
+                            self.normals,
+                            self.colors[..., :d],
+                            ray_origin,
+                            light_source.origin,
+                            light_source.light_color,
+                            light_intensity,
+                            ambient_light_intensity,
+                            *self.shader_param_values,
+                        )
 
             self.first_projection = True
             (
@@ -755,6 +759,7 @@ class RenderPrimitive:
                 screen_basis,
                 screen_width,
                 screen_height,
+                memory=self.memory
             )
             self.first_projection = False
             return self

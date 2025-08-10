@@ -25,7 +25,7 @@ class BezierCircuitCubic(Renderable):
         portion_of_curve_drawn=1.0,
         filled=True,
         add_texture_grid=True,
-        texture_grid_size=2,
+        texture_grid_size=1,
         empty=False,
         **kwargs,
     ):
@@ -181,8 +181,8 @@ class BezierCircuitCubic(Renderable):
                 self.basis,
                 self.glow,
                 self.border_width
-                * self.scene.render_settings.resolution[1]
-                / PREVIEW.resolution[1],
+                * self.scene.render_settings.resolution[1] * self.scene.render_settings.anti_alias_level
+                / (PREVIEW.resolution[1] * 2),
                 self.border_color,
                 self.portion_of_curve_drawn,
             ],

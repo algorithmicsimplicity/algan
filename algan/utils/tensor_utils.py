@@ -301,20 +301,19 @@ def mid_point(x, dim=-1, keepdim=True):
     return (x.amin(dim, keepdim=keepdim) + x.amax(dim, keepdim=keepdim)) * 0.5
 
 
-def _get_empty_tensor_of_broadcasted_shape(x, y):
+def _get_broadcasted_shape(x, y):
     if x.dim() < y.dim():
         x = unsqueeze_left(x, y)
     if y.dim() < x.dim():
         y = unsqueeze_left(y, x)
-    return torch.empty(
-        [max(x_, y_) for x_, y_ in zip(x.shape[:-1], y.shape[:-1])] + [1],
-        device=x.device,
-    )
+    return [max(x_, y_) for x_, y_ in zip(x.shape[:-1], y.shape[:-1])] + [1]
 
 
 def _dot_product_low_dim(x, y, out=None):
     if out is None:
-        out = _get_empty_tensor_of_broadcasted_shape(x, y)
+        out = torch.empty(_get_broadcasted_shape(x, y), device=x.device)
+    elif hasattr(out, 'get_tensor'):
+        out = out.get_tensor(_get_broadcasted_shape(x, y))
     out = out.squeeze(-1)
     torch.mul(x[..., 0], y[..., 0], out=out)
     for i in range(1, x.shape[-1]):

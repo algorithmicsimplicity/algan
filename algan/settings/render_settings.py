@@ -32,14 +32,14 @@ class RenderSettings:
     resolution: Tuple[int, int]
     frames_per_second: int = 30
     anti_alias_level: int = 1
-    fxaa = False
+    fxaa: bool = True
     audio_frames_per_second: int = 44100
     save_image: bool = False
 
 
 THUMBNAIL = RenderSettings((1280, 720), 1, save_image=True)
 
-SMOKE_TEST = RenderSettings((100, 100), 2, anti_alias_level=1)
+SMOKE_TEST = RenderSettings((100, 100), 2, anti_alias_level=1, fxaa=False)
 
 # Render at (600, 400) resolution, 10 fps.
 PREVIEW = RenderSettings((640, 400), 10)

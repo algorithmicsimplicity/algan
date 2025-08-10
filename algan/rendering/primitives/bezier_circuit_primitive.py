@@ -5,7 +5,6 @@ import torch.nn.functional as F
 
 from algan import compiled
 from algan.constants.color import BLUE, BLACK
-from algan.logging.logger import LoggerManager
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.geometry.geometry import (
     intersect_line_with_plane,
@@ -382,11 +381,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         self.filled = filled
         if triangle_collection is not None:
             device = COMPUTING_DEFAULTS.render_device
-            # logger = LoggerManager.instance().set_class("batching")
-            # logger.log_message(
-            #    f"{[_.num_segments_per_circuit for _ in triangle_collection]}"
-            # )
-            # self.num_segments_per_circuit = torch.cat([_.num_segments_per_circuit for _ in triangle_collection]).to(device)
             self.num_segments_per_object = torch.cat(
                 [_.num_segments_per_circuit.view(-1) for _ in triangle_collection]
             ).to(device)
@@ -527,24 +521,12 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 device=arange_num_segments_per_oject.device,
                 out=arange_num_segments_per_oject,
             )
-            # logger = LoggerManager.instance().set_class("rendering")
-            # logger.log_message(
-            #    f"Attempting repeat_interleave with arguments {arange_num_segments_per_oject},"
-            #    f"{self.num_segments_per_object}, device: {x.device}, x.shape: {x.shape}"
-            # )
             segment_to_object_scatter_inds = torch.repeat_interleave(
                 arange_num_segments_per_oject, self.num_segments_per_object, -1
             ).view(1, -1, 1)
             self.segment_to_object_scatter_inds = segment_to_object_scatter_inds
 
-            def log_var(name, var):
-                pass
-                # logger.log_message(f"{name} {var.shape},\n{var.dtype},\n {var}\n")
-
-            #log_var("segment_to_object_scatter_inds", segment_to_object_scatter_inds)
             arange_num_segments_per_oject = arange_num_segments_per_oject.view(1, -1, 1)
-            #log_var("arange_num_segments_per_oject", arange_num_segments_per_oject)
-            #log_var("x0", x[..., 0])
             object_bounding_corners_bottom_left = (
                 broadcast_scatter(
                     arange_num_segments_per_oject,
@@ -610,13 +592,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             if self.first_projection:
                 return None
 
-            # LoggerManager.instance().set_class("rendering").log_message(
-            #    f"num_fragments:  {num_fragments}"
-            # )
-            # object_to_fragment_gather_inds = torch.repeat_interleave(
-            #     torch.arange(object_bounding_box_num_pixels.numel(),
-            #                  device=x.device), object_bounding_box_num_pixels.view(-1), -1,
-            #     output_size=num_fragments).unsqueeze(-1)
             arange_numel = self.get_tensor(
                 [object_bounding_box_num_pixels.numel()], dtype=torch.long
             )
@@ -656,10 +631,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             self.memory.current_pointer -= cumsum_size
             object_offsets = object_offsets_flat.view(-1, 1)
 
-            # LoggerManager.instance().set_class("rendering").log_message(
-            #    f"first bg:  {object_offsets}, {object_to_fragment_gather_inds}"
-            # )
-            # object_fragment_inds = object_fragment_inds - broadcast_gather(object_offsets, -2, object_to_fragment_gather_inds, keepdim=True)
             temp_gathered = broadcast_gather(
                 object_offsets,
                 -2,
@@ -681,8 +652,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 out=self.memory,
             )
 
-            # LoggerManager.instance().set_class("rendering").log_message(f"bg3")
-            # object_bounding_corners_bottom_left_for_frags = broadcast_gather(squish(object_bounding_corners_bottom_left, 0, 1), -2, object_to_fragment_gather_inds, keepdim=True)
             squished_corners = squish(object_bounding_corners_bottom_left, 0, 1)
             object_bounding_corners_bottom_left_for_frags = broadcast_gather(
                 squished_corners,
@@ -730,8 +699,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 out=object_fragment_y,
             )
 
-            # LoggerManager.instance().set_class("rendering").log_message(f"done")
-
             return (
                 object_fragment_x,
                 object_fragment_y,
@@ -753,6 +720,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         )
 
     def project_to_screen(self, camera, light_sources):
+        self.distance_to_control_points = (self.corners - camera.ray_origin).norm(p=2, dim=-1, keepdim=True)
         super().project_to_screen(camera, light_sources)
         control_points = self.corners
 
@@ -782,7 +750,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         return f"{__class__}_{self.num_texture_points}_{self.filled}"
 
     def get_memory_used_per_timestep(self):
-        return self.num_fragments_fill * 256
+        return self.num_fragments_fill * (128 + 64)
 
     #@compiled
     def render_(
@@ -815,6 +783,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             return x
 
         corners = select_time(self.corners)
+        distance_to_control_points = select_time(self.distance_to_control_points)
         corners_int = select_time(self.corners_int)
         projected_distances = select_time(self.projected_distances)
         if corners.numel() == 0:
@@ -830,11 +799,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         ray_origin = select_time(ray_origin)
         next_segment_inds = select_time(self.next_segment_inds)
         num_segments_per_object = self.num_segments_per_object
-
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"starting rendering with {corners.shape}, {normals.shape}, {mob_center.shape}, "
-        #    f"{colors.shape}, {ray_origin.shape}"
-        # )
 
         num_objects = len(num_segments_per_object)  #
 
@@ -866,9 +830,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         memory = self.memory
         fragment_x = memory.clone(fragment_x, persist=True)
         fragment_y = memory.clone(fragment_y, persist=True)
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"got bounding boxes"
-        # )
         control_points = corners
         control_points = torch.repeat_interleave(control_points, self.num_samples_per_segment, 1)
         # t = torch.linspace(0, 1, self.num_sampled_points, device=control_points.device)
@@ -916,10 +877,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             [*line_segments.shape[:-1]], dtype=line_segments.dtype
         )
         torch.norm(line_segments, p=2, dim=-1, out=line_segment_lengths)
-
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"got line_segment_lengths"
-        # )
 
         # Now that we have approximated the bezier circuits as polygons, we need to rasterize the polygons.
         # The basic plan is, around each polygon vertex we look at the local neighbourhood of pixels.
@@ -1004,9 +961,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             local_to_bbox_inds.clamp_min_(0)
             local_to_bbox_inds.clamp_max_(bbox_num_pixels - 1)
 
-            # LoggerManager.instance().set_class("rendering").log_message(
-            #    f"got local_to_bbox"
-            # )
             # local_to_bbox_inds scatters from local_window into object level bounding box.
             # Now we need to add offsets so that inds from different objects end up in different output frames.
             # offsets = object_bounding_box_dimensions.prod(-1, keepdims=True).view(-1,1)
@@ -1020,9 +974,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             temp_offsets.copy_(offsets)
             torch.cumsum(offsets, -2, out=offsets)
             offsets -= temp_offsets
-            # LoggerManager.instance().set_class("rendering").log_message(
-            #    f"attempting repeat interleave3 {offsets} {corners.shape[0]}"
-            # )
+
             # offsets_for_segments = squish(torch.repeat_interleave(unsquish(offsets, 0, -corners.shape[0]), num_segments_per_object, -2).unsqueeze(-1), 0, 1)
             offsets_for_segments = squish(
                 broadcast_gather(
@@ -1046,10 +998,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             bbox_y, object_bounding_box_dimensions_for_segments, offsets
          ) = get_local_to_global_inds(local_window_x, local_window_y, local_window_fragment_to_object_inds)
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"got local to global"
-        # )
-
         # invalid_mask = ((bbox_x < 0) | (bbox_x > bounding_box_widths.unsqueeze(-2))) | (((bbox_y < 0) | (bbox_y > bounding_box_heights.unsqueeze(-2))))
         # invalid_mask = ((bbox_x >= object_bounding_box_dimensions_for_segments[...,:1,:]) |
         #                (bbox_y < 0) | (bbox_y > object_bounding_box_dimensions_for_segments[...,1:,:]))
@@ -1071,8 +1019,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
         self.memory.current_pointer = pointer
 
-        # LoggerManager.instance().set_class("rendering").log_message(f"got invalid mask")
-
         # Note we need to keep negative x inds around for now, because we cumsum across rows from the left
         # to count intersections, we will cull negative x inds later.
         zero = self.get_tensor([1])
@@ -1087,9 +1033,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         out = self.get_tensor([fragment_x.shape[-2]])
         out[:] = 0
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"attempting scatter_add {local_intersection_counts}"
-        # )
         global_intersection_counts = torch.scatter_add(
             out, -1, local_to_global_inds, local_intersection_counts.view(-1), out=out
         )
@@ -1148,10 +1091,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         dist_invalid_mask = torch.logical_or(invalid_mask, temp_bool, out=invalid_mask)
         self.memory.current_pointer = pointer
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"got dist_invalid mask"
-        # )
-
         posinf = zero
         posinf[:] = 1e12
         local_dist = torch.where(dist_invalid_mask, posinf, local_dist, out=local_dist)
@@ -1198,9 +1137,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         # global_dists = torch.empty((fragment_x.shape[-2],), device=control_points.device)
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"attempting scatter_reduce"
-        # )
         """
         self.memory.current_pointer = pointer
 
@@ -1226,9 +1162,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         left_intersection_counts = torch.cumsum(
             global_intersection_counts, -1, out=global_intersection_counts
         )
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"got left_intersection_counts {local_intersection_counts.shape}"
-        # )
 
         pointer = self.memory.current_pointer
         row_start_counts = self.get_tensor(left_intersection_counts.shape)
@@ -1274,10 +1207,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         # fragment_coords = torch.cat((fragment_x, fragment_y), -1).float()
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"finished constructing mask {fragment_x.shape},"
-        # )
-
         # TODO subtract window_start from x and y (so they are 0 centered.
         # inds = (fragment_x - start_x) + (fragment_y - start_y) * window_width
         interior_mask = memory.clone(interior_mask, persist=True)
@@ -1306,7 +1235,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         g_offsets = self.get_tensor([corners.shape[0]], dtype=torch.long)
         torch.arange(0, corners.shape[0], device=g_offsets.device, out=g_offsets)
         g_offsets *= window_size
-        object_to_fragment_gather_inds = memory.clone(object_to_fragment_gather_inds, persist=True)
+        #object_to_fragment_gather_inds = memory.clone(object_to_fragment_gather_inds, persist=True)
         frame_to_fragment_gather_inds = torch.floor_divide(object_to_fragment_gather_inds, num_objects, out=memory.get_tensor(object_to_fragment_gather_inds.shape, object_to_fragment_gather_inds.dtype, persist=True))
         g_offsets = self.expand_verts_to_frags(
             g_offsets.unsqueeze(-1), frame_to_fragment_gather_inds
@@ -1371,17 +1300,20 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         dists = memory.get_tensor([*ray_origin.shape[:-1], 1])
         with memory.temp():
-            plane_dir = torch.sub(ray_origin, mob_center_for_frags, out=memory.get_tensor(ray_origin.shape))
+            plane_dir = torch.sub(mob_center_for_frags, ray_origin, out=memory.get_tensor(ray_origin.shape))
             dot1 = dot_product(plane_dir, normals_for_frags, out=memory.get_tensor([*ray_origin.shape[:-1], 1]))
-            dot1 *= -1
             dot2 = dot_product(ray_direction, normals_for_frags, out=dists)
+            #if not self.filled:
+            #    mdeg = dot2.abs() < 0.075
             dists = torch.divide(dot1, dot2, out=dot2)
+            #if not self.filled:
+            #dists = torch.where(mdeg, torch.tensor((-1,), device=dists.device), dists, out=dists)
+        #m_parallel = squish((dists < min_dists_for_frag) | (dists > max_dists_for_frag))
+        #colors = torch.where(m_parallel, torch.tensor((0,), device=dists.device), colors)
+        #dists = torch.where(m_parallel, torch.tensor((-1,), device=dists.device), dists)
         dists.nan_to_num_()
         texture_start_pointer = memory.current_pointer
         if self.num_texture_points > 1:
-            # LoggerManager.instance().set_class("rendering").log_message(
-            #    f"starting coloring process {dists.shape},"
-            # )
             proj_onto_mobs = torch.addcmul(ray_origin, dists, ray_direction, out=ray_direction)
             memory.current_reverse_pointer = initial_persist_pointer
             with memory.temp():
@@ -1453,7 +1385,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 y_ceil_float = torch.ceil(y, out=temp)
                 y_ceil[:] = y_ceil_float
 
-            colos = squish(select_time(self.colors), 0, 2)
+            colos = squish(colors, 0, 2)
             interpolated_colors = 0
             temp_long = self.get_tensor(w1.shape, torch.int)
             sum_w = self.get_tensor(w1.shape, w1.dtype)
@@ -1488,9 +1420,21 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 colors.view(-1,colors.shape[-1]), object_to_fragment_gather_inds, -2
             )
 
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"finished coloring {interpolated_colors.shape},"
-        # )
+        with memory.temp():
+            dists_per_object = torch.split(distance_to_control_points, [_ for _ in self.num_segments_per_object], -3)
+            dshape = [*distance_to_control_points.shape[:-3], len(dists_per_object), *distance_to_control_points.shape[-1:]]
+            min_dists_per_object = torch.cat([squish(_, 1, 2).amin(-2, keepdim=True) for _ in dists_per_object], -2,
+                                             out=self.memory.get_tensor(dshape))  # * 0.9
+            max_dists_per_object = torch.cat([squish(_, 1, 2).amax(-2, keepdim=True) for _ in dists_per_object], -2,
+                                             out=self.memory.get_tensor(dshape))  # * 0.9
+            border_dists = broadcast_gather(squish(border_width) * 10 / screen_height, -2, object_to_fragment_gather_inds, out=memory)
+            min_dists_for_frag = broadcast_gather(squish(min_dists_per_object), -2,
+                                                  object_to_fragment_gather_inds, out=memory)
+            min_dists_for_frag -= border_dists
+            max_dists_for_frag = broadcast_gather(squish(max_dists_per_object), -2,
+                                                  object_to_fragment_gather_inds, out=memory)
+            max_dists_for_frag += border_dists
+            dists = dists.view(-1,1).clamp_(min=min_dists_for_frag, max=max_dists_for_frag)
 
         # output_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
         # output_frags[:] = 0
@@ -1523,8 +1467,5 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             return colors, dists2
 
         colors, dists = get_frags(1)
-        # LoggerManager.instance().set_class("rendering").log_message(
-        #    f"finished getting frags {colors.shape},"
-        # )
         self.memory.current_pointer = initial_pointer
         return colors, dists, inds

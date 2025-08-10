@@ -13,7 +13,6 @@ from moviepy import CompositeAudioClip
 import algan
 from algan import not_compiled
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
-from algan.logging.logger import LoggerManager
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan import compiled
@@ -211,37 +210,35 @@ class Scene:
                     .to(COMPUTING_DEFAULTS.render_device)
                 )
 
-            gc.collect()
-            empty_cache()
             #torch.compiler.cudagraph_mark_step_begin()
-            self.memory = ManualMemory(
-                COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering
-            )
             self.memory.scene = self
-            #logger = LoggerManager.instance().set_class("batching")
+            original_pointers = self.memory.get_pointers()
             for primitive in primitive_batch:
-                #logger.log_message(
-                #    f"Pre-projecting primitive {primitive} with corners.shape: {primitive.corners.shape},"
-                #    f"camera.location.shape: {camera.location.shape}, camera.ray_origin.shape: {camera.ray_origin.shape},"
-                #    f"light_source.location.shape: {self.light_sources[0].location.shape}, "
-                #    f"light_source.origin: {self.light_sources[0].origin.shape}"
-                #)
                 primitive.memory = self.memory
                 primitive.project_to_screen(camera, self.light_sources)
 
+            render_pointers = self.memory.get_pointers()
             current_ind = start_ind
-            start_pointer = self.memory.current_pointer
             while True:
-                duration = end_ind - current_ind
-                while True:
-                    mem_used = sum(
+                mem_per_time_step = max([_.get_memory_used(0, 1) - _.get_memory_used_for_blending(0, 1)
+                     for _ in primitive_batch]) + sum([_.get_memory_used_for_blending(0, 1)
+                    for _ in primitive_batch])
+                duration = int(self.memory.get_num_bytes_remaining() // mem_per_time_step)
+                duration = min(duration, end_ind - current_ind)
+                duration = max(duration, 1)
+                #duration = end_ind - current_ind
+                while False:
+                    mem_used = max(
                         [
                             _.get_memory_used(
                                 current_ind - start_ind, current_ind + duration - start_ind
-                            )
+                            ) - _.get_memory_used_for_blending(current_ind - start_ind, current_ind + duration - start_ind)
                             for _ in primitive_batch
                         ]
-                    ) + (self.num_pixels_screen_width * self.num_pixels_screen_height * 5)
+                    ) + sum([_.get_memory_used_for_blending(
+                                current_ind - start_ind, current_ind + duration - start_ind
+                            )
+                            for _ in primitive_batch]) + (self.num_pixels_screen_width * self.num_pixels_screen_height * 5)
                     if mem_used <= self.memory.get_num_bytes_remaining():
                         break
                     duration = duration // 2
@@ -275,14 +272,13 @@ class Scene:
                     post_processes=post_processes,
                 )
 
-                self.memory.current_pointer = start_pointer
-                self.memory.max_pointer = start_pointer
+                self.memory.set_pointers(render_pointers)
                 current_ind = new_ind
                 if current_ind >= end_ind:
                     break
 
-            self.memory.data = None
-            self.memory = None
+            self.memory.set_pointers(original_pointers)
+            self.memory.max_pointer = self.memory.current_pointer = (len(self.memory) - self.memory.current_reverse_pointer)
             for actor in [self.camera, self.camera.screen, *self.light_sources]:
                 actor.reset_state()
 
@@ -351,10 +347,7 @@ class Scene:
             if duration <= 1:
                 duration = 1
                 break
-        #logger = LoggerManager.instance().set_class("batching")
-        #logger.log_message(
-        #    f"Fetching batch of primitives from {start_time_ind}:{start_time_ind + duration}."
-        #)
+
         actors = [
             _
             for _ in actors
@@ -470,6 +463,12 @@ class Scene:
         save_image = False
 
         self.has_any_active_actors = False
+        gc.collect()
+        if COMPUTING_DEFAULTS.render_device == torch.device('cuda'):
+            torch.cuda.empty_cache()
+        self.memory = ManualMemory(
+            COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering
+        )
         with Off(
             record_attr_modifications=False,
             record_funcs=False,
@@ -532,6 +531,9 @@ class Scene:
 
         self.background_frame = self.original_background_frame
 
+        self.memory.data = None
+        self.memory = None
+
         file_writer.close()
         if os.path.exists(file_path_out):
             os.remove(file_path_out)
@@ -580,7 +582,8 @@ class Scene:
         frame_ind_delimits = num_pixels_in_frame.cumsum(0)
         inds = inds % window_size
         inds = inds.unsqueeze(-1).expand([-1, frames.shape[-1]])
-        frames = (frames * 255).to(torch.uint8)
+        frames *= 255
+        frames = self.memory.cast(frames, torch.uint8)
 
         for i in range(len(frame_ind_delimits)):
             frame[:] = bgf[..., : frame.shape[-1]]

@@ -15,6 +15,10 @@ from algan.utils.tensor_utils import (
 )
 
 
+def distance(x, y, *args, **kwargs):
+    return torch.cdist(x.unsqueeze(-2), y.unsqueeze(-2), *args, **kwargs).squeeze(-2)
+
+
 def intersect_line_with_plane(
     line_direction, plane_point, plane_normal, line_point=0, dim=-1
 ):

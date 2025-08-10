@@ -26,6 +26,7 @@ rendering_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 STYLE_DEFAULTS.fade_out_on_scene_end = True
 RENDERING_DEFAULTS.settings = PREVIEW
+COMPUTING_DEFAULTS.use_torch_scatter = False
 COMPUTING_DEFAULTS.render_device = torch.device(rendering_device)
 DIRECTORY_DEFAULTS.base_directory = cd
 

@@ -15,22 +15,14 @@ class InsufficientMemoryException(Exception):
 
 
 def get_num_available_bytes(device=torch.device("cuda")):
-    logger = LoggerManager.instance().set_class("memory")
     if device == torch.device("cuda"):
         torch.cuda.empty_cache()
         free_bytes, total_bytes = torch.cuda.mem_get_info()
-        #logger.log_message(
-        #    f"get_num_available_bytes device: {device}, total_bytes: {total_bytes}, free_bytes: {free_bytes}"
-        #)
         return free_bytes
     elif device == torch.device("mps"):
         allocated_bytes = torch.mps.driver_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
         free_bytes = total_bytes - allocated_bytes
-        #logger.log_message(
-        #    f"get_num_available_bytes device: {device}, allocated_bytes: {allocated_bytes}, total_bytes:"
-        #    f" {total_bytes}, free_bytes: {free_bytes}, free_portion: {free_bytes / total_bytes}"
-        #)
         free_bytes = min(free_bytes, 1 * GIGABYTES)
         return free_bytes
     else:
@@ -87,10 +79,10 @@ class ManualMemory:
         self.current_reverse_pointer = pointers[1]
 
     def get_percent_used(self):
-        return self.current_pointer / len(self)
+        return self.get_num_bytes_remaining() / len(self)
 
     def get_num_bytes_remaining(self):
-        return len(self) - self.current_pointer
+        return self.current_reverse_pointer - self.current_pointer
 
     def clone(self, x, **kwargs):
         new_x = self.get_tensor(x.shape, x.dtype, **kwargs)
@@ -145,10 +137,6 @@ class ManualMemory:
 
         def error_check():
             if ((new_pointer < self.current_pointer) if reverse else (new_pointer > self.current_reverse_pointer)):
-                # logger = LoggerManager.instance().set_class("memory")
-                # logger.log_message(
-                #    f"Manual Memory OOM, tried to allocate {numel} bytes, memory is already {self.get_percent_used()} full."
-                # )
                 raise InsufficientMemoryException
 
         error_check()
@@ -166,10 +154,10 @@ class ManualMemory:
                 self.current_reverse_pointer = new_pointer
             else:
                 self.current_pointer = new_pointer
-            old_max = self.max_pointer
+            #old_max = self.max_pointer
             self.max_pointer = max(self.max_pointer, self.current_pointer + (self.length - self.current_reverse_pointer))
-            if self.max_pointer > old_max:
-                LoggerManager.instance().log_message(f'Reached {self.max_pointer} bytes, {self.max_pointer / len(self)}%')
+            #if self.max_pointer > old_max:
+            #    LoggerManager.instance().log_message(f'Reached {self.max_pointer} bytes, {self.max_pointer / len(self)}%')
             x = x.view(shape).view(dtype)
             return x
 

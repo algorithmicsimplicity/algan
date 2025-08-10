@@ -5,6 +5,7 @@ from algan.utils.tensor_utils import dot_product
 
 
 def basic_pbr_shader(
+        memory,
     vertex_location,
     vertex_normal,
     albedo_color,
@@ -133,6 +134,7 @@ def basic_pbr_shader(
 
 
 def default_shader(
+        memory,
     vertex_location,
     vertex_normal,
     albedo_color,
@@ -170,13 +172,18 @@ def default_shader(
 
     """
 
-    incidences = F.normalize(vertex_location - light_origin, p=2, dim=-1)
-    vertex_normal = F.normalize(vertex_normal, p=2, dim=-1)
-    diffuse_factor = (dot_product(-incidences, vertex_normal)).relu_().pow_(5) * 0.5
-    return albedo_color * (1 - diffuse_factor) + diffuse_factor * light_color
+    incidences = torch.subtract(vertex_location, light_origin, out=memory.get_tensor(vertex_location.shape))
+    incidences = F.normalize(incidences, p=2, dim=-1, out=incidences)
+    vertex_normal = F.normalize(vertex_normal, p=2, dim=-1, out=vertex_normal)
+    dot = dot_product(incidences, vertex_normal, out=memory)
+    dot *= -1
+    diffuse_factor = (dot).relu_().pow_(5)
+    diffuse_factor *=  0.5
+    return torch.lerp(albedo_color, light_color, diffuse_factor, out=memory.get_tensor(albedo_color.shape))
 
 
 def null_shader(
+        memory,
     vertex_location,
     vertex_normal,
     albedo_color,
