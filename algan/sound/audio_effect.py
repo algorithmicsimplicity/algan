@@ -3,6 +3,7 @@ from algan.utils.audio_utils import get_pyttsx_speech_generator
 
 class AudioManager:
     _speech_generator = None
+    _video_transcript = ""
 
     def __init__(self):
         raise RuntimeError("AudioManager cannot be instantiated.")
@@ -10,6 +11,10 @@ class AudioManager:
     @classmethod
     def set_speech_source(cls, speech_generator):
         cls._speech_generator = speech_generator
+
+    @classmethod
+    def append_script(cls, script):
+        cls._video_transcript += script.strip(' ') + '\n\n'
 
     @classmethod
     def get_speech(cls, script):

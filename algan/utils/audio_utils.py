@@ -1,5 +1,7 @@
 import bisect
 import os
+import hashlib
+from pathlib import Path
 
 from moviepy import AudioFileClip
 import pyttsx3
@@ -51,9 +53,14 @@ def get_speech_generator_from_file(audio_file, transcript=None):
 
 
 def get_pyttsx_speech_generator(script):
-    engine = pyttsx3.init()  # object creation
-    file = os.path.join(DIRECTORY_DEFAULTS.cache_directory, "temp_ttsx_output.mp3")
-    engine.save_to_file(script, file)
-    engine.runAndWait()
-    engine.stop()
+    hasher = hashlib.sha256()
+    hasher.update(script.encode())
+    hash_bytes = hasher.hexdigest()[:32]
+    file = os.path.join(DIRECTORY_DEFAULTS.cache_directory, 'audio', f"{hash_bytes}.mp3")
+    if not os.path.exists(file):
+        Path(file).parent.mkdir(parents=True, exist_ok=True)
+        engine = pyttsx3.init()
+        engine.save_to_file(script, file)
+        engine.runAndWait()
+        engine.stop()
     return AudioFileClip(file)

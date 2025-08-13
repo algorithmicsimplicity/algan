@@ -28,6 +28,7 @@ class Neuron(Mob):
             .scale(0.25)
             .move_to(self.location)
             .look(direction, axis=1)
+            .set_shader(None)
         )
         self.synapses = [
             Synapse(grid_height).move_between_points(l, self.location)
@@ -133,7 +134,7 @@ class NeuralNetMLP(Mob):
         o = self.forward(
             input, output_generator, run_time, reset=False, color=forward_color
         )  # .get_component_mobs())
-        o.move_next_to(label, -self.get_right_direction())
+        #o.move_next_to(label, -self.get_right_direction())
         self.backward(o, label, color=backward_color, run_time=run_time)
         o.despawn()
         return self
@@ -160,7 +161,7 @@ class NeuralNetMLP(Mob):
             with Sync():
                 if reset:
                     self.reset_input_synapses()
-                out.move(self.get_right_direction() * 0.5)
+                out.move(self.get_right_direction() * 0.25)
             return out
 
     def reset_input_synapses(self):

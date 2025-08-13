@@ -135,7 +135,6 @@ class SceneManager:
             cls._instance.reset_scene()
         return cls._instance
 
-
 from algan.settings.render_settings import *
 
 from algan.constants.spatial import *

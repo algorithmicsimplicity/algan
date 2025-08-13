@@ -44,6 +44,7 @@ class NumericDisplay(Mob):
                 self.update_display(self.value)
                 self.register_attrs_as_animatable(["value"], NumericDisplay)
         self.add_children(self.digit_mobs, self.decimal, self.negative_sign)
+        #self.components = [*self.digit_mobs, self.decimal, self.negative_sign]
 
     @property
     def value(self):
@@ -88,8 +89,10 @@ class NumericDisplay(Mob):
             return mob
 
         with Sync():
+            self.negative_sign.set_time_inds_to(self)
             self.negative_sign.set(opacity=neg_opacity, max_opacity=neg_opacity)
             for i in range(len(self.digit_mobs)):
+                self.digit_mobs[i].set_time_inds_to(self)
                 prep(self.digit_mobs[i].character_mobs).set(
                     opacity=all_opacities[i], max_opacity=all_opacities[i]
                 )

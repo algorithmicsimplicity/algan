@@ -22,12 +22,17 @@ class ManimMob(BezierCircuitCubic):
 
     """
 
-    def __init__(self, manim_mob, batch=False, **kwargs):
+    def __init__(self, manim_mob, batch=False, _add_to_scene=None, **kwargs):
         manim_scale_factor = 1
         children = []
+        orig_add_to_scene = _add_to_scene
+        if _add_to_scene is None:
+            _add_to_scene = not batch
+        else:
+            kwargs['add_to_scene'] = _add_to_scene
         for submob in manim_mob.submobjects:
             if isinstance(submob, ImageMobject):
-                mob = ImageMob(submob)
+                mob = ImageMob(submob, add_to_scene=_add_to_scene)
                 children.append(mob)
                 continue
             if submob.n_points_per_curve != 4 or submob.n_points_per_cubic_curve != 4:
@@ -36,15 +41,15 @@ class ManimMob(BezierCircuitCubic):
                 )
             # if isinstance(submob, VectorizedPoint):# or isinstance(submob, ThreeDVMobject):
             #    continue
-            children.append(ManimMob(submob, batch=False, **kwargs))
+            children.append(ManimMob(submob, batch=False, _add_to_scene=_add_to_scene, **kwargs))
 
         empty = False
         if len(manim_mob.points) == 0:
-            control_points = torch.from_numpy(manim_mob.get_center()).float()
+            control_points = torch.from_numpy(manim_mob.get_center()).float().to(torch.get_default_device())
             control_points = torch.stack([control_points for _ in range(4)], -2)
             empty = True
         else:
-            control_points = torch.from_numpy(manim_mob.points)
+            control_points = torch.from_numpy(manim_mob.points).to(torch.get_default_device())
             if len(control_points) == 1:
                 control_points = control_points.expand(
                     *([-1] * (control_points.dim() - 2)), 4, -1
@@ -61,6 +66,9 @@ class ManimMob(BezierCircuitCubic):
             if opacity is not None:
                 a = a * opacity
             return Color(rgb, glow=0, opacity=a)
+
+        if orig_add_to_scene is not None:
+            kwargs['add_to_scene'] = orig_add_to_scene
 
         super().__init__(
             control_points * manim_scale_factor,
@@ -79,5 +87,9 @@ class ManimMob(BezierCircuitCubic):
         )
         self.singleton_batch_indexing = True
         if len(children) > 0:
-            self.add_children(batch_mobs(children) if batch else Group(children))
+            if 'add_to_scene' not in kwargs:
+                add_to_scene = True
+            else:
+                add_to_scene = kwargs['add_to_scene']
+            self.add_children(batch_mobs(children, add_to_scene=add_to_scene) if batch else Group(children, add_to_scene=add_to_scene))
         self.submobjects = children

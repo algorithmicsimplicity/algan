@@ -97,7 +97,7 @@ class Color(torch.Tensor):
         return (self * 255).to(torch.uint8)
 
     def new_empty(self, *args, **kwargs):
-        return Color((0, 0, 0), **kwargs)
+        return Color((0, 0, 0), **kwargs).to(self.device).as_subclass(Color)
 
     @staticmethod
     def add_defaults(color):

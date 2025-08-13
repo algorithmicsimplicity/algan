@@ -1,5 +1,6 @@
 import torch.types
 from algan.mobs.surfaces.surface import Surface
+from algan.constants.color import Color
 import algan.utils.file_utils as file_utils
 from manim import ImageMobject
 
@@ -23,7 +24,7 @@ class ImageMob(Surface):
     def __init__(self, rgba_array_or_file_path: torch.Tensor | str, **kwargs):
         submob = rgba_array_or_file_path
         if isinstance(rgba_array_or_file_path, ImageMobject):
-            rgba_array = torch.from_numpy(submob.pixel_array).float() / 255
+            rgba_array = Color.add_defaults(torch.from_numpy(submob.pixel_array).float() / 255)
         else:
             rgba_array = file_utils.get_image(rgba_array_or_file_path)
 

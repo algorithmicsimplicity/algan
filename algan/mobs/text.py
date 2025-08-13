@@ -48,9 +48,11 @@ class Tex(Mob):
             for _ in [_ for _ in chars if not isinstance(_, mn.ImageMobject)]
         ]
         with Off():
-            self.character_mobs = TriangulatedBezierCircuit(
-                p, invert=False, hash_keys=p, reverse_points=False, *args, **kwargs
-            )
+            self.character_mobs = []
+            if len(p) > 0:
+                self.character_mobs = TriangulatedBezierCircuit(
+                    p, invert=False, hash_keys=p, reverse_points=False, *args, **kwargs
+                )
             self.image_mobs = [
                 ImageMob(_) for _ in chars if isinstance(_, mn.ImageMobject)
             ]

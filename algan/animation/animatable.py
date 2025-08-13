@@ -21,7 +21,7 @@ from algan.utils.tensor_utils import (
     robust_concat,
     concat_dicts,
     prepare_kwargs,
-    HANDLED_FUNCTIONS,
+    HANDLED_FUNCTIONS, wait_for_cuda,
 )
 from algan import SceneManager, compiled
 from algan.utils.python_utils import traverse
@@ -58,6 +58,7 @@ class ModificationHistory:
             dict()
         )  # overwrites are not supported at the moment.
         self.most_recent_function_added = None
+        self.cached_history = None
 
     def overwrite_attr_history(self, attr, end_time):
         if attr not in self.attribute_overwrites:
@@ -74,6 +75,7 @@ class ModificationHistory:
             animation_context.current_time + animation_context.run_time_unit,
         )
         self.attribute_modifications[attr].append([new_value, start_time, end_time])
+        self.cached_history = None
         return self
 
     def insert_function_application(
@@ -104,8 +106,11 @@ class ModificationHistory:
             AnimationManager.get_execution_count() + prio * 1e12
         )
         self.most_recent_function_added = self.function_applications[func_name][2][-1]
+        self.cached_history = None
 
     def get_history(self, animatable):
+        if self.cached_history is not None:
+            return self.cached_history
         attrs = []
 
         for attr in self.attribute_modifications:
@@ -203,6 +208,8 @@ class ModificationHistory:
                         sub_rate_funcs,
                     )
                 )
+        wait_for_cuda()
+        self.cached_history = (attrs, funcs)
         return attrs, funcs
 
 
@@ -952,6 +959,7 @@ class Animatable:
         attr_to_values = dict()
         self.t = t
 
+        wait_for_cuda()
         attr_history, func_history = self.data.history.get_history(self)
         self.func_history = func_history
         for attr, new_values, end_times in attr_history:
@@ -969,9 +977,12 @@ class Animatable:
             )
 
         if "opacity" not in attr_to_values:
-            attr_to_values["opacity"] = self.opacity.expand(
-                despawn_ind - spawn_ind, -1, -1
-            ).clone()
+            opacity = self.opacity
+            if opacity.shape[0] == 1:
+                opacity = opacity.expand(
+                    despawn_ind - spawn_ind, -1, -1
+                ).clone()
+            attr_to_values["opacity"] = opacity
         attr_to_values["opacity"][: max(self.spawn_ind - (spawn_ind), 0)] = 0
         attr_to_values["opacity"][max(self.despawn_ind - spawn_ind, 0) :] = 0
         self.data.data_dict_materialized = attr_to_values
@@ -1062,6 +1073,7 @@ class Animatable:
             func(caller, **kwargs2)
 
         self.already_set_state = True
+        wait_for_cuda()
         return True
 
     def update_gather_scatter_inds(self, n):

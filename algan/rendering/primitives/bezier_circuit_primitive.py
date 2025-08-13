@@ -15,7 +15,7 @@ from algan.rendering.primitives.primitive import (
     InsufficientMemoryException,
     RenderPrimitive2D,
 )
-from algan.utils.tensor_utils import broadcast_all, broadcast_scatter
+from algan.utils.tensor_utils import broadcast_all, broadcast_scatter, wait_for_cuda
 from algan.utils.tensor_utils import (
     dot_product,
     squish,
@@ -1312,6 +1312,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         #colors = torch.where(m_parallel, torch.tensor((0,), device=dists.device), colors)
         #dists = torch.where(m_parallel, torch.tensor((-1,), device=dists.device), dists)
         dists.nan_to_num_()
+        m = memory.clone(m)
         texture_start_pointer = memory.current_pointer
         if self.num_texture_points > 1:
             proj_onto_mobs = torch.addcmul(ray_origin, dists, ray_direction, out=ray_direction)
@@ -1468,4 +1469,5 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         colors, dists = get_frags(1)
         self.memory.current_pointer = initial_pointer
+        wait_for_cuda()
         return colors, dists, inds

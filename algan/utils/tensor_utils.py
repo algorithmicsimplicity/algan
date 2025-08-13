@@ -482,3 +482,8 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     )
     return kwargs
 
+
+def wait_for_cuda():
+    return
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()

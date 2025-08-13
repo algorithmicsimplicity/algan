@@ -17,7 +17,7 @@ from algan.utils.tensor_utils import (
     squish,
     broadcast_gather,
     unsquish,
-    unsqueeze_right,
+    unsqueeze_right, wait_for_cuda,
 )
 
 
@@ -259,6 +259,7 @@ class RenderPrimitive:
                 torchvision.utils.save_image(
                     torch.from_numpy(frame).permute(-1, 0, 1) / 255, scene.file_path
                 )
+        wait_for_cuda()
 
     def mem_cat(self, xs):
         dim = 0
@@ -369,6 +370,8 @@ class RenderPrimitive:
             else:
                 self.memory.set_pointers(out_pointers)
         except (InsufficientMemoryException, torch.OutOfMemoryError):
+            #print(f'splitting to t={(time_end - time_start)//2}, frame={(window[0] + window[2]) // 2},'
+            #      f' {(window[1] + window[3]) // 2}')
             self.memory.set_pointers(original_pointers)
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
@@ -579,6 +582,7 @@ class RenderPrimitive:
             )
             ind_counts = histc_result.long()
             self.memory.current_pointer = out_pointer
+            wait_for_cuda()
             return out, out_inds, ind_counts
 
     #@cuda_compiled
@@ -651,11 +655,12 @@ class RenderPrimitive:
             memory=None,
     ):
 
+        original_persist_pointer = memory.current_reverse_pointer
         with memory.temp():
-            rays = torch.sub(x, ray_origin, out=memory.get_tensor(x.shape))
+            rays = torch.sub(x, ray_origin, out=memory.get_tensor(x.shape, persist=True))
             rays = F.normalize(rays, p=2, dim=-1, out=rays)
             projected_corners, _ = intersect_line_with_plane(
-                rays, screen_point, screen_basis[..., -1:, :], ray_origin
+                rays, screen_point, screen_basis[..., -1:, :], ray_origin, memory=memory
             )
         projected_corners.nan_to_num_()
         projected_distances = distance(x, ray_origin)
@@ -666,6 +671,7 @@ class RenderPrimitive:
             -1,
             keepdim=False, out=memory
         )
+        memory.current_reverse_pointer = original_persist_pointer
         corners_2d.nan_to_num_()
 
         corners_2d *= screen_height // 2
@@ -1000,6 +1006,7 @@ class RenderPrimitive:
 
         inds = torch.masked_select(inds, m, out=memory.get_tensor((num_masked_frags,), torch.long))
         self.memory.current_reverse_pointer = original_pointers[1]
+        wait_for_cuda()
         return colors, dists, inds
 
 

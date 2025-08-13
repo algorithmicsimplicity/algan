@@ -405,7 +405,7 @@ class Mob(Animatable):
                 d.set_non_recursive(color=d.color.set_opacity(opacity))
         return self
 
-    def pulse_color(self, color: torch.Tensor = None, opacity: bool = None) -> "Mob":
+    def pulse_color(self, color: torch.Tensor = None, opacity: bool = None, recursive=True) -> "Mob":
         """Animates a color pulse effect.
 
         The Mob's color changes to the target `color` and then animates back to its
@@ -425,9 +425,9 @@ class Mob(Animatable):
         """
         with Sync():
             if color is not None:
-                self.apply_absolute_change_two("color", color, self.color)
+                self.apply_absolute_change_two("color", color, self.color, recursive="True" if recursive else "False")
             if opacity is not None:
-                self.apply_absolute_change_two("opacity", opacity, opacity)
+                self.apply_absolute_change_two("opacity", opacity, opacity, recursive="True" if recursive else "False")
         return self
 
     def wave_color(
@@ -472,6 +472,7 @@ class Mob(Animatable):
                 for _ in self.get_descendants()
                 if (_.is_primitive and not _.ignore_wave_animations)
             ]
+            kwargs['recursive'] = False
             animate_lagged_by_location(
                 primitive_mobs,
                 lambda x: x.pulse_color(color, **kwargs),
@@ -1741,6 +1742,7 @@ class Mob(Animatable):
 
         """
         # Calculate the new absolute scale coefficient
+        scale_factor = cast_to_tensor(scale_factor)
         new_scale = scale_factor * self.scale_coefficient
         # Use the 'set' method to apply the new scale coefficient, which handles animation and recursion
         return (
@@ -2558,6 +2560,11 @@ class Mob(Animatable):
                 "of a mob that is already spawned. This is not allowed."
                 "See docs for help."
             )
+
+        if shader is None:
+            for d in reversed(self.get_descendants()):
+                d.shader = shader
+            return self
 
         shader_params = inspect.signature(shader).parameters
         num_shader_independent_params = len(

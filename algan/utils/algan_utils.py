@@ -19,6 +19,7 @@ from algan import compiled
 from algan.animation.animation_contexts import AnimationManager, Off
 from algan.rendering.camera import Camera
 from algan import SceneManager
+from algan.sound.audio_effect import AudioManager
 from algan.utils.memory_utils import empty_cache
 
 
@@ -75,6 +76,7 @@ def render_to_file(
         temp_file_path = os.path.join(output_dir, f"{file_name}_temp")
         file_path = os.path.join(output_dir, f"{file_name}")
         audio_file_path = os.path.join(output_dir, f"{file_name}_temp.wav")
+        script_file_path = os.path.join(output_dir, f"{file_name}_script.txt")
 
         if os.path.exists(file_path) and not overwrite:
             return
@@ -124,6 +126,8 @@ def render_to_file(
         print(f"Began rendering {file_name}{file_ext}")
         audiofile = scene.render_audio_to_file(audio_file_path, audio_fps)
         if audiofile is not None:
+            with open(script_file_path, "w") as f:
+                f.write(AudioManager._video_transcript)
             print("Audio rendered, now rendering video")
 
         try:

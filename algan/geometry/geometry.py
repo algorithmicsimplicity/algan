@@ -20,7 +20,7 @@ def distance(x, y, *args, **kwargs):
 
 
 def intersect_line_with_plane(
-    line_direction, plane_point, plane_normal, line_point=0, dim=-1
+    line_direction, plane_point, plane_normal, line_point=0, dim=-1, memory=None
 ):
     if dim > 0:
         maxdim = max(
@@ -31,14 +31,24 @@ def intersect_line_with_plane(
             ]
         )
         dim = dim - maxdim
-    lp = line_point - plane_point
-    plane_normal = F.normalize(plane_normal, p=2, dim=dim)
-    intersection_distances = -(
-        dot_product(lp, plane_normal, dim)
-        / dot_product(line_direction, plane_normal, dim)
-    )
-    intersection_points = line_point + line_direction * intersection_distances
-    return intersection_points, intersection_distances
+    if memory is None:
+        lp = line_point - plane_point
+        plane_normal = F.normalize(plane_normal, p=2, dim=dim)
+        intersection_distances = -(
+            dot_product(lp, plane_normal, dim)
+            / dot_product(line_direction, plane_normal, dim)
+        )
+        intersection_points = line_point + line_direction * intersection_distances
+        return intersection_points, intersection_distances
+    with memory.temp():
+        lp = torch.sub(line_point, plane_point,  out=memory.get_tensor(line_point.shape))
+        plane_normal = F.normalize(plane_normal, p=2, dim=dim, out=plane_normal)
+        dot1 = dot_product(lp, plane_normal, dim, out=memory)
+        dot2 = dot_product(line_direction, plane_normal, dim, out=memory)
+        intersection_distances = torch.divide(dot1, dot2, out=dot2)
+        intersection_points = torch.addcmul(line_point, line_direction, intersection_distances, value=-1, out=line_direction)
+        return intersection_points, intersection_distances
+
 
 
 def intersect_line_with_plane_colinear(

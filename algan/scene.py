@@ -28,7 +28,7 @@ import numpy as np
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.utils.memory_utils import get_num_available_bytes, ManualMemory, empty_cache
-from algan.utils.tensor_utils import unsquish
+from algan.utils.tensor_utils import unsquish, wait_for_cuda
 
 
 class EmptySceneWarning(Warning):
@@ -86,7 +86,7 @@ class Scene:
         self.memory = memory
 
     @staticmethod
-    def wait(time):
+    def wait(time=1):
         return AnimationManager.wait(time)
 
     @staticmethod
@@ -161,6 +161,7 @@ class Scene:
             ):
                 if actor.data.spawn_time() >= 0:
                     actor.despawn(**kwargs)
+        self.actors[-1] = [_ for _ in self.actors[-1] if (_.data.spawn_time() >= 0 and _.data.despawn_time() >= 0)]
 
     def render_audio_to_file(self, file_path, frames_per_second=44100):
         if len(self.effects) == 0:
@@ -190,6 +191,7 @@ class Scene:
         transparent_background=False,
         background_color=None,
     ):
+        wait_for_cuda()
         with torch.no_grad():
             time_inds = torch.arange(start_ind, end_ind)
             camera = self.camera
@@ -281,6 +283,7 @@ class Scene:
             self.memory.max_pointer = self.memory.current_pointer = (len(self.memory) - self.memory.current_reverse_pointer)
             for actor in [self.camera, self.camera.screen, *self.light_sources]:
                 actor.reset_state()
+            wait_for_cuda()
 
     def get_frame(self, i):
         actors = self.actors[-1]
@@ -313,6 +316,7 @@ class Scene:
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
+        wait_for_cuda()
         max_end_time = max_end_time_ind / self.frames_per_second
         start_time = start_time_ind / self.frames_per_second
         primitive_actors = [
@@ -324,30 +328,35 @@ class Scene:
         ]
 
         # Binary search to find a batch size that will fit in memory.
-        duration = max_end_time_ind - start_time_ind
-        duration = min(duration, COMPUTING_DEFAULTS.max_animate_batch_size)
-        while True:
-            selected_actors = [
-                _
-                for _ in primitive_actors
-                if (
-                    _.data.spawn_time()
-                    <= (start_time_ind + duration) / self.frames_per_second
-                )
-            ]
-            mem_used = sum(
-                [
-                    _.get_memory_used_per_timestep() * 2 * duration
-                    for _ in selected_actors
+        def get_duration():
+            #return 90
+            duration = max_end_time_ind - start_time_ind
+            duration = min(duration, COMPUTING_DEFAULTS.max_animate_batch_size)
+            while True:
+                selected_actors = [
+                    _
+                    for _ in primitive_actors
+                    if (
+                        _.data.spawn_time()
+                        <= (start_time_ind + duration) / self.frames_per_second
+                    )
                 ]
-            )
-            if mem_used <= max_mem_used:
-                break
-            duration = duration // 2
-            if duration <= 1:
-                duration = 1
-                break
+                mem_used = sum(
+                    [
+                        _.get_memory_used_per_timestep() * duration
+                        for _ in selected_actors
+                    ]
+                )
+                if mem_used <= max_mem_used:
+                    break
+                duration = duration // 2
+                if duration <= 1:
+                    duration = 1
+                    break
+            wait_for_cuda()
+            return duration
 
+        duration = get_duration()
         actors = [
             _
             for _ in actors
@@ -363,12 +372,16 @@ class Scene:
         for actor in sorted(actors, key=lambda x: x.anchor_priority, reverse=True):
             if hasattr(actor, "already_set_state") and actor.already_set_state:
                 continue
+            if (not actor.is_primitive) and len(list(actor.data.history.function_applications.items())) == 0:
+                actor.reset_state()
+                continue
             actor.set_state_full(start_time_ind, start_time_ind + duration)
             if hasattr(actor, "get_render_primitives"):
                 actor.set_state_to_time_t(time_inds)
                 for component in actor.components:
                     component.set_state_full(start_time_ind, start_time_ind + duration)
                     component.set_state_to_time_t(time_inds)
+                wait_for_cuda()
                 primitive = actor.get_render_primitives()
                 if primitive is not None:
                     if not isinstance(primitive, list):
@@ -418,6 +431,7 @@ class Scene:
                 primitive_collections[-1].memory = self.memory
                 primitive_collections[-1].scene = self
 
+        wait_for_cuda()
         return primitive_collections, start_time_ind + duration
 
     def background_is_transparent(self):
@@ -520,6 +534,7 @@ class Scene:
                             transparent_background,
                             background_color,
                         )
+                        del primitives
                         e = time.time()
                         print(
                             f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"

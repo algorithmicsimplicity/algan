@@ -4,13 +4,13 @@ from algan.utils.python_utils import traverse
 from algan.animation.animation_contexts import *
 
 
-def batch_mobs(mobs, parent_batch_sizes=None):
+def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
     mobs = list(traverse(mobs))
     if len(mobs) == 0:
         return None
     orig_parent_batch_sizes = parent_batch_sizes
     with Off(record_funcs=False, record_attr_modifications=False):
-        batch_mob = mobs[0].clone(reset_history=True, recursive=False, clone_data=True)
+        batch_mob = mobs[0].clone(reset_history=True, recursive=False, clone_data=True, add_to_scene=add_to_scene)
         for attr in batch_mob.animatable_attrs:
             batch_mob.data.data_dict[attr] = torch.cat(
                 [
@@ -43,6 +43,7 @@ def batch_mobs(mobs, parent_batch_sizes=None):
                 batch_mobs(
                     [m.components[i] for m in mobs],
                     torch.ones((child_pbs.sum(),), dtype=torch.long),
+                    add_to_scene=add_to_scene,
                 )
             )
 
@@ -53,7 +54,7 @@ def batch_mobs(mobs, parent_batch_sizes=None):
                     batch_mob.__setattr__(attr, components[i])
 
         children = [m.get_children(0, include_components=False) for m in mobs]
-        child = batch_mobs(children, torch.tensor([len(_) for _ in children]))
+        child = batch_mobs(children, torch.tensor([len(_) for _ in children]), add_to_scene=add_to_scene)
         if child is not None:
             components.append(child)
 

@@ -449,6 +449,7 @@ class Speech(Audio):
     """
 
     def __init__(self, script, **kwargs):
+        AudioManager.append_script(script)
         super().__init__(AudioManager.get_speech(script), **kwargs)
 
 
