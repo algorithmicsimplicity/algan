@@ -191,6 +191,13 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
   "I002",
 ]
 
+# Taichi kernels need runtime-evaluated annotations (ti.f32, ti.types.ndarray());
+# `from __future__ import annotations` would turn them into strings and break
+# kernel compilation.
+"**/*_taichi.py" = [
+  "I002",
+]
+
 "__init__.py" = [
   "F401",
   "F403",
