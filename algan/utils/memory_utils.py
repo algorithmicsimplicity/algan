@@ -4,7 +4,7 @@ import traceback
 import torch
 import numpy as np
 
-from algan import not_compiled
+from algan import not_compiled, csync
 from algan.logging.logger import LoggerManager
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.constants.math import GIGABYTES
@@ -37,8 +37,9 @@ def empty_cache():
 
 
 class TempMemoryContext:
-    def __init__(self, memory):
+    def __init__(self, memory, clear_persist):
         self.memory = memory
+        self.clear_persist = clear_persist
 
     def __enter__(self):
         self.initial_pointer = self.memory.current_pointer
@@ -48,21 +49,23 @@ class TempMemoryContext:
         if exc_type is not None:
             return False
         self.memory.current_pointer = self.initial_pointer
-        #self.memory.current_reverse_pointer = self.initial_reverse_pointer
+        if self.clear_persist:
+            self.memory.current_reverse_pointer = self.initial_reverse_pointer
         return True
 
 
 class ManualMemory:
-    def __init__(self, portion_of_available_memory_used, device=None):
+    def __init__(self, portion_of_available_memory_used, device=None, managed=True):
         if device is None:
             device = COMPUTING_DEFAULTS.render_device
         self.current_pointer = 0
         self.max_pointer = 0
         self.stack = []
+        self.managed = managed
 
         num_bytes = int(
             get_num_available_bytes(device) * portion_of_available_memory_used
-        )
+        ) if managed else 1
         self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
         self.length = len(self.data)
         self.current_reverse_pointer = self.length
@@ -95,15 +98,17 @@ class ManualMemory:
         return new_x
 
     @not_compiled
+    @csync
     def get_tensor(self, shape, dtype=torch.float, persist=False):
-        #return torch.empty(shape, dtype=dtype, device=self.data.device)
+        if not self.managed:
+            return torch.empty(shape, dtype=dtype, device=self.data.device)
         reverse = persist
         def get_shape(shape):
-            shape = [_ for _ in shape]
+            shape = [_.item() if hasattr(_, 'item') else _ for _ in shape]
             num_bytes = 1
-            if dtype in [torch.int, torch.float]:
+            if dtype in [torch.int, torch.float, torch.complex32]:
                 num_bytes = 4
-            elif dtype in [torch.long, torch.double]:
+            elif dtype in [torch.long, torch.double, torch.complex64]:
                 num_bytes = 8
             shape[-1] = shape[-1] * num_bytes
             return shape, num_bytes
@@ -161,6 +166,7 @@ class ManualMemory:
             x = x.view(shape).view(dtype)
             return x
 
+        torch.cuda.synchronize()
         return get_data()
 
     def reset(self):
@@ -176,5 +182,5 @@ class ManualMemory:
         self.current_pointer = self.stack[-1]
         self.stack = self.stack[:-1]
 
-    def temp(self):
-        return TempMemoryContext(self)
+    def temp(self, clear_persist=False):
+        return TempMemoryContext(self, clear_persist)

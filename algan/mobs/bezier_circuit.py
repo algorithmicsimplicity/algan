@@ -1,7 +1,8 @@
 import gc
 
 import torch
-from algan import RIGHT, PREVIEW
+from algan.constants.spatial import OUT
+from algan import RIGHT, PREVIEW, rotate_vector_around_axis
 from algan.animation.animation_contexts import Off
 from algan.logging.logger import LoggerManager
 from algan.mobs.renderable import Renderable
@@ -89,7 +90,7 @@ class BezierCircuitCubic(Renderable):
                 ..., dists.argmax(-2, keepdim=True).squeeze(), :
             ].unsqueeze(-2)
             if second_basis.norm(p=2, dim=-1) <= 1e-4:
-                second_basis = get_orthonormal_vector(first_basis)
+                second_basis = rotate_vector_around_axis(first_basis, 90, OUT, -1)
             second_basis = (
                 second_basis
                 * first_basis.norm(p=2, dim=-1, keepdim=True)

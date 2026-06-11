@@ -26,7 +26,7 @@ class NumericDisplay(Mob):
                 self.placeholder.opacity = 0
                 self.placeholder.animation_manager.context.current_time = ct
 
-                self.decimal = self.placeholder[1]
+                self.decimal = self.placeholder[2]
                 self.negative_sign = self.placeholder[0]
                 self.digit_mobs = []
                 for _ in range(num_decimal_places + 1):

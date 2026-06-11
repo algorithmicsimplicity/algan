@@ -980,14 +980,6 @@ class TriangulatedBezierCircuit(Mob):
         #    self.spawn(animate_creation)
         self.parents = []
 
-    def highlight(self):
-        self.color = RED_A
-        return self
-
-    def highlight_off(self):
-        self.color = WHITE
-        return self
-
     def get_local_coord_bounding_box(self):
         all_points = torch.stack([point_to_tensor2(_.end) for _ in self.path], 0)
         mn, mx = (all_points.amin(-2)), (all_points.amax(-2))

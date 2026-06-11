@@ -2,7 +2,9 @@ import torch
 
 from algan import *
 from algan import PI
+from algan.geometry.geometry import project_onto_basis, get_orthonormal_vector
 from algan.mobs.surfaces.surface import Surface
+from algan.mobs.shapes_2d import Circle
 
 
 class Sphere(Surface):
@@ -133,25 +135,21 @@ class Cylinder(Surface):
         uv[..., 1:] /= uv[..., 1:].amax()
         u = -uv[..., :1]
         v = uv[..., 1:]
-        return torch.cat(
-            (
-                (u * torch.pi * 2).sin() * self.radius,
-                (v - 0.5) * self.height,
-                (u * torch.pi * 2).cos() * self.radius,
-            ),
-            -1,
-        )
+        return ((u * torch.pi * 2).sin() * self.radius * self.get_right_basis() +
+                (v - 0.5) * self.height * self.get_upwards_basis() +
+                (u * torch.pi * 2).cos() * -self.get_forward_basis()
+            )
 
     def normal_function(self, uv):
         xyz = self.coord_function(uv)
+        return project_onto_basis(xyz, [self.get_right_direction(), self.get_forward_direction()])
         xyz[..., 1] = 0
         return xyz
 
     @animated_function(animated_args={"interpolation": 0})
     def set_start_point(self, point, interpolation=1):
         offset = (
-            self.get_upwards_direction()
-            * self.scale_coefficient[..., 1].unsqueeze(-1)
+            self.get_upwards_basis()
             * 0.5
         )
         current_end = self.location + offset
@@ -179,6 +177,14 @@ class Cylinder(Surface):
             s = torch.ones_like(self.scale_coefficient)
             s[..., 1] = (end - start).norm(p=2, dim=-1) / self.scale_coefficient[..., 1]
             self.move_to((start + end) * 0.5)
-            self.look(F.normalize(end - start, p=2, dim=-1), axis=1)
-            self.scale(s)
+            up_b = F.normalize(end - start, p=2, dim=-1)
+            right_b = get_orthonormal_vector(up_b)
+            forward_b = get_orthonormal_vector(up_b, right_b)
+            self.setattr_and_record_modification('basis', torch.cat((right_b * self.scale_coefficient[...,:1],
+                                    end - start,
+                                    forward_b * self.scale_coefficient[..., 2:],
+                                    ), -1))
+            self.set_location_by_function(self.coord_function)
+            #self.look_and_scale(F.normalize(end - start, p=2, dim=-1), s, axis=1)
+            #self.set_normal_by_function(self.normal_function)
         return self

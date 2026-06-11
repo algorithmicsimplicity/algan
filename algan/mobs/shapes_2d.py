@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.animation.animation_contexts import Off, Sync
-from algan.constants.spatial import UP, RIGHT
+from algan.constants.spatial import UP, RIGHT, IN
 from algan.constants.color import *
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
@@ -257,7 +257,7 @@ class Rectangle(Quad):
 
     """
 
-    def __init__(self, height=2, width=2, **kwargs):
+    def __init__(self, width=2, height=2, **kwargs):
         corners = (
             torch.tensor(
                 (
@@ -289,22 +289,26 @@ class SurroundingRectangle(Quad):
 
     """
 
-    def __init__(self, mob, buffer=STYLE_DEFAULTS.buffer, **kwargs):
+    def __init__(self, mob, buffer=STYLE_DEFAULTS.buffer * 0.5, bottom_buffer=None, *args, **kwargs):
         bbox = mob.get_bounding_box()
-        mn = bbox.amin(-2) - buffer
-        mx = bbox.amax(-2) + buffer
+        mn = bbox.amin(-2)
+        mn[...,:2] -=  buffer
+        mx = bbox.amax(-2)
+        mx[..., :2] += buffer
+        if bottom_buffer is not None:
+            mn[...,1:2] -= bottom_buffer
         md = (mn + mx) * 0.5
 
         corners = torch.stack(
             (
                 torch.stack((mn[..., 0], mx[..., 1], md[..., 2]), -1),
-                mx,
+                torch.stack((mx[..., 0], mx[..., 1], md[..., 2]), -1),
                 torch.stack((mx[..., 0], mn[..., 1], md[..., 2]), -1),
-                mn,
+                torch.stack((mn[..., 0], mn[..., 1], md[..., 2]), -1),
             ),
             -2,
         )
-        super().__init__(corners, **kwargs)
+        super().__init__(corners + IN * 0.01, *args, **kwargs)
 
 
 class Square(Rectangle):

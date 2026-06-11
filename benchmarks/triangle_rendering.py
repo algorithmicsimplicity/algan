@@ -3,11 +3,16 @@ import manim as mn
 
 
 def render_static_triangles():
-    mobs = Group([Sphere() for _ in range(9)]).arrange_in_grid().spawn()
-    mobs.wait(100)
+    m1 = QuadTriangulated(torch.stack([UP, RIGHT, DOWN, LEFT]), color=RED).spawn()
+    m2 = QuadTriangulated(torch.stack([UP, RIGHT, DOWN, LEFT]), color=GREEN).move(OUT*0.01).spawn()
+    m1.move(RIGHT)
+    m1.move(LEFT*2)
+    #mobs = Group([Sphere() for _ in range(9)]).arrange_in_grid().spawn()
+    #mobs.wait(1)
 
 
 #COMPUTING_DEFAULTS.compiled = False
-COMPUTING_DEFAULTS.max_animate_batch_size = 1000
+rs = PREVIEW
+rs.fxaa = False
 #COMPUTING_DEFAULTS.render_device = torch.device('cpu')
-render_all_funcs(__name__, PREVIEW)
+render_all_funcs(__name__, rs)

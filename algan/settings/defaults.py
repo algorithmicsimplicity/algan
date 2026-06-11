@@ -27,13 +27,14 @@ accelerator = torch.device(
 @dataclass
 class ComputingDefaults:
     compiled: bool = False
-    portion_of_memory_used_for_animating: float = 0.8
-    portion_of_memory_used_for_rendering: float = 0.6
+    portion_of_memory_used_for_animating: float = 0.15
+    portion_of_memory_used_for_rendering: float = 0.4
     max_animate_batch_size = 10000
     max_cpu_memory_used = 2 * GIGABYTES
     animation_device = torch.device("cpu")
     render_device = accelerator
     use_torch_scatter = True
+    allow_save_frame = True
 
 
 COMPUTING_DEFAULTS = ComputingDefaults()

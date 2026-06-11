@@ -34,7 +34,9 @@ class Tex(Mob):
         # if not self.latex:
         #    text = f'\\text{{{text}}}'
         base_font_size = 48
-        t = (mn.MathTex if self.latex else mn.Text)(text, font_size=base_font_size)
+        if isinstance(text, str):
+            text = [text]
+        t = (mn.MathTex if self.latex else mn.Text)(*text, font_size=base_font_size)
 
         def maybe_flip(submob):
             x = torch.from_numpy(submob.points).to(COMPUTING_DEFAULTS.animation_device)
@@ -42,7 +44,14 @@ class Tex(Mob):
                 return x.flip(-2)
             return x
 
-        chars = (t.submobjects[0] if latex else t).submobjects
+        if latex:
+            sub_mobs = [_.submobjects for _ in t.submobjects]
+            self.num_mobs_per_segment = torch.tensor([len(_) for _ in sub_mobs])
+            self.segment_ends = self.num_mobs_per_segment.cumsum(0)
+            self.segment_starts = self.segment_ends - self.num_mobs_per_segment
+            chars = [x for l in sub_mobs for x in l]
+        else:
+            chars = t.submobjects
         p = [
             unsquish(maybe_flip(_), -2, 4).transpose(-3, -2)
             for _ in [_ for _ in chars if not isinstance(_, mn.ImageMobject)]
@@ -60,6 +69,9 @@ class Tex(Mob):
             self.add_children(self.character_mobs, self.image_mobs)
             self.scale(font_size / base_font_size)
 
+    def get_segment(self, i):
+        return self[self.segment_starts[i]:self.segment_ends[i]]
+
     def __getitem__(self, item):
         return Group([self.character_mobs[item]])
 
@@ -69,7 +81,7 @@ class Tex(Mob):
     def default_color(self):
         return BLUE
 
-    def highlight(self):
+    """def highlight(self):
         self.orig_color = self.color
         with Sync():
             for _ in self.get_descendants():
@@ -80,7 +92,7 @@ class Tex(Mob):
         with Sync():
             for _ in self.get_descendants():
                 _.color = WHITE
-        return self
+        return self"""
 
     def on_create(self):
         with Off():  # Ensure initial state setting is not recorded as an animation

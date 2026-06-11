@@ -3,7 +3,63 @@ import torch.nn.functional as F
 import torch.fft
 
 
-def fft_conv2d(input_tensor, kernel, padding="same"):
+def fft_conv1d(input_tensor, kernel, dim=-1, padding="same", num_iterations=1, memory=None):
+    """
+    Perform 2D convolution using FFT for better performance with large kernels.
+
+    Args:
+        input_tensor: Input tensor of shape (C, H, W)
+        kernel: Convolution kernel of shape (C, Kh, Kw)
+        padding: Padding mode ('same' or 'valid')
+
+    Returns:
+        Convolved tensor
+    """
+
+    C = input_tensor.shape[-3]
+    L = input_tensor.shape[dim]
+    C_k = kernel.shape[-3]
+    L_k = kernel.shape[dim]
+
+    assert C == C_k, "Number of channels must match between input and kernel"
+
+    # Calculate output size and padding
+    if padding == "same":
+        pad = L_k // 2
+        out_l = L
+    else:  # 'valid'
+        pad_h = pad_w = 0
+        out_l = L - L_k + 1
+
+    # Calculate FFT size (next power of 2 for efficiency)
+    fft_l = L + L_k - 1#1 << (L + L_k - 1).bit_length()
+
+    fft_shape = [_ for _ in input_tensor.shape]
+    fft_shape[dim] = (fft_l // 2 + 1)
+    # Perform FFT
+    input_fft = torch.fft.rfft(input_tensor, n=fft_l, dim=dim, out=memory.get_tensor(fft_shape, dtype=torch.complex64))
+    kernel_fft = torch.fft.rfft(kernel, n=fft_l, dim=dim)
+
+    # Element-wise multiplication in frequency domain
+    result_fft = torch.mul(input_fft, kernel_fft, out=input_fft)
+
+    # Inverse FFT
+    fft_shape = [_ for _ in input_tensor.shape]
+    fft_shape[dim] = fft_l
+    result = torch.fft.irfft(result_fft, n=fft_l, dim=dim, out=memory.get_tensor(fft_shape, persist=True))#, out=result_fft)
+
+    # Extract the valid convolution result
+    if padding == "same":
+        # Center crop to original size
+        pad_left = (L_k - 1) // 2
+        result = torch.torch.ops.aten.slice(result, dim, pad_left, pad_left + L, 1)
+    else:  # 'valid'
+        result = torch.torch.ops.aten.slice(result, dim, 0, out_l, 1)
+
+    return result
+
+
+def fft_conv2d(input_tensor, kernel, padding="same", num_iterations=1):
     """
     Perform 2D convolution using FFT for better performance with large kernels.
 
@@ -42,10 +98,10 @@ def fft_conv2d(input_tensor, kernel, padding="same"):
     kernel_fft = torch.fft.fft2(kernel_padded, dim=(-2, -1))
 
     # Element-wise multiplication in frequency domain
-    result_fft = input_fft * kernel_fft
+    result_fft = torch.mul(input_fft, kernel_fft, out=input_fft)
 
     # Inverse FFT
-    result = torch.fft.ifft2(result_fft, dim=(-2, -1)).real
+    result = torch.fft.ifft2(result_fft, dim=(-2, -1), out=result_fft).real
 
     # Extract the valid convolution result
     if padding == "same":
@@ -75,11 +131,14 @@ def gaussian_kernel_2d(kernel_size, sigma, device):
     x = torch.linspace(
         -(kernel_size - 1) / 2, (kernel_size - 1) / 2, kernel_size, device=device
     )
-    gauss_1d = torch.exp(-0.5 * (x / sigma) ** 2)
-    gauss_1d = gauss_1d / gauss_1d.sum()
+    x /= sigma
+    x.square_()
+    x *= -0.5
+    x = x.exp_()
+    x /= x.sum()
 
     # Create 2D kernel by outer product
-    kernel_2d = gauss_1d[:, None] * gauss_1d[None, :]
+    kernel_2d = x[:, None] * x[None, :]
 
     return kernel_2d
 
@@ -221,7 +280,7 @@ def bloom_filter_old(
 
 
 def bloom_filter_premultiply(
-    x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8
+    x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8, memory=None
 ):
     if x.shape[-1] < 5:
         raise ValueError(
@@ -269,7 +328,7 @@ def bloom_filter_premultiply(
     return (out * 255).clamp_(min=0, max=255).to(xdtype)
 
 
-def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
+def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
     #return x
     if x[...,3:4].amax() <= 1e-5:
         return x
@@ -307,6 +366,7 @@ def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=
         color = F.conv2d(
             color, filter_horizontal, padding=(0, p), groups=color.shape[0]
         )
+    for i in range(num_iterations):
         color = F.conv2d(color, filter_vertical, padding=(p, 0), groups=color.shape[0])
 
     color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode="bilinear").squeeze(
@@ -346,7 +406,7 @@ def bloom_filter(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=
     return (out * 255).clamp_(min=0, max=255).to(xdtype)
 
 
-def bloom_filter_fft(x, num_iterations=3, kernel_size=51, strength=10, scale_factor=8):
+def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor=8, memory=None):
     """
     FFT-based bloom filter for better performance with large kernel sizes.
 
@@ -360,47 +420,83 @@ def bloom_filter_fft(x, num_iterations=3, kernel_size=51, strength=10, scale_fac
     Returns:
         Bloomed image tensor with same shape as input
     """
+    if x[...,3:4].amax() <= 1e-5:
+        return x
     scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
+    if (kernel_size % 2) == 0:
+        kernel_size = kernel_size + 1
 
     xdtype = x.dtype
 
-    x = x.to(torch.float) / 255
-    color_channels = [*range(3), 4] if x.shape[-1] == 5 else [*range(3)]
+    x = x.to(torch.float)
+    x /= 255
+    out = memory.clone(x)
+    color_channels = [*range(3), 4] if x.shape[-1] == 5 else slice(0,3)
     color = x[..., color_channels]
     glow = x[..., 3:4]
 
-    color = color * glow * strength
+    color *= glow
+    color *= strength
 
     # Create 2D Gaussian kernel
-    sigma = kernel_size / 4.0  # Standard deviation (kernel_size covers ~6 sigmas)
-    kernel_2d = gaussian_kernel_2d(kernel_size, sigma, x.device)
+    #sigma = kernel_size / 4.0
+    #kernel_2d = gaussian_kernel_2d(kernel_size, sigma, x.device)
+
+    d = 3
+
+    channels = color.shape[-1]
+    def get_filters(kernel_size):
+        filter = torch.exp(-1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2))
+        filter /= filter.sum()
+        filter_horizontal = filter.view(1, 1, 1, kernel_size).expand(
+            channels, -1, -1, -1
+        )
+        filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
+        return filter_horizontal, filter_vertical
 
     # Prepare for convolution: (C, H, W) format
-    color = color.permute(-1, 0, 1)
+    color = color.permute(0, -1, 1, 2)
     orig_shape = color.shape[-2:]
 
     # Downsample for computational efficiency
     color = F.interpolate(
-        color.unsqueeze(0), scale_factor=1 / scale_factor, mode="bilinear"
-    ).squeeze(0)
-
-    # Expand kernel for each channel
-    kernel_expanded = kernel_2d.unsqueeze(0).expand(color.shape[0], -1, -1)
-
-    # Apply FFT-based convolution num_iterations times
-    for i in range(num_iterations):
-        color = fft_conv2d(color, kernel_expanded, padding="same")
-
-    # Upsample back to original resolution
-    color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode="bilinear").squeeze(
-        0
+        color, scale_factor=1 / scale_factor, mode="bilinear", antialias=True
     )
 
+    # Expand kernel for each channel
+    #kernel_expanded = kernel_2d.unsqueeze(0).expand(color.shape[0], -1, -1)
+
+    # Apply FFT-based convolution num_iterations times
+    #p = (kernel_size - 1) // 2
+    #color = F.conv2d(color, kernel_expanded.unsqueeze(1), padding=(p, p), groups=color.shape[0])
+    with memory.temp(clear_persist=True):
+        _color = memory.clone(color)
+        def convolve(color, filter_horizontal, filter_vertical):
+            for i in range(num_iterations):
+                with memory.temp():
+                    color = fft_conv1d(color, filter_horizontal.squeeze(1), padding="same", num_iterations=1, dim=-1, memory=memory)
+                with memory.temp():
+                    color = fft_conv1d(color, filter_vertical.squeeze(1), padding="same", num_iterations=1, dim=-2, memory=memory)
+            return color
+        with memory.temp(clear_persist=True):
+            color1 = convolve(memory.clone(color), *get_filters(kernel_size))
+        color1 = memory.clone(color1)
+        with memory.temp(clear_persist=True):
+            color2 = convolve(memory.clone(color), *get_filters(max(kernel_size // 32, 1)))
+            color1 = torch.lerp(color1, color2, 0.4, out=color1)
+        with memory.temp(clear_persist=True):
+            color3 = convolve(color, *get_filters(max(kernel_size // 128, 1)))
+        color = torch.lerp(color1, color3, 0.25, out=color)
+
+    # Upsample back to original resolution
+    color = F.interpolate(color, size=orig_shape, mode="bilinear", antialias=True)
+
     # Convert back to (H, W, C) format
-    color = color.permute(1, 2, 0)
+    color = color.permute(0, 2, 3, 1)
 
     # Combine with original image
-    out = x.clone()
     out[..., color_channels] += color
+    out *= 255
+    out.clamp_(min=0, max=255)
 
-    return (out * 255).clamp_(min=0, max=255).to(xdtype)
+    return out.to(xdtype)

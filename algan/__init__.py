@@ -97,6 +97,12 @@ except Exception as e:
     cuda_compiled = lambda x: x
 #not_compiled = torch.compiler.disable(recursive=True)
 not_compiled = lambda x: x
+def csync(f):
+    def _sync(*args, **kwargs):
+        torch.cuda.synchronize()
+        return f(*args, **kwargs)
+
+    return _sync
 
 from algan.settings.defaults import *
 from algan.settings.style_defaults import *

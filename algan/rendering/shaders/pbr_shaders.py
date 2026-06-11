@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 
+from algan.geometry.geometry import normalize
 from algan.utils.tensor_utils import dot_product
 
 
@@ -173,8 +174,8 @@ def default_shader(
     """
 
     incidences = torch.subtract(vertex_location, light_origin, out=memory.get_tensor(vertex_location.shape))
-    incidences = F.normalize(incidences, p=2, dim=-1, out=incidences)
-    vertex_normal = F.normalize(vertex_normal, p=2, dim=-1, out=vertex_normal)
+    incidences = normalize(incidences, dim=-1, p=2, memory=memory)
+    vertex_normal = normalize(vertex_normal, p=2, dim=-1, memory=memory)
     dot = dot_product(incidences, vertex_normal, out=memory)
     dot *= -1
     diffuse_factor = (dot).relu_().pow_(5)

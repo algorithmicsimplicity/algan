@@ -59,11 +59,12 @@ num_iterations = 300
 import time
 import cProfile
 import pstats
+import triton
 
 #import torch_tensorrt
 
 
-compiled = lambda f: f#torch.compile(f, dynamic=False, fullgraph=False)#, backend='cudagraphs')
+compiled = lambda f: torch.compile(f)#, fullgraph=False)#, backend='cudagraphs')
                                                     #, backend="tensorrt",
                                                     #options={"min_block_size": 1},)
                                                     #         "use_python_runtime": True, }
@@ -94,28 +95,29 @@ def get_repeat_interleaved(objects):
 
 
 def get_gather_expanded(objects):
-    out = torch.gather(objects.squeeze(-1), -1, gather_inds.expand(objects.shape[0], objects.shape[1], -1)).view([*objects.shape[:-1], -1]).contiguous()
+    out = torch.gather(objects.squeeze(-1), -1,
+                       gather_inds.expand(objects.shape[0], objects.shape[1], -1)
+                       ).view([*objects.shape[:-1], -1]).contiguous()
     torch.cuda.synchronize()
     return out
 
 
 def op(x, y):
-    x += y
+    return x + y
     #torch.cuda.synchronize()
-    return x
+    #return x
 
 
 def rep(f, i=num_iterations):
     for _ in range(i):
         f()
         #gc.collect()
-        #torch.cuda.empty_cache()
+        #torch.cuda.empty_cache()f
 
 
 @compiled
 def _normal_broadcast(fragments, objects):
-    op(fragments, objects)
-    return fragments
+    return op(fragments, objects)
 
 
 def normal_broadcast(fragments, objects):
@@ -126,16 +128,15 @@ def normal_broadcast(fragments, objects):
 @compiled
 def jagged_broadcast(fragments, objects):
     fragments_n = get_jagged(fragments)
-    op(fragments_n, objects_j)
+    out = op(fragments_n, objects_j)
     torch.cuda.synchronize()
-    return fragments_n
+    return out#fragments_n
 
 
 @compiled
 def _gather_expanded(fragments, objects):
     objects_n = get_gather_expanded(objects)
-    op(fragments, objects_n)
-    return fragments
+    return op(fragments, objects_n)
 
 
 def gather_expanded(fragments, objects):
@@ -161,7 +162,7 @@ if __name__ == '__main__':
     #print(x + y)
 
     with torch.no_grad():
-        ops = [normal_broadcast, gather_expanded, repeat_interleaved, jagged_broadcast]
+        ops = [normal_broadcast]#[normal_broadcast, gather_expanded, repeat_interleaved, jagged_broadcast]
         def run(i=num_iterations):
             for f in ops:
                 gc.collect()

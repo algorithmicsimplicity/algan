@@ -1,16 +1,21 @@
 import collections
 import gc
 import math
+import multiprocessing
 import os
+import threading
 import time
 import wave
 import warnings
+from queue import Queue
 
 import torch
 import torch.nn.functional as F
+import torchvision.utils
 from moviepy import CompositeAudioClip
 
 import algan
+from algan import csync
 from algan import not_compiled
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.settings.defaults import *
@@ -22,17 +27,27 @@ from algan.constants.color import *
 from algan.constants.spatial import *
 
 # from algan.rendering.lights import PointLight
-from algan.animation.animation_contexts import Sync, AnimationManager, Off
+from algan.animation.animation_contexts import Seq, Sync, AnimationManager, Off
 import numpy as np
 
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.utils.memory_utils import get_num_available_bytes, ManualMemory, empty_cache
 from algan.utils.tensor_utils import unsquish, wait_for_cuda
+from algan.utils.file_utils import get_image
 
 
 class EmptySceneWarning(Warning):
     pass
+
+
+def write_frames_from_queue(queue, file_writer):
+    #with get_file_writer() as file_writer:
+    while True:
+        frame = queue.get()
+        if frame is None:  # Sentinel value to signal the end
+            break
+        file_writer.write_frame(frame.numpy())
 
 
 class Scene:
@@ -48,6 +63,7 @@ class Scene:
         self.current_time = 0
         self.min_time = 0
         self.max_time = 0
+        self.background_is_set = False
         if hasattr(background_frame, "__call__"):
             background_frame = background_frame(
                 torch.stack(
@@ -67,7 +83,7 @@ class Scene:
         self.background_frame = background_frame
         self.actors = [[]]
         self.effects = []
-        self.scene_times = [(self.current_time, self.current_time)]
+        self.scene_times = [[self.current_time, self.current_time]]
         self.background_depths = torch.full_like(
             self.background_frame[..., :1],
             dtype=torch.get_default_dtype(),
@@ -154,29 +170,34 @@ class Scene:
     def clear():
         algan.SceneManager.instance().clear_scene()
 
-    def clear_scene(self, **kwargs):
+    def despawn_scene(self, **kwargs):
         with Sync():
             for actor in list(
                 sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)
             ):
                 if actor.data.spawn_time() >= 0:
                     actor.despawn(**kwargs)
+
+    def clear_scene(self, **kwargs):
+        with Seq(run_time=0.5):
+            self.despawn_scene(**kwargs)
         self.actors[-1] = [_ for _ in self.actors[-1] if (_.data.spawn_time() >= 0 and _.data.despawn_time() >= 0)]
 
-    def render_audio_to_file(self, file_path, frames_per_second=44100):
+    def render_audio_to_file(self, file_path, frames_per_second=44100, codec='pcm_s32le', nbytes=4):
         if len(self.effects) == 0:
             return None
 
         clips_to_compose = []
+        start_time = self.scene_times[-1][0] / self.render_settings.frames_per_second
         for audio_effect in self.effects:
             timed_clip = audio_effect.audio_clip.with_start(
-                audio_effect.start_time_func()
+                audio_effect.start_time_func() - start_time
             )
             clips_to_compose.append(timed_clip)
 
         audio_clip = CompositeAudioClip(clips_to_compose)
         audio_clip.duration = AnimationManager.instance().context.end_time
-        audio_clip.write_audiofile(file_path, fps=frames_per_second)
+        audio_clip.write_audiofile(file_path, fps=frames_per_second, codec=codec, nbytes=nbytes)
         audio_clip.close()
         return file_path
 
@@ -192,11 +213,18 @@ class Scene:
         background_color=None,
     ):
         wait_for_cuda()
-        with torch.no_grad():
+        with (torch.no_grad()):
             time_inds = torch.arange(start_ind, end_ind)
             camera = self.camera
-            camera.screen.set_state_to_time_t(time_inds)
+            camera.screen.reset_state()
+            camera.reset_state()
+            camera.set_state_full(time_inds[0], time_inds[-1]+1)
             camera.set_state_to_time_t(time_inds)
+            camera.screen.set_state_full(time_inds[0], time_inds[-1] + 1)
+            camera.screen.set_state_to_time_t(time_inds)
+            camera.ray_origin = camera.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
+            camera.screen_point = camera.screen.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
+            camera.screen_basis = unsquish(camera.screen.basis, -1, 3).to(COMPUTING_DEFAULTS.render_device)
             camera.screen_width = (
                 self.num_pixels_screen_width * self.render_settings.anti_alias_level
             )
@@ -204,6 +232,8 @@ class Scene:
                 self.num_pixels_screen_height * self.render_settings.anti_alias_level
             )
             for l in self.light_sources:
+                l.reset_state()
+                l.set_state_full(time_inds[0], time_inds[-1]+1)
                 l.set_state_to_time_t(time_inds)
                 l.origin = l.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
                 l.light_color = (
@@ -221,10 +251,11 @@ class Scene:
 
             render_pointers = self.memory.get_pointers()
             current_ind = start_ind
+            num_bytes_for_post_processing_per_frame = self.num_pixels_screen_width * self.num_pixels_screen_height * 5 * 4 * 4
             while True:
-                mem_per_time_step = max([_.get_memory_used(0, 1) - _.get_memory_used_for_blending(0, 1)
-                     for _ in primitive_batch]) + sum([_.get_memory_used_for_blending(0, 1)
-                    for _ in primitive_batch])
+                mem_per_time_step = max(max([_.get_memory_used(0, 1) - _.get_memory_used_for_blending(0, 1)
+                     for _ in primitive_batch]) + max([_.get_memory_used_for_blending(0, 1) for _ in primitive_batch]),
+                                        num_bytes_for_post_processing_per_frame)
                 duration = int(self.memory.get_num_bytes_remaining() // mem_per_time_step)
                 duration = min(duration, end_ind - current_ind)
                 duration = max(duration, 1)
@@ -255,7 +286,22 @@ class Scene:
                 # for l in self.light_sources:
                 #    l.set_state_to_time_t(time_inds)
                 print(f'rendering batch with duration {duration}')
-                primitive_batch[0].render(
+
+                bgf = self.background_frame if background_color is None else background_color
+                if hasattr(bgf, '__call__'):
+                    device = camera.ray_origin.device
+                    aa = self.render_settings.anti_alias_level
+                    x = torch.arange(self.num_pixels_screen_width * aa, device=device).view(1,-1,1)
+                    y = torch.arange(self.num_pixels_screen_height * aa, device=device).view(-1,1,1)
+                    bgf = bgf(x / (self.num_pixels_screen_width * aa), y / (self.num_pixels_screen_height * aa),
+                              torch.arange(current_ind, new_ind, device=device).view(-1,1,1,1) / self.frames_per_second)
+                if bgf.dim() > 1:
+                    if bgf.shape[0] == 1:
+                        bgf = bgf.expand(new_ind - current_ind, *[-1 for _ in range(bgf.dim()-1)]).contiguous()
+                    bgf = bgf.view(-1,bgf.shape[-1])
+                    bgf = torch.cat((bgf[:1], bgf))
+                    bgf = ((bgf + (0.5/255)) * 255).to(torch.uint8).clamp_max_(255)
+                yield primitive_batch[0].render(
                     primitive_batch,
                     self,
                     save_image,
@@ -263,7 +309,7 @@ class Scene:
                     self.num_pixels_screen_height,
                     current_ind - start_ind,
                     new_ind - start_ind,
-                    self.background_frame if background_color is None else background_color,
+                    bgf,
                     transparent_background,
                     camera.ray_origin,
                     camera.screen_point,
@@ -313,21 +359,22 @@ class Scene:
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
 
+    @csync
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
-        wait_for_cuda()
         max_end_time = max_end_time_ind / self.frames_per_second
         start_time = start_time_ind / self.frames_per_second
         primitive_actors = [
             _
             for _ in actors
             if (_.data.spawn_time() <= max_end_time)
-            and (_.data.despawn_time() >= start_time)
+            and ((_.data.despawn_time() >= start_time) or _.data.despawn_time() < 0)
             and hasattr(_, "get_render_primitives")
         ]
 
         # Binary search to find a batch size that will fit in memory.
+        @csync
         def get_duration():
             #return 90
             duration = max_end_time_ind - start_time_ind
@@ -364,7 +411,7 @@ class Scene:
                 _.data.spawn_time()
                 <= (start_time_ind + duration) / self.frames_per_second
             )
-            and (_.data.despawn_time() >= start_time_ind / self.frames_per_second)
+            and ((_.data.despawn_time() >= start_time_ind / self.frames_per_second) or (_.data.despawn_time() < 0))
         ]
         time_inds = torch.arange(start_time_ind, start_time_ind + duration)
 
@@ -400,6 +447,8 @@ class Scene:
 
         primitive_collections = []
         max_bezier_batch_size = 50000
+        gc.collect()
+        torch.cuda.empty_cache()
         for _, (primitive_class, primitives) in grouped_primitives.items():
             if primitive_class is BezierCircuitPrimitive:
                 counts = torch.tensor([_.corners.shape[1] for _ in primitives]).cumsum(
@@ -435,10 +484,130 @@ class Scene:
         return primitive_collections, start_time_ind + duration
 
     def background_is_transparent(self):
-        return (self.background_frame[..., -1].min() < 1).item()
+        if hasattr(self.background_frame, '__call__'):
+            return False
+        return (self.background_frame[..., -1].min() < (1-(0.5/255))).item()
 
     def get_pixel_format(self):
         return "rgba" if self.background_is_transparent() else "rgb"
+
+    def show_frame(self, time_stamp=None):
+        from algan.utils.plotting_utils import plot_tensor
+        if time_stamp is None:
+            time_stamp = AnimationManager.instance().context.current_time + 1.5/self.render_settings.frames_per_second
+        time_ind = round(time_stamp * self.render_settings.frames_per_second)
+        frames = []
+        for frame in self.get_frames(time_ind-1, time_ind):
+            frame = frame.float() / 255
+            frames.append(frame.squeeze(0).permute(-1,0,1))
+        for frame in frames:
+            plot_tensor(frame)
+
+        return frames
+
+    def save_frame(self, filename, time_stamp=None):
+        if not COMPUTING_DEFAULTS.allow_save_frame:
+            return
+        from algan.utils.plotting_utils import plot_tensor
+        if time_stamp is None:
+            time_stamp = AnimationManager.instance().context.current_time + 1.5/self.render_settings.frames_per_second
+        time_ind = round(time_stamp * self.render_settings.frames_per_second)
+        frames = []
+        for frame in self.get_frames(time_ind-1, time_ind):
+            frame = frame.float() / 255
+            frames.append(frame.squeeze(0).permute(-1,0,1))
+        torchvision.utils.save_image(frames[-1], filename)
+        return frames
+
+    def get_frames(self, start_time_ind, end_time_ind, background_color=None, post_processes=[bloom_filter], manual_memory=True):
+        if end_time_ind <= start_time_ind:
+            yield []
+            return
+
+        self.original_background_frame = self.background_frame
+        if background_color is not None:
+            self.background_frame = background_color
+
+        transparent_background = self.background_is_transparent()
+
+        # self.camera.wait(1/self.frames_per_second + 1e-4)
+        for l in self.light_sources:
+            l.is_primitive = True
+        actors = [self.camera, self.camera.screen, *self.light_sources, *self.actors[-1]]
+        save_image = False
+
+        self.has_any_active_actors = False
+        gc.collect()
+        if COMPUTING_DEFAULTS.render_device == torch.device('cuda'):
+            torch.cuda.empty_cache()
+        self.memory = ManualMemory(
+            COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
+        )
+
+        with Off(
+                record_attr_modifications=False,
+                record_funcs=False,
+                priority_level=math.inf,
+        ):
+            current_time_ind = start_time_ind
+
+            max_animate_mem = int(
+                    COMPUTING_DEFAULTS.portion_of_memory_used_for_animating
+                    * get_num_available_bytes(COMPUTING_DEFAULTS.render_device)
+                )
+
+            while True:
+                primitives, new_time_ind = self.get_batch_of_primitives(
+                    current_time_ind, end_time_ind, actors, max_animate_mem
+                )
+                if new_time_ind <= current_time_ind:
+                    raise OutOfRenderMemory(
+                        "Insufficient memory to render this scene,"
+                        "please reduce the number of Mobs used."
+                    )
+                if len(primitives) > 0:
+                    self.has_any_active_actors = True
+
+                    s = time.time()
+                    print(
+                        f"Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video."
+                    )
+                    yield from self.render_primitive_batch(
+                        primitives,
+                        current_time_ind,
+                        new_time_ind,
+                        save_image,
+                        post_processes,
+                        transparent_background,
+                        background_color,
+                    )
+                    del primitives
+                    e = time.time()
+                    print(
+                        f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
+                    )
+
+                current_time_ind = new_time_ind
+                if new_time_ind >= end_time_ind:
+                    break
+
+        self.background_frame = self.original_background_frame
+
+        self.memory.data = None
+        self.memory = None
+
+    def set_background_color(self, background_color, overwrite=False):
+        if self.background_is_set and not overwrite:
+            return self
+        if isinstance(background_color, str):
+            background_color = F.interpolate(get_image(background_color).transpose(0,-1).unsqueeze(0), tuple(self.frame_size),
+                                             mode='bilinear', antialias='bilinear').squeeze(0).permute(1,2,0).unsqueeze(0)
+        self.background_frame = self.background_color = background_color
+        self.background_is_set = True
+        return self
+
+    def get_background_color(self):
+        return self.background_color
 
     def render_to_video(
         self,
@@ -449,107 +618,49 @@ class Scene:
         background_color=None,
     ):
         self.scene_times.append(
-            (
-                self.scene_times[-1][1],
+            [
+                self.scene_times[-1][0],
                 (
                     round(
                         AnimationManager.instance().context.end_time
                         * self.frames_per_second
                     )
                 ),
-            )
+            ]
         )
         self.initialize_frames()
-        self.original_background_frame = self.background_frame
-        if background_color is not None:
-            self.background_frame = background_color
 
-        transparent_background = self.background_is_transparent()
-
-        # self.camera.wait(1/self.frames_per_second + 1e-4)
         self.camera.despawn(animate=False)
         for l in self.light_sources:
-            l.is_primitive = True
             l.despawn(animate=False)
-        self.actors = [
-            [self.camera, self.camera.screen, *self.light_sources, *self.actors[-1]]
-        ]
-        save_image = False
 
-        self.has_any_active_actors = False
-        gc.collect()
-        if COMPUTING_DEFAULTS.render_device == torch.device('cuda'):
-            torch.cuda.empty_cache()
-        self.memory = ManualMemory(
-            COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering
-        )
-        with Off(
-            record_attr_modifications=False,
-            record_funcs=False,
-            priority_level=math.inf,
-        ):
-            for scene_num, (actors, (scene_start, scene_end)) in enumerate(
-                zip(self.actors, self.scene_times[-len(self.actors) :])
-            ):
-                if scene_end < scene_start:
-                    continue
-                if scene_end == scene_start and not save_image:
-                    scene_end += 1
-                    save_image = True
-                    file_path = f"{file_path}.png"
-                    file_path_out = f"{file_path_out}.png"
+        self.file_path = file_path
+        self.file_writer = file_writer
 
-                self.file_path = file_path
-                self.file_writer = file_writer
-
-                current_time_ind = scene_start
-
-                max_animate_mem = int(
-                    COMPUTING_DEFAULTS.portion_of_memory_used_for_animating
-                    * get_num_available_bytes(COMPUTING_DEFAULTS.render_device)
+        '''
+                frame_queue = multiprocessing.Queue(maxsize=40)
+                writer_process = multiprocessing.Process(
+                    target=write_frames_from_queue,
+                    args=(frame_queue, file_writer)
                 )
+                '''
+        frame_queue = Queue(maxsize=8)
+        writer_process = threading.Thread(target=write_frames_from_queue, args=(frame_queue, file_writer))
+        writer_process.daemon = True
+        writer_process.start()
 
-                while True:
-                    primitives, new_time_ind = self.get_batch_of_primitives(
-                        current_time_ind, scene_end, actors, max_animate_mem
-                    )
-                    if new_time_ind <= current_time_ind:
-                        raise OutOfRenderMemory(
-                            "Insufficient memory to render this scene,"
-                            "please reduce the number of Mobs used."
-                        )
-                    if len(primitives) > 0:
-                        self.has_any_active_actors = True
+        self.frame_queue = frame_queue
+        # Wait for the writer process to complete
+        for frame_batch in self.get_frames(*self.scene_times[-1], background_color=background_color,
+                                           post_processes=post_processes, manual_memory=True):
+            for frame in frame_batch:
+                frame_queue.put(frame)
 
-                        s = time.time()
-                        print(
-                            f"Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video."
-                        )
-                        self.render_primitive_batch(
-                            primitives,
-                            current_time_ind,
-                            new_time_ind,
-                            save_image,
-                            post_processes,
-                            transparent_background,
-                            background_color,
-                        )
-                        del primitives
-                        e = time.time()
-                        print(
-                            f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
-                        )
-
-                    current_time_ind = new_time_ind
-                    if new_time_ind >= scene_end:
-                        break
-
-        self.background_frame = self.original_background_frame
-
-        self.memory.data = None
-        self.memory = None
-
+        self.frame_queue.put(None)
+        writer_process.join()
         file_writer.close()
+
+        #file_writer.close()
         if os.path.exists(file_path_out):
             os.remove(file_path_out)
         os.rename(file_path, file_path_out)
@@ -558,7 +669,6 @@ class Scene:
                 "You rendered an empty scene! Did you forget to spawn() your Mobs?",
                 EmptySceneWarning,
             )
-        return save_image
 
     @not_compiled  #@torch.compiler.disable(recursive=True)
     def get_frames_from_fragments(self, fragments, window, frame, anti_alias_level=1):
@@ -601,7 +711,7 @@ class Scene:
         frames = self.memory.cast(frames, torch.uint8)
 
         for i in range(len(frame_ind_delimits)):
-            frame[:] = bgf[..., : frame.shape[-1]]
+            frame[:] = bgf[..., :frame.shape[-1]]
             ind_begin = frame_ind_delimits[i - 1] if i > 0 else 0
             ind_end = frame_ind_delimits[i]
             frame.scatter_(0, inds[ind_begin:ind_end], frames[ind_begin:ind_end])

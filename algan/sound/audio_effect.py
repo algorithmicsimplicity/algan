@@ -22,6 +22,10 @@ class AudioManager:
             return get_pyttsx_speech_generator(script)
         return cls._speech_generator(script)
 
+    @classmethod
+    def reset(cls):
+        cls._video_transcript = ""
+
 
 class AudioEffect:
     def __init__(self, audio_clip, start_time):

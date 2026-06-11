@@ -15,8 +15,16 @@ from algan.utils.tensor_utils import (
 )
 
 
-def distance(x, y, *args, **kwargs):
-    return torch.cdist(x.unsqueeze(-2), y.unsqueeze(-2), *args, **kwargs).squeeze(-2)
+def distance(x, y, memory=None, *args, **kwargs):
+    if memory is None:
+        return torch.cdist(x.unsqueeze(-2), y.unsqueeze(-2), *args, **kwargs).squeeze(-2)
+    out = memory.get_tensor([*x.shape[:-1], 1])
+    with memory.temp():
+        dif = torch.sub(x, y, out=memory.get_tensor(x.shape))
+        dif.square_()
+        dist = torch.sum(dif, -1, keepdim=True, out=out)
+        dist = dist.sqrt_()
+    return dist
 
 
 def intersect_line_with_plane(
@@ -150,12 +158,16 @@ def get_rotation_between_3d_vectors(vector1, vector2, dim=-1):
     normal_vector = -F.normalize(
         broadcast_cross_product(vector1, vector2, dim=dim), p=2, dim=dim
     )
+    normal_vector_r = get_orthonormal_vector(vector1, vector2)
     radians_to_rotate = (
         F.cosine_similarity(vector1, vector2, dim=dim, eps=1e-12)
         .arccos()
         .unsqueeze(dim)
     )
-    return radians_to_rotate * RADIANS_TO_DEGREES, normal_vector
+    degrees_to_rotate = radians_to_rotate * RADIANS_TO_DEGREES
+    normal_vector = torch.where((degrees_to_rotate.abs() <= 1e-4) | ((degrees_to_rotate - 180).abs() <= 1e-4),
+                                normal_vector_r, normal_vector)
+    return degrees_to_rotate, normal_vector
 
 
 def rotate_basis_to_direction(basis, direction, axis=-1, dim=-1):
@@ -167,14 +179,24 @@ def rotate_basis_to_direction(basis, direction, axis=-1, dim=-1):
     )
 
 
+def normalize(x, dim=-1, p=2, memory=None):
+    if memory is None:
+        return F.normalize(x, p=p, dim=dim)
+    with memory.temp():
+        norm = torch.norm(x, p=2, dim=-1, keepdim=True,
+                                          out=memory.get_tensor([*x.shape[:-1], 1])).clamp_min_(1e-8)
+        x /= norm
+    return x
+
+
 def get_rotation_between_bases(basis1, basis2):
-    n1 = basis1.norm(p=2, dim=-1, keepdim=True)
-    n2 = basis2.norm(p=2, dim=-1, keepdim=True)
+    n1 = torch.diag_embed(1/basis1.norm(p=2, dim=-1))
+    n2 = torch.diag_embed(basis2.norm(p=2, dim=-1))
     o1 = F.normalize(basis1, p=2, dim=-1)
     o2 = F.normalize(basis2, p=2, dim=-1)
-    rot = o1.transpose(-2, -1) @ o2
+    rot = o2 @ o1.transpose(-2, -1)
     # scale = n2 / n1
-    return (1 / n1) * rot * n2  # .transpose(-2,-1)
+    return (n2 @ (rot @ (n1)))  # .transpose(-2,-1)
 
 
 def get_rotation_between_orthonormal_bases(basis1, basis2):
@@ -411,11 +433,18 @@ def get_roots_of_polynomial_backup_recurse(coefs):
     return roots * m + (1 - m) * pad_to_length(backup_roots, roots.shape[-1])
 
 
-def get_orthonormal_vector(vector):
-    r = torch.randn_like(vector)
-    vn = F.normalize(vector, p=2, dim=-1)
-    r = r - dot_product(r, vn) * vn
-    return F.normalize(r, p=2, dim=-1)
+def project_onto_basis(vector, basis):
+    return sum([dot_product(vector, b) * b for b in basis])
+
+
+def get_orthonormal_vector(*vectors):
+    vectors = list(vectors)
+    r = torch.randn_like(vectors[0])
+    for vector in vectors:
+        vn = F.normalize(vector, p=2, dim=-1)
+        r = r - dot_product(r, vn) * vn
+        r = F.normalize(r, p=2, dim=-1)
+    return r
 
 
 def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):

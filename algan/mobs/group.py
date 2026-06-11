@@ -181,7 +181,8 @@ class Group(Mob):
                 l = start
                 if alignment_direction is not None:
                     l = l + alignment_offsets[i] * alignment_direction
-                mob.location = l
+                #loc + (disp_to_center) = l
+                mob.location = l + (mob.location - mob.get_center())
                 start = start + direction * (mob_sizes[i] / 2 + buffer)
         return self
 
@@ -296,15 +297,5 @@ class Group(Mob):
                 y_dist = sum(buf_dist2[:y]) + buf_dist2[y] * 0.5
                 mob.location = (
                     start + row_direction * x_dist + column_direction * y_dist
-                )
+                ) + (mob.location - mob.get_center())
         return self
-
-    def highlight(self):
-        with Sync():
-            for m in self.mobs:
-                m.highlight()
-
-    def highlight_off(self):
-        with Sync():
-            for m in self.mobs:
-                m.highlight_off()

@@ -1,3 +1,5 @@
+import torch
+
 from algan import default_shader
 from algan.animation.animation_contexts import Off, Sync, Seq, Lag
 from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
@@ -5,33 +7,44 @@ from algan.mobs.mob import Mob
 from algan.mobs.shapes_3d import Sphere, Cylinder
 from algan.constants.rate_funcs import identity, ease_in_expo, ease_out_expo
 from algan.rendering.shaders.pbr_shaders import null_shader
-from algan.utils.tensor_utils import dot_product
+from algan.utils.tensor_utils import dot_product, unsquish, squish
+from algan.mobs.text import Tex
+
+
+def tweak_color(c, strength=0.3):
+    t = torch.rand((1,)).item() * strength
+    m = torch.randint(0, 2, (1,))
+    target_c = WHITE * m + (1 - m) * BLACK
+    return c * (1 - t) + t * target_c
 
 
 class Synapse(Cylinder):
     def __init__(self, grid_height=10, *args, **kwargs):
-        super().__init__(grid_height=grid_height, grid_aspect_ratio=2)
+        if 'color' in kwargs:
+            c = kwargs['color']
+            kwargs['color'] = tweak_color(c)
+        super().__init__(grid_height=grid_height, grid_aspect_ratio=2, **kwargs)
         self.scale(0.02)
 
 
 class Neuron(Mob):
-    def __init__(self, input_locs, direction, **kwargs):
+    def __init__(self, input_locs, direction, neuron_color, **kwargs):
         super().__init__(**kwargs)
         grid_height = 10
         self.core = (
-            Sphere(grid_height=grid_height, grid_aspect_ratio=2)
+            Sphere(grid_height=grid_height, grid_aspect_ratio=2, color=neuron_color)
             .scale(0.175)
             .move_to(self.location)
         )
         self.shell = (
-            Sphere(opacity=0.1e-4, grid_height=grid_height, grid_aspect_ratio=2)
-            .scale(0.25)
+            Sphere(opacity=0.1e-4, grid_height=grid_height, color=neuron_color, grid_aspect_ratio=2)
+            .scale(0.2)
             .move_to(self.location)
             .look(direction, axis=1)
             .set_shader(None)
         )
         self.synapses = [
-            Synapse(grid_height).move_between_points(l, self.location)
+            Synapse(grid_height, color=neuron_color).move_between_points(l, self.location)
             for l in input_locs
         ]
         self.add_children(self.core, self.shell, self.synapses)
@@ -65,6 +78,8 @@ def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
                 opacity=1,
                 wave_length=1.5,
             )
+    with Off():
+        [s.despawn(animate=False) for s in syns]
     return
 
 
@@ -77,9 +92,11 @@ class NeuralNetMLP(Mob):
         layer_spacing=1,
         neuron_spacing=0.5,
         input_locs=None,
+        neuron_color=GREEN,
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.look(direction)
         start = ORIGIN if input_locs is None else sum(input_locs) / len(input_locs)
 
         def proj(x):
@@ -108,19 +125,34 @@ class NeuralNetMLP(Mob):
                         [l + direction * self.input_synapse_offset],
                         direction,
                         location=l,
+                        neuron_color=neuron_color
                     )
                     for l in neuron_locs[0]
                 ]
             ] + [
                 [
-                    Neuron(neuron_locs[i], direction, location=l)
+                    Neuron(neuron_locs[i], direction, location=l, neuron_color=neuron_color)
                     for l in neuron_locs[i + 1]
                 ]
                 for i in range(len(neuron_locs) - 1)
             ]
         # self.layers = [[Neuron(neuron_locs[i], location=l) for l in neuron_locs[i+1]] for i in range(len(neuron_locs)-1)]
+
         self.add_children(self.layers)
-        self.direction = direction
+
+    def increment_weight(self):
+        weight = self.layers[1][0].synapses[0]
+        weight.orig_color = weight.color
+        with Seq():
+            weight.color = weight.color + GLOW * 0.2
+            self.increment_label = Tex('w := w + 0.001').move_next_to(weight, LEFT+DOWN, buffer=0.05).spawn()
+        self.incremented_weight = weight
+        return weight
+
+    def unincrement_weight(self):
+        with Sync():
+            self.increment_label.despawn()
+            self.incremented_weight.color = self.incremented_weight.orig_color
 
     def train_step(
         self,
@@ -144,7 +176,7 @@ class NeuralNetMLP(Mob):
             inputs = [
                 [_]
                 for _ in inputs.get_points_evenly_along_direction(
-                    -(self.get_right_direction() + self.get_upwards_direction()),
+                    -(self.get_forward_direction() + self.get_upwards_direction()),
                     len(self.layers[0]),
                 )
             ]
@@ -161,23 +193,33 @@ class NeuralNetMLP(Mob):
             with Sync():
                 if reset:
                     self.reset_input_synapses()
-                out.move(self.get_right_direction() * 0.25)
+                out.move(self.get_forward_direction() * 0.25)
             return out
 
     def reset_input_synapses(self):
         with Sync(run_time=1):
             for n in self.layers[0]:
                 for syn in n.synapses:
-                    syn.set_start_point(
-                        n.location + RIGHT * self.input_synapse_offset
+                    syn.move_between_points(
+                        n.location + self.get_forward_direction() * self.input_synapse_offset,
+                        n.location
                     )  # , n.location)
+            '''with Off():
+                for n in self.layers[0]:
+                    for syn in n.synapses:
+                        syn.location = n.location + self.get_forward_direction() * self.input_synapse_offset * 0.5
+                        syn.basis = torch.cat([-self.get_upwards_direction() * syn.scale_coefficient[...,:1],
+                                               self.get_forward_direction() * self.input_synapse_offset,
+                                               -self.get_right_direction() * syn.scale_coefficient[...,2:]], -1)
+                        syn.set_location_by_function(syn.coord_function)'''
+
 
     def backward(
         self, output=None, label=None, color=PURE_BLUE * k + (1 - k) * WHITE, run_time=3
     ):
         with Seq(run_time=run_time):
             if label is not None:
-                with Lag(0.6, run_time=6):
+                with Lag(0.65, run_time=6):
                     zap(label, output, color=color)
                     zap(output, self.layers[-1][0].shell, color=color)
                 self.animation_manager.context.current_time = (
@@ -199,7 +241,9 @@ class NeuralNetMLP(Mob):
         def pulse_synapses(neuron):
             with Sync(rate_func=ease_out_expo):
                 for synapse in neuron.synapses:
-                    synapse.wave_color(color + GLOW * 0.8, 0.9, reverse)
+                    synapse.wave_color(color + GLOW * 0.8, 0.9, reverse,
+                                       direction=self.get_forward_direction(),
+                                       new_color=tweak_color(synapse.color, 0.33) if reverse else None)
 
         def pulse_neuron(neuron):
             with Seq(run_time=3):
@@ -210,6 +254,7 @@ class NeuralNetMLP(Mob):
                     1,
                     reverse,
                     lag_duration=0.5,
+                    direction = self.get_forward_direction()
                 )
 
         pulse_funcs = [pulse_synapses, pulse_neuron]
@@ -232,7 +277,7 @@ class NeuralNetMLP(Mob):
                 return
             with Off():
                 output = output_generator().move_next_to(
-                    self.layers[-1][len(self.layers[-1]) // 2], self.direction, buffer=0
+                    self.layers[-1][len(self.layers[-1]) // 2], self.get_forward_direction(), buffer=0
                 )
                 for _ in output.get_descendants():
                     if not _.is_primitive:
@@ -241,6 +286,6 @@ class NeuralNetMLP(Mob):
                 output.spawn(animate=False)
             with Seq(run_time=3):
                 output.wave_color(
-                    color + GLOW, direction=self.direction, opacity=1, wave_length=1.5
+                    color + GLOW, direction=self.get_forward_direction(), opacity=1, wave_length=1.5
                 )
             return output

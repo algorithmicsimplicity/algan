@@ -371,6 +371,8 @@ class Animatable:
             scene = SceneManager.instance()
         self.scene = scene
         self.id = self.scene.get_new_id()
+        if self.id == 497:
+            print('debug')
         if add_to_scene:
             self.scene.add_actor(self)
 
@@ -647,7 +649,7 @@ class Animatable:
                 )
             else:
                 # We are at render time and this attr has never been modified, just fill with current value.
-                dd[key] = self.__getattribute__(key).expand(
+                dd[key] = self.__getattribute__(key)[-1:].expand(
                     len(self.data.time_inds_materialized), -1, -1
                 )
             return
@@ -702,7 +704,10 @@ class Animatable:
         )
         if value.shape[1] == 1 and self.data_sub_inds is not None:
             return value[time_inds]
-        return value[time_inds][:, data_inds]
+        try:
+            return value[time_inds][:, data_inds]
+        except:
+            return value[time_inds][:, data_inds]
 
     def wait(self, *args, **kwargs):
         """An animated function that does nothing for one second!"""
@@ -950,9 +955,11 @@ class Animatable:
         """Sets all animatable attribute values to the values they had before any animated_function applications take place."""
         fps = self.scene.frames_per_second
         time_inds = torch.arange(spawn_ind, despawn_ind)
-        self.despawn_ind = int(self.data.despawn_time() * fps)
         self.spawn_ind = int(self.data.spawn_time() * fps)
-        self.despawn_ind = max(self.despawn_ind, self.spawn_ind + 1)
+        if self.data.despawn_time() < 0:
+            self.despawn_ind = despawn_ind+1
+        else:
+            self.despawn_ind = max(despawn_ind, self.spawn_ind + 1)
 
         t = time_inds / fps
         t = t.unsqueeze(-1)

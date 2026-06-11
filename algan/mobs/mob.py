@@ -139,7 +139,7 @@ class Mob(Animatable):
                 # 'glow': additive_relation, # Currently commented out, but could be additive.
                 "basis": (
                     lambda x, y: squish(
-                        unsquish(x, -1, 3) @ unsquish(y, -1, 3), -2, -1
+                        unsquish(y, -1, 3) @ unsquish(x, -1, 3), -2, -1
                     ),
                     lambda x, y: squish(
                         get_rotation_between_bases(
@@ -405,7 +405,7 @@ class Mob(Animatable):
                 d.set_non_recursive(color=d.color.set_opacity(opacity))
         return self
 
-    def pulse_color(self, color: torch.Tensor = None, opacity: bool = None, recursive=True) -> "Mob":
+    def pulse_color(self, color: torch.Tensor = None, opacity: bool = None, recursive=True, new_color=None) -> "Mob":
         """Animates a color pulse effect.
 
         The Mob's color changes to the target `color` and then animates back to its
@@ -423,9 +423,11 @@ class Mob(Animatable):
             Mob: The Mob instance itself, allowing for method chaining.
 
         """
+        if new_color is None:
+            new_color = self.color
         with Sync():
             if color is not None:
-                self.apply_absolute_change_two("color", color, self.color, recursive="True" if recursive else "False")
+                self.apply_absolute_change_two("color", color, new_color, recursive="True" if recursive else "False")
             if opacity is not None:
                 self.apply_absolute_change_two("opacity", opacity, opacity, recursive="True" if recursive else "False")
         return self
@@ -517,7 +519,10 @@ class Mob(Animatable):
             Mob: The Mob instance itself, allowing for method chaining.
 
         """
-        change = change * interpolation
+        try:
+            change = change * interpolation
+        except:
+            change = change * interpolation
         relation = self.attr_to_relations[relation_key][0]
         current_value = self.__getattribute__(key)
 
@@ -1008,14 +1013,6 @@ class Mob(Animatable):
         """
         return self.get_forward_direction()
 
-    def get_center(self) -> torch.Tensor:
-        """Gets the logical center of the Mob.
-        Currently, this is simply the `location` attribute.
-
-        """
-        # TODO: Make this get mid point of bounding box surrounding self + children.
-        return self.location
-
     def set_location(self, location: torch.Tensor, recursive: bool = True) -> "Mob":
         """Sets the location of the Mob.
 
@@ -1057,6 +1054,13 @@ class Mob(Animatable):
             key, value
         )  # Calls the property setter, which then calls apply_absolute_change/set_relative
         self.recursing = original_recursing_state  # Restore original state
+
+    def move_between(self, loc1, loc2):
+        loc1, loc2 = [_.get_center() if hasattr(_, 'get_center') else _ for _ in [loc1, loc2]]
+        return self.move_to((loc1 + loc2) / 2)
+
+    def set_center(self, location):
+        return self.move_to(self.location - self.get_center() + location)
 
     def move_to(
         self, location: torch.Tensor, path_arc_angle: float | None = None, **kwargs
@@ -1205,6 +1209,20 @@ class Mob(Animatable):
         # Use broadcast_gather to retrieve the actual point
         return broadcast_gather(all_boundary_points, -2, best_index, keepdim=True)
 
+    def get_center(self) -> torch.Tensor:
+        """Gets the center (median mid-point) of the Mob and its descendants.
+
+        """
+
+        def get_median_location(tensor_values: torch.Tensor) -> torch.Tensor:
+            """Calculates the median (midpoint of min/max) of a tensor's values."""
+            max_val = tensor_values.amax(-2, keepdim=True)
+            min_val = tensor_values.amin(-2, keepdim=True)
+            return (max_val + min_val) * 0.5
+
+        bbox = self.get_bounding_box()
+        return get_median_location(bbox)
+
     def get_boundary_in_direction(self, direction: torch.Tensor) -> torch.Tensor:
         """Gets the point on the Mob's boundary (including children) that lies along
         the given direction from its center, and is furthest in that direction.
@@ -1221,14 +1239,8 @@ class Mob(Animatable):
         direction = F.normalize(direction, p=2, dim=-1)
         edge_point = self.get_boundary_edge_point(direction)
 
-        def get_median_location(tensor_values: torch.Tensor) -> torch.Tensor:
-            """Calculates the median (midpoint of min/max) of a tensor's values."""
-            max_val = tensor_values.amax(-2, keepdim=True)
-            min_val = tensor_values.amin(-2, keepdim=True)
-            return (max_val + min_val) * 0.5
-
         # Get the logical center of the Mob (or its current location if no complex center is defined)
-        mob_center = get_median_location(self.location)
+        mob_center = self.get_center()
         # Project the offset from the center to the edge point onto the direction
         # and add it back to the center to get the boundary point in that direction.
         return (
@@ -1258,17 +1270,18 @@ class Mob(Animatable):
         self.location = new_location
         return self
 
-    def get_x_coord(self):
-        return self.get_individual_coords(0)
+    def get_x_coord(self, *args, **kwargs):
+        return self.get_individual_coords(0, *args, **kwargs)
 
-    def get_y_coord(self):
-        return self.get_individual_coords(1)
+    def get_y_coord(self, *args, **kwargs):
+        return self.get_individual_coords(1, *args, **kwargs)
 
-    def get_z_coord(self):
-        return self.get_individual_coords(2)
+    def get_z_coord(self, *args, **kwargs):
+        return self.get_individual_coords(2, *args, **kwargs)
 
-    def get_individual_coords(self, coord_indexes):
-        return self.location[..., coord_indexes].clone()
+    def get_individual_coords(self, coord_indexes, centered=False):
+        l = self.get_center() if centered else self.location
+        return l[..., coord_indexes].clone()
 
     def set_x_y_coord(self, xy_coords: torch.Tensor):
         """Sets the x and y coordinates of the Mob's location, preserving z."""
@@ -1675,10 +1688,10 @@ class Mob(Animatable):
             * normalized_displacement_direction
         )
 
-        with Seq(run_time=1):  # Perform steps sequentially over the same runtime
-            self.move(displacement)  # First step: move by initial displacement
-            self.move(orthogonal_displacement)  # Second step: move orthogonally
-            self.location = destination  # Final step: snap to destination (or animate if runtime allows)
+        with Seq(run_time=1):
+            self.move(displacement)
+            self.move(orthogonal_displacement)
+            self.location = destination
         return self
 
     def get_length_along_direction(self, direction: torch.Tensor) -> torch.Tensor:
@@ -1721,6 +1734,19 @@ class Mob(Animatable):
         for child in self.children:
             parts.extend(child.get_parts_as_mobs())
         return parts
+
+    def scale_global_axes(self, scale_factor, recursive: bool = True):
+        scale_factor = cast_to_tensor(scale_factor)
+        new_basis = squish(unsquish(self.basis, -1, 3) * scale_factor.unsqueeze(-2), -2, -1)
+        self.set_basis_interpolated(new_basis, relation_key="scale_coefficient")
+        return self
+        if recursive:
+            for d in self.get_descendants(include_self=False):
+                d.setattr_and_record_modification('basis',
+                            squish(unsquish(d.basis, -1, 3) * scale_factor.unsqueeze(
+                                                                -2), -2, -1))
+        return self.setattr_and_record_modification('basis',
+                    squish(unsquish(self.basis, -1, 3) * scale_factor.unsqueeze(-2), -2, -1))
 
     def scale(
         self, scale_factor: float | torch.Tensor, recursive: bool = True
@@ -2704,6 +2730,15 @@ class Mob(Animatable):
         for child in self.children:
             child.set_recursive_from_parent(self, **kwargs)  # Propagate to children
         return self
+
+    def get_forward_basis(self):
+        return unsquish(self.basis, -1, 3)[..., 2, :]
+
+    def get_right_basis(self):
+        return unsquish(self.basis, -1, 3)[..., 0, :]
+
+    def get_upwards_basis(self):
+        return unsquish(self.basis, -1, 3)[..., 1, :]
 
     def get_forward_direction(self) -> torch.Tensor:
         """Gets the Mob's current forward direction vector (normalized).

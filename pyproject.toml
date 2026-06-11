@@ -1,6 +1,6 @@
 [project]
 name = "algan"
-version = "0.0.65"
+version = "0.2.2"
 description = "The simplest animation engine for 3D graphics."
 authors = [
   {name = "Algorithmic Simplicity", email = "algorithmicsimplicity@gmail.com"},
@@ -43,7 +43,7 @@ dependencies = [
     "reprit>=0.9.0",
     "decision>=0.3.0",
     "numpy>=1.20.0",
-    "opencv-python>=4.0.0",
+    "opencv-python>=3.0.0",
     "scipy>=1.8.0",
     "svgelements>=1.0.0",
     "torch>=2.0.0",

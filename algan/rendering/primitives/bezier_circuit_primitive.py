@@ -82,7 +82,7 @@ def batch_arange(lengths, memory=None):
     start_pointer = memory.current_pointer
     start_reverse_pointer = memory.current_reverse_pointer
     offsets = torch.cumsum(lengths, 0, out=memory.get_tensor(lengths.shape, lengths.dtype))
-    n = offsets[-1].clone()
+    n = offsets[-1].long()
     offsets -= lengths
     offsets = torch.repeat_interleave(offsets, lengths, output_size=n)
     inds = torch.arange(n, device=lengths.device, out=memory.get_tensor((n,), dtype=torch.long, persist=True))
@@ -292,7 +292,7 @@ def rasterize_polygon(vertices, next_vertices, num_vertices_per_object, memory):
 
         pos_slope_mask = torch.lt(nv_y, v_y, out=memory.get_tensor(vshape, dtype=torch.bool))
 
-        vertices_y = memory.get_tensor(vshape[:-1], torch.int)
+        vertices_y = memory.get_tensor(vshape[1:-1], torch.int)
         with memory.temp():
             temp_vertices_y = memory.get_tensor(vshape[:-1], torch.int)
             temp_next_vertices_y = memory.get_tensor(vshape[:-1], torch.int)
@@ -305,9 +305,9 @@ def rasterize_polygon(vertices, next_vertices, num_vertices_per_object, memory):
             temp_vertices_y[:] = vertices_y_int
             vertices_y_int = temp_vertices_y
 
-            y_ranges = torch.sub(next_vertices_y_int, vertices_y_int, out=vertices_y)
+            y_ranges = torch.sub(next_vertices_y_int, vertices_y_int, out=memory.get_tensor(vshape[:-1], torch.int))
             y_ranges.abs_()
-            y_ranges = torch.amax(y_ranges, 0, out=vertices_y[0])
+            y_ranges = torch.amax(y_ranges, 0, out=vertices_y)
 
         expa = TensorExpander(num_repeats=y_ranges, dim=-2, memory=memory)
 
@@ -451,7 +451,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             if self.num_texture_points <= 0:
                 self.colors = self.colors  # [..., 0, :]
             else:
-                self.colors = self.colors[..., (-self.num_texture_points) :, :]
+                self.colors = self.colors[..., (-self.num_texture_points):, :]
             self.padding = max(self.border_width.amax().ceil().long()+1, 2)
             # self.portion_of_curve_drawn = self.portion_of_curve_drawn[...,0,:1]
             return
@@ -1254,6 +1254,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         normals_for_frags = self.expand_verts_to_frags(
             squish(normals, 0, 1), object_to_fragment_gather_inds
         )
+        normals_for_frags = F.normalize(normals_for_frags, p=2, dim=-1, out=normals_for_frags)
 
         def expo(x, select=True, gather_inds=object_to_fragment_gather_inds, persist=False):
             if select:
@@ -1300,6 +1301,10 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
         dists = memory.get_tensor([*ray_origin.shape[:-1], 1])
         with memory.temp():
+            #<ray_origin + a * ray_dir - mob_center, norm> = 0
+            # a * <ray_dir, norm> = <mob_center, norm> - <ray_origin, norm>
+            # a = <mob_center, norm> - <ray_origin, norm> / <ray_dir, norm>
+            # a =
             plane_dir = torch.sub(mob_center_for_frags, ray_origin, out=memory.get_tensor(ray_origin.shape))
             dot1 = dot_product(plane_dir, normals_for_frags, out=memory.get_tensor([*ray_origin.shape[:-1], 1]))
             dot2 = dot_product(ray_direction, normals_for_frags, out=dists)
@@ -1421,7 +1426,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 colors.view(-1,colors.shape[-1]), object_to_fragment_gather_inds, -2
             )
 
-        with memory.temp():
+        """with memory.temp():
             dists_per_object = torch.split(distance_to_control_points, [_ for _ in self.num_segments_per_object], -3)
             dshape = [*distance_to_control_points.shape[:-3], len(dists_per_object), *distance_to_control_points.shape[-1:]]
             min_dists_per_object = torch.cat([squish(_, 1, 2).amin(-2, keepdim=True) for _ in dists_per_object], -2,
@@ -1435,7 +1440,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             max_dists_for_frag = broadcast_gather(squish(max_dists_per_object), -2,
                                                   object_to_fragment_gather_inds, out=memory)
             max_dists_for_frag += border_dists
-            dists = dists.view(-1,1).clamp_(min=min_dists_for_frag, max=max_dists_for_frag)
+            dists = dists.view(-1,1).clamp_(min=min_dists_for_frag, max=max_dists_for_frag)"""
+        dists = dists.view(-1, 1)
 
         # output_frags = self.get_tensor((len(unique_inds), colors.shape[-1]-1))
         # output_frags[:] = 0

@@ -1,7 +1,7 @@
 import torch
 from torch.export.dynamic_shapes import Dim
 
-from algan import compiled, exported, cuda_compiled, CudaStream
+from algan import compiled, exported, cuda_compiled, CudaStream, csync
 from algan.constants.color import BLUE
 from algan.settings.defaults import *
 from algan.rendering.primitives.primitive import RenderPrimitive
@@ -159,18 +159,25 @@ class TrianglePrimitive(RenderPrimitive):
     def get_batch_identifier(self):
         return f"{self.__class__}_{id(self.shader)}"
 
+    @csync
     def get_interpolation_coordinates(
         self, vertex_corners, fragment_x, fragment_y, aa_offsets
     ):
-        return get_bary_coordinates(vertex_corners, fragment_x, fragment_y)
+
+        out = get_bary_coordinates(vertex_corners, fragment_x, fragment_y)
+        torch.cuda.synchronize()
+        return out
 
     #@compiled
+    @csync
     def interpolate_property(self, interpolation_coord, property, repeats_inds):
-        return interpolate_triangle_corners(
+        out = interpolate_triangle_corners(
             self,
             interpolation_coord,
             self.expand_verts_to_frags(property, repeats_inds.unsqueeze(-1), -3, persist=True),
         )
+        torch.cuda.synchronize()
+        return out
 
 
 def get_tangents(x):

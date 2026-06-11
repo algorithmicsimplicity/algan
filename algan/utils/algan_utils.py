@@ -4,12 +4,16 @@ import time
 
 from pathlib import Path
 
+import multiprocessing
+import re
 import inspect
 import pstats
 import sys
+import subprocess
 
 import torch
 import cv2
+from moviepy import VideoFileClip, concatenate_videoclips
 from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter
 
 import algan
@@ -21,7 +25,33 @@ from algan.rendering.camera import Camera
 from algan import SceneManager
 from algan.sound.audio_effect import AudioManager
 from algan.utils.memory_utils import empty_cache
+from functools import partial
 
+
+def get_file_writer(temp_file_path, render_settings_resolution, codec, fps, with_mask, ffmpeg_params, audiofile, audio_codec):
+    try:
+        file_writer = FFMPEG_VideoWriter(
+            filename=temp_file_path,
+            size=render_settings_resolution,
+            codec=codec,
+            fps=fps,
+            with_mask=with_mask,
+            ffmpeg_params=ffmpeg_params,
+            audiofile=audiofile,
+            audio_codec=audio_codec,
+        )
+    except TypeError:
+        file_writer = FFMPEG_VideoWriter(
+            filename=temp_file_path,
+            size=render_settings.resolution,
+            codec=codec,
+            fps=render_settings.frames_per_second,
+            withmask=scene.background_is_transparent(),
+            ffmpeg_params=ffmpeg_params,
+            audiofile=audiofile,
+            audio_codec=audio_codec,
+        )
+    return file_writer
 
 # ‘mpeg4’ > ‘libx264’
 # @compiled
@@ -88,7 +118,7 @@ def render_to_file(
         empty_cache()
         if background_color is None:
             background_color = STYLE_DEFAULTS.background_color
-        scene.background_frame = scene.background_color = background_color
+        scene.set_background_color(background_color)
 
         if animate_fade_out is None:
             animate_fade_out = STYLE_DEFAULTS.fade_out_on_scene_end
@@ -118,40 +148,27 @@ def render_to_file(
             audio_codec = "mp3"
         if ffmpeg_params is None:
             ffmpeg_params = (
-                ["-crf", "15", "-preset", "veryslow"]
+                ["-crf", "17", "-preset", "slower"]
                 if not scene.background_is_transparent()
                 else []
             )
 
         print(f"Began rendering {file_name}{file_ext}")
-        audiofile = scene.render_audio_to_file(audio_file_path, audio_fps)
+        audiofile = scene.render_audio_to_file(audio_file_path, audio_fps,
+                                               nbytes=4, codec='pcm_s32le', )
         if audiofile is not None:
             with open(script_file_path, "w") as f:
                 f.write(AudioManager._video_transcript)
             print("Audio rendered, now rendering video")
 
-        try:
-            file_writer = FFMPEG_VideoWriter(
-                temp_file_path,
-                size=render_settings.resolution,
-                codec=codec,
-                fps=render_settings.frames_per_second,
-                with_mask=scene.background_is_transparent(),
-                ffmpeg_params=ffmpeg_params,
-                audiofile=audiofile,
-                audio_codec=audio_codec,
-            )
-        except TypeError:
-            file_writer = FFMPEG_VideoWriter(
-                temp_file_path,
-                size=render_settings.resolution,
-                codec=codec,
-                fps=render_settings.frames_per_second,
-                withmask=scene.background_is_transparent(),
-                ffmpeg_params=ffmpeg_params,
-                audiofile=audiofile,
-                audio_codec=audio_codec,
-            )
+        file_writer = get_file_writer(temp_file_path,
+                    render_settings.resolution,
+                    codec,
+                    render_settings.frames_per_second,
+                    scene.background_is_transparent(),
+                    ffmpeg_params,
+                    audiofile,
+                    audio_codec)
 
         try:
             scene.render_to_video(file_writer, temp_file_path, file_path, **kwargs)
@@ -165,6 +182,7 @@ def render_to_file(
                 os.remove(audio_file_path)
 
         SceneManager.reset()
+        AudioManager.reset()
         # AnimationManager.reset()
         # scene = SceneManager.instance()
         # scene.set_render_settings(render_settings)
@@ -181,6 +199,7 @@ def render_all_funcs(
     output_dir=None,
     output_path=None,
     file_extension="mp4",
+        smoke_test=False,
     **kwargs,
 ):
     def run(output_dir=None, render_settings=None, output_path=None):
@@ -218,15 +237,20 @@ def render_all_funcs(
             for i, (func_name, f) in list(enumerate(scene_funcs))[s:e]:
                 scene = SceneManager.reset()
                 scene.set_render_settings(render_settings)
+                if 'background_color' in kwargs:
+                    scene.set_background_color(kwargs['background_color'])
                 f()
-                render_to_file(
-                    f"{i}_{func_name}.{file_extension}",
-                    output_dir,
-                    output_path,
-                    render_settings,
-                    overwrite,
-                    **kwargs,
-                )
+                if not smoke_test:
+                    render_to_file(
+                        f"{i}_{func_name}.{file_extension}",
+                        output_dir,
+                        output_path,
+                        render_settings,
+                        overwrite,
+                        **kwargs,
+                    )
+
+            #combine_scenes(output_dir)
             return
 
     if profile:
@@ -263,3 +287,166 @@ def profile_func(func):
     ps.print_stats()
     print(f'took {end - start} seconds.')
     return out
+
+
+def concatenate_videos(directory: str, threads: int = None, reencode: bool = False,
+                       output_file='output.mp4'):
+    """
+    Concatenate all .mp4 files in a directory into output.mp4.
+
+    Files are sorted by their numeric prefix (e.g., 1_intro.mp4, 2_scene.mp4).
+    Uses ffmpeg with multithreading support.
+
+    Args:
+        directory: Path to directory containing .mp4 files
+        threads: Number of threads for ffmpeg (default: CPU count)
+        reencode: If True, re-encode videos with multithreading.
+                 If False, use stream copy (faster, no re-encoding)
+
+    Returns:
+        Path to output file if successful, None otherwise
+    """
+    # Default to CPU count
+    if threads is None:
+        threads = multiprocessing.cpu_count()
+
+    dir_path = Path(directory).resolve()
+
+    # Find all .mp4 files (excluding output.mp4 if it exists)
+    mp4_files = [f for f in dir_path.glob("*.mp4") if f.name != output_file]
+
+    if not mp4_files:
+        print(f"No .mp4 files found in {directory}")
+        return None
+
+    # Sort by numeric prefix
+    def get_prefix_number(file_path):
+        match = re.match(r'(\d+)_', file_path.name)
+        if match:
+            return int(match.group(1))
+        # Files without numeric prefix go to end, maintain alphabetical order
+        return (float('inf'))#, file_path.name)
+
+    sorted_files = sorted(mp4_files, key=get_prefix_number)
+
+    # Create concat list file for ffmpeg
+    concat_file = dir_path / "ffmpeg_concat_list.txt"
+    try:
+        with open(concat_file, 'w', encoding='utf-8') as f:
+            for video_file in sorted_files:
+                # Use absolute path with proper escaping for ffmpeg
+                # Replace backslashes with forward slashes for ffmpeg on Windows
+                abs_path = str(video_file.resolve()).replace('\\', '/')
+                f.write(f"file '{abs_path}'\n")
+
+        # Build ffmpeg command
+        output_path = dir_path / output_file
+
+        cmd = [
+            'ffmpeg',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', str(concat_file)
+        ]
+
+        if reencode:
+            # Re-encode with multithreading
+            cmd.extend([
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '23',
+                '-threads', str(threads),
+                '-c:a', 'aac',
+                '-b:a', '192k'
+            ])
+            print(f"Re-encoding with {threads} threads...")
+        else:
+            # Stream copy (fast, no re-encoding, but limited multithreading benefit)
+            cmd.extend(['-c', 'copy'])
+            print("Using stream copy (no re-encoding)...")
+
+        cmd.extend(['-y', str(output_path)])  # -y to overwrite without asking
+
+        print(f"\nConcatenating {len(sorted_files)} videos:")
+        for i, f in enumerate(sorted_files, 1):
+            print(f"  {i}. {f.name}")
+        print(f"\nOutput: {output_path}\n")
+
+        # Run ffmpeg
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace'
+        )
+
+        if result.returncode == 0:
+            print(f"✓ Successfully created {output_path.name}")
+            print(f"  Size: {output_path.stat().st_size / (1024*1024):.2f} MB")
+            return output_path
+        else:
+            print(f"✗ Error running ffmpeg:")
+            print(result.stderr)
+            return None
+
+    finally:
+        # Clean up concat list file
+        if concat_file.exists():
+            concat_file.unlink()
+
+
+def combine_scenes(dir):
+    ext = None
+    output_text_file = os.path.join(dir, "transcript.txt")
+    transcript = ""
+    video_files = []
+    def starts_with_int(s):
+        try:
+            int(s.split('_')[0])
+            return True
+        except:
+            return False
+    for f in sorted([_ for _ in os.listdir(dir) if starts_with_int(_)], key=lambda x: int(x.split('_')[0])):
+        if f.endswith('.mp4'):
+            video_files.append(os.path.join(dir, f))
+            if ext is None:
+                ext = f.split('.')[-1]
+        elif f.endswith('.txt'):
+            with open(os.path.join(dir, f), 'r') as f:
+                transcript += f.read()
+
+    with open(output_text_file, 'w') as f:
+        f.write(transcript)
+
+    concatenate_videos(dir, output_file=f"video.{ext}")
+    return
+
+    ##[_.close() for _ in video_clips]
+    def close_video_reader(self):
+        if self.reader:
+            self.reader.close()
+        return self
+    prev_clip = close_video_reader(VideoFileClip(video_files[0]))
+    clips = [prev_clip]
+    for i in range(1, len(video_files)):#video_files[1:]:
+        vf = video_files[i]
+        temp = prev_clip
+        new = close_video_reader(VideoFileClip(vf))
+        clips.append(new)
+        continue
+        prev_clip = concatenate_videoclips([prev_clip, new])
+        prev_clip.write_videofile(output_video_file)
+        temp.close()
+        new.close()
+        prev_clip.close()
+        if i < len(video_files)-1:
+            prev_clip = VideoFileClip(output_video_file)
+
+    #video_clips = [VideoFileClip(f) for f in video_files]
+    combined_clip = concatenate_videoclips(clips, method='compose')
+
+    combined_clip.write_videofile(output_video_file)
+
+    #prev_clip.close()#[_.close() for _ in video_clips]
+

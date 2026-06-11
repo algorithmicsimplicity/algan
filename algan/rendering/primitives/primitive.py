@@ -6,10 +6,12 @@ import sys
 import traceback
 import gc
 
-from algan import compiled, exported, cuda_compiled, CudaStream, not_compiled
+from algan.rendering.primitives.fragment_blender_taichi import blend_packed_power_of_two_fragment_list
+from algan.rendering.primitives.triangle_rasterize_taichi import rasterize_triangle_taichi
+from algan import compiled, exported, cuda_compiled, CudaStream, not_compiled, csync
 from algan.settings.defaults import COMPUTING_DEFAULTS
-from algan.constants.color import BLUE, BLACK, WHITE
-from algan.geometry.geometry import intersect_line_with_plane, distance
+from algan.constants.color import BLUE, BLACK, WHITE, RED, GREEN
+from algan.geometry.geometry import intersect_line_with_plane, distance, normalize
 from algan.rendering.post_processing.anti_aliasing.fxaa import fxaa
 from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.utils.tensor_utils import (
@@ -79,6 +81,7 @@ dynamic_shapes = [
 
 
 @cuda_compiled
+@csync
 def do_write(out, c_write, max_dist, dists, max_ind, c_read, ie, memory):
     #stream = torch.cuda.Stream()
     #with torch.cuda.stream(stream):
@@ -109,18 +112,21 @@ def do_write(out, c_write, max_dist, dists, max_ind, c_read, ie, memory):
             c_write[..., -1:].copy_(a_out)
         else:"""
         c_write = c_write[..., :-1]
+        torch.lerp(c_read, c_write, a, out=c_write)
         # if True:#not (i == 0 and transparent_output):
         # write = c_read * (1 - a) + a * (c_write)
-        torch.mul(c_write, a, out=c_write)
-        torch.mul(a, -1, out=a)
-        torch.add(a, 1, out=a)
-        torch.addcmul(c_write, c_read, a, out=c_write)
+        #torch.mul(c_write, a, out=c_write)
+        #torch.mul(a, -1, out=a)
+        #torch.add(a, 1, out=a)
+        #torch.addcmul(c_write, c_read, a, out=c_write)
 
         # write = write * mask + (~mask) * c_read
         write = torch.where(mask, c_write, c_read, out=c_write)
 
         out.scatter_(-2, ie, write)
-        return out
+    torch.cuda.synchronize()
+    return out
+
 
 #@exported(example_inputs=example_inputs, dynamic_shapes=dynamic_shapes)
 #@cuda_compiled
@@ -146,6 +152,47 @@ def blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, in
 
     out = do_write(out, c_write, max_dist, dists, max_ind, c_read, ie, memory)
     return out
+
+"""
+normal:
+c[0] * a[0],
+c[0] * a[0] * (1-a[1]) + a[1] * c[1]
+
+pre_mult:
+c[0] * a[0],
+c[0] * a[0] * (1-a[1]) + (c[1]*a[1]*(1-a[0])
+"""
+
+def blend_seq(data):
+    data = data.cpu()
+    outs = torch.zeros_like(data)
+    blend = torch.zeros_like(data[0,:-1])
+    for i, frag in enumerate(data):
+        if frag[-1].abs() > 0.5:
+            blend[:] = 0
+        a = frag[-2]
+        #blend = blend * (1-a) + a * frag[:-1]
+        blend = blend * (1-a) + frag[:-1]
+        outs[i, :-1] = blend
+    return outs.cuda()
+
+@csync
+def blend_with_scan(data):
+    out = blend_packed_power_of_two_fragment_list(data)
+    torch.cuda.synchronize()
+    return out
+
+
+def plot_inds(inds, width, height, t=0):
+    from algan.utils.plotting_utils import plot_tensor
+    out = torch.zeros((height, width, 3), device=inds.device)
+    n = t * width * height
+    inds = inds[(inds >= n) & (inds < ((t+1)*width*height))]
+    inds = inds.view(-1,1).expand(-1,out.shape[-1])
+    inds = inds % n
+    x = torch.scatter(squish(out), 0, inds, torch.ones_like(inds, dtype=out.dtype)).view(out.shape).permute(-1,0,1)
+    plot_tensor(x)
+    return x
 
 
 class RenderPrimitive:
@@ -198,7 +245,7 @@ class RenderPrimitive:
         window = (0, 0, screen_width, screen_height)
         kwargs["screen_width"] = screen_width
         kwargs["screen_height"] = screen_height
-        frames = self.render_window(
+        return self.render_window(
             primitives,
             scene,
             window,
@@ -215,29 +262,32 @@ class RenderPrimitive:
         )
 
     #@cuda_compiled
+    @csync
     def post_process_frames(self, frames, anti_alias_level, post_processes=[]):
         self.pre_post_pointers = self.memory.get_pointers()
         frame_out = frames
         if anti_alias_level > 1:
-            aa_frame_out = self.get_tensor([frame_out.shape[0] // anti_alias_level,
-                                            frame_out.shape[1] // anti_alias_level, frame_out.shape[2]], dtype=torch.uint8)
+            aa_frame_out = self.get_tensor([frame_out.shape[0],
+                                            frame_out.shape[1] // anti_alias_level, frame_out.shape[2] // anti_alias_level,
+                                            frame_out.shape[3]], dtype=torch.uint8)
             with self.memory.temp():
-                frame_temp = self.get_tensor([frame_out.shape[0] // anti_alias_level,
-                                            frame_out.shape[1] // anti_alias_level, frame_out.shape[2]])
-                frame_temp[:] = frame_out[1::anti_alias_level, ::anti_alias_level]
+                frame_temp = self.get_tensor([frame_out.shape[0],
+                                            frame_out.shape[1] // anti_alias_level, frame_out.shape[2] // anti_alias_level,
+                                              frame_out.shape[3]])
+                frame_temp[:] = frame_out[:, ::anti_alias_level, ::anti_alias_level]
                 for i in range(anti_alias_level):
                     for j in range(anti_alias_level):
                         if i == j == 0:
                             continue
-                        frame_temp[:] += frame_out[i::anti_alias_level, j::anti_alias_level]
+                        frame_temp[:] += frame_out[:, i::anti_alias_level, j::anti_alias_level]
                 frame_temp /= (anti_alias_level * anti_alias_level)
                 aa_frame_out[:] = frame_temp
             frame_out = aa_frame_out
         if self.memory.scene.render_settings.fxaa:
-            frame_out = (fxaa(frame_out.float().permute(-1,0,1).unsqueeze(0)).squeeze(0).permute(1,2,0)).to(torch.uint8)
+            frame_out = (fxaa(frame_out.float().permute(0,-1,1,2)).permute(0, 2,3,1)).to(torch.uint8)
         num_channels = frame_out.shape[-1]
         for p in post_processes:
-            frame_out = p(frame_out)
+            frame_out = p(frame_out, memory=self.memory)
         if num_channels == frame_out.shape[-1]:
             if num_channels == 5:
                 frame_out = frame_out[..., [*range(num_channels - 2), -1]]
@@ -246,13 +296,16 @@ class RenderPrimitive:
         frame_out = frame_out.cpu().flip(-3)
         # frame_out = frame_out.transpose(0, 1)
         # frame_out[...,:3] = frame_out[...,:3].flip(-1)
-        return frame_out.numpy()
+        torch.cuda.synchronize()
+        return frame_out
+
 
     def save_frames(self, frames, save_image, scene, **kwargs):
-        frames = (self.post_process_frames(frame, **kwargs) for frame in frames)
+        #frames = (self.post_process_frames(frame, **kwargs) for frame in frames)
+        frames = self.post_process_frames(frames, **kwargs)
         if not save_image:
             for frame in frames:
-                scene.file_writer.write_frame(frame)
+                scene.frame_queue.put(frame)
                 self.memory.set_pointers(self.pre_post_pointers)
         else:
             for frame in frames:
@@ -261,19 +314,23 @@ class RenderPrimitive:
                 )
         wait_for_cuda()
 
-    def mem_cat(self, xs):
+    def mem_cat(self, xs, extra_buffer=0, persist=False):
         dim = 0
         x_shape = xs[0].shape
-        concatenated_size = sum([x.shape[dim] for x in xs])
+        concatenated_size = sum([x.shape[dim] for x in xs]) + extra_buffer
         out_shape = [*x_shape[:dim], concatenated_size, *x_shape[dim:][1:]]
-        out = self.get_tensor(out_shape, dtype=xs[0].dtype)
-        return torch.cat(xs, out=out)
+        out = self.get_tensor(out_shape, dtype=xs[0].dtype, persist=persist)
+        if xs[0].device != out.device:
+            out = out.to(xs[0].device)
+        torch.cat(xs, out=out[:out.shape[0]-extra_buffer])
+        return out
         '''i = 0
         for x in xs:
             out[i : i + x.shape[dim]] = x
             i += x.shape[dim]
         return out'''
 
+    @csync
     def render_window(
         self,
         primitives,
@@ -296,14 +353,15 @@ class RenderPrimitive:
         del kwargs2["post_processes"]
         original_pointers = self.memory.get_pointers()
         try:
-            out = self.get_tensor(
-                (
-                    ((window[2] - window[0]) * (window[3] - window[1])),
-                    4 if not transparent_output else 5,
-                ),
-                torch.uint8,
-            )
+            screen_width = (window[2] - window[0])
+            screen_height = (window[3] - window[1])
+            num_frames = time_end - time_start
+            num_pixels_per_frame = screen_width * screen_height
+            num_pixels = num_pixels_per_frame * num_frames
+            out = self.memory.get_tensor(
+                (num_pixels + 1, 5 if transparent_output else 4), torch.uint8)
             out_pointers = self.memory.get_pointers()
+            torch.cuda.empty_cache()
 
             chunks = []
             for p in primitives:
@@ -341,8 +399,21 @@ class RenderPrimitive:
                 )
             else:
                 # colors, dists, inds = [torch.cat(_) for _ in zip(*chunks)]
-                colors, dists, inds = [self.mem_cat(_) for _ in zip(*chunks)] if len(chunks) > 1 else chunks[0]
-                frags = self.blend_frags_to_pixels(
+                extra_buffer = 0
+                if background_color.dim() > 1 and background_color.shape[0] > 1:
+                    with self.memory.temp(clear_persist=True):
+                        unique_inds = (self.mem_cat(list(zip(*chunks))[-1]) if len(chunks) > 1 else chunks[0][-1]).unique()
+                    extra_buffer = len(unique_inds)
+                    colors, dists, inds = [self.mem_cat(_, extra_buffer).clone() for _ in zip(*chunks)]
+                    bg_inds = unique_inds
+                    bg_cols = broadcast_gather(background_color.to(bg_inds.device), 0, bg_inds.view(-1, 1))
+                    colors[-extra_buffer:] = bg_cols
+                    colors[-extra_buffer:] /= 255
+                    dists[-extra_buffer:] = dists[:-extra_buffer].amax(0) + 1e-2
+                    inds[-extra_buffer:] = bg_inds
+                else:
+                    colors, dists, inds = [self.mem_cat(_, extra_buffer).clone() for _ in zip(*chunks)] if len(chunks) > 1 else chunks[0]
+                frames = self.blend_frags_to_pixels(
                     colors,
                     dists,
                     inds,
@@ -350,28 +421,25 @@ class RenderPrimitive:
                     time_end - time_start,
                     kwargs["screen_width"],
                     kwargs["screen_height"],
+                    num_pixels,
                     transparent_output,
+                    out
                 )
-                frames = scene.get_frames_from_fragments(
-                    frags, window, out, anti_alias_level=kwargs["anti_alias_level"]
-                )
+                frames = frames[:-1].view(num_frames, screen_height, screen_width, frames.shape[-1])
+                #frames = scene.get_frames_from_fragments(
+                #    frags, window, out, anti_alias_level=kwargs["anti_alias_level"]
+                #)
             self.memory.set_pointers(out_pointers)
             if (window[2] - window[0]) == kwargs["screen_width"] and (
                 window[3] - window[1]
             ) == kwargs["screen_height"]:
-                self.save_frames(
-                    frames,
-                    save_image,
-                    scene,
-                    anti_alias_level=kwargs["anti_alias_level"],
-                    post_processes=post_processes,
-                )
+                frames = self.post_process_frames(frames, anti_alias_level=kwargs["anti_alias_level"], post_processes=post_processes)
                 self.memory.set_pointers(original_pointers)
             else:
                 self.memory.set_pointers(out_pointers)
         except (InsufficientMemoryException, torch.OutOfMemoryError):
-            #print(f'splitting to t={(time_end - time_start)//2}, frame={(window[0] + window[2]) // 2},'
-            #      f' {(window[1] + window[3]) // 2}')
+            print(f'splitting to t={(time_end - time_start)//2}, frame={(window[0] + window[2]) // 2},'
+                  f' {(window[1] + window[3]) // 2}')
             self.memory.set_pointers(original_pointers)
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
@@ -381,7 +449,14 @@ class RenderPrimitive:
 
             if (time_end - time_start) > 1:
                 m = time_start + (time_end - time_start) // 2
-                self.render_window(
+                if background_color.dim() > 1 and background_color.shape[0] > 1:
+                    bg0 = background_color[:1]
+                    background_color = unsquish(background_color[1:], 0, -(time_end-time_start))
+                    bg1 = torch.cat((bg0, squish(background_color[:m], 0, 1)))
+                    bg2 = torch.cat((bg0, squish(background_color[m:], 0, 1)))
+                else:
+                    bg1 = bg2 = background_color
+                return self.mem_cat([self.render_window(
                     primitives,
                     scene,
                     window,
@@ -390,12 +465,12 @@ class RenderPrimitive:
                     m,
                     object_start,
                     object_end,
-                    background_color,
+                    bg1,
                     False,
                     transparent_output,
                     *args,
                     **kwargs,
-                )
+                ),
                 self.render_window(
                     primitives,
                     scene,
@@ -405,13 +480,12 @@ class RenderPrimitive:
                     time_end,
                     object_start,
                     object_end,
-                    background_color,
+                    bg2,
                     False,
                     transparent_output,
                     *args,
                     **kwargs,
-                )
-                return
+                )])
             else:
                 window_size = (window[2] - window[0]) * (window[3] - window[1])
                 if window_size < 100 * 100:
@@ -494,6 +568,7 @@ class RenderPrimitive:
                     return None
                 else:
                     return frames
+        torch.cuda.synchronize()
         return frames
 
     def get_tensor_from_memory(self, *args, **kwargs):
@@ -510,7 +585,8 @@ class RenderPrimitive:
         return broadcast_gather(x, dim, repeats_inds, out=out)
 
     @cuda_compiled
-    def blend_frags_to_pixels(
+    @csync
+    def blend_frags_to_pixels_old(
         self,
         colors,
         dists,
@@ -583,7 +659,137 @@ class RenderPrimitive:
             ind_counts = histc_result.long()
             self.memory.current_pointer = out_pointer
             wait_for_cuda()
-            return out, out_inds, ind_counts
+        torch.cuda.synchronize()
+        return out, out_inds, ind_counts
+
+    @cuda_compiled
+    @csync
+    def blend_frags_to_pixels(
+            self,
+            colors,
+            dists,
+            inds,
+            background_color,
+            num_frames,
+            screen_width,
+            screen_height,
+            num_pixels,
+            transparent_output=False,
+            out=None,
+    ):
+        colors[..., -1].clamp_(min=0, max=1)
+        #pre-multiply
+        colors[..., :-1] *= colors[..., -1:]
+
+        with self.memory.temp():
+            dists = self.memory.cast(dists, torch.double)
+            dists -= dists.view(-1).amin(0)
+            fragment_order = torch.add(inds, dists, alpha=1/(dists.view(-1).amax(0) + 1), out=dists)
+            sorted_frgment_order, s = torch.sort(fragment_order, stable=True, dim=0, descending=True,
+                              out=(self.get_tensor(fragment_order.shape, torch.double),
+                                   self.get_tensor(fragment_order.shape, torch.long)))
+            N = colors.shape[0]
+            padded_N = 1 << (N).bit_length() if N > 1 else N
+            buffer = self.memory.get_tensor((padded_N, colors.shape[1]+1))
+            buffer[:] = 0
+            sorted_colors = broadcast_gather(colors, 0, s.view(-1,1), out=buffer[:N,:-1], keepdim=True)
+            sorted_frgment_order.floor_()
+            #sorted_frgment_order = sorted_frgment_order.float()# remove distance component, now we just have fragment ID in sorted order.
+            with self.memory.temp():
+                difs = torch.diff(sorted_frgment_order, dim=0, out=self.memory.get_tensor(sorted_frgment_order.shape),
+                                  prepend=torch.tensor((1e12,), device=sorted_frgment_order.device))
+                mask = torch.lt(difs, -0.5, out=buffer[:N,-1])
+            mask_out = self.memory.get_tensor([mask.shape[0] + 1], torch.bool)
+            mask_out[-1] = True
+            mask = torch.gt(mask, 0.5, out=mask_out[:-1])
+            mask = mask_out[1:]
+
+            #buffer2 = blend_seq(buffer)
+            #sorted_colors = buffer2[:N, :-1]
+            blend_with_scan(buffer[:padded_N])
+            sorted_colors = buffer[1:N+1, :-1]
+            torch.cuda.synchronize()
+            out[..., :] = background_color[..., : out.shape[-1]]
+            sorted_frgment_order = self.memory.cast(sorted_frgment_order, torch.long)
+            fragment_to_pixel_ind = sorted_frgment_order
+            #fragment_to_pixel_ind = torch.where(mask, sorted_frgment_order,
+            #                                    torch.tensor((num_pixels,), device=out.device
+            #                                                 ), out=sorted_frgment_order)
+            frags = sorted_colors[:, :out.shape[-1]]
+            frags *= 255
+            frags.clamp_(min=0, max=255)
+            frags = self.memory.cast(frags, torch.uint8)
+            out = torch.scatter(out, 0, fragment_to_pixel_ind[mask].unsqueeze(1).expand(-1,out.shape[-1]), frags[mask], out=out)
+            return out
+            return out[:-1].view(num_frames, screen_width, screen_height, out.shape[-1])
+
+
+
+            dists += inds
+
+        #TODO rest
+
+        unique_inds, unique_inds_inverse, unique_counts = inds.unique(
+            return_inverse=True, return_counts=True
+        )
+
+        current_frags = self.get_tensor(
+            (len(unique_inds), colors.shape[-1] - (0 if transparent_output else 1)),
+            torch.float,
+        )
+        out_pointer = self.memory.current_pointer
+        self.memory.save_pointer()
+
+        if unique_counts.numel() == 0:
+            max_buffer_depth = 1
+        else:
+            max_buffer_depth = unique_counts.amax()
+
+        out = current_frags
+        out[..., :] = background_color[..., : out.shape[-1]]
+        # out[..., -1] = 0
+
+        # TODO make it so that if opacity is 0, that pixel is removed entirely (instead of just painting background constants), this will save us having to
+        # render invisible objects.
+
+        original_pointer = self.memory.current_pointer
+        inds_selected_ = self.get_tensor(unique_inds_inverse.shape, unique_inds_inverse.dtype)
+        c_write_ = self.get_tensor(colors.shape, colors.dtype)
+        c_read_ = self.get_tensor(out.shape, out.dtype)
+
+        # @compiled
+        @not_compiled
+        def blend_colors(dists, inds, colors, out):
+            for i in range(max_buffer_depth):
+                max_dist, max_ind = scatter_arg_max(
+                    dists, inds, -1, dim_size=out.shape[-2]
+                )
+                if max_ind is None:
+                    break
+
+                blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, inds_selected_, c_write_,
+                                             c_read_, self.memory)
+            self.memory.current_pointer = original_pointer
+            return out
+
+        out = blend_colors(dists, unique_inds_inverse, colors, out)
+        self.memory.reset_pointer()
+
+        out_inds = unique_inds.scatter_(0, unique_inds_inverse, inds)
+        # ind_counts = torch.histc(out_inds.float(), num_frames, min=0, max=(screen_width * screen_height * num_frames)).long()
+        float_tensor = self.get_tensor(out_inds.shape, dtype=torch.float)
+        float_tensor.copy_(out_inds)
+        histc_result = torch.histc(
+            float_tensor,
+            num_frames,
+            min=0,
+            max=(screen_width * screen_height * num_frames),
+        )
+        ind_counts = histc_result.long()
+        self.memory.current_pointer = out_pointer
+        wait_for_cuda()
+        torch.cuda.synchronize()
+        return out, out_inds, ind_counts
 
     #@cuda_compiled
     def get_windowed_bounding_boxes(
@@ -658,12 +864,12 @@ class RenderPrimitive:
         original_persist_pointer = memory.current_reverse_pointer
         with memory.temp():
             rays = torch.sub(x, ray_origin, out=memory.get_tensor(x.shape, persist=True))
-            rays = F.normalize(rays, p=2, dim=-1, out=rays)
+            rays = normalize(rays, p=2, dim=-1, memory=memory)
             projected_corners, _ = intersect_line_with_plane(
                 rays, screen_point, screen_basis[..., -1:, :], ray_origin, memory=memory
             )
         projected_corners.nan_to_num_()
-        projected_distances = distance(x, ray_origin)
+        projected_distances = distance(x, ray_origin, memory=memory)
         projected_corners -= screen_point
         corners_2d = dot_product(
             projected_corners.unsqueeze(-2),
@@ -718,6 +924,7 @@ class RenderPrimitive:
         )
 
     #@cuda_compiled
+    @csync
     def project_to_screen(self, camera, light_sources):
         #stream = torch.cuda.Stream()
         #with torch.cuda.stream(stream):
@@ -768,10 +975,12 @@ class RenderPrimitive:
                 memory=self.memory
             )
             self.first_projection = False
-            return self
+        torch.cuda.synchronize()
+        return self
 
     #@compiled
     #@cuda_compiled
+    @csync
     def render_(
         self,
         time_start,
@@ -811,6 +1020,30 @@ class RenderPrimitive:
 
         window_width = window_coords[2] - window_coords[0]
         window_height = window_coords[3] - window_coords[1]
+
+        fragment_count = torch.zeros((1,), device=corners.device, dtype=torch.long)
+        pointer = memory.current_pointer
+        num_outputs = 8
+        bytes_per_output = 4 * num_outputs
+        out_n_total = (memory.current_reverse_pointer - (memory.current_pointer+1))//bytes_per_output
+        out_n_per_var = out_n_total // num_outputs
+        out_buffer = memory.get_tensor((out_n_per_var, 6), torch.float)
+        out_ind_buffer = memory.get_tensor((out_n_per_var,), torch.long)
+        rasterize_triangle_taichi(squish(corners), squish(colors), squish(projected_distances),
+                                      out_buffer, out_ind_buffer,
+                                      window_width, window_height, fragment_count, corners.shape[1])
+        memory.current_pointer = pointer
+        if fragment_count > out_buffer.shape[0]:
+            raise InsufficientMemoryException
+        out = memory.get_tensor((fragment_count, num_outputs-2), torch.float)
+        inds_ = memory.clone(out_ind_buffer[:fragment_count])
+        colors_ = out[...,:5]
+        dists_ = out[...,5]
+        #inds_ = out[...,6]
+        #inds_ = memory.cast(inds_, torch.long, persist=True)
+        torch.cuda.synchronize()
+        return colors_, dists_, inds_
+
         start_x, start_y, end_x, end_y = window_coords
 
         corners_locs, corners_inds, projected_distances = (
@@ -1007,6 +1240,7 @@ class RenderPrimitive:
         inds = torch.masked_select(inds, m, out=memory.get_tensor((num_masked_frags,), torch.long))
         self.memory.current_reverse_pointer = original_pointers[1]
         wait_for_cuda()
+        torch.cuda.synchronize()
         return colors, dists, inds
 
 

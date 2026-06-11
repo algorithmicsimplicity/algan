@@ -422,19 +422,20 @@ class Audio(AnimationContext):
 
     """
 
-    def __init__(self, file_path_or_clip: str, **kwargs):
+    def __init__(self, file_path_or_clip: str, wait_at_end=0, **kwargs):
         audio_clip = file_path_or_clip
         if isinstance(file_path_or_clip, str):
             audio_clip = AudioFileClip(file_path_or_clip)
-        kwargs["run_time"] = audio_clip.duration
+        kwargs["run_time"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)
         self.audio_clip = audio_clip
 
     def __enter__(self):
         super().__enter__()
-        SceneManager.instance().add_effect(
-            AudioEffect(self.audio_clip, self.get_current_time())
-        )
+        if self.prev_context.run_time_unit > 0:
+            SceneManager.instance().add_effect(
+                AudioEffect(self.audio_clip, self.get_current_time())
+            )
 
 
 class Speech(Audio):
@@ -448,9 +449,13 @@ class Speech(Audio):
 
     """
 
-    def __init__(self, script, **kwargs):
+    def __init__(self, script, wait_at_end=1, *args, **kwargs):
         AudioManager.append_script(script)
-        super().__init__(AudioManager.get_speech(script), **kwargs)
+        super().__init__(AudioManager.get_speech(script), wait_at_end, *args, **kwargs)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        super().__exit__(exc_type, exc_val, exc_tb)
+        self.wait(1)
 
 
 class SlideShow(Seq):

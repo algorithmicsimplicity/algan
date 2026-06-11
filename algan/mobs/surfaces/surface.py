@@ -256,7 +256,7 @@ class Surface(Renderable):
             # self.set_normal_by_function(other_surface.normal_function)
 
     def set_location_by_function(self, function):
-        new_loc = squish(function(self.get_base_grid()), -3, -2) + self.location
+        new_loc = function(squish(self.get_base_grid(), -3, -2).unsqueeze(0)) + self.location
         self.grid.location = new_loc
         return self
 
