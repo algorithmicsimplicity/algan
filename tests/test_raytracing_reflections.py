@@ -127,6 +127,32 @@ def main():
     sharp_lit = (floor_mirror[..., 1] > 60).sum()
     glossy_lit = (floor_glossy[..., 1] > 30).sum()
     print(f"lit floor pixels sharp={sharp_lit} glossy(low thresh)={glossy_lit}")
+
+    # Fully physical pass: no vertex shading; the scene's point light (up
+    # and to the right of the camera) lights the sphere via shadow-rayed
+    # next-event estimation, so its right side must come out brighter.
+    from algan.rendering.raytracing import set_physical_lighting
+
+    set_physical_lighting(True)
+    try:
+        physical_path = render("reflections_physical", mirror=True,
+                               roughness=0.15, samples_per_pixel=24)
+    finally:
+        set_physical_lighting(False)
+        set_samples_per_pixel(1)
+    physical_frame = grab_frame(physical_path, 18)
+    cv2.imwrite(os.path.join(OUT_DIR, "reflections_physical.png"),
+                physical_frame.astype(np.uint8))
+    green = physical_frame[..., 1]
+    mask = green > 25
+    assert mask.sum() > 50, "physical render lost the lit sphere"
+    cols = np.nonzero(mask.any(axis=0))[0]
+    middle = (cols.min() + cols.max()) // 2
+    left = green[:, :middle][mask[:, :middle]].mean()
+    right = green[:, middle:][mask[:, middle:]].mean()
+    print(f"physical sphere brightness left={left:.1f} right={right:.1f}")
+    assert right > left * 1.1, (
+        "physical point light did not shade the sphere directionally")
     print("reflection demo passed")
 
 

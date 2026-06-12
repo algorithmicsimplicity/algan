@@ -35,6 +35,7 @@ from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.rendering.raytracing.ray_trace_taichi import (
     MIN_ALPHA,
+    path_trace_physical_stbvh,
     path_trace_scene_stbvh,
     render_scene_stbvh,
 )
@@ -53,6 +54,39 @@ SAMPLES_PER_PIXEL = 1
 # surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
 # with throughput ``albedo * strength`` for color bleeding.
 INDIRECT_BOUNCE_STRENGTH = 0.0
+# Fully physical mode: vertex shading is skipped (colors are raw albedo) and
+# the path tracer computes all lighting from the scene's explicit point
+# lights (with shadow rays), glow emission and the background environment.
+# Requires SAMPLES_PER_PIXEL > 1.
+PHYSICAL_LIGHTING = False
+# Radiance scale of explicit point lights in physical mode. The default of
+# pi makes a white light produce roughly albedo-level Lambertian brightness.
+LIGHT_INTENSITY = 3.141592653589793
+# Constant ambient term added per diffuse interaction in physical mode.
+AMBIENT_LIGHT = 0.0
+
+
+def set_physical_lighting(enabled):
+    """Toggle fully physical lighting for the Monte Carlo renderer: vertex
+    shading is skipped and illumination comes from the scene's point lights
+    (sampled with shadow rays), surface ``glow`` emission, and the background
+    environment. Requires ``set_samples_per_pixel`` > 1. Set before
+    rendering.
+    """
+    global PHYSICAL_LIGHTING
+    PHYSICAL_LIGHTING = bool(enabled)
+
+
+def set_light_intensity(intensity):
+    """Radiance scale applied to explicit point lights in physical mode."""
+    global LIGHT_INTENSITY
+    LIGHT_INTENSITY = float(intensity)
+
+
+def set_ambient_light(intensity):
+    """Constant ambient lighting term used in physical mode."""
+    global AMBIENT_LIGHT
+    AMBIENT_LIGHT = float(intensity)
 
 
 def set_samples_per_pixel(samples):
@@ -214,9 +248,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     @csync
     def project_to_screen(self, camera, light_sources):
         with CudaStream():
-            # Vertex shading, identical to the rasterized pipeline.
+            # Vertex shading, identical to the rasterized pipeline. Skipped
+            # in physical mode, where colors are raw albedo and the path
+            # tracer computes all lighting itself.
             d = -1
-            if getattr(self, "shader", None) is not None:
+            if not PHYSICAL_LIGHTING and getattr(self, "shader", None) is not None:
                 for light_source in light_sources:
                     with self.memory.temp():
                         self.colors[..., :d] = self.shader(
@@ -633,6 +669,24 @@ def _merge_scene(primitives):
     return scene
 
 
+def _pack_lights(light_sources, num_frames, device):
+    """Per-frame positions [T, L, 3] and RGB radiances [T, L, 3] of the
+    scene's point lights (as prepared by the scene before rendering).
+    """
+    positions, colors = [], []
+    for light in light_sources or ():
+        positions.append(_expand_frames(
+            _flat_frames(light.origin, (3,)), num_frames))
+        col = light.light_color.reshape(light.light_color.shape[0], -1)
+        colors.append(_expand_frames(col[:, :3].float(), num_frames))
+    if not positions:
+        return (torch.zeros((1, 1, 3), device=device),
+                torch.zeros((1, 1, 3), device=device), 0)
+    light_pos = torch.stack(positions, 1).to(device).contiguous()
+    light_col = torch.stack(colors, 1).to(device).contiguous()
+    return light_pos, light_col, light_pos.shape[1]
+
+
 def _prefill_background(out, background_color, frame_offset, device):
     """Fill the output buffer with the background. Solid colors arrive as a
     float [channels] tensor in [0, 1]; animated/image backgrounds arrive as a
@@ -697,6 +751,17 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
     first.memory = memory
 
     samples = max(1, int(SAMPLES_PER_PIXEL))
+    physical = bool(PHYSICAL_LIGHTING)
+    if physical and samples <= 1:
+        raise ValueError(
+            "Physical lighting is a Monte Carlo mode; call "
+            "set_samples_per_pixel(n) with n > 1 (e.g. 32) to use it.")
+    if physical:
+        light_pos, light_col, num_lights = _pack_lights(
+            light_sources, num_frames, device)
+    else:
+        light_pos = light_col = None
+        num_lights = 0
 
     def render_chunk(start, end):
         entry_pointers = memory.get_pointers()
@@ -722,7 +787,12 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 float(width // 2), float(height // 2),
                 float(merged["num_circuits"]), int(MAX_BOUNCES),
                 1 if transparent_background else 0)
-            if samples > 1:
+            if physical:
+                path_trace_physical_stbvh(
+                    *shared_args, samples, light_pos, light_col,
+                    int(num_lights), float(LIGHT_INTENSITY),
+                    float(AMBIENT_LIGHT), out)
+            elif samples > 1:
                 path_trace_scene_stbvh(*shared_args, samples,
                                        float(INDIRECT_BOUNCE_STRENGTH), out)
             else:
@@ -752,7 +822,8 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
 _originals = {}
 
 
-def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None):
+def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
+                       physical_lighting=None):
     """Route newly created mobs through the ray traced render pipeline.
 
     Rebinds the primitive classes used by the mob modules; call this before
@@ -768,11 +839,17 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None):
     indirect_bounce_strength
         Diffuse indirect lighting strength for the Monte Carlo renderer
         (see :func:`set_indirect_bounce_strength`).
+    physical_lighting
+        Fully physical mode: skip vertex shading and light the scene with
+        the explicit point lights, glow emission and the background
+        environment (see :func:`set_physical_lighting`).
     """
     if samples_per_pixel is not None:
         set_samples_per_pixel(samples_per_pixel)
     if indirect_bounce_strength is not None:
         set_indirect_bounce_strength(indirect_bounce_strength)
+    if physical_lighting is not None:
+        set_physical_lighting(physical_lighting)
     targets = []
     import algan.mobs.bezier_circuit as bezier_circuit
     import algan.mobs.shapes_2d as shapes_2d

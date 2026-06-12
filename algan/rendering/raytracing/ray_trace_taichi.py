@@ -392,6 +392,97 @@ def _sample_circuit_color(circuit, f, u, v, in_border,
     return color, alpha
 
 
+@ti.func
+def _nearest_surface(ro, rd, inv_rd, f, t_prev, layer_prev,
+                     pixel_size_per_t, base_dist, layer_offset_triangles,
+                     t_node_lo: ti.template(), t_node_hi: ti.template(),
+                     t_node_tmin: ti.template(), t_node_tmax: ti.template(),
+                     t_node_miss: ti.template(), t_leaf_prim: ti.template(),
+                     t_first_leaf,
+                     tri_verts: ti.template(), tri_colors: ti.template(),
+                     b_node_lo: ti.template(), b_node_hi: ti.template(),
+                     b_node_tmin: ti.template(), b_node_tmax: ti.template(),
+                     b_node_miss: ti.template(), b_leaf_prim: ti.template(),
+                     b_first_leaf,
+                     circuit_meta: ti.template(), circuit_colors: ti.template(),
+                     circuit_border_colors: ti.template(),
+                     edges_2d: ti.template(), edge_offsets: ti.template()):
+    """Nearest surface of either geometry type strictly after
+    (t_prev, layer_prev) along the ray, with its shading properties fetched.
+
+    Returns (found, t_hit, layer, color[rgb+glow], alpha, reflectivity,
+    roughness, normal); ``found == 0`` means the ray escapes the scene.
+    """
+    found = 0
+    t_hit = 1e30
+    hit_layer = -1e30
+    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    alpha = 0.0
+    reflectivity = 0.0
+    roughness = 0.0
+    normal = ti.math.vec3(0.0, 0.0, 0.0)
+
+    tt, t_prim, w1, w2, t_layer = _nearest_triangle_hit(
+        ro, rd, inv_rd, f, t_prev, layer_prev, layer_offset_triangles,
+        t_node_lo, t_node_hi, t_node_tmin, t_node_tmax,
+        t_node_miss, t_leaf_prim, t_first_leaf, tri_verts)
+    bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
+        ro, rd, inv_rd, f, t_prev, layer_prev, pixel_size_per_t, base_dist,
+        b_node_lo, b_node_hi, b_node_tmin, b_node_tmax,
+        b_node_miss, b_leaf_prim, b_first_leaf,
+        circuit_meta, edges_2d, edge_offsets)
+
+    if (t_prim >= 0) or (b_circ >= 0):
+        found = 1
+        use_triangle = (t_prim >= 0) and (
+            (b_circ < 0) or (not _comes_after(tt, t_layer, bt, b_layer)))
+        if use_triangle:
+            t_hit = tt
+            hit_layer = t_layer
+            w0 = 1.0 - w1 - w2
+            tc = f % tri_colors.shape[0]
+            tv = f % tri_verts.shape[0]
+            for ci in ti.static(range(4)):
+                color[ci] = (w0 * tri_colors[tc, t_prim, 0, ci]
+                             + w1 * tri_colors[tc, t_prim, 1, ci]
+                             + w2 * tri_colors[tc, t_prim, 2, ci])
+            alpha = (w0 * tri_colors[tc, t_prim, 0, 4]
+                     + w1 * tri_colors[tc, t_prim, 1, 4]
+                     + w2 * tri_colors[tc, t_prim, 2, 4])
+            reflectivity = (w0 * tri_verts[tv, t_prim, 0, 6]
+                            + w1 * tri_verts[tv, t_prim, 1, 6]
+                            + w2 * tri_verts[tv, t_prim, 2, 6])
+            roughness = (w0 * tri_verts[tv, t_prim, 0, 7]
+                         + w1 * tri_verts[tv, t_prim, 1, 7]
+                         + w2 * tri_verts[tv, t_prim, 2, 7])
+            for ci in ti.static(range(3)):
+                normal[ci] = (w0 * tri_verts[tv, t_prim, 0, 3 + ci]
+                              + w1 * tri_verts[tv, t_prim, 1, 3 + ci]
+                              + w2 * tri_verts[tv, t_prim, 2, 3 + ci])
+            if normal.norm() < 1e-6:
+                v0 = ti.math.vec3(tri_verts[tv, t_prim, 0, 0],
+                                  tri_verts[tv, t_prim, 0, 1],
+                                  tri_verts[tv, t_prim, 0, 2])
+                v1 = ti.math.vec3(tri_verts[tv, t_prim, 1, 0],
+                                  tri_verts[tv, t_prim, 1, 1],
+                                  tri_verts[tv, t_prim, 1, 2])
+                v2 = ti.math.vec3(tri_verts[tv, t_prim, 2, 0],
+                                  tri_verts[tv, t_prim, 2, 1],
+                                  tri_verts[tv, t_prim, 2, 2])
+                normal = (v1 - v0).cross(v2 - v0)
+        else:
+            t_hit = bt
+            hit_layer = b_layer
+            color, alpha = _sample_circuit_color(
+                b_circ, f, b_u, b_v, b_border,
+                circuit_meta, circuit_colors, circuit_border_colors)
+            tm = f % circuit_meta.shape[0]
+            normal = ti.math.vec3(circuit_meta[tm, b_circ, _M_NORMAL],
+                                  circuit_meta[tm, b_circ, _M_NORMAL + 1],
+                                  circuit_meta[tm, b_circ, _M_NORMAL + 2])
+    return found, t_hit, hit_layer, color, alpha, reflectivity, roughness, normal
+
+
 @ti.kernel
 def render_scene_stbvh(
         # Triangle STBVH + packed geometry.
@@ -606,8 +697,6 @@ def path_trace_scene_stbvh(
     Paths that escape the scene pick up the background; the sample mean is
     written over the pre-filled background buffer.
     """
-    num_color_frames = tri_colors.shape[0]
-    num_vert_frames = tri_verts.shape[0]
     pixels_per_frame = width * height
     num_rays = (time_end - time_start) * pixels_per_frame
 
@@ -648,77 +737,20 @@ def path_trace_scene_stbvh(
             step = 0
             while step < MAX_SURFACES_PER_RAY:
                 step += 1
-                tt, t_prim, w1, w2, t_layer = _nearest_triangle_hit(
+                (found, t_hit, hit_layer, color, alpha, reflectivity,
+                 roughness, normal) = _nearest_surface(
                     ro, rd, inv_rd, f, t_prev, layer_prev,
-                    layer_offset_triangles,
+                    pixel_size_per_t, base_dist, layer_offset_triangles,
                     t_node_lo, t_node_hi, t_node_tmin, t_node_tmax,
-                    t_node_miss, t_leaf_prim, t_first_leaf, tri_verts)
-                bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
-                    ro, rd, inv_rd, f, t_prev, layer_prev,
-                    pixel_size_per_t, base_dist,
+                    t_node_miss, t_leaf_prim, t_first_leaf,
+                    tri_verts, tri_colors,
                     b_node_lo, b_node_hi, b_node_tmin, b_node_tmax,
                     b_node_miss, b_leaf_prim, b_first_leaf,
-                    circuit_meta, edges_2d, edge_offsets)
-
-                if (t_prim < 0) and (b_circ < 0):
+                    circuit_meta, circuit_colors, circuit_border_colors,
+                    edges_2d, edge_offsets)
+                if found == 0:
                     escaped = True
                     break
-                use_triangle = (t_prim >= 0) and (
-                    (b_circ < 0) or (not _comes_after(tt, t_layer, bt, b_layer)))
-
-                color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-                alpha = 0.0
-                reflectivity = 0.0
-                roughness = 0.0
-                t_hit = 0.0
-                hit_layer = 0.0
-                normal = ti.math.vec3(0.0, 0.0, 0.0)
-                if use_triangle:
-                    t_hit = tt
-                    hit_layer = t_layer
-                    w0 = 1.0 - w1 - w2
-                    tc = f % num_color_frames
-                    tv = f % num_vert_frames
-                    for ci in ti.static(range(4)):
-                        color[ci] = (w0 * tri_colors[tc, t_prim, 0, ci]
-                                     + w1 * tri_colors[tc, t_prim, 1, ci]
-                                     + w2 * tri_colors[tc, t_prim, 2, ci])
-                    alpha = (w0 * tri_colors[tc, t_prim, 0, 4]
-                             + w1 * tri_colors[tc, t_prim, 1, 4]
-                             + w2 * tri_colors[tc, t_prim, 2, 4])
-                    reflectivity = (w0 * tri_verts[tv, t_prim, 0, 6]
-                                    + w1 * tri_verts[tv, t_prim, 1, 6]
-                                    + w2 * tri_verts[tv, t_prim, 2, 6])
-                    roughness = (w0 * tri_verts[tv, t_prim, 0, 7]
-                                 + w1 * tri_verts[tv, t_prim, 1, 7]
-                                 + w2 * tri_verts[tv, t_prim, 2, 7])
-                    for ci in ti.static(range(3)):
-                        normal[ci] = (
-                            w0 * tri_verts[tv, t_prim, 0, 3 + ci]
-                            + w1 * tri_verts[tv, t_prim, 1, 3 + ci]
-                            + w2 * tri_verts[tv, t_prim, 2, 3 + ci])
-                    if normal.norm() < 1e-6:
-                        v0 = ti.math.vec3(tri_verts[tv, t_prim, 0, 0],
-                                          tri_verts[tv, t_prim, 0, 1],
-                                          tri_verts[tv, t_prim, 0, 2])
-                        v1 = ti.math.vec3(tri_verts[tv, t_prim, 1, 0],
-                                          tri_verts[tv, t_prim, 1, 1],
-                                          tri_verts[tv, t_prim, 1, 2])
-                        v2 = ti.math.vec3(tri_verts[tv, t_prim, 2, 0],
-                                          tri_verts[tv, t_prim, 2, 1],
-                                          tri_verts[tv, t_prim, 2, 2])
-                        normal = (v1 - v0).cross(v2 - v0)
-                else:
-                    t_hit = bt
-                    hit_layer = b_layer
-                    color, alpha = _sample_circuit_color(
-                        b_circ, f, b_u, b_v, b_border,
-                        circuit_meta, circuit_colors, circuit_border_colors)
-                    tm = f % circuit_meta.shape[0]
-                    normal = ti.math.vec3(
-                        circuit_meta[tm, b_circ, _M_NORMAL],
-                        circuit_meta[tm, b_circ, _M_NORMAL + 1],
-                        circuit_meta[tm, b_circ, _M_NORMAL + 2])
 
                 alpha = ti.math.clamp(alpha, 0.0, 1.0)
                 if ti.random(ti.f32) >= alpha:
@@ -774,6 +806,295 @@ def path_trace_scene_stbvh(
 
             if escaped:
                 acc += throughput * background
+                acc_alpha += 1.0 if interacted else background_alpha
+            else:
+                acc_alpha += 1.0
+
+        inv_spp = 1.0 / ti.cast(samples_per_pixel, ti.f32)
+        for ci in ti.static(range(4)):
+            val = acc[ci] * inv_spp * 255.0
+            out[f_rel, p, ci] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),
+                                        ti.u8)
+        if transparent != 0:
+            val = acc_alpha * inv_spp * 255.0
+            out[f_rel, p, 4] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),
+                                       ti.u8)
+
+
+@ti.func
+def _transmittance(ro, rd, f, max_t,
+                   pixel_size_per_t, base_dist, layer_offset_triangles,
+                   t_node_lo: ti.template(), t_node_hi: ti.template(),
+                   t_node_tmin: ti.template(), t_node_tmax: ti.template(),
+                   t_node_miss: ti.template(), t_leaf_prim: ti.template(),
+                   t_first_leaf,
+                   tri_verts: ti.template(), tri_colors: ti.template(),
+                   b_node_lo: ti.template(), b_node_hi: ti.template(),
+                   b_node_tmin: ti.template(), b_node_tmax: ti.template(),
+                   b_node_miss: ti.template(), b_leaf_prim: ti.template(),
+                   b_first_leaf,
+                   circuit_meta: ti.template(), circuit_colors: ti.template(),
+                   circuit_border_colors: ti.template(),
+                   edges_2d: ti.template(), edge_offsets: ti.template()):
+    """Fraction of light transmitted along a shadow ray of length ``max_t``:
+    every surface crossed attenuates by its transparency ``1 - alpha``.
+    """
+    inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
+                          _safe_inverse(rd[2]))
+    transmitted = 1.0
+    t_prev = 0.0
+    layer_prev = 1e30
+    step = 0
+    while step < MAX_SURFACES_PER_RAY:
+        step += 1
+        (found, t_hit, hit_layer, _color, alpha, _refl, _rough,
+         _normal) = _nearest_surface(
+            ro, rd, inv_rd, f, t_prev, layer_prev,
+            pixel_size_per_t, base_dist, layer_offset_triangles,
+            t_node_lo, t_node_hi, t_node_tmin, t_node_tmax,
+            t_node_miss, t_leaf_prim, t_first_leaf,
+            tri_verts, tri_colors,
+            b_node_lo, b_node_hi, b_node_tmin, b_node_tmax,
+            b_node_miss, b_leaf_prim, b_first_leaf,
+            circuit_meta, circuit_colors, circuit_border_colors,
+            edges_2d, edge_offsets)
+        if (found == 0) or (t_hit >= max_t):
+            break
+        transmitted *= 1.0 - ti.math.clamp(alpha, 0.0, 1.0)
+        if transmitted < 1e-3:
+            transmitted = 0.0
+            break
+        t_prev = t_hit
+        layer_prev = hit_layer
+    return transmitted
+
+
+@ti.kernel
+def path_trace_physical_stbvh(
+        # Triangle STBVH + packed geometry.
+        t_node_lo: ti.types.ndarray(), t_node_hi: ti.types.ndarray(),
+        t_node_tmin: ti.types.ndarray(), t_node_tmax: ti.types.ndarray(),
+        t_node_miss: ti.types.ndarray(), t_leaf_prim: ti.types.ndarray(),
+        t_first_leaf: int,
+        tri_verts: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        # Bezier STBVH + packed geometry.
+        b_node_lo: ti.types.ndarray(), b_node_hi: ti.types.ndarray(),
+        b_node_tmin: ti.types.ndarray(), b_node_tmax: ti.types.ndarray(),
+        b_node_miss: ti.types.ndarray(), b_leaf_prim: ti.types.ndarray(),
+        b_first_leaf: int,
+        circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
+        circuit_border_colors: ti.types.ndarray(),
+        edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
+        # Per-frame camera and pixel scale.
+        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
+        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
+        pixel_world_scale: ti.types.ndarray(),
+        # Render parameters.
+        time_start: int, time_end: int, width: int, height: int,
+        half_screen_w: float, half_screen_h: float,
+        layer_offset_triangles: float, max_bounces: int, transparent: int,
+        samples_per_pixel: int,
+        # Explicit point lights [Tl, L, 3] and lighting controls.
+        light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
+        num_lights: int, light_intensity: float, ambient: float,
+        # Output buffer pre-filled with the background (the environment).
+        out: ti.types.ndarray()):
+    """Physically based Monte Carlo path tracer with explicit lights.
+
+    Vertex colors are treated as raw *albedo* (vertex shading is skipped in
+    this mode) and all illumination is computed by the integrator:
+
+    * **Point lights** are sampled explicitly at every interaction
+      (next-event estimation): a shadow ray accumulates the transmittance
+      through partially transparent occluders, and the surface responds with
+      a Lambertian diffuse lobe plus a Fresnel-weighted glossy specular lobe
+      (Schlick ``F0 = lerp(0.04, albedo, metallic)``, normalized
+      Blinn-Phong with exponent derived from ``roughness``). ``reflectivity``
+      doubles as the metallicness.
+    * **Emissive surfaces**: the ``glow`` channel emits
+      ``albedo * glow`` radiance, picked up by paths that hit the surface
+      (point lights are never hit by chance, so nothing is double counted).
+    * **The background acts as the environment light** for escaping paths,
+      and ``ambient`` adds a constant ambient term per diffuse interaction.
+    * Continuation rays importance-sample the BRDF: a Fresnel-proportional
+      coin chooses the specular lobe (mirror direction jittered by
+      ``roughness``) or the cosine-weighted diffuse lobe, with throughput
+      weights that keep the estimator unbiased. Transparency passes rays
+      straight through with probability ``1 - alpha``.
+    """
+    pixels_per_frame = width * height
+    num_rays = (time_end - time_start) * pixels_per_frame
+    num_light_frames = ti.max(light_pos.shape[0], 1)
+
+    for ray_id in range(num_rays):
+        f_rel = ray_id // pixels_per_frame
+        p = ray_id - f_rel * pixels_per_frame
+        f = time_start + f_rel
+        py = p // width
+        px = p - py * width
+        pixel_size_per_t = pixel_world_scale[f]
+
+        background = ti.math.vec3(ti.cast(out[f_rel, p, 0], ti.f32),
+                                  ti.cast(out[f_rel, p, 1], ti.f32),
+                                  ti.cast(out[f_rel, p, 2], ti.f32)) / 255.0
+        background_alpha = 1.0
+        if transparent != 0:
+            background_alpha = ti.cast(out[f_rel, p, 4], ti.f32) / 255.0
+
+        acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)  # radiance rgb + bloom glow
+        acc_alpha = 0.0
+        for _sample in range(samples_per_pixel):
+            ro, rd = _generate_ray(f, px, py, ti.random(ti.f32),
+                                   ti.random(ti.f32),
+                                   half_screen_w, half_screen_h,
+                                   cam_origin, screen_point,
+                                   pixel_basis_x, pixel_basis_y)
+            inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
+                                  _safe_inverse(rd[2]))
+            throughput = ti.math.vec3(1.0, 1.0, 1.0)
+            t_prev = 0.0
+            layer_prev = 1e30
+            base_dist = 0.0
+            bounces_left = max_bounces
+            interacted = False
+            escaped = False
+
+            step = 0
+            while step < MAX_SURFACES_PER_RAY:
+                step += 1
+                (found, t_hit, hit_layer, color, alpha, reflectivity,
+                 roughness, normal) = _nearest_surface(
+                    ro, rd, inv_rd, f, t_prev, layer_prev,
+                    pixel_size_per_t, base_dist, layer_offset_triangles,
+                    t_node_lo, t_node_hi, t_node_tmin, t_node_tmax,
+                    t_node_miss, t_leaf_prim, t_first_leaf,
+                    tri_verts, tri_colors,
+                    b_node_lo, b_node_hi, b_node_tmin, b_node_tmax,
+                    b_node_miss, b_leaf_prim, b_first_leaf,
+                    circuit_meta, circuit_colors, circuit_border_colors,
+                    edges_2d, edge_offsets)
+                if found == 0:
+                    escaped = True
+                    break
+
+                alpha = ti.math.clamp(alpha, 0.0, 1.0)
+                if ti.random(ti.f32) >= alpha:
+                    t_prev = t_hit
+                    layer_prev = hit_layer
+                    continue
+                interacted = True
+
+                albedo = ti.math.vec3(color[0], color[1], color[2])
+                glow = ti.max(color[3], 0.0)
+                metallic = ti.math.clamp(reflectivity, 0.0, 1.0)
+                if normal.norm() > 1e-9:
+                    normal = normal.normalized()
+                if normal.dot(rd) > 0.0:
+                    normal = -normal
+                hit_point = ro + t_hit * rd
+                shadow_origin = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
+
+                f0 = ti.math.vec3(0.04, 0.04, 0.04) * (1.0 - metallic) \
+                    + albedo * metallic
+                cos_view = ti.max(normal.dot(-rd), 0.0)
+                fresnel = f0 + (ti.math.vec3(1.0, 1.0, 1.0) - f0) \
+                    * ti.pow(1.0 - cos_view, 5.0)
+
+                # Emission (glow) and constant ambient.
+                acc += ti.math.vec4(
+                    throughput[0] * albedo[0] * glow,
+                    throughput[1] * albedo[1] * glow,
+                    throughput[2] * albedo[2] * glow,
+                    (throughput[0] + throughput[1] + throughput[2])
+                    / 3.0 * glow)
+                if ambient > 0.0:
+                    amb = ambient * (1.0 - metallic)
+                    acc += ti.math.vec4(throughput[0] * albedo[0] * amb,
+                                        throughput[1] * albedo[1] * amb,
+                                        throughput[2] * albedo[2] * amb, 0.0)
+
+                # Next-event estimation: sample every point light.
+                phong_n = ti.math.clamp(
+                    2.0 / ti.max(roughness * roughness, 5e-4) - 2.0,
+                    1.0, 4096.0)
+                tl = f % num_light_frames
+                for li in range(num_lights):
+                    lp = ti.math.vec3(light_pos[tl, li, 0],
+                                      light_pos[tl, li, 1],
+                                      light_pos[tl, li, 2])
+                    to_light = lp - hit_point
+                    light_dist = to_light.norm()
+                    if light_dist > 1e-5:
+                        wi = to_light / light_dist
+                        cos_i = normal.dot(wi)
+                        if cos_i > 1e-4:
+                            visible = _transmittance(
+                                shadow_origin, wi, f,
+                                light_dist - 20.0 * MIN_HIT_DISTANCE,
+                                pixel_size_per_t, base_dist,
+                                layer_offset_triangles,
+                                t_node_lo, t_node_hi, t_node_tmin,
+                                t_node_tmax, t_node_miss, t_leaf_prim,
+                                t_first_leaf, tri_verts, tri_colors,
+                                b_node_lo, b_node_hi, b_node_tmin,
+                                b_node_tmax, b_node_miss, b_leaf_prim,
+                                b_first_leaf, circuit_meta, circuit_colors,
+                                circuit_border_colors, edges_2d,
+                                edge_offsets)
+                            if visible > 1e-4:
+                                half_v = (wi - rd).normalized()
+                                cos_h = ti.max(normal.dot(half_v), 0.0)
+                                spec = fresnel * ((phong_n + 2.0)
+                                                  / 6.283185307179586
+                                                  * ti.pow(cos_h, phong_n))
+                                diff = albedo * ((1.0 - metallic)
+                                                 / 3.141592653589793)
+                                radiance = ti.math.vec3(
+                                    light_col[tl, li, 0],
+                                    light_col[tl, li, 1],
+                                    light_col[tl, li, 2]) * light_intensity
+                                lit = throughput * (diff + spec) \
+                                    * (cos_i * visible) * radiance
+                                acc += ti.math.vec4(lit[0], lit[1], lit[2],
+                                                    0.0)
+
+                # Importance-sample the BRDF for the continuation ray.
+                if bounces_left <= 0:
+                    break  # absorbed
+                spec_prob = ti.math.clamp(
+                    (fresnel[0] + fresnel[1] + fresnel[2]) / 3.0, 0.0, 0.95)
+                if metallic < 1e-3:
+                    spec_prob = 0.0  # skip glints on plain dielectrics
+                if ti.random(ti.f32) < spec_prob:
+                    rd_new = (rd - 2.0 * rd.dot(normal) * normal).normalized()
+                    if roughness > 1e-4:
+                        rd_new = (rd_new + roughness
+                                  * _random_unit_vector()).normalized()
+                        if rd_new.dot(normal) < 0.0:
+                            rd_new = rd_new - 2.0 * rd_new.dot(normal) * normal
+                    rd = rd_new
+                    throughput *= fresnel / spec_prob
+                else:
+                    rd = _cosine_hemisphere_direction(normal)
+                    throughput *= albedo * ((1.0 - metallic)
+                                            / (1.0 - spec_prob))
+                if (ti.max(throughput[0],
+                           ti.max(throughput[1], throughput[2]))
+                        < MIN_WEIGHT):
+                    break  # absorbed
+                ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
+                inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                      _safe_inverse(rd[1]),
+                                      _safe_inverse(rd[2]))
+                base_dist += t_hit
+                t_prev = 0.0
+                layer_prev = 1e30
+                bounces_left -= 1
+
+            if escaped:
+                acc += ti.math.vec4(throughput[0] * background[0],
+                                    throughput[1] * background[1],
+                                    throughput[2] * background[2], 0.0)
                 acc_alpha += 1.0 if interacted else background_alpha
             else:
                 acc_alpha += 1.0

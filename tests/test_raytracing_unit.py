@@ -22,6 +22,7 @@ import torch
 
 from algan.rendering.raytracing.ray_trace_taichi import (
     MIN_ALPHA,
+    path_trace_physical_stbvh,
     path_trace_scene_stbvh,
     render_scene_stbvh,
 )
@@ -109,9 +110,12 @@ def _dummy_bezier_parts():
 
 
 def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
-                bg=20, max_bounces=0, samples_per_pixel=0, indirect=0.0):
-    """Launch the deterministic kernel, or the Monte Carlo kernel when
-    ``samples_per_pixel > 0``.
+                bg=20, max_bounces=0, samples_per_pixel=0, indirect=0.0,
+                physical=False, light_pos=None, light_col=None,
+                light_intensity=3.141592653589793, ambient=0.0):
+    """Launch the deterministic kernel, the Monte Carlo kernel
+    (``samples_per_pixel > 0``), or the physical path tracer
+    (``physical=True``).
     """
     bez_bvh, meta, ccolors, bcolors, edges, offsets = _dummy_bezier_parts()
     out = torch.full((T, W * H, 4), bg, dtype=torch.uint8, device=DEVICE)
@@ -126,7 +130,17 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
         cam.contiguous(), sp.contiguous(), pbx.contiguous(), pby.contiguous(),
         scale, 0, T, W, H, float(W // 2), float(H // 2),
         0.0, max_bounces, 0)
-    if samples_per_pixel > 0:
+    if physical:
+        if light_pos is None:
+            light_pos = torch.zeros((1, 1, 3), device=DEVICE)
+            light_col = torch.zeros((1, 1, 3), device=DEVICE)
+            num_lights = 0
+        else:
+            num_lights = light_pos.shape[1]
+        path_trace_physical_stbvh(
+            *shared, samples_per_pixel, light_pos.contiguous(),
+            light_col.contiguous(), num_lights, light_intensity, ambient, out)
+    elif samples_per_pixel > 0:
         path_trace_scene_stbvh(*shared, samples_per_pixel, indirect, out)
     else:
         render_scene_stbvh(*shared, out)
@@ -395,6 +409,92 @@ def test_indirect_color_bleed():
           f"(R-G near wall {bleed_off:.1f} -> {bleed_on:.1f})")
 
 
+def _floor_pixel(world_x, W, H):
+    """Pixel column of floor point (world_x, 0, 0) for the standard camera
+    at (0, 0, 8) with screen plane z=5 (ray hits z=0 at 8/3 the screen
+    offset, so u = 3x/8).
+    """
+    return int(round(0.375 * world_x * (H // 2) + W // 2))
+
+
+def test_physical_direct_lighting_and_shadows():
+    """A point light over a matte floor: brightness must follow the Lambert
+    cosine (no vertex shading involved) and an occluder must cast a shadow
+    via the explicit shadow rays.
+    """
+    W, H = 64, 48
+    floor = torch.tensor([[[-8.0, -8, 0], [8, -8, 0], [0, 12, 0]]],
+                         device=DEVICE)
+    occluder = torch.tensor([[[1.8, -0.2, 2.0], [2.2, -0.2, 2.0],
+                              [2.0, 0.3, 2.0]]], device=DEVICE)
+    corners = torch.stack((floor[0], occluder[0])).unsqueeze(0)
+    tri_verts = torch.cat(
+        (corners, torch.zeros(1, 2, 3, 5, device=DEVICE)), -1)
+    colors = torch.zeros(1, 2, 3, 5, device=DEVICE)
+    colors[0, 0] = torch.tensor([0.8, 0.8, 0.8, 0.0, 1.0], device=DEVICE)
+    colors[0, 1] = torch.tensor([0.3, 0.3, 0.3, 0.0, 1.0], device=DEVICE)
+    cam = torch.tensor([[0.0, 0.0, 8.0]], device=DEVICE)
+    sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
+    pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
+    pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
+    bvh = build_stbvh(corners.amin(-2).contiguous(),
+                      corners.amax(-2).contiguous(), num_frames=1)
+    light_pos = torch.tensor([[[2.0, 0.0, 4.0]]], device=DEVICE)
+    light_col = torch.tensor([[[1.0, 1.0, 1.0]]], device=DEVICE)
+
+    img = _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, 1, W, H,
+                      bg=0, max_bounces=0, samples_per_pixel=256,
+                      physical=True, light_pos=light_pos,
+                      light_col=light_col).view(H, W, 4).float()
+    row = H // 2
+    lit_near = img[row, _floor_pixel(0.8, W, H), 0]      # cos ~ 0.96
+    lit_far = img[row, _floor_pixel(-2.5, W, H), 0]      # cos ~ 0.66
+    shadowed = img[row, _floor_pixel(2.0, W, H), 0]      # under the occluder
+    print(f"physical floor brightness: near={lit_near:.0f} far={lit_far:.0f} "
+          f"shadow={shadowed:.0f}")
+    # Lambert: brightness ~ albedo * cos -> 0.8 * 0.96 * 255 ~ 196.
+    assert 150 < lit_near < 240, f"direct lighting off: {lit_near}"
+    assert lit_far < lit_near - 20, "no cosine falloff with light distance"
+    assert lit_far > 60, f"far floor unexpectedly dark: {lit_far}"
+    assert shadowed < 30, f"occluder cast no shadow: {shadowed}"
+    print("ok: physical direct lighting follows Lambert cosine and shadows")
+
+
+def test_physical_emissive_surface():
+    """With no lights at all, a glowing panel must illuminate a matte floor
+    through indirect bounces (emission picked up by scattered paths).
+    """
+    W, H = 64, 48
+    floor = torch.tensor([[[-8.0, -8, 0], [8, -8, 0], [0, 12, 0]]],
+                         device=DEVICE)
+    panel = torch.tensor([[[1.2, -0.8, 2.5], [2.4, -0.8, 2.5],
+                           [1.8, 0.8, 2.5]]], device=DEVICE)
+    corners = torch.stack((floor[0], panel[0])).unsqueeze(0)
+    tri_verts = torch.cat(
+        (corners, torch.zeros(1, 2, 3, 5, device=DEVICE)), -1)
+    colors = torch.zeros(1, 2, 3, 5, device=DEVICE)
+    colors[0, 0] = torch.tensor([0.8, 0.8, 0.8, 0.0, 1.0], device=DEVICE)
+    colors[0, 1] = torch.tensor([1.0, 0.15, 0.15, 6.0, 1.0], device=DEVICE)
+    cam = torch.tensor([[0.0, 0.0, 8.0]], device=DEVICE)
+    sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
+    pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
+    pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
+    bvh = build_stbvh(corners.amin(-2).contiguous(),
+                      corners.amax(-2).contiguous(), num_frames=1)
+
+    img = _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, 1, W, H,
+                      bg=0, max_bounces=2, samples_per_pixel=512,
+                      physical=True).view(H, W, 4).float()
+    row = H // 2
+    near = img[row, _floor_pixel(0.9, W, H)]
+    far = img[row, _floor_pixel(-3.0, W, H)]
+    print(f"emissive bleed: near R={near[0]:.0f} G={near[1]:.0f}, "
+          f"far R={far[0]:.0f}")
+    assert near[0] > far[0] + 8, "emissive panel did not light the floor"
+    assert near[0] > near[1] + 4, "emissive lighting lost the panel's color"
+    print("ok: emissive (glow) surfaces light their surroundings")
+
+
 if __name__ == "__main__":
     test_morton_spread()
     test_stbvh_structure()
@@ -403,4 +503,6 @@ if __name__ == "__main__":
     test_mirror_reflection()
     test_glossy_reflection_blurs()
     test_indirect_color_bleed()
+    test_physical_direct_lighting_and_shadows()
+    test_physical_emissive_surface()
     print("all raytracing unit tests passed")

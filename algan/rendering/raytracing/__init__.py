@@ -44,7 +44,10 @@ from algan.rendering.raytracing.primitives import (
     RayTracedTrianglePrimitive,
     disable_ray_tracing,
     enable_ray_tracing,
+    set_ambient_light,
     set_indirect_bounce_strength,
+    set_light_intensity,
+    set_physical_lighting,
     set_reflectivity,
     set_roughness,
     set_samples_per_pixel,
@@ -63,4 +66,7 @@ __all__ = [
     "set_roughness",
     "set_samples_per_pixel",
     "set_indirect_bounce_strength",
+    "set_physical_lighting",
+    "set_light_intensity",
+    "set_ambient_light",
 ]
