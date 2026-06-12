@@ -224,7 +224,7 @@ class Scene:
             camera.screen.set_state_to_time_t(time_inds)
             camera.ray_origin = camera.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
             camera.screen_point = camera.screen.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
-            camera.screen_basis = unsquish(camera.screen.basis, -1, 3).to(COMPUTING_DEFAULTS.render_device)
+            camera.screen_basis = camera.get_render_screen_basis().to(COMPUTING_DEFAULTS.render_device)
             camera.screen_width = (
                 self.num_pixels_screen_width * self.render_settings.anti_alias_level
             )

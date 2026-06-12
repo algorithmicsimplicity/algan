@@ -63,6 +63,21 @@ MIN_ALPHA = 1e-3
 MIN_WEIGHT = 1e-3
 # Hard cap on blended surfaces per ray, to bound worst-case stacked geometry.
 MAX_SURFACES_PER_RAY = 256
+# Tolerance of the point-in-triangle test, in barycentric units. Adjacent
+# triangles sharing an edge (e.g. the diagonals of a triangulated image
+# grid) must overlap slightly rather than exclude each other: with exact
+# tests, floating-point noise can make a ray on the shared edge miss *both*
+# triangles, leaving crack pixels. The overlap is ~1e-4 of a triangle's
+# size (sub-pixel), and the duplicate hit on the seam is discarded by the
+# edge-merging rule below.
+BARYCENTRIC_EPSILON = 1e-4
+# A triangle hit whose smallest barycentric coordinate is below this counts
+# as an *edge hit*. When two consecutive edge hits land within
+# DEPTH_TIE_EPSILON of each other along a ray, they are the two triangles
+# adjacent to a shared mesh edge reporting the same surface point: the
+# second is discarded so the mesh behaves as one cohesive surface (in
+# particular, a partially transparent mesh must not blend twice on seams).
+TRIANGLE_EDGE_EPSILON = 2e-4
 
 # circuit_meta channel layout.
 _M_CENTER = 0      # 0-2   plane origin
@@ -210,7 +225,9 @@ def _nearest_triangle_hit(ro, rd, inv_rd, f, t_prev, layer_prev, layer_offset,
                         w1 = tvec.dot(pv) * inv_det
                         qv = tvec.cross(e1)
                         w2 = rd.dot(qv) * inv_det
-                        if (w1 >= 0.0) and (w2 >= 0.0) and (w1 + w2 <= 1.0):
+                        if ((w1 >= -BARYCENTRIC_EPSILON)
+                                and (w2 >= -BARYCENTRIC_EPSILON)
+                                and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
                             t = e2.dot(qv) * inv_det
                             layer = layer_offset + ti.cast(prim, ti.f32)
                             if ((t > MIN_HIT_DISTANCE)
@@ -411,7 +428,9 @@ def _nearest_surface(ro, rd, inv_rd, f, t_prev, layer_prev,
     (t_prev, layer_prev) along the ray, with its shading properties fetched.
 
     Returns (found, t_hit, layer, color[rgb+glow], alpha, reflectivity,
-    roughness, normal); ``found == 0`` means the ray escapes the scene.
+    roughness, normal, edge_hit); ``found == 0`` means the ray escapes the
+    scene, ``edge_hit == 1`` flags a triangle hit on/near one of its edges
+    (used to merge the duplicate hits of mesh seams).
     """
     found = 0
     t_hit = 1e30
@@ -421,6 +440,7 @@ def _nearest_surface(ro, rd, inv_rd, f, t_prev, layer_prev,
     reflectivity = 0.0
     roughness = 0.0
     normal = ti.math.vec3(0.0, 0.0, 0.0)
+    edge_hit = 0
 
     tt, t_prim, w1, w2, t_layer = _nearest_triangle_hit(
         ro, rd, inv_rd, f, t_prev, layer_prev, layer_offset_triangles,
@@ -440,6 +460,8 @@ def _nearest_surface(ro, rd, inv_rd, f, t_prev, layer_prev,
             t_hit = tt
             hit_layer = t_layer
             w0 = 1.0 - w1 - w2
+            if ti.min(w0, ti.min(w1, w2)) < TRIANGLE_EDGE_EPSILON:
+                edge_hit = 1
             tc = f % tri_colors.shape[0]
             tv = f % tri_verts.shape[0]
             for ci in ti.static(range(4)):
@@ -480,7 +502,8 @@ def _nearest_surface(ro, rd, inv_rd, f, t_prev, layer_prev,
             normal = ti.math.vec3(circuit_meta[tm, b_circ, _M_NORMAL],
                                   circuit_meta[tm, b_circ, _M_NORMAL + 1],
                                   circuit_meta[tm, b_circ, _M_NORMAL + 2])
-    return found, t_hit, hit_layer, color, alpha, reflectivity, roughness, normal
+    return (found, t_hit, hit_layer, color, alpha, reflectivity, roughness,
+            normal, edge_hit)
 
 
 @ti.kernel
@@ -510,8 +533,6 @@ def render_scene_stbvh(
         # Output buffer [time_end - time_start, width * height, channels],
         # pre-filled with the background; blended in place.
         out: ti.types.ndarray()):
-    num_color_frames = tri_colors.shape[0]
-    num_vert_frames = tri_verts.shape[0]
     pixels_per_frame = width * height
     num_rays = (time_end - time_start) * pixels_per_frame
 
@@ -537,72 +558,33 @@ def render_scene_stbvh(
         base_dist = 0.0    # distance accumulated over previous bounces
         bounces_left = max_bounces
 
+        seam_t = -1e30  # depth of the last processed triangle edge hit
         step = 0
         while step < MAX_SURFACES_PER_RAY:
             step += 1
-            tt, t_prim, w1, w2, t_layer = _nearest_triangle_hit(
-                ro, rd, inv_rd, f, t_prev, layer_prev, layer_offset_triangles,
-                t_node_lo, t_node_hi, t_node_tmin, t_node_tmax,
-                t_node_miss, t_leaf_prim, t_first_leaf, tri_verts)
-            bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
+            (found, t_hit, hit_layer, color, alpha, reflectivity,
+             roughness, normal, edge_hit) = _nearest_surface(
                 ro, rd, inv_rd, f, t_prev, layer_prev,
-                pixel_size_per_t, base_dist,
+                pixel_size_per_t, base_dist, layer_offset_triangles,
+                t_node_lo, t_node_hi, t_node_tmin, t_node_tmax,
+                t_node_miss, t_leaf_prim, t_first_leaf,
+                tri_verts, tri_colors,
                 b_node_lo, b_node_hi, b_node_tmin, b_node_tmax,
                 b_node_miss, b_leaf_prim, b_first_leaf,
-                circuit_meta, edges_2d, edge_offsets)
-
-            use_triangle = (t_prim >= 0) and (
-                (b_circ < 0) or (not _comes_after(tt, t_layer, bt, b_layer)))
-            if (t_prim < 0) and (b_circ < 0):
+                circuit_meta, circuit_colors, circuit_border_colors,
+                edges_2d, edge_offsets)
+            if found == 0:
                 break
 
-            color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-            alpha = 0.0
-            reflectivity = 0.0
-            t_hit = 0.0
-            hit_layer = 0.0
-            normal = ti.math.vec3(0.0, 0.0, 0.0)
-            if use_triangle:
-                t_hit = tt
-                hit_layer = t_layer
-                w0 = 1.0 - w1 - w2
-                tc = f % num_color_frames
-                tv = f % num_vert_frames
-                for ci in ti.static(range(4)):
-                    color[ci] = (w0 * tri_colors[tc, t_prim, 0, ci]
-                                 + w1 * tri_colors[tc, t_prim, 1, ci]
-                                 + w2 * tri_colors[tc, t_prim, 2, ci])
-                alpha = (w0 * tri_colors[tc, t_prim, 0, 4]
-                         + w1 * tri_colors[tc, t_prim, 1, 4]
-                         + w2 * tri_colors[tc, t_prim, 2, 4])
-                reflectivity = (w0 * tri_verts[tv, t_prim, 0, 6]
-                                + w1 * tri_verts[tv, t_prim, 1, 6]
-                                + w2 * tri_verts[tv, t_prim, 2, 6])
-                if reflectivity > MIN_ALPHA:
-                    # Interpolated shading normal, falling back to the
-                    # geometric normal when vertex normals are absent.
-                    for ci in ti.static(range(3)):
-                        normal[ci] = (
-                            w0 * tri_verts[tv, t_prim, 0, 3 + ci]
-                            + w1 * tri_verts[tv, t_prim, 1, 3 + ci]
-                            + w2 * tri_verts[tv, t_prim, 2, 3 + ci])
-                    if normal.norm() < 1e-6:
-                        v0 = ti.math.vec3(tri_verts[tv, t_prim, 0, 0],
-                                          tri_verts[tv, t_prim, 0, 1],
-                                          tri_verts[tv, t_prim, 0, 2])
-                        v1 = ti.math.vec3(tri_verts[tv, t_prim, 1, 0],
-                                          tri_verts[tv, t_prim, 1, 1],
-                                          tri_verts[tv, t_prim, 1, 2])
-                        v2 = ti.math.vec3(tri_verts[tv, t_prim, 2, 0],
-                                          tri_verts[tv, t_prim, 2, 1],
-                                          tri_verts[tv, t_prim, 2, 2])
-                        normal = (v1 - v0).cross(v2 - v0)
-            else:
-                t_hit = bt
-                hit_layer = b_layer
-                color, alpha = _sample_circuit_color(
-                    b_circ, f, b_u, b_v, b_border,
-                    circuit_meta, circuit_colors, circuit_border_colors)
+            # Mesh seams: the two triangles adjacent to a shared edge can
+            # both report the crossing ray; the second edge hit at the same
+            # depth is the same surface point, so skip it (one cohesive
+            # surface, blended exactly once).
+            if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+                t_prev = t_hit
+                layer_prev = hit_layer
+                continue
+            seam_t = t_hit if edge_hit == 1 else -1e30
 
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
@@ -628,6 +610,7 @@ def render_scene_stbvh(
                 base_dist += t_hit
                 t_prev = 0.0
                 layer_prev = 1e30
+                seam_t = -1e30
                 bounces_left -= 1
             else:
                 weight *= 1.0 - alpha
@@ -730,6 +713,7 @@ def path_trace_scene_stbvh(
             t_prev = 0.0
             layer_prev = 1e30
             base_dist = 0.0
+            seam_t = -1e30
             bounces_left = max_bounces
             interacted = False
             escaped = False
@@ -738,7 +722,7 @@ def path_trace_scene_stbvh(
             while step < MAX_SURFACES_PER_RAY:
                 step += 1
                 (found, t_hit, hit_layer, color, alpha, reflectivity,
-                 roughness, normal) = _nearest_surface(
+                 roughness, normal, edge_hit) = _nearest_surface(
                     ro, rd, inv_rd, f, t_prev, layer_prev,
                     pixel_size_per_t, base_dist, layer_offset_triangles,
                     t_node_lo, t_node_hi, t_node_tmin, t_node_tmax,
@@ -751,6 +735,14 @@ def path_trace_scene_stbvh(
                 if found == 0:
                     escaped = True
                     break
+
+                # Mesh seams: skip the duplicate edge hit of the adjacent
+                # triangle so the surface scatters/transmits exactly once.
+                if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+                    t_prev = t_hit
+                    layer_prev = hit_layer
+                    continue
+                seam_t = t_hit if edge_hit == 1 else -1e30
 
                 alpha = ti.math.clamp(alpha, 0.0, 1.0)
                 if ti.random(ti.f32) >= alpha:
@@ -802,6 +794,7 @@ def path_trace_scene_stbvh(
                 base_dist += t_hit
                 t_prev = 0.0
                 layer_prev = 1e30
+                seam_t = -1e30
                 bounces_left -= 1
 
             if escaped:
@@ -844,11 +837,12 @@ def _transmittance(ro, rd, f, max_t,
     transmitted = 1.0
     t_prev = 0.0
     layer_prev = 1e30
+    seam_t = -1e30
     step = 0
     while step < MAX_SURFACES_PER_RAY:
         step += 1
         (found, t_hit, hit_layer, _color, alpha, _refl, _rough,
-         _normal) = _nearest_surface(
+         _normal, edge_hit) = _nearest_surface(
             ro, rd, inv_rd, f, t_prev, layer_prev,
             pixel_size_per_t, base_dist, layer_offset_triangles,
             t_node_lo, t_node_hi, t_node_tmin, t_node_tmax,
@@ -860,6 +854,12 @@ def _transmittance(ro, rd, f, max_t,
             edges_2d, edge_offsets)
         if (found == 0) or (t_hit >= max_t):
             break
+        # Skip the duplicate edge hit of mesh seams (attenuate once).
+        if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+            t_prev = t_hit
+            layer_prev = hit_layer
+            continue
+        seam_t = t_hit if edge_hit == 1 else -1e30
         transmitted *= 1.0 - ti.math.clamp(alpha, 0.0, 1.0)
         if transmitted < 1e-3:
             transmitted = 0.0
@@ -955,6 +955,7 @@ def path_trace_physical_stbvh(
             t_prev = 0.0
             layer_prev = 1e30
             base_dist = 0.0
+            seam_t = -1e30
             bounces_left = max_bounces
             interacted = False
             escaped = False
@@ -963,7 +964,7 @@ def path_trace_physical_stbvh(
             while step < MAX_SURFACES_PER_RAY:
                 step += 1
                 (found, t_hit, hit_layer, color, alpha, reflectivity,
-                 roughness, normal) = _nearest_surface(
+                 roughness, normal, edge_hit) = _nearest_surface(
                     ro, rd, inv_rd, f, t_prev, layer_prev,
                     pixel_size_per_t, base_dist, layer_offset_triangles,
                     t_node_lo, t_node_hi, t_node_tmin, t_node_tmax,
@@ -976,6 +977,14 @@ def path_trace_physical_stbvh(
                 if found == 0:
                     escaped = True
                     break
+
+                # Mesh seams: skip the duplicate edge hit of the adjacent
+                # triangle (one interaction per surface crossing).
+                if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+                    t_prev = t_hit
+                    layer_prev = hit_layer
+                    continue
+                seam_t = t_hit if edge_hit == 1 else -1e30
 
                 alpha = ti.math.clamp(alpha, 0.0, 1.0)
                 if ti.random(ti.f32) >= alpha:
@@ -1089,6 +1098,7 @@ def path_trace_physical_stbvh(
                 base_dist += t_hit
                 t_prev = 0.0
                 layer_prev = 1e30
+                seam_t = -1e30
                 bounces_left -= 1
 
             if escaped:

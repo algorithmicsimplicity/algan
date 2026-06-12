@@ -31,6 +31,7 @@ class Camera(Mob):
                 init=False,
             )
             self.screen.scale(torch.tensor((1 / screen_scale, 1 / screen_scale, 1)))
+            self.screen_scale_factor = screen_scale
             self.screen.is_primitive = True
             self.is_primitive = True
             self.add_children(self.screen)
@@ -81,12 +82,28 @@ class Camera(Mob):
             self.orbit_around_line(ORIGIN, UP, num_degrees=angle_2)
             self.orbit_around_line(ORIGIN, OUT, num_degrees=angle_3)
 
+    def get_render_screen_basis(self):
+        """Per-frame screen basis used by the renderers to project the scene.
+
+        Derived from the camera's own basis -- which is purely rotational,
+        the camera mob is never scaled -- with the screen's in-plane scale
+        applied along the screen's *local* axes. The screen mob's stored
+        basis cannot be used directly: its non-uniform scale is applied
+        along world axes (basis = rotation @ scale), so once the camera
+        rotates the rows skew and shrink/stretch, which makes the projection
+        anisotropic -- the image visibly squashes with the orbit angle
+        (e.g. a sphere renders as an ellipse).
+        """
+        basis = unsquish(self.basis, -1, 3).clone()
+        basis[..., :2, :] = basis[..., :2, :] / self.screen_scale_factor
+        return basis
+
     def set_state_to_time_t(self, time_inds):
         super().set_state_to_time_t(time_inds)
         device = COMPUTING_DEFAULTS.render_device
         self.ray_origin = self.location.unsqueeze(-2).to(device)
         self.screen_point = self.screen.location.unsqueeze(-2).to(device)
-        self.screen_basis = unsquish(self.screen.basis, -1, 3).to(device)
+        self.screen_basis = self.get_render_screen_basis().to(device)
 
     def retroactive_center(self, mob, **kwargs):
         self.set_to_retroactive()

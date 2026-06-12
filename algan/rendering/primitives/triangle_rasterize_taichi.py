@@ -54,8 +54,12 @@ def rasterize_triangle_taichi(triangles_2d: ti.types.ndarray(), colors: ti.types
                 # Compute barycentric coordinates
                 bary = compute_barycentric(p, ti.Vector([v00, v01]), ti.Vector([v10, v11]), ti.Vector([v20, v21]))
 
-                # Check if point is inside triangle
-                if bary[0] >= 0 and bary[1] >= 0 and bary[2] >= 0:
+                # Check if point is inside triangle. The small tolerance lets
+                # adjacent triangles overlap on their shared edge instead of
+                # excluding each other: with exact tests, floating-point noise
+                # can make a pixel on the edge fail both triangles, leaving
+                # crack pixels along mesh seams.
+                if bary[0] >= -1e-5 and bary[1] >= -1e-5 and bary[2] >= -1e-5:
                     frag_idx = ti.atomic_add(fragment_count[0], 1)
                     if frag_idx < out_buffer.shape[0]:
                         #if frag_idx < out_buffer.shape[0]:

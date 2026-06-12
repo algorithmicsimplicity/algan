@@ -32,7 +32,7 @@ from algan import (
 from algan.settings.render_settings import RenderSettings
 from algan.utils.algan_utils import render_to_file
 
-OUT_DIR = os.path.join(os.path.dirname(__file__), "raytracing_outputs")
+OUT_DIR = os.path.join(os.path.dirname(__file__), "raytracing_outputs_v2")
 SETTINGS = RenderSettings((640, 400), 10, anti_alias_level=1, fxaa=False)
 
 
