@@ -1,18 +1,16 @@
 from algan import *
-import manim as mn
+from algan.rendering.raytracing import enable_ray_tracing
 
 
 def render_static_triangles():
-    m1 = QuadTriangulated(torch.stack([UP, RIGHT, DOWN, LEFT]), color=RED).spawn()
-    m2 = QuadTriangulated(torch.stack([UP, RIGHT, DOWN, LEFT]), color=GREEN).move(OUT*0.01).spawn()
-    m1.move(RIGHT)
-    m1.move(LEFT*2)
-    #mobs = Group([Sphere() for _ in range(9)]).arrange_in_grid().spawn()
-    #mobs.wait(1)
+    n = 100
+    m = Sphere(grid_height=n, grid_width=n).scale(3).spawn()
+    Scene.wait(10)
 
 
-#COMPUTING_DEFAULTS.compiled = False
-rs = PREVIEW
+rs = UHD
 rs.fxaa = False
-#COMPUTING_DEFAULTS.render_device = torch.device('cpu')
+COMPUTING_DEFAULTS.portion_of_memory_used_for_animating = 0.15
+COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering = 0.4
+enable_ray_tracing()
 render_all_funcs(__name__, rs)

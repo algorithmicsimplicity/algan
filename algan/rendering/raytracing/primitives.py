@@ -2,7 +2,10 @@
 
 ``RayTracedTrianglePrimitive`` and ``RayTracedBezierCircuitPrimitive`` subclass
 the rasterized primitives to keep their construction and batching, but render
-through a self-contained ray tracing pipeline:
+through a self-contained ray tracing pipeline. ``RayTracedPNTrianglePrimitive``
+additionally renders each triangle as a curved point-normal (PN) patch -- a
+quadratic Bezier triangle bent to match the vertex normals (enable with
+``enable_ray_tracing(pn_triangles=True)``):
 
 * ``project_to_screen`` shades vertices and packs geometry + per-frame bounds
   for the whole batch of frames (the spatio-temporal BVH of ``stbvh.py``).
@@ -11,7 +14,9 @@ through a self-contained ray tracing pipeline:
   -- including mirror bounces -- directly into a fixed
   ``[num_frames, num_pixels, channels]`` output buffer. Memory use is
   independent of depth complexity and bounce count, and there is no fragment
-  buffer, sorting pass or atomic contention.
+  buffer or sorting pass. The Monte Carlo kernels flatten the parallel loop
+  further to one thread per (frame, pixel, sample) path, accumulating into a
+  float32 per-pixel buffer with atomic adds.
 
 Mirrors: give a mob a reflectivity with :func:`set_reflectivity` (before
 spawning); the value is per-vertex, animatable, and bounces up to
@@ -33,8 +38,13 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
 )
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
+from algan.rendering.raytracing.pn_patch import (
+    pn_control_points,
+    pn_patch_coefficients,
+)
 from algan.rendering.raytracing.ray_trace_taichi import (
     MIN_ALPHA,
+    finalize_samples,
     path_trace_physical_stbvh,
     path_trace_scene_stbvh,
     render_scene_stbvh,
@@ -215,16 +225,19 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                              **shader_kwargs)
             # Gather per-mob surface params with the same broadcast/cat
             # recipe the base class applies to corners/colors, so shapes
-            # line up.
+            # line up -- except along time: the references are sliced to a
+            # single frame so a static parameter (the usual case) stays
+            # single-frame instead of being expanded to the batch length.
             for name in self._surface_params:
                 values = []
                 for triangle in triangle_collection:
                     v = getattr(triangle, name, None)
                     if v is None:
-                        v = torch.zeros_like(triangle.colors[..., :1])
+                        v = torch.zeros_like(triangle.colors[:1, ..., :1])
                     v = broadcast_all(
-                        [triangle.corners, triangle.colors, triangle.normals,
-                         v], ignored_dims=[-1])[-1][..., :1]
+                        [triangle.corners[:1], triangle.colors[:1],
+                         triangle.normals[:1], v], ignored_dims=[-1]
+                    )[-1][..., :1]
                     values.append(v)
                 setattr(self, name, unsquish(torch.cat(values, 1), -2, 3
                                              ).to(COMPUTING_DEFAULTS.render_device))
@@ -238,66 +251,96 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             for name, value in params.items():
                 if value is None:
                     setattr(self, name,
-                            torch.zeros_like(self.colors[..., :1]))
+                            torch.zeros_like(self.colors[:1, ..., :1]))
                 else:
                     value = cast_to_tensor(value).to(self.colors.device)
                     setattr(self, name, broadcast_all(
-                        [self.corners, self.colors, value],
+                        [self.corners[:1], self.colors[:1], value],
                         ignored_dims=[-1])[-1][..., :1])
+
+    def _shade_vertex_colors(self, camera, light_sources):
+        """Vertex shading, identical to the rasterized pipeline. Skipped in
+        physical mode, where colors are raw albedo and the path tracer
+        computes all lighting itself.
+        """
+        d = -1
+        if not PHYSICAL_LIGHTING and getattr(self, "shader", None) is not None:
+            for light_source in light_sources:
+                with self.memory.temp():
+                    self.colors[..., :d] = self.shader(
+                        self.memory,
+                        self.corners,
+                        self.normals,
+                        self.colors[..., :d],
+                        camera.ray_origin,
+                        light_source.origin,
+                        light_source.light_color,
+                        1,
+                        1,
+                        *self.shader_param_values,
+                    )
+
+    def _pack_surface_extra(self, error_context):
+        """Per-corner (reflectivity, roughness) pairs [Te, N, 6]."""
+        (reflectivity_e, roughness_e), _ = _unify_time(
+            [self.reflectivity.float(), self.roughness.float()],
+            error_context)
+        return torch.cat((reflectivity_e, roughness_e), -1).reshape(
+            reflectivity_e.shape[0], reflectivity_e.shape[1], 6).contiguous()
+
+    def _pack_frame_visibility(self, lo, hi, colors, error_context):
+        """Per-frame bounds; frames where a primitive is fully transparent
+        are marked empty so they never enter the BVH. Fully opaque frames
+        are flagged so the trace kernel can prune hits behind them while
+        gathering.
+        """
+        alpha = colors[..., -1]
+        visible = alpha.amax(-1) > MIN_ALPHA
+        opaque = alpha.amin(-1) >= 1.0 - 1e-6
+        (lo, hi, visible, opaque), _ = _unify_time(
+            [lo, hi, visible.unsqueeze(-1), opaque.unsqueeze(-1)],
+            error_context)
+        visible = visible.squeeze(-1)
+        self._rt_frame_opaque = opaque.squeeze(-1).contiguous()
+        self._rt_frame_lo = torch.where(
+            visible.unsqueeze(-1), lo,
+            torch.tensor(EMPTY_LO, device=lo.device)).contiguous()
+        self._rt_frame_hi = torch.where(
+            visible.unsqueeze(-1), hi,
+            torch.tensor(EMPTY_HI, device=hi.device)).contiguous()
+
+    def _set_frame_buffer_bytes(self, camera):
+        """Per-frame buffer bytes: the u8 output, plus the f32 sample
+        accumulator in Monte Carlo mode.
+        """
+        mc = PHYSICAL_LIGHTING or SAMPLES_PER_PIXEL > 1
+        self._rt_frame_bytes = int(
+            camera.screen_width * camera.screen_height * 5 * 4
+            * (2 if mc else 1))
 
     @csync
     def project_to_screen(self, camera, light_sources):
         with CudaStream():
-            # Vertex shading, identical to the rasterized pipeline. Skipped
-            # in physical mode, where colors are raw albedo and the path
-            # tracer computes all lighting itself.
-            d = -1
-            if not PHYSICAL_LIGHTING and getattr(self, "shader", None) is not None:
-                for light_source in light_sources:
-                    with self.memory.temp():
-                        self.colors[..., :d] = self.shader(
-                            self.memory,
-                            self.corners,
-                            self.normals,
-                            self.colors[..., :d],
-                            camera.ray_origin,
-                            light_source.origin,
-                            light_source.light_color,
-                            1,
-                            1,
-                            *self.shader_param_values,
-                        )
+            self._shade_vertex_colors(camera, light_sources)
 
             corners = self.corners.float()
             normals = self.normals.float()
-            reflectivity = self.reflectivity.float()
-            roughness = self.roughness.float()
-            (corners_e, normals_e, reflectivity_e, roughness_e), _ = _unify_time(
-                [corners, normals, reflectivity, roughness],
-                "triangle vertex data")
-            # Packed per-corner data: position, shading normal, reflectivity,
-            # roughness.
-            self._rt_tri_verts = torch.cat(
-                (corners_e, normals_e, reflectivity_e, roughness_e),
-                -1).contiguous()
+            # Hot/cold split, each array with its own (independent) time
+            # dimension: positions are touched by every candidate
+            # intersection, normals only by hits that bounce or scatter, and
+            # reflectivity/roughness (usually static) only by confirmed hits.
+            self._rt_tri_pos = corners.reshape(
+                corners.shape[0], corners.shape[1], 9).contiguous()
+            self._rt_tri_norm = normals.reshape(
+                normals.shape[0], normals.shape[1], 9).contiguous()
+            self._rt_tri_extra = self._pack_surface_extra(
+                "triangle surface params")
             self._rt_tri_colors = self.colors.float().contiguous()
-            num_frames = camera.ray_origin.shape[0]
-            self._rt_num_frames = num_frames
+            self._rt_num_frames = camera.ray_origin.shape[0]
 
-            # Per-frame bounds; frames where a triangle is fully transparent
-            # are marked empty so they never enter the BVH.
-            lo = corners.amin(-2)
-            hi = corners.amax(-2)
-            visible = self._rt_tri_colors[..., -1].amax(-1) > MIN_ALPHA
-            (lo, hi, visible), _ = _unify_time(
-                [lo, hi, visible.unsqueeze(-1)], "triangle bounds/colors")
-            visible = visible.squeeze(-1)
-            self._rt_frame_lo = torch.where(
-                visible.unsqueeze(-1), lo,
-                torch.tensor(EMPTY_LO, device=lo.device)).contiguous()
-            self._rt_frame_hi = torch.where(
-                visible.unsqueeze(-1), hi,
-                torch.tensor(EMPTY_HI, device=hi.device)).contiguous()
+            self._pack_frame_visibility(corners.amin(-2), corners.amax(-2),
+                                        self._rt_tri_colors,
+                                        "triangle bounds/colors")
 
             # Everything the renderer needs now lives in the packed arrays;
             # release the unpacked geometry to halve resident GPU memory.
@@ -305,13 +348,15 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self.reflectivity = self.roughness = None
             self.colors = None
 
-            self._rt_frame_bytes = int(
-                camera.screen_width * camera.screen_height * 5 * 4)
-        torch.cuda.synchronize()
+            self._set_frame_buffer_bytes(camera)
         return self
 
     def get_memory_used_per_timestep(self):
-        return self._rt_frame_bytes
+        #return self._rt_frame_bytes
+        return 0
+        if self._rt_tri_pos is not None:
+            return (self._rt_tri_pos[0].numel() * 3) * 4
+        return 0
 
     def get_memory_used_for_blending(self, start_ind, end_ind):
         return 0  # Blending happens in-register inside the trace kernel.
@@ -323,6 +368,56 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             primitives, scene, screen_width, screen_height, time_start,
             time_end, background_color, transparent_background, *args,
             **kwargs)
+
+
+class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
+    """Curved point-normal (PN) triangle batch: each triangle is rendered as
+    the quadratic Bezier (Steiner) triangle whose mid-edge control points
+    bend the surface to respect the vertex normals (see
+    :mod:`algan.rendering.raytracing.pn_patch`), so coarsely tessellated
+    smooth surfaces keep smooth silhouettes. Construction, batching and
+    vertex shading are inherited from the flat triangles; only the packed
+    geometry differs (monomial patch coefficients instead of corner
+    positions) and the trace kernels intersect rays with the curved patch
+    (up to four hits per ray). Triangles with zero or face-constant normals
+    stay exactly flat, and adjacent patches share boundary curves, so PN
+    meshes stay watertight.
+    """
+
+    @csync
+    def project_to_screen(self, camera, light_sources):
+        with CudaStream():
+            self._shade_vertex_colors(camera, light_sources)
+
+            corners = self.corners.float()
+            normals = self.normals.float()
+            # Hot/cold split as for flat triangles, with the patch's
+            # monomial coefficients as the hot geometry. corners and
+            # normals share a time dimension by construction (the batching
+            # constructor broadcasts them together).
+            control_points = pn_control_points(corners, normals)
+            self._rt_pn_ctrl = pn_patch_coefficients(
+                control_points).contiguous()
+            self._rt_pn_norm = normals.reshape(
+                normals.shape[0], normals.shape[1], 9).contiguous()
+            self._rt_pn_extra = self._pack_surface_extra("pn surface params")
+            self._rt_pn_colors = self.colors.float().contiguous()
+            self._rt_num_frames = camera.ray_origin.shape[0]
+
+            # The patch lies in the convex hull of its control points, so
+            # the control net bounds it.
+            self._pack_frame_visibility(control_points.amin(-2),
+                                        control_points.amax(-2),
+                                        self._rt_pn_colors,
+                                        "pn bounds/colors")
+
+            self.corners = self.normals = None
+            self.reflectivity = self.roughness = None
+            self.colors = None
+
+            self._set_frame_buffer_bytes(camera)
+        torch.cuda.synchronize()
+        return self
 
 
 def _evaluate_cubic_bezier_batch(p, t):
@@ -373,9 +468,12 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             # release the control points to reduce resident GPU memory.
             self.corners = None
 
+            # Per-frame buffer bytes: the u8 output, plus the f32 sample
+            # accumulator in Monte Carlo mode.
+            mc = PHYSICAL_LIGHTING or SAMPLES_PER_PIXEL > 1
             self._rt_frame_bytes = int(
-                camera.screen_width * camera.screen_height * 5 * 4)
-        torch.cuda.synchronize()
+                camera.screen_width * camera.screen_height * 5 * 4
+                * (2 if mc else 1))
         return self
 
     def _compute_samples_per_segment(self, corners, cam_o, sp, sb, screen_h):
@@ -520,15 +618,27 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             1, idx, seg_hi, "amax", include_self=True)
 
         fill_alpha = self._rt_circuit_colors[..., -1].amax(-1)  # over texture
+        fill_min = self._rt_circuit_colors[..., -1].amin(-1)
         if not self.filled:
             fill_alpha = torch.zeros_like(fill_alpha)
         border_alpha = self._rt_circuit_border_colors[..., -1]
         border_on = self._rt_border_width > 1e-3
         visible = (fill_alpha > MIN_ALPHA) | (
             (border_alpha > MIN_ALPHA) & border_on)
-        (lo, hi, visible), _ = _unify_time(
-            [lo, hi, visible.unsqueeze(-1)], "bezier bounds/colors")
+        (lo, hi, visible, fill_min, border_alpha, border_on), _ = _unify_time(
+            [lo, hi, visible.unsqueeze(-1), fill_min.unsqueeze(-1),
+             border_alpha.unsqueeze(-1), border_on.unsqueeze(-1)],
+            "bezier bounds/colors")
         visible = visible.squeeze(-1)
+        # A circuit is opaque (prunes hits behind it while gathering) only if
+        # every region a hit can land in -- the fill/texture and, when shown,
+        # the border -- is fully opaque.
+        opaque = (fill_min.squeeze(-1) >= 1.0 - 1e-6) & (
+            (~border_on.squeeze(-1))
+            | (border_alpha.squeeze(-1) >= 1.0 - 1e-6))
+        if not self.filled:
+            opaque = torch.zeros_like(opaque)
+        self._rt_frame_opaque = opaque.contiguous()
         lo = torch.where(visible.unsqueeze(-1), lo,
                          torch.tensor(EMPTY_LO, device=device))
         hi = torch.where(visible.unsqueeze(-1), hi,
@@ -547,7 +657,11 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         self._rt_frame_hi = (hi + inflate.view(1, -1, 1)).contiguous()
 
     def get_memory_used_per_timestep(self):
-        return self._rt_frame_bytes
+        #return self._rt_frame_bytes
+        return 0
+        if self._rt_edges is not None:
+            return (self._rt_edges[0].numel()*2) * 4
+        return self._rt_merged_scene['tri_pos'][0].numel() * 8
 
     def get_memory_used_for_blending(self, start_ind, end_ind):
         return 0  # Blending happens in-register inside the trace kernel.
@@ -569,8 +683,9 @@ def _empty_scene_part(device):
 
 
 def _merge_scene(primitives):
-    """Merge the batch's collections into one triangle set and one bezier set
-    (each with a single STBVH over all frames), cached for the batch.
+    """Merge the batch's collections into one set per geometry type --
+    triangles, PN patches and bezier circuits, each with a single STBVH
+    over all frames -- cached for the batch.
     """
     first = primitives[0]
     cached = getattr(first, "_rt_merged_scene", None)
@@ -580,12 +695,16 @@ def _merge_scene(primitives):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     device = COMPUTING_DEFAULTS.render_device
+    pn_patches = [p for p in primitives
+                  if isinstance(p, RayTracedPNTrianglePrimitive)]
     triangles = [p for p in primitives
-                 if isinstance(p, RayTracedTrianglePrimitive)]
+                 if isinstance(p, RayTracedTrianglePrimitive)
+                 and not isinstance(p, RayTracedPNTrianglePrimitive)]
     beziers = [p for p in primitives
                if isinstance(p, RayTracedBezierCircuitPrimitive)]
     unknown = [p for p in primitives
-               if p not in triangles and p not in beziers]
+               if p not in triangles and p not in pn_patches
+               and p not in beziers]
     if unknown:
         raise TypeError(
             "The ray traced renderer can only draw ray traced primitives; "
@@ -595,21 +714,57 @@ def _merge_scene(primitives):
 
     scene = {}
     if triangles:
-        scene["tri_verts"] = _cat_collections(
-            [p._rt_tri_verts for p in triangles], 1, "triangle merge")
+        scene["tri_pos"] = _cat_collections(
+            [p._rt_tri_pos for p in triangles], 1, "triangle merge")
+        scene["tri_norm"] = _cat_collections(
+            [p._rt_tri_norm for p in triangles], 1, "triangle merge")
+        scene["tri_extra"] = _cat_collections(
+            [p._rt_tri_extra for p in triangles], 1, "triangle merge")
         scene["tri_colors"] = _cat_collections(
             [p._rt_tri_colors for p in triangles], 1, "triangle merge")
         lo = _cat_collections([p._rt_frame_lo for p in triangles], 1,
                               "triangle merge")
         hi = _cat_collections([p._rt_frame_hi for p in triangles], 1,
                               "triangle merge")
+        opaque = _cat_collections([p._rt_frame_opaque for p in triangles], 1,
+                                  "triangle merge")
         scene["tri_bvh"] = build_stbvh(
             lo, hi, num_frames=num_frames,
-            tightness=RayTracedTrianglePrimitive.stbvh_tightness)
+            tightness=RayTracedTrianglePrimitive.stbvh_tightness,
+            opaque=opaque)
     else:
-        scene["tri_verts"] = torch.zeros((1, 1, 3, 8), device=device)
+        scene["tri_pos"] = torch.zeros((1, 1, 9), device=device)
+        scene["tri_norm"] = torch.zeros((1, 1, 9), device=device)
+        scene["tri_extra"] = torch.zeros((1, 1, 6), device=device)
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["tri_bvh"] = _empty_scene_part(device)
+    scene["num_triangles"] = scene["tri_pos"].shape[1] if triangles else 0
+
+    if pn_patches:
+        scene["pn_ctrl"] = _cat_collections(
+            [p._rt_pn_ctrl for p in pn_patches], 1, "pn merge")
+        scene["pn_norm"] = _cat_collections(
+            [p._rt_pn_norm for p in pn_patches], 1, "pn merge")
+        scene["pn_extra"] = _cat_collections(
+            [p._rt_pn_extra for p in pn_patches], 1, "pn merge")
+        scene["pn_colors"] = _cat_collections(
+            [p._rt_pn_colors for p in pn_patches], 1, "pn merge")
+        lo = _cat_collections([p._rt_frame_lo for p in pn_patches], 1,
+                              "pn merge")
+        hi = _cat_collections([p._rt_frame_hi for p in pn_patches], 1,
+                              "pn merge")
+        opaque = _cat_collections([p._rt_frame_opaque for p in pn_patches],
+                                  1, "pn merge")
+        scene["pn_bvh"] = build_stbvh(
+            lo, hi, num_frames=num_frames,
+            tightness=RayTracedPNTrianglePrimitive.stbvh_tightness,
+            opaque=opaque)
+    else:
+        scene["pn_ctrl"] = torch.zeros((1, 1, 18), device=device)
+        scene["pn_norm"] = torch.zeros((1, 1, 9), device=device)
+        scene["pn_extra"] = torch.zeros((1, 1, 6), device=device)
+        scene["pn_colors"] = torch.zeros((1, 1, 3, 5), device=device)
+        scene["pn_bvh"] = _empty_scene_part(device)
 
     if beziers:
         scene["circuit_meta"] = _cat_collections(
@@ -639,9 +794,12 @@ def _merge_scene(primitives):
                               "bezier merge")
         hi = _cat_collections([p._rt_frame_hi for p in beziers], 1,
                               "bezier merge")
+        opaque = _cat_collections([p._rt_frame_opaque for p in beziers], 1,
+                                  "bezier merge")
         scene["bez_bvh"] = build_stbvh(
             lo, hi, num_frames=num_frames,
-            tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness)
+            tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
+            opaque=opaque)
         scene["num_circuits"] = scene["circuit_meta"].shape[1]
     else:
         scene["circuit_meta"] = torch.zeros((1, 1, 20), device=device)
@@ -657,12 +815,17 @@ def _merge_scene(primitives):
     # The merged tensors replace the per-collection ones; release the
     # originals so peak GPU memory stays close to one copy of the scene.
     for p in triangles:
-        p._rt_tri_verts = p._rt_tri_colors = None
-        p._rt_frame_lo = p._rt_frame_hi = None
+        p._rt_tri_pos = p._rt_tri_norm = None
+        p._rt_tri_extra = p._rt_tri_colors = None
+        p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
+    for p in pn_patches:
+        p._rt_pn_ctrl = p._rt_pn_norm = None
+        p._rt_pn_extra = p._rt_pn_colors = None
+        p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     for p in beziers:
         p._rt_circuit_meta = p._rt_circuit_colors = None
         p._rt_circuit_border_colors = p._rt_edges = None
-        p._rt_frame_lo = p._rt_frame_hi = None
+        p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     first._rt_merged_scene = scene
@@ -746,6 +909,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                          ).contiguous()
 
     tri_bvh = merged["tri_bvh"]
+    pn_bvh = merged["pn_bvh"]
     bez_bvh = merged["bez_bvh"]
     first = primitives[0]
     first.memory = memory
@@ -764,37 +928,68 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
         num_lights = 0
 
     def render_chunk(start, end):
+        # The Monte Carlo kernels launch one thread per (frame, pixel,
+        # sample) path; keep the flattened index within int32 range.
+        if (samples > 1 and
+                (end - start) * width * height * samples >= 1 << 31):
+            if end - start <= 1:
+                raise OutOfRenderMemory(
+                    "samples_per_pixel * resolution exceeds the ray tracer's "
+                    "per-launch path budget (2^31). Please lower the sample "
+                    "count, resolution or anti-alias level.")
+            middle = (start + end) // 2
+            return render_chunk(start, middle) + render_chunk(middle, end)
         entry_pointers = memory.get_pointers()
         try:
             out = memory.get_tensor((end - start, width * height, C_out),
                                     torch.uint8)
             _prefill_background(out, background_color, start - time_start,
                                 device)
+            accum = None
+            if physical or samples > 1:
+                # f32 per-pixel sample sums, averaged by finalize_samples.
+                accum = memory.get_tensor((end - start, width * height, 5),
+                                          torch.float32)
+                accum.zero_()
             torch.cuda.synchronize()
+            # Coplanar layer order: circuits < triangles < PN patches.
+            layer_offset_triangles = float(merged["num_circuits"])
+            layer_offset_pn = layer_offset_triangles + float(
+                merged["num_triangles"])
             shared_args = (
-                tri_bvh.node_lo, tri_bvh.node_hi, tri_bvh.node_tmin,
-                tri_bvh.node_tmax, tri_bvh.node_miss, tri_bvh.leaf_prim,
-                tri_bvh.first_leaf,
-                merged["tri_verts"], merged["tri_colors"],
-                bez_bvh.node_lo, bez_bvh.node_hi, bez_bvh.node_tmin,
-                bez_bvh.node_tmax, bez_bvh.node_miss, bez_bvh.leaf_prim,
-                bez_bvh.first_leaf,
+                tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
+                tri_bvh.leaf_tspan, tri_bvh.first_leaf,
+                merged["tri_pos"], merged["tri_norm"], merged["tri_extra"],
+                merged["tri_colors"],
+                pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
+                pn_bvh.leaf_tspan, pn_bvh.first_leaf,
+                merged["pn_ctrl"], merged["pn_norm"], merged["pn_extra"],
+                merged["pn_colors"],
+                bez_bvh.nodes, bez_bvh.node_miss, bez_bvh.leaf_prim,
+                bez_bvh.leaf_tspan, bez_bvh.first_leaf,
                 merged["circuit_meta"], merged["circuit_colors"],
                 merged["circuit_border_colors"], merged["edges_2d"],
                 merged["edge_offsets"],
                 cam_origin, sp, pbx, pby, pixel_world_scale,
                 int(start), int(end), int(width), int(height),
                 float(width // 2), float(height // 2),
-                float(merged["num_circuits"]), int(MAX_BOUNCES),
+                layer_offset_triangles, layer_offset_pn, int(MAX_BOUNCES),
                 1 if transparent_background else 0)
             if physical:
                 path_trace_physical_stbvh(
                     *shared_args, samples, light_pos, light_col,
                     int(num_lights), float(LIGHT_INTENSITY),
-                    float(AMBIENT_LIGHT), out)
+                    float(AMBIENT_LIGHT), out, accum)
+                finalize_samples(samples,
+                                 1 if transparent_background else 0,
+                                 accum, out)
             elif samples > 1:
                 path_trace_scene_stbvh(*shared_args, samples,
-                                       float(INDIRECT_BOUNCE_STRENGTH), out)
+                                       float(INDIRECT_BOUNCE_STRENGTH), out,
+                                       accum)
+                finalize_samples(samples,
+                                 1 if transparent_background else 0,
+                                 accum, out)
             else:
                 render_scene_stbvh(*shared_args, out)
             ti.sync()
@@ -823,7 +1018,7 @@ _originals = {}
 
 
 def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
-                       physical_lighting=None):
+                       physical_lighting=None, pn_triangles=False):
     """Route newly created mobs through the ray traced render pipeline.
 
     Rebinds the primitive classes used by the mob modules; call this before
@@ -843,6 +1038,12 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         Fully physical mode: skip vertex shading and light the scene with
         the explicit point lights, glow emission and the background
         environment (see :func:`set_physical_lighting`).
+    pn_triangles
+        Render triangle mobs as curved point-normal (PN) patches --
+        quadratic Bezier triangles bent to match the vertex normals -- so
+        coarsely tessellated smooth surfaces (spheres, parametric surfaces)
+        keep smooth silhouettes. Triangles whose normals are zero or
+        constant across the face stay exactly flat.
     """
     if samples_per_pixel is not None:
         set_samples_per_pixel(samples_per_pixel)
@@ -850,17 +1051,19 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         set_indirect_bounce_strength(indirect_bounce_strength)
     if physical_lighting is not None:
         set_physical_lighting(physical_lighting)
+    triangle_cls = (RayTracedPNTrianglePrimitive if pn_triangles
+                    else RayTracedTrianglePrimitive)
     targets = []
     import algan.mobs.bezier_circuit as bezier_circuit
     import algan.mobs.shapes_2d as shapes_2d
     import algan.mobs.surfaces.surface as surface
-    targets.append((shapes_2d, "TrianglePrimitive", RayTracedTrianglePrimitive))
-    targets.append((surface, "TrianglePrimitive", RayTracedTrianglePrimitive))
+    targets.append((shapes_2d, "TrianglePrimitive", triangle_cls))
+    targets.append((surface, "TrianglePrimitive", triangle_cls))
     targets.append((bezier_circuit, "BezierCircuitPrimitive",
                     RayTracedBezierCircuitPrimitive))
     try:
         import algan.mobs.plots as plots
-        targets.append((plots, "TrianglePrimitive", RayTracedTrianglePrimitive))
+        targets.append((plots, "TrianglePrimitive", triangle_cls))
     except Exception:
         pass  # plots has a broken legacy import; skip it.
     for module, name, cls in targets:

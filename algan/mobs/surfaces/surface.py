@@ -55,18 +55,18 @@ class Surface(Renderable):
 
     Parameters
     ----------
-    function
+    coord_function
         The function mapping 2-D intrinsic coordinates (ranging from [0,1]), to 3-D world coordinates,
         which defines the manifold's shape.
-    function_normals
-        Function mapping 3-D world coordinates to their normal vectors (i.e. vectors facing directly out
+    normal_function
+        Function mapping 3-D world coordinates to their normal vectors (i.e. vectors pointing directly out
         of the surface), used for lighting.
     grid_height
-        Height of the grid from which internal coordinates are sampled.
+        Height of the grid from which intrinsic coordinates are sampled.
     grid_width
-        Width of the grid from which internal coordinates are sampled.
-    grid_aspect_radio
-        If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio
+        Width of the grid from which intrinsic coordinates are sampled.
+    grid_aspect_ratio
+        If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio.
     *args, **kwargs
         Passed to :class:`~.Mob`
 

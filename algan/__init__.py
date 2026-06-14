@@ -104,6 +104,13 @@ def csync(f):
 
     return _sync
 
+import taichi as ti
+
+def _sync_devices():
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    ti.sync()
+
 from algan.settings.defaults import *
 from algan.settings.style_defaults import *
 from algan.settings.logging_defaults import *

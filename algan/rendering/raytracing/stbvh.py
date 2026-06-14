@@ -16,19 +16,24 @@ Memory footprint is optimized in two ways:
    than a per-frame BVH). Frames in which a primitive is invisible contribute
    nothing at all.
 2. **Pointer-free layout** -- instances are sorted along a 4D (x, y, z, t)
-   Morton curve so that nodes are coherent in space *and* time, then packed
-   into an implicit complete binary tree (heap order). Children are found by
-   index arithmetic and traversal is stackless via precomputed "miss" links,
-   so a node costs just 8 floats + 3 ints.
+   Morton curve so that nodes are coherent in space *and* time, then grouped
+   ``LEAF_SIZE`` at a time into the leaves of an implicit complete binary
+   tree (heap order). Children are found by index arithmetic and traversal is
+   stackless via precomputed "miss" links. Each node is packed into a single
+   32-byte row (bounds + frame interval) so a node visit touches one cache
+   line.
 
-Intersection tests remain exact: a leaf stores only the primitive index and
-its frame interval; the traversal kernel fetches the primitive's geometry at
-the ray's exact frame.
+Intersection tests remain exact: a leaf slot stores only the primitive index
+and its frame interval (packed into one int32); the traversal kernel fetches
+the primitive's geometry at the ray's exact frame and skips slots whose
+instance does not cover that frame.
 
 Everything in this module is implemented with vectorized PyTorch ops (the
 per-ray traversal lives in ``ray_trace_taichi.py``).
 """
 from __future__ import annotations
+
+import os
 
 import torch
 
@@ -42,48 +47,65 @@ EMPTY_HI = -1e17
 
 _QUANT_BITS = 15  # 4 * 15 = 60 bits used, keeping codes positive in int64.
 
+# Instances per leaf. Grouping shrinks the tree (depth and node memory both
+# divide by LEAF_SIZE) at the cost of testing up to LEAF_SIZE primitives per
+# leaf visit. Measured on animated scenes, grouping is counterproductive:
+# the 4D Morton order places the *same* primitive at adjacent frames next to
+# each other, so grouped leaves get time-swept union boxes whose slots are
+# then mostly rejected by their frame intervals. Default to one instance per
+# leaf; the env knob remains for experiments. Read once at import (the
+# traversal kernels specialize on it).
+LEAF_SIZE = max(1, int(os.environ.get("ALGAN_STBVH_LEAF_SIZE", "1")))
+
 
 class STBVH:
     """Flat tensor representation of the spatio-temporal BVH.
 
-    All node arrays are in heap order over a complete binary tree with
+    Node data is in heap order over a complete binary tree with
     ``num_leaves`` (a power of two) leaves: the root is node 0, the children
     of node ``i`` are ``2i + 1`` and ``2i + 2``, and the leaves occupy nodes
-    ``[num_leaves - 1, 2 * num_leaves - 1)``.
+    ``[num_leaves - 1, 2 * num_leaves - 1)``. Each leaf holds ``LEAF_SIZE``
+    instance slots.
 
     Attributes
     ----------
-    node_lo, node_hi : Tensor[num_nodes, 3] (float32)
-        Spatial bounds of each node (union over the node's frame interval).
-    node_tmin, node_tmax : Tensor[num_nodes] (int32)
-        Inclusive frame-interval bounds of each node. A ray belonging to
-        frame ``f`` may only enter nodes with ``tmin <= f <= tmax``.
+    nodes : Tensor[num_nodes, 8] (float32)
+        Packed per-node data: spatial bounds ``lo.xyz, hi.xyz`` (union over
+        the node's frame interval) and the inclusive frame interval
+        ``tmin, tmax`` stored as floats (exact for < 2**24 frames). A ray
+        belonging to frame ``f`` may only enter nodes with
+        ``tmin <= f <= tmax``.
     node_miss : Tensor[num_nodes] (int32)
         Stackless traversal links: the next node in depth-first order when a
         node is skipped or a leaf has been processed (-1 terminates).
-    leaf_prim : Tensor[num_leaves] (int32)
-        Primitive index for each leaf, -1 for padding leaves.
+    leaf_prim : Tensor[num_leaves * LEAF_SIZE] (int32)
+        Primitive index for each leaf slot, -1 for padding slots. Slot ``j``
+        of leaf ``l`` is at index ``l * LEAF_SIZE + j``.
+    leaf_tspan : Tensor[num_leaves * LEAF_SIZE] (int32)
+        Frame interval of each slot's instance, packed as
+        ``tmin | (tmax << 16)`` (requires frame batches < 2**15 frames,
+        enforced by the renderer's chunking). Bit 31 (the sign bit) flags
+        instances that are fully *opaque* over their interval: the renderer
+        can prune everything behind such a hit while gathering.
     """
 
-    def __init__(self, node_lo, node_hi, node_tmin, node_tmax, node_miss, leaf_prim):
-        self.node_lo = node_lo
-        self.node_hi = node_hi
-        self.node_tmin = node_tmin
-        self.node_tmax = node_tmax
+    def __init__(self, nodes, node_miss, leaf_prim, leaf_tspan):
+        self.nodes = nodes
         self.node_miss = node_miss
         self.leaf_prim = leaf_prim
-        self.num_leaves = leaf_prim.shape[0]
+        self.leaf_tspan = leaf_tspan
+        self.num_leaves = (nodes.shape[0] + 1) // 2
         self.first_leaf = self.num_leaves - 1
 
     @property
     def num_nodes(self):
-        return self.node_lo.shape[0]
+        return self.nodes.shape[0]
 
     def get_memory_used(self):
         return sum(
             t.numel() * t.element_size()
-            for t in (self.node_lo, self.node_hi, self.node_tmin, self.node_tmax,
-                      self.node_miss, self.leaf_prim)
+            for t in (self.nodes, self.node_miss, self.leaf_prim,
+                      self.leaf_tspan)
         )
 
 
@@ -229,7 +251,8 @@ def _compute_miss_links(num_leaves, device):
     return miss
 
 
-def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0):
+def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
+                opaque=None):
     """Build a spatio-temporal BVH from per-frame primitive bounds.
 
     Parameters
@@ -242,11 +265,21 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0):
         Number of frames in the render batch (defaults to ``Tc``).
     tightness : float
         See :func:`segment_primitives_in_time`.
+    opaque : Tensor[To, N] (bool), optional
+        Per-frame full-opacity flags (``To`` is 1 or ``Tc``). An instance is
+        marked opaque (``leaf_tspan`` bit 31) when the primitive is opaque on
+        *every* frame of the instance's interval, allowing the renderer to
+        prune hits behind it during gathering.
     """
     Tc, N, _ = frame_lo.shape
     device = frame_lo.device
     if num_frames is None:
         num_frames = Tc
+    if num_frames >= 1 << 15:
+        raise ValueError(
+            f"STBVH leaf frame intervals are packed into 16-bit halves; "
+            f"render batches must stay below {1 << 15} frames "
+            f"(got {num_frames}).")
 
     if Tc == 1:
         valid = (frame_hi[0] >= frame_lo[0]).all(-1)
@@ -255,6 +288,10 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0):
         t1 = torch.full_like(prim_id, num_frames - 1)
         inst_lo = frame_lo[0, prim_id]
         inst_hi = frame_hi[0, prim_id]
+        if opaque is not None:
+            inst_opaque = opaque.all(0)[prim_id]
+        else:
+            inst_opaque = None
     else:
         if Tc != num_frames:
             raise ValueError(
@@ -263,6 +300,19 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0):
         prim_id, t0, t1, inst_lo, inst_hi = segment_primitives_in_time(
             frame_lo, frame_hi, tightness
         )
+        if opaque is not None:
+            if opaque.shape[0] == 1:
+                inst_opaque = opaque[0, prim_id]
+            else:
+                # Opaque over [t0, t1] iff no non-opaque frame in between
+                # (prefix sums of the negated mask).
+                prefix = torch.zeros((Tc + 1, N), dtype=torch.long,
+                                     device=device)
+                prefix[1:] = (~opaque).long().cumsum(0)
+                inst_opaque = (prefix[t1 + 1, prim_id]
+                               - prefix[t0, prim_id]) == 0
+        else:
+            inst_opaque = None
 
     M = prim_id.shape[0]
     if M > 0:
@@ -279,45 +329,67 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0):
         order = torch.argsort(codes)
         prim_id, t0, t1 = prim_id[order], t0[order], t1[order]
         inst_lo, inst_hi = inst_lo[order], inst_hi[order]
+        if inst_opaque is not None:
+            inst_opaque = inst_opaque[order]
 
-    P = 1 << max(M - 1, 0).bit_length() if M > 1 else 1
+    # Consecutive Morton-ordered instances share leaves, LEAF_SIZE at a time.
+    L = LEAF_SIZE
+    num_groups = max((M + L - 1) // L, 1)
+    P = 1 << max(num_groups - 1, 0).bit_length() if num_groups > 1 else 1
     num_nodes = 2 * P - 1
-
-    node_lo = torch.full((num_nodes, 3), EMPTY_LO, device=device)
-    node_hi = torch.full((num_nodes, 3), EMPTY_HI, device=device)
-    node_tmin = torch.full((num_nodes,), 1 << 30, dtype=torch.long, device=device)
-    node_tmax = torch.full((num_nodes,), -1, dtype=torch.long, device=device)
-    leaf_prim = torch.full((P,), -1, dtype=torch.long, device=device)
-
     first_leaf = P - 1
+
+    # Per-slot instance data, padded to P * L slots. Padding slots get an
+    # impossible frame interval (tmin > tmax) and empty bounds so they are
+    # never visited.
+    slot_lo = torch.full((P * L, 3), EMPTY_LO, device=device)
+    slot_hi = torch.full((P * L, 3), EMPTY_HI, device=device)
+    slot_t0 = torch.full((P * L,), (1 << 15) - 1, dtype=torch.long,
+                         device=device)
+    slot_t1 = torch.zeros((P * L,), dtype=torch.long, device=device)
+    slot_opaque = torch.zeros((P * L,), dtype=torch.bool, device=device)
+    leaf_prim = torch.full((P * L,), -1, dtype=torch.long, device=device)
     if M > 0:
-        node_lo[first_leaf:first_leaf + M] = inst_lo
-        node_hi[first_leaf:first_leaf + M] = inst_hi
-        node_tmin[first_leaf:first_leaf + M] = t0
-        node_tmax[first_leaf:first_leaf + M] = t1
+        slot_lo[:M] = inst_lo
+        slot_hi[:M] = inst_hi
+        slot_t0[:M] = t0
+        slot_t1[:M] = t1
         leaf_prim[:M] = prim_id
+        if inst_opaque is not None:
+            slot_opaque[:M] = inst_opaque
+    leaf_tspan = (slot_t0.clamp(0, (1 << 15) - 1)
+                  | (slot_t1.clamp(0, (1 << 15) - 1) << 16)).to(torch.int32)
+    # Bit 31 (sign bit) flags interval-opaque instances.
+    leaf_tspan = torch.where(
+        slot_opaque, leaf_tspan | torch.tensor(-2147483648, dtype=torch.int32,
+                                               device=device), leaf_tspan)
+
+    nodes = torch.empty((num_nodes, 8), device=device)
+    nodes[first_leaf:, 0:3] = slot_lo.view(P, L, 3).amin(1)
+    nodes[first_leaf:, 3:6] = slot_hi.view(P, L, 3).amax(1)
+    nodes[first_leaf:, 6] = slot_t0.view(P, L).amin(1).float()
+    nodes[first_leaf:, 7] = slot_t1.view(P, L).amax(1).float()
 
     # Bottom-up union of children into parents, one vectorized level at a time.
     offset, width = first_leaf, P
     while width > 1:
-        child_lo = node_lo[offset:offset + width]
-        child_hi = node_hi[offset:offset + width]
-        child_t0 = node_tmin[offset:offset + width]
-        child_t1 = node_tmax[offset:offset + width]
+        child = nodes[offset:offset + width]
         parent_offset = offset - width // 2
-        node_lo[parent_offset:offset] = torch.minimum(child_lo[0::2], child_lo[1::2])
-        node_hi[parent_offset:offset] = torch.maximum(child_hi[0::2], child_hi[1::2])
-        node_tmin[parent_offset:offset] = torch.minimum(child_t0[0::2], child_t0[1::2])
-        node_tmax[parent_offset:offset] = torch.maximum(child_t1[0::2], child_t1[1::2])
+        nodes[parent_offset:offset, 0:3] = torch.minimum(child[0::2, 0:3],
+                                                         child[1::2, 0:3])
+        nodes[parent_offset:offset, 3:6] = torch.maximum(child[0::2, 3:6],
+                                                         child[1::2, 3:6])
+        nodes[parent_offset:offset, 6] = torch.minimum(child[0::2, 6],
+                                                       child[1::2, 6])
+        nodes[parent_offset:offset, 7] = torch.maximum(child[0::2, 7],
+                                                       child[1::2, 7])
         offset, width = parent_offset, width // 2
 
     miss = _compute_miss_links(P, device)
 
     return STBVH(
-        node_lo.contiguous(),
-        node_hi.contiguous(),
-        node_tmin.to(torch.int32).contiguous(),
-        node_tmax.to(torch.int32).contiguous(),
+        nodes.contiguous(),
         miss.to(torch.int32).contiguous(),
         leaf_prim.to(torch.int32).contiguous(),
+        leaf_tspan.contiguous(),
     )

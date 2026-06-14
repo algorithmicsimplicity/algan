@@ -15,7 +15,6 @@ import torchvision.utils
 from moviepy import CompositeAudioClip
 
 import algan
-from algan import csync
 from algan import not_compiled
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.settings.defaults import *
@@ -33,8 +32,9 @@ import numpy as np
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.utils.memory_utils import get_num_available_bytes, ManualMemory, empty_cache
-from algan.utils.tensor_utils import unsquish, wait_for_cuda
+from algan.utils.tensor_utils import unsquish
 from algan.utils.file_utils import get_image
+from algan import _sync_devices
 
 
 class EmptySceneWarning(Warning):
@@ -212,8 +212,7 @@ class Scene:
         transparent_background=False,
         background_color=None,
     ):
-        wait_for_cuda()
-        with (torch.no_grad()):
+        with torch.no_grad():
             time_inds = torch.arange(start_ind, end_ind)
             camera = self.camera
             camera.screen.reset_state()
@@ -329,7 +328,6 @@ class Scene:
             self.memory.max_pointer = self.memory.current_pointer = (len(self.memory) - self.memory.current_reverse_pointer)
             for actor in [self.camera, self.camera.screen, *self.light_sources]:
                 actor.reset_state()
-            wait_for_cuda()
 
     def get_frame(self, i):
         actors = self.actors[-1]
@@ -359,7 +357,6 @@ class Scene:
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
 
-    @csync
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
@@ -374,7 +371,6 @@ class Scene:
         ]
 
         # Binary search to find a batch size that will fit in memory.
-        @csync
         def get_duration():
             #return 90
             duration = max_end_time_ind - start_time_ind
@@ -400,7 +396,6 @@ class Scene:
                 if duration <= 1:
                     duration = 1
                     break
-            wait_for_cuda()
             return duration
 
         duration = get_duration()
@@ -428,7 +423,6 @@ class Scene:
                 for component in actor.components:
                     component.set_state_full(start_time_ind, start_time_ind + duration)
                     component.set_state_to_time_t(time_inds)
-                wait_for_cuda()
                 primitive = actor.get_render_primitives()
                 if primitive is not None:
                     if not isinstance(primitive, list):
@@ -447,8 +441,6 @@ class Scene:
 
         primitive_collections = []
         max_bezier_batch_size = 50000
-        gc.collect()
-        torch.cuda.empty_cache()
         for _, (primitive_class, primitives) in grouped_primitives.items():
             if primitive_class is BezierCircuitPrimitive:
                 counts = torch.tensor([_.corners.shape[1] for _ in primitives]).cumsum(
@@ -479,8 +471,6 @@ class Scene:
                 )
                 primitive_collections[-1].memory = self.memory
                 primitive_collections[-1].scene = self
-
-        wait_for_cuda()
         return primitive_collections, start_time_ind + duration
 
     def background_is_transparent(self):
@@ -557,8 +547,18 @@ class Scene:
                 )
 
             while True:
+                _sync_devices()
+                s = time.time()
+                print(
+                    f"Fetching batch {current_time_ind}:{end_time_ind}."
+                )
                 primitives, new_time_ind = self.get_batch_of_primitives(
                     current_time_ind, end_time_ind, actors, max_animate_mem
+                )
+                _sync_devices()
+                e = time.time()
+                print(
+                    f"Batch fetch took {e - s} seconds"
                 )
                 if new_time_ind <= current_time_ind:
                     raise OutOfRenderMemory(
@@ -568,6 +568,7 @@ class Scene:
                 if len(primitives) > 0:
                     self.has_any_active_actors = True
 
+                    _sync_devices()
                     s = time.time()
                     print(
                         f"Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video."
@@ -582,6 +583,7 @@ class Scene:
                         background_color,
                     )
                     del primitives
+                    _sync_devices()
                     e = time.time()
                     print(
                         f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
