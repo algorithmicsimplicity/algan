@@ -163,12 +163,20 @@ class BezierCircuitCubic(Renderable):
         return PURPLE
 
     def get_memory_used_per_timestep(self):
-        n = (
-            self.control_points.location.shape[-2] * 3
-            + self.texture_points.location.shape[-2] * 5
-            + self.location.shape[-2] * (6)
-        )
-        return n * (4+9)
+        n_ctrl = self.control_points.location.shape[-2]
+        n_tex = self.texture_points.location.shape[-2]
+        n_loc = self.location.shape[-2]
+        n_segments = max(n_ctrl // 4, 1)  # cubic beziers have 4 control points each
+        # Animation state: control points (3 floats), texture (5), location (6).
+        animation_bytes = (n_ctrl * 3 + n_tex * 5 + n_loc * 6) * 4
+        # Primitive output: control point corners, colors, normals, border data.
+        primitive_bytes = n_segments * 4 * 3 * 4 + n_tex * 5 * 4 + n_loc * 12
+        # RT polyline edges: ~100 samples per segment, 4 floats (16 bytes) each.
+        rt_edge_bytes = n_segments * 100 * 16
+        # Per-circuit RT metadata (20 floats), frame bounds (6 floats), BVH (~64 bytes).
+        n_circuits = max(n_loc, 1)
+        rt_meta_bytes = n_circuits * (80 + 24 + 64)
+        return int(animation_bytes + primitive_bytes + rt_edge_bytes + rt_meta_bytes)
 
     def get_render_primitives(self):
         if self.empty:

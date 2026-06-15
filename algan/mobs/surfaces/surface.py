@@ -135,13 +135,24 @@ class Surface(Renderable):
         self.ignore_wave_animations = True
 
     def get_memory_used_per_timestep(self):
-        n = self.grid.location.shape[-2] * 1.51
-        # 3 (location) + 5 (color) + 3 (normal) = 11 floats
-        num_vars = 11
+        n_grid = self.grid.location.shape[-2]
+        n_tri = 2 * max(self.grid_height - 1, 1) * max(self.grid_width - 1, 1)
+        n_v = n_tri * 3
+        # Grid animation state: location(3*4) + color(5*4) = 32 bytes per grid point.
+        # Normal computation intermediates (grid rolls, stack, cross products):
+        # ~150 bytes per grid point peak.
+        animation_and_intermediates = n_grid * 182
+        # Primitive output that persists through rendering:
+        # corners(3*3*4=36) + colors(3*5*4=60, cloned) + normals(3*3*4=36) = 132 bytes
+        # per triangle, plus RT frame bounds ~8 bytes/vertex.
+        primitive_bytes = n_v * 52
+        # BVH: ~64 bytes per triangle per timestep.
+        bvh_bytes = n_tri * 64
+        # Shader params broadcast to vertices.
+        shader_bytes = 0
         for _ in self.get_shader_params().values():
-            num_vars += _.shape[-1]
-        # 4 bytes per float
-        return int(n * (num_vars * 4 + 10))
+            shader_bytes += n_v * _.shape[-1] * 4
+        return int(animation_and_intermediates + primitive_bytes + bvh_bytes + shader_bytes)
 
     def get_render_primitives(self):
         self.grid.set_time_inds_to(self)
@@ -176,7 +187,22 @@ class Surface(Renderable):
             triangle_normals[..., -1, :, [1, 2], :] = 0
             triangle_normals[..., :, 0, [0, 1], :] = 0
             triangle_normals[..., :, -1, [2, 3], :] = 0
-            vertex_normals = -F.normalize(triangle_normals.sum(-2), p=2, dim=-1)
+            unnormalized_normals = triangle_normals.sum(-2)
+
+            # Merge unnormalized normals along closed seams
+            is_closed_x = torch.allclose(grid[..., 0, :, :], grid[..., -1, :, :], atol=1e-4, rtol=1e-4)
+            if is_closed_x:
+                closed_normals = unnormalized_normals[..., 0, :, :] + unnormalized_normals[..., -1, :, :]
+                unnormalized_normals[..., 0, :, :] = closed_normals
+                unnormalized_normals[..., -1, :, :] = closed_normals
+
+            is_closed_y = torch.allclose(grid[..., :, 0, :], grid[..., :, -1, :], atol=1e-4, rtol=1e-4)
+            if is_closed_y:
+                closed_normals = unnormalized_normals[..., :, 0, :] + unnormalized_normals[..., :, -1, :]
+                unnormalized_normals[..., :, 0, :] = closed_normals
+                unnormalized_normals[..., :, -1, :] = closed_normals
+
+            vertex_normals = -F.normalize(unnormalized_normals, p=2, dim=-1)
             vertex_normals = grid_to_triangle_vertices(vertex_normals)
         else:
             vertex_normals = None

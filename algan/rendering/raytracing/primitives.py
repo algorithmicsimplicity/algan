@@ -27,6 +27,8 @@ mobs render through this pipeline.
 """
 from __future__ import annotations
 
+import gc
+
 import taichi as ti
 import torch
 import torch.nn.functional as F
@@ -349,14 +351,15 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self.colors = None
 
             self._set_frame_buffer_bytes(camera)
+
+            # Ensure released geometry is actually freed before rendering.
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         return self
 
     def get_memory_used_per_timestep(self):
-        #return self._rt_frame_bytes
-        return 0
-        if self._rt_tri_pos is not None:
-            return (self._rt_tri_pos[0].numel() * 3) * 4
-        return 0
+        return self._rt_frame_bytes
 
     def get_memory_used_for_blending(self, start_ind, end_ind):
         return 0  # Blending happens in-register inside the trace kernel.
@@ -416,6 +419,11 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
             self.colors = None
 
             self._set_frame_buffer_bytes(camera)
+
+            # Ensure released geometry is actually freed before rendering.
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         torch.cuda.synchronize()
         return self
 
@@ -474,6 +482,11 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             self._rt_frame_bytes = int(
                 camera.screen_width * camera.screen_height * 5 * 4
                 * (2 if mc else 1))
+
+            # Ensure released geometry is actually freed before rendering.
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         return self
 
     def _compute_samples_per_segment(self, corners, cam_o, sp, sb, screen_h):
@@ -657,11 +670,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         self._rt_frame_hi = (hi + inflate.view(1, -1, 1)).contiguous()
 
     def get_memory_used_per_timestep(self):
-        #return self._rt_frame_bytes
-        return 0
-        if self._rt_edges is not None:
-            return (self._rt_edges[0].numel()*2) * 4
-        return self._rt_merged_scene['tri_pos'][0].numel() * 8
+        return self._rt_frame_bytes
 
     def get_memory_used_for_blending(self, start_ind, end_ind):
         return 0  # Blending happens in-register inside the trace kernel.
@@ -826,6 +835,7 @@ def _merge_scene(primitives):
         p._rt_circuit_meta = p._rt_circuit_colors = None
         p._rt_circuit_border_colors = p._rt_edges = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     first._rt_merged_scene = scene

@@ -997,6 +997,7 @@ class Animatable:
         self.data.time_inds_active = torch.arange(len(time_inds))
         self.data.time_inds_materialized = time_inds
         self.data.set_pre_function_application = True
+        #_sync_devices()
 
     #@compiled
     def set_state_full(self, s, e):
@@ -1005,6 +1006,7 @@ class Animatable:
             return False
         self.raw_s = s
         self.raw_e = e
+        #_sync_devices()
         if not self.data.set_pre_function_application:
             self.set_state_pre_function_applications(s, e)
         t = self.t
@@ -1080,7 +1082,7 @@ class Animatable:
             func(caller, **kwargs2)
 
         self.already_set_state = True
-        wait_for_cuda()
+        #_sync_devices()
         return True
 
     def update_gather_scatter_inds(self, n):

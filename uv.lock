@@ -114,7 +114,7 @@ requires-dist = [
     { name = "moviepy", specifier = ">=2.2.0" },
     { name = "myst-parser", marker = "extra == 'dev'", specifier = ">=3.0.1" },
     { name = "numpy", specifier = ">=1.20.0" },
-    { name = "opencv-python", specifier = ">=4.0.0" },
+    { name = "opencv-python", specifier = ">=3.0.0" },
     { name = "parameterized", marker = "extra == 'dev'", specifier = ">=0.9.0" },
     { name = "prioq", specifier = ">=0.6.0" },
     { name = "psutil", marker = "extra == 'dev'", specifier = ">=6.1.1" },

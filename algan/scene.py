@@ -248,6 +248,11 @@ class Scene:
                 primitive.memory = self.memory
                 primitive.project_to_screen(camera, self.light_sources)
 
+            # Reclaim animation-phase residuals before render batching.
+            gc.collect()
+            if COMPUTING_DEFAULTS.render_device == torch.device('cuda'):
+                torch.cuda.empty_cache()
+
             render_pointers = self.memory.get_pointers()
             current_ind = start_ind
             num_bytes_for_post_processing_per_frame = self.num_pixels_screen_width * self.num_pixels_screen_height * 5 * 4 * 4
@@ -583,6 +588,10 @@ class Scene:
                         background_color,
                     )
                     del primitives
+                    # Free previous batch data before allocating next batch.
+                    gc.collect()
+                    if COMPUTING_DEFAULTS.render_device == torch.device('cuda'):
+                        torch.cuda.empty_cache()
                     _sync_devices()
                     e = time.time()
                     print(
