@@ -202,6 +202,17 @@ class Surface(Renderable):
                 unnormalized_normals[..., :, 0, :] = closed_normals
                 unnormalized_normals[..., :, -1, :] = closed_normals
 
+            # Merge unnormalized normals at singular poles (e.g. Sphere poles, Cone tip)
+            is_south_pole = torch.allclose(grid[..., :, 0, :], grid[..., :1, 0, :], atol=1e-4, rtol=1e-4)
+            if is_south_pole:
+                pole_normal = unnormalized_normals[..., :, 0, :].sum(-2, keepdim=True)
+                unnormalized_normals[..., :, 0, :] = pole_normal
+
+            is_north_pole = torch.allclose(grid[..., :, -1, :], grid[..., :1, -1, :], atol=1e-4, rtol=1e-4)
+            if is_north_pole:
+                pole_normal = unnormalized_normals[..., :, -1, :].sum(-2, keepdim=True)
+                unnormalized_normals[..., :, -1, :] = pole_normal
+
             vertex_normals = -F.normalize(unnormalized_normals, p=2, dim=-1)
             vertex_normals = grid_to_triangle_vertices(vertex_normals)
         else:

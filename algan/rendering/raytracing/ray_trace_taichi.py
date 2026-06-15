@@ -102,6 +102,11 @@ BARYCENTRIC_EPSILON = 1e-4
 # second is discarded so the mesh behaves as one cohesive surface (in
 # particular, a partially transparent mesh must not blend twice on seams).
 TRIANGLE_EDGE_EPSILON = 2e-4
+# Slightly larger tolerances for the point-normal (PN) triangle patch
+# numerical intersection solver and edge/seam de-duplication, to cover
+# larger floating-point / solver noise.
+PN_BARYCENTRIC_EPSILON = 1e-4
+PN_EDGE_EPSILON = 2e-4
 # Hits gathered per BVH traversal by the deterministic renderer. Depth
 # peeling consumes hits strictly front-to-back; collecting a small batch of
 # nearest hits per traversal lets a ray crossing several translucent
@@ -315,11 +320,7 @@ def _quartic_roots(q4, q3, q2, q1, q0, lo, hi):
         if xb > xa:
             yb = (((c4 * xb + c3) * xb + c2) * xb + c1) * xb + c0
             root = hi + 1.0
-            if ti.abs(yb) < 1e-6:
-                # Tangential contact at a critical point (or the interval
-                # end): the monotone piece's single root is the endpoint.
-                root = xb
-            elif (ya > 0.0) != (yb > 0.0):
+            if (ya > 0.0) != (yb > 0.0):
                 ra = xa
                 rb = xb
                 fa = ya
@@ -332,6 +333,10 @@ def _quartic_roots(q4, q3, q2, q1, q0, lo, hi):
                     else:
                         rb = m
                 root = 0.5 * (ra + rb)
+            elif ti.abs(yb) < 1e-3:
+                # Tangential contact at a critical point (or the interval
+                # end): the monotone piece's single root is the endpoint.
+                root = xb
             if root <= hi:
                 dup = 0
                 for c in ti.static(range(4)):
@@ -444,7 +449,7 @@ def _pn_intersect(ro, rd, tp, prim, pn_ctrl: ti.template()):
         q1 = 2.0 * al1 * al0 - be1 * g0 - be0 * g1
         q0 = al0 * al0 - be0 * g0
 
-    nu, ru = _quartic_roots(q4, q3, q2, q1, q0, -1e-3, 1.0 + 1e-3)
+    nu, ru = _quartic_roots(q4, q3, q2, q1, q0, -1e-2, 1.0 + 1e-2)
 
     count = 0
     out_t = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
@@ -507,7 +512,7 @@ def _pn_intersect(ro, rd, tp, prim, pn_ctrl: ti.template()):
                     v = -a2 / b2
                     ok = 1
             if ok == 1:
-                for _ in ti.static(range(2)):
+                for _ in ti.static(range(3)):
                     fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
                     gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
                     fu = 2.0 * A1 * u + B1 * v + D1
@@ -516,13 +521,15 @@ def _pn_intersect(ro, rd, tp, prim, pn_ctrl: ti.template()):
                     gv = B2 * u + 2.0 * C2 * v + E2
                     det = fu * gv - fv * gu
                     if ti.abs(det) > 1e-12:
-                        u -= (gv * fval - fv * gval) / det
-                        v -= (fu * gval - gu * fval) / det
+                        du = (gv * fval - fv * gval) / det
+                        dv = (fu * gval - gu * fval) / det
+                        u -= ti.math.clamp(du, -0.2, 0.2)
+                        v -= ti.math.clamp(dv, -0.2, 0.2)
                 fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
                 gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
-                if ((u >= -BARYCENTRIC_EPSILON) and (v >= -BARYCENTRIC_EPSILON)
-                        and (u + v <= 1.0 + BARYCENTRIC_EPSILON)
-                        and (ti.abs(fval) < 2e-4) and (ti.abs(gval) < 2e-4)):
+                if ((u >= -PN_BARYCENTRIC_EPSILON) and (v >= -PN_BARYCENTRIC_EPSILON)
+                        and (u + v <= 1.0 + PN_BARYCENTRIC_EPSILON)
+                        and (ti.abs(fval) < 2e-3) and (ti.abs(gval) < 2e-3)):
                     x = (k0 + u * ku + v * kv + (u * u) * kuu
                          + (v * v) * kvv + (u * v) * kuv)
                     t = x.dot(rd)
@@ -1053,7 +1060,10 @@ def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
         border = b_border
     if (found == 1) and (hit_type >= 1):
         w0 = 1.0 - a - b
-        if ti.min(w0, ti.min(a, b)) < TRIANGLE_EDGE_EPSILON:
+        eps = TRIANGLE_EDGE_EPSILON
+        if hit_type == 2:
+            eps = PN_EDGE_EPSILON
+        if ti.min(w0, ti.min(a, b)) < eps:
             edge_hit = 1
     return (found, t_hit, hit_layer, hit_prim, hit_type, a, b, border,
             edge_hit)
@@ -1222,7 +1232,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                     v = vs[r]
                                     w0 = 1.0 - u - v
                                     eh = 1 if (ti.min(w0, ti.min(u, v))
-                                               < TRIANGLE_EDGE_EPSILON) else 0
+                                               < PN_EDGE_EPSILON) else 0
                                     hit_flags[slot] = 2 | (eh << 2)
                                     hit_a[slot] = u
                                     hit_b[slot] = v

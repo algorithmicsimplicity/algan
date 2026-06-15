@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from algan import (
-    Sphere
+    Sphere, Scene
 )
 from algan.settings.render_settings import RenderSettings
 from algan.utils.algan_utils import render_to_file
@@ -27,7 +27,8 @@ SETTINGS = RenderSettings((640, 400), 10, anti_alias_level=1, fxaa=False)
 
 
 def build_and_animate_scene():
-    Sphere(grid_height=10).scale(3).spawn()
+    Sphere(grid_height=10, opacity=0.5).scale(3).spawn()
+    Scene.instance().save_frame('pn_sphere.png')
 
 
 def render(name, ray_traced):
