@@ -212,7 +212,10 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
                                accum)
         finalize_samples(samples_per_pixel, 0, accum, out)
     else:
-        render_scene_stbvh(*shared, out)
+        # has_tri/has_pn/has_bez = 1, 1, 1: traverse every geometry type, as
+        # the kernel did before the empty-type gating was added (the dummy
+        # PN/bezier BVHs here are empty, so traversing them is a no-op).
+        render_scene_stbvh(*shared, 1, 1, 1, out)
     torch.cuda.synchronize()
     return out
 

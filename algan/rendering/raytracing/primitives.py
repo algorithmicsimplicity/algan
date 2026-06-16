@@ -50,6 +50,7 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     path_trace_physical_stbvh,
     path_trace_scene_stbvh,
     render_scene_stbvh,
+    render_triangles_stbvh,
 )
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO, build_stbvh
 from algan.settings.defaults import COMPUTING_DEFAULTS
@@ -76,6 +77,18 @@ PHYSICAL_LIGHTING = False
 LIGHT_INTENSITY = 3.141592653589793
 # Constant ambient term added per diffuse interaction in physical mode.
 AMBIENT_LIGHT = 0.0
+# When True, the deterministic trace kernel is told which geometry types are
+# actually present and skips the per-ray traversal of any type whose tree is
+# just the empty placeholder (a launch-uniform branch, no divergence). Set
+# False to force all three traversals -- used by the A/B benchmark to measure
+# the gain in isolation.
+GATE_EMPTY_TRAVERSALS = True
+# When True, a batch containing only flat triangles is rendered by the
+# specialized ``render_triangles_stbvh`` kernel instead of the general
+# three-geometry-type ``render_scene_stbvh``. Output is identical; the
+# specialized kernel just carries no PN/bezier code, so it has lower register
+# pressure (higher GPU occupancy). Set False to force the general kernel (A/B).
+USE_TRIANGLE_ONLY_KERNEL = True
 
 
 def set_physical_lighting(enabled):
@@ -775,6 +788,7 @@ def _merge_scene(primitives):
         scene["pn_extra"] = torch.zeros((1, 1, 6), device=device)
         scene["pn_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["pn_bvh"] = _empty_scene_part(device)
+    scene["num_pn"] = scene["pn_ctrl"].shape[1] if pn_patches else 0
 
     if beziers:
         scene["circuit_meta"] = _cat_collections(
@@ -922,6 +936,14 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
     tri_bvh = merged["tri_bvh"]
     pn_bvh = merged["pn_bvh"]
     bez_bvh = merged["bez_bvh"]
+    # A geometry type absent from the whole batch has only a placeholder BVH;
+    # tell the deterministic kernel so it skips that empty traversal per ray.
+    if GATE_EMPTY_TRAVERSALS:
+        has_tri = 1 if merged["num_triangles"] > 0 else 0
+        has_pn = 1 if merged["num_pn"] > 0 else 0
+        has_bez = 1 if merged["num_circuits"] > 0 else 0
+    else:  # benchmarking escape hatch: traverse every (possibly empty) tree
+        has_tri = has_pn = has_bez = 1
     first = primitives[0]
     first.memory = memory
 
@@ -1001,8 +1023,23 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 finalize_samples(samples,
                                  1 if transparent_background else 0,
                                  accum, out)
+            elif (USE_TRIANGLE_ONLY_KERNEL and has_tri
+                  and not has_pn and not has_bez):
+                # Triangle-only batch: the lean kernel (no PN/bezier code)
+                # gives identical output at lower register pressure.
+                render_triangles_stbvh(
+                    tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
+                    tri_bvh.leaf_tspan, tri_bvh.first_leaf,
+                    merged["tri_pos"], merged["tri_norm"],
+                    merged["tri_extra"], merged["tri_colors"],
+                    cam_origin, sp, pbx, pby,
+                    int(start), int(end), int(width), int(height),
+                    float(width // 2), float(height // 2),
+                    layer_offset_triangles, int(MAX_BOUNCES),
+                    1 if transparent_background else 0, out)
             else:
-                render_scene_stbvh(*shared_args, out)
+                render_scene_stbvh(*shared_args, has_tri, has_pn, has_bez,
+                                   out)
             ti.sync()
             frames = out.view(end - start, height, width, C_out)
             frames = first.post_process_frames(

@@ -1119,11 +1119,17 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                   b_nodes: ti.template(), b_node_miss: ti.template(),
                   b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                   b_first_leaf, circuit_meta: ti.template(),
-                  edges_2d: ti.template(), edge_offsets: ti.template()) -> ti.i32:
+                  edges_2d: ti.template(), edge_offsets: ti.template(),
+                  has_tri: ti.i32, has_pn: ti.i32,
+                  has_bez: ti.i32) -> ti.i32:
     """Gather the up-to-``KBUF`` nearest hits strictly after
     (t_prev, layer_prev) into the caller's buffers, in one traversal of each
     BVH. Triangles are traversed first; the PN-patch and bezier traversals
     then prune against the hits already gathered.
+
+    ``has_tri``/``has_pn``/``has_bez`` flag which geometry types are present;
+    a type absent from the whole batch has only a placeholder (empty) BVH, so
+    its traversal is skipped outright (a launch-uniform branch, no divergence).
 
     Buffers hold geometry only (the consumer fetches shading data):
     ``hit_flags`` packs the hit type (0 = bezier circuit, 1 = triangle,
@@ -1143,7 +1149,9 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
 
     # --- Triangle BVH ---
     tp = f % tri_pos.shape[0]
-    node = 0
+    node = -1
+    if has_tri != 0:
+        node = 0
     while node != -1:
         window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
         window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
@@ -1227,7 +1235,9 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
 
     # --- PN patch BVH (window already tightened by the triangle hits) ---
     pp = f % pn_ctrl.shape[0]
-    node = 0
+    node = -1
+    if has_pn != 0:
+        node = 0
     while node != -1:
         window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
         window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
@@ -1295,7 +1305,9 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     # --- Bezier BVH (window tightened by the triangle and patch hits) ---
     num_meta_frames = circuit_meta.shape[0]
     num_edge_frames = edges_2d.shape[0]
-    node = 0
+    node = -1
+    if has_bez != 0:
+        node = 0
     while node != -1:
         window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
         window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
@@ -1439,6 +1451,8 @@ def render_scene_stbvh(
         half_screen_w: float, half_screen_h: float,
         layer_offset_triangles: float, layer_offset_pn: float,
         max_bounces: int, transparent: int,
+        # Which geometry types are present (skip an absent type's empty BVH).
+        has_tri: ti.i32, has_pn: ti.i32, has_bez: ti.i32,
         # Output buffer [time_end - time_start, width * height, channels],
         # pre-filled with the background; blended in place.
         out: ti.types.ndarray()):
@@ -1493,7 +1507,8 @@ def render_scene_stbvh(
                 p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
                 p_first_leaf, pn_ctrl,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                b_first_leaf, circuit_meta, edges_2d, edge_offsets)
+                b_first_leaf, circuit_meta, edges_2d, edge_offsets,
+                has_tri, has_pn, has_bez)
             if num_hits == 0:
                 break
 
@@ -1606,6 +1621,264 @@ def render_scene_stbvh(
                 done = True  # the batch held every remaining hit
 
         # Composite over the pre-filled background and write the pixel.
+        for ci in ti.static(range(4)):
+            bg = ti.cast(out[f_rel, p, ci], ti.f32)
+            val = acc[ci] * 255.0 + weight * bg
+            out[f_rel, p, ci] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),
+                                        ti.u8)
+        if transparent != 0:
+            bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
+            val = (1.0 - weight) * 255.0 + weight * bg_a
+            out[f_rel, p, 4] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),
+                                       ti.u8)
+
+
+@ti.func
+def _collect_hits_tri(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+                      layer_offset_triangles,
+                      hit_t: ti.template(), hit_layer: ti.template(),
+                      hit_prim: ti.template(), hit_flags: ti.template(),
+                      hit_a: ti.template(), hit_b: ti.template(),
+                      t_nodes: ti.template(), t_node_miss: ti.template(),
+                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
+                      t_first_leaf, tri_pos: ti.template()) -> ti.i32:
+    """Triangle-only specialization of :func:`_collect_hits`: gathers the
+    up-to-``KBUF`` nearest triangle hits in one BVH traversal. Identical math
+    and acceptance rules to the triangle branch of ``_collect_hits``, but with
+    no PN-patch or bezier code in its call graph, so the kernel that uses it
+    (``render_triangles_stbvh``) carries far fewer live registers -- which
+    raises occupancy on the latency-bound traversal.
+    """
+    count = 0
+    worst_idx = 0
+    worst_t = 1e30
+    worst_layer = -1e30
+    opq_t = 1e30
+    opq_layer = -1e30
+
+    tp = f % tri_pos.shape[0]
+    node = 0
+    while node != -1:
+        window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
+        window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+        if _node_intersected(node, ff, ro, inv_rd,
+                             t_prev - DEPTH_TIE_EPSILON, window_hi, t_nodes):
+            if node >= t_first_leaf:
+                base = (node - t_first_leaf) * LEAF_SIZE
+                for j in ti.static(range(LEAF_SIZE)):
+                    prim = t_leaf_prim[base + j]
+                    tspan = t_leaf_tspan[base + j]
+                    if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
+                            and (f <= ((tspan >> 16) & 0x7FFF))):
+                        v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+                                          tri_pos[tp, prim, 1],
+                                          tri_pos[tp, prim, 2])
+                        v1 = ti.math.vec3(tri_pos[tp, prim, 3],
+                                          tri_pos[tp, prim, 4],
+                                          tri_pos[tp, prim, 5])
+                        v2 = ti.math.vec3(tri_pos[tp, prim, 6],
+                                          tri_pos[tp, prim, 7],
+                                          tri_pos[tp, prim, 8])
+                        e1 = v1 - v0
+                        e2 = v2 - v0
+                        pv = rd.cross(e2)
+                        det = e1.dot(pv)
+                        if ti.abs(det) > 1e-12:
+                            inv_det = 1.0 / det
+                            tvec = ro - v0
+                            w1 = tvec.dot(pv) * inv_det
+                            qv = tvec.cross(e1)
+                            w2 = rd.dot(qv) * inv_det
+                            if ((w1 >= -BARYCENTRIC_EPSILON)
+                                    and (w2 >= -BARYCENTRIC_EPSILON)
+                                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
+                                t = e2.dot(qv) * inv_det
+                                layer = layer_offset_triangles + ti.cast(
+                                    prim, ti.f32)
+                                accept = ((t > MIN_HIT_DISTANCE)
+                                          and _comes_after(t, layer, t_prev,
+                                                           layer_prev)
+                                          and not _comes_after(
+                                              t, layer, opq_t, opq_layer))
+                                if accept and (count == KBUF):
+                                    accept = _comes_after(worst_t, worst_layer,
+                                                          t, layer)
+                                if accept:
+                                    slot = worst_idx
+                                    if count < KBUF:
+                                        slot = count
+                                        count += 1
+                                    hit_t[slot] = t
+                                    hit_layer[slot] = layer
+                                    hit_prim[slot] = prim
+                                    w0 = 1.0 - w1 - w2
+                                    eh = 1 if (ti.min(w0, ti.min(w1, w2))
+                                               < TRIANGLE_EDGE_EPSILON) else 0
+                                    hit_flags[slot] = 1 | (eh << 2)
+                                    hit_a[slot] = w1
+                                    hit_b[slot] = w2
+                                    if (tspan < 0) and _comes_after(
+                                            opq_t, opq_layer, t, layer):
+                                        opq_t = t
+                                        opq_layer = layer
+                                    if count == KBUF:
+                                        worst_idx = 0
+                                        worst_t = hit_t[0]
+                                        worst_layer = hit_layer[0]
+                                        for q in ti.static(range(1, KBUF)):
+                                            if _comes_after(hit_t[q],
+                                                            hit_layer[q],
+                                                            worst_t,
+                                                            worst_layer):
+                                                worst_idx = q
+                                                worst_t = hit_t[q]
+                                                worst_layer = hit_layer[q]
+                node = t_node_miss[node]
+            else:
+                node = BVH_ARITY * node + 1
+        else:
+            node = t_node_miss[node]
+    return count
+
+
+@ti.kernel
+def render_triangles_stbvh(
+        # Triangle STBVH + packed geometry (the only geometry type).
+        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
+        t_first_leaf: int,
+        tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
+        tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        # Per-frame camera.
+        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
+        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
+        # Render parameters.
+        time_start: int, time_end: int, width: int, height: int,
+        half_screen_w: float, half_screen_h: float,
+        layer_offset_triangles: float, max_bounces: int, transparent: int,
+        # Output buffer, pre-filled with the background; blended in place.
+        out: ti.types.ndarray()):
+    """Deterministic renderer for batches that contain *only* flat triangles
+    (the common case: 3D meshes, parametric surfaces, 2D polygons). Identical
+    output to ``render_scene_stbvh`` on such a batch, but without the PN-patch
+    and bezier traversal/shading in its call graph, so it compiles to a much
+    lighter-weight kernel.
+    """
+    pixels_per_frame = width * height
+    num_rays = (time_end - time_start) * pixels_per_frame
+
+    for ray_id in range(num_rays):
+        f_rel = ray_id // pixels_per_frame
+        p = ray_id - f_rel * pixels_per_frame
+        f = time_start + f_rel
+        ff = ti.cast(f, ti.f32)
+        py = p // width
+        px = p - py * width
+
+        ro, rd = _generate_ray(f, px, py, 0.5, 0.5,
+                               half_screen_w, half_screen_h,
+                               cam_origin, screen_point,
+                               pixel_basis_x, pixel_basis_y)
+        inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
+                              _safe_inverse(rd[2]))
+
+        acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        weight = 1.0
+        t_prev = 0.0
+        layer_prev = 1e30
+        bounces_left = max_bounces
+        seam_t = -1e30
+
+        kb_t = ti.Vector([0.0] * KBUF)
+        kb_layer = ti.Vector([0.0] * KBUF)
+        kb_prim = ti.Vector([0] * KBUF)
+        kb_flags = ti.Vector([0] * KBUF)
+        kb_a = ti.Vector([0.0] * KBUF)
+        kb_b = ti.Vector([0.0] * KBUF)
+
+        processed = 0
+        done = False
+        while (not done) and (processed < MAX_SURFACES_PER_RAY):
+            num_hits = _collect_hits_tri(
+                ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+                layer_offset_triangles,
+                kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                t_first_leaf, tri_pos)
+            if num_hits == 0:
+                break
+
+            bounced = False
+            drained = 0
+            while drained < num_hits:
+                sel = 0
+                sel_found = 0
+                for q in ti.static(range(KBUF)):
+                    if (q < num_hits) and (kb_prim[q] >= 0):
+                        if sel_found == 0:
+                            sel = q
+                            sel_found = 1
+                        elif _comes_after(kb_t[sel], kb_layer[sel],
+                                          kb_t[q], kb_layer[q]):
+                            sel = q
+                t_hit = kb_t[sel]
+                hit_layer = kb_layer[sel]
+                prim = kb_prim[sel]
+                flags = kb_flags[sel]
+                a = kb_a[sel]
+                b = kb_b[sel]
+                kb_prim[sel] = -1
+                drained += 1
+                processed += 1
+                edge_hit = (flags >> 2) & 1
+
+                if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+                    t_prev = t_hit
+                    layer_prev = hit_layer
+                    continue
+                seam_t = t_hit if edge_hit == 1 else -1e30
+
+                w0 = 1.0 - a - b
+                color, alpha = _triangle_color(f, prim, w0, a, b, tri_colors)
+                reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
+                                                       tri_extra)
+
+                alpha = ti.math.clamp(alpha, 0.0, 1.0)
+                reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
+                if bounces_left <= 0:
+                    reflectivity = 0.0
+
+                acc += (weight * alpha * (1.0 - reflectivity)) * color
+
+                if (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
+                    normal = _triangle_normal(f, prim, 1.0 - a - b, a, b,
+                                              tri_norm, tri_pos)
+                    normal = normal.normalized()
+                    if normal.dot(rd) > 0.0:
+                        normal = -normal
+                    hit_point = ro + t_hit * rd
+                    rd = (rd - 2.0 * rd.dot(normal) * normal).normalized()
+                    ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
+                    inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                          _safe_inverse(rd[1]),
+                                          _safe_inverse(rd[2]))
+                    weight *= alpha * reflectivity
+                    t_prev = 0.0
+                    layer_prev = 1e30
+                    seam_t = -1e30
+                    bounces_left -= 1
+                    bounced = True
+                    break
+                else:
+                    weight *= 1.0 - alpha
+                    t_prev = t_hit
+                    layer_prev = hit_layer
+                if weight < MIN_WEIGHT:
+                    done = True
+                    break
+            if (not done) and (not bounced) and (num_hits < KBUF):
+                done = True
+
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
             val = acc[ci] * 255.0 + weight * bg
