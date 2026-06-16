@@ -169,6 +169,23 @@ from algan.scene import Scene
 from algan.animation.animation_contexts import *
 from algan.utils.algan_utils import *
 from algan.rendering.lights import *
+from algan.rendering.shaders.materials import *
+from algan.rendering.shaders.material_shaders import (
+    basic_material_shader,
+    lambert_shader,
+    phong_shader,
+    standard_shader,
+    physical_shader,
+    toon_shader,
+    normal_shader,
+    matcap_shader,
+    depth_shader,
+)
+from algan.rendering.shaders.pbr_shaders import (
+    default_shader,
+    basic_pbr_shader,
+    null_shader,
+)
 
 from algan.animation.manim_animations import *
 

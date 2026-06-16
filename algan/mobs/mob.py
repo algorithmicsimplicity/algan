@@ -2616,6 +2616,77 @@ class Mob(Animatable):
             d.shader_specific_param_names = shader_specific_param_names
         return self
 
+    def set_material(self, material, apply_to_raytracer=False):
+        """Applies a Three.js-style :class:`~algan.rendering.shaders.materials.Material`
+        to this mob and all of its descendants.
+
+        This configures the material's lighting shader (via :meth:`set_shader`)
+        and copies its properties onto the mob: numeric/colour material
+        properties become animatable attributes (e.g. ``mob.roughness``,
+        ``mob.emissive_intensity``), the material colour drives the mob's base
+        colour, and ``opacity`` drives its max opacity. Like :meth:`set_shader`,
+        this MUST be called before the mob is spawned.
+
+        Parameters
+        ----------
+        material
+            A :class:`~algan.rendering.shaders.materials.Material` instance, e.g.
+            ``MeshStandardMaterial(metalness=1.0, roughness=0.2)``.
+        apply_to_raytracer
+            If True, also map ``metalness``/``roughness`` onto the ray traced
+            renderer's mirror reflection parameters (``set_reflectivity`` /
+            ``set_roughness``) so path-traced reflections respond to the
+            material. Off by default. Only meaningful for
+            :class:`MeshStandardMaterial` (and subclasses).
+
+        Returns
+        -------
+        :class:`~.Mob`
+            The mob instance itself, allowing for method chaining.
+
+        Raises
+        ------
+        :class:`.ModifiedProtectedAttributeError`
+            If used on an already spawned mob.
+        """
+        from algan.rendering.shaders.materials import (
+            _to_color5,
+            MeshStandardMaterial,
+        )
+
+        if self.data.spawn_time() >= 0:
+            raise ModifiedProtectedAttributeError(
+                "You are attempting to set the material "
+                "of a mob that is already spawned. This is not allowed. "
+                "See docs for help."
+            )
+
+        # Register the lighting shader and its animatable parameters, then
+        # override the signature defaults with this material's values.
+        self.set_shader(material.shader)
+        params = material.get_shader_param_values()
+        color5 = _to_color5(material.color) if material.applies_color else None
+        for d in reversed(self.get_descendants()):
+            for name, value in params.items():
+                d.__setattr__(name, value)
+            if color5 is not None:
+                d.color = color5
+            d.max_opacity = cast_to_tensor(material.opacity)
+            d.material = material
+
+        material.emit_warnings()
+
+        if apply_to_raytracer and isinstance(material, MeshStandardMaterial):
+            from algan.rendering.raytracing.primitives import (
+                set_reflectivity,
+                set_roughness,
+            )
+
+            set_reflectivity(self, float(material.metalness))
+            set_roughness(self, float(material.roughness))
+
+        return self
+
     def get_shader_params(self):
         if hasattr(self, "shader_specific_param_names"):
             return {

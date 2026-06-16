@@ -61,6 +61,100 @@ method, it read the the function signature of the shader and realised that there
 2 additional arguments named smoothness and metallicness, so it automatically
 added those as animatable attributes to our mob.
 
+Materials (Three.js-style)
+==========================
+
+For a more comprehensive workflow, Algan provides a set of **material** classes
+that mirror the `Three.js <https://threejs.org/>`_ mesh materials -- the same
+material types, property names, and default settings. Instead of picking a shader
+function and animating loose parameters, you configure a material object and apply
+it with :meth:`~.Mob.set_material`.
+
+.. algan:: SetMaterial
+
+    from algan import *
+
+    with Sync():
+        mob1 = Sphere().move(LEFT*2).set_material(
+            MeshStandardMaterial(color=RED, metalness=1.0, roughness=0.2)).spawn()
+        mob2 = Sphere().move(RIGHT*2).set_material(
+            MeshPhongMaterial(color=BLUE, shininess=80)).spawn()
+
+    with Seq(run_time_unit=5):
+        mob1.roughness = 1.0
+        mob1.metalness = 0.0
+
+    render_to_file()
+
+As with :meth:`~.Mob.set_shader`, :meth:`~.Mob.set_material` **must** be called
+before the mob is spawned. Applying a material registers the material's
+numeric/colour properties as animatable attributes on the mob, so you can animate
+them afterwards (``mob1.roughness = 1.0`` above), exactly like the built-in
+attributes.
+
+Available materials
+-------------------
+
+All of the Three.js mesh materials are provided, with matching default settings:
+
+.. list-table::
+    :header-rows: 1
+
+    * - Material
+      - Lighting
+      - Key properties (defaults)
+    * - :class:`MeshBasicMaterial`
+      - Unlit (flat colour)
+      - ``color``
+    * - :class:`MeshLambertMaterial`
+      - Diffuse (Lambert)
+      - ``color``, ``emissive`` (0x000000), ``emissiveIntensity`` (1)
+    * - :class:`MeshPhongMaterial`
+      - Blinn-Phong specular
+      - ``specular`` (0x111111), ``shininess`` (30), ``emissive``
+    * - :class:`MeshStandardMaterial`
+      - PBR metalness/roughness
+      - ``roughness`` (1), ``metalness`` (0), ``emissive``, ``envMapIntensity`` (1)
+    * - :class:`MeshPhysicalMaterial`
+      - PBR + clearcoat/sheen
+      - adds ``clearcoat`` (0), ``ior`` (1.5), ``specularIntensity`` (1),
+        ``sheen`` (0), ``transmission`` (0), ...
+    * - :class:`MeshToonMaterial`
+      - Cel / banded diffuse
+      - ``color``, ``bands`` (3), ``emissive``
+    * - :class:`MeshNormalMaterial`
+      - Normal-as-colour
+      - ``flatShading`` (False)
+    * - :class:`MeshMatcapMaterial`
+      - Material capture (approx.)
+      - ``color``
+    * - :class:`MeshDepthMaterial`
+      - Camera-distance grayscale
+      - ``near`` (0.1), ``far`` (100)
+
+Colours accept hex ints (``0xff0000``), hex strings (``"#ff0000"``), Algan colour
+constants (``RED``), or RGB tuples. Following Three.js, a material's ``color``
+default is white and drives the mesh's base colour (overriding a shape's own
+default colour).
+
+.. note::
+
+    The animatable attribute names on the mob use Python ``snake_case`` (e.g.
+    ``mob.emissive_intensity``, ``mob.metalness``), while the material
+    constructors accept the Three.js ``camelCase`` names (e.g.
+    ``MeshStandardMaterial(emissiveIntensity=2)``).
+
+.. important::
+
+    **Limitations.** Algan shades *per vertex* and has no UV / image-sampling
+    pipeline, so every texture / image-based property (``map``, ``normalMap``,
+    ``roughnessMap``, ``envMap``, ``matcap``, ``gradientMap``, ...) is accepted
+    for API parity but **not sampled** -- a warning is emitted when one is set.
+    ``wireframe``, ``vertexColors`` and non-default ``side`` are likewise
+    unsupported. The matcap, normal and depth materials use approximations
+    (matcap has no image; normals are world-space rather than view-space). For
+    the best results, light the scene with a single point light.
+
 Writing Custom Shaders
 ======================
 
