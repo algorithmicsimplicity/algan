@@ -57,7 +57,7 @@ with each type's primitive index breaking ties within the type.
 """
 import taichi as ti
 
-from algan.rendering.raytracing.stbvh import LEAF_SIZE
+from algan.rendering.raytracing.stbvh import BVH_ARITY, LEAF_SIZE
 
 
 def _ensure_taichi_initialized():
@@ -106,7 +106,30 @@ TRIANGLE_EDGE_EPSILON = 2e-4
 # numerical intersection solver and edge/seam de-duplication, to cover
 # larger floating-point / solver noise.
 PN_BARYCENTRIC_EPSILON = 1e-4
-PN_EDGE_EPSILON = 2e-4
+# Two G0-adjacent PN patches share their boundary curve but have different
+# tangent planes there, so near a seam their curved surfaces overlap in a thin
+# band and a ray can pierce *both* a small distance inside their shared edge.
+# A PN hit counts as an edge hit (a seam-merge candidate) when its smallest
+# barycentric coordinate is below this -- wide enough to cover that overlap
+# band, so a translucent seam is blended once rather than twice.
+PN_EDGE_EPSILON = 8e-3
+# A near-double resultant root (a ray grazing or near-edge piercing a patch)
+# can be recovered as several candidate hits at essentially the same surface
+# point, via different u-roots and v-branches; Newton leaves them a few
+# thousandths apart in (u, v) -- and, where the surface is steep, more than
+# DEPTH_TIE_EPSILON apart in depth -- so they survive the depth tie-break and
+# would blend two or three times (a bright seam on a translucent patch). Hits
+# whose patch parameters agree to within this are treated as the same hit.
+PN_DEDUP_UV_EPSILON = 5e-3
+# Depth window for merging the duplicate edge hits of a *shared PN-patch seam*
+# (the two curved patches meeting along a boundary curve). Across the overlap
+# band the two near-edge hits sit a few thousandths apart in depth -- past
+# DEPTH_TIE_EPSILON -- so the seam-merge needs a looser window than the
+# flat-triangle case or a translucent seam blends twice. Still far below any
+# visible surface separation (sub-pixel at typical scene scales), and only the
+# extreme silhouette could merge a front/back pair this close, over a band far
+# narrower than a pixel.
+PN_SEAM_DEPTH_EPSILON = 8e-3
 # Hits gathered per BVH traversal by the deterministic renderer. Depth
 # peeling consumes hits strictly front-to-back; collecting a small batch of
 # nearest hits per traversal lets a ray crossing several translucent
@@ -363,10 +386,14 @@ def _pn_intersect(ro, rd, tp, prim, pn_ctrl: ti.template()):
     The v-resultant of the pair is a quartic in u (the cubic
     ``b1 a2 - b2 a1`` when both projections are linear in v, which covers
     flat patches exactly); its real roots in the domain are isolated by
-    :func:`_quartic_roots`, v is recovered from the linear pencil
-    ``c2 f - c1 g`` (falling back to the better-conditioned quadratic, whose
-    negative discriminant rejects complex-pair phantoms), and each root is
-    polished with two Newton steps on (f, g) to f32 accuracy.
+    :func:`_quartic_roots`. For each root, v is recovered by solving the
+    better-conditioned of the two v-quadratics and trying *both* of its roots
+    (a near-double resultant root packs two distinct (u, v) hits at nearly the
+    same u, so a single recovered v can land on the wrong, out-of-domain
+    branch and drop a real interior hit); the linear pencil ``c2 f - c1 g``
+    and a single linear equation cover the cases with no quadratic term. Each
+    candidate is polished with three Newton steps on (f, g) to f32 accuracy
+    and kept only if it lands in the barycentric domain.
 
     Returns ``(count, t, u, v)`` with per-hit values in the vec4 slots
     ``[0, count)``; hits closer than DEPTH_TIE_EPSILON along the ray
@@ -457,92 +484,99 @@ def _pn_intersect(ro, rd, tp, prim, pn_ctrl: ti.template()):
     out_v = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     for ri in ti.static(range(4)):
         if ri < nu:
-            u = ru[ri]
-            a1 = (A1 * u + D1) * u + F1
-            b1 = B1 * u + E1
-            a2 = (A2 * u + D2) * u + F2
-            b2 = B2 * u + E2
-            denom = C2 * b1 - C1 * b2
-            v = 0.0
-            ok = 0
-            if ti.abs(denom) > 1e-8:
-                v = (C1 * a2 - C2 * a1) / denom
-                ok = 1
-            elif ti.max(ti.abs(C1), ti.abs(C2)) > 1e-7:
-                # The two v-quadratics are near-proportional at this u:
-                # solve the better-conditioned one directly. A negative
-                # discriminant means the shared root pair is complex (the
-                # resultant vanishes without a real intersection).
+            u_root = ru[ri]
+            a1 = (A1 * u_root + D1) * u_root + F1
+            b1 = B1 * u_root + E1
+            a2 = (A2 * u_root + D2) * u_root + F2
+            b2 = B2 * u_root + E2
+            # Candidate v values at this resultant root. A near-double root in
+            # u packs two distinct (u, v) intersections at nearly the same u
+            # (a ray grazing a patch, or piercing it near an edge): the two
+            # roots collapse and v cannot be told apart from u alone. Recovering
+            # a single v then latches onto whichever branch wins by a hair --
+            # often the out-of-domain one -- silently dropping the real interior
+            # hit and leaving a hole (e.g. on a coarsely tessellated sphere). So
+            # take *both* roots of the better-conditioned v-quadratic and
+            # Newton-polish each; the linear pencil / single linear equation
+            # supply one candidate when no projection is genuinely quadratic.
+            v_cand0 = 0.0
+            v_cand1 = 0.0
+            num_v = 0
+            if ti.max(ti.abs(C1), ti.abs(C2)) > 1e-7:
                 cc = C1
                 bb = b1
                 aa = a1
-                co = C2
-                bo = b2
-                ao = a2
                 if ti.abs(C2) > ti.abs(C1):
                     cc = C2
                     bb = b2
                     aa = a2
-                    co = C1
-                    bo = b1
-                    ao = a1
                 disc = bb * bb - 4.0 * cc * aa
                 if disc >= 0.0:
                     sq = ti.sqrt(disc)
                     qq = -0.5 * (bb + sq)
                     if bb < 0.0:
                         qq = -0.5 * (bb - sq)
-                    v0 = -0.5 * bb / cc
-                    v1 = v0
+                    v_cand0 = -0.5 * bb / cc
+                    v_cand1 = v_cand0
                     if ti.abs(qq) > 1e-30:
-                        v0 = qq / cc
-                        v1 = aa / qq
-                    v = v0
-                    if (ti.abs((co * v1 + bo) * v1 + ao)
-                            < ti.abs((co * v0 + bo) * v0 + ao)):
-                        v = v1
-                    ok = 1
-            else:
-                # Both projections linear in v.
-                if ti.abs(b1) >= ti.abs(b2):
+                        v_cand0 = qq / cc
+                        v_cand1 = aa / qq
+                    num_v = 2
+            if num_v == 0:
+                # No projection is genuinely quadratic in v (or it had no real
+                # root at this u): eliminate v^2 with the linear pencil, then
+                # fall back to the single linear equation.
+                denom = C2 * b1 - C1 * b2
+                if ti.abs(denom) > 1e-8:
+                    v_cand0 = (C1 * a2 - C2 * a1) / denom
+                    num_v = 1
+                elif ti.abs(b1) >= ti.abs(b2):
                     if ti.abs(b1) > 1e-8:
-                        v = -a1 / b1
-                        ok = 1
+                        v_cand0 = -a1 / b1
+                        num_v = 1
                 elif ti.abs(b2) > 1e-8:
-                    v = -a2 / b2
-                    ok = 1
-            if ok == 1:
-                for _ in ti.static(range(3)):
+                    v_cand0 = -a2 / b2
+                    num_v = 1
+            for vc in ti.static(range(2)):
+                if vc < num_v:
+                    u = u_root
+                    v = v_cand0 if ti.static(vc == 0) else v_cand1
+                    for _ in ti.static(range(3)):
+                        fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
+                        gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
+                        fu = 2.0 * A1 * u + B1 * v + D1
+                        fv = B1 * u + 2.0 * C1 * v + E1
+                        gu = 2.0 * A2 * u + B2 * v + D2
+                        gv = B2 * u + 2.0 * C2 * v + E2
+                        det = fu * gv - fv * gu
+                        if ti.abs(det) > 1e-12:
+                            du = (gv * fval - fv * gval) / det
+                            dv = (fu * gval - gu * fval) / det
+                            u -= ti.math.clamp(du, -0.2, 0.2)
+                            v -= ti.math.clamp(dv, -0.2, 0.2)
                     fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
                     gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
-                    fu = 2.0 * A1 * u + B1 * v + D1
-                    fv = B1 * u + 2.0 * C1 * v + E1
-                    gu = 2.0 * A2 * u + B2 * v + D2
-                    gv = B2 * u + 2.0 * C2 * v + E2
-                    det = fu * gv - fv * gu
-                    if ti.abs(det) > 1e-12:
-                        du = (gv * fval - fv * gval) / det
-                        dv = (fu * gval - gu * fval) / det
-                        u -= ti.math.clamp(du, -0.2, 0.2)
-                        v -= ti.math.clamp(dv, -0.2, 0.2)
-                fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
-                gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
-                if ((u >= -PN_BARYCENTRIC_EPSILON) and (v >= -PN_BARYCENTRIC_EPSILON)
-                        and (u + v <= 1.0 + PN_BARYCENTRIC_EPSILON)
-                        and (ti.abs(fval) < 2e-3) and (ti.abs(gval) < 2e-3)):
-                    x = (k0 + u * ku + v * kv + (u * u) * kuu
-                         + (v * v) * kvv + (u * v) * kuv)
-                    t = x.dot(rd)
-                    dup = 0
-                    for c in ti.static(range(4)):
-                        if ((c < count)
-                                and (ti.abs(out_t[c] - t) <= DEPTH_TIE_EPSILON)):
-                            dup = 1
-                    if dup == 0:
-                        out_t[count] = t
-                        out_u[count] = u
-                        out_v[count] = v
-                        count += 1
+                    if ((u >= -PN_BARYCENTRIC_EPSILON)
+                            and (v >= -PN_BARYCENTRIC_EPSILON)
+                            and (u + v <= 1.0 + PN_BARYCENTRIC_EPSILON)
+                            and (ti.abs(fval) < 2e-3) and (ti.abs(gval) < 2e-3)):
+                        x = (k0 + u * ku + v * kv + (u * u) * kuu
+                             + (v * v) * kvv + (u * v) * kuv)
+                        t = x.dot(rd)
+                        dup = 0
+                        for c in ti.static(range(4)):
+                            if (c < count) and (
+                                    (ti.abs(out_t[c] - t) <= DEPTH_TIE_EPSILON)
+                                    or ((ti.abs(out_u[c] - u)
+                                         <= PN_DEDUP_UV_EPSILON)
+                                        and (ti.abs(out_v[c] - v)
+                                             <= PN_DEDUP_UV_EPSILON))):
+                                dup = 1
+                        if (dup == 0) and (count < 4):
+                            out_t[count] = t
+                            out_u[count] = u
+                            out_v[count] = v
+                            count += 1
     return count, out_t, out_u, out_v
 
 
@@ -607,7 +641,7 @@ def _nearest_triangle_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                     best_w2 = w2
                 node = node_miss[node]
             else:
-                node = 2 * node + 1
+                node = BVH_ARITY * node + 1
         else:
             node = node_miss[node]
     return best_t, best_prim, best_w1, best_w2, best_layer
@@ -659,7 +693,7 @@ def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset,
                                     best_v = vs[r]
                 node = node_miss[node]
             else:
-                node = 2 * node + 1
+                node = BVH_ARITY * node + 1
         else:
             node = node_miss[node]
     return best_t, best_prim, best_u, best_v, best_layer
@@ -771,7 +805,7 @@ def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                     best_v = v
                 node = node_miss[node]
             else:
-                node = 2 * node + 1
+                node = BVH_ARITY * node + 1
         else:
             node = node_miss[node]
     return best_t, best_circuit, best_border, best_u, best_v, best_layer
@@ -1187,7 +1221,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                                 worst_layer = hit_layer[q]
                 node = t_node_miss[node]
             else:
-                node = 2 * node + 1
+                node = BVH_ARITY * node + 1
         else:
             node = t_node_miss[node]
 
@@ -1254,7 +1288,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                                 worst_layer = hit_layer[q]
                 node = p_node_miss[node]
             else:
-                node = 2 * node + 1
+                node = BVH_ARITY * node + 1
         else:
             node = p_node_miss[node]
 
@@ -1369,7 +1403,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                                 worst_layer = hit_layer[q]
                 node = b_node_miss[node]
             else:
-                node = 2 * node + 1
+                node = BVH_ARITY * node + 1
         else:
             node = b_node_miss[node]
     return count
@@ -1491,11 +1525,14 @@ def render_scene_stbvh(
                 edge_hit = (flags >> 2) & 1
                 border = (flags >> 3) & 1
 
-                # Mesh seams: the two triangles adjacent to a shared edge can
-                # both report the crossing ray; the second edge hit at the
-                # same depth is the same surface point, so skip it (one
-                # cohesive surface, blended exactly once).
-                if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+                # Mesh seams: the two triangles (or curved patches) adjacent to
+                # a shared edge can both report the crossing ray; the second
+                # edge hit at the same depth is the same surface point, so skip
+                # it (one cohesive surface, blended exactly once). PN seams
+                # need a looser depth window than flat triangles.
+                seam_eps = PN_SEAM_DEPTH_EPSILON if htype == 2 \
+                    else DEPTH_TIE_EPSILON
+                if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                     t_prev = t_hit
                     layer_prev = hit_layer
                     continue
@@ -1700,8 +1737,11 @@ def path_trace_scene_stbvh(
                 break
 
             # Mesh seams: skip the duplicate edge hit of the adjacent
-            # triangle so the surface scatters/transmits exactly once.
-            if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+            # triangle/patch so the surface scatters/transmits exactly once
+            # (PN seams need a looser depth window than flat triangles).
+            seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2 \
+                else DEPTH_TIE_EPSILON
+            if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                 t_prev = t_hit
                 layer_prev = hit_layer
                 continue
@@ -1866,8 +1906,11 @@ def _transmittance(ro, rd, f, ff, max_t,
             circuit_meta, edges_2d, edge_offsets)
         if (found == 0) or (t_hit >= max_t):
             break
-        # Skip the duplicate edge hit of mesh seams (attenuate once).
-        if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+        # Skip the duplicate edge hit of mesh seams (attenuate once); PN
+        # seams need a looser depth window than flat triangles.
+        seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2 \
+            else DEPTH_TIE_EPSILON
+        if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
             t_prev = t_hit
             layer_prev = hit_layer
             continue
@@ -2014,8 +2057,11 @@ def path_trace_physical_stbvh(
                 break
 
             # Mesh seams: skip the duplicate edge hit of the adjacent
-            # triangle (one interaction per surface crossing).
-            if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+            # triangle/patch (one interaction per surface crossing); PN seams
+            # need a looser depth window than flat triangles.
+            seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2 \
+                else DEPTH_TIE_EPSILON
+            if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
                 t_prev = t_hit
                 layer_prev = hit_layer
                 continue

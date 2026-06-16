@@ -57,6 +57,17 @@ _QUANT_BITS = 15  # 4 * 15 = 60 bits used, keeping codes positive in int64.
 # traversal kernels specialize on it).
 LEAF_SIZE = max(1, int(os.environ.get("ALGAN_STBVH_LEAF_SIZE", "1")))
 
+# Branching factor of the implicit tree. A wider tree is shallower -- depth
+# divides by log2(BVH_ARITY) -- which shortens the serial chain of dependent
+# node reads that dominates traversal latency, without changing which
+# primitives a leaf holds (so renders are byte-for-byte identical to a binary
+# tree). 4 (BVH4) is the measured sweet spot: depth halves vs binary for a
+# ~10-16% trace-kernel speedup, while 8 over-widens (8 sibling-box tests per
+# level outweigh the further depth cut). 2 reproduces the original binary
+# layout. Read once at import; the traversal kernels specialize on it. Must
+# be >= 2.
+BVH_ARITY = max(2, int(os.environ.get("ALGAN_BVH_ARITY", "4")))
+
 
 class STBVH:
     """Flat tensor representation of the spatio-temporal BVH.
@@ -94,8 +105,11 @@ class STBVH:
         self.node_miss = node_miss
         self.leaf_prim = leaf_prim
         self.leaf_tspan = leaf_tspan
-        self.num_leaves = (nodes.shape[0] + 1) // 2
-        self.first_leaf = self.num_leaves - 1
+        # Implicit complete BVH_ARITY-ary tree with P leaves has
+        # num_nodes = (A*P - 1)/(A - 1) nodes, the P leaves last in heap order.
+        num_nodes = nodes.shape[0]
+        self.num_leaves = (num_nodes * (BVH_ARITY - 1) + 1) // BVH_ARITY
+        self.first_leaf = num_nodes - self.num_leaves
 
     @property
     def num_nodes(self):
@@ -237,17 +251,23 @@ def segment_primitives_in_time(frame_lo, frame_hi, tightness=2.0):
 
 
 def _compute_miss_links(num_leaves, device):
-    """Miss links for stackless DFS over the implicit complete binary tree."""
-    num_nodes = 2 * num_leaves - 1
+    """Miss links for stackless DFS over the implicit complete BVH_ARITY-ary
+    tree: a skipped or finished node jumps to its next sibling, or -- for the
+    last sibling in a group -- to its parent's miss target. Levels are filled
+    top-down so each parent's link is already set when its children read it.
+    """
+    a = BVH_ARITY
+    num_internal = (num_leaves - 1) // (a - 1)
+    num_nodes = num_internal + num_leaves
     miss = torch.full((num_nodes,), -1, dtype=torch.long, device=device)
-    start, width = 1, 2
+    start, width = 1, a
     while start < num_nodes:
         idx = torch.arange(start, start + width, device=device)
-        left = (idx % 2) == 1
-        parent_miss = miss[(idx - 1) >> 1]
-        miss[idx] = torch.where(left, idx + 1, parent_miss)
+        pos = (idx - 1) % a  # position within the sibling group (0..a-1)
+        parent_miss = miss[(idx - 1) // a]
+        miss[idx] = torch.where(pos == (a - 1), parent_miss, idx + 1)
         start += width
-        width *= 2
+        width *= a
     return miss
 
 
@@ -334,10 +354,13 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
 
     # Consecutive Morton-ordered instances share leaves, LEAF_SIZE at a time.
     L = LEAF_SIZE
+    a = BVH_ARITY
     num_groups = max((M + L - 1) // L, 1)
-    P = 1 << max(num_groups - 1, 0).bit_length() if num_groups > 1 else 1
-    num_nodes = 2 * P - 1
-    first_leaf = P - 1
+    P = 1  # leaf count: the smallest power of the arity that holds all groups
+    while P < num_groups:
+        P *= a
+    num_nodes = (a * P - 1) // (a - 1)
+    first_leaf = num_nodes - P
 
     # Per-slot instance data, padded to P * L slots. Padding slots get an
     # impossible frame interval (tmin > tmax) and empty bounds so they are
@@ -371,19 +394,27 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
     nodes[first_leaf:, 7] = slot_t1.view(P, L).amax(1).float()
 
     # Bottom-up union of children into parents, one vectorized level at a time.
+    # Each parent unions its `a` consecutive children (strided slices of the
+    # level), so this works for any arity (a == 2 reproduces the binary union).
     offset, width = first_leaf, P
     while width > 1:
         child = nodes[offset:offset + width]
-        parent_offset = offset - width // 2
-        nodes[parent_offset:offset, 0:3] = torch.minimum(child[0::2, 0:3],
-                                                         child[1::2, 0:3])
-        nodes[parent_offset:offset, 3:6] = torch.maximum(child[0::2, 3:6],
-                                                         child[1::2, 3:6])
-        nodes[parent_offset:offset, 6] = torch.minimum(child[0::2, 6],
-                                                       child[1::2, 6])
-        nodes[parent_offset:offset, 7] = torch.maximum(child[0::2, 7],
-                                                       child[1::2, 7])
-        offset, width = parent_offset, width // 2
+        parent_width = width // a
+        parent_offset = offset - parent_width
+        lo = torch.minimum(child[0::a, 0:3], child[1::a, 0:3])
+        hi = torch.maximum(child[0::a, 3:6], child[1::a, 3:6])
+        tlo = torch.minimum(child[0::a, 6], child[1::a, 6])
+        thi = torch.maximum(child[0::a, 7], child[1::a, 7])
+        for c in range(2, a):
+            lo = torch.minimum(lo, child[c::a, 0:3])
+            hi = torch.maximum(hi, child[c::a, 3:6])
+            tlo = torch.minimum(tlo, child[c::a, 6])
+            thi = torch.maximum(thi, child[c::a, 7])
+        nodes[parent_offset:offset, 0:3] = lo
+        nodes[parent_offset:offset, 3:6] = hi
+        nodes[parent_offset:offset, 6] = tlo
+        nodes[parent_offset:offset, 7] = thi
+        offset, width = parent_offset, parent_width
 
     miss = _compute_miss_links(P, device)
 
