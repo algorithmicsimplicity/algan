@@ -66,7 +66,7 @@ LEAF_SIZE = max(1, int(os.environ.get("ALGAN_STBVH_LEAF_SIZE", "1")))
 # level outweigh the further depth cut). 2 reproduces the original binary
 # layout. Read once at import; the traversal kernels specialize on it. Must
 # be >= 2.
-BVH_ARITY = max(2, int(os.environ.get("ALGAN_BVH_ARITY", "4")))
+BVH_ARITY = 4#max(2, int(os.environ.get("ALGAN_BVH_ARITY", "4")))
 
 
 class STBVH:
