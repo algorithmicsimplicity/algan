@@ -72,11 +72,11 @@ BVH_ARITY = 4#max(2, int(os.environ.get("ALGAN_BVH_ARITY", "4")))
 class STBVH:
     """Flat tensor representation of the spatio-temporal BVH.
 
-    Node data is in heap order over a complete binary tree with
-    ``num_leaves`` (a power of two) leaves: the root is node 0, the children
-    of node ``i`` are ``2i + 1`` and ``2i + 2``, and the leaves occupy nodes
-    ``[num_leaves - 1, 2 * num_leaves - 1)``. Each leaf holds ``LEAF_SIZE``
-    instance slots.
+    Node data is in heap order over a complete ``BVH_ARITY``-ary tree with
+    ``num_leaves`` (a power of ``BVH_ARITY``) leaves: the root is node 0, the
+    children of node ``i`` are ``BVH_ARITY*i + 1 .. BVH_ARITY*i + BVH_ARITY``,
+    and the ``num_leaves`` leaves occupy the last nodes (from ``first_leaf``).
+    Each leaf holds ``LEAF_SIZE`` instance slots.
 
     Attributes
     ----------

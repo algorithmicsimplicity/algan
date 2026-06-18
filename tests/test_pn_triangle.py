@@ -23,12 +23,12 @@ from algan.settings.render_settings import RenderSettings
 from algan.utils.algan_utils import render_to_file
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "raytracing_outputs_v2")
-SETTINGS = RenderSettings((640, 400), 10, anti_alias_level=1, fxaa=False)
+SETTINGS = RenderSettings((640, 400), 10, anti_alias_level=2, fxaa=False)
 
 
 def build_and_animate_scene():
     Sphere(grid_height=10, opacity=0.5).scale(3).spawn()
-    Scene.instance().save_frame('pn_sphere.png')
+    #Scene.instance().save_frame('pn_sphere.png')
 
 
 def render(name, ray_traced):

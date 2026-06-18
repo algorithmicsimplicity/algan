@@ -105,7 +105,7 @@ USE_TRIANGLE_ONLY_KERNEL = True
 # When True, a batch with NO PN patches but containing bezier circuits (text,
 # 2D shapes), optionally mixed with flat triangles, is rendered by the
 # specialized ``render_no_pn_stbvh`` kernel instead of the general
-# ``render_scene_stbvh``. The general kernel always compiles the PN quartic
+# ``render_scene_stbvh``. The general kernel always compiles the PN Matrix Pencil
 # solver into its call graph (its dominant register cost); the no-PN kernel
 # omits it, so a no-PN scene runs at higher occupancy. Output is byte-identical
 # (the omitted PN paths are inert when no PN patches are present). The pure
@@ -925,6 +925,31 @@ def _prefill_background(out, background_color, frame_offset, device):
             out[..., k:] = rows[..., -1:].to(torch.uint8)
 
 
+def _downsample_background(background_color, aa, num_frames, screen_height,
+                           screen_width):
+    """Average a super-sampled animated/image background down to the output
+    resolution (box filter, matching ``post_process_frames``), so the in-place
+    anti-aliased renderer -- which samples the background once per output pixel
+    -- gets a background at the right resolution.
+
+    Solid colors (resolution-free) and backgrounds that are not super-sampled
+    (row count not ``num_frames * (screen_height*aa) * (screen_width*aa)``) are
+    returned unchanged.
+    """
+    bg = background_color
+    if not torch.is_tensor(bg) or bg.dim() <= 1 or bg.shape[0] == 1:
+        return bg  # solid color
+    C = bg.shape[-1]
+    body = bg.reshape(-1, C)[1:]  # drop the leading padding row
+    h_aa, w_aa = screen_height * aa, screen_width * aa
+    if body.shape[0] != num_frames * h_aa * w_aa:
+        return bg  # not a super-sampled image background; leave as-is
+    img = body.view(num_frames, h_aa, w_aa, C).float().permute(0, 3, 1, 2)
+    ds = F.avg_pool2d(img, aa).permute(0, 2, 3, 1).reshape(-1, C)
+    ds = (ds + 0.5).clamp_(0, 255).to(bg.dtype)
+    return torch.cat((ds[:1], ds), 0)
+
+
 def render_triangles_wavefront(
         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
         tri_pos, tri_norm, tri_extra, tri_colors,
@@ -1125,8 +1150,26 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
     depth complexity or bounce count.
     """
     merged = _merge_scene(primitives)
-    width = screen_width * anti_alias_level
-    height = screen_height * anti_alias_level
+    aa = max(1, int(anti_alias_level))
+    # Anti-aliasing strategy. The deterministic megakernels and the Monte
+    # Carlo path tracers average ``aa^2`` jittered sub-pixel rays *in place* at
+    # the output resolution, so the frame buffer stays ``screen_width x
+    # screen_height`` regardless of ``aa`` (a^2x less render memory than
+    # super-sampling). The wavefront path can't do that (its per-ray state is
+    # one global cell per ray), so when it is selected we fall back to the
+    # classic super-sample-then-average-down path: render at ``aa``x resolution
+    # and let ``post_process_frames`` box-filter back down.
+    inplace_aa = not USE_WAVEFRONT
+    if inplace_aa:
+        width = screen_width
+        height = screen_height
+        kernel_aa = aa          # in-kernel sub-pixel averaging factor
+        post_aa = 1             # post-processing does not down-sample
+    else:
+        width = screen_width * aa
+        height = screen_height * aa
+        kernel_aa = 1
+        post_aa = aa
     C_out = 5 if transparent_background else 4
     device = COMPUTING_DEFAULTS.render_device
     num_frames = merged["num_frames"]
@@ -1137,11 +1180,23 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                         num_frames).contiguous()
     sb = _expand_frames(_flat_frames(screen_basis, (3, 3)), num_frames)
     pbx, pby = _pixel_bases(sb)
-    # World units per screen pixel per unit distance (for border widths).
+    # World units per screen pixel per unit distance (for border widths). Border
+    # widths are authored in *anti-aliased* pixels (see BezierCircuit), so this
+    # always uses the super-sampled height (screen_height * aa), whether or not
+    # the frame buffer itself is super-sampled.
     b1_norm = sb[:, 1].norm(p=2, dim=-1)
     screen_dist = (sp - cam_origin).norm(p=2, dim=-1)
-    pixel_world_scale = (2.0 / (height * b1_norm * screen_dist).clamp_min(1e-12)
-                         ).contiguous()
+    pixel_world_scale = (
+        2.0 / (screen_height * aa * b1_norm * screen_dist).clamp_min(1e-12)
+    ).contiguous()
+
+    # In-place AA samples the background once per output pixel, so an
+    # animated/image background that arrived super-sampled must be averaged
+    # down to the output resolution first (solid colors are resolution-free).
+    if inplace_aa and aa > 1:
+        background_color = _downsample_background(
+            background_color, aa, time_end - time_start,
+            screen_height, screen_width)
 
     tri_bvh = merged["tri_bvh"]
     pn_bvh = merged["pn_bvh"]
@@ -1158,6 +1213,13 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
     first.memory = memory
 
     samples = max(1, int(SAMPLES_PER_PIXEL))
+    # In-place AA folds the anti-alias super-sampling into the Monte Carlo
+    # sample count: each of the ``aa^2`` sub-pixels would have drawn ``samples``
+    # random rays jittered over its own cell and then been averaged down, which
+    # is equivalent (same total, same expectation) to drawing ``samples * aa^2``
+    # rays jittered over the whole output pixel. (The wavefront/super-sample
+    # path keeps ``kernel_aa == 1``, so ``samples_eff == samples`` there.)
+    samples_eff = samples * (kernel_aa * kernel_aa)
     physical = bool(PHYSICAL_LIGHTING)
     if physical and samples <= 1:
         raise ValueError(
@@ -1172,9 +1234,11 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
 
     def render_chunk(start, end):
         # The Monte Carlo kernels launch one thread per (frame, pixel,
-        # sample) path; keep the flattened index within int32 range.
+        # sample) path; keep the flattened index within int32 range. (The
+        # deterministic kernels loop the aa^2 sub-pixels serially per pixel, so
+        # only the Monte Carlo path multiplies the thread count by the samples.)
         if (samples > 1 and
-                (end - start) * width * height * samples >= 1 << 31):
+                (end - start) * width * height * samples_eff >= 1 << 31):
             if end - start <= 1:
                 raise OutOfRenderMemory(
                     "samples_per_pixel * resolution exceeds the ray tracer's "
@@ -1219,17 +1283,17 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 1 if transparent_background else 0)
             if physical:
                 path_trace_physical_stbvh(
-                    *shared_args, samples, light_pos, light_col,
+                    *shared_args, samples_eff, light_pos, light_col,
                     int(num_lights), float(LIGHT_INTENSITY),
                     float(AMBIENT_LIGHT), out, accum)
-                finalize_samples(samples,
+                finalize_samples(samples_eff,
                                  1 if transparent_background else 0,
                                  accum, out)
             elif samples > 1:
-                path_trace_scene_stbvh(*shared_args, samples,
+                path_trace_scene_stbvh(*shared_args, samples_eff,
                                        float(INDIRECT_BOUNCE_STRENGTH), out,
                                        accum)
-                finalize_samples(samples,
+                finalize_samples(samples_eff,
                                  1 if transparent_background else 0,
                                  accum, out)
             elif (USE_WAVEFRONT and has_tri
@@ -1269,10 +1333,10 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     int(start), int(end), int(width), int(height),
                     float(width // 2), float(height // 2),
                     layer_offset_triangles, int(MAX_BOUNCES),
-                    1 if transparent_background else 0, out)
+                    1 if transparent_background else 0, kernel_aa, out)
             elif USE_NO_PN_KERNEL and not has_pn:
                 # No PN patches (bezier circuits, optionally with flat
-                # triangles): the no-PN kernel omits the quartic solver from
+                # triangles): the no-PN kernel omits the Matrix Pencil solver from
                 # its call graph for identical output at lower register
                 # pressure. (Pure triangle-only was handled above.)
                 render_no_pn_stbvh(
@@ -1290,14 +1354,14 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     float(width // 2), float(height // 2),
                     layer_offset_triangles, int(MAX_BOUNCES),
                     1 if transparent_background else 0,
-                    has_tri, has_bez, out)
+                    has_tri, has_bez, kernel_aa, out)
             else:
                 render_scene_stbvh(*shared_args, has_tri, has_pn, has_bez,
-                                   out)
+                                   kernel_aa, out)
             ti.sync()
             frames = out.view(end - start, height, width, C_out)
             frames = first.post_process_frames(
-                frames, anti_alias_level=anti_alias_level,
+                frames, anti_alias_level=post_aa,
                 post_processes=list(post_processes))
             memory.set_pointers(entry_pointers)
             return [frames]

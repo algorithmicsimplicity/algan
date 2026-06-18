@@ -42,7 +42,7 @@ def _gpu_memory_pressure(threshold=0.8):
         return True
 
 
-def empty_cache(force_gc=False):
+def empty_cache(force_gc=True):
     """Reclaim freed memory back to the allocators.
 
     ``gc.collect()`` walks the entire Python object graph and dominates this

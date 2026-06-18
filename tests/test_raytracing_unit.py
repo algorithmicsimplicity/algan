@@ -94,10 +94,13 @@ def test_stbvh_structure():
     missing = visible_cpu & (coverage == 0)
     assert not missing.any(), "a visible (frame, prim) pair is not covered"
 
-    # Parents must bound children spatially and temporally.
-    P = bvh.num_leaves
-    for parent in range(P - 1):
-        for child in (2 * parent + 1, 2 * parent + 2):
+    # Parents must bound children spatially and temporally. The implicit tree
+    # is BVH_ARITY-ary: the internal nodes are [0, first_leaf), and the
+    # children of internal node i are BVH_ARITY*i + 1 .. BVH_ARITY*i + ARITY.
+    from algan.rendering.raytracing.stbvh import BVH_ARITY
+    for parent in range(bvh.first_leaf):
+        for k in range(BVH_ARITY):
+            child = BVH_ARITY * parent + 1 + k
             assert (bvh.nodes[parent, 0:3] <= bvh.nodes[child, 0:3] + 1e-5).all()
             assert (bvh.nodes[parent, 3:6] >= bvh.nodes[child, 3:6] - 1e-5).all()
             assert bvh.nodes[parent, 6] <= bvh.nodes[child, 6]
@@ -214,8 +217,9 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
     else:
         # has_tri/has_pn/has_bez = 1, 1, 1: traverse every geometry type, as
         # the kernel did before the empty-type gating was added (the dummy
-        # PN/bezier BVHs here are empty, so traversing them is a no-op).
-        render_scene_stbvh(*shared, 1, 1, 1, out)
+        # PN/bezier BVHs here are empty, so traversing them is a no-op). The
+        # trailing 1 is aa_level (one ray per pixel: no sub-pixel averaging).
+        render_scene_stbvh(*shared, 1, 1, 1, 1, out)
     torch.cuda.synchronize()
     return out
 

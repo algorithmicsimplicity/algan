@@ -102,9 +102,10 @@ PN_BARYCENTRIC_EPSILON = 1e-4
 # barycentric coordinate is below this -- wide enough to cover that overlap
 # band, so a translucent seam is blended once rather than twice.
 PN_EDGE_EPSILON = 8e-3
-# A near-double resultant root (a ray grazing or near-edge piercing a patch)
-# can be recovered as several candidate hits at essentially the same surface
-# point, via different u-roots and v-branches; Newton leaves them a few
+# A ray grazing or near-edge piercing a patch makes two intersections nearly
+# coincide, and the solver can recover them as several candidate hits at
+# essentially the same surface point (via the two split lines, or the linear
+# fallback landing on a pencil hit); Newton leaves them a few
 # thousandths apart in (u, v) -- and, where the surface is steep, more than
 # DEPTH_TIE_EPSILON apart in depth -- so they survive the depth tie-break and
 # would blend two or three times (a bright seam on a translucent patch). Hits
@@ -232,133 +233,73 @@ def _comes_after(t, layer, t_prev, layer_prev) -> bool:
 
 
 @ti.func
-def _quartic_roots(q4, q3, q2, q1, q0, lo, hi):
-    """Real roots of ``q4 x^4 + q3 x^3 + q2 x^2 + q1 x + q0`` in [lo, hi],
-    tolerant of degenerate (effectively lower-degree) coefficient sets.
+def _cbrt(x):
+    """Real cube root, valid for negative arguments."""
+    r = ti.pow(ti.abs(x), 1.0 / 3.0)
+    if x < 0.0:
+        r = -r
+    return r
 
-    Roots are isolated, not solved in closed form: [lo, hi] is split into
-    monotone pieces at the polynomial's critical points -- the derivative
-    cubic's roots, themselves isolated by *its* critical points from the
-    closed-form quadratic -- and each piece with a sign change is bisected.
-    This finds every simple root in the interval regardless of the actual
-    degree; near-zero values at the split points are also accepted as roots
-    so tangential (even-multiplicity) contacts are kept.
 
-    Returns ``(count, roots)`` with the roots ascending in ``roots[:count]``.
+@ti.func
+def _cubic_real_roots(a3, a2, a1, a0):
+    """Real roots of ``a3 x^3 + a2 x^2 + a1 x + a0`` in closed form.
+
+    Degenerate-degree aware: a vanishing leading coefficient falls back to
+    the stable quadratic / linear formula, so the same routine serves the
+    flat-patch pencil (whose cubic collapses to a quadratic) and the curved
+    case. Returns ``(count, roots)`` with the real roots in ``roots[:count]``
+    (``count`` in 0..3); the order is unspecified -- callers select a root by
+    conditioning, not by magnitude.
     """
-    scale = ti.max(ti.max(ti.abs(q4), ti.abs(q3)),
-                   ti.max(ti.max(ti.abs(q2), ti.abs(q1)),
-                          ti.max(ti.abs(q0), 1e-30)))
-    c4 = q4 / scale
-    c3 = q3 / scale
-    c2 = q2 / scale
-    c1 = q1 / scale
-    c0 = q0 / scale
-
-    # Critical points of the derivative cubic: roots of 12c4 x^2 + 6c3 x
-    # + 2c2 (stable quadratic formula, degree-degenerate aware).
-    s0 = lo
-    s1 = lo
-    qa = 12.0 * c4
-    qb = 6.0 * c3
-    qc = 2.0 * c2
-    if ti.abs(qa) > 1e-12:
-        disc = qb * qb - 4.0 * qa * qc
-        if disc > 0.0:
-            sq = ti.sqrt(disc)
-            qq = -0.5 * (qb + sq)
-            if qb < 0.0:
-                qq = -0.5 * (qb - sq)
-            if ti.abs(qq) > 1e-30:
-                s0 = qq / qa
-                s1 = qc / qq
-    elif ti.abs(qb) > 1e-12:
-        s0 = -qc / qb
-    s0 = ti.math.clamp(s0, lo, hi)
-    s1 = ti.math.clamp(s1, lo, hi)
-    if s1 < s0:
-        swap = s0
-        s0 = s1
-        s1 = swap
-
-    # Roots of the derivative cubic on its (up to 3) monotone pieces: the
-    # quartic's critical points.
-    d3 = 4.0 * c4
-    d2 = 3.0 * c3
-    d1 = 2.0 * c2
-    d0 = c1
-    crit = ti.math.vec3(hi, hi, hi)
-    ncrit = 0
-    xa = lo
-    ya = ((d3 * xa + d2) * xa + d1) * xa + d0
-    for k in ti.static(range(3)):
-        xb = hi
-        if ti.static(k == 0):
-            xb = s0
-        if ti.static(k == 1):
-            xb = s1
-        if xb > xa:
-            yb = ((d3 * xb + d2) * xb + d1) * xb + d0
-            if (ya > 0.0) != (yb > 0.0):
-                ra = xa
-                rb = xb
-                fa = ya
-                for _ in range(24):
-                    m = 0.5 * (ra + rb)
-                    fm = ((d3 * m + d2) * m + d1) * m + d0
-                    if (fm > 0.0) == (fa > 0.0):
-                        ra = m
-                        fa = fm
-                    else:
-                        rb = m
-                crit[ncrit] = 0.5 * (ra + rb)
-                ncrit += 1
-            xa = xb
-            ya = yb
-
-    # Roots of the quartic on its (up to 4) monotone pieces.
-    roots = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    roots = ti.math.vec3(0.0, 0.0, 0.0)
     count = 0
-    xa = lo
-    ya = (((c4 * xa + c3) * xa + c2) * xa + c1) * xa + c0
-    if ti.abs(ya) < 1e-6:
-        roots[count] = xa
-        count += 1
-    for k in ti.static(range(4)):
-        xb = hi
-        if ti.static(k < 3):
-            if k < ncrit:
-                xb = crit[k]
-        if xb > xa:
-            yb = (((c4 * xb + c3) * xb + c2) * xb + c1) * xb + c0
-            root = hi + 1.0
-            if (ya > 0.0) != (yb > 0.0):
-                ra = xa
-                rb = xb
-                fa = ya
-                for _ in range(26):
-                    m = 0.5 * (ra + rb)
-                    fm = (((c4 * m + c3) * m + c2) * m + c1) * m + c0
-                    if (fm > 0.0) == (fa > 0.0):
-                        ra = m
-                        fa = fm
-                    else:
-                        rb = m
-                root = 0.5 * (ra + rb)
-            elif ti.abs(yb) < 1e-3:
-                # Tangential contact at a critical point (or the interval
-                # end): the monotone piece's single root is the endpoint.
-                root = xb
-            if root <= hi:
-                dup = 0
-                for c in ti.static(range(4)):
-                    if (c < count) and (ti.abs(roots[c] - root) < 1e-5):
-                        dup = 1
-                if (dup == 0) and (count < 4):
-                    roots[count] = root
-                    count += 1
-            xa = xb
-            ya = yb
+    scale = ti.max(ti.max(ti.abs(a3), ti.abs(a2)),
+                   ti.max(ti.abs(a1), ti.max(ti.abs(a0), 1e-30)))
+    if ti.abs(a3) <= 1e-7 * scale:
+        # Effectively quadratic a2 x^2 + a1 x + a0 (or linear).
+        if ti.abs(a2) <= 1e-7 * scale:
+            if ti.abs(a1) > 1e-30:
+                roots[0] = -a0 / a1
+                count = 1
+        else:
+            disc = a1 * a1 - 4.0 * a2 * a0
+            if disc >= 0.0:
+                sq = ti.sqrt(disc)
+                w = -0.5 * (a1 + sq)
+                if a1 < 0.0:
+                    w = -0.5 * (a1 - sq)
+                if ti.abs(w) > 1e-30:
+                    roots[0] = w / a2
+                    roots[1] = a0 / w
+                else:
+                    roots[0] = -0.5 * a1 / a2
+                    roots[1] = roots[0]
+                count = 2
+    else:
+        # Depressed cubic y^3 + p y + q via x = y - a2 / (3 a3).
+        b = a2 / a3
+        c = a1 / a3
+        d = a0 / a3
+        shift = b * (1.0 / 3.0)
+        p = c - b * b * (1.0 / 3.0)
+        q = (2.0 / 27.0) * b * b * b - (1.0 / 3.0) * b * c + d
+        half_q = 0.5 * q
+        disc = half_q * half_q + p * p * p * (1.0 / 27.0)
+        if disc >= 0.0:
+            # One real root (Cardano); the other two are complex.
+            sq = ti.sqrt(disc)
+            roots[0] = _cbrt(-half_q + sq) + _cbrt(-half_q - sq) - shift
+            count = 1
+        else:
+            # Three distinct real roots (p < 0): trigonometric form.
+            m = 2.0 * ti.sqrt(-p * (1.0 / 3.0))
+            arg = ti.math.clamp(3.0 * q / (p * m), -1.0, 1.0)
+            theta = ti.acos(arg) * (1.0 / 3.0)
+            roots[0] = m * ti.cos(theta) - shift
+            roots[1] = m * ti.cos(theta - 2.0943951023931953) - shift
+            roots[2] = m * ti.cos(theta - 4.1887902047863905) - shift
+            count = 3
     return count, roots
 
 
@@ -369,20 +310,23 @@ def _pn_intersect(ro, rd, tp, prim, pn_ctrl: ti.template()):
     ``S(u, v) = K0 + Ku u + Kv v + Kuu u^2 + Kvv v^2 + Kuv uv`` over the
     barycentric domain ``u, v >= 0, u + v <= 1``.
 
-    Sederberg & Anderson's two-plane method: the patch is projected onto
-    two orthogonal planes containing the ray, giving two bivariate
-    quadratics ``f(u, v) = g(u, v) = 0`` whose common roots are the hits.
-    The v-resultant of the pair is a quartic in u (the cubic
-    ``b1 a2 - b2 a1`` when both projections are linear in v, which covers
-    flat patches exactly); its real roots in the domain are isolated by
-    :func:`_quartic_roots`. For each root, v is recovered by solving the
-    better-conditioned of the two v-quadratics and trying *both* of its roots
-    (a near-double resultant root packs two distinct (u, v) hits at nearly the
-    same u, so a single recovered v can land on the wrong, out-of-domain
-    branch and drop a real interior hit); the linear pencil ``c2 f - c1 g``
-    and a single linear equation cover the cases with no quadratic term. Each
-    candidate is polished with three Newton steps on (f, g) to f32 accuracy
-    and kept only if it lands in the barycentric domain.
+    Sederberg & Anderson's two-plane method: the patch is projected onto two
+    orthogonal planes containing the ray, giving two bivariate quadratics
+    ``f(u, v) = g(u, v) = 0`` whose common roots are the hits. Rather than
+    eliminating a variable into a resultant quartic (numerically fragile --
+    catastrophic cancellation near grazing rays), the pair is solved with the
+    *matrix pencil*: each quadratic is a symmetric 3x3 conic matrix
+    (``MF``, ``MG``), and ``det(x MF + MG)`` is a cubic in ``x`` whose real
+    roots make ``M = x MF + MG`` a degenerate conic -- a product of two
+    straight lines through all four common roots of ``f`` and ``g``. The root
+    whose member splits into a *real* line pair (adjugate with a negative
+    diagonal -- the squared homogeneous intersection point) is chosen, ``M``
+    is factored into the two lines via ``M + [p]_x`` (rank 1), and each line
+    is intersected with ``f`` through a single stable 1D quadratic. A flat
+    patch makes f and g linear, which collapses the pencil (``det`` vanishes
+    identically); that case falls back to the 2x2 linear solve. Every
+    candidate is polished with three Newton steps on ``(f, g)`` to f32
+    accuracy and kept only if it lands in the barycentric domain.
 
     Returns ``(count, t, u, v)`` with per-hit values in the vec4 slots
     ``[0, count)``; hits closer than DEPTH_TIE_EPSILON along the ray
@@ -440,132 +384,307 @@ def _pn_intersect(ro, rd, tp, prim, pn_ctrl: ti.template()):
     E2 /= sg
     F2 /= sg
 
-    # Quadratics in v: f = C1 v^2 + b1(u) v + a1(u) with b1 = B1 u + E1,
-    # a1 = A1 u^2 + D1 u + F1 (same for g). The cubic gm = b1 a2 - b2 a1 is
-    # both the v-eliminated system when C1 = C2 = 0 and one factor of the
-    # general resultant (c1 a2 - c2 a1)^2 - (c1 b2 - c2 b1)(b1 a2 - b2 a1).
-    g3 = B1 * A2 - B2 * A1
-    g2 = B1 * D2 + E1 * A2 - B2 * D1 - E2 * A1
-    g1 = B1 * F2 + E1 * D2 - B2 * F1 - E2 * D1
-    g0 = E1 * F2 - E2 * F1
-    q4 = 0.0
-    q3 = g3
-    q2 = g2
-    q1 = g1
-    q0 = g0
-    if ti.max(ti.abs(C1), ti.abs(C2)) > 1e-6:
-        al2 = C1 * A2 - C2 * A1
-        al1 = C1 * D2 - C2 * D1
-        al0 = C1 * F2 - C2 * F1
-        be1 = C1 * B2 - C2 * B1
-        be0 = C1 * E2 - C2 * E1
-        q4 = al2 * al2 - be1 * g3
-        q3 = 2.0 * al2 * al1 - be1 * g2 - be0 * g3
-        q2 = al1 * al1 + 2.0 * al2 * al0 - be1 * g1 - be0 * g2
-        q1 = 2.0 * al1 * al0 - be1 * g0 - be0 * g1
-        q0 = al0 * al0 - be0 * g0
+    # Symmetric conic matrices of f and g: (u, v, 1) M (u, v, 1)^T equals the
+    # quadratic, so the cross/linear terms carry the standard factor 1/2.
+    mf00 = A1
+    mf11 = C1
+    mf22 = F1
+    mf01 = 0.5 * B1
+    mf02 = 0.5 * D1
+    mf12 = 0.5 * E1
+    mg00 = A2
+    mg11 = C2
+    mg22 = F2
+    mg01 = 0.5 * B2
+    mg02 = 0.5 * D2
+    mg12 = 0.5 * E2
 
-    nu, ru = _quartic_roots(q4, q3, q2, q1, q0, -1e-2, 1.0 + 1e-2)
+    # Adjugates (symmetric) of MF and MG.
+    af00 = mf11 * mf22 - mf12 * mf12
+    af11 = mf00 * mf22 - mf02 * mf02
+    af22 = mf00 * mf11 - mf01 * mf01
+    af01 = mf02 * mf12 - mf01 * mf22
+    af02 = mf01 * mf12 - mf02 * mf11
+    af12 = mf01 * mf02 - mf00 * mf12
+    ag00 = mg11 * mg22 - mg12 * mg12
+    ag11 = mg00 * mg22 - mg02 * mg02
+    ag22 = mg00 * mg11 - mg01 * mg01
+    ag01 = mg02 * mg12 - mg01 * mg22
+    ag02 = mg01 * mg12 - mg02 * mg11
+    ag12 = mg01 * mg02 - mg00 * mg12
+
+    # det(x MF + MG) = c3 x^3 + c2 x^2 + c1 x + c0 (the matrix pencil):
+    # c3 = det(MF), c0 = det(MG), c2 = tr(adj(MF) MG), c1 = tr(adj(MG) MF).
+    c3 = mf00 * af00 + mf01 * af01 + mf02 * af02
+    c0 = mg00 * ag00 + mg01 * ag01 + mg02 * ag02
+    c2 = (af00 * mg00 + af11 * mg11 + af22 * mg22
+          + 2.0 * (af01 * mg01 + af02 * mg02 + af12 * mg12))
+    c1 = (ag00 * mf00 + ag11 * mf11 + ag22 * mf22
+          + 2.0 * (ag01 * mf01 + ag02 * mf02 + ag12 * mf12))
+
+    nx, xr = _cubic_real_roots(c3, c2, c1, c0)
+
+    # Pick the real pencil root whose member conic splits into a real line
+    # pair. det(M) = 0 makes M two lines; the pair is real iff M's adjugate
+    # has a negative diagonal entry (= -|intersection point|^2 in homogeneous
+    # coordinates). Comparing on the scale-normalized M keeps a large root
+    # (the member near the line at infinity) from looking spuriously
+    # well-conditioned.
+    best_q = 0.0
+    x0 = 0.0
+    found = 0
+    for i in ti.static(range(3)):
+        if i < nx:
+            xroot = xr[i]
+            a00 = xroot * mf00 + mg00
+            a11 = xroot * mf11 + mg11
+            a22 = xroot * mf22 + mg22
+            a01 = xroot * mf01 + mg01
+            a02 = xroot * mf02 + mg02
+            a12 = xroot * mf12 + mg12
+            ms = ti.max(ti.max(ti.max(ti.abs(a00), ti.abs(a11)),
+                               ti.max(ti.abs(a22), ti.abs(a01))),
+                        ti.max(ti.abs(a02), ti.max(ti.abs(a12), 1e-30)))
+            inv = 1.0 / ms
+            a00 *= inv
+            a11 *= inv
+            a22 *= inv
+            a01 *= inv
+            a02 *= inv
+            a12 *= inv
+            d00 = a11 * a22 - a12 * a12
+            d11 = a00 * a22 - a02 * a02
+            d22 = a00 * a11 - a01 * a01
+            q = ti.max(ti.max(-d00, -d11), -d22)
+            if q > best_q:
+                best_q = q
+                x0 = xroot
+                found = 1
 
     count = 0
     out_t = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     out_u = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     out_v = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-    for ri in ti.static(range(4)):
-        if ri < nu:
-            u_root = ru[ri]
-            a1 = (A1 * u_root + D1) * u_root + F1
-            b1 = B1 * u_root + E1
-            a2 = (A2 * u_root + D2) * u_root + F2
-            b2 = B2 * u_root + E2
-            # Candidate v values at this resultant root. A near-double root in
-            # u packs two distinct (u, v) intersections at nearly the same u
-            # (a ray grazing a patch, or piercing it near an edge): the two
-            # roots collapse and v cannot be told apart from u alone. Recovering
-            # a single v then latches onto whichever branch wins by a hair --
-            # often the out-of-domain one -- silently dropping the real interior
-            # hit and leaving a hole (e.g. on a coarsely tessellated sphere). So
-            # take *both* roots of the better-conditioned v-quadratic and
-            # Newton-polish each; the linear pencil / single linear equation
-            # supply one candidate when no projection is genuinely quadratic.
-            v_cand0 = 0.0
-            v_cand1 = 0.0
-            num_v = 0
-            if ti.max(ti.abs(C1), ti.abs(C2)) > 1e-7:
-                cc = C1
-                bb = b1
-                aa = a1
-                if ti.abs(C2) > ti.abs(C1):
-                    cc = C2
-                    bb = b2
-                    aa = a2
-                disc = bb * bb - 4.0 * cc * aa
-                if disc >= 0.0:
-                    sq = ti.sqrt(disc)
-                    qq = -0.5 * (bb + sq)
-                    if bb < 0.0:
-                        qq = -0.5 * (bb - sq)
-                    v_cand0 = -0.5 * bb / cc
-                    v_cand1 = v_cand0
-                    if ti.abs(qq) > 1e-30:
-                        v_cand0 = qq / cc
-                        v_cand1 = aa / qq
-                    num_v = 2
-            if num_v == 0:
-                # No projection is genuinely quadratic in v (or it had no real
-                # root at this u): eliminate v^2 with the linear pencil, then
-                # fall back to the single linear equation.
-                denom = C2 * b1 - C1 * b2
-                if ti.abs(denom) > 1e-8:
-                    v_cand0 = (C1 * a2 - C2 * a1) / denom
-                    num_v = 1
-                elif ti.abs(b1) >= ti.abs(b2):
-                    if ti.abs(b1) > 1e-8:
-                        v_cand0 = -a1 / b1
-                        num_v = 1
-                elif ti.abs(b2) > 1e-8:
-                    v_cand0 = -a2 / b2
-                    num_v = 1
-            for vc in ti.static(range(2)):
-                if vc < num_v:
-                    u = u_root
-                    v = v_cand0 if ti.static(vc == 0) else v_cand1
-                    for _ in ti.static(range(3)):
-                        fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
-                        gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
-                        fu = 2.0 * A1 * u + B1 * v + D1
-                        fv = B1 * u + 2.0 * C1 * v + E1
-                        gu = 2.0 * A2 * u + B2 * v + D2
-                        gv = B2 * u + 2.0 * C2 * v + E2
-                        det = fu * gv - fv * gu
-                        if ti.abs(det) > 1e-12:
-                            du = (gv * fval - fv * gval) / det
-                            dv = (fu * gval - gu * fval) / det
-                            u -= ti.math.clamp(du, -0.2, 0.2)
-                            v -= ti.math.clamp(dv, -0.2, 0.2)
+
+    # Linear fallback. A flat patch (or any ray whose two planes both cut the
+    # patch in a straight line) makes f and g linear, so MF and MG share the
+    # line at infinity and det(x MF + MG) vanishes for every x -- the pencil
+    # has no usable root (found == 0). The lone hit is then the solution of
+    # the 2x2 linear system, processed through the same path as the curved
+    # candidates below.
+    ldet = D1 * E2 - E1 * D2
+    lin_u = 0.0
+    lin_v = 0.0
+    lin_ok = 0
+    if (found == 0) and (ti.abs(ldet) > 1e-9):
+        lin_u = (E1 * F2 - E2 * F1) / ldet
+        lin_v = (D2 * F1 - D1 * F2) / ldet
+        lin_ok = 1
+
+    # The two split lines (defaulted so the loop skips them when found == 0).
+    lines_a = ti.math.vec2(0.0, 0.0)
+    lines_b = ti.math.vec2(0.0, 0.0)
+    lines_c = ti.math.vec2(0.0, 0.0)
+    if found == 1:
+        # Rebuild the chosen degenerate member (scale-normalized) and split it
+        # into the two lines L0 (largest-norm row of M + [p]_x) and L1
+        # (largest-norm column): M + [p]_x is the rank-1 outer product of the
+        # two line vectors, p being their intersection point.
+        a00 = x0 * mf00 + mg00
+        a11 = x0 * mf11 + mg11
+        a22 = x0 * mf22 + mg22
+        a01 = x0 * mf01 + mg01
+        a02 = x0 * mf02 + mg02
+        a12 = x0 * mf12 + mg12
+        ms = ti.max(ti.max(ti.max(ti.abs(a00), ti.abs(a11)),
+                           ti.max(ti.abs(a22), ti.abs(a01))),
+                    ti.max(ti.abs(a02), ti.max(ti.abs(a12), 1e-30)))
+        inv = 1.0 / ms
+        a00 *= inv
+        a11 *= inv
+        a22 *= inv
+        a01 *= inv
+        a02 *= inv
+        a12 *= inv
+        b00 = a11 * a22 - a12 * a12
+        b11 = a00 * a22 - a02 * a02
+        b22 = a00 * a11 - a01 * a01
+        b01 = a02 * a12 - a01 * a22
+        b02 = a01 * a12 - a02 * a11
+        b12 = a01 * a02 - a00 * a12
+        px = 0.0
+        py = 0.0
+        pz = 0.0
+        if (-b00 >= -b11) and (-b00 >= -b22):
+            s = ti.sqrt(ti.max(-b00, 1e-30))
+            px = b00 / s
+            py = b01 / s
+            pz = b02 / s
+        elif -b11 >= -b22:
+            s = ti.sqrt(ti.max(-b11, 1e-30))
+            px = b01 / s
+            py = b11 / s
+            pz = b12 / s
+        else:
+            s = ti.sqrt(ti.max(-b22, 1e-30))
+            px = b02 / s
+            py = b12 / s
+            pz = b22 / s
+        c00 = a00
+        c01 = a01 - pz
+        c02 = a02 + py
+        c10 = a01 + pz
+        c11 = a11
+        c12 = a12 - px
+        c20 = a02 - py
+        c21 = a12 + px
+        c22 = a22
+        r0n = c00 * c00 + c01 * c01 + c02 * c02
+        r1n = c10 * c10 + c11 * c11 + c12 * c12
+        r2n = c20 * c20 + c21 * c21 + c22 * c22
+        la0 = c00
+        lb0 = c01
+        lc0 = c02
+        if (r1n >= r0n) and (r1n >= r2n):
+            la0 = c10
+            lb0 = c11
+            lc0 = c12
+        elif r2n >= r0n:
+            la0 = c20
+            lb0 = c21
+            lc0 = c22
+        k0n = c00 * c00 + c10 * c10 + c20 * c20
+        k1n = c01 * c01 + c11 * c11 + c21 * c21
+        k2n = c02 * c02 + c12 * c12 + c22 * c22
+        la1 = c00
+        lb1 = c10
+        lc1 = c20
+        if (k1n >= k0n) and (k1n >= k2n):
+            la1 = c01
+            lb1 = c11
+            lc1 = c21
+        elif k2n >= k0n:
+            la1 = c02
+            lb1 = c12
+            lc1 = c22
+        lines_a = ti.math.vec2(la0, la1)
+        lines_b = ti.math.vec2(lb0, lb1)
+        lines_c = ti.math.vec2(lc0, lc1)
+
+    # Candidate (u, v) sources: the two split lines (li 0, 1) intersected with
+    # f, plus the linear-fallback point (li 2). Each is Newton-polished on
+    # (f, g), domain-tested and de-duplicated.
+    for li in ti.static(range(3)):
+        u_c0 = 0.0
+        v_c0 = 0.0
+        u_c1 = 0.0
+        v_c1 = 0.0
+        num_uv = 0
+        if ti.static(li < 2):
+            la = lines_a[li]
+            lb = lines_b[li]
+            lc = lines_c[li]
+            if ti.max(ti.abs(la), ti.abs(lb)) > 1e-12:
+                # Substitute the line into f -> a stable 1D quadratic, solved
+                # along whichever axis the line is least parallel to.
+                qa = 0.0
+                qb = 0.0
+                qc = 0.0
+                use_u = ti.abs(la) >= ti.abs(lb)
+                al = 0.0
+                be = 0.0
+                if use_u:
+                    al = -lb / la
+                    be = -lc / la
+                    qa = A1 * al * al + B1 * al + C1
+                    qb = 2.0 * A1 * al * be + B1 * be + D1 * al + E1
+                    qc = A1 * be * be + D1 * be + F1
+                else:
+                    al = -la / lb
+                    be = -lc / lb
+                    qa = C1 * al * al + B1 * al + A1
+                    qb = 2.0 * C1 * al * be + B1 * be + E1 * al + D1
+                    qc = C1 * be * be + E1 * be + F1
+                t0 = 0.0
+                t1 = 0.0
+                if ti.abs(qa) <= 1e-12 * ti.max(ti.abs(qb), 1e-30):
+                    if ti.abs(qb) > 1e-30:
+                        t0 = -qc / qb
+                        t1 = t0
+                        num_uv = 1
+                else:
+                    disc = qb * qb - 4.0 * qa * qc
+                    qsc = ti.max(qb * qb, ti.abs(4.0 * qa * qc)) + 1e-30
+                    # A line through a real common root meets f; a slightly
+                    # negative discriminant (a near-tangent rounded below zero)
+                    # is clamped so the grazing double root is still recovered.
+                    if disc >= -1e-6 * qsc:
+                        sq = ti.sqrt(ti.max(disc, 0.0))
+                        w = -0.5 * (qb + sq)
+                        if qb < 0.0:
+                            w = -0.5 * (qb - sq)
+                        if ti.abs(w) > 1e-30:
+                            t0 = w / qa
+                            t1 = qc / w
+                        else:
+                            t0 = -0.5 * qb / qa
+                            t1 = t0
+                        num_uv = 2
+                if use_u:
+                    v_c0 = t0
+                    u_c0 = al * t0 + be
+                    v_c1 = t1
+                    u_c1 = al * t1 + be
+                else:
+                    u_c0 = t0
+                    v_c0 = al * t0 + be
+                    u_c1 = t1
+                    v_c1 = al * t1 + be
+        else:
+            if lin_ok == 1:
+                u_c0 = lin_u
+                v_c0 = lin_v
+                num_uv = 1
+        for vc in ti.static(range(2)):
+            if vc < num_uv:
+                u = u_c0 if ti.static(vc == 0) else u_c1
+                v = v_c0 if ti.static(vc == 0) else v_c1
+                for _ in ti.static(range(3)):
                     fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
                     gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
-                    if ((u >= -PN_BARYCENTRIC_EPSILON)
-                            and (v >= -PN_BARYCENTRIC_EPSILON)
-                            and (u + v <= 1.0 + PN_BARYCENTRIC_EPSILON)
-                            and (ti.abs(fval) < 2e-3) and (ti.abs(gval) < 2e-3)):
-                        x = (k0 + u * ku + v * kv + (u * u) * kuu
-                             + (v * v) * kvv + (u * v) * kuv)
-                        t = x.dot(rd)
-                        dup = 0
-                        for c in ti.static(range(4)):
-                            if (c < count) and (
-                                    (ti.abs(out_t[c] - t) <= DEPTH_TIE_EPSILON)
-                                    or ((ti.abs(out_u[c] - u)
-                                         <= PN_DEDUP_UV_EPSILON)
-                                        and (ti.abs(out_v[c] - v)
-                                             <= PN_DEDUP_UV_EPSILON))):
-                                dup = 1
-                        if (dup == 0) and (count < 4):
-                            out_t[count] = t
-                            out_u[count] = u
-                            out_v[count] = v
-                            count += 1
+                    fu = 2.0 * A1 * u + B1 * v + D1
+                    fv = B1 * u + 2.0 * C1 * v + E1
+                    gu = 2.0 * A2 * u + B2 * v + D2
+                    gv = B2 * u + 2.0 * C2 * v + E2
+                    det = fu * gv - fv * gu
+                    if ti.abs(det) > 1e-12:
+                        du = (gv * fval - fv * gval) / det
+                        dv = (fu * gval - gu * fval) / det
+                        u -= ti.math.clamp(du, -0.2, 0.2)
+                        v -= ti.math.clamp(dv, -0.2, 0.2)
+                fval = (A1 * u + B1 * v + D1) * u + (C1 * v + E1) * v + F1
+                gval = (A2 * u + B2 * v + D2) * u + (C2 * v + E2) * v + F2
+                if ((u >= -PN_BARYCENTRIC_EPSILON)
+                        and (v >= -PN_BARYCENTRIC_EPSILON)
+                        and (u + v <= 1.0 + PN_BARYCENTRIC_EPSILON)
+                        and (ti.abs(fval) < 2e-3) and (ti.abs(gval) < 2e-3)):
+                    x = (k0 + u * ku + v * kv + (u * u) * kuu
+                         + (v * v) * kvv + (u * v) * kuv)
+                    t = x.dot(rd)
+                    dup = 0
+                    for c in ti.static(range(4)):
+                        if (c < count) and (
+                                (ti.abs(out_t[c] - t) <= DEPTH_TIE_EPSILON)
+                                or ((ti.abs(out_u[c] - u)
+                                     <= PN_DEDUP_UV_EPSILON)
+                                    and (ti.abs(out_v[c] - v)
+                                         <= PN_DEDUP_UV_EPSILON))):
+                            dup = 1
+                    if (dup == 0) and (count < 4):
+                        out_t[count] = t
+                        out_u[count] = u
+                        out_v[count] = v
+                        count += 1
     return count, out_t, out_u, out_v
 
 
@@ -1410,6 +1529,179 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     return count
 
 
+@ti.func
+def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
+                     layer_offset_triangles, layer_offset_pn, max_bounces,
+                     t_nodes: ti.template(), t_node_miss: ti.template(),
+                     t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
+                     t_first_leaf, tri_pos: ti.template(),
+                     tri_norm: ti.template(), tri_extra: ti.template(),
+                     tri_colors: ti.template(),
+                     p_nodes: ti.template(), p_node_miss: ti.template(),
+                     p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
+                     p_first_leaf, pn_ctrl: ti.template(),
+                     pn_norm: ti.template(), pn_extra: ti.template(),
+                     pn_colors: ti.template(),
+                     b_nodes: ti.template(), b_node_miss: ti.template(),
+                     b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
+                     b_first_leaf, circuit_meta: ti.template(),
+                     circuit_colors: ti.template(),
+                     circuit_border_colors: ti.template(),
+                     edges_2d: ti.template(), edge_offsets: ti.template(),
+                     has_tri: ti.i32, has_pn: ti.i32, has_bez: ti.i32):
+    """Trace one primary ray through the full (triangle + PN + bezier) scene,
+    returning its premultiplied RGB + glow accumulator ``acc`` and remaining
+    transmittance ``weight`` (the inputs to the over-background composite). The
+    per-(frame, pixel) body of the deterministic renderer, factored out so the
+    kernel can average several jittered sub-pixel rays in place (anti-aliasing
+    at the output resolution -- no super-sampled frame buffer)."""
+    acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)  # premultiplied RGB + glow
+    weight = 1.0       # remaining transmittance * reflection throughput
+    t_prev = 0.0
+    layer_prev = 1e30  # accept any first hit
+    base_dist = 0.0    # distance accumulated over previous bounces
+    bounces_left = max_bounces
+    seam_t = -1e30  # depth of the last processed triangle edge hit
+
+    # Batched depth peeling: each traversal gathers up to KBUF nearest
+    # hits, which are then consumed strictly front-to-back. A batch that
+    # comes back not full contained every remaining hit, so peeling ends
+    # without a confirming traversal.
+    kb_t = ti.Vector([0.0] * KBUF)
+    kb_layer = ti.Vector([0.0] * KBUF)
+    kb_prim = ti.Vector([0] * KBUF)
+    kb_flags = ti.Vector([0] * KBUF)
+    kb_a = ti.Vector([0.0] * KBUF)
+    kb_b = ti.Vector([0.0] * KBUF)
+
+    processed = 0
+    done = False
+    while (not done) and (processed < MAX_SURFACES_PER_RAY):
+        num_hits = _collect_hits(
+            ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+            pixel_size_per_t, base_dist, layer_offset_triangles,
+            layer_offset_pn,
+            kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+            t_first_leaf, tri_pos,
+            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
+            p_first_leaf, pn_ctrl,
+            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+            b_first_leaf, circuit_meta, edges_2d, edge_offsets,
+            has_tri, has_pn, has_bez)
+        if num_hits == 0:
+            break
+
+        bounced = False
+        drained = 0
+        while drained < num_hits:
+            # Select the earliest unconsumed hit, with the same pairwise
+            # (distance, layer) rule the traversal itself applies.
+            sel = 0
+            sel_found = 0
+            for q in ti.static(range(KBUF)):
+                if (q < num_hits) and (kb_prim[q] >= 0):
+                    if sel_found == 0:
+                        sel = q
+                        sel_found = 1
+                    elif _comes_after(kb_t[sel], kb_layer[sel],
+                                      kb_t[q], kb_layer[q]):
+                        sel = q
+            t_hit = kb_t[sel]
+            hit_layer = kb_layer[sel]
+            prim = kb_prim[sel]
+            flags = kb_flags[sel]
+            a = kb_a[sel]
+            b = kb_b[sel]
+            kb_prim[sel] = -1  # consume
+            drained += 1
+            processed += 1
+            htype = flags & 3
+            edge_hit = (flags >> 2) & 1
+            border = (flags >> 3) & 1
+
+            # Mesh seams: the two triangles (or curved patches) adjacent to
+            # a shared edge can both report the crossing ray; the second
+            # edge hit at the same depth is the same surface point, so skip
+            # it (one cohesive surface, blended exactly once). PN seams
+            # need a looser depth window than flat triangles.
+            seam_eps = PN_SEAM_DEPTH_EPSILON if htype == 2 \
+                else DEPTH_TIE_EPSILON
+            if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
+                t_prev = t_hit
+                layer_prev = hit_layer
+                continue
+            seam_t = t_hit if edge_hit == 1 else -1e30
+
+            color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+            alpha = 0.0
+            reflectivity = 0.0
+            if htype == 1:
+                w0 = 1.0 - a - b
+                color, alpha = _triangle_color(f, prim, w0, a, b,
+                                               tri_colors)
+                reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
+                                                       tri_extra)
+            elif htype == 2:
+                w0 = 1.0 - a - b
+                color, alpha = _triangle_color(f, prim, w0, a, b,
+                                               pn_colors)
+                reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
+                                                       pn_extra)
+            else:
+                color, alpha = _sample_circuit_color(
+                    prim, f, a, b, border,
+                    circuit_meta, circuit_colors, circuit_border_colors)
+
+            alpha = ti.math.clamp(alpha, 0.0, 1.0)
+            reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
+            if bounces_left <= 0:
+                reflectivity = 0.0
+
+            acc += (weight * alpha * (1.0 - reflectivity)) * color
+
+            if (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
+                # Mirror bounce: reflect about the face-forward normal
+                # and restart peeling along the new ray (the rest of the
+                # gathered batch belongs to the old ray and is dropped).
+                # The normal is only fetched here, on the bounce path.
+                normal = ti.math.vec3(0.0, 0.0, 0.0)
+                if htype == 1:
+                    normal = _triangle_normal(f, prim, 1.0 - a - b, a, b,
+                                              tri_norm, tri_pos)
+                elif htype == 2:
+                    normal = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
+                else:
+                    normal = _bezier_normal(f, prim, circuit_meta)
+                normal = normal.normalized()
+                if normal.dot(rd) > 0.0:
+                    normal = -normal
+                hit_point = ro + t_hit * rd
+                rd = (rd - 2.0 * rd.dot(normal) * normal).normalized()
+                ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
+                inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                      _safe_inverse(rd[1]),
+                                      _safe_inverse(rd[2]))
+                weight *= alpha * reflectivity
+                base_dist += t_hit
+                t_prev = 0.0
+                layer_prev = 1e30
+                seam_t = -1e30
+                bounces_left -= 1
+                bounced = True
+                break
+            else:
+                weight *= 1.0 - alpha
+                t_prev = t_hit
+                layer_prev = hit_layer
+            if weight < MIN_WEIGHT:
+                done = True
+                break
+        if (not done) and (not bounced) and (num_hits < KBUF):
+            done = True  # the batch held every remaining hit
+    return acc, weight
+
+
 @ti.kernel
 def render_scene_stbvh(
         # Triangle STBVH + packed geometry.
@@ -1442,11 +1734,16 @@ def render_scene_stbvh(
         max_bounces: int, transparent: int,
         # Which geometry types are present (skip an absent type's empty BVH).
         has_tri: ti.i32, has_pn: ti.i32, has_bez: ti.i32,
+        # Anti-alias level: a^2 jittered sub-pixel rays are averaged per output
+        # pixel (in place, at the output resolution -- no super-sampled buffer).
+        aa_level: int,
         # Output buffer [time_end - time_start, width * height, channels],
         # pre-filled with the background; blended in place.
         out: ti.types.ndarray()):
     pixels_per_frame = width * height
     num_rays = (time_end - time_start) * pixels_per_frame
+    inv_aa = 1.0 / ti.cast(aa_level, ti.f32)
+    inv_samples = inv_aa * inv_aa
 
     for ray_id in range(num_rays):
         f_rel = ray_id // pixels_per_frame
@@ -1455,171 +1752,51 @@ def render_scene_stbvh(
         ff = ti.cast(f, ti.f32)
         py = p // width
         px = p - py * width
-
-        ro, rd = _generate_ray(f, px, py, 0.5, 0.5,
-                               half_screen_w, half_screen_h,
-                               cam_origin, screen_point,
-                               pixel_basis_x, pixel_basis_y)
-        inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
-                              _safe_inverse(rd[2]))
         pixel_size_per_t = pixel_world_scale[f]
 
-        acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)  # premultiplied RGB + glow
-        weight = 1.0       # remaining transmittance * reflection throughput
-        t_prev = 0.0
-        layer_prev = 1e30  # accept any first hit
-        base_dist = 0.0    # distance accumulated over previous bounces
-        bounces_left = max_bounces
-        seam_t = -1e30  # depth of the last processed triangle edge hit
+        # Average a^2 rays jittered on a regular sub-pixel grid: sub-pixel
+        # (si, sj) of output pixel (px, py) is the (px*a + si, py*a + sj)
+        # cell of an a-times-finer grid, so this matches super-sampling at
+        # ``aa_level`` and averaging down, but with no super-sampled buffer.
+        csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        asum = 0.0
+        for si in range(aa_level):
+            for sj in range(aa_level):
+                jx = (ti.cast(si, ti.f32) + 0.5) * inv_aa
+                jy = (ti.cast(sj, ti.f32) + 0.5) * inv_aa
+                ro, rd = _generate_ray(f, px, py, jx, jy,
+                                       half_screen_w, half_screen_h,
+                                       cam_origin, screen_point,
+                                       pixel_basis_x, pixel_basis_y)
+                inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                      _safe_inverse(rd[1]),
+                                      _safe_inverse(rd[2]))
+                acc, weight = _trace_scene_ray(
+                    ro, rd, inv_rd, f, ff, pixel_size_per_t,
+                    layer_offset_triangles, layer_offset_pn, max_bounces,
+                    t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                    t_first_leaf, tri_pos, tri_norm, tri_extra, tri_colors,
+                    p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
+                    p_first_leaf, pn_ctrl, pn_norm, pn_extra, pn_colors,
+                    b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+                    b_first_leaf, circuit_meta, circuit_colors,
+                    circuit_border_colors, edges_2d, edge_offsets,
+                    has_tri, has_pn, has_bez)
+                for ci in ti.static(range(4)):
+                    csum[ci] += (acc[ci] * 255.0
+                                 + weight * ti.cast(out[f_rel, p, ci], ti.f32))
+                if transparent != 0:
+                    asum += ((1.0 - weight) * 255.0
+                             + weight * ti.cast(out[f_rel, p, 4], ti.f32))
 
-        # Batched depth peeling: each traversal gathers up to KBUF nearest
-        # hits, which are then consumed strictly front-to-back. A batch that
-        # comes back not full contained every remaining hit, so peeling ends
-        # without a confirming traversal.
-        kb_t = ti.Vector([0.0] * KBUF)
-        kb_layer = ti.Vector([0.0] * KBUF)
-        kb_prim = ti.Vector([0] * KBUF)
-        kb_flags = ti.Vector([0] * KBUF)
-        kb_a = ti.Vector([0.0] * KBUF)
-        kb_b = ti.Vector([0.0] * KBUF)
-
-        processed = 0
-        done = False
-        while (not done) and (processed < MAX_SURFACES_PER_RAY):
-            num_hits = _collect_hits(
-                ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-                pixel_size_per_t, base_dist, layer_offset_triangles,
-                layer_offset_pn,
-                kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
-                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                t_first_leaf, tri_pos,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                p_first_leaf, pn_ctrl,
-                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                b_first_leaf, circuit_meta, edges_2d, edge_offsets,
-                has_tri, has_pn, has_bez)
-            if num_hits == 0:
-                break
-
-            bounced = False
-            drained = 0
-            while drained < num_hits:
-                # Select the earliest unconsumed hit, with the same pairwise
-                # (distance, layer) rule the traversal itself applies.
-                sel = 0
-                sel_found = 0
-                for q in ti.static(range(KBUF)):
-                    if (q < num_hits) and (kb_prim[q] >= 0):
-                        if sel_found == 0:
-                            sel = q
-                            sel_found = 1
-                        elif _comes_after(kb_t[sel], kb_layer[sel],
-                                          kb_t[q], kb_layer[q]):
-                            sel = q
-                t_hit = kb_t[sel]
-                hit_layer = kb_layer[sel]
-                prim = kb_prim[sel]
-                flags = kb_flags[sel]
-                a = kb_a[sel]
-                b = kb_b[sel]
-                kb_prim[sel] = -1  # consume
-                drained += 1
-                processed += 1
-                htype = flags & 3
-                edge_hit = (flags >> 2) & 1
-                border = (flags >> 3) & 1
-
-                # Mesh seams: the two triangles (or curved patches) adjacent to
-                # a shared edge can both report the crossing ray; the second
-                # edge hit at the same depth is the same surface point, so skip
-                # it (one cohesive surface, blended exactly once). PN seams
-                # need a looser depth window than flat triangles.
-                seam_eps = PN_SEAM_DEPTH_EPSILON if htype == 2 \
-                    else DEPTH_TIE_EPSILON
-                if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
-                    t_prev = t_hit
-                    layer_prev = hit_layer
-                    continue
-                seam_t = t_hit if edge_hit == 1 else -1e30
-
-                color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-                alpha = 0.0
-                reflectivity = 0.0
-                if htype == 1:
-                    w0 = 1.0 - a - b
-                    color, alpha = _triangle_color(f, prim, w0, a, b,
-                                                   tri_colors)
-                    reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
-                                                           tri_extra)
-                elif htype == 2:
-                    w0 = 1.0 - a - b
-                    color, alpha = _triangle_color(f, prim, w0, a, b,
-                                                   pn_colors)
-                    reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
-                                                           pn_extra)
-                else:
-                    color, alpha = _sample_circuit_color(
-                        prim, f, a, b, border,
-                        circuit_meta, circuit_colors, circuit_border_colors)
-
-                alpha = ti.math.clamp(alpha, 0.0, 1.0)
-                reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
-                if bounces_left <= 0:
-                    reflectivity = 0.0
-
-                acc += (weight * alpha * (1.0 - reflectivity)) * color
-
-                if (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
-                    # Mirror bounce: reflect about the face-forward normal
-                    # and restart peeling along the new ray (the rest of the
-                    # gathered batch belongs to the old ray and is dropped).
-                    # The normal is only fetched here, on the bounce path.
-                    normal = ti.math.vec3(0.0, 0.0, 0.0)
-                    if htype == 1:
-                        normal = _triangle_normal(f, prim, 1.0 - a - b, a, b,
-                                                  tri_norm, tri_pos)
-                    elif htype == 2:
-                        normal = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
-                    else:
-                        normal = _bezier_normal(f, prim, circuit_meta)
-                    normal = normal.normalized()
-                    if normal.dot(rd) > 0.0:
-                        normal = -normal
-                    hit_point = ro + t_hit * rd
-                    rd = (rd - 2.0 * rd.dot(normal) * normal).normalized()
-                    ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
-                    inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
-                                          _safe_inverse(rd[1]),
-                                          _safe_inverse(rd[2]))
-                    weight *= alpha * reflectivity
-                    base_dist += t_hit
-                    t_prev = 0.0
-                    layer_prev = 1e30
-                    seam_t = -1e30
-                    bounces_left -= 1
-                    bounced = True
-                    break
-                else:
-                    weight *= 1.0 - alpha
-                    t_prev = t_hit
-                    layer_prev = hit_layer
-                if weight < MIN_WEIGHT:
-                    done = True
-                    break
-            if (not done) and (not bounced) and (num_hits < KBUF):
-                done = True  # the batch held every remaining hit
-
-        # Composite over the pre-filled background and write the pixel.
+        # Composite the averaged sub-pixels and write the pixel once.
         for ci in ti.static(range(4)):
-            bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            val = acc[ci] * 255.0 + weight * bg
-            out[f_rel, p, ci] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),
-                                        ti.u8)
+            out[f_rel, p, ci] = ti.cast(
+                ti.math.clamp(csum[ci] * inv_samples + 0.5, 0.0, 255.0),
+                ti.u8)
         if transparent != 0:
-            bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
-            val = (1.0 - weight) * 255.0 + weight * bg_a
-            out[f_rel, p, 4] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),
-                                       ti.u8)
+            out[f_rel, p, 4] = ti.cast(
+                ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
 
 
 @ti.func
@@ -1730,6 +1907,119 @@ def _collect_hits_tri(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     return count
 
 
+@ti.func
+def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
+                         max_bounces,
+                         t_nodes: ti.template(), t_node_miss: ti.template(),
+                         t_leaf_prim: ti.template(),
+                         t_leaf_tspan: ti.template(),
+                         t_first_leaf, tri_pos: ti.template(),
+                         tri_norm: ti.template(), tri_extra: ti.template(),
+                         tri_colors: ti.template()):
+    """Trace one primary ray through a triangle-only scene, returning its
+    premultiplied RGB + glow accumulator and remaining transmittance. The
+    triangle-only specialization of :func:`_trace_scene_ray` (cf.
+    ``_collect_hits_tri``), factored out so the kernel can average several
+    jittered sub-pixel rays in place."""
+    acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    weight = 1.0
+    t_prev = 0.0
+    layer_prev = 1e30
+    bounces_left = max_bounces
+    seam_t = -1e30
+
+    kb_t = ti.Vector([0.0] * KBUF)
+    kb_layer = ti.Vector([0.0] * KBUF)
+    kb_prim = ti.Vector([0] * KBUF)
+    kb_flags = ti.Vector([0] * KBUF)
+    kb_a = ti.Vector([0.0] * KBUF)
+    kb_b = ti.Vector([0.0] * KBUF)
+
+    processed = 0
+    done = False
+    while (not done) and (processed < MAX_SURFACES_PER_RAY):
+        num_hits = _collect_hits_tri(
+            ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+            layer_offset_triangles,
+            kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+            t_first_leaf, tri_pos)
+        if num_hits == 0:
+            break
+
+        bounced = False
+        drained = 0
+        while drained < num_hits:
+            sel = 0
+            sel_found = 0
+            for q in ti.static(range(KBUF)):
+                if (q < num_hits) and (kb_prim[q] >= 0):
+                    if sel_found == 0:
+                        sel = q
+                        sel_found = 1
+                    elif _comes_after(kb_t[sel], kb_layer[sel],
+                                      kb_t[q], kb_layer[q]):
+                        sel = q
+            t_hit = kb_t[sel]
+            hit_layer = kb_layer[sel]
+            prim = kb_prim[sel]
+            flags = kb_flags[sel]
+            a = kb_a[sel]
+            b = kb_b[sel]
+            kb_prim[sel] = -1
+            drained += 1
+            processed += 1
+            edge_hit = (flags >> 2) & 1
+
+            if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+                t_prev = t_hit
+                layer_prev = hit_layer
+                continue
+            seam_t = t_hit if edge_hit == 1 else -1e30
+
+            w0 = 1.0 - a - b
+            color, alpha = _triangle_color(f, prim, w0, a, b, tri_colors)
+            reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
+                                                   tri_extra)
+
+            alpha = ti.math.clamp(alpha, 0.0, 1.0)
+            reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
+            if bounces_left <= 0:
+                reflectivity = 0.0
+
+            acc += (weight * alpha * (1.0 - reflectivity)) * color
+
+            if (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
+                normal = _triangle_normal(f, prim, 1.0 - a - b, a, b,
+                                          tri_norm, tri_pos)
+                normal = normal.normalized()
+                if normal.dot(rd) > 0.0:
+                    normal = -normal
+                hit_point = ro + t_hit * rd
+                rd = (rd - 2.0 * rd.dot(normal) * normal).normalized()
+                ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
+                inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                      _safe_inverse(rd[1]),
+                                      _safe_inverse(rd[2]))
+                weight *= alpha * reflectivity
+                t_prev = 0.0
+                layer_prev = 1e30
+                seam_t = -1e30
+                bounces_left -= 1
+                bounced = True
+                break
+            else:
+                weight *= 1.0 - alpha
+                t_prev = t_hit
+                layer_prev = hit_layer
+            if weight < MIN_WEIGHT:
+                done = True
+                break
+        if (not done) and (not bounced) and (num_hits < KBUF):
+            done = True
+    return acc, weight
+
+
 @ti.kernel
 def render_triangles_stbvh(
         # Triangle STBVH + packed geometry (the only geometry type).
@@ -1745,6 +2035,8 @@ def render_triangles_stbvh(
         time_start: int, time_end: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float,
         layer_offset_triangles: float, max_bounces: int, transparent: int,
+        # Anti-alias level: a^2 jittered sub-pixel rays averaged per pixel.
+        aa_level: int,
         # Output buffer, pre-filled with the background; blended in place.
         out: ti.types.ndarray()):
     """Deterministic renderer for batches that contain *only* flat triangles
@@ -1755,6 +2047,8 @@ def render_triangles_stbvh(
     """
     pixels_per_frame = width * height
     num_rays = (time_end - time_start) * pixels_per_frame
+    inv_aa = 1.0 / ti.cast(aa_level, ti.f32)
+    inv_samples = inv_aa * inv_aa
 
     for ray_id in range(num_rays):
         f_rel = ray_id // pixels_per_frame
@@ -1764,120 +2058,39 @@ def render_triangles_stbvh(
         py = p // width
         px = p - py * width
 
-        ro, rd = _generate_ray(f, px, py, 0.5, 0.5,
-                               half_screen_w, half_screen_h,
-                               cam_origin, screen_point,
-                               pixel_basis_x, pixel_basis_y)
-        inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
-                              _safe_inverse(rd[2]))
-
-        acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-        weight = 1.0
-        t_prev = 0.0
-        layer_prev = 1e30
-        bounces_left = max_bounces
-        seam_t = -1e30
-
-        kb_t = ti.Vector([0.0] * KBUF)
-        kb_layer = ti.Vector([0.0] * KBUF)
-        kb_prim = ti.Vector([0] * KBUF)
-        kb_flags = ti.Vector([0] * KBUF)
-        kb_a = ti.Vector([0.0] * KBUF)
-        kb_b = ti.Vector([0.0] * KBUF)
-
-        processed = 0
-        done = False
-        while (not done) and (processed < MAX_SURFACES_PER_RAY):
-            num_hits = _collect_hits_tri(
-                ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-                layer_offset_triangles,
-                kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
-                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                t_first_leaf, tri_pos)
-            if num_hits == 0:
-                break
-
-            bounced = False
-            drained = 0
-            while drained < num_hits:
-                sel = 0
-                sel_found = 0
-                for q in ti.static(range(KBUF)):
-                    if (q < num_hits) and (kb_prim[q] >= 0):
-                        if sel_found == 0:
-                            sel = q
-                            sel_found = 1
-                        elif _comes_after(kb_t[sel], kb_layer[sel],
-                                          kb_t[q], kb_layer[q]):
-                            sel = q
-                t_hit = kb_t[sel]
-                hit_layer = kb_layer[sel]
-                prim = kb_prim[sel]
-                flags = kb_flags[sel]
-                a = kb_a[sel]
-                b = kb_b[sel]
-                kb_prim[sel] = -1
-                drained += 1
-                processed += 1
-                edge_hit = (flags >> 2) & 1
-
-                if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
-                    t_prev = t_hit
-                    layer_prev = hit_layer
-                    continue
-                seam_t = t_hit if edge_hit == 1 else -1e30
-
-                w0 = 1.0 - a - b
-                color, alpha = _triangle_color(f, prim, w0, a, b, tri_colors)
-                reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
-                                                       tri_extra)
-
-                alpha = ti.math.clamp(alpha, 0.0, 1.0)
-                reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
-                if bounces_left <= 0:
-                    reflectivity = 0.0
-
-                acc += (weight * alpha * (1.0 - reflectivity)) * color
-
-                if (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
-                    normal = _triangle_normal(f, prim, 1.0 - a - b, a, b,
-                                              tri_norm, tri_pos)
-                    normal = normal.normalized()
-                    if normal.dot(rd) > 0.0:
-                        normal = -normal
-                    hit_point = ro + t_hit * rd
-                    rd = (rd - 2.0 * rd.dot(normal) * normal).normalized()
-                    ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
-                    inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
-                                          _safe_inverse(rd[1]),
-                                          _safe_inverse(rd[2]))
-                    weight *= alpha * reflectivity
-                    t_prev = 0.0
-                    layer_prev = 1e30
-                    seam_t = -1e30
-                    bounces_left -= 1
-                    bounced = True
-                    break
-                else:
-                    weight *= 1.0 - alpha
-                    t_prev = t_hit
-                    layer_prev = hit_layer
-                if weight < MIN_WEIGHT:
-                    done = True
-                    break
-            if (not done) and (not bounced) and (num_hits < KBUF):
-                done = True
+        # Average a^2 rays on a regular sub-pixel grid (matches super-sampling
+        # at ``aa_level`` and averaging down, with no super-sampled buffer).
+        csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        asum = 0.0
+        for si in range(aa_level):
+            for sj in range(aa_level):
+                jx = (ti.cast(si, ti.f32) + 0.5) * inv_aa
+                jy = (ti.cast(sj, ti.f32) + 0.5) * inv_aa
+                ro, rd = _generate_ray(f, px, py, jx, jy,
+                                       half_screen_w, half_screen_h,
+                                       cam_origin, screen_point,
+                                       pixel_basis_x, pixel_basis_y)
+                inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                      _safe_inverse(rd[1]),
+                                      _safe_inverse(rd[2]))
+                acc, weight = _trace_triangles_ray(
+                    ro, rd, inv_rd, f, ff, layer_offset_triangles, max_bounces,
+                    t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                    t_first_leaf, tri_pos, tri_norm, tri_extra, tri_colors)
+                for ci in ti.static(range(4)):
+                    csum[ci] += (acc[ci] * 255.0
+                                 + weight * ti.cast(out[f_rel, p, ci], ti.f32))
+                if transparent != 0:
+                    asum += ((1.0 - weight) * 255.0
+                             + weight * ti.cast(out[f_rel, p, 4], ti.f32))
 
         for ci in ti.static(range(4)):
-            bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            val = acc[ci] * 255.0 + weight * bg
-            out[f_rel, p, ci] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),
-                                        ti.u8)
+            out[f_rel, p, ci] = ti.cast(
+                ti.math.clamp(csum[ci] * inv_samples + 0.5, 0.0, 255.0),
+                ti.u8)
         if transparent != 0:
-            bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
-            val = (1.0 - weight) * 255.0 + weight * bg_a
-            out[f_rel, p, 4] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),
-                                       ti.u8)
+            out[f_rel, p, 4] = ti.cast(
+                ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
 
 
 @ti.kernel

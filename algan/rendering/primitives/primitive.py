@@ -260,7 +260,7 @@ class RenderPrimitive:
         )
 
     #@cuda_compiled
-    @csync
+    #@csync
     def post_process_frames(self, frames, anti_alias_level, post_processes=[]):
         self.pre_post_pointers = self.memory.get_pointers()
         frame_out = frames

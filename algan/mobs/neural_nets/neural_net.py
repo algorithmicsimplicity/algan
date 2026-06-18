@@ -19,7 +19,8 @@ def tweak_color(c, strength=0.3):
 
 
 class Synapse(Cylinder):
-    def __init__(self, grid_height=10, *args, **kwargs):
+    def __init__(self, grid_height=5, *args, **kwargs):
+        grid_height = 5
         if 'color' in kwargs:
             c = kwargs['color']
             kwargs['color'] = tweak_color(c)
@@ -30,7 +31,7 @@ class Synapse(Cylinder):
 class Neuron(Mob):
     def __init__(self, input_locs, direction, neuron_color, **kwargs):
         super().__init__(**kwargs)
-        grid_height = 10
+        grid_height = 5
         self.core = (
             Sphere(grid_height=grid_height, grid_aspect_ratio=2, color=neuron_color)
             .scale(0.175)
