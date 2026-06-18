@@ -99,7 +99,8 @@ except Exception as e:
 not_compiled = lambda x: x
 def csync(f):
     def _sync(*args, **kwargs):
-        torch.cuda.synchronize()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         return f(*args, **kwargs)
 
     return _sync

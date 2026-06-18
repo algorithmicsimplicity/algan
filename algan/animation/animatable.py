@@ -371,8 +371,6 @@ class Animatable:
             scene = SceneManager.instance()
         self.scene = scene
         self.id = self.scene.get_new_id()
-        if self.id == 497:
-            print('debug')
         if add_to_scene:
             self.scene.add_actor(self)
 
@@ -704,10 +702,7 @@ class Animatable:
         )
         if value.shape[1] == 1 and self.data_sub_inds is not None:
             return value[time_inds]
-        try:
-            return value[time_inds][:, data_inds]
-        except:
-            return value[time_inds][:, data_inds]
+        return value[time_inds][:, data_inds]
 
     def wait(self, *args, **kwargs):
         """An animated function that does nothing for one second!"""
@@ -959,7 +954,12 @@ class Animatable:
         if self.data.despawn_time() < 0:
             self.despawn_ind = despawn_ind+1
         else:
-            self.despawn_ind = max(despawn_ind, self.spawn_ind + 1)
+            # Hide the mob from its own despawn frame onwards. We must use the
+            # actor's despawn_time here (not the render batch's end) so that mobs
+            # despawned without an animation (despawn(animate=False), as used by
+            # become()/detach_history()) actually disappear instead of lingering
+            # at full opacity until the end of the current render batch.
+            self.despawn_ind = max(int(self.data.despawn_time() * fps), self.spawn_ind + 1)
 
         t = time_inds / fps
         t = t.unsqueeze(-1)

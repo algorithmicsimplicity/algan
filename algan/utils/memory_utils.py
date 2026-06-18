@@ -1,3 +1,4 @@
+import gc
 import math
 import traceback
 
@@ -30,6 +31,7 @@ def get_num_available_bytes(device=torch.device("cuda")):
 
 
 def empty_cache():
+    gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     if torch.mps.is_available():
@@ -166,7 +168,6 @@ class ManualMemory:
             x = x.view(shape).view(dtype)
             return x
 
-        torch.cuda.synchronize()
         return get_data()
 
     def reset(self):

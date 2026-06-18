@@ -32,7 +32,7 @@ class Color(torch.Tensor):
 
     def __eq__(self, other):
         eq = super().__eq__(other)
-        if self.numel() == 5 and other.numel() == 5:
+        if self.numel() == 5 and hasattr(other, 'numel') and other.numel() == 5:
             return eq.all().item()
         return eq
 
@@ -41,7 +41,7 @@ class Color(torch.Tensor):
         opacity = self.data[..., -1:]
         if opacity.numel() == 1:
             opacity = opacity.item()
-        return opacity
+        return opacity.as_subclass(torch.Tensor)
 
     @opacity.setter
     def opacity(self, value):
@@ -52,7 +52,7 @@ class Color(torch.Tensor):
         glow = self.data[..., -2:-1]
         if glow.numel() == 1:
             glow = glow.item()
-        return glow
+        return glow.as_subclass(torch.Tensor)
 
     def is_transparent(self):
         return self.opacity < 1

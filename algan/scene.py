@@ -249,9 +249,7 @@ class Scene:
                 primitive.project_to_screen(camera, self.light_sources)
 
             # Reclaim animation-phase residuals before render batching.
-            gc.collect()
-            if COMPUTING_DEFAULTS.render_device == torch.device('cuda'):
-                torch.cuda.empty_cache()
+            empty_cache()
 
             render_pointers = self.memory.get_pointers()
             current_ind = start_ind
@@ -323,6 +321,8 @@ class Scene:
                     memory=self.memory,
                     post_processes=post_processes,
                 )
+
+                empty_cache
 
                 self.memory.set_pointers(render_pointers)
                 current_ind = new_ind
@@ -532,9 +532,7 @@ class Scene:
         save_image = False
 
         self.has_any_active_actors = False
-        gc.collect()
-        if COMPUTING_DEFAULTS.render_device == torch.device('cuda'):
-            torch.cuda.empty_cache()
+        empty_cache
         self.memory = ManualMemory(
             COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
         )
@@ -589,9 +587,7 @@ class Scene:
                     )
                     del primitives
                     # Free previous batch data before allocating next batch.
-                    gc.collect()
-                    if COMPUTING_DEFAULTS.render_device == torch.device('cuda'):
-                        torch.cuda.empty_cache()
+                    empty_cache()
                     _sync_devices()
                     e = time.time()
                     print(

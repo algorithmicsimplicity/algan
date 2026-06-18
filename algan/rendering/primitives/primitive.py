@@ -124,7 +124,6 @@ def do_write(out, c_write, max_dist, dists, max_ind, c_read, ie, memory):
         write = torch.where(mask, c_write, c_read, out=c_write)
 
         out.scatter_(-2, ie, write)
-    torch.cuda.synchronize()
     return out
 
 
@@ -179,7 +178,6 @@ def blend_seq(data):
 @csync
 def blend_with_scan(data):
     out = blend_packed_power_of_two_fragment_list(data)
-    torch.cuda.synchronize()
     return out
 
 
@@ -296,7 +294,6 @@ class RenderPrimitive:
         frame_out = frame_out.cpu().flip(-3)
         # frame_out = frame_out.transpose(0, 1)
         # frame_out[...,:3] = frame_out[...,:3].flip(-1)
-        torch.cuda.synchronize()
         return frame_out
 
 
@@ -361,7 +358,7 @@ class RenderPrimitive:
             out = self.memory.get_tensor(
                 (num_pixels + 1, 5 if transparent_output else 4), torch.uint8)
             out_pointers = self.memory.get_pointers()
-            torch.cuda.empty_cache()
+            empty_cache()
 
             chunks = []
             for p in primitives:
@@ -568,7 +565,6 @@ class RenderPrimitive:
                     return None
                 else:
                     return frames
-        torch.cuda.synchronize()
         return frames
 
     def get_tensor_from_memory(self, *args, **kwargs):
@@ -659,7 +655,6 @@ class RenderPrimitive:
             ind_counts = histc_result.long()
             self.memory.current_pointer = out_pointer
             wait_for_cuda()
-        torch.cuda.synchronize()
         return out, out_inds, ind_counts
 
     @cuda_compiled
@@ -708,7 +703,6 @@ class RenderPrimitive:
             #sorted_colors = buffer2[:N, :-1]
             blend_with_scan(buffer[:padded_N])
             sorted_colors = buffer[1:N+1, :-1]
-            torch.cuda.synchronize()
             out[..., :] = background_color[..., : out.shape[-1]]
             sorted_frgment_order = self.memory.cast(sorted_frgment_order, torch.long)
             fragment_to_pixel_ind = sorted_frgment_order
@@ -788,7 +782,6 @@ class RenderPrimitive:
         ind_counts = histc_result.long()
         self.memory.current_pointer = out_pointer
         wait_for_cuda()
-        torch.cuda.synchronize()
         return out, out_inds, ind_counts
 
     #@cuda_compiled
@@ -975,7 +968,6 @@ class RenderPrimitive:
                 memory=self.memory
             )
             self.first_projection = False
-        torch.cuda.synchronize()
         return self
 
     #@compiled
@@ -1041,7 +1033,6 @@ class RenderPrimitive:
         dists_ = out[...,5]
         #inds_ = out[...,6]
         #inds_ = memory.cast(inds_, torch.long, persist=True)
-        torch.cuda.synchronize()
         return colors_, dists_, inds_
 
         start_x, start_y, end_x, end_y = window_coords
@@ -1239,8 +1230,6 @@ class RenderPrimitive:
 
         inds = torch.masked_select(inds, m, out=memory.get_tensor((num_masked_frags,), torch.long))
         self.memory.current_reverse_pointer = original_pointers[1]
-        wait_for_cuda()
-        torch.cuda.synchronize()
         return colors, dists, inds
 
 

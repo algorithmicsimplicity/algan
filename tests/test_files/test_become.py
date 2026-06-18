@@ -13,9 +13,13 @@ def test_become_shapes_2d():
 
 def test_become_text():
     x = Tex("Hello", font_size=90).spawn()
-    x.become(Tex("Holloo", font_size=90)).become(Tex("Hollo", font_size=90)).become(
-        Tex("Hllo", font_size=90)
-    ).become(Tex("World", font_size=90))
+    # minimize_movement pairs each triangle with the closest triangle in the target,
+    # so the glyphs deform smoothly in place instead of breaking apart and reforming.
+    x.become(Tex("Holloo", font_size=90), minimize_movement=True).become(
+        Tex("Hollo", font_size=90), minimize_movement=True
+    ).become(Tex("Hllo", font_size=90), minimize_movement=True).become(
+        Tex("World", font_size=90), minimize_movement=True
+    )
 
 
 render_all_funcs(__name__)

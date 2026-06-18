@@ -165,7 +165,6 @@ class TrianglePrimitive(RenderPrimitive):
     ):
 
         out = get_bary_coordinates(vertex_corners, fragment_x, fragment_y)
-        torch.cuda.synchronize()
         return out
 
     #@compiled
@@ -176,7 +175,6 @@ class TrianglePrimitive(RenderPrimitive):
             interpolation_coord,
             self.expand_verts_to_frags(property, repeats_inds.unsqueeze(-1), -3, persist=True),
         )
-        torch.cuda.synchronize()
         return out
 
 

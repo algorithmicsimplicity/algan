@@ -54,7 +54,7 @@ from algan.rendering.raytracing.ray_trace_taichi import (
 )
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO, build_stbvh
 from algan.settings.defaults import COMPUTING_DEFAULTS
-from algan.utils.memory_utils import InsufficientMemoryException
+from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.utils.tensor_utils import broadcast_all, cast_to_tensor, unsquish
 
 # Maximum number of ray bounces (mirror reflections / diffuse scatters).
@@ -309,7 +309,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         are flagged so the trace kernel can prune hits behind them while
         gathering.
         """
-        alpha = colors[..., -1]
+        alpha = colors.opacity.squeeze(-1)
         visible = alpha.amax(-1) > MIN_ALPHA
         opaque = alpha.amin(-1) >= 1.0 - 1e-6
         (lo, hi, visible, opaque), _ = _unify_time(
@@ -366,9 +366,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self._set_frame_buffer_bytes(camera)
 
             # Ensure released geometry is actually freed before rendering.
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            empty_cache()
         return self
 
     def get_memory_used_per_timestep(self):
@@ -434,11 +432,7 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
             self._set_frame_buffer_bytes(camera)
 
             # Ensure released geometry is actually freed before rendering.
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+            empty_cache()
         return self
 
 
@@ -498,9 +492,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 * (2 if mc else 1))
 
             # Ensure released geometry is actually freed before rendering.
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            empty_cache()
         return self
 
     def _compute_samples_per_segment(self, corners, cam_o, sp, sb, screen_h):
@@ -644,11 +636,11 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         hi = torch.full((Tb, C, 3), EMPTY_HI, device=device).scatter_reduce_(
             1, idx, seg_hi, "amax", include_self=True)
 
-        fill_alpha = self._rt_circuit_colors[..., -1].amax(-1)  # over texture
-        fill_min = self._rt_circuit_colors[..., -1].amin(-1)
+        fill_alpha = self._rt_circuit_colors.opacity.squeeze(-1).amax(-1)  # over texture
+        fill_min = self._rt_circuit_colors.opacity.squeeze(-1).amin(-1)
         if not self.filled:
             fill_alpha = torch.zeros_like(fill_alpha)
-        border_alpha = self._rt_circuit_border_colors[..., -1]
+        border_alpha = self._rt_circuit_border_colors.opacity.squeeze(-1)
         border_on = self._rt_border_width > 1e-3
         visible = (fill_alpha > MIN_ALPHA) | (
             (border_alpha > MIN_ALPHA) & border_on)
@@ -715,8 +707,7 @@ def _merge_scene(primitives):
     if cached is not None:
         return cached
 
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    empty_cache()
     device = COMPUTING_DEFAULTS.render_device
     pn_patches = [p for p in primitives
                   if isinstance(p, RayTracedPNTrianglePrimitive)]
@@ -850,9 +841,8 @@ def _merge_scene(primitives):
         p._rt_circuit_meta = p._rt_circuit_colors = None
         p._rt_circuit_border_colors = p._rt_edges = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+
+    empty_cache()
     first._rt_merged_scene = scene
     return scene
 
@@ -984,7 +974,6 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 accum = memory.get_tensor((end - start, width * height, 5),
                                           torch.float32)
                 accum.zero_()
-            torch.cuda.synchronize()
             # Coplanar layer order: circuits < triangles < PN patches.
             layer_offset_triangles = float(merged["num_circuits"])
             layer_offset_pn = layer_offset_triangles + float(
@@ -1124,3 +1113,9 @@ def disable_ray_tracing():
     for (module, name), original in _originals.items():
         setattr(module, name, original)
     _originals.clear()
+
+
+def is_ray_tracing_enabled():
+    """True if the ray traced primitive classes are currently active (i.e.
+    :func:`enable_ray_tracing` has been called and not yet disabled)."""
+    return bool(_originals)

@@ -15,6 +15,7 @@ from algan import (
     COMPUTING_DEFAULTS,
     DIRECTORY_DEFAULTS,
 )
+from algan.rendering.raytracing import enable_ray_tracing
 
 current_file_path = os.path.abspath(__file__)
 cd = os.path.dirname(current_file_path)
@@ -35,6 +36,7 @@ class TestOverseer(TestCase):
     def setUp(self):
         if os.path.exists(DIRECTORY_DEFAULTS.cache_directory):
             shutil.rmtree(DIRECTORY_DEFAULTS.cache_directory)
+        enable_ray_tracing(1)#, pn_triangles=True)
 
     @parameterized.expand(test_files)
     def test_algan_file(self, test_file):

@@ -519,10 +519,7 @@ class Mob(Animatable):
             Mob: The Mob instance itself, allowing for method chaining.
 
         """
-        try:
-            change = change * interpolation
-        except:
-            change = change * interpolation
+        change = change * interpolation
         relation = self.attr_to_relations[relation_key][0]
         current_value = self.__getattribute__(key)
 
@@ -2252,6 +2249,63 @@ class Mob(Animatable):
             ).unsqueeze(0)
         return self
 
+    def reorder_batch_to_minimize_movement(self, target: "Mob"):
+        """Reorders the objects in this Mob's batch so that each is paired with the
+        closest object in ``target``, minimizing the total distance the objects travel.
+
+        This Mob and ``target`` must already have the same batch size (e.g. after
+        :meth:`expand_n_batch`). Used by :meth:`become` when ``minimize_movement`` is
+        True, so that the i-th object of the source morphs into the *nearest* object of
+        the target rather than the one that merely shares its batch index. For text and
+        other heavily-batched Mobs this is what turns the transformation from triangles
+        flying across the screen and reforming into a smooth, local deformation.
+
+        Args:
+            target (Mob): The Mob whose objects this Mob is being matched against
+                (i.e. the Mob this one will morph towards).
+        """
+        num_points_per_object = self.num_points_per_object
+        my_points = unsquish(
+            cast_to_tensor(self.location)[0], -2, num_points_per_object
+        )  # [num_objects, num_points_per_object, 3]
+        target_points = unsquish(
+            cast_to_tensor(target.location)[0], -2, num_points_per_object
+        )
+        num_objects = my_points.shape[-3]
+        # Nothing to reorder for a single (or mismatched) object batch.
+        if num_objects <= 1 or target_points.shape[-3] != num_objects:
+            return self
+
+        # Pair objects by their centers using optimal (minimum total distance) assignment.
+        my_centers = my_points.mean(-2)
+        target_centers = target_points.mean(-2)
+        distance_matrix = torch.cdist(target_centers, my_centers)
+        target_inds, my_inds = linear_sum_assignment(distance_matrix.cpu().numpy())
+        # Build the permutation that sends my object `my_inds[k]` to slot `target_inds[k]`,
+        # so that afterwards self's k-th object is the one matched to target's k-th object.
+        permutation = torch.empty(num_objects, dtype=torch.long)
+        permutation[torch.as_tensor(target_inds, dtype=torch.long)] = torch.as_tensor(
+            my_inds, dtype=torch.long
+        )
+        permutation = permutation.to(my_points.device)
+
+        # Apply the same object permutation to every (non-broadcast) batched attribute so
+        # all of this Mob's data stays consistent.
+        for attr in self.animatable_attrs:
+            value = cast_to_tensor(self.__getattribute__(attr))[0]
+            if (value.shape[-2] == 1) or (
+                value.shape[-2] % num_points_per_object != 0
+            ):
+                continue
+            value_per_object = unsquish(value, -2, num_points_per_object)
+            if value_per_object.shape[-3] != num_objects:
+                continue
+            value_per_object = value_per_object.index_select(-3, permutation)
+            self.data.data_dict[attr] = squish(
+                value_per_object, -3, -2
+            ).unsqueeze(0)
+        return self
+
     def get_non_component_children(self):
         return [_ for _ in self.children if _ not in self.components]
 
@@ -2269,6 +2323,10 @@ class Mob(Animatable):
         to parts of `other_mob` for a smoother transition, especially for complex Mobs
         with multiple children or batched primitive points.
 
+        Behaves like Manim's ``Transform``: this Mob morphs into the appearance of
+        `other_mob` and is the single Mob left in the scene afterwards. `other_mob`
+        is only used as a source of target data and is never added to the scene.
+
         Parameters
         ----------
         other_mob
@@ -2280,11 +2338,21 @@ class Mob(Animatable):
             history is "detached" and this Mob starts a fresh animation history
             from its transformed state. If False, the transformation is recorded
             within the existing history.
+        minimize_movement
+            If True, the sub-parts (children, and batched sub-objects such as the
+            individual triangles of text) are paired with the *closest* sub-part of
+            `other_mob`, via optimal assignment, so that the total distance travelled
+            during the transformation is minimized. This produces a smooth, local
+            deformation rather than sub-parts flying across the screen and reforming.
+            If False (the default), sub-parts are paired in the order they occur,
+            matching Manim's behaviour. Note the optimal assignment can be costly for
+            Mobs made of very many sub-objects.
 
         Returns
         -------
         :class:`~.Mob`
-            The new (transformed) Mob instance,
+            The transformed Mob (now displaying `other_mob`'s appearance). Use this
+            returned Mob for any subsequent animations.
 
         Raises
         ------
@@ -2307,14 +2375,14 @@ class Mob(Animatable):
         with Off():
             new_self = self
             if detach_history:
+                # Detach this mob's history so that the (potentially shape-changing)
+                # transformation is recorded in a fresh, internally-consistent history.
+                # detach_history() freezes and despawns the current mob and returns a
+                # spawned clone that takes its place seamlessly.
                 new_self = self.detach_history()
-                # Detach current mob's history
-                other_mob_original = (
-                    other_mob  # Keep a reference to the original target mob
-                )
-                other_mob = other_mob.clone(
-                    add_to_scene=False
-                )  # Clone target to avoid modifying it directly
+                # Clone the target purely as a source of data to morph towards, so we
+                # never mutate (or spawn) the mob the caller passed in.
+                other_mob = other_mob.clone(add_to_scene=False)
 
             # Adjust child counts to match for smooth transitions
             child_difference = len(other_mob.get_non_component_children()) - len(
@@ -2441,6 +2509,11 @@ class Mob(Animatable):
                     elif batch_difference < 0:
                         other_mob.expand_n_batch(-batch_difference)
 
+                    if minimize_movement:
+                        # Re-pair the (now equally-sized) batches so each source object
+                        # morphs into the closest target object, minimizing total movement.
+                        other_mob.reorder_batch_to_minimize_movement(new_self)
+
                 # Set all animatable attributes non-recursively to match the target mob's values
                 for attr_name in new_self.animatable_attrs:
                     if not hasattr(new_self, attr_name):
@@ -2450,11 +2523,10 @@ class Mob(Animatable):
                         attr_name, getattr(other_mob, attr_name)
                     )
 
-            if detach_history:
-                # If history was detached, despawn the transforming mob and spawn the original target mob
-                with Off():
-                    new_self.despawn(animate=False)
-                    return other_mob_original.spawn(animate=False)
+            # Like Manim's Transform, the (single) transforming mob is left in the
+            # scene holding the target's appearance; the target mob itself is never
+            # added to the scene. We return the transformed mob so that it can be
+            # further animated / transformed by the caller.
             return new_self
 
     def _become_recursive(self, other_mob: "Mob", move_to: bool = False):
@@ -2616,7 +2688,7 @@ class Mob(Animatable):
             d.shader_specific_param_names = shader_specific_param_names
         return self
 
-    def set_material(self, material, apply_to_raytracer=False):
+    def set_material(self, material, apply_to_raytracer=None):
         """Applies a Three.js-style :class:`~algan.rendering.shaders.materials.Material`
         to this mob and all of its descendants.
 
@@ -2627,17 +2699,25 @@ class Mob(Animatable):
         colour, and ``opacity`` drives its max opacity. Like :meth:`set_shader`,
         this MUST be called before the mob is spawned.
 
+        Under physical lighting (``enable_ray_tracing(physical_lighting=True)``)
+        the material is *also* shaded per ray hit by the path tracer: the
+        material's ``(metalness, roughness)`` (see
+        :meth:`Material.physical_surface_params`) are routed into the renderer's
+        per-hit surface parameters. This happens automatically when physical
+        lighting is active, so enable it before applying materials.
+
         Parameters
         ----------
         material
             A :class:`~algan.rendering.shaders.materials.Material` instance, e.g.
             ``MeshStandardMaterial(metalness=1.0, roughness=0.2)``.
         apply_to_raytracer
-            If True, also map ``metalness``/``roughness`` onto the ray traced
-            renderer's mirror reflection parameters (``set_reflectivity`` /
-            ``set_roughness``) so path-traced reflections respond to the
-            material. Off by default. Only meaningful for
-            :class:`MeshStandardMaterial` (and subclasses).
+            Controls routing of ``(metalness, roughness)`` into the ray traced
+            renderer's per-hit surface parameters. ``None`` (default)
+            auto-enables it exactly when physical lighting is active under the
+            ray traced pipeline. Pass ``True`` to force it on regardless (note:
+            in the *deterministic* ray tracer a non-zero ``metalness`` becomes a
+            mirror reflection), or ``False`` to suppress it.
 
         Returns
         -------
@@ -2649,10 +2729,7 @@ class Mob(Animatable):
         :class:`.ModifiedProtectedAttributeError`
             If used on an already spawned mob.
         """
-        from algan.rendering.shaders.materials import (
-            _to_color5,
-            MeshStandardMaterial,
-        )
+        from algan.rendering.shaders.materials import _to_color5
 
         if self.data.spawn_time() >= 0:
             raise ModifiedProtectedAttributeError(
@@ -2676,14 +2753,22 @@ class Mob(Animatable):
 
         material.emit_warnings()
 
-        if apply_to_raytracer and isinstance(material, MeshStandardMaterial):
-            from algan.rendering.raytracing.primitives import (
-                set_reflectivity,
-                set_roughness,
-            )
+        # Route the material onto the ray traced renderer's per-hit surface
+        # parameters (reflectivity = metalness, plus roughness), so the physical
+        # path tracer shades each hit from the material. The deterministic
+        # renderer instead treats reflectivity as mirror-ness, so by default we
+        # only auto-route when physical lighting is active under the ray traced
+        # pipeline.
+        import algan.rendering.raytracing.primitives as _rt
 
-            set_reflectivity(self, float(material.metalness))
-            set_roughness(self, float(material.roughness))
+        if apply_to_raytracer is None:
+            apply_to_raytracer = (
+                _rt.PHYSICAL_LIGHTING and _rt.is_ray_tracing_enabled()
+            )
+        if apply_to_raytracer:
+            metalness, roughness = material.physical_surface_params()
+            _rt.set_reflectivity(self, metalness)
+            _rt.set_roughness(self, roughness)
 
         return self
 

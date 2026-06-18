@@ -144,6 +144,42 @@ default colour).
     constructors accept the Three.js ``camelCase`` names (e.g.
     ``MeshStandardMaterial(emissiveIntensity=2)``).
 
+Vertex shading vs. physical shading
+-----------------------------------
+
+By default, materials are evaluated **per vertex** (the lighting is computed at
+each triangle corner and the resulting colour is interpolated across the face).
+This is fast and looks great on the curved, finely-tessellated surfaces typical
+of Algan scenes.
+
+For more accurate, **per-hit** shading -- where the full PBR lighting is
+evaluated at every ray intersection -- enable the physical path tracer *before*
+creating your mobs::
+
+    from algan import *
+    from algan.rendering.raytracing import enable_ray_tracing
+
+    enable_ray_tracing(physical_lighting=True, samples_per_pixel=64)
+
+    Sphere().set_material(MeshStandardMaterial(metalness=1.0, roughness=0.2)).spawn()
+    render_to_file()
+
+When physical lighting is active, :meth:`~.Mob.set_material` automatically routes
+each material's ``(metalness, roughness)`` into the path tracer's per-hit surface
+shading, so ``MeshStandardMaterial`` / ``MeshPhysicalMaterial`` are rendered as
+true metalness/roughness PBR. Non-PBR materials fall back to a sensible
+``(metalness, roughness)`` (diffuse for Lambert/Toon, a roughness derived from
+``shininess`` for Phong).
+
+.. note::
+
+    Under physical lighting the mob colour is treated as raw *albedo* and all
+    illumination comes from the scene's lights, emission and the background
+    environment -- so the result differs from the vertex-shaded preview (that is
+    the point). Currently only ``metalness`` and ``roughness`` are routed to the
+    path tracer; emissive colour, clearcoat and sheen remain vertex-shading
+    features. Enable physical lighting *before* applying materials.
+
 .. important::
 
     **Limitations.** Algan shades *per vertex* and has no UV / image-sampling

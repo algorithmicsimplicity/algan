@@ -86,5 +86,4 @@ if __name__ == '__main__':
         rasterize(triangles_2d, colors, distances,
                   out_buffer,
                   width, height, fragment_count)
-        print('done')
     print(fragment_count)

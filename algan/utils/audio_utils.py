@@ -93,8 +93,6 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
         chunk_end_s = min(chunk_start_s + chunk_duration_s, audio_duration_s)
         if chunk_start_s + chunk_duration_s >= audio_duration_s-10:
             final_chunk = True
-        if chunk_start_s > 1300:
-            print(' ')
 
         print(f"\n--- Processing Chunk {chunk_start_s}/{audio_duration_s} ({chunk_start_s:.2f}s to {chunk_end_s:.2f}s) ---")
 
@@ -140,14 +138,12 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
             # --- Perform the optimized alignment ---
             blank_id = processor.tokenizer.pad_token_id
             delimiter_id = processor.tokenizer.word_delimiter_token_id
-            try:
-                aligned_tokens, scores = torchaudio.functional.forced_align(
-                    emissions.unsqueeze(0),
-                    torch.tensor([tokenized_transcript], dtype=torch.int32, device=device),
-                    blank=blank_id
-                )
-            except:
-                print('a')
+
+            aligned_tokens, scores = torchaudio.functional.forced_align(
+                emissions.unsqueeze(0),
+                torch.tensor([tokenized_transcript], dtype=torch.int32, device=device),
+                blank=blank_id
+            )
             token_spans = F.merge_tokens(aligned_tokens[0], scores[0])
 
             time_per_frame = 1
@@ -169,11 +165,9 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
             chunk_word_segments = [[strip_nonchars(_[0]), chunk_start_s + _[1] * time_per_frame,
                                     chunk_start_s + _[2] * time_per_frame] for _ in (word_spans[:-1] if not final_chunk else word_spans)]
 
-        try:
-            estimated_words_per_chunk = len(chunk_word_segments) * ((chunk_end_s - chunk_start_s)
-                                                                    / (chunk_word_segments[-1][-1] - chunk_start_s)) * 0.9
-        except:
-            print('b')
+        estimated_words_per_chunk = len(chunk_word_segments) * ((chunk_end_s - chunk_start_s)
+                                                                / (chunk_word_segments[-1][-1] - chunk_start_s)) * 0.9
+
         all_word_segments.extend(chunk_word_segments)
         chunk_start_s = all_word_segments[-1][-1] + time_per_frame * 0.5
 
