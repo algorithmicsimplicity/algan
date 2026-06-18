@@ -60,20 +60,9 @@ import taichi as ti
 from algan.rendering.raytracing.stbvh import BVH_ARITY, LEAF_SIZE
 
 
-def _ensure_taichi_initialized():
-    """Initialize Taichi unless another module (e.g. the rasterizer) already
-    has; re-initializing would invalidate previously compiled kernels.
-    """
-    initialized = False
-    try:
-        initialized = ti.lang.impl.get_runtime().prog is not None
-    except Exception:
-        initialized = False
-    if not initialized:
-        ti.init(arch=ti.gpu)
+from algan.rendering.taichi_runtime import init_taichi
 
-
-_ensure_taichi_initialized()
+init_taichi()
 
 # Minimum hit distance along a ray (also the self-intersection guard for
 # reflected rays, together with a normal offset at the bounce origin).

@@ -1,7 +1,9 @@
 import taichi as ti
 import torch
 
-ti.init(arch=ti.gpu)
+from algan.rendering.taichi_runtime import init_taichi
+
+init_taichi()
 
 @ti.func
 def edge_function(a: ti.math.vec2, b: ti.math.vec2, c: ti.math.vec2) -> ti.f32:

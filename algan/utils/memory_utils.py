@@ -30,8 +30,32 @@ def get_num_available_bytes(device=torch.device("cuda")):
         return COMPUTING_DEFAULTS.max_cpu_memory_used
 
 
-def empty_cache():
-    gc.collect()
+def _gpu_memory_pressure(threshold=0.8):
+    """True when the CUDA device is using more than ``threshold`` of its memory
+    (driver-level, so it accounts for Taichi + torch + everything)."""
+    if not torch.cuda.is_available():
+        return True  # No CUDA telemetry; keep the original (always-gc) behavior.
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        return (total_bytes - free_bytes) > threshold * total_bytes
+    except Exception:
+        return True
+
+
+def empty_cache(force_gc=False):
+    """Reclaim freed memory back to the allocators.
+
+    ``gc.collect()`` walks the entire Python object graph and dominates this
+    call (~0.2s each on a large scene; it was costing ~40% of a small render
+    when called several times per frame batch). It is only needed to break
+    *reference cycles* -- reference counting already frees the (explicitly
+    nulled) geometry tensors immediately -- so it is skipped unless the GPU is
+    actually under memory pressure (where reclaiming cyclic garbage matters for
+    avoiding OOM) or ``force_gc`` is set. ``torch.cuda.empty_cache()`` is cheap
+    (~ms) and always runs to return the freed blocks to the allocator.
+    """
+    if force_gc or _gpu_memory_pressure():
+        gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     if torch.mps.is_available():

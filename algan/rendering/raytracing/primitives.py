@@ -28,6 +28,7 @@ mobs render through this pipeline.
 from __future__ import annotations
 
 import gc
+import os
 
 import taichi as ti
 import torch
@@ -45,12 +46,24 @@ from algan.rendering.raytracing.pn_patch import (
     pn_patch_coefficients,
 )
 from algan.rendering.raytracing.ray_trace_taichi import (
+    KBUF,
+    MAX_SURFACES_PER_RAY,
     MIN_ALPHA,
     finalize_samples,
     path_trace_physical_stbvh,
     path_trace_scene_stbvh,
     render_scene_stbvh,
     render_triangles_stbvh,
+)
+from algan.rendering.raytracing.no_pn_taichi import render_no_pn_stbvh
+from algan.rendering.raytracing.wavefront_taichi import (
+    wf_composite,
+    wf_gen_general,
+    wf_gen_triangle,
+    wf_shade_general,
+    wf_shade_triangle,
+    wf_traverse_general,
+    wf_traverse_triangle,
 )
 from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO, build_stbvh
 from algan.settings.defaults import COMPUTING_DEFAULTS
@@ -89,6 +102,27 @@ GATE_EMPTY_TRAVERSALS = True
 # specialized kernel just carries no PN/bezier code, so it has lower register
 # pressure (higher GPU occupancy). Set False to force the general kernel (A/B).
 USE_TRIANGLE_ONLY_KERNEL = True
+# When True, a batch with NO PN patches but containing bezier circuits (text,
+# 2D shapes), optionally mixed with flat triangles, is rendered by the
+# specialized ``render_no_pn_stbvh`` kernel instead of the general
+# ``render_scene_stbvh``. The general kernel always compiles the PN quartic
+# solver into its call graph (its dominant register cost); the no-PN kernel
+# omits it, so a no-PN scene runs at higher occupancy. Output is byte-identical
+# (the omitted PN paths are inert when no PN patches are present). The pure
+# triangle-only case is handled by the even-leaner kernel above; this catches
+# the remaining default (pn_triangles=False) scenes. Env ALGAN_NO_PN=0 forces
+# the general kernel (A/B against this specialization).
+USE_NO_PN_KERNEL = os.environ.get("ALGAN_NO_PN", "1") == "1"
+# When True, ray-traced batches are rendered by the experimental wavefront
+# (stage-split) path instead of the single-megakernel path: per-ray state lives
+# in global memory and small per-stage kernels (gen, traverse, shade, composite)
+# run in a host loop with PyTorch ray compaction between iterations, for higher
+# occupancy and less divergence. Output is byte-identical. Covers both the
+# triangle-only and the general (PN/bezier/mixed) cases. Off by default (env
+# ALGAN_WAVEFRONT=1): measured SLOWER than the megakernels on the GTX 1050
+# (global state-I/O cost exceeds the occupancy gain on a bandwidth-limited GPU),
+# kept for validation and for higher-bandwidth hardware.
+USE_WAVEFRONT = os.environ.get("ALGAN_WAVEFRONT", "0") == "1"
 
 
 def set_physical_lighting(enabled):
@@ -891,6 +925,192 @@ def _prefill_background(out, background_color, frame_offset, device):
             out[..., k:] = rows[..., -1:].to(torch.uint8)
 
 
+def render_triangles_wavefront(
+        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+        tri_pos, tri_norm, tri_extra, tri_colors,
+        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        time_start, time_end, width, height, half_screen_w, half_screen_h,
+        layer_offset_triangles, max_bounces, transparent, out):
+    """Wavefront orchestration for a triangle-only batch: byte-identical to
+    ``render_triangles_stbvh`` but split into per-stage kernels over per-ray
+    global state, with PyTorch ray compaction between host iterations.
+
+    Geometry/intersection/shading is the megakernel's (see
+    :mod:`algan.rendering.raytracing.wavefront_taichi`); this just owns the
+    state buffers and the gen -> (traverse -> shade -> compact)* -> composite
+    loop.
+    """
+    device = out.device
+    n = (time_end - time_start) * width * height
+
+    f32 = torch.float32
+    i32 = torch.int32
+    rs_ro = torch.empty((n, 3), dtype=f32, device=device)
+    rs_rd = torch.empty((n, 3), dtype=f32, device=device)
+    rs_acc = torch.empty((n, 4), dtype=f32, device=device)
+    rs_sca = torch.empty((n, 4), dtype=f32, device=device)
+    rs_int = torch.empty((n, 4), dtype=i32, device=device)
+    rs_kt = torch.empty((n, KBUF), dtype=f32, device=device)
+    rs_kl = torch.empty((n, KBUF), dtype=f32, device=device)
+    rs_ka = torch.empty((n, KBUF), dtype=f32, device=device)
+    rs_kb = torch.empty((n, KBUF), dtype=f32, device=device)
+    rs_kp = torch.empty((n, KBUF), dtype=i32, device=device)
+    rs_kf = torch.empty((n, KBUF), dtype=i32, device=device)
+
+    wf_gen_triangle(
+        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        int(time_start), int(width), int(height),
+        float(half_screen_w), float(half_screen_h), int(max_bounces),
+        rs_ro, rs_rd, rs_acc, rs_sca, rs_int)
+
+    _timing = os.environ.get("ALGAN_WF_TIMING", "0") == "1"
+    if _timing:
+        import time as _t
+        torch.cuda.synchronize(); ti.sync()
+        _t_loop = _t.perf_counter()
+        _t_traverse = 0.0
+        _t_shade = 0.0
+        _t_compact = 0.0
+
+    active = torch.arange(n, dtype=i32, device=device)
+    # Worst case: MAX_SURFACES_PER_RAY layers + a bounce-triggered re-traversal
+    # per bounce, plus margin. Loop also exits as soon as no ray is active.
+    max_iters = MAX_SURFACES_PER_RAY + max_bounces + 2
+    it = 0
+    while active.numel() > 0 and it < max_iters:
+        na = int(active.numel())
+        if _timing:
+            import time as _t
+            torch.cuda.synchronize(); ti.sync(); _s = _t.perf_counter()
+        wf_traverse_triangle(
+            active, na, t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+            int(t_first_leaf), tri_pos, float(layer_offset_triangles),
+            int(time_start), int(width), int(height),
+            rs_ro, rs_rd, rs_sca, rs_int,
+            rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
+        if _timing:
+            torch.cuda.synchronize(); ti.sync(); _m = _t.perf_counter()
+            _t_traverse += _m - _s
+        wf_shade_triangle(
+            active, na, tri_pos, tri_norm, tri_extra, tri_colors,
+            int(time_start), int(width), int(height),
+            rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+            rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
+        if _timing:
+            torch.cuda.synchronize(); ti.sync(); _e = _t.perf_counter()
+            _t_shade += _e - _m
+        # Compaction: rays still flagged active (status column 2 == 0).
+        active = (rs_int[:, 2] == 0).nonzero(as_tuple=True)[0].to(i32)
+        if _timing:
+            torch.cuda.synchronize(); ti.sync()
+            _t_compact += _t.perf_counter() - _e
+        it += 1
+
+    if _timing:
+        import time as _t
+        torch.cuda.synchronize(); ti.sync()
+        print(f"[wf] iters={it} traverse={_t_traverse*1e3:.1f}ms "
+              f"shade={_t_shade*1e3:.1f}ms compact={_t_compact*1e3:.1f}ms "
+              f"loop_total={(_t.perf_counter()-_t_loop)*1e3:.1f}ms")
+
+    wf_composite(int(time_start), int(width), int(height),
+                 1 if transparent else 0, rs_acc, rs_sca, out)
+
+
+def render_general_wavefront(
+        tri_bvh, pn_bvh, bez_bvh, merged,
+        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        pixel_world_scale, time_start, time_end, width, height,
+        half_screen_w, half_screen_h, layer_offset_triangles, layer_offset_pn,
+        has_tri, has_pn, has_bez, max_bounces, transparent, out):
+    """Wavefront orchestration for the general (triangle + PN + bezier) case:
+    byte-identical to ``render_scene_stbvh`` but stage-split over per-ray global
+    state, with PyTorch ray compaction between host iterations. State carries a
+    5th scalar (base_dist) for bezier border widths across bounces."""
+    device = out.device
+    n = (time_end - time_start) * width * height
+    f32 = torch.float32
+    i32 = torch.int32
+    rs_ro = torch.empty((n, 3), dtype=f32, device=device)
+    rs_rd = torch.empty((n, 3), dtype=f32, device=device)
+    rs_acc = torch.empty((n, 4), dtype=f32, device=device)
+    rs_sca = torch.empty((n, 5), dtype=f32, device=device)
+    rs_int = torch.empty((n, 4), dtype=i32, device=device)
+    rs_kt = torch.empty((n, KBUF), dtype=f32, device=device)
+    rs_kl = torch.empty((n, KBUF), dtype=f32, device=device)
+    rs_ka = torch.empty((n, KBUF), dtype=f32, device=device)
+    rs_kb = torch.empty((n, KBUF), dtype=f32, device=device)
+    rs_kp = torch.empty((n, KBUF), dtype=i32, device=device)
+    rs_kf = torch.empty((n, KBUF), dtype=i32, device=device)
+
+    wf_gen_general(
+        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        int(time_start), int(width), int(height),
+        float(half_screen_w), float(half_screen_h), int(max_bounces),
+        rs_ro, rs_rd, rs_acc, rs_sca, rs_int)
+
+    _timing = os.environ.get("ALGAN_WF_TIMING", "0") == "1"
+    _tt = _ts = _tc = 0.0
+    if _timing:
+        import time as _t
+        torch.cuda.synchronize(); ti.sync(); _loop0 = _t.perf_counter()
+
+    active = torch.arange(n, dtype=i32, device=device)
+    max_iters = MAX_SURFACES_PER_RAY + max_bounces + 2
+    it = 0
+    while active.numel() > 0 and it < max_iters:
+        na = int(active.numel())
+        if _timing:
+            import time as _t
+            torch.cuda.synchronize(); ti.sync(); _s = _t.perf_counter()
+        wf_traverse_general(
+            active, na,
+            tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
+            tri_bvh.leaf_tspan, int(tri_bvh.first_leaf), merged["tri_pos"],
+            pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
+            pn_bvh.leaf_tspan, int(pn_bvh.first_leaf), merged["pn_ctrl"],
+            bez_bvh.nodes, bez_bvh.node_miss, bez_bvh.leaf_prim,
+            bez_bvh.leaf_tspan, int(bez_bvh.first_leaf), merged["circuit_meta"],
+            merged["edges_2d"], merged["edge_offsets"], pixel_world_scale,
+            float(layer_offset_triangles), float(layer_offset_pn),
+            int(has_tri), int(has_pn), int(has_bez),
+            int(time_start), int(width), int(height),
+            rs_ro, rs_rd, rs_sca, rs_int,
+            rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
+        if _timing:
+            torch.cuda.synchronize(); ti.sync(); _m = _t.perf_counter()
+            _tt += _m - _s
+        wf_shade_general(
+            active, na,
+            merged["tri_pos"], merged["tri_norm"], merged["tri_extra"],
+            merged["tri_colors"],
+            merged["pn_ctrl"], merged["pn_norm"], merged["pn_extra"],
+            merged["pn_colors"],
+            merged["circuit_meta"], merged["circuit_colors"],
+            merged["circuit_border_colors"],
+            int(time_start), int(width), int(height),
+            rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+            rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
+        if _timing:
+            torch.cuda.synchronize(); ti.sync(); _e = _t.perf_counter()
+            _ts += _e - _m
+        ti.sync()
+        active = (rs_int[:, 2] == 0).nonzero(as_tuple=True)[0].to(i32)
+        if _timing:
+            torch.cuda.synchronize(); ti.sync(); _tc += _t.perf_counter() - _e
+        it += 1
+
+    if _timing:
+        import time as _t
+        torch.cuda.synchronize(); ti.sync()
+        print(f"[wf-general] iters={it} traverse={_tt*1e3:.1f}ms "
+              f"shade={_ts*1e3:.1f}ms compact={_tc*1e3:.1f}ms "
+              f"loop_total={(_t.perf_counter()-_loop0)*1e3:.1f}ms")
+
+    wf_composite(int(time_start), int(width), int(height),
+                 1 if transparent else 0, rs_acc, rs_sca, out)
+
+
 @csync
 def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                             time_start, time_end, background_color,
@@ -1012,6 +1232,30 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 finalize_samples(samples,
                                  1 if transparent_background else 0,
                                  accum, out)
+            elif (USE_WAVEFRONT and has_tri
+                  and not has_pn and not has_bez):
+                # Triangle-only batch via the wavefront (stage-split) path:
+                # byte-identical output, higher occupancy / less divergence.
+                render_triangles_wavefront(
+                    tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
+                    tri_bvh.leaf_tspan, tri_bvh.first_leaf,
+                    merged["tri_pos"], merged["tri_norm"],
+                    merged["tri_extra"], merged["tri_colors"],
+                    cam_origin, sp, pbx, pby,
+                    int(start), int(end), int(width), int(height),
+                    float(width // 2), float(height // 2),
+                    layer_offset_triangles, int(MAX_BOUNCES),
+                    1 if transparent_background else 0, out)
+            elif USE_WAVEFRONT:
+                # General (PN/bezier/mixed) batch via the wavefront path.
+                render_general_wavefront(
+                    tri_bvh, pn_bvh, bez_bvh, merged,
+                    cam_origin, sp, pbx, pby, pixel_world_scale,
+                    int(start), int(end), int(width), int(height),
+                    float(width // 2), float(height // 2),
+                    layer_offset_triangles, layer_offset_pn,
+                    has_tri, has_pn, has_bez, int(MAX_BOUNCES),
+                    1 if transparent_background else 0, out)
             elif (USE_TRIANGLE_ONLY_KERNEL and has_tri
                   and not has_pn and not has_bez):
                 # Triangle-only batch: the lean kernel (no PN/bezier code)
@@ -1026,6 +1270,27 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     float(width // 2), float(height // 2),
                     layer_offset_triangles, int(MAX_BOUNCES),
                     1 if transparent_background else 0, out)
+            elif USE_NO_PN_KERNEL and not has_pn:
+                # No PN patches (bezier circuits, optionally with flat
+                # triangles): the no-PN kernel omits the quartic solver from
+                # its call graph for identical output at lower register
+                # pressure. (Pure triangle-only was handled above.)
+                render_no_pn_stbvh(
+                    tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
+                    tri_bvh.leaf_tspan, tri_bvh.first_leaf,
+                    merged["tri_pos"], merged["tri_norm"],
+                    merged["tri_extra"], merged["tri_colors"],
+                    bez_bvh.nodes, bez_bvh.node_miss, bez_bvh.leaf_prim,
+                    bez_bvh.leaf_tspan, bez_bvh.first_leaf,
+                    merged["circuit_meta"], merged["circuit_colors"],
+                    merged["circuit_border_colors"], merged["edges_2d"],
+                    merged["edge_offsets"],
+                    cam_origin, sp, pbx, pby, pixel_world_scale,
+                    int(start), int(end), int(width), int(height),
+                    float(width // 2), float(height // 2),
+                    layer_offset_triangles, int(MAX_BOUNCES),
+                    1 if transparent_background else 0,
+                    has_tri, has_bez, out)
             else:
                 render_scene_stbvh(*shared_args, has_tri, has_pn, has_bez,
                                    out)

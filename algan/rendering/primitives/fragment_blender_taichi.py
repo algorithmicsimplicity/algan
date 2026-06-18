@@ -2,7 +2,9 @@ import taichi as ti
 import numpy as np
 import torch
 
-ti.init(arch=ti.gpu)# if ti.is_arch_available(ti.gpu) else ti.cpu)
+from algan.rendering.taichi_runtime import init_taichi
+
+init_taichi()
 
 VECTOR_DIM = 6
 
