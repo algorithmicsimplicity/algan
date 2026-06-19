@@ -76,7 +76,7 @@ class Surface(Renderable):
         self,
         coord_function=None,
         normal_function=None,
-        grid_height=50,
+        grid_height=12,
         grid_width=None,
         grid_aspect_ratio=None,
         checkered_color=None,

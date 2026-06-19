@@ -119,6 +119,10 @@ class TrianglePrimitive(RenderPrimitive):
         self.min_interpolation_coord = 0
         if triangle_collection is not None:
             self.shader = triangle_collection[0].shader
+            # Names of the positional shader_param_values, in the same order
+            # (kept so the ray tracer can map them to its material slots).
+            self.shader_param_names = getattr(
+                triangle_collection[0], "shader_param_names", [])
             self.corners, self.colors, self.normals, *self.shader_param_values = (
                 unsquish(torch.cat(_, 1), -2, 3).to(COMPUTING_DEFAULTS.render_device)
                 for _ in zip(
@@ -148,6 +152,7 @@ class TrianglePrimitive(RenderPrimitive):
         self.colors[..., -2:-1] += glow
         self.colors[..., -1:] *= opacity
         self.normals = normals
+        self.shader_param_names = list(shader_kwargs.keys())
         self.shader_param_values = broadcast_all(
             [colors, *shader_kwargs.values()], ignored_dims=[-1]
         )[1:]

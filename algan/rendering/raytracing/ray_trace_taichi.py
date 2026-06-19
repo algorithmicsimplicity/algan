@@ -58,6 +58,7 @@ with each type's primitive index breaking ties within the type.
 import taichi as ti
 
 from algan.rendering.raytracing.stbvh import BVH_ARITY, LEAF_SIZE
+from algan.rendering.raytracing.shading_taichi import _shade_fragment
 
 
 from algan.rendering.taichi_runtime import init_taichi
@@ -1122,6 +1123,61 @@ def _bezier_normal(f, circuit, circuit_meta: ti.template()):
 
 
 @ti.func
+def _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
+                   tri_pos: ti.template(), tri_norm: ti.template(),
+                   tri_mat_id: ti.template(), tri_mat: ti.template(),
+                   light_pos: ti.template(), light_col: ti.template(),
+                   num_lights, albedo):
+    """Per-fragment material shading of a confirmed flat-triangle hit: feeds the
+    interpolated shading normal, geometric face normal, hit position and the
+    per-primitive material block into :func:`_shade_fragment`. ``albedo`` is the
+    interpolated (raw) base RGB + glow; returns the shaded RGB + glow."""
+    w0 = 1.0 - a - b
+    n = _triangle_normal(f, prim, w0, a, b, tri_norm, tri_pos)
+    tp = f % tri_pos.shape[0]
+    v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                      tri_pos[tp, prim, 2])
+    v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                      tri_pos[tp, prim, 5])
+    v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                      tri_pos[tp, prim, 8])
+    face_n = (v1 - v0).cross(v2 - v0)
+    pos = ro + t_hit * rd
+    rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
+    return _shade_fragment(prim, f, pos, -rd, n, face_n, rgb, albedo[3],
+                           light_pos, light_col, num_lights,
+                           tri_mat_id, tri_mat)
+
+
+@ti.func
+def _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
+                  pn_ctrl: ti.template(), pn_norm: ti.template(),
+                  pn_mat_id: ti.template(), pn_mat: ti.template(),
+                  light_pos: ti.template(), light_col: ti.template(),
+                  num_lights, albedo):
+    """Per-fragment material shading of a confirmed PN-patch hit. Like
+    :func:`_shade_tri_hit` but the geometric face normal is the cross product of
+    the patch's parametric tangents at (u, v) = (a, b)."""
+    n = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
+    tp = f % pn_ctrl.shape[0]
+    su = ti.math.vec3(0.0, 0.0, 0.0)
+    sv = ti.math.vec3(0.0, 0.0, 0.0)
+    for ci in ti.static(range(3)):
+        su[ci] = (pn_ctrl[tp, prim, 3 + ci]
+                  + 2.0 * a * pn_ctrl[tp, prim, 9 + ci]
+                  + b * pn_ctrl[tp, prim, 15 + ci])
+        sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
+                  + 2.0 * b * pn_ctrl[tp, prim, 12 + ci]
+                  + a * pn_ctrl[tp, prim, 15 + ci])
+    face_n = su.cross(sv)
+    pos = ro + t_hit * rd
+    rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
+    return _shade_fragment(prim, f, pos, -rd, n, face_n, rgb, albedo[3],
+                           light_pos, light_col, num_lights,
+                           pn_mat_id, pn_mat)
+
+
+@ti.func
 def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
                      layer_offset_pn,
@@ -1548,7 +1604,12 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                      circuit_colors: ti.template(),
                      circuit_border_colors: ti.template(),
                      edges_2d: ti.template(), edge_offsets: ti.template(),
-                     has_tri: ti.i32, has_pn: ti.i32, has_bez: ti.i32):
+                     has_tri: ti.i32, has_pn: ti.i32, has_bez: ti.i32,
+                     frag_shading: ti.template(),
+                     tri_mat_id: ti.template(), tri_mat: ti.template(),
+                     pn_mat_id: ti.template(), pn_mat: ti.template(),
+                     light_pos: ti.template(), light_col: ti.template(),
+                     num_lights):
     """Trace one primary ray through the full (triangle + PN + bezier) scene,
     returning its premultiplied RGB + glow accumulator ``acc`` and remaining
     transmittance ``weight`` (the inputs to the over-background composite). The
@@ -1653,6 +1714,24 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                     prim, f, a, b, border,
                     circuit_meta, circuit_colors, circuit_border_colors)
 
+            # Fragment shading: ``color`` arrived as the interpolated raw albedo
+            # for triangle/PN hits; evaluate the lighting model per fragment.
+            # Bezier circuits (htype 0) keep their sampled colour. Compiled out
+            # entirely on the default (vertex-shaded) path via ti.static.
+            if ti.static(frag_shading != 0):
+                if htype == 1:
+                    color = _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
+                                           tri_pos, tri_norm,
+                                           tri_mat_id, tri_mat,
+                                           light_pos, light_col, num_lights,
+                                           color)
+                elif htype == 2:
+                    color = _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
+                                          pn_ctrl, pn_norm,
+                                          pn_mat_id, pn_mat,
+                                          light_pos, light_col, num_lights,
+                                          color)
+
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
             if bounces_left <= 0:
@@ -1734,6 +1813,14 @@ def render_scene_stbvh(
         max_bounces: int, transparent: int,
         # Which geometry types are present (skip an absent type's empty BVH).
         has_tri: ti.i32, has_pn: ti.i32, has_bez: ti.i32,
+        # Fragment shading (compile-time): 0 = use baked vertex colours
+        # (unchanged default path); 1 = material-shade triangle/PN hits per
+        # fragment from the raw albedo, material blocks and scene lights.
+        frag_shading: ti.template(),
+        tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
+        pn_mat_id: ti.types.ndarray(), pn_mat: ti.types.ndarray(),
+        light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
+        num_lights: int,
         # Anti-alias level: a^2 jittered sub-pixel rays are averaged per output
         # pixel (in place, at the output resolution -- no super-sampled buffer).
         aa_level: int,
@@ -1781,7 +1868,9 @@ def render_scene_stbvh(
                     b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                     b_first_leaf, circuit_meta, circuit_colors,
                     circuit_border_colors, edges_2d, edge_offsets,
-                    has_tri, has_pn, has_bez)
+                    has_tri, has_pn, has_bez,
+                    frag_shading, tri_mat_id, tri_mat, pn_mat_id, pn_mat,
+                    light_pos, light_col, num_lights)
                 for ci in ti.static(range(4)):
                     csum[ci] += (acc[ci] * 255.0
                                  + weight * ti.cast(out[f_rel, p, ci], ti.f32))
@@ -1915,7 +2004,11 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
                          t_leaf_tspan: ti.template(),
                          t_first_leaf, tri_pos: ti.template(),
                          tri_norm: ti.template(), tri_extra: ti.template(),
-                         tri_colors: ti.template()):
+                         tri_colors: ti.template(),
+                         frag_shading: ti.template(),
+                         tri_mat_id: ti.template(), tri_mat: ti.template(),
+                         light_pos: ti.template(), light_col: ti.template(),
+                         num_lights):
     """Trace one primary ray through a triangle-only scene, returning its
     premultiplied RGB + glow accumulator and remaining transmittance. The
     triangle-only specialization of :func:`_trace_scene_ray` (cf.
@@ -1982,6 +2075,13 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
             reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
                                                    tri_extra)
 
+            # Fragment shading: ``color`` is the interpolated raw albedo;
+            # material-shade it per fragment. Compiled out on the default path.
+            if ti.static(frag_shading != 0):
+                color = _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
+                                       tri_pos, tri_norm, tri_mat_id, tri_mat,
+                                       light_pos, light_col, num_lights, color)
+
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
             if bounces_left <= 0:
@@ -2035,6 +2135,12 @@ def render_triangles_stbvh(
         time_start: int, time_end: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float,
         layer_offset_triangles: float, max_bounces: int, transparent: int,
+        # Fragment shading (compile-time): 0 = baked vertex colours (default);
+        # 1 = material-shade each triangle hit per fragment.
+        frag_shading: ti.template(),
+        tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
+        light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
+        num_lights: int,
         # Anti-alias level: a^2 jittered sub-pixel rays averaged per pixel.
         aa_level: int,
         # Output buffer, pre-filled with the background; blended in place.
@@ -2076,7 +2182,9 @@ def render_triangles_stbvh(
                 acc, weight = _trace_triangles_ray(
                     ro, rd, inv_rd, f, ff, layer_offset_triangles, max_bounces,
                     t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                    t_first_leaf, tri_pos, tri_norm, tri_extra, tri_colors)
+                    t_first_leaf, tri_pos, tri_norm, tri_extra, tri_colors,
+                    frag_shading, tri_mat_id, tri_mat,
+                    light_pos, light_col, num_lights)
                 for ci in ti.static(range(4)):
                     csum[ci] += (acc[ci] * 255.0
                                  + weight * ti.cast(out[f_rel, p, ci], ti.f32))

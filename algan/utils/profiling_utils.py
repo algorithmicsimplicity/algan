@@ -39,7 +39,7 @@ import taichi as ti
 import torch
 
 import algan  # noqa: F401  (initializes taichi via the rasterizer modules)
-from algan import SceneManager
+from algan import SceneManager, Animatable, Surface, BezierCircuitCubic
 
 from algan.constants.color import BLUE, GREEN, GREY, ORANGE, PURPLE, RED, WHITE, YELLOW
 from algan.settings.render_settings import RenderSettings
@@ -50,7 +50,7 @@ from algan.utils.algan_utils import render_to_file
 # time; no kernels have been compiled for launch yet, so this is safe).
 KERNEL_PROFILER = False
 try:
-    ti.init(arch=ti.cuda, kernel_profiler=True)
+    ti.init(arch=ti.cuda, kernel_profiler=True, advanced_optimization=False)
     KERNEL_PROFILER = True
 except Exception as e:  # pragma: no cover - CPU-only fallback
     print(f"Kernel profiler unavailable ({e}); continuing without it.")
@@ -73,6 +73,8 @@ REPORT_PATH = "raytracing_profile_report.txt"
 def _sync_devices():
     if torch.cuda.is_available():
         torch.cuda.synchronize()
+    if torch.mps.is_available():
+        torch.mps.synchronize()
     ti.sync()
 
 
@@ -87,6 +89,9 @@ class StageTimers:
 
     def reset(self):
         self.times = defaultdict(float)
+        self.exclusive_times = defaultdict(float)
+        self.stack_level = 0
+        self.level_times = defaultdict(float)
         self.counts = defaultdict(int)
         self.active = set()
         self.kernel_launches = []  # (num_frames, num_rays, seconds)
@@ -97,13 +102,19 @@ class StageTimers:
             yield
             return
         self.active.add(name)
+        self.stack_level += 1
         _sync_devices()
         t0 = time.perf_counter()
         try:
             yield
         finally:
             _sync_devices()
-            self.times[name] += time.perf_counter() - t0
+            t = time.perf_counter() - t0
+            self.stack_level -= 1
+            self.level_times[self.stack_level] += t
+            self.times[name] += t
+            self.exclusive_times[name] += t - self.level_times[self.stack_level+1]
+            self.level_times[self.stack_level + 1] = 0
             self.counts[name] += 1
             self.active.discard(name)
 
@@ -171,7 +182,13 @@ def install_instrumentation():
     # Scene-side preparation (mob state evaluation; not part of the ray
     # tracer but reported for end-to-end context).
     TIMERS.wrap_function(Scene, "get_batch_of_primitives",
-                         "scene prep: mob state -> primitives")
+                         "Scene.get_batch_of_primitives")
+
+    TIMERS.wrap_function(Animatable, 'reset_state', "Animatable.reset_state")
+    TIMERS.wrap_function(Animatable, 'set_state_full', "Animatable.set_state_full")
+    TIMERS.wrap_function(Animatable, 'set_state_to_time_t', "Animatable.set_state_to_time_t")
+    TIMERS.wrap_function(Surface, 'get_render_primitives', "Surface.get_render_primitives")
+    TIMERS.wrap_function(BezierCircuitCubic, 'get_render_primitives', "BezierCircuitCubic.get_render_primitives")
 
     # Geometry packing.
     TIMERS.wrap_function(rtp.RayTracedTrianglePrimitive, "project_to_screen",
@@ -284,7 +301,7 @@ def run_once(scene_func, settings, tag="", run_index=0):
                      if torch.cuda.is_available() else 0.0)
     return dict(total=total, peak_alloc_mb=peak_alloc,
                 peak_reserved_mb=peak_reserved,
-                times=dict(TIMERS.times), counts=dict(TIMERS.counts),
+                times=dict(TIMERS.times), counts=dict(TIMERS.counts), exclusive_times=dict(TIMERS.exclusive_times),
                 launches=list(TIMERS.kernel_launches),
                 scene_stats=[dict(b) for b in SCENE_STATS.get("batches", [])],
                 cprofile_path=dump_path)
@@ -305,10 +322,11 @@ def format_report(results):
         label = "cold (includes Taichi JIT)" if i == 1 else "warm"
         w(f"RUN {i} ({label}): end-to-end {res['total']:.2f}s")
         w("-" * 78)
-        w(f"{'stage':<52}{'calls':>6}{'seconds':>10}{'% of total':>10}")
+        w(f"{'stage':<52}{'calls':>6}{'seconds':>10}{'% of total':>10}{'exclusive':>10}")
         for name, secs in sorted(res["times"].items(), key=lambda kv: -kv[1]):
             w(f"{name:<52}{res['counts'][name]:>6}{secs:>10.3f}"
-              f"{100 * secs / res['total']:>9.1f}%")
+              f"{100 * secs / res['total']:>9.1f}%"
+              f"{res['exclusive_times'][name]:>10.3f}")
         accounted = sum(v for k, v in res["times"].items()
                         if not k.startswith(("  -", "beziers:   -"))
                         and k != "ray traced render total")

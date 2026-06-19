@@ -56,6 +56,7 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     render_triangles_stbvh,
 )
 from algan.rendering.raytracing.no_pn_taichi import render_no_pn_stbvh
+from algan.rendering.raytracing.shading_taichi import MAT_W
 from algan.rendering.raytracing.wavefront_taichi import (
     wf_composite,
     wf_gen_general,
@@ -123,6 +124,89 @@ USE_NO_PN_KERNEL = os.environ.get("ALGAN_NO_PN", "1") == "1"
 # (global state-I/O cost exceeds the occupancy gain on a bandwidth-limited GPU),
 # kept for validation and for higher-bandwidth hardware.
 USE_WAVEFRONT = os.environ.get("ALGAN_WAVEFRONT", "0") == "1"
+# When True, the *deterministic* ray tracer (SAMPLES_PER_PIXEL == 1, non-physical)
+# shades the core lit materials per fragment inside the trace kernel instead of
+# baking per-vertex colours (Gouraud). Off by default so existing frame-comparison
+# baselines are unchanged; enable via enable_ray_tracing(fragment_shading=True) or
+# set_fragment_shading(True). Ignored by the Monte Carlo / physical paths.
+FRAGMENT_SHADING = False
+
+
+def set_fragment_shading(enabled):
+    """Toggle per-fragment shading of the *deterministic* ray tracer.
+
+    When enabled, triangle/PN hits whose material is one of the core lit
+    shaders (the legacy diffuse default, ``MeshBasicMaterial``,
+    ``MeshLambertMaterial``, ``MeshPhongMaterial``, ``MeshStandardMaterial``)
+    are shaded per fragment in-kernel from the raw albedo, a per-primitive
+    material block and the scene's point lights -- crisper specular highlights
+    and smooth shading on coarse meshes. Other materials keep vertex shading.
+    Only the deterministic renderer (``set_samples_per_pixel(1)``, non-physical)
+    is affected. Set before rendering.
+    """
+    global FRAGMENT_SHADING
+    FRAGMENT_SHADING = bool(enabled)
+
+
+# --- Core lit material registry (shader function -> in-kernel material id) ----
+# Ids must match shading_taichi: 0 default diffuse, 1 basic/unlit/passthrough,
+# 2 lambert, 3 phong, 4 standard.
+def _build_core_shader_ids():
+    from algan.rendering.shaders.material_shaders import (
+        basic_material_shader,
+        lambert_shader,
+        phong_shader,
+        standard_shader,
+    )
+    from algan.rendering.shaders.pbr_shaders import default_shader, null_shader
+
+    return {
+        default_shader: 0,
+        null_shader: 1,
+        basic_material_shader: 1,
+        lambert_shader: 2,
+        phong_shader: 3,
+        standard_shader: 4,
+    }
+
+
+_CORE_SHADER_IDS = None
+# Per-material parameter defaults (canonical 12-slot block; see shading_taichi).
+_MAT_DEFAULTS = [0.0, 0.0, 0.0, 1.0, 0.0666, 0.0666, 0.0666, 30.0, 1.0, 0.0,
+                 0.0, 1.0]
+# Material-property name -> (start slot, width) in the canonical block.
+_MAT_SLOTS = {
+    "emissive": (0, 3),
+    "emissive_intensity": (3, 1),
+    "specular": (4, 3),
+    "shininess": (7, 1),
+    "roughness": (8, 1),
+    "metalness": (9, 1),
+    "flat_shading": (10, 1),
+    "env_map_intensity": (11, 1),
+}
+
+
+def _core_shader_ids():
+    global _CORE_SHADER_IDS
+    if _CORE_SHADER_IDS is None:
+        _CORE_SHADER_IDS = _build_core_shader_ids()
+    return _CORE_SHADER_IDS
+
+
+def _shader_material_id(shader):
+    """In-kernel material id for a shader function. Unknown / non-core shaders
+    (and ``None``) map to 1 (unlit passthrough: the kernel returns the colour --
+    raw or baked -- unchanged)."""
+    if shader is None:
+        return 1
+    return _core_shader_ids().get(shader, 1)
+
+
+def _shader_is_core(shader):
+    """True if ``shader`` has an in-kernel port (so its hits can be fragment
+    shaded rather than baked)."""
+    return shader is not None and shader in _core_shader_ids()
 
 
 def set_physical_lighting(enabled):
@@ -307,13 +391,24 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                         [self.corners[:1], self.colors[:1], value],
                         ignored_dims=[-1])[-1][..., :1])
 
+    def _shaded_per_fragment(self):
+        """True when this primitive's hits are shaded per fragment in-kernel
+        (deterministic renderer, fragment shading on, core lit material) rather
+        than baked per vertex -- in which case ``colors`` stays raw albedo."""
+        return (FRAGMENT_SHADING and not PHYSICAL_LIGHTING
+                and SAMPLES_PER_PIXEL <= 1
+                and _shader_is_core(getattr(self, "shader", None)))
+
     def _shade_vertex_colors(self, camera, light_sources):
         """Vertex shading, identical to the rasterized pipeline. Skipped in
-        physical mode, where colors are raw albedo and the path tracer
-        computes all lighting itself.
+        physical mode (raw albedo, the path tracer lights the scene) and when
+        this primitive is shaded per fragment instead (see
+        :meth:`_shaded_per_fragment`).
         """
+        if PHYSICAL_LIGHTING or self._shaded_per_fragment():
+            return
         d = -1
-        if not PHYSICAL_LIGHTING and getattr(self, "shader", None) is not None:
+        if getattr(self, "shader", None) is not None:
             for light_source in light_sources:
                 with self.memory.temp():
                     self.colors[..., :d] = self.shader(
@@ -329,6 +424,50 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                         *self.shader_param_values,
                     )
 
+    def _pack_material(self):
+        """Per-primitive material id ``[1, N]`` and the canonical material
+        parameter block ``[Tm, N, MAT_W]`` consumed by the in-kernel fragment
+        shader. Material properties are per-mob constants broadcast to
+        vertices, so each triangle's value is taken from its first corner.
+        Non-core (or absent) shaders get id 1 (passthrough) and default params.
+        """
+        colors = self.colors
+        N = colors.shape[1]
+        device = colors.device
+        shader = getattr(self, "shader", None)
+        mat_id = torch.full((1, N), _shader_material_id(shader),
+                            dtype=torch.int32, device=device)
+        def per_triangle(value):
+            v = value.float().to(device)
+            if v.dim() >= 4:              # [T, N, 3, w] -> per-triangle corner 0
+                v = v[:, :, 0, :]
+            return v
+
+        pairs = []
+        if _shader_is_core(shader):
+            # The material's shader params, addressed by their real names (the
+            # signature is not reliable: the ray tracer pops ``roughness`` out
+            # of the shader kwargs into a surface param, see _surface_params).
+            names = list(getattr(self, "shader_param_names", None) or [])
+            values = list(getattr(self, "shader_param_values", None) or [])
+            for name, value in zip(names, values):
+                if name in _MAT_SLOTS and value is not None:
+                    pairs.append((name, per_triangle(value)))
+            # ``roughness`` (MeshStandardMaterial) was popped into self.roughness;
+            # feed it into the roughness slot (ignored by the non-PBR branches).
+            roughness = getattr(self, "roughness", None)
+            if roughness is not None:
+                pairs.append(("roughness", per_triangle(roughness)))
+        Tm = max([1] + [v.shape[0] for _n, v in pairs])
+        mat = torch.tensor(_MAT_DEFAULTS, device=device).view(
+            1, 1, MAT_W).expand(Tm, N, MAT_W).contiguous()
+        for name, v in pairs:
+            start, width = _MAT_SLOTS[name]
+            if v.shape[-1] != width:      # broadcast a scalar into a vector slot
+                v = v.expand(*v.shape[:-1], width)
+            mat[:, :, start:start + width] = v
+        return mat_id.contiguous(), mat.contiguous()
+
     def _pack_surface_extra(self, error_context):
         """Per-corner (reflectivity, roughness) pairs [Te, N, 6]."""
         (reflectivity_e, roughness_e), _ = _unify_time(
@@ -343,7 +482,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         are flagged so the trace kernel can prune hits behind them while
         gathering.
         """
-        alpha = colors.opacity.squeeze(-1)
+        # Last channel is opacity. Indexing (rather than the Color.opacity
+        # property) so this also works for textured surfaces (ImageMob), whose
+        # per-vertex colors are plain tensors, not Color instances.
+        alpha = colors[..., -1]
         visible = alpha.amax(-1) > MIN_ALPHA
         opaque = alpha.amin(-1) >= 1.0 - 1e-6
         (lo, hi, visible, opaque), _ = _unify_time(
@@ -385,6 +527,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self._rt_tri_extra = self._pack_surface_extra(
                 "triangle surface params")
             self._rt_tri_colors = self.colors.float().contiguous()
+            self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
             self._rt_num_frames = camera.ray_origin.shape[0]
 
             self._pack_frame_visibility(corners.amin(-2), corners.amax(-2),
@@ -395,7 +538,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # release the unpacked geometry to halve resident GPU memory.
             self.corners = self.normals = None
             self.reflectivity = self.roughness = None
-            self.colors = None
+            self.colors = self.shader_param_values = None
 
             self._set_frame_buffer_bytes(camera)
 
@@ -450,6 +593,7 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 normals.shape[0], normals.shape[1], 9).contiguous()
             self._rt_pn_extra = self._pack_surface_extra("pn surface params")
             self._rt_pn_colors = self.colors.float().contiguous()
+            self._rt_pn_mat_id, self._rt_pn_mat = self._pack_material()
             self._rt_num_frames = camera.ray_origin.shape[0]
 
             # The patch lies in the convex hull of its control points, so
@@ -461,7 +605,7 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
             self.corners = self.normals = None
             self.reflectivity = self.roughness = None
-            self.colors = None
+            self.colors = self.shader_param_values = None
 
             self._set_frame_buffer_bytes(camera)
 
@@ -770,6 +914,10 @@ def _merge_scene(primitives):
             [p._rt_tri_extra for p in triangles], 1, "triangle merge")
         scene["tri_colors"] = _cat_collections(
             [p._rt_tri_colors for p in triangles], 1, "triangle merge")
+        scene["tri_mat_id"] = _cat_collections(
+            [p._rt_tri_mat_id for p in triangles], 1, "triangle merge")
+        scene["tri_mat"] = _cat_collections(
+            [p._rt_tri_mat for p in triangles], 1, "triangle merge")
         lo = _cat_collections([p._rt_frame_lo for p in triangles], 1,
                               "triangle merge")
         hi = _cat_collections([p._rt_frame_hi for p in triangles], 1,
@@ -785,6 +933,9 @@ def _merge_scene(primitives):
         scene["tri_norm"] = torch.zeros((1, 1, 9), device=device)
         scene["tri_extra"] = torch.zeros((1, 1, 6), device=device)
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
+        scene["tri_mat_id"] = torch.zeros((1, 1), dtype=torch.int32,
+                                          device=device)
+        scene["tri_mat"] = torch.zeros((1, 1, MAT_W), device=device)
         scene["tri_bvh"] = _empty_scene_part(device)
     scene["num_triangles"] = scene["tri_pos"].shape[1] if triangles else 0
 
@@ -797,6 +948,10 @@ def _merge_scene(primitives):
             [p._rt_pn_extra for p in pn_patches], 1, "pn merge")
         scene["pn_colors"] = _cat_collections(
             [p._rt_pn_colors for p in pn_patches], 1, "pn merge")
+        scene["pn_mat_id"] = _cat_collections(
+            [p._rt_pn_mat_id for p in pn_patches], 1, "pn merge")
+        scene["pn_mat"] = _cat_collections(
+            [p._rt_pn_mat for p in pn_patches], 1, "pn merge")
         lo = _cat_collections([p._rt_frame_lo for p in pn_patches], 1,
                               "pn merge")
         hi = _cat_collections([p._rt_frame_hi for p in pn_patches], 1,
@@ -812,6 +967,9 @@ def _merge_scene(primitives):
         scene["pn_norm"] = torch.zeros((1, 1, 9), device=device)
         scene["pn_extra"] = torch.zeros((1, 1, 6), device=device)
         scene["pn_colors"] = torch.zeros((1, 1, 3, 5), device=device)
+        scene["pn_mat_id"] = torch.zeros((1, 1), dtype=torch.int32,
+                                         device=device)
+        scene["pn_mat"] = torch.zeros((1, 1, MAT_W), device=device)
         scene["pn_bvh"] = _empty_scene_part(device)
     scene["num_pn"] = scene["pn_ctrl"].shape[1] if pn_patches else 0
 
@@ -866,10 +1024,12 @@ def _merge_scene(primitives):
     for p in triangles:
         p._rt_tri_pos = p._rt_tri_norm = None
         p._rt_tri_extra = p._rt_tri_colors = None
+        p._rt_tri_mat_id = p._rt_tri_mat = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     for p in pn_patches:
         p._rt_pn_ctrl = p._rt_pn_norm = None
         p._rt_pn_extra = p._rt_pn_colors = None
+        p._rt_pn_mat_id = p._rt_pn_mat = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     for p in beziers:
         p._rt_circuit_meta = p._rt_circuit_colors = None
@@ -1136,7 +1296,6 @@ def render_general_wavefront(
                  1 if transparent else 0, rs_acc, rs_sca, out)
 
 
-@csync
 def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                             time_start, time_end, background_color,
                             transparent_background, ray_origin, screen_point,
@@ -1225,11 +1384,22 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
         raise ValueError(
             "Physical lighting is a Monte Carlo mode; call "
             "set_samples_per_pixel(n) with n > 1 (e.g. 32) to use it.")
-    if physical:
+    # Deterministic per-fragment shading is active for a single-sample,
+    # non-physical render with the toggle on; it needs the scene's point lights
+    # in the kernel. (Physical mode packs the same lights for its own path.)
+    det_frag = bool(FRAGMENT_SHADING) and not physical and samples <= 1
+    frag_flag = 1 if det_frag else 0
+    if physical or det_frag:
         light_pos, light_col, num_lights = _pack_lights(
             light_sources, num_frames, device)
-    else:
+    elif samples > 1:
         light_pos = light_col = None
+        num_lights = 0
+    else:
+        # Deterministic, fragment shading off: tiny placeholders for the
+        # (compiled-out) material/light kernel args.
+        light_pos = torch.zeros((1, 1, 3), device=device)
+        light_col = torch.zeros((1, 1, 3), device=device)
         num_lights = 0
 
     def render_chunk(start, end):
@@ -1239,6 +1409,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
         # only the Monte Carlo path multiplies the thread count by the samples.)
         if (samples > 1 and
                 (end - start) * width * height * samples_eff >= 1 << 31):
+            print(f'Render OOM, splitting {start}:{end}')
             if end - start <= 1:
                 raise OutOfRenderMemory(
                     "samples_per_pixel * resolution exceeds the ray tracer's "
@@ -1296,10 +1467,12 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 finalize_samples(samples_eff,
                                  1 if transparent_background else 0,
                                  accum, out)
-            elif (USE_WAVEFRONT and has_tri
+            elif (USE_WAVEFRONT and not det_frag and has_tri
                   and not has_pn and not has_bez):
                 # Triangle-only batch via the wavefront (stage-split) path:
                 # byte-identical output, higher occupancy / less divergence.
+                # (The wavefront path has no fragment shader, so a fragment
+                # shaded render falls through to the megakernel below.)
                 render_triangles_wavefront(
                     tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
                     tri_bvh.leaf_tspan, tri_bvh.first_leaf,
@@ -1310,7 +1483,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     float(width // 2), float(height // 2),
                     layer_offset_triangles, int(MAX_BOUNCES),
                     1 if transparent_background else 0, out)
-            elif USE_WAVEFRONT:
+            elif USE_WAVEFRONT and not det_frag:
                 # General (PN/bezier/mixed) batch via the wavefront path.
                 render_general_wavefront(
                     tri_bvh, pn_bvh, bez_bvh, merged,
@@ -1333,7 +1506,9 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     int(start), int(end), int(width), int(height),
                     float(width // 2), float(height // 2),
                     layer_offset_triangles, int(MAX_BOUNCES),
-                    1 if transparent_background else 0, kernel_aa, out)
+                    1 if transparent_background else 0,
+                    frag_flag, merged["tri_mat_id"], merged["tri_mat"],
+                    light_pos, light_col, int(num_lights), kernel_aa, out)
             elif USE_NO_PN_KERNEL and not has_pn:
                 # No PN patches (bezier circuits, optionally with flat
                 # triangles): the no-PN kernel omits the Matrix Pencil solver from
@@ -1354,10 +1529,15 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     float(width // 2), float(height // 2),
                     layer_offset_triangles, int(MAX_BOUNCES),
                     1 if transparent_background else 0,
-                    has_tri, has_bez, kernel_aa, out)
+                    has_tri, has_bez,
+                    frag_flag, merged["tri_mat_id"], merged["tri_mat"],
+                    light_pos, light_col, int(num_lights), kernel_aa, out)
             else:
                 render_scene_stbvh(*shared_args, has_tri, has_pn, has_bez,
-                                   kernel_aa, out)
+                                   frag_flag, merged["tri_mat_id"],
+                                   merged["tri_mat"], merged["pn_mat_id"],
+                                   merged["pn_mat"], light_pos, light_col,
+                                   int(num_lights), kernel_aa, out)
             ti.sync()
             frames = out.view(end - start, height, width, C_out)
             frames = first.post_process_frames(
@@ -1366,6 +1546,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
             memory.set_pointers(entry_pointers)
             return [frames]
         except (InsufficientMemoryException, torch.OutOfMemoryError):
+            print(f'Render OOM, splitting {start}:{end}')
             memory.set_pointers(entry_pointers)
             if end - start <= 1:
                 raise OutOfRenderMemory(
@@ -1384,7 +1565,8 @@ _originals = {}
 
 
 def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
-                       physical_lighting=None, pn_triangles=False):
+                       physical_lighting=None, pn_triangles=False,
+                       fragment_shading=None):
     """Route newly created mobs through the ray traced render pipeline.
 
     Rebinds the primitive classes used by the mob modules; call this before
@@ -1410,6 +1592,11 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         coarsely tessellated smooth surfaces (spheres, parametric surfaces)
         keep smooth silhouettes. Triangles whose normals are zero or
         constant across the face stay exactly flat.
+    fragment_shading
+        Shade the core lit materials per fragment in the *deterministic*
+        renderer (``samples_per_pixel == 1``, non-physical) instead of baking
+        per-vertex colours -- crisper specular highlights and smooth shading on
+        coarse meshes (see :func:`set_fragment_shading`). Off by default.
     """
     if samples_per_pixel is not None:
         set_samples_per_pixel(samples_per_pixel)
@@ -1417,6 +1604,8 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         set_indirect_bounce_strength(indirect_bounce_strength)
     if physical_lighting is not None:
         set_physical_lighting(physical_lighting)
+    if fragment_shading is not None:
+        set_fragment_shading(fragment_shading)
     triangle_cls = (RayTracedPNTrianglePrimitive if pn_triangles
                     else RayTracedTrianglePrimitive)
     targets = []
