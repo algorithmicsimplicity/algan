@@ -43,6 +43,7 @@ from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.rendering.raytracing.pn_patch import (
     pn_control_points,
+    pn_obb,
     pn_patch_coefficients,
 )
 from algan.rendering.raytracing.ray_trace_taichi import (
@@ -146,6 +147,34 @@ def set_fragment_shading(enabled):
     """
     global FRAGMENT_SHADING
     FRAGMENT_SHADING = bool(enabled)
+
+
+# When True, the deterministic ray tracer casts binary hard shadows: each
+# shaded triangle/PN fragment fires one shadow ray per point light and an
+# opaque occluder (alpha >= SHADOW_ALPHA_THRESHOLD) fully blocks that light's
+# direct contribution. Implies per-fragment shading (shadows are evaluated in
+# the lighting model) and forces the general kernel. No soft/transmissive
+# shadows -- use the physical path tracer for those. Off by default.
+SHADOWS = False
+
+
+def set_ray_traced_shadows(enabled):
+    """Toggle binary hard shadows in the *deterministic* ray tracer.
+
+    When enabled, every shaded triangle/PN fragment traces one shadow ray per
+    scene point light; a light is occluded (its direct diffuse/specular term
+    dropped, ambient/emissive kept) when an opaque surface lies between the
+    fragment and the light. Shadows are evaluated inside the per-fragment
+    lighting model, so this implies :func:`set_fragment_shading` for the render
+    and forces the general ``render_scene_stbvh`` kernel (the lean triangle-only
+    and no-PN kernels are bypassed). Shadows are hard-edged and ignore
+    transparency; for soft or glass shadows use the physical path tracer
+    (``set_samples_per_pixel(n)`` with ``n > 1``). Only the deterministic
+    renderer (``set_samples_per_pixel(1)``, non-physical) is affected. Set
+    before rendering.
+    """
+    global SHADOWS
+    SHADOWS = bool(enabled)
 
 
 # --- Core lit material registry (shader function -> in-kernel material id) ----
@@ -340,7 +369,7 @@ def _cat_collections(tensors, dim, error_context):
 class RayTracedTrianglePrimitive(TrianglePrimitive):
     """Triangle batch rendered by ray tracing a spatio-temporal BVH."""
 
-    stbvh_tightness = 2.0
+    stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
 
     # Per-vertex surface parameters consumed by the trace kernels rather
     # than by a shader; popped from the shader kwargs (see set_reflectivity
@@ -589,6 +618,11 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
             control_points = pn_control_points(corners, normals)
             self._rt_pn_ctrl = pn_patch_coefficients(
                 control_points).contiguous()
+            # Tight oriented bounding box per patch: the trace kernel tests it
+            # before the matrix-pencil solve to reject the (many) candidates
+            # whose loose axis-aligned leaf box the ray pierces but whose actual
+            # (often thin, diagonal) patch it misses.
+            self._rt_pn_obb = pn_obb(control_points).contiguous()
             self._rt_pn_norm = normals.reshape(
                 normals.shape[0], normals.shape[1], 9).contiguous()
             self._rt_pn_extra = self._pack_surface_extra("pn surface params")
@@ -634,7 +668,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     sampled bilinearly in-kernel from their texture grid.
     """
 
-    stbvh_tightness = 2.0
+    stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
     max_samples_per_segment = 512
 
     @csync
@@ -942,6 +976,8 @@ def _merge_scene(primitives):
     if pn_patches:
         scene["pn_ctrl"] = _cat_collections(
             [p._rt_pn_ctrl for p in pn_patches], 1, "pn merge")
+        scene["pn_obb"] = _cat_collections(
+            [p._rt_pn_obb for p in pn_patches], 1, "pn merge")
         scene["pn_norm"] = _cat_collections(
             [p._rt_pn_norm for p in pn_patches], 1, "pn merge")
         scene["pn_extra"] = _cat_collections(
@@ -964,6 +1000,7 @@ def _merge_scene(primitives):
             opaque=opaque)
     else:
         scene["pn_ctrl"] = torch.zeros((1, 1, 18), device=device)
+        scene["pn_obb"] = torch.zeros((1, 1, 12), device=device)
         scene["pn_norm"] = torch.zeros((1, 1, 9), device=device)
         scene["pn_extra"] = torch.zeros((1, 1, 6), device=device)
         scene["pn_colors"] = torch.zeros((1, 1, 3, 5), device=device)
@@ -1028,6 +1065,7 @@ def _merge_scene(primitives):
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     for p in pn_patches:
         p._rt_pn_ctrl = p._rt_pn_norm = None
+        p._rt_pn_obb = None
         p._rt_pn_extra = p._rt_pn_colors = None
         p._rt_pn_mat_id = p._rt_pn_mat = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
@@ -1387,8 +1425,13 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
     # Deterministic per-fragment shading is active for a single-sample,
     # non-physical render with the toggle on; it needs the scene's point lights
     # in the kernel. (Physical mode packs the same lights for its own path.)
-    det_frag = bool(FRAGMENT_SHADING) and not physical and samples <= 1
+    # Deterministic hard shadows are evaluated inside the per-fragment lighting
+    # model, so enabling them implies fragment shading for this render.
+    det_shadows = bool(SHADOWS) and not physical and samples <= 1
+    det_frag = ((bool(FRAGMENT_SHADING) or det_shadows)
+                and not physical and samples <= 1)
     frag_flag = 1 if det_frag else 0
+    shadow_flag = 1 if det_shadows else 0
     if physical or det_frag:
         light_pos, light_col, num_lights = _pack_lights(
             light_sources, num_frames, device)
@@ -1494,9 +1537,11 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     has_tri, has_pn, has_bez, int(MAX_BOUNCES),
                     1 if transparent_background else 0, out)
             elif (USE_TRIANGLE_ONLY_KERNEL and has_tri
-                  and not has_pn and not has_bez):
+                  and not has_pn and not has_bez and not det_shadows):
                 # Triangle-only batch: the lean kernel (no PN/bezier code)
-                # gives identical output at lower register pressure.
+                # gives identical output at lower register pressure. (Shadows
+                # live only in the general kernel, so a shadowed render falls
+                # through to render_scene_stbvh below.)
                 render_triangles_stbvh(
                     tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
                     tri_bvh.leaf_tspan, tri_bvh.first_leaf,
@@ -1509,11 +1554,12 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     1 if transparent_background else 0,
                     frag_flag, merged["tri_mat_id"], merged["tri_mat"],
                     light_pos, light_col, int(num_lights), kernel_aa, out)
-            elif USE_NO_PN_KERNEL and not has_pn:
+            elif USE_NO_PN_KERNEL and not has_pn and not det_shadows:
                 # No PN patches (bezier circuits, optionally with flat
                 # triangles): the no-PN kernel omits the Matrix Pencil solver from
                 # its call graph for identical output at lower register
-                # pressure. (Pure triangle-only was handled above.)
+                # pressure. (Pure triangle-only was handled above; a shadowed
+                # render uses the general kernel below.)
                 render_no_pn_stbvh(
                     tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
                     tri_bvh.leaf_tspan, tri_bvh.first_leaf,
@@ -1537,7 +1583,8 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                                    frag_flag, merged["tri_mat_id"],
                                    merged["tri_mat"], merged["pn_mat_id"],
                                    merged["pn_mat"], light_pos, light_col,
-                                   int(num_lights), kernel_aa, out)
+                                   int(num_lights), shadow_flag, kernel_aa,
+                                   merged["pn_obb"], out)
             ti.sync()
             frames = out.view(end - start, height, width, C_out)
             frames = first.post_process_frames(
@@ -1566,7 +1613,7 @@ _originals = {}
 
 def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
                        physical_lighting=None, pn_triangles=False,
-                       fragment_shading=None):
+                       fragment_shading=None, shadows=None):
     """Route newly created mobs through the ray traced render pipeline.
 
     Rebinds the primitive classes used by the mob modules; call this before
@@ -1597,6 +1644,12 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         renderer (``samples_per_pixel == 1``, non-physical) instead of baking
         per-vertex colours -- crisper specular highlights and smooth shading on
         coarse meshes (see :func:`set_fragment_shading`). Off by default.
+    shadows
+        Cast binary hard shadows in the *deterministic* renderer: each shaded
+        fragment is darkened where an opaque surface occludes a point light
+        (see :func:`set_ray_traced_shadows`). Implies ``fragment_shading``. For
+        soft or transmissive shadows use physical lighting instead. Off by
+        default.
     """
     if samples_per_pixel is not None:
         set_samples_per_pixel(samples_per_pixel)
@@ -1606,6 +1659,8 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         set_physical_lighting(physical_lighting)
     if fragment_shading is not None:
         set_fragment_shading(fragment_shading)
+    if shadows is not None:
+        set_ray_traced_shadows(shadows)
     triangle_cls = (RayTracedPNTrianglePrimitive if pn_triangles
                     else RayTracedTrianglePrimitive)
     targets = []

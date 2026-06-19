@@ -55,15 +55,25 @@ separate from cold data (what only confirmed hits touch):
 Coplanar-surface layer order is bezier circuits < triangles < PN patches,
 with each type's primitive index breaking ties within the type.
 """
+import os
+
 import taichi as ti
 
 from algan.rendering.raytracing.stbvh import BVH_ARITY, LEAF_SIZE
-from algan.rendering.raytracing.shading_taichi import _shade_fragment
+from algan.rendering.raytracing.shading_taichi import (
+    MAX_SHADOW_LIGHTS, _shade_fragment)
 
 
 from algan.rendering.taichi_runtime import init_taichi
 
 init_taichi()
+
+# Cull PN-patch candidates against their tight oriented box before the
+# matrix-pencil solve (default on; env ALGAN_PN_OBB=0 disables for A/B). Output
+# is identical -- the OBB conservatively bounds the patch -- and it removes the
+# ~98% of solver invocations whose ray pierces a patch's loose axis-aligned leaf
+# box but misses the (thin, often diagonal) patch itself.
+_PN_OBB_ON = os.environ.get("ALGAN_PN_OBB", "1") == "1"
 
 # Minimum hit distance along a ray (also the self-intersection guard for
 # reflected rays, together with a normal offset at the bounce origin).
@@ -75,6 +85,11 @@ DEPTH_TIE_EPSILON = 1e-4
 MIN_ALPHA = 1e-3
 # Marching stops once the remaining transmittance drops below this.
 MIN_WEIGHT = 1e-3
+# A surface this opaque (or more) casts a deterministic hard shadow; more
+# transparent surfaces are ignored by the binary shadow test (no glass/soft
+# shadows -- those need the physical path tracer). Picked at one-half so a
+# surface shadows exactly when it covers most of the light it occludes.
+SHADOW_ALPHA_THRESHOLD = 0.5
 # Hard cap on blended surfaces per ray, to bound worst-case stacked geometry.
 MAX_SURFACES_PER_RAY = 256
 # Tolerance of the point-in-triangle test, in barycentric units. Adjacent
@@ -222,6 +237,44 @@ def _node_intersected(node, ff, ro, inv_rd, t_lo, t_hi,
         t_far = ti.min(t_far, ti.max(tz0, tz1))
         hit = (t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi) and (t_far >= t_lo)
     return hit
+
+
+@ti.func
+def _obb_misses(ro, rd, po, prim, pn_obb: ti.template(), t_lo, t_hi) -> bool:
+    """Conservative ray/OBB cull for a PN patch: True when the ray misses the
+    patch's tight oriented box within ``[t_lo, t_hi]``. The box (built in
+    :func:`pn_obb`) bounds the patch's control hull, so a miss here is a
+    guaranteed miss of the patch and the matrix-pencil solve can be skipped --
+    this rejects the bulk of false-positive candidates whose loose axis-aligned
+    leaf box the ray pierces but whose (thin, often diagonal) patch it does not.
+    The three packed axes are the frame directions scaled by their half-extents;
+    a zero-extent axis (a perfectly flat patch) is left unconstrained.
+    """
+    cen = ti.math.vec3(pn_obb[po, prim, 0], pn_obb[po, prim, 1],
+                       pn_obb[po, prim, 2])
+    d = ro - cen
+    tnear = -1e30
+    tfar = 1e30
+    miss = False
+    for ax in ti.static(range(3)):
+        a = ti.math.vec3(pn_obb[po, prim, 3 + ax * 3],
+                         pn_obb[po, prim, 4 + ax * 3],
+                         pn_obb[po, prim, 5 + ax * 3])
+        l2 = a.dot(a)
+        if l2 > 1e-30:
+            inv = 1.0 / l2
+            e = d.dot(a) * inv      # ray-origin coord in [-1, 1] slab units
+            g = rd.dot(a) * inv
+            if ti.abs(g) > 1e-12:
+                ta = (-1.0 - e) / g
+                tb = (1.0 - e) / g
+                tnear = ti.max(tnear, ti.min(ta, tb))
+                tfar = ti.min(tfar, ti.max(ta, tb))
+            elif ti.abs(e) > 1.0:
+                miss = True
+    if (tnear > tfar) or (tfar < t_lo) or (tnear > t_hi):
+        miss = True
+    return miss
 
 
 @ti.func
@@ -1127,11 +1180,12 @@ def _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
                    tri_pos: ti.template(), tri_norm: ti.template(),
                    tri_mat_id: ti.template(), tri_mat: ti.template(),
                    light_pos: ti.template(), light_col: ti.template(),
-                   num_lights, albedo):
+                   num_lights, albedo, shadows: ti.template(), vis):
     """Per-fragment material shading of a confirmed flat-triangle hit: feeds the
     interpolated shading normal, geometric face normal, hit position and the
     per-primitive material block into :func:`_shade_fragment`. ``albedo`` is the
-    interpolated (raw) base RGB + glow; returns the shaded RGB + glow."""
+    interpolated (raw) base RGB + glow; returns the shaded RGB + glow. ``vis``
+    holds the caller's per-light shadow visibilities (used iff ``shadows``)."""
     w0 = 1.0 - a - b
     n = _triangle_normal(f, prim, w0, a, b, tri_norm, tri_pos)
     tp = f % tri_pos.shape[0]
@@ -1146,7 +1200,7 @@ def _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
     return _shade_fragment(prim, f, pos, -rd, n, face_n, rgb, albedo[3],
                            light_pos, light_col, num_lights,
-                           tri_mat_id, tri_mat)
+                           tri_mat_id, tri_mat, shadows, vis)
 
 
 @ti.func
@@ -1154,7 +1208,7 @@ def _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
                   pn_ctrl: ti.template(), pn_norm: ti.template(),
                   pn_mat_id: ti.template(), pn_mat: ti.template(),
                   light_pos: ti.template(), light_col: ti.template(),
-                  num_lights, albedo):
+                  num_lights, albedo, shadows: ti.template(), vis):
     """Per-fragment material shading of a confirmed PN-patch hit. Like
     :func:`_shade_tri_hit` but the geometric face normal is the cross product of
     the patch's parametric tangents at (u, v) = (a, b)."""
@@ -1174,7 +1228,7 @@ def _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
     return _shade_fragment(prim, f, pos, -rd, n, face_n, rgb, albedo[3],
                            light_pos, light_col, num_lights,
-                           pn_mat_id, pn_mat)
+                           pn_mat_id, pn_mat, shadows, vis)
 
 
 @ti.func
@@ -1280,6 +1334,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                   p_nodes: ti.template(), p_node_miss: ti.template(),
                   p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
                   p_first_leaf, pn_ctrl: ti.template(),
+                  pn_obb: ti.template(),
                   b_nodes: ti.template(), b_node_miss: ti.template(),
                   b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                   b_first_leaf, circuit_meta: ti.template(),
@@ -1399,6 +1454,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
 
     # --- PN patch BVH (window already tightened by the triangle hits) ---
     pp = f % pn_ctrl.shape[0]
+    po = f % pn_obb.shape[0]
     node = -1
     if has_pn != 0:
         node = 0
@@ -1413,7 +1469,10 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                     prim = p_leaf_prim[base + j]
                     tspan = p_leaf_tspan[base + j]
                     if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                            and (f <= ((tspan >> 16) & 0x7FFF))):
+                            and (f <= ((tspan >> 16) & 0x7FFF))
+                            and (ti.static(not _PN_OBB_ON) or not _obb_misses(
+                                ro, rd, po, prim, pn_obb,
+                                t_prev - DEPTH_TIE_EPSILON, window_hi))):
                         cnt, ts, us, vs = _pn_intersect(ro, rd, pp, prim,
                                                         pn_ctrl)
                         layer = layer_offset_pn + ti.cast(prim, ti.f32)
@@ -1586,6 +1645,79 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
 
 
 @ti.func
+def _shadow_occluded(ro, rd, f, ff, max_t,
+                     pixel_size_per_t, base_dist, layer_offset_triangles,
+                     layer_offset_pn,
+                     t_nodes: ti.template(), t_node_miss: ti.template(),
+                     t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
+                     t_first_leaf, tri_pos: ti.template(),
+                     tri_colors: ti.template(),
+                     p_nodes: ti.template(), p_node_miss: ti.template(),
+                     p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
+                     p_first_leaf, pn_ctrl: ti.template(),
+                     pn_colors: ti.template(),
+                     b_nodes: ti.template(), b_node_miss: ti.template(),
+                     b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
+                     b_first_leaf, circuit_meta: ti.template(),
+                     circuit_colors: ti.template(),
+                     circuit_border_colors: ti.template(),
+                     edges_2d: ti.template(), edge_offsets: ti.template()):
+    """Binary hard-shadow test for the deterministic renderer: returns 1.0 if
+    a sufficiently opaque surface lies between the shaded point and the light
+    (within ``max_t`` along ``rd``), else 0.0.
+
+    Cheaper than the physical kernel's :func:`_transmittance`: it stops at the
+    *first* blocker whose alpha reaches :data:`SHADOW_ALPHA_THRESHOLD` (so a lit
+    point usually costs a single BVH traversal) and ignores more transparent
+    surfaces entirely -- no transmittance accumulation, so no glass/soft
+    shadows (use the physical path tracer for those). Mesh seams still merge
+    their duplicate edge hit so a thin opaque seam can't double-count.
+    """
+    inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
+                          _safe_inverse(rd[2]))
+    occluded = 0.0
+    t_prev = 0.0
+    layer_prev = 1e30
+    seam_t = -1e30
+    step = 0
+    while step < MAX_SURFACES_PER_RAY:
+        step += 1
+        (found, t_hit, hit_layer, prim, hit_type, a, b, border,
+         edge_hit) = _nearest_surface(
+            ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+            pixel_size_per_t, base_dist, layer_offset_triangles,
+            layer_offset_pn,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+            tri_pos,
+            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+            pn_ctrl,
+            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+            circuit_meta, edges_2d, edge_offsets)
+        if (found == 0) or (t_hit >= max_t):
+            break
+        seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2             else DEPTH_TIE_EPSILON
+        if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
+            t_prev = t_hit
+            layer_prev = hit_layer
+            continue
+        seam_t = t_hit if edge_hit == 1 else -1e30
+        alpha = 0.0
+        if hit_type == 1:
+            alpha = _triangle_alpha(f, prim, 1.0 - a - b, a, b, tri_colors)
+        elif hit_type == 2:
+            alpha = _triangle_alpha(f, prim, 1.0 - a - b, a, b, pn_colors)
+        else:
+            alpha = _circuit_alpha(prim, f, a, b, border, circuit_meta,
+                                   circuit_colors, circuit_border_colors)
+        if alpha >= SHADOW_ALPHA_THRESHOLD:
+            occluded = 1.0
+            break
+        t_prev = t_hit
+        layer_prev = hit_layer
+    return occluded
+
+
+@ti.func
 def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                      layer_offset_triangles, layer_offset_pn, max_bounces,
                      t_nodes: ti.template(), t_node_miss: ti.template(),
@@ -1596,6 +1728,7 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                      p_nodes: ti.template(), p_node_miss: ti.template(),
                      p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
                      p_first_leaf, pn_ctrl: ti.template(),
+                     pn_obb: ti.template(),
                      pn_norm: ti.template(), pn_extra: ti.template(),
                      pn_colors: ti.template(),
                      b_nodes: ti.template(), b_node_miss: ti.template(),
@@ -1609,7 +1742,7 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                      tri_mat_id: ti.template(), tri_mat: ti.template(),
                      pn_mat_id: ti.template(), pn_mat: ti.template(),
                      light_pos: ti.template(), light_col: ti.template(),
-                     num_lights):
+                     num_lights, shadows: ti.template()):
     """Trace one primary ray through the full (triangle + PN + bezier) scene,
     returning its premultiplied RGB + glow accumulator ``acc`` and remaining
     transmittance ``weight`` (the inputs to the over-background composite). The
@@ -1646,7 +1779,7 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
             t_first_leaf, tri_pos,
             p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-            p_first_leaf, pn_ctrl,
+            p_first_leaf, pn_ctrl, pn_obb,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
             b_first_leaf, circuit_meta, edges_2d, edge_offsets,
             has_tri, has_pn, has_bez)
@@ -1719,18 +1852,113 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
             # Bezier circuits (htype 0) keep their sampled colour. Compiled out
             # entirely on the default (vertex-shaded) path via ti.static.
             if ti.static(frag_shading != 0):
+                # Per-light shadow visibility for this hit (all-lit unless a
+                # binary shadow ray finds an opaque blocker). Compiled out when
+                # shadows are off; only triangle/PN hits cast/receive shadows.
+                # The light loop is a *runtime* loop (not ti.static-unrolled) so
+                # the heavy ``_shadow_occluded`` -> ``_nearest_surface`` -> PN
+                # solver call graph is inlined once, not once per light --
+                # unrolling it MAX_SHADOW_LIGHTS times explodes the general
+                # kernel's IR and effectively never finishes compiling.
+                vis = ti.Vector([1.0] * MAX_SHADOW_LIGHTS)
+                if ti.static(shadows != 0):
+                    if (htype == 1) or (htype == 2):
+                        # Smooth shading normal and the *geometric* face normal
+                        # of the hit facet/patch.
+                        snrm = ti.math.vec3(0.0, 0.0, 0.0)
+                        fnrm = ti.math.vec3(0.0, 0.0, 0.0)
+                        if htype == 1:
+                            snrm = _triangle_normal(f, prim, 1.0 - a - b, a, b,
+                                                    tri_norm, tri_pos)
+                            tp = f % tri_pos.shape[0]
+                            v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+                                              tri_pos[tp, prim, 1],
+                                              tri_pos[tp, prim, 2])
+                            v1 = ti.math.vec3(tri_pos[tp, prim, 3],
+                                              tri_pos[tp, prim, 4],
+                                              tri_pos[tp, prim, 5])
+                            v2 = ti.math.vec3(tri_pos[tp, prim, 6],
+                                              tri_pos[tp, prim, 7],
+                                              tri_pos[tp, prim, 8])
+                            fnrm = (v1 - v0).cross(v2 - v0)
+                        else:
+                            snrm = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
+                            tp = f % pn_ctrl.shape[0]
+                            su = ti.math.vec3(0.0, 0.0, 0.0)
+                            sv = ti.math.vec3(0.0, 0.0, 0.0)
+                            for ci in ti.static(range(3)):
+                                su[ci] = (pn_ctrl[tp, prim, 3 + ci]
+                                          + 2.0 * a * pn_ctrl[tp, prim, 9 + ci]
+                                          + b * pn_ctrl[tp, prim, 15 + ci])
+                                sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
+                                          + 2.0 * b * pn_ctrl[tp, prim, 12 + ci]
+                                          + a * pn_ctrl[tp, prim, 15 + ci])
+                            fnrm = su.cross(sv)
+                        if snrm.norm() > 1e-9:
+                            snrm = snrm.normalized()
+                        if snrm.dot(rd) > 0.0:
+                            snrm = -snrm
+                        # Orient the geometric normal outward (same hemisphere
+                        # as the shading normal). On a flat-triangle mesh the
+                        # smooth shading normal can face a light while the actual
+                        # facet faces away near the terminator; a shadow ray
+                        # fired there grazes into the adjacent uphill facet and
+                        # reports a spurious self-shadow. Biasing the ray origin
+                        # along -- and gating it on -- the geometric normal
+                        # suppresses that (those fragments are near-unlit
+                        # anyway). PN patches are curved, so fnrm ~ snrm and this
+                        # is effectively a no-op for them.
+                        if fnrm.norm() > 1e-9:
+                            fnrm = fnrm.normalized()
+                        if fnrm.dot(snrm) < 0.0:
+                            fnrm = -fnrm
+                        spos = ro + t_hit * rd
+                        sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
+                        tl = f % light_pos.shape[0]
+                        for li in range(num_lights):
+                            if li < MAX_SHADOW_LIGHTS:
+                                lp = ti.math.vec3(light_pos[tl, li, 0],
+                                                  light_pos[tl, li, 1],
+                                                  light_pos[tl, li, 2])
+                                to_light = lp - spos
+                                ldist = to_light.norm()
+                                if ldist > 1e-5:
+                                    wi = to_light / ldist
+                                    # Skip lights below the geometric horizon
+                                    # (self-shadow acne) or the shading horizon
+                                    # (no direct light to occlude anyway).
+                                    if (fnrm.dot(wi) > 1e-3) and \
+                                            (snrm.dot(wi) > 1e-4):
+                                        occ = _shadow_occluded(
+                                            sorigin, wi, f, ff,
+                                            ldist - 20.0 * MIN_HIT_DISTANCE,
+                                            pixel_size_per_t, base_dist,
+                                            layer_offset_triangles,
+                                            layer_offset_pn,
+                                            t_nodes, t_node_miss, t_leaf_prim,
+                                            t_leaf_tspan, t_first_leaf, tri_pos,
+                                            tri_colors,
+                                            p_nodes, p_node_miss, p_leaf_prim,
+                                            p_leaf_tspan, p_first_leaf, pn_ctrl,
+                                            pn_colors,
+                                            b_nodes, b_node_miss, b_leaf_prim,
+                                            b_leaf_tspan, b_first_leaf,
+                                            circuit_meta, circuit_colors,
+                                            circuit_border_colors,
+                                            edges_2d, edge_offsets)
+                                        vis[li] = 1.0 - occ
                 if htype == 1:
                     color = _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
                                            tri_pos, tri_norm,
                                            tri_mat_id, tri_mat,
                                            light_pos, light_col, num_lights,
-                                           color)
+                                           color, shadows, vis)
                 elif htype == 2:
                     color = _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
                                           pn_ctrl, pn_norm,
                                           pn_mat_id, pn_mat,
                                           light_pos, light_col, num_lights,
-                                          color)
+                                          color, shadows, vis)
 
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
@@ -1821,9 +2049,15 @@ def render_scene_stbvh(
         pn_mat_id: ti.types.ndarray(), pn_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int,
+        # Binary hard shadows (compile-time): 0 = no shadows (unchanged);
+        # 1 = each shaded triangle/PN fragment fires one opaque-occluder shadow
+        # ray per light (requires frag_shading != 0). General kernel only.
+        shadows: ti.template(),
         # Anti-alias level: a^2 jittered sub-pixel rays are averaged per output
         # pixel (in place, at the output resolution -- no super-sampled buffer).
         aa_level: int,
+        # Per-PN-patch oriented bounding box (12 floats) for the pre-solve cull.
+        pn_obb: ti.types.ndarray(),
         # Output buffer [time_end - time_start, width * height, channels],
         # pre-filled with the background; blended in place.
         out: ti.types.ndarray()):
@@ -1864,13 +2098,13 @@ def render_scene_stbvh(
                     t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                     t_first_leaf, tri_pos, tri_norm, tri_extra, tri_colors,
                     p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                    p_first_leaf, pn_ctrl, pn_norm, pn_extra, pn_colors,
+                    p_first_leaf, pn_ctrl, pn_obb, pn_norm, pn_extra, pn_colors,
                     b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                     b_first_leaf, circuit_meta, circuit_colors,
                     circuit_border_colors, edges_2d, edge_offsets,
                     has_tri, has_pn, has_bez,
                     frag_shading, tri_mat_id, tri_mat, pn_mat_id, pn_mat,
-                    light_pos, light_col, num_lights)
+                    light_pos, light_col, num_lights, shadows)
                 for ci in ti.static(range(4)):
                     csum[ci] += (acc[ci] * 255.0
                                  + weight * ti.cast(out[f_rel, p, ci], ti.f32))
@@ -2077,10 +2311,13 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
 
             # Fragment shading: ``color`` is the interpolated raw albedo;
             # material-shade it per fragment. Compiled out on the default path.
+            # The lean kernel never casts shadows (the shadowed render is forced
+            # onto the general kernel), so shadows are disabled here.
             if ti.static(frag_shading != 0):
                 color = _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
                                        tri_pos, tri_norm, tri_mat_id, tri_mat,
-                                       light_pos, light_col, num_lights, color)
+                                       light_pos, light_col, num_lights, color,
+                                       0, ti.Vector([1.0] * MAX_SHADOW_LIGHTS))
 
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)

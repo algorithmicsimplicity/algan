@@ -149,6 +149,53 @@ def _quantize(c, lo, hi):
     return q.clamp_(min=0, max=2 ** _QUANT_BITS - 1)
 
 
+# Build the instance ordering by recursive median split (env ALGAN_BVH_BUILD)
+# instead of the default 4D-Morton sort. A space-filling curve is cheap but
+# packs spatially-distant instances into the same balanced subtree at its
+# discontinuities, leaving loose internal node boxes; a top-down median split
+# bisects each node along its longest (normalized) axis, giving tighter boxes
+# and fewer traversal steps. It is purely a reordering -- same instances, same
+# opaque flags, same tree shape -- so the traversal code is untouched and the
+# set of intersections found is unchanged.
+_BVH_BUILD = os.environ.get("ALGAN_BVH_BUILD", "morton")
+
+
+def _median_split_slots(centers, P):
+    """Assign ``M`` instances to the ``P`` leaf slots of the implicit balanced
+    tree by recursive longest-axis median bisection.
+
+    ``centers`` is ``[M, 4]`` (spatial centre xyz + temporal centre), assumed
+    already normalized so the four axes are comparable. Returns ``slot_src``
+    ``[P]`` mapping each leaf slot to its instance index, or ``-1`` for the
+    ``P - M`` padding slots (which sink to the end of every subtree). Each
+    bisection sorts a node's instances along its widest axis and cuts at the
+    slot-capacity midpoint, so subtrees map onto contiguous heap-ordered slots.
+    """
+    M = centers.shape[0]
+    device = centers.device
+    BIG = 1e30
+    cpad = torch.full((P, 4), BIG, device=device)
+    cpad[:M] = centers
+    valid = torch.arange(P, device=device) < M
+    slot = torch.arange(P, device=device)
+    n_levels = P.bit_length() - 1  # P is a power of the (power-of-two) arity
+    for level in range(n_levels):
+        ng = 1 << level
+        gs = P >> level
+        sg = slot.view(ng, gs)
+        cg = cpad[sg]                       # [ng, gs, 4]
+        vg = valid[sg].unsqueeze(-1)        # [ng, gs, 1]
+        lo = torch.where(vg, cg, torch.full_like(cg, BIG)).amin(1)
+        hi = torch.where(vg, cg, torch.full_like(cg, -BIG)).amax(1)
+        axis = (hi - lo).argmax(1)          # [ng] widest axis per group
+        key = torch.gather(
+            cg, 2, axis.view(ng, 1, 1).expand(ng, gs, 1)).squeeze(2)
+        # Padding slots carry key == BIG, so they sort to the end of each group.
+        perm = key.argsort(1)
+        slot = torch.gather(sg, 1, perm).reshape(-1)
+    return torch.where(slot < M, slot, torch.full_like(slot, -1))
+
+
 def _box_cost(lo, hi):
     """Half-perimeter cost of boxes; empty boxes cost 0."""
     return (hi - lo).clamp_min(0).sum(-1)
@@ -335,24 +382,6 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
             inst_opaque = None
 
     M = prim_id.shape[0]
-    if M > 0:
-        # Sort instances along a 4D Morton curve so the implicit tree gets
-        # spatio-temporally coherent subtrees.
-        center = (inst_lo + inst_hi) * 0.5
-        t_center = (t0 + t1).float() * 0.5
-        smin = inst_lo.amin(0)
-        smax = inst_hi.amax(0)
-        q = _quantize(center, smin, smax)
-        qt = _quantize(t_center, torch.zeros((), device=device),
-                       torch.full((), float(max(num_frames - 1, 1)), device=device))
-        codes = morton_code_4d(q[:, 0], q[:, 1], q[:, 2], qt)
-        order = torch.argsort(codes)
-        prim_id, t0, t1 = prim_id[order], t0[order], t1[order]
-        inst_lo, inst_hi = inst_lo[order], inst_hi[order]
-        if inst_opaque is not None:
-            inst_opaque = inst_opaque[order]
-
-    # Consecutive Morton-ordered instances share leaves, LEAF_SIZE at a time.
     L = LEAF_SIZE
     a = BVH_ARITY
     num_groups = max((M + L - 1) // L, 1)
@@ -362,24 +391,72 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
     num_nodes = (a * P - 1) // (a - 1)
     first_leaf = num_nodes - P
 
-    # Per-slot instance data, padded to P * L slots. Padding slots get an
-    # impossible frame interval (tmin > tmax) and empty bounds so they are
-    # never visited.
-    slot_lo = torch.full((P * L, 3), EMPTY_LO, device=device)
-    slot_hi = torch.full((P * L, 3), EMPTY_HI, device=device)
-    slot_t0 = torch.full((P * L,), (1 << 15) - 1, dtype=torch.long,
-                         device=device)
-    slot_t1 = torch.zeros((P * L,), dtype=torch.long, device=device)
-    slot_opaque = torch.zeros((P * L,), dtype=torch.bool, device=device)
-    leaf_prim = torch.full((P * L,), -1, dtype=torch.long, device=device)
-    if M > 0:
-        slot_lo[:M] = inst_lo
-        slot_hi[:M] = inst_hi
-        slot_t0[:M] = t0
-        slot_t1[:M] = t1
-        leaf_prim[:M] = prim_id
+    use_split = (_BVH_BUILD == "split") and (L == 1) and (M > 0)
+    if use_split:
+        # Recursive longest-axis median split: tighter internal boxes than the
+        # Morton curve, fewer traversal steps. The four axes are normalized so
+        # space and time are comparable, then instances are bisected into the
+        # P leaf slots (padding slots map to -1). Same instances/opaque flags as
+        # Morton, just a different sibling grouping.
+        center = (inst_lo + inst_hi) * 0.5
+        t_center = (t0 + t1).float() * 0.5
+        smin = inst_lo.amin(0)
+        smax = inst_hi.amax(0)
+        cn = (center - smin) / (smax - smin).clamp_min(1e-12)
+        tn = (t_center / float(max(num_frames - 1, 1))).unsqueeze(-1)
+        slot_src = _median_split_slots(torch.cat((cn, tn), -1), P)  # [P]
+        real = slot_src >= 0
+        src = slot_src.clamp_min(0)
+        slot_lo = torch.where(real.unsqueeze(-1), inst_lo[src],
+                              torch.tensor(EMPTY_LO, device=device))
+        slot_hi = torch.where(real.unsqueeze(-1), inst_hi[src],
+                              torch.tensor(EMPTY_HI, device=device))
+        slot_t0 = torch.where(real, t0[src],
+                              torch.full_like(t0[src], (1 << 15) - 1))
+        slot_t1 = torch.where(real, t1[src], torch.zeros_like(t1[src]))
+        leaf_prim = torch.where(real, prim_id[src],
+                                torch.full_like(prim_id[src], -1))
         if inst_opaque is not None:
-            slot_opaque[:M] = inst_opaque
+            slot_opaque = real & inst_opaque[src]
+        else:
+            slot_opaque = torch.zeros((P,), dtype=torch.bool, device=device)
+    else:
+        if M > 0:
+            # Sort instances along a 4D Morton curve so the implicit tree gets
+            # spatio-temporally coherent subtrees.
+            center = (inst_lo + inst_hi) * 0.5
+            t_center = (t0 + t1).float() * 0.5
+            smin = inst_lo.amin(0)
+            smax = inst_hi.amax(0)
+            q = _quantize(center, smin, smax)
+            qt = _quantize(t_center, torch.zeros((), device=device),
+                           torch.full((), float(max(num_frames - 1, 1)),
+                                      device=device))
+            codes = morton_code_4d(q[:, 0], q[:, 1], q[:, 2], qt)
+            order = torch.argsort(codes)
+            prim_id, t0, t1 = prim_id[order], t0[order], t1[order]
+            inst_lo, inst_hi = inst_lo[order], inst_hi[order]
+            if inst_opaque is not None:
+                inst_opaque = inst_opaque[order]
+
+        # Consecutive Morton-ordered instances share leaves, LEAF_SIZE at a time.
+        # Padding slots get an impossible frame interval (tmin > tmax) and empty
+        # bounds so they are never visited.
+        slot_lo = torch.full((P * L, 3), EMPTY_LO, device=device)
+        slot_hi = torch.full((P * L, 3), EMPTY_HI, device=device)
+        slot_t0 = torch.full((P * L,), (1 << 15) - 1, dtype=torch.long,
+                             device=device)
+        slot_t1 = torch.zeros((P * L,), dtype=torch.long, device=device)
+        slot_opaque = torch.zeros((P * L,), dtype=torch.bool, device=device)
+        leaf_prim = torch.full((P * L,), -1, dtype=torch.long, device=device)
+        if M > 0:
+            slot_lo[:M] = inst_lo
+            slot_hi[:M] = inst_hi
+            slot_t0[:M] = t0
+            slot_t1[:M] = t1
+            leaf_prim[:M] = prim_id
+            if inst_opaque is not None:
+                slot_opaque[:M] = inst_opaque
     leaf_tspan = (slot_t0.clamp(0, (1 << 15) - 1)
                   | (slot_t1.clamp(0, (1 << 15) - 1) << 16)).to(torch.int32)
     # Bit 31 (sign bit) flags interval-opaque instances.

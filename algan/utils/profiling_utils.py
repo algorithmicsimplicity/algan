@@ -48,9 +48,15 @@ from algan.utils.algan_utils import render_to_file
 # Re-initialize Taichi with the kernel profiler before any kernel launches
 # (the rasterizer modules already initialized it without profiling at import
 # time; no kernels have been compiled for launch yet, so this is safe).
+# Use the *exact* production config (algan.rendering.taichi_runtime) plus the
+# kernel profiler, so the benchmark measures what real renders actually run --
+# previously it forced its own config (no debug flag, etc.) and so silently
+# profiled a different, much faster runtime than production. See
+# [[algan-render-benchmarking]].
+from algan.rendering.taichi_runtime import taichi_init_kwargs
 KERNEL_PROFILER = False
 try:
-    ti.init(arch=ti.cuda, kernel_profiler=True, advanced_optimization=False)
+    ti.init(**taichi_init_kwargs(), kernel_profiler=True)
     KERNEL_PROFILER = True
 except Exception as e:  # pragma: no cover - CPU-only fallback
     print(f"Kernel profiler unavailable ({e}); continuing without it.")
@@ -326,7 +332,7 @@ def format_report(results):
         for name, secs in sorted(res["times"].items(), key=lambda kv: -kv[1]):
             w(f"{name:<52}{res['counts'][name]:>6}{secs:>10.3f}"
               f"{100 * secs / res['total']:>9.1f}%"
-              f"{res['exclusive_times'][name]:>10.3f}")
+              f"{res['exclusive_times'][name] if name in res['exclusive_times'] else secs:>10.3f}")
         accounted = sum(v for k, v in res["times"].items()
                         if not k.startswith(("  -", "beziers:   -"))
                         and k != "ray traced render total")
@@ -369,7 +375,7 @@ def format_report(results):
 
 
 def profile_scene(scene_func, render_settings, tag=""):
-    enable_ray_tracing(samples_per_pixel=SPP)
+    #enable_ray_tracing(samples_per_pixel=SPP)
     install_instrumentation()
     os.makedirs(OUT_DIR, exist_ok=True)
 
