@@ -75,6 +75,15 @@ init_taichi()
 # box but misses the (thin, often diagonal) patch itself.
 _PN_OBB_ON = os.environ.get("ALGAN_PN_OBB", "1") == "1"
 
+# Traverse an explicit-DFS unbalanced SAH tree (env ALGAN_BVH_BUILD=sah) instead
+# of the implicit balanced heap tree. Compile-time: when on, a node is a leaf iff
+# its per-node ``leaf_prim`` slot is >= 0, its first child is ``node + 1`` (DFS
+# order), and ``node_miss`` is the subtree-escape pointer; when off, the implicit
+# heap rules apply (leaf iff ``node >= first_leaf``, child ``BVH_ARITY*node+1``).
+# The leaf-processing body is shared between the two. Currently wired into the
+# deterministic primary path (_collect_hits). See stbvh._build_sah_dfs.
+_USE_SAH = os.environ.get("ALGAN_BVH_BUILD", "morton") == "sah"
+
 # Minimum hit distance along a ray (also the self-intersection guard for
 # reflected rays, together with a normal offset at the bounce origin).
 MIN_HIT_DISTANCE = 1e-4
@@ -813,11 +822,17 @@ def _nearest_triangle_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
 def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset,
                     nodes: ti.template(), node_miss: ti.template(),
                     leaf_prim: ti.template(), leaf_tspan: ti.template(),
-                    first_leaf, pn_ctrl: ti.template()):
+                    first_leaf, pn_ctrl: ti.template(), pn_obb: ti.template()):
     """Nearest PN-patch intersection strictly after (t_prev, layer_prev).
     Every root of each candidate patch is considered (a ray can pierce a
     curved patch several times) and the patch parameters (u, v) of the
     winning hit double as its color/normal interpolation weights.
+
+    Each candidate is first culled against its tight oriented box
+    (:func:`_obb_misses`) within the still-useful window, skipping the
+    matrix-pencil solve for the many rays that pierce a patch's loose leaf AABB
+    but miss the patch itself -- the same conservative (output-preserving) cull
+    the primary depth-peel uses.
     """
     best_t = 1e30
     best_layer = -1e30
@@ -825,6 +840,7 @@ def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset,
     best_u = 0.0
     best_v = 0.0
     tp = f % pn_ctrl.shape[0]
+    po = f % pn_obb.shape[0]
     node = 0
     while node != -1:
         if _node_intersected(node, ff, ro, inv_rd,
@@ -836,7 +852,11 @@ def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset,
                     prim = leaf_prim[base + j]
                     tspan = leaf_tspan[base + j]
                     if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                            and (f <= ((tspan >> 16) & 0x7FFF))):
+                            and (f <= ((tspan >> 16) & 0x7FFF))
+                            and (ti.static(not _PN_OBB_ON) or not _obb_misses(
+                                ro, rd, po, prim, pn_obb,
+                                t_prev - DEPTH_TIE_EPSILON,
+                                best_t + DEPTH_TIE_EPSILON))):
                         cnt, ts, us, vs = _pn_intersect(ro, rd, tp, prim,
                                                         pn_ctrl)
                         layer = layer_offset + ti.cast(prim, ti.f32)
@@ -1241,6 +1261,7 @@ def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      p_nodes: ti.template(), p_node_miss: ti.template(),
                      p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
                      p_first_leaf, pn_ctrl: ti.template(),
+                     pn_obb: ti.template(),
                      b_nodes: ti.template(), b_node_miss: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                      b_first_leaf, circuit_meta: ti.template(),
@@ -1275,7 +1296,7 @@ def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     pt, p_prim, p_u, p_v, p_layer = _nearest_pn_hit(
         ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset_pn,
         p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-        pn_ctrl)
+        pn_ctrl, pn_obb)
     bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
         ro, rd, inv_rd, f, ff, t_prev, layer_prev, pixel_size_per_t,
         base_dist, b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
@@ -1463,8 +1484,11 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
         window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
         if _node_intersected(node, ff, ro, inv_rd,
                              t_prev - DEPTH_TIE_EPSILON, window_hi, p_nodes):
-            if node >= p_first_leaf:
-                base = (node - p_first_leaf) * LEAF_SIZE
+            p_is_leaf = (p_leaf_prim[node] >= 0) if ti.static(_USE_SAH) \
+                else (node >= p_first_leaf)
+            if p_is_leaf:
+                base = (node * LEAF_SIZE) if ti.static(_USE_SAH) \
+                    else (node - p_first_leaf) * LEAF_SIZE
                 for j in ti.static(range(LEAF_SIZE)):
                     prim = p_leaf_prim[base + j]
                     tspan = p_leaf_tspan[base + j]
@@ -1521,7 +1545,8 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                                 worst_layer = hit_layer[q]
                 node = p_node_miss[node]
             else:
-                node = BVH_ARITY * node + 1
+                node = (node + 1) if ti.static(_USE_SAH) \
+                    else (BVH_ARITY * node + 1)
         else:
             node = p_node_miss[node]
 
@@ -1536,8 +1561,11 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
         window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
         if _node_intersected(node, ff, ro, inv_rd,
                              t_prev - DEPTH_TIE_EPSILON, window_hi, b_nodes):
-            if node >= b_first_leaf:
-                base = (node - b_first_leaf) * LEAF_SIZE
+            b_is_leaf = (b_leaf_prim[node] >= 0) if ti.static(_USE_SAH) \
+                else (node >= b_first_leaf)
+            if b_is_leaf:
+                base = (node * LEAF_SIZE) if ti.static(_USE_SAH) \
+                    else (node - b_first_leaf) * LEAF_SIZE
                 for j in ti.static(range(LEAF_SIZE)):
                     circuit = b_leaf_prim[base + j]
                     tspan = b_leaf_tspan[base + j]
@@ -1638,7 +1666,8 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                                 worst_layer = hit_layer[q]
                 node = b_node_miss[node]
             else:
-                node = BVH_ARITY * node + 1
+                node = (node + 1) if ti.static(_USE_SAH) \
+                    else (BVH_ARITY * node + 1)
         else:
             node = b_node_miss[node]
     return count
@@ -1655,6 +1684,7 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
                      p_nodes: ti.template(), p_node_miss: ti.template(),
                      p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
                      p_first_leaf, pn_ctrl: ti.template(),
+                     pn_obb: ti.template(),
                      pn_colors: ti.template(),
                      b_nodes: ti.template(), b_node_miss: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
@@ -1690,7 +1720,7 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
             tri_pos,
             p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-            pn_ctrl,
+            pn_ctrl, pn_obb,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
             circuit_meta, edges_2d, edge_offsets)
         if (found == 0) or (t_hit >= max_t):
@@ -1940,6 +1970,7 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                                             tri_colors,
                                             p_nodes, p_node_miss, p_leaf_prim,
                                             p_leaf_tspan, p_first_leaf, pn_ctrl,
+                                            pn_obb,
                                             pn_colors,
                                             b_nodes, b_node_miss, b_leaf_prim,
                                             b_leaf_tspan, b_first_leaf,
@@ -2469,6 +2500,8 @@ def path_trace_scene_stbvh(
         layer_offset_triangles: float, layer_offset_pn: float,
         max_bounces: int, transparent: int,
         samples_per_pixel: int, indirect_strength: float,
+        # Per-PN-patch oriented bounding box for the pre-solve cull.
+        pn_obb: ti.types.ndarray(),
         # Background buffer [time_end - time_start, width * height,
         # channels] (u8), read by paths that escape the scene.
         out: ti.types.ndarray(),
@@ -2549,7 +2582,7 @@ def path_trace_scene_stbvh(
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos,
                 p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                p_first_leaf, pn_ctrl,
+                p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, edges_2d, edge_offsets)
             if found == 0:
@@ -2693,6 +2726,7 @@ def _transmittance(ro, rd, f, ff, max_t,
                    p_nodes: ti.template(), p_node_miss: ti.template(),
                    p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
                    p_first_leaf, pn_ctrl: ti.template(),
+                   pn_obb: ti.template(),
                    pn_colors: ti.template(),
                    b_nodes: ti.template(), b_node_miss: ti.template(),
                    b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
@@ -2721,7 +2755,7 @@ def _transmittance(ro, rd, f, ff, max_t,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
             tri_pos,
             p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-            pn_ctrl,
+            pn_ctrl, pn_obb,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
             circuit_meta, edges_2d, edge_offsets)
         if (found == 0) or (t_hit >= max_t):
@@ -2786,6 +2820,8 @@ def path_trace_physical_stbvh(
         # Explicit point lights [Tl, L, 3] and lighting controls.
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int, light_intensity: float, ambient: float,
+        # Per-PN-patch oriented bounding box for the pre-solve cull.
+        pn_obb: ti.types.ndarray(),
         # Background/environment buffer (u8), read by escaping paths.
         out: ti.types.ndarray(),
         # Per-pixel sample accumulator [frames, pixels, 5] (f32,
@@ -2869,7 +2905,7 @@ def path_trace_physical_stbvh(
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                 t_first_leaf, tri_pos,
                 p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                p_first_leaf, pn_ctrl,
+                p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, edges_2d, edge_offsets)
             if found == 0:
@@ -2976,6 +3012,7 @@ def path_trace_physical_stbvh(
                             tri_colors,
                             p_nodes, p_node_miss, p_leaf_prim,
                             p_leaf_tspan, p_first_leaf, pn_ctrl,
+                            pn_obb,
                             pn_colors,
                             b_nodes, b_node_miss, b_leaf_prim,
                             b_leaf_tspan, b_first_leaf, circuit_meta,

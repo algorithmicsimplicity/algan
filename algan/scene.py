@@ -258,7 +258,7 @@ class Scene:
                 mem_per_time_step = max(max([_.get_memory_used(0, 1) - _.get_memory_used_for_blending(0, 1)
                      for _ in primitive_batch]) + max([_.get_memory_used_for_blending(0, 1) for _ in primitive_batch]),
                                         num_bytes_for_post_processing_per_frame)
-                duration = int(self.memory.get_num_bytes_remaining() // mem_per_time_step)
+                duration = int(self.memory.get_num_bytes_remaining() // mem_per_time_step) * 1
                 duration = min(duration, end_ind - current_ind)
                 duration = max(duration, 1)
                 #duration = end_ind - current_ind

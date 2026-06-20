@@ -1499,14 +1499,14 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 path_trace_physical_stbvh(
                     *shared_args, samples_eff, light_pos, light_col,
                     int(num_lights), float(LIGHT_INTENSITY),
-                    float(AMBIENT_LIGHT), out, accum)
+                    float(AMBIENT_LIGHT), merged["pn_obb"], out, accum)
                 finalize_samples(samples_eff,
                                  1 if transparent_background else 0,
                                  accum, out)
             elif samples > 1:
                 path_trace_scene_stbvh(*shared_args, samples_eff,
-                                       float(INDIRECT_BOUNCE_STRENGTH), out,
-                                       accum)
+                                       float(INDIRECT_BOUNCE_STRENGTH),
+                                       merged["pn_obb"], out, accum)
                 finalize_samples(samples_eff,
                                  1 if transparent_background else 0,
                                  accum, out)

@@ -66,7 +66,7 @@ LEAF_SIZE = max(1, int(os.environ.get("ALGAN_STBVH_LEAF_SIZE", "1")))
 # level outweigh the further depth cut). 2 reproduces the original binary
 # layout. Read once at import; the traversal kernels specialize on it. Must
 # be >= 2.
-BVH_ARITY = 4#max(2, int(os.environ.get("ALGAN_BVH_ARITY", "4")))
+BVH_ARITY = max(2, int(os.environ.get("ALGAN_BVH_ARITY", "4")))
 
 
 class STBVH:
@@ -194,6 +194,137 @@ def _median_split_slots(centers, P):
         perm = key.argsort(1)
         slot = torch.gather(sg, 1, perm).reshape(-1)
     return torch.where(slot < M, slot, torch.full_like(slot, -1))
+
+
+def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
+                   device, nbins=16):
+    """Top-down binned-SAH BVH (binary, unbalanced), laid out in DFS preorder
+    with stackless skip pointers -- the explicit-tree counterpart of the implicit
+    balanced layout. Returns the same flat arrays the traversal consumes, but
+    addressed per-node: ``leaf_prim[node] >= 0`` marks a leaf (one instance), an
+    internal node's first child is ``node + 1``, and ``node_miss[node]`` is the
+    subtree-escape ("skip") index (-1 to terminate).
+
+    SAH cost is the surface-area heuristic on the 3D union boxes; the temporal
+    dimension rides along via each node's frame interval (checked by the kernel's
+    ``tspan`` test) plus the upstream temporal segmentation. Built on the CPU
+    (NumPy) -- a from-scratch unbalanced build is awkward to vectorize; this is
+    the correctness/validation version (see notes on build cost).
+    """
+    import numpy as np
+    import sys
+
+    M = int(prim_id.shape[0])
+    if M == 0:
+        nodes = torch.zeros((1, 8), dtype=torch.float32)
+        nodes[0, 0:3] = EMPTY_LO
+        nodes[0, 3:6] = EMPTY_HI
+        nodes[0, 6] = (1 << 15) - 1
+        nodes[0, 7] = 0.0
+        return STBVH(
+            nodes.contiguous().to(device),
+            torch.tensor([-1], dtype=torch.int32, device=device),
+            torch.tensor([-1], dtype=torch.int32, device=device),
+            torch.tensor([(1 << 15) - 1], dtype=torch.int32, device=device),
+        )
+    lo = inst_lo.detach().cpu().numpy().astype(np.float64)
+    hi = inst_hi.detach().cpu().numpy().astype(np.float64)
+    cent = (lo + hi) * 0.5
+    pid = prim_id.detach().cpu().numpy().astype(np.int64)
+    a0 = t0.detach().cpu().numpy().astype(np.int64)
+    a1 = t1.detach().cpu().numpy().astype(np.int64)
+    opq = (inst_opaque.detach().cpu().numpy().astype(bool)
+           if inst_opaque is not None else np.zeros(M, bool))
+
+    maxN = max(2 * M - 1, 1)
+    n_lo = np.zeros((maxN, 3)); n_hi = np.zeros((maxN, 3))
+    n_t0 = np.zeros(maxN, np.int64); n_t1 = np.zeros(maxN, np.int64)
+    n_prim = np.full(maxN, -1, np.int64)
+    n_opq = np.zeros(maxN, bool)
+    n_skip = np.zeros(maxN, np.int64)
+    ctr = [0]
+
+    def half_area(blo, bhi):
+        d = np.maximum(bhi - blo, 0.0)
+        return d[0] * d[1] + d[1] * d[2] + d[0] * d[2]
+
+    sys.setrecursionlimit(max(10000, 4 * M))
+
+    def build(ids):
+        ni = ctr[0]; ctr[0] += 1
+        blo = lo[ids].min(0); bhi = hi[ids].max(0)
+        n_lo[ni] = blo; n_hi[ni] = bhi
+        n_t0[ni] = a0[ids].min(); n_t1[ni] = a1[ids].max()
+        if ids.shape[0] == 1:
+            n_prim[ni] = pid[ids[0]]
+            n_opq[ni] = opq[ids[0]]
+            n_skip[ni] = ctr[0]
+            return
+        n = ids.shape[0]
+        best_cost = np.inf; best_left = None
+        diag = bhi - blo
+        # Spatio-temporal SAH: search splits along x/y/z centroid AND the time
+        # centroid (axis 3); weight each child's box cost by its frame-interval
+        # extent so time-mixed nodes are penalised. A ray (frame f, spatial dir)
+        # only enters a node when f is in its interval, so the expected cost
+        # scales with surface_area * temporal_extent -- this recovers the
+        # temporal coherence the 4D Morton curve gets for free.
+        for ax in range(4):
+            if ax < 3:
+                cax = cent[ids, ax]
+            else:
+                cax = (a0[ids] + a1[ids]) * 0.5
+            cmin, cmax = cax.min(), cax.max()
+            if cmax - cmin <= 1e-12:
+                continue
+            b = np.minimum(((cax - cmin) / (cmax - cmin) * nbins).astype(int),
+                           nbins - 1)
+            for s in range(1, nbins):
+                lmask = b < s
+                nl = int(lmask.sum())
+                if nl == 0 or nl == n:
+                    continue
+                lids = ids[lmask]; rids = ids[~lmask]
+                te_l = float(a1[lids].max() - a0[lids].min() + 1)
+                te_r = float(a1[rids].max() - a0[rids].min() + 1)
+                cost = (te_l * half_area(lo[lids].min(0), hi[lids].max(0)) * nl
+                        + te_r * half_area(lo[rids].min(0), hi[rids].max(0))
+                        * (n - nl))
+                if cost < best_cost:
+                    best_cost = cost; best_left = lmask
+        if best_left is None:
+            ax = int(np.argmax(diag))
+            order = np.argsort(cent[ids, ax], kind="stable")
+            best_left = np.zeros(ids.shape[0], bool)
+            best_left[order[:ids.shape[0] // 2]] = True
+        build(ids[best_left])
+        build(ids[~best_left])
+        n_skip[ni] = ctr[0]
+
+    if M > 0:
+        build(np.arange(M))
+    N = max(ctr[0], 1)
+
+    nodes = torch.zeros((N, 8), dtype=torch.float32)
+    nodes[:, 0:3] = torch.from_numpy(n_lo[:N]).float()
+    nodes[:, 3:6] = torch.from_numpy(n_hi[:N]).float()
+    nodes[:, 6] = torch.from_numpy(n_t0[:N]).float()
+    nodes[:, 7] = torch.from_numpy(n_t1[:N]).float()
+    skip = torch.from_numpy(n_skip[:N]).long()
+    skip = torch.where(skip >= N, torch.full_like(skip, -1), skip)
+    tspan = (torch.from_numpy(np.clip(n_t0[:N], 0, (1 << 15) - 1)).long()
+             | (torch.from_numpy(np.clip(n_t1[:N], 0, (1 << 15) - 1)).long()
+                << 16)).to(torch.int32)
+    opaque_t = torch.from_numpy(n_opq[:N])
+    tspan = torch.where(opaque_t, tspan | torch.tensor(-2147483648,
+                        dtype=torch.int32), tspan)
+    leaf_prim = torch.from_numpy(n_prim[:N]).to(torch.int32)
+    return STBVH(
+        nodes.contiguous().to(device),
+        skip.to(torch.int32).contiguous().to(device),
+        leaf_prim.contiguous().to(device),
+        tspan.contiguous().to(device),
+    )
 
 
 def _box_cost(lo, hi):
@@ -380,6 +511,12 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
                                - prefix[t0, prim_id]) == 0
         else:
             inst_opaque = None
+
+    if _BVH_BUILD == "sah":
+        # Explicit-DFS unbalanced SAH tree (experimental; consumed by the
+        # ti.static SAH branch of the deterministic traversal).
+        return _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque,
+                              num_frames, device)
 
     M = prim_id.shape[0]
     L = LEAF_SIZE
