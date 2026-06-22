@@ -99,6 +99,7 @@ class Surface(Renderable):
         self.coord_function_active = coord_function
         self.normal_function_active = normal_function
         self.ignore_normals = ignore_normals
+        self.color_texture = color_texture
         # triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
         super().__init__(*args, **kwargs)
         self.grid_height, self.grid_width = grid_height, grid_width
@@ -112,7 +113,18 @@ class Surface(Renderable):
             checkered_color = unsqueeze_left(checkered_color, color)
 
         if color_texture is not None:
-            color = squish(color_texture, -3, -2)
+            tex = color_texture
+            if tex.dim() == 3:  # [W, H, 5]
+                tex_temp = tex.unsqueeze(0).permute(0, 3, 1, 2)
+                tex_temp = F.interpolate(tex_temp, size=(grid_width, grid_height), mode='bilinear', align_corners=True)
+                vertex_color_texture = tex_temp.permute(0, 2, 3, 1).squeeze(0)
+            elif tex.dim() == 4:  # [T, W, H, 5]
+                tex_temp = tex.permute(0, 3, 1, 2)
+                tex_temp = F.interpolate(tex_temp, size=(grid_width, grid_height), mode='bilinear', align_corners=True)
+                vertex_color_texture = tex_temp.permute(0, 2, 3, 1)
+            else:
+                vertex_color_texture = tex
+            color = squish(vertex_color_texture, -3, -2)
         else:
             color_grid = (
                 (BLACK * 0)
@@ -229,11 +241,21 @@ class Surface(Renderable):
         grid_color = self.grid.color.clone()
         grid_color[..., -1:] *= self.grid.opacity
         grid_color[..., -2:-1] += self.grid.glow
+        uvs = None
+        texture_map = None
+        if self.color_texture is not None:
+            # Generate UV coordinates for the triangle corners from the base grid
+            base_grid = self.get_base_grid()
+            uvs = grid_to_triangle_vertices(base_grid).unsqueeze(0)  # [1, num_triangles * 3, 2]
+            texture_map = self.color_texture
+
         return TrianglePrimitive(
             corners=grid_to_triangle_vertices(grid),
             colors=expand_grid_to_verts(grid_color),
             normals=vertex_normals,
             shader=self.shader,
+            uvs=uvs,
+            texture_map=texture_map,
             **{
                 k: expand_grid_to_verts(v)
                 for k, v in self.grid.get_shader_params().items()

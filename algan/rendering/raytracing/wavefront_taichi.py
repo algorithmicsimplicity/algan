@@ -48,6 +48,8 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     _safe_inverse,
     _sample_circuit_color,
     _triangle_color,
+    _flat_triangle_color,
+    _flat_triangle_alpha,
     _triangle_extra,
     _triangle_normal,
 )
@@ -152,6 +154,8 @@ def wf_shade_triangle(
         active: ti.types.ndarray(), num_active: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
+        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         time_start: int, width: int, height: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
@@ -224,7 +228,9 @@ def wf_shade_triangle(
                 seam_t = t_hit if edge_hit == 1 else -1e30
 
                 w0 = 1.0 - a - b
-                color, alpha = _triangle_color(f, prim, w0, a, b, tri_colors)
+                color, alpha = _flat_triangle_color(f, prim, w0, a, b,
+                                                    tri_colors, tri_uvs, tri_tex_meta,
+                                                    textures, num_colored_triangles)
                 reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
                                                        tri_extra)
                 alpha = ti.math.clamp(alpha, 0.0, 1.0)
@@ -425,6 +431,8 @@ def wf_shade_general(
         active: ti.types.ndarray(), num_active: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
+        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
         pn_extra: ti.types.ndarray(), pn_colors: ti.types.ndarray(),
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
@@ -510,8 +518,9 @@ def wf_shade_general(
                 reflectivity = 0.0
                 if htype == 1:
                     w0 = 1.0 - a - b
-                    color, alpha = _triangle_color(f, prim, w0, a, b,
-                                                   tri_colors)
+                    color, alpha = _flat_triangle_color(f, prim, w0, a, b,
+                                                        tri_colors, tri_uvs, tri_tex_meta,
+                                                        textures, num_colored_triangles)
                     reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
                                                            tri_extra)
                 elif htype == 2:

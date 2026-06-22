@@ -471,11 +471,25 @@ class Scene:
                         break
                     counts -= counts[current_ind - 1]
             else:
-                primitive_collections.append(
-                    primitive_class(triangle_collection=primitives)
-                )
-                primitive_collections[-1].memory = self.memory
-                primitive_collections[-1].scene = self
+                textured = []
+                colored = []
+                for p in primitives:
+                    if getattr(p, "uvs", None) is not None or getattr(p, "texture_map", None) is not None:
+                        textured.append(p)
+                    else:
+                        colored.append(p)
+                if colored:
+                    primitive_collections.append(
+                        primitive_class(triangle_collection=colored)
+                    )
+                    primitive_collections[-1].memory = self.memory
+                    primitive_collections[-1].scene = self
+                if textured:
+                    primitive_collections.append(
+                        primitive_class(triangle_collection=textured)
+                    )
+                    primitive_collections[-1].memory = self.memory
+                    primitive_collections[-1].scene = self
         return primitive_collections, start_time_ind + duration
 
     def background_is_transparent(self):

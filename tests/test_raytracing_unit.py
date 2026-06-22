@@ -182,10 +182,15 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
     out = torch.full((T, W * H, 4), bg, dtype=torch.uint8, device=DEVICE)
     scale = torch.full((T,), 1e-3, device=DEVICE)
     tri_pos, tri_norm, tri_extra = _split_tri_verts(tri_verts)
+    dummy_tri_uvs = torch.zeros((1, 1, 6), device=DEVICE)
+    dummy_textures = torch.zeros((1, 1, 5), device=DEVICE)
+    dummy_tri_tex_meta = torch.zeros((1, 3), dtype=torch.int32, device=DEVICE)
+    num_colored_triangles = int(tri_verts.shape[1])
     shared = (
         tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
         tri_bvh.leaf_tspan, tri_bvh.first_leaf,
         tri_pos, tri_norm, tri_extra, tri_colors.contiguous(),
+        dummy_tri_uvs, dummy_tri_tex_meta, dummy_textures, num_colored_triangles,
         pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
         pn_bvh.leaf_tspan, pn_bvh.first_leaf,
         pn_ctrl.contiguous(), pn_norm.contiguous(), pn_extra.contiguous(),
@@ -196,6 +201,7 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
         cam.contiguous(), sp.contiguous(), pbx.contiguous(), pby.contiguous(),
         scale, 0, T, W, H, float(W // 2), float(H // 2),
         0.0, float(tri_verts.shape[1]), max_bounces, 0)
+    dummy_pn_obb = torch.zeros((pn_ctrl.shape[0], pn_ctrl.shape[1], 12), device=DEVICE)
     if physical:
         if light_pos is None:
             light_pos = torch.zeros((1, 1, 3), device=DEVICE)
@@ -207,11 +213,11 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
         path_trace_physical_stbvh(
             *shared, samples_per_pixel, light_pos.contiguous(),
             light_col.contiguous(), num_lights, light_intensity, ambient,
-            out, accum)
+            dummy_pn_obb, out, accum)
         finalize_samples(samples_per_pixel, 0, accum, out)
     elif samples_per_pixel > 0:
         accum = torch.zeros((T, W * H, 5), device=DEVICE)
-        path_trace_scene_stbvh(*shared, samples_per_pixel, indirect, out,
+        path_trace_scene_stbvh(*shared, samples_per_pixel, indirect, dummy_pn_obb, out,
                                accum)
         finalize_samples(samples_per_pixel, 0, accum, out)
     else:
@@ -219,7 +225,14 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
         # the kernel did before the empty-type gating was added (the dummy
         # PN/bezier BVHs here are empty, so traversing them is a no-op). The
         # trailing 1 is aa_level (one ray per pixel: no sub-pixel averaging).
-        render_scene_stbvh(*shared, 1, 1, 1, 1, out)
+        dummy_mat_id = torch.zeros((1, 1), dtype=torch.int32, device=DEVICE)
+        dummy_mat = torch.zeros((1, 1, 32), device=DEVICE)
+        dummy_light_pos = torch.zeros((1, 1, 3), device=DEVICE)
+        dummy_light_col = torch.zeros((1, 1, 3), device=DEVICE)
+        render_scene_stbvh(
+            *shared, 1, 1, 1, 0,
+            dummy_mat_id, dummy_mat, dummy_mat_id, dummy_mat,
+            dummy_light_pos, dummy_light_col, 0, 0, 1, dummy_pn_obb, out)
     torch.cuda.synchronize()
     return out
 

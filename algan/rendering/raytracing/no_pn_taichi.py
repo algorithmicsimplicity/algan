@@ -42,6 +42,8 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     _sample_circuit_color,
     _shade_tri_hit,
     _triangle_color,
+    _flat_triangle_color,
+    _flat_triangle_alpha,
     _triangle_extra,
     _triangle_normal,
 )
@@ -285,7 +287,9 @@ def _trace_no_pn_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                      t_first_leaf, tri_pos: ti.template(),
                      tri_norm: ti.template(), tri_extra: ti.template(),
-                     tri_colors: ti.template(),
+                     tri_colors: ti.template(), tri_uvs: ti.template(),
+                     tri_tex_meta: ti.template(), textures: ti.template(),
+                     num_colored_triangles: ti.i32,
                      b_nodes: ti.template(), b_node_miss: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                      b_first_leaf, circuit_meta: ti.template(),
@@ -371,8 +375,9 @@ def _trace_no_pn_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
             reflectivity = 0.0
             if htype == 1:
                 w0 = 1.0 - a - b
-                color, alpha = _triangle_color(f, prim, w0, a, b,
-                                               tri_colors)
+                color, alpha = _flat_triangle_color(f, prim, w0, a, b,
+                                                    tri_colors, tri_uvs, tri_tex_meta,
+                                                    textures, num_colored_triangles)
                 reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
                                                        tri_extra)
             else:
@@ -445,6 +450,8 @@ def render_no_pn_stbvh(
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
+        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         # Bezier STBVH + packed geometry.
         b_nodes: ti.types.ndarray(), b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
@@ -509,6 +516,7 @@ def render_no_pn_stbvh(
                     layer_offset_triangles, max_bounces,
                     t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                     t_first_leaf, tri_pos, tri_norm, tri_extra, tri_colors,
+                    tri_uvs, tri_tex_meta, textures, num_colored_triangles,
                     b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                     b_first_leaf, circuit_meta, circuit_colors,
                     circuit_border_colors, edges_2d, edge_offsets,

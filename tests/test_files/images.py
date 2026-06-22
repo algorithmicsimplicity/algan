@@ -1,0 +1,15 @@
+from algan import *
+from algan.rendering.raytracing import enable_ray_tracing
+from algan.utils.algan_utils import render_all_funcs
+
+
+def images():
+    #n = 4
+    #m = math.isqrt(4 * n)
+    #rgba_array = torch.stack((RED, BLUE, GREEN, PURPLE)).unsqueeze(0).expand(n, -1, -1).reshape(m, m, -1)
+    #x = ImageMob(rgba_array).spawn()
+    x = ImageMob('world_map.jpg').spawn()
+    x.scale(3)
+
+enable_ray_tracing()
+render_all_funcs(__name__)

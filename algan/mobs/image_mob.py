@@ -1,3 +1,4 @@
+import torch
 import torch.types
 from algan.mobs.surfaces.surface import Surface
 from algan.constants.color import Color
@@ -30,10 +31,19 @@ class ImageMob(Surface):
 
         h = rgba_array.shape[-3]
         w = rgba_array.shape[-2]
+        aspect_ratio = w / h
 
         super().__init__(
-            grid_height=h,
-            grid_width=w,
+            coord_function=lambda uv: torch.cat(
+                (
+                    (uv[..., :1] - 0.5) * aspect_ratio,
+                    (uv[..., 1:] - 0.5),
+                    torch.zeros_like(uv[..., :1]),
+                ),
+                -1,
+            ),
+            grid_height=2,
+            grid_width=2,
             color_texture=rgba_array.transpose(-3, -2).flip(-2),
             **kwargs,
         )

@@ -1117,6 +1117,141 @@ def _triangle_alpha(f, prim, w0, w1, w2, tri_colors: ti.template()) -> ti.f32:
 
 
 @ti.func
+def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), textures: ti.template()):
+    offset = tri_tex_meta[prim_uv_index, 0]
+    width = tri_tex_meta[prim_uv_index, 1]
+    height = tri_tex_meta[prim_uv_index, 2]
+
+    px = u * (width - 1.0)
+    py = v * (height - 1.0)
+
+    px = ti.math.clamp(px, 0.0, ti.max(width - 1.0, 0.0))
+    py = ti.math.clamp(py, 0.0, ti.max(height - 1.0, 0.0))
+
+    x_floor = ti.floor(px)
+    y_floor = ti.floor(py)
+    xr = px - x_floor
+    yr = py - y_floor
+
+    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    alpha = 0.0
+    sum_w = 0.0
+
+    tc = f % textures.shape[0]
+    num_points = textures.shape[1]
+
+    for corner in ti.static(range(4)):
+        cx = ti.cast(x_floor + (corner % 2), ti.i32)
+        cy = ti.cast(y_floor + (corner // 2), ti.i32)
+        w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
+            yr if (corner // 2) == 1 else 1.0 - yr)
+
+        cx = ti.math.clamp(cx, 0, ti.cast(width - 1.0, ti.i32))
+        cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
+
+        local_idx = cy * ti.cast(width, ti.i32) + cx
+        abs_idx = offset + local_idx
+        abs_idx = ti.math.clamp(abs_idx, 0, num_points - 1)
+
+        color += w * ti.math.vec4(textures[tc, abs_idx, 0],
+                                  textures[tc, abs_idx, 1],
+                                  textures[tc, abs_idx, 2],
+                                  textures[tc, abs_idx, 3])
+        alpha += w * textures[tc, abs_idx, 4]
+        sum_w += w
+
+    color /= ti.max(sum_w, 1e-6)
+    alpha /= ti.max(sum_w, 1e-6)
+    return color, alpha
+
+
+@ti.func
+def _flat_triangle_color(f, prim, w0, w1, w2, tri_colors: ti.template(),
+                         tri_uvs: ti.template(), tri_tex_meta: ti.template(),
+                         textures: ti.template(), num_colored_triangles: ti.i32):
+    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    alpha = 0.0
+    if prim < num_colored_triangles:
+        tc = f % tri_colors.shape[0]
+        for ci in ti.static(range(4)):
+            color[ci] = (w0 * tri_colors[tc, prim, 0, ci]
+                         + w1 * tri_colors[tc, prim, 1, ci]
+                         + w2 * tri_colors[tc, prim, 2, ci])
+        alpha = (w0 * tri_colors[tc, prim, 0, 4]
+                 + w1 * tri_colors[tc, prim, 1, 4]
+                 + w2 * tri_colors[tc, prim, 2, 4])
+    else:
+        prim_uv_index = prim - num_colored_triangles
+        tu = f % tri_uvs.shape[0]
+        u = (w0 * tri_uvs[tu, prim_uv_index, 0]
+             + w1 * tri_uvs[tu, prim_uv_index, 2]
+             + w2 * tri_uvs[tu, prim_uv_index, 4])
+        v = (w0 * tri_uvs[tu, prim_uv_index, 1]
+             + w1 * tri_uvs[tu, prim_uv_index, 3]
+             + w2 * tri_uvs[tu, prim_uv_index, 5])
+        color, alpha = _sample_texture(f, u, v, prim_uv_index, tri_tex_meta, textures)
+    return color, alpha
+
+
+@ti.func
+def _flat_triangle_alpha(f, prim, w0, w1, w2, tri_colors: ti.template(),
+                         tri_uvs: ti.template(), tri_tex_meta: ti.template(),
+                         textures: ti.template(), num_colored_triangles: ti.i32) -> ti.f32:
+    alpha = 0.0
+    if prim < num_colored_triangles:
+        tc = f % tri_colors.shape[0]
+        alpha = (w0 * tri_colors[tc, prim, 0, 4]
+                 + w1 * tri_colors[tc, prim, 1, 4]
+                 + w2 * tri_colors[tc, prim, 2, 4])
+    else:
+        prim_uv_index = prim - num_colored_triangles
+        tu = f % tri_uvs.shape[0]
+        u = (w0 * tri_uvs[tu, prim_uv_index, 0]
+             + w1 * tri_uvs[tu, prim_uv_index, 2]
+             + w2 * tri_uvs[tu, prim_uv_index, 4])
+        v = (w0 * tri_uvs[tu, prim_uv_index, 1]
+             + w1 * tri_uvs[tu, prim_uv_index, 3]
+             + w2 * tri_uvs[tu, prim_uv_index, 5])
+
+        offset = tri_tex_meta[prim_uv_index, 0]
+        width = tri_tex_meta[prim_uv_index, 1]
+        height = tri_tex_meta[prim_uv_index, 2]
+
+        px = u * (width - 1.0)
+        py = v * (height - 1.0)
+
+        px = ti.math.clamp(px, 0.0, ti.max(width - 1.0, 0.0))
+        py = ti.math.clamp(py, 0.0, ti.max(height - 1.0, 0.0))
+
+        x_floor = ti.floor(px)
+        y_floor = ti.floor(py)
+        xr = px - x_floor
+        yr = py - y_floor
+
+        sum_w = 0.0
+        tc = f % textures.shape[0]
+        num_points = textures.shape[1]
+
+        for corner in ti.static(range(4)):
+            cx = ti.cast(x_floor + (corner % 2), ti.i32)
+            cy = ti.cast(y_floor + (corner // 2), ti.i32)
+            w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
+                yr if (corner // 2) == 1 else 1.0 - yr)
+
+            cx = ti.math.clamp(cx, 0, ti.cast(width - 1.0, ti.i32))
+            cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
+
+            local_idx = cy * ti.cast(width, ti.i32) + cx
+            abs_idx = offset + local_idx
+            abs_idx = ti.math.clamp(abs_idx, 0, num_points - 1)
+
+            alpha += w * textures[tc, abs_idx, 4]
+            sum_w += w
+        alpha /= ti.max(sum_w, 1e-6)
+    return alpha
+
+
+@ti.func
 def _triangle_extra(f, prim, w0, w1, w2, tri_extra: ti.template()):
     """Barycentric (reflectivity, roughness) of a confirmed triangle hit.
     ``tri_extra`` rows hold per-corner (reflectivity, roughness) pairs.
@@ -1680,7 +1815,9 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
                      t_nodes: ti.template(), t_node_miss: ti.template(),
                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                      t_first_leaf, tri_pos: ti.template(),
-                     tri_colors: ti.template(),
+                     tri_colors: ti.template(), tri_uvs: ti.template(),
+                     tri_tex_meta: ti.template(), textures: ti.template(),
+                     num_colored_triangles: ti.i32,
                      p_nodes: ti.template(), p_node_miss: ti.template(),
                      p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
                      p_first_leaf, pn_ctrl: ti.template(),
@@ -1733,7 +1870,8 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
         seam_t = t_hit if edge_hit == 1 else -1e30
         alpha = 0.0
         if hit_type == 1:
-            alpha = _triangle_alpha(f, prim, 1.0 - a - b, a, b, tri_colors)
+            alpha = _flat_triangle_alpha(f, prim, 1.0 - a - b, a, b, tri_colors,
+                                         tri_uvs, tri_tex_meta, textures, num_colored_triangles)
         elif hit_type == 2:
             alpha = _triangle_alpha(f, prim, 1.0 - a - b, a, b, pn_colors)
         else:
@@ -1754,7 +1892,9 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                      t_first_leaf, tri_pos: ti.template(),
                      tri_norm: ti.template(), tri_extra: ti.template(),
-                     tri_colors: ti.template(),
+                     tri_colors: ti.template(), tri_uvs: ti.template(),
+                     tri_tex_meta: ti.template(), textures: ti.template(),
+                     num_colored_triangles: ti.i32,
                      p_nodes: ti.template(), p_node_miss: ti.template(),
                      p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
                      p_first_leaf, pn_ctrl: ti.template(),
@@ -1862,8 +2002,9 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
             reflectivity = 0.0
             if htype == 1:
                 w0 = 1.0 - a - b
-                color, alpha = _triangle_color(f, prim, w0, a, b,
-                                               tri_colors)
+                color, alpha = _flat_triangle_color(f, prim, w0, a, b,
+                                                    tri_colors, tri_uvs, tri_tex_meta,
+                                                    textures, num_colored_triangles)
                 reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
                                                        tri_extra)
             elif htype == 2:
@@ -1967,7 +2108,8 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                                             layer_offset_pn,
                                             t_nodes, t_node_miss, t_leaf_prim,
                                             t_leaf_tspan, t_first_leaf, tri_pos,
-                                            tri_colors,
+                                            tri_colors, tri_uvs, tri_tex_meta,
+                                            textures, num_colored_triangles,
                                             p_nodes, p_node_miss, p_leaf_prim,
                                             p_leaf_tspan, p_first_leaf, pn_ctrl,
                                             pn_obb,
@@ -2048,6 +2190,8 @@ def render_scene_stbvh(
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
+        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         # PN patch STBVH + packed geometry.
         p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
@@ -2128,6 +2272,7 @@ def render_scene_stbvh(
                     layer_offset_triangles, layer_offset_pn, max_bounces,
                     t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                     t_first_leaf, tri_pos, tri_norm, tri_extra, tri_colors,
+                    tri_uvs, tri_tex_meta, textures, num_colored_triangles,
                     p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
                     p_first_leaf, pn_ctrl, pn_obb, pn_norm, pn_extra, pn_colors,
                     b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
@@ -2269,7 +2414,9 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
                          t_leaf_tspan: ti.template(),
                          t_first_leaf, tri_pos: ti.template(),
                          tri_norm: ti.template(), tri_extra: ti.template(),
-                         tri_colors: ti.template(),
+                         tri_colors: ti.template(), tri_uvs: ti.template(),
+                         tri_tex_meta: ti.template(), textures: ti.template(),
+                         num_colored_triangles: ti.i32,
                          frag_shading: ti.template(),
                          tri_mat_id: ti.template(), tri_mat: ti.template(),
                          light_pos: ti.template(), light_col: ti.template(),
@@ -2336,7 +2483,8 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
             seam_t = t_hit if edge_hit == 1 else -1e30
 
             w0 = 1.0 - a - b
-            color, alpha = _triangle_color(f, prim, w0, a, b, tri_colors)
+            color, alpha = _flat_triangle_color(f, prim, w0, a, b, tri_colors,
+                                                tri_uvs, tri_tex_meta, textures, num_colored_triangles)
             reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
                                                    tri_extra)
 
@@ -2396,6 +2544,8 @@ def render_triangles_stbvh(
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
+        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         # Per-frame camera.
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
@@ -2451,6 +2601,7 @@ def render_triangles_stbvh(
                     ro, rd, inv_rd, f, ff, layer_offset_triangles, max_bounces,
                     t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                     t_first_leaf, tri_pos, tri_norm, tri_extra, tri_colors,
+                    tri_uvs, tri_tex_meta, textures, num_colored_triangles,
                     frag_shading, tri_mat_id, tri_mat,
                     light_pos, light_col, num_lights)
                 for ci in ti.static(range(4)):
@@ -2477,6 +2628,8 @@ def path_trace_scene_stbvh(
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
+        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         # PN patch STBVH + packed geometry.
         p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
@@ -2606,8 +2759,8 @@ def path_trace_scene_stbvh(
             reflectivity = 0.0
             roughness = 0.0
             if hit_type == 1:
-                color, alpha = _triangle_color(f, prim, w0, a, b,
-                                               tri_colors)
+                color, alpha = _flat_triangle_color(f, prim, w0, a, b, tri_colors,
+                                                    tri_uvs, tri_tex_meta, textures, num_colored_triangles)
                 reflectivity, roughness = _triangle_extra(
                     f, prim, w0, a, b, tri_extra)
             elif hit_type == 2:
@@ -2794,6 +2947,8 @@ def path_trace_physical_stbvh(
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
+        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         # PN patch STBVH + packed geometry.
         p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
@@ -2929,8 +3084,8 @@ def path_trace_physical_stbvh(
             reflectivity = 0.0
             roughness = 0.0
             if hit_type == 1:
-                color, alpha = _triangle_color(f, prim, w0, a, b,
-                                               tri_colors)
+                color, alpha = _flat_triangle_color(f, prim, w0, a, b, tri_colors,
+                                                    tri_uvs, tri_tex_meta, textures, num_colored_triangles)
                 reflectivity, roughness = _triangle_extra(
                     f, prim, w0, a, b, tri_extra)
             elif hit_type == 2:

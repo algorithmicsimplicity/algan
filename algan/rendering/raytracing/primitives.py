@@ -378,11 +378,13 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     def __init__(self, corners=None, colors=None, opacity=1, normals=None,
                  perimeter_points=None, reverse_perimeter=False,
                  triangle_collection=None, glow=0, shader=None,
+                 uvs=None, texture_map=None,
                  **shader_kwargs):
         if triangle_collection is not None:
             super().__init__(corners, colors, opacity, normals,
                              perimeter_points, reverse_perimeter,
                              triangle_collection, glow, shader,
+                             uvs=uvs, texture_map=texture_map,
                              **shader_kwargs)
             # Gather per-mob surface params with the same broadcast/cat
             # recipe the base class applies to corners/colors, so shapes
@@ -408,6 +410,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             super().__init__(corners, colors, opacity, normals,
                              perimeter_points, reverse_perimeter,
                              triangle_collection, glow, shader,
+                             uvs=uvs, texture_map=texture_map,
                              **shader_kwargs)
             for name, value in params.items():
                 if value is None:
@@ -556,6 +559,13 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
         self._rt_num_frames = camera.ray_origin.shape[0]
 
+        if self.uvs is not None:
+            self._rt_tri_uvs = self.uvs.float().reshape(self.uvs.shape[0], self.uvs.shape[1], 6).contiguous()
+            self._rt_texture_map = self.texture_map.float().contiguous() if self.texture_map is not None else None
+        else:
+            self._rt_tri_uvs = None
+            self._rt_texture_map = None
+
         self._pack_frame_visibility(corners.amin(-2), corners.amax(-2),
                                     self._rt_tri_colors,
                                     "triangle bounds/colors")
@@ -565,6 +575,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self.corners = self.normals = None
         self.reflectivity = self.roughness = None
         self.colors = self.shader_param_values = None
+        self.uvs = self.texture_map = None
 
         self._set_frame_buffer_bytes(camera)
 
@@ -933,23 +944,65 @@ def _merge_scene(primitives):
 
     scene = {}
     if triangles:
+        colored_triangles = [p for p in triangles if getattr(p, "_rt_tri_uvs", None) is None]
+        textured_triangles = [p for p in triangles if getattr(p, "_rt_tri_uvs", None) is not None]
+        all_triangles = colored_triangles + textured_triangles
+        num_colored = sum(p._rt_tri_pos.shape[1] for p in colored_triangles)
+
+        scene["num_colored_triangles"] = num_colored
         scene["tri_pos"] = _cat_collections(
-            [p._rt_tri_pos for p in triangles], 1, "triangle merge")
+            [p._rt_tri_pos for p in all_triangles], 1, "triangle merge")
         scene["tri_norm"] = _cat_collections(
-            [p._rt_tri_norm for p in triangles], 1, "triangle merge")
+            [p._rt_tri_norm for p in all_triangles], 1, "triangle merge")
         scene["tri_extra"] = _cat_collections(
-            [p._rt_tri_extra for p in triangles], 1, "triangle merge")
-        scene["tri_colors"] = _cat_collections(
-            [p._rt_tri_colors for p in triangles], 1, "triangle merge")
+            [p._rt_tri_extra for p in all_triangles], 1, "triangle merge")
+
+        if colored_triangles:
+            scene["tri_colors"] = _cat_collections(
+                [p._rt_tri_colors for p in colored_triangles], 1, "triangle merge")
+        else:
+            scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
+
+        if textured_triangles:
+            scene["tri_uvs"] = _cat_collections(
+                [p._rt_tri_uvs for p in textured_triangles], 1, "triangle merge")
+
+            flat_textures = []
+            for p in textured_triangles:
+                tex = p._rt_texture_map
+                if tex.dim() == 3:  # [H, W, 5]
+                    tex = tex.unsqueeze(0)  # [1, H, W, 5]
+                # Flatten H and W (dimensions 1 and 2)
+                tex = tex.reshape(tex.shape[0], -1, 5)  # [T_tex, H*W, 5]
+                flat_textures.append(tex)
+            scene["textures"] = _cat_collections(flat_textures, 1, "texture merge")
+
+            offset = 0
+            tex_meta_list = []
+            for p in textured_triangles:
+                tex = p._rt_texture_map
+                w = tex.shape[-3]
+                h = tex.shape[-2]
+                num_tris = p._rt_tri_pos.shape[1]
+                meta = torch.tensor([offset, w, h], dtype=torch.int32, device=device).view(1, 3).expand(num_tris, 3)
+                tex_meta_list.append(meta)
+                offset += w * h
+            scene["tri_tex_meta"] = torch.cat(tex_meta_list, 0).contiguous()
+        else:
+            scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
+            scene["textures"] = torch.zeros((1, 1, 5), device=device)
+            scene["tri_tex_meta"] = torch.zeros((1, 3), dtype=torch.int32, device=device)
+
         scene["tri_mat_id"] = _cat_collections(
-            [p._rt_tri_mat_id for p in triangles], 1, "triangle merge")
+            [p._rt_tri_mat_id for p in all_triangles], 1, "triangle merge")
         scene["tri_mat"] = _cat_collections(
-            [p._rt_tri_mat for p in triangles], 1, "triangle merge")
-        lo = _cat_collections([p._rt_frame_lo for p in triangles], 1,
+            [p._rt_tri_mat for p in all_triangles], 1, "triangle merge")
+
+        lo = _cat_collections([p._rt_frame_lo for p in all_triangles], 1,
                               "triangle merge")
-        hi = _cat_collections([p._rt_frame_hi for p in triangles], 1,
+        hi = _cat_collections([p._rt_frame_hi for p in all_triangles], 1,
                               "triangle merge")
-        opaque = _cat_collections([p._rt_frame_opaque for p in triangles], 1,
+        opaque = _cat_collections([p._rt_frame_opaque for p in all_triangles], 1,
                                   "triangle merge")
         scene["tri_bvh"] = build_stbvh(
             lo, hi, num_frames=num_frames,
@@ -960,6 +1013,10 @@ def _merge_scene(primitives):
         scene["tri_norm"] = torch.zeros((1, 1, 9), device=device)
         scene["tri_extra"] = torch.zeros((1, 1, 6), device=device)
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
+        scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
+        scene["textures"] = torch.zeros((1, 1, 5), device=device)
+        scene["tri_tex_meta"] = torch.zeros((1, 3), dtype=torch.int32, device=device)
+        scene["num_colored_triangles"] = 0
         scene["tri_mat_id"] = torch.zeros((1, 1), dtype=torch.int32,
                                           device=device)
         scene["tri_mat"] = torch.zeros((1, 1, MAT_W), device=device)
@@ -1055,6 +1112,7 @@ def _merge_scene(primitives):
         p._rt_tri_pos = p._rt_tri_norm = None
         p._rt_tri_extra = p._rt_tri_colors = None
         p._rt_tri_mat_id = p._rt_tri_mat = None
+        p._rt_tri_uvs = p._rt_texture_map = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     for p in pn_patches:
         p._rt_pn_ctrl = p._rt_pn_norm = None
@@ -1144,6 +1202,7 @@ def _downsample_background(background_color, aa, num_frames, screen_height,
 def render_triangles_wavefront(
         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
         tri_pos, tri_norm, tri_extra, tri_colors,
+        tri_uvs, tri_tex_meta, textures, num_colored_triangles,
         cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
         time_start, time_end, width, height, half_screen_w, half_screen_h,
         layer_offset_triangles, max_bounces, transparent, out):
@@ -1209,13 +1268,14 @@ def render_triangles_wavefront(
             _t_traverse += _m - _s
         wf_shade_triangle(
             active, na, tri_pos, tri_norm, tri_extra, tri_colors,
+            tri_uvs, tri_tex_meta, textures, num_colored_triangles,
             int(time_start), int(width), int(height),
             rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
             rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
         if _timing:
             torch.cuda.synchronize(); ti.sync(); _e = _t.perf_counter()
             _t_shade += _e - _m
-        # Compaction: rays still flagged active (status column 2 == 0).
+        # Compaction: ...
         active = (rs_int[:, 2] == 0).nonzero(as_tuple=True)[0].to(i32)
         if _timing:
             torch.cuda.synchronize(); ti.sync()
@@ -1299,7 +1359,8 @@ def render_general_wavefront(
         wf_shade_general(
             active, na,
             merged["tri_pos"], merged["tri_norm"], merged["tri_extra"],
-            merged["tri_colors"],
+            merged["tri_colors"], merged["tri_uvs"], merged["tri_tex_meta"],
+            merged["textures"], int(merged["num_colored_triangles"]),
             merged["pn_ctrl"], merged["pn_norm"], merged["pn_extra"],
             merged["pn_colors"],
             merged["circuit_meta"], merged["circuit_colors"],
@@ -1473,7 +1534,8 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
                 tri_bvh.leaf_tspan, tri_bvh.first_leaf,
                 merged["tri_pos"], merged["tri_norm"], merged["tri_extra"],
-                merged["tri_colors"],
+                merged["tri_colors"], merged["tri_uvs"], merged["tri_tex_meta"],
+                merged["textures"], int(merged["num_colored_triangles"]),
                 pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
                 pn_bvh.leaf_tspan, pn_bvh.first_leaf,
                 merged["pn_ctrl"], merged["pn_norm"], merged["pn_extra"],
@@ -1514,6 +1576,8 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     tri_bvh.leaf_tspan, tri_bvh.first_leaf,
                     merged["tri_pos"], merged["tri_norm"],
                     merged["tri_extra"], merged["tri_colors"],
+                    merged["tri_uvs"], merged["tri_tex_meta"],
+                    merged["textures"], int(merged["num_colored_triangles"]),
                     cam_origin, sp, pbx, pby,
                     int(start), int(end), int(width), int(height),
                     float(width // 2), float(height // 2),
@@ -1540,6 +1604,8 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     tri_bvh.leaf_tspan, tri_bvh.first_leaf,
                     merged["tri_pos"], merged["tri_norm"],
                     merged["tri_extra"], merged["tri_colors"],
+                    merged["tri_uvs"], merged["tri_tex_meta"],
+                    merged["textures"], int(merged["num_colored_triangles"]),
                     cam_origin, sp, pbx, pby,
                     int(start), int(end), int(width), int(height),
                     float(width // 2), float(height // 2),
@@ -1558,6 +1624,8 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     tri_bvh.leaf_tspan, tri_bvh.first_leaf,
                     merged["tri_pos"], merged["tri_norm"],
                     merged["tri_extra"], merged["tri_colors"],
+                    merged["tri_uvs"], merged["tri_tex_meta"],
+                    merged["textures"], int(merged["num_colored_triangles"]),
                     bez_bvh.nodes, bez_bvh.node_miss, bez_bvh.leaf_prim,
                     bez_bvh.leaf_tspan, bez_bvh.first_leaf,
                     merged["circuit_meta"], merged["circuit_colors"],

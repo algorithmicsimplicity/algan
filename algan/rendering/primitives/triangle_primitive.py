@@ -96,6 +96,8 @@ class TrianglePrimitive(RenderPrimitive):
         triangle_collection=None,
         glow=0,
         shader=None,
+        uvs=None,
+        texture_map=None,
         **shader_kwargs,
     ):
         device = COMPUTING_DEFAULTS.animation_device
@@ -114,6 +116,9 @@ class TrianglePrimitive(RenderPrimitive):
         """
         self.reverse_perimeter = reverse_perimeter
         self.min_interpolation_coord = 0
+        self.uvs = None
+        self.texture_map = None
+
         if triangle_collection is not None:
             self.shader = triangle_collection[0].shader
             # Names of the positional shader_param_values, in the same order
@@ -137,8 +142,35 @@ class TrianglePrimitive(RenderPrimitive):
                     )
                 )
             )
+
+            # Check if any triangle in the collection has uvs or texture_map
+            has_uvs = any(getattr(t, "uvs", None) is not None for t in triangle_collection)
+            if has_uvs:
+                uv_list = []
+                for triangle in triangle_collection:
+                    uv = getattr(triangle, "uvs", None)
+                    if uv is None:
+                        uv = torch.zeros((*triangle.corners.shape[:-1], 2), device=triangle.corners.device)
+                    else:
+                        if uv.dim() == 4:
+                            uv = squish(uv, -3, -2)
+                        uv = uv.to(triangle.corners.device)
+                    uv_list.append(uv)
+                merged_uvs = []
+                for i, triangle in enumerate(triangle_collection):
+                    cor, uv = broadcast_all([triangle.corners, uv_list[i]], ignored_dims=[-1])
+                    merged_uvs.append(uv)
+                self.uvs = unsquish(torch.cat(merged_uvs, 1), -2, 3)
+
+            for triangle in triangle_collection:
+                tex = getattr(triangle, "texture_map", None)
+                if tex is not None:
+                    self.texture_map = tex.to(self.corners.device)
+                    break
+
             self.padding = 1
             return
+
         self.corners = corners
         if normals is None:
             normals = torch.zeros_like(corners)
@@ -153,6 +185,12 @@ class TrianglePrimitive(RenderPrimitive):
         self.shader_param_values = broadcast_all(
             [colors, *shader_kwargs.values()], ignored_dims=[-1]
         )[1:]
+
+        if uvs is not None:
+            if uvs.dim() == 3:
+                uvs = unsquish(uvs, -2, 3)
+            self.uvs = uvs.to(self.corners.device)
+        self.texture_map = texture_map.to(self.corners.device) if texture_map is not None else None
 
         if shader is None:
             shader = RENDERING_DEFAULTS.shader
