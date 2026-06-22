@@ -1,7 +1,7 @@
 import torch
 from torch.export.dynamic_shapes import Dim
 
-from algan import compiled, exported, cuda_compiled, CudaStream, csync
+from algan import compiled, exported
 from algan.constants.color import BLUE
 from algan.settings.defaults import *
 from algan.rendering.primitives.primitive import RenderPrimitive
@@ -21,30 +21,28 @@ t = 2
 num_frag = 100000
 #@exported(example_inputs=(torch.randn((t, num_frag, 3, 2)), torch.randn((t, num_frag, 1)), torch.randn((t, num_frag, 1))),
 #          dynamic_shapes=[(Dim.AUTO, Dim.AUTO, Dim.STATIC, Dim.STATIC), (Dim.AUTO, Dim.AUTO, Dim.STATIC), (Dim.AUTO, Dim.AUTO, Dim.STATIC)])
-@cuda_compiled
 def _get_bary_coordinates_part_1(triangle_corners, fragment_x, fragment_y):
     #stream = torch.cuda.Stream()
     #with torch.cuda.stream(stream):
-    with CudaStream():
-        cs = triangle_corners
-        fragment_x -= cs[..., 2, 0].unsqueeze(-1)
-        fragment_y -= cs[..., 2, 1].unsqueeze(-1)
-        # y23 = (cs[..., 1, 1] - cs[..., 2, 1]).unsqueeze(-1)
-        y23 = torch.subtract(cs[..., 1, 1], cs[..., 2, 1], out=cs[..., 1, 1]).unsqueeze(-1)
-        # x13 = (cs[..., 0, 0] - cs[..., 2, 0]).unsqueeze(-1)
-        x13 = torch.subtract(cs[..., 0, 0], cs[..., 2, 0], out=cs[..., 0, 0]).unsqueeze(-1)
-        # x32 = (cs[..., 2, 0] - cs[..., 1, 0]).unsqueeze(-1)
-        x32 = torch.subtract(cs[..., 2, 0], cs[..., 1, 0], out=cs[..., 2, 0]).unsqueeze(-1)
-        # y13 = (cs[..., 0, 1] - cs[..., 2, 1]).unsqueeze(-1)
-        y13 = torch.subtract(cs[..., 0, 1], cs[..., 2, 1], out=cs[..., 1, 0]).unsqueeze(-1)
-        # y31 = (cs[..., 2, 1] - cs[..., 0, 1]).unsqueeze(-1)
-        y31 = torch.subtract(cs[..., 2, 1], cs[..., 0, 1], out=cs[..., 0, 1]).unsqueeze(-1)
-        # denom = (y23 * x13 + x32 * y13)
-        # inv_denom = 1 / denom
-        denom = torch.mul(y23, x13, out=cs[..., 2, 1].unsqueeze(-1))
-        denom = torch.addcmul(denom, x32, y13, value=1, out=denom)
-        inv_denom = torch.div(1, denom, out=denom)
-        return denom, inv_denom, x13, x32, y13, y31, y23
+    cs = triangle_corners
+    fragment_x -= cs[..., 2, 0].unsqueeze(-1)
+    fragment_y -= cs[..., 2, 1].unsqueeze(-1)
+    # y23 = (cs[..., 1, 1] - cs[..., 2, 1]).unsqueeze(-1)
+    y23 = torch.subtract(cs[..., 1, 1], cs[..., 2, 1], out=cs[..., 1, 1]).unsqueeze(-1)
+    # x13 = (cs[..., 0, 0] - cs[..., 2, 0]).unsqueeze(-1)
+    x13 = torch.subtract(cs[..., 0, 0], cs[..., 2, 0], out=cs[..., 0, 0]).unsqueeze(-1)
+    # x32 = (cs[..., 2, 0] - cs[..., 1, 0]).unsqueeze(-1)
+    x32 = torch.subtract(cs[..., 2, 0], cs[..., 1, 0], out=cs[..., 2, 0]).unsqueeze(-1)
+    # y13 = (cs[..., 0, 1] - cs[..., 2, 1]).unsqueeze(-1)
+    y13 = torch.subtract(cs[..., 0, 1], cs[..., 2, 1], out=cs[..., 1, 0]).unsqueeze(-1)
+    # y31 = (cs[..., 2, 1] - cs[..., 0, 1]).unsqueeze(-1)
+    y31 = torch.subtract(cs[..., 2, 1], cs[..., 0, 1], out=cs[..., 0, 1]).unsqueeze(-1)
+    # denom = (y23 * x13 + x32 * y13)
+    # inv_denom = 1 / denom
+    denom = torch.mul(y23, x13, out=cs[..., 2, 1].unsqueeze(-1))
+    denom = torch.addcmul(denom, x32, y13, value=1, out=denom)
+    inv_denom = torch.div(1, denom, out=denom)
+    return denom, inv_denom, x13, x32, y13, y31, y23
 
 
 def _get_bary_coordinates_part_2(fragment_x, fragment_y, inv_denom, x13, x32, y13, y31, y23):
@@ -76,7 +74,6 @@ def get_bary_coordinates(triangle_corners, fragment_x, fragment_y):
 
 
 #@compiled
-@cuda_compiled
 def interpolate_triangle_corners(self, interpolation_coord, property):
     ws = interpolation_coord
     x = property
@@ -164,7 +161,6 @@ class TrianglePrimitive(RenderPrimitive):
     def get_batch_identifier(self):
         return f"{self.__class__}_{id(self.shader)}"
 
-    @csync
     def get_interpolation_coordinates(
         self, vertex_corners, fragment_x, fragment_y, aa_offsets
     ):
@@ -172,8 +168,6 @@ class TrianglePrimitive(RenderPrimitive):
         out = get_bary_coordinates(vertex_corners, fragment_x, fragment_y)
         return out
 
-    #@compiled
-    @csync
     def interpolate_property(self, interpolation_coord, property, repeats_inds):
         out = interpolate_triangle_corners(
             self,

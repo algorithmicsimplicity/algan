@@ -34,7 +34,6 @@ import taichi as ti
 import torch
 import torch.nn.functional as F
 
-from algan import CudaStream, csync
 from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
     batch_arange,
@@ -538,41 +537,39 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             camera.screen_width * camera.screen_height * 5 * 4
             * (2 if mc else 1))
 
-    @csync
     def project_to_screen(self, camera, light_sources):
-        with CudaStream():
-            self._shade_vertex_colors(camera, light_sources)
+        self._shade_vertex_colors(camera, light_sources)
 
-            corners = self.corners.float()
-            normals = self.normals.float()
-            # Hot/cold split, each array with its own (independent) time
-            # dimension: positions are touched by every candidate
-            # intersection, normals only by hits that bounce or scatter, and
-            # reflectivity/roughness (usually static) only by confirmed hits.
-            self._rt_tri_pos = corners.reshape(
-                corners.shape[0], corners.shape[1], 9).contiguous()
-            self._rt_tri_norm = normals.reshape(
-                normals.shape[0], normals.shape[1], 9).contiguous()
-            self._rt_tri_extra = self._pack_surface_extra(
-                "triangle surface params")
-            self._rt_tri_colors = self.colors.float().contiguous()
-            self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
-            self._rt_num_frames = camera.ray_origin.shape[0]
+        corners = self.corners.float()
+        normals = self.normals.float()
+        # Hot/cold split, each array with its own (independent) time
+        # dimension: positions are touched by every candidate
+        # intersection, normals only by hits that bounce or scatter, and
+        # reflectivity/roughness (usually static) only by confirmed hits.
+        self._rt_tri_pos = corners.reshape(
+            corners.shape[0], corners.shape[1], 9).contiguous()
+        self._rt_tri_norm = normals.reshape(
+            normals.shape[0], normals.shape[1], 9).contiguous()
+        self._rt_tri_extra = self._pack_surface_extra(
+            "triangle surface params")
+        self._rt_tri_colors = self.colors.float().contiguous()
+        self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
+        self._rt_num_frames = camera.ray_origin.shape[0]
 
-            self._pack_frame_visibility(corners.amin(-2), corners.amax(-2),
-                                        self._rt_tri_colors,
-                                        "triangle bounds/colors")
+        self._pack_frame_visibility(corners.amin(-2), corners.amax(-2),
+                                    self._rt_tri_colors,
+                                    "triangle bounds/colors")
 
-            # Everything the renderer needs now lives in the packed arrays;
-            # release the unpacked geometry to halve resident GPU memory.
-            self.corners = self.normals = None
-            self.reflectivity = self.roughness = None
-            self.colors = self.shader_param_values = None
+        # Everything the renderer needs now lives in the packed arrays;
+        # release the unpacked geometry to halve resident GPU memory.
+        self.corners = self.normals = None
+        self.reflectivity = self.roughness = None
+        self.colors = self.shader_param_values = None
 
-            self._set_frame_buffer_bytes(camera)
+        self._set_frame_buffer_bytes(camera)
 
-            # Ensure released geometry is actually freed before rendering.
-            empty_cache()
+        # Ensure released geometry is actually freed before rendering.
+        empty_cache()
         return self
 
     def get_memory_used_per_timestep(self):
@@ -604,47 +601,45 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
     meshes stay watertight.
     """
 
-    @csync
     def project_to_screen(self, camera, light_sources):
-        with CudaStream():
-            self._shade_vertex_colors(camera, light_sources)
+        self._shade_vertex_colors(camera, light_sources)
 
-            corners = self.corners.float()
-            normals = self.normals.float()
-            # Hot/cold split as for flat triangles, with the patch's
-            # monomial coefficients as the hot geometry. corners and
-            # normals share a time dimension by construction (the batching
-            # constructor broadcasts them together).
-            control_points = pn_control_points(corners, normals)
-            self._rt_pn_ctrl = pn_patch_coefficients(
-                control_points).contiguous()
-            # Tight oriented bounding box per patch: the trace kernel tests it
-            # before the matrix-pencil solve to reject the (many) candidates
-            # whose loose axis-aligned leaf box the ray pierces but whose actual
-            # (often thin, diagonal) patch it misses.
-            self._rt_pn_obb = pn_obb(control_points).contiguous()
-            self._rt_pn_norm = normals.reshape(
-                normals.shape[0], normals.shape[1], 9).contiguous()
-            self._rt_pn_extra = self._pack_surface_extra("pn surface params")
-            self._rt_pn_colors = self.colors.float().contiguous()
-            self._rt_pn_mat_id, self._rt_pn_mat = self._pack_material()
-            self._rt_num_frames = camera.ray_origin.shape[0]
+        corners = self.corners.float()
+        normals = self.normals.float()
+        # Hot/cold split as for flat triangles, with the patch's
+        # monomial coefficients as the hot geometry. corners and
+        # normals share a time dimension by construction (the batching
+        # constructor broadcasts them together).
+        control_points = pn_control_points(corners, normals)
+        self._rt_pn_ctrl = pn_patch_coefficients(
+            control_points).contiguous()
+        # Tight oriented bounding box per patch: the trace kernel tests it
+        # before the matrix-pencil solve to reject the (many) candidates
+        # whose loose axis-aligned leaf box the ray pierces but whose actual
+        # (often thin, diagonal) patch it misses.
+        self._rt_pn_obb = pn_obb(control_points).contiguous()
+        self._rt_pn_norm = normals.reshape(
+            normals.shape[0], normals.shape[1], 9).contiguous()
+        self._rt_pn_extra = self._pack_surface_extra("pn surface params")
+        self._rt_pn_colors = self.colors.float().contiguous()
+        self._rt_pn_mat_id, self._rt_pn_mat = self._pack_material()
+        self._rt_num_frames = camera.ray_origin.shape[0]
 
-            # The patch lies in the convex hull of its control points, so
-            # the control net bounds it.
-            self._pack_frame_visibility(control_points.amin(-2),
-                                        control_points.amax(-2),
-                                        self._rt_pn_colors,
-                                        "pn bounds/colors")
+        # The patch lies in the convex hull of its control points, so
+        # the control net bounds it.
+        self._pack_frame_visibility(control_points.amin(-2),
+                                    control_points.amax(-2),
+                                    self._rt_pn_colors,
+                                    "pn bounds/colors")
 
-            self.corners = self.normals = None
-            self.reflectivity = self.roughness = None
-            self.colors = self.shader_param_values = None
+        self.corners = self.normals = None
+        self.reflectivity = self.roughness = None
+        self.colors = self.shader_param_values = None
 
-            self._set_frame_buffer_bytes(camera)
+        self._set_frame_buffer_bytes(camera)
 
-            # Ensure released geometry is actually freed before rendering.
-            empty_cache()
+        # Ensure released geometry is actually freed before rendering.
+        empty_cache()
         return self
 
 
@@ -671,40 +666,38 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
     max_samples_per_segment = 512
 
-    @csync
     def project_to_screen(self, camera, light_sources):
-        with CudaStream():
-            corners = self.corners.float().contiguous()  # [Tc, S, 4, 3]
-            num_frames = camera.ray_origin.shape[0]
-            self._rt_num_frames = num_frames
+        corners = self.corners.float().contiguous()  # [Tc, S, 4, 3]
+        num_frames = camera.ray_origin.shape[0]
+        self._rt_num_frames = num_frames
 
-            device = corners.device
-            cam_o = _expand_frames(_flat_frames(camera.ray_origin, (3,)),
-                                   num_frames).to(device)
-            sp = _expand_frames(_flat_frames(camera.screen_point, (3,)),
-                                num_frames).to(device)
-            sb = _expand_frames(_flat_frames(camera.screen_basis, (3, 3)),
-                                num_frames).to(device)
+        device = corners.device
+        cam_o = _expand_frames(_flat_frames(camera.ray_origin, (3,)),
+                               num_frames).to(device)
+        sp = _expand_frames(_flat_frames(camera.screen_point, (3,)),
+                            num_frames).to(device)
+        sb = _expand_frames(_flat_frames(camera.screen_basis, (3, 3)),
+                            num_frames).to(device)
 
-            num_samples = self._compute_samples_per_segment(
-                corners, cam_o, sp, sb, camera.screen_height)
-            self._build_circuit_geometry(corners, num_samples)
-            self._build_frame_bounds(corners, cam_o, sp, sb,
-                                     camera.screen_height)
+        num_samples = self._compute_samples_per_segment(
+            corners, cam_o, sp, sb, camera.screen_height)
+        self._build_circuit_geometry(corners, num_samples)
+        self._build_frame_bounds(corners, cam_o, sp, sb,
+                                 camera.screen_height)
 
-            # The polylines/metadata now carry everything the renderer needs;
-            # release the control points to reduce resident GPU memory.
-            self.corners = None
+        # The polylines/metadata now carry everything the renderer needs;
+        # release the control points to reduce resident GPU memory.
+        self.corners = None
 
-            # Per-frame buffer bytes: the u8 output, plus the f32 sample
-            # accumulator in Monte Carlo mode.
-            mc = PHYSICAL_LIGHTING or SAMPLES_PER_PIXEL > 1
-            self._rt_frame_bytes = int(
-                camera.screen_width * camera.screen_height * 5 * 4
-                * (2 if mc else 1))
+        # Per-frame buffer bytes: the u8 output, plus the f32 sample
+        # accumulator in Monte Carlo mode.
+        mc = PHYSICAL_LIGHTING or SAMPLES_PER_PIXEL > 1
+        self._rt_frame_bytes = int(
+            camera.screen_width * camera.screen_height * 5 * 4
+            * (2 if mc else 1))
 
-            # Ensure released geometry is actually freed before rendering.
-            empty_cache()
+        # Ensure released geometry is actually freed before rendering.
+        empty_cache()
         return self
 
     def _compute_samples_per_segment(self, corners, cam_o, sp, sb, screen_h):

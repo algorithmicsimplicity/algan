@@ -124,6 +124,14 @@ def _shade_fragment(prim, f, pos, view_dir, n_interp, face_n, albedo, glow,
     env = mat_arr[tm, prim, 11]
 
     n = _shading_normal(n_interp, face_n, flat)
+    # Two-sided shading: light the face the viewer actually sees. A coarsely
+    # tessellated mesh whose perpendicular frame was built from an arbitrary
+    # axis (e.g. a Cylinder via ``move_between_points``) can leave some patch
+    # normals pointing inward; without flipping them toward the viewer they
+    # shade as unlit backfaces (black), so a thin tube's apparent lighting would
+    # depend on its (incidental) frame orientation instead of just its shape.
+    if n.dot(view_dir) < 0.0:
+        n = -n
 
     out = albedo
     # mid == _MID_UNLIT: basic / passthrough -- colour returned unchanged.

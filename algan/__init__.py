@@ -11,8 +11,6 @@ import torch
 torch.set_grad_enabled(False)
 c = torch.inference_mode()
 c.__enter__()
-#import openvino.torch
-#import torch_tensorrt
 
 
 def exported(function=None, *, example_inputs=None, dynamic_shapes=None):
@@ -40,25 +38,9 @@ def exported(function=None, *, example_inputs=None, dynamic_shapes=None):
 '''default_compile_operation = lambda x: torch.compile(x, dynamic=False, fullgraph=False, backend="tensorrt",
                                                     options={"min_block_size": 1,
                                                              "use_python_runtime": True, }
-                                                    )#"onnxrt")# mode="reduce-overhead")#backend='cudagraphs')'''
-default_compile_operation = lambda x: torch.compile(x, dynamic=True, fullgraph=False)
-
-
-class CudaStream():
-    def __enter__(self):
-        self.stream = None
-        if False:#COMPUTING_DEFAULTS.compiled:
-            self.stream = torch.cuda.Stream()
-            self.stream.wait_stream(torch.cuda.default_stream(torch.device('cuda')))
-            self.context = torch.cuda.stream(self.stream)
-            self.context.__enter__()
-
-    def __exit__(self, exc_type, exc_value, exc_traceback):
-        if exc_type is not None:
-            return False
-        if self.stream is not None:
-            return self.context.__exit__(exc_type, exc_value, exc_traceback)
-        return True
+                                                    )#"onnxrt")# mode="reduce-overhead")#backend='cudagraphs')
+default_compile_operation = lambda x: torch.compile(x, dynamic=True, fullgraph=False)'''
+default_compile_operation = lambda x: x
 
 
 def compile_wrapper(function):
@@ -82,28 +64,17 @@ try:
         with torch.no_grad():
             return x + 1
 
-    # Test the dummy function
     with torch.no_grad():
         _dummy_func(torch.tensor(1.0))
 
     # compiled = torch.compile
     # print('using torch.compile')
     compiled = lambda x: x
-    cuda_compiled = lambda x: x#compile_wrapper
 except Exception as e:
-    #raise e
-    #print('PyTorch Compilation is unavailable, most likely due to running on Windows OS.')
     compiled = lambda x: x
-    cuda_compiled = lambda x: x
+
 #not_compiled = torch.compiler.disable(recursive=True)
 not_compiled = lambda x: x
-def csync(f):
-    def _sync(*args, **kwargs):
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        return f(*args, **kwargs)
-
-    return _sync
 
 import taichi as ti
 

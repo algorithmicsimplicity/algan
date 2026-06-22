@@ -438,13 +438,39 @@ def project_onto_basis(vector, basis):
 
 
 def get_orthonormal_vector(*vectors):
-    vectors = list(vectors)
-    r = torch.randn_like(vectors[0])
-    for vector in vectors:
-        vn = F.normalize(vector, p=2, dim=-1)
-        r = r - dot_product(r, vn) * vn
-        r = F.normalize(r, p=2, dim=-1)
-    return r
+    """A unit vector orthogonal to every vector in ``vectors`` (batched over the
+    leading dims). The choice among the valid orthogonal directions is
+    *deterministic*.
+
+    It used to seed the Gram-Schmidt with ``torch.randn_like``, which re-rolls
+    every render. Since this builds the perpendicular basis of surfaces of
+    revolution (e.g. Cylinders, via ``Cylinder._move_between_points``), a random
+    seed spun those meshes to a random angle about their axis on each render. The
+    silhouette is rotation-symmetric so it looked stable, but which tessellated
+    facet faced the light changed -- making per-facet shading and ray-traced
+    shadows flicker randomly between renders (most visible on thin tubes such as
+    neural-net synapses). Seeding from the fixed standard basis instead keeps the
+    orientation reproducible.
+    """
+    vectors = [F.normalize(v, p=2, dim=-1) for v in vectors]
+    v0 = vectors[0]
+    # Try each standard-basis axis as the seed, project out all input vectors,
+    # and keep the best-conditioned residual per batch element -- a deterministic,
+    # well-conditioned choice for any input (even when an axis lies in the span of
+    # ``vectors``). The *which* orthogonal direction does not matter to callers;
+    # only that it is reproducible.
+    best = torch.zeros_like(v0)
+    best_norm = torch.zeros_like(v0[..., :1])
+    for axis in range(v0.shape[-1]):
+        r = torch.zeros_like(v0)
+        r[..., axis] = 1.0
+        for vn in vectors:
+            r = r - dot_product(r, vn) * vn
+        n = r.norm(p=2, dim=-1, keepdim=True)
+        take = n > best_norm
+        best = torch.where(take, r, best)
+        best_norm = torch.where(take, n, best_norm)
+    return F.normalize(best, p=2, dim=-1)
 
 
 def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):

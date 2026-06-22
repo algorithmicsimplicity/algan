@@ -8,7 +8,7 @@ import gc
 
 from algan.rendering.primitives.fragment_blender_taichi import blend_packed_power_of_two_fragment_list
 from algan.rendering.primitives.triangle_rasterize_taichi import rasterize_triangle_taichi
-from algan import compiled, exported, cuda_compiled, CudaStream, not_compiled, csync
+from algan import compiled, exported, not_compiled
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.constants.color import BLUE, BLACK, WHITE, RED, GREEN
 from algan.geometry.geometry import intersect_line_with_plane, distance, normalize
@@ -19,7 +19,7 @@ from algan.utils.tensor_utils import (
     squish,
     broadcast_gather,
     unsquish,
-    unsqueeze_right, wait_for_cuda,
+    unsqueeze_right,
 )
 
 
@@ -34,40 +34,36 @@ class OutOfRenderMemory(Exception):
 
 
 #@torch.compiler.disable(recursive=True)
-@cuda_compiled
 def scatter_arg_max(x, inds, dim=-1, dim_size=None):
-    #stream = torch.cuda.Stream()
-    #with torch.cuda.stream(stream):
-    with CudaStream():
-        if len(inds) == 0:
-            return None, None
-        if scatter_max_op is not None and COMPUTING_DEFAULTS.use_torch_scatter:
-            return scatter_max_op(x, inds, -1, dim_size=dim_size)
-        inds = inds.clone()
-        x = x.view(-1)
-        out_dims = [*x.shape]
-        out_dims[dim] = dim_size if dim_size is not None else inds.amax() + 1
-        out = torch.zeros(out_dims, device=x.device)
-        max_vals = torch.scatter_reduce(out, dim, inds, x, "amax", include_self=False)
-        max_vals_gathered = broadcast_gather(max_vals, dim, inds)
-        m = x >= max_vals_gathered - 1e-6
-        inds[~m] = -1
-        #inds = torch.where(m, inds, -1)
+    if len(inds) == 0:
+        return None, None
+    if scatter_max_op is not None and COMPUTING_DEFAULTS.use_torch_scatter:
+        return scatter_max_op(x, inds, -1, dim_size=dim_size)
+    inds = inds.clone()
+    x = x.view(-1)
+    out_dims = [*x.shape]
+    out_dims[dim] = dim_size if dim_size is not None else inds.amax() + 1
+    out = torch.zeros(out_dims, device=x.device)
+    max_vals = torch.scatter_reduce(out, dim, inds, x, "amax", include_self=False)
+    max_vals_gathered = broadcast_gather(max_vals, dim, inds)
+    m = x >= max_vals_gathered - 1e-6
+    inds[~m] = -1
+    #inds = torch.where(m, inds, -1)
 
-        sorted_inds, sorted_indices = torch.sort(inds)
-        is_new_mask = torch.cat(
-            [torch.tensor([True], device=x.device), torch.diff(sorted_inds) != 0]
-        )
+    sorted_inds, sorted_indices = torch.sort(inds)
+    is_new_mask = torch.cat(
+        [torch.tensor([True], device=x.device), torch.diff(sorted_inds) != 0]
+    )
 
-        argmax_inds = sorted_indices[is_new_mask]
-        if sorted_inds[0] == -1:
-            if len(argmax_inds) == 1:
-                argmax_inds = argmax_inds[:0]
-            elif len(argmax_inds) > 1:
-                argmax_inds = argmax_inds[1:]  # sorted_indices[is_new_mask]
+    argmax_inds = sorted_indices[is_new_mask]
+    if sorted_inds[0] == -1:
+        if len(argmax_inds) == 1:
+            argmax_inds = argmax_inds[:0]
+        elif len(argmax_inds) > 1:
+            argmax_inds = argmax_inds[1:]  # sorted_indices[is_new_mask]
 
-        max_vals = broadcast_gather(x, -1, argmax_inds)
-        return max_vals, argmax_inds
+    max_vals = broadcast_gather(x, -1, argmax_inds)
+    return max_vals, argmax_inds
 
 
 dummy_dists = torch.randn((100, 1))
@@ -80,55 +76,49 @@ dynamic_shapes = [
 ]
 
 
-@cuda_compiled
-@csync
 def do_write(out, c_write, max_dist, dists, max_ind, c_read, ie, memory):
-    #stream = torch.cuda.Stream()
-    #with torch.cuda.stream(stream):
-    with CudaStream():
-        with memory.temp():
-            mask1 = torch.lt(torch.tensor((0.0,), device=c_write.device), max_dist, out=memory.get_tensor(max_dist.shape, torch.bool))
-            mask2 = torch.lt(max_dist, 1e12, out=memory.get_tensor(max_dist.shape, torch.bool))
-            mask = torch.logical_and(mask1, mask2, out=mask1).unsqueeze(-1)
-            #mask = ((0 < max_dist) & (max_dist < 1e12)).unsqueeze(-1)
+    with memory.temp():
+        mask1 = torch.lt(torch.tensor((0.0,), device=c_write.device), max_dist, out=memory.get_tensor(max_dist.shape, torch.bool))
+        mask2 = torch.lt(max_dist, 1e12, out=memory.get_tensor(max_dist.shape, torch.bool))
+        mask = torch.logical_and(mask1, mask2, out=mask1).unsqueeze(-1)
+        #mask = ((0 < max_dist) & (max_dist < 1e12)).unsqueeze(-1)
 
-        dists.scatter_(-1, max_ind, -1.0)
-        a = c_write[..., -1:]
-        """if False:#transparent_output:
-            af = a
-            ab = c_read[..., -1:]
-            a_out = af + ab * (1 - af)
-    
-            # If the resulting alpha is 0, the color is black with 0 alpha (fully transparent)
-            # m = a_out > 1e-3
-    
-            rgb_f = c_write[..., :-1]
-            rgb_b = c_read[..., :-1]
-            # Calculate the resulting RGB components
-            rgb_out = (
-                              rgb_f * af + (1 - af) * ab * rgb_b
-                      ) / a_out.clamp_min(1e-3)
-            # rgg_out = torch.where(m, rgb_out, torch.zeros((1,), device=m.device), out=c_write[...,:-1])
-            c_write[..., -1:].copy_(a_out)
-        else:"""
-        c_write = c_write[..., :-1]
-        torch.lerp(c_read, c_write, a, out=c_write)
-        # if True:#not (i == 0 and transparent_output):
-        # write = c_read * (1 - a) + a * (c_write)
-        #torch.mul(c_write, a, out=c_write)
-        #torch.mul(a, -1, out=a)
-        #torch.add(a, 1, out=a)
-        #torch.addcmul(c_write, c_read, a, out=c_write)
+    dists.scatter_(-1, max_ind, -1.0)
+    a = c_write[..., -1:]
+    """if False:#transparent_output:
+        af = a
+        ab = c_read[..., -1:]
+        a_out = af + ab * (1 - af)
 
-        # write = write * mask + (~mask) * c_read
-        write = torch.where(mask, c_write, c_read, out=c_write)
+        # If the resulting alpha is 0, the color is black with 0 alpha (fully transparent)
+        # m = a_out > 1e-3
 
-        out.scatter_(-2, ie, write)
+        rgb_f = c_write[..., :-1]
+        rgb_b = c_read[..., :-1]
+        # Calculate the resulting RGB components
+        rgb_out = (
+                          rgb_f * af + (1 - af) * ab * rgb_b
+                  ) / a_out.clamp_min(1e-3)
+        # rgg_out = torch.where(m, rgb_out, torch.zeros((1,), device=m.device), out=c_write[...,:-1])
+        c_write[..., -1:].copy_(a_out)
+    else:"""
+    c_write = c_write[..., :-1]
+    torch.lerp(c_read, c_write, a, out=c_write)
+    # if True:#not (i == 0 and transparent_output):
+    # write = c_read * (1 - a) + a * (c_write)
+    #torch.mul(c_write, a, out=c_write)
+    #torch.mul(a, -1, out=a)
+    #torch.add(a, 1, out=a)
+    #torch.addcmul(c_write, c_read, a, out=c_write)
+
+    # write = write * mask + (~mask) * c_read
+    write = torch.where(mask, c_write, c_read, out=c_write)
+
+    out.scatter_(-2, ie, write)
     return out
 
 
 #@exported(example_inputs=example_inputs, dynamic_shapes=dynamic_shapes)
-#@cuda_compiled
 def blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, inds_selected_, c_write_, c_read_, memory):
     inds_selected = broadcast_gather(
         inds,
@@ -175,7 +165,7 @@ def blend_seq(data):
         outs[i, :-1] = blend
     return outs.cuda()
 
-@csync
+
 def blend_with_scan(data):
     out = blend_packed_power_of_two_fragment_list(data)
     return out
@@ -259,8 +249,6 @@ class RenderPrimitive:
             **kwargs,
         )
 
-    #@cuda_compiled
-    #@csync
     def post_process_frames(self, frames, anti_alias_level, post_processes=[]):
         self.pre_post_pointers = self.memory.get_pointers()
         frame_out = frames
@@ -309,7 +297,6 @@ class RenderPrimitive:
                 torchvision.utils.save_image(
                     torch.from_numpy(frame).permute(-1, 0, 1) / 255, scene.file_path
                 )
-        wait_for_cuda()
 
     def mem_cat(self, xs, extra_buffer=0, persist=False):
         dim = 0
@@ -327,7 +314,6 @@ class RenderPrimitive:
             i += x.shape[dim]
         return out'''
 
-    @csync
     def render_window(
         self,
         primitives,
@@ -580,8 +566,6 @@ class RenderPrimitive:
             out = self.get_tensor(xshape, x.dtype, persist=persist)
         return broadcast_gather(x, dim, repeats_inds, out=out)
 
-    @cuda_compiled
-    @csync
     def blend_frags_to_pixels_old(
         self,
         colors,
@@ -593,72 +577,66 @@ class RenderPrimitive:
         screen_height,
         transparent_output=False,
     ):
-        #stream = torch.cuda.Stream()
-        #with torch.cuda.stream(stream):
-        with CudaStream():
-            colors[..., -1].clamp_(min=0, max=1)
-            unique_inds, unique_inds_inverse, unique_counts = inds.unique(
-                return_inverse=True, return_counts=True
-            )
+        colors[..., -1].clamp_(min=0, max=1)
+        unique_inds, unique_inds_inverse, unique_counts = inds.unique(
+            return_inverse=True, return_counts=True
+        )
 
-            current_frags = self.get_tensor(
-                (len(unique_inds), colors.shape[-1] - (0 if transparent_output else 1)),
-                torch.float,
-            )
-            out_pointer = self.memory.current_pointer
-            self.memory.save_pointer()
+        current_frags = self.get_tensor(
+            (len(unique_inds), colors.shape[-1] - (0 if transparent_output else 1)),
+            torch.float,
+        )
+        out_pointer = self.memory.current_pointer
+        self.memory.save_pointer()
 
-            if unique_counts.numel() == 0:
-                max_buffer_depth = 1
-            else:
-                max_buffer_depth = unique_counts.amax()
+        if unique_counts.numel() == 0:
+            max_buffer_depth = 1
+        else:
+            max_buffer_depth = unique_counts.amax()
 
-            out = current_frags
-            out[..., :] = background_color[..., : out.shape[-1]]
-            # out[..., -1] = 0
+        out = current_frags
+        out[..., :] = background_color[..., : out.shape[-1]]
+        # out[..., -1] = 0
 
-            # TODO make it so that if opacity is 0, that pixel is removed entirely (instead of just painting background constants), this will save us having to
-            # render invisible objects.
+        # TODO make it so that if opacity is 0, that pixel is removed entirely (instead of just painting background constants), this will save us having to
+        # render invisible objects.
 
-            original_pointer = self.memory.current_pointer
-            inds_selected_ = self.get_tensor(unique_inds_inverse.shape, unique_inds_inverse.dtype)
-            c_write_ = self.get_tensor(colors.shape, colors.dtype)
-            c_read_ = self.get_tensor(out.shape, out.dtype)
+        original_pointer = self.memory.current_pointer
+        inds_selected_ = self.get_tensor(unique_inds_inverse.shape, unique_inds_inverse.dtype)
+        c_write_ = self.get_tensor(colors.shape, colors.dtype)
+        c_read_ = self.get_tensor(out.shape, out.dtype)
 
-            #@compiled
-            @not_compiled
-            def blend_colors(dists, inds, colors, out):
-                for i in range(max_buffer_depth):
-                    max_dist, max_ind = scatter_arg_max(
-                        dists, inds, -1, dim_size=out.shape[-2]
-                    )
-                    if max_ind is None:
-                        break
+        #@compiled
+        @not_compiled
+        def blend_colors(dists, inds, colors, out):
+            for i in range(max_buffer_depth):
+                max_dist, max_ind = scatter_arg_max(
+                    dists, inds, -1, dim_size=out.shape[-2]
+                )
+                if max_ind is None:
+                    break
 
-                    blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, inds_selected_, c_write_, c_read_, self.memory)
-                self.memory.current_pointer = original_pointer
-                return out
+                blend_one_layer_of_fragments(dists, inds, colors, out, max_dist, max_ind, inds_selected_, c_write_, c_read_, self.memory)
+            self.memory.current_pointer = original_pointer
+            return out
 
-            out = blend_colors(dists, unique_inds_inverse, colors, out)
-            self.memory.reset_pointer()
+        out = blend_colors(dists, unique_inds_inverse, colors, out)
+        self.memory.reset_pointer()
 
-            out_inds = unique_inds.scatter_(0, unique_inds_inverse, inds)
-            # ind_counts = torch.histc(out_inds.float(), num_frames, min=0, max=(screen_width * screen_height * num_frames)).long()
-            float_tensor = self.get_tensor(out_inds.shape, dtype=torch.float)
-            float_tensor.copy_(out_inds)
-            histc_result = torch.histc(
-                float_tensor,
-                num_frames,
-                min=0,
-                max=(screen_width * screen_height * num_frames),
-            )
-            ind_counts = histc_result.long()
-            self.memory.current_pointer = out_pointer
-            wait_for_cuda()
+        out_inds = unique_inds.scatter_(0, unique_inds_inverse, inds)
+        # ind_counts = torch.histc(out_inds.float(), num_frames, min=0, max=(screen_width * screen_height * num_frames)).long()
+        float_tensor = self.get_tensor(out_inds.shape, dtype=torch.float)
+        float_tensor.copy_(out_inds)
+        histc_result = torch.histc(
+            float_tensor,
+            num_frames,
+            min=0,
+            max=(screen_width * screen_height * num_frames),
+        )
+        ind_counts = histc_result.long()
+        self.memory.current_pointer = out_pointer
         return out, out_inds, ind_counts
 
-    @cuda_compiled
-    @csync
     def blend_frags_to_pixels(
             self,
             colors,
@@ -781,10 +759,8 @@ class RenderPrimitive:
         )
         ind_counts = histc_result.long()
         self.memory.current_pointer = out_pointer
-        wait_for_cuda()
         return out, out_inds, ind_counts
 
-    #@cuda_compiled
     def get_windowed_bounding_boxes(
         self, bounding_corners, screen_width, screen_height, window_coords=None
     ):
@@ -841,7 +817,6 @@ class RenderPrimitive:
             None,
         )
 
-    #@cuda_compiled
     def project_and_get_bounding_boxes(
         self,
         x,
@@ -916,63 +891,56 @@ class RenderPrimitive:
             _,
         )
 
-    #@cuda_compiled
-    @csync
     def project_to_screen(self, camera, light_sources):
-        #stream = torch.cuda.Stream()
-        #with torch.cuda.stream(stream):
-        with CudaStream():
-            ray_origin = camera.ray_origin
-            screen_point = camera.screen_point
-            screen_basis = camera.screen_basis
-            screen_width = camera.screen_width
-            screen_height = camera.screen_height
+        ray_origin = camera.ray_origin
+        screen_point = camera.screen_point
+        screen_basis = camera.screen_basis
+        screen_width = camera.screen_width
+        screen_height = camera.screen_height
 
-            light_intensity = 1
-            ambient_light_intensity = 1
-            d = -1
-            if hasattr(self, "shader") and self.shader is not None:
-                for light_source in light_sources:
-                    with self.memory.temp():
-                        self.colors[..., :d] = self.shader(self.memory,
-                            self.corners,
-                            self.normals,
-                            self.colors[..., :d],
-                            ray_origin,
-                            light_source.origin,
-                            light_source.light_color,
-                            light_intensity,
-                            ambient_light_intensity,
-                            *self.shader_param_values,
-                        )
+        light_intensity = 1
+        ambient_light_intensity = 1
+        d = -1
+        if hasattr(self, "shader") and self.shader is not None:
+            for light_source in light_sources:
+                with self.memory.temp():
+                    self.colors[..., :d] = self.shader(self.memory,
+                        self.corners,
+                        self.normals,
+                        self.colors[..., :d],
+                        ray_origin,
+                        light_source.origin,
+                        light_source.light_color,
+                        light_intensity,
+                        ambient_light_intensity,
+                        *self.shader_param_values,
+                    )
 
-            self.first_projection = True
-            (
-                self.corners,
-                self.corners_int,
-                self.projected_distances,
-                self.bounding_corners,
-                self.bounding_box_sizes,
-                self.bbss,
-                self.num_fragments_per_object,
-                self.num_fragments_per_frame,
-                self.num_fragments,
-                _,
-            ) = self.project_and_get_bounding_boxes(
-                self.corners,
-                ray_origin,
-                screen_point,
-                screen_basis,
-                screen_width,
-                screen_height,
-                memory=self.memory
-            )
-            self.first_projection = False
+        self.first_projection = True
+        (
+            self.corners,
+            self.corners_int,
+            self.projected_distances,
+            self.bounding_corners,
+            self.bounding_box_sizes,
+            self.bbss,
+            self.num_fragments_per_object,
+            self.num_fragments_per_frame,
+            self.num_fragments,
+            _,
+        ) = self.project_and_get_bounding_boxes(
+            self.corners,
+            ray_origin,
+            screen_point,
+            screen_basis,
+            screen_width,
+            screen_height,
+            memory=self.memory
+        )
+        self.first_projection = False
         return self
 
     #@compiled
-    #@cuda_compiled
-    @csync
     def render_(
         self,
         time_start,

@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from algan import cuda_compiled, CudaStream, not_compiled
+from algan import not_compiled
 from algan.settings.defaults import *
 
 

@@ -5,7 +5,7 @@ import traceback
 import torch
 import numpy as np
 
-from algan import not_compiled, csync
+from algan import not_compiled
 from algan.logging.logger import LoggerManager
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.constants.math import GIGABYTES
@@ -124,7 +124,6 @@ class ManualMemory:
         return new_x
 
     @not_compiled
-    @csync
     def get_tensor(self, shape, dtype=torch.float, persist=False):
         if not self.managed:
             return torch.empty(shape, dtype=dtype, device=self.data.device)

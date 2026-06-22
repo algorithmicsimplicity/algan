@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 from typing import Tuple
 
+from algan.settings.abstract_settings import Settings
+
 
 @dataclass
-class RenderSettings:
-    """Contains all of the settings for a rendering operation, as used in :func:`~.render_to_file` .
+class RenderSettings(Settings):
+    """Contains all the settings for a rendering operation, as used in :func:`~.render_to_file` .
 
     Parameters
     ----------
