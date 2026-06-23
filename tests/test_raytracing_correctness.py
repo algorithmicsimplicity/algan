@@ -30,6 +30,9 @@ USE_RASTERIZER = "raster" in sys.argv[1:]
 
 
 def _enable_renderer():
+    from algan import SceneManager
+
+    SceneManager.reset()
     if not USE_RASTERIZER:
         from algan.rendering.raytracing import enable_ray_tracing
 

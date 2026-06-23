@@ -88,6 +88,9 @@ class Color(torch.Tensor):
         out.opacity = opacity
         return out
 
+    def mult_opacity(self, opacity):
+        return self.set_opacity(self.opacity * opacity)
+
     def set_glow(self, glow):
         out = self.prep_set(glow)
         out.glow = glow

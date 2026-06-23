@@ -56,6 +56,14 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     render_triangles_stbvh,
 )
 from algan.rendering.raytracing.no_pn_taichi import render_no_pn_stbvh
+from algan.rendering.raytracing.gbuffer_taichi import (
+    GB_HIT_W,
+    gbuffer_nearest_general,
+    shade_accumulate_wavefront,
+    shade_gbuffer_torch,
+    wf_drain_record_gbuffer,
+    wf_traverse_gbuffer,
+)
 from algan.rendering.raytracing.shading_taichi import MAT_W
 from algan.rendering.raytracing.wavefront_taichi import (
     wf_composite,
@@ -124,6 +132,21 @@ USE_NO_PN_KERNEL = os.environ.get("ALGAN_NO_PN", "1") == "1"
 # (global state-I/O cost exceeds the occupancy gain on a bandwidth-limited GPU),
 # kept for validation and for higher-bandwidth hardware.
 USE_WAVEFRONT = os.environ.get("ALGAN_WAVEFRONT", "0") == "1"
+# When True, the *deterministic* fragment-shaded path uses the experimental
+# deferred-shading (G-buffer) prototype instead of the in-kernel ``_shade_fragment``:
+# the trace kernel writes per-pixel surface attributes and a PyTorch pass shades
+# the whole screen at once (see :mod:`algan.rendering.raytracing.gbuffer_taichi`).
+# Prototype only -- nearest opaque hit, no transparency/bounces/shadows -- gated
+# behind ALGAN_GBUFFER=1 for benchmarking against the megakernel.
+USE_GBUFFER = os.environ.get("ALGAN_GBUFFER", "0") == "1"
+# Which deferred path ALGAN_GBUFFER selects: "wavefront" (full transparency +
+# reflection ping-pong, default) or "nearest" (the single-hit opaque prototype).
+GBUFFER_MODE = os.environ.get("ALGAN_GBUFFER_MODE", "wavefront")
+# Accumulated wall time (seconds) spent inside the per-chunk render dispatch
+# (trace kernel + any deferred shade), summed across chunks when
+# ALGAN_KERNEL_TIMING=1. Benchmarks read and reset this to isolate the render
+# kernel cost from animation generation and video encoding.
+_KERNEL_TIME_TOTAL = 0.0
 # When True, the *deterministic* ray tracer (SAMPLES_PER_PIXEL == 1, non-physical)
 # shades the core lit materials per fragment inside the trace kernel instead of
 # baking per-vertex colours (Gouraud). Off by default so existing frame-comparison
@@ -1388,6 +1411,205 @@ def render_general_wavefront(
                  1 if transparent else 0, rs_acc, rs_sca, out)
 
 
+# Pixels per PyTorch shading block. The deferred shade pass runs over the
+# G-buffer in fixed-size blocks so its temporaries stay small and bounded
+# (independent of frame count), which matters on memory-tight GPUs where the
+# render arena already reserves most of VRAM.
+GBUFFER_SHADE_BLOCK = 1 << 18  # 262144 pixels
+
+
+def render_gbuffer_general(
+        merged, memory, cam_origin, screen_point, pixel_basis_x,
+        pixel_basis_y, pixel_world_scale, time_start, time_end, width, height,
+        half_screen_w, half_screen_h, layer_offset_triangles, layer_offset_pn,
+        light_pos, light_col, num_lights, transparent, out):
+    """Deferred-shading (G-buffer) prototype host driver.
+
+    The trace kernel writes each primary ray's nearest-hit surface attributes
+    into a per-pixel G-buffer; PyTorch then material-shades the screen (reusing
+    ``_shade_fragment``'s math) in bounded pixel-blocks and composites into
+    ``out``. Drop-in alternative to the megakernel's in-kernel fragment shading
+    for the all-opaque deterministic path -- see
+    :mod:`algan.rendering.raytracing.gbuffer_taichi`. Prototype: nearest opaque
+    hit only (no transparent-layer compositing, mirror bounces or shadows).
+
+    The G-buffer is allocated from the render memory pool (``memory``) rather
+    than as fresh ``torch.empty`` tensors: the pool's arena is pre-reserved, so
+    this adds no new allocation (leaving VRAM free for the Taichi launch) and a
+    pool overflow raises ``InsufficientMemoryException``, hooking into the
+    caller's existing frame-splitting OOM handler.
+    """
+    device = out.device
+    n = (time_end - time_start) * width * height
+    pixels_per_frame = width * height
+    gb_f32 = memory.get_tensor((n, 16), torch.float32)
+    gb_i32 = memory.get_tensor((n, 3), torch.int32)
+
+    tri_bvh = merged["tri_bvh"]
+    pn_bvh = merged["pn_bvh"]
+    bez_bvh = merged["bez_bvh"]
+    gbuffer_nearest_general(
+        tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
+        tri_bvh.leaf_tspan, int(tri_bvh.first_leaf),
+        merged["tri_pos"], merged["tri_norm"], merged["tri_colors"],
+        merged["tri_uvs"], merged["tri_tex_meta"], merged["textures"],
+        int(merged["num_colored_triangles"]),
+        pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim, pn_bvh.leaf_tspan,
+        int(pn_bvh.first_leaf),
+        merged["pn_ctrl"], merged["pn_norm"], merged["pn_colors"],
+        merged["pn_obb"],
+        bez_bvh.nodes, bez_bvh.node_miss, bez_bvh.leaf_prim, bez_bvh.leaf_tspan,
+        int(bez_bvh.first_leaf),
+        merged["circuit_meta"], merged["circuit_colors"],
+        merged["circuit_border_colors"], merged["edges_2d"],
+        merged["edge_offsets"],
+        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        pixel_world_scale,
+        int(time_start), int(width), int(height),
+        float(half_screen_w), float(half_screen_h),
+        float(layer_offset_triangles), float(layer_offset_pn),
+        gb_f32, gb_i32)
+    ti.sync()
+
+    out_v = out.view(n, -1)
+    C = out_v.shape[1]
+    k = min(4, C)
+    mat_default = torch.tensor(_MAT_DEFAULTS, device=device,
+                               dtype=torch.float32).view(1, MAT_W)
+
+    for off in range(0, n, GBUFFER_SHADE_BLOCK):
+        hi = min(off + GBUFFER_SHADE_BLOCK, n)
+        bs = hi - off
+        gi = gb_i32[off:hi]
+        valid = gi[:, 0] == 1
+        prim = gi[:, 1].long()
+        htype = gi[:, 2]
+        f_idx = (torch.arange(off, hi, device=device) // pixels_per_frame
+                 + int(time_start))
+
+        # Per-pixel material block (mat_id + 12 slots) gathered by hit type;
+        # bezier hits and misses keep the unlit default (id 1), as the
+        # megakernel leaves them.
+        mat = mat_default.repeat(bs, 1)
+        mat_id = torch.ones(bs, dtype=torch.long, device=device)
+        for type_id, id_key, mat_key in ((1, "tri_mat_id", "tri_mat"),
+                                         (2, "pn_mat_id", "pn_mat")):
+            mask = valid & (htype == type_id)
+            if not bool(mask.any()):
+                continue
+            mat_arr = merged[mat_key]    # [Tm, N, MAT_W]
+            id_arr = merged[id_key]      # [Tmid, N]
+            pm = prim[mask]
+            fm = f_idx[mask]
+            mat[mask] = mat_arr[fm % mat_arr.shape[0], pm].float()
+            mat_id[mask] = id_arr[fm % id_arr.shape[0], pm].long()
+
+        shaded = shade_gbuffer_torch(gb_f32[off:hi], mat, mat_id, f_idx,
+                                     light_pos, light_col, int(num_lights))
+        px = (shaded * 255.0 + 0.5).clamp(0.0, 255.0).to(torch.uint8)
+        block = out_v[off:hi]
+        block[valid, :k] = px[valid, :k]
+        if transparent and C >= 5:
+            block[valid, 4] = torch.tensor(255, dtype=torch.uint8,
+                                           device=device)
+
+
+# Pixels per PyTorch shading block for the deferred wavefront path.
+GBUFFER_WF_SHADE_BLOCK = 1 << 18
+
+
+def render_gbuffer_wavefront_general(
+        merged, memory, cam_origin, screen_point, pixel_basis_x,
+        pixel_basis_y, pixel_world_scale, time_start, time_end, width, height,
+        half_screen_w, half_screen_h, layer_offset_triangles, layer_offset_pn,
+        has_tri, has_pn, has_bez, max_bounces,
+        light_pos, light_col, num_lights, transparent, out):
+    """Deferred wavefront with transparency + reflections.
+
+    Stage-split ping-pong (gen -> (traverse -> drain-record -> PyTorch shade ->
+    compact)* -> composite): the trace/drain/bounce state machine runs in Taichi
+    exactly as the megakernel, but per-hit material shading is deferred to a
+    PyTorch pass over a per-ray G-buffer (see
+    :mod:`algan.rendering.raytracing.gbuffer_taichi`). All per-ray state and the
+    G-buffer are allocated from the render pool so the caller's frame-splitting
+    OOM handler bounds memory. No shadows or refractions.
+    """
+    device = out.device
+    n = (time_end - time_start) * width * height
+    f32 = torch.float32
+    i32 = torch.int32
+    g = memory.get_tensor
+    rs_ro = g((n, 3), f32)
+    rs_rd = g((n, 3), f32)
+    rs_acc = g((n, 4), f32)
+    rs_sca = g((n, 5), f32)
+    rs_int = g((n, 4), i32)
+    rs_kt = g((n, KBUF), f32)
+    rs_kl = g((n, KBUF), f32)
+    rs_ka = g((n, KBUF), f32)
+    rs_kb = g((n, KBUF), f32)
+    rs_kp = g((n, KBUF), i32)
+    rs_kf = g((n, KBUF), i32)
+    gb_f32 = g((n, KBUF, GB_HIT_W), f32)
+    gb_i32 = g((n, KBUF, 2), i32)
+    gb_count = g((n,), i32)
+
+    tri_bvh = merged["tri_bvh"]
+    pn_bvh = merged["pn_bvh"]
+    bez_bvh = merged["bez_bvh"]
+
+    wf_gen_general(
+        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        int(time_start), int(width), int(height),
+        float(half_screen_w), float(half_screen_h), int(max_bounces),
+        rs_ro, rs_rd, rs_acc, rs_sca, rs_int)
+
+    active = torch.arange(n, dtype=i32, device=device)
+    max_iters = MAX_SURFACES_PER_RAY + max_bounces + 2
+    it = 0
+    while active.numel() > 0 and it < max_iters:
+        na = int(active.numel())
+        wf_traverse_gbuffer(
+            active, na,
+            tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
+            tri_bvh.leaf_tspan, int(tri_bvh.first_leaf), merged["tri_pos"],
+            pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
+            pn_bvh.leaf_tspan, int(pn_bvh.first_leaf), merged["pn_ctrl"],
+            merged["pn_obb"],
+            bez_bvh.nodes, bez_bvh.node_miss, bez_bvh.leaf_prim,
+            bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
+            merged["circuit_meta"], merged["edges_2d"], merged["edge_offsets"],
+            pixel_world_scale,
+            float(layer_offset_triangles), float(layer_offset_pn),
+            int(has_tri), int(has_pn), int(has_bez),
+            int(time_start), int(width), int(height),
+            rs_ro, rs_rd, rs_sca, rs_int,
+            rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
+        wf_drain_record_gbuffer(
+            active, na,
+            merged["tri_pos"], merged["tri_norm"], merged["tri_extra"],
+            merged["tri_colors"], merged["tri_uvs"], merged["tri_tex_meta"],
+            merged["textures"], int(merged["num_colored_triangles"]),
+            merged["pn_ctrl"], merged["pn_norm"], merged["pn_extra"],
+            merged["pn_colors"],
+            merged["circuit_meta"], merged["circuit_colors"],
+            merged["circuit_border_colors"],
+            int(time_start), int(width), int(height),
+            rs_ro, rs_rd, rs_sca, rs_int,
+            rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
+            gb_f32, gb_i32, gb_count)
+        ti.sync()
+        shade_accumulate_wavefront(
+            active, gb_f32, gb_i32, gb_count, rs_acc, merged,
+            light_pos, light_col, int(num_lights), width * height,
+            int(time_start), GBUFFER_WF_SHADE_BLOCK)
+        active = (rs_int[:, 2] == 0).nonzero(as_tuple=True)[0].to(i32)
+        it += 1
+
+    wf_composite(int(time_start), int(width), int(height),
+                 1 if transparent else 0, rs_acc, rs_sca, out)
+
+
 def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                             time_start, time_end, background_color,
                             transparent_background, ray_origin, screen_point,
@@ -1550,6 +1772,12 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 float(width // 2), float(height // 2),
                 layer_offset_triangles, layer_offset_pn, int(MAX_BOUNCES),
                 1 if transparent_background else 0)
+            _ktiming = os.environ.get("ALGAN_KERNEL_TIMING", "0") == "1"
+            if _ktiming:
+                import time as _kt
+                torch.cuda.synchronize()
+                ti.sync()
+                _k0 = _kt.perf_counter()
             if physical:
                 path_trace_physical_stbvh(
                     *shared_args, samples_eff, light_pos, light_col,
@@ -1565,6 +1793,30 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 finalize_samples(samples_eff,
                                  1 if transparent_background else 0,
                                  accum, out)
+            elif USE_GBUFFER and det_frag and not det_shadows:
+                # Deferred-shading (G-buffer) path: trace/drain in Taichi, shade
+                # in PyTorch. Replaces the megakernel's in-kernel fragment
+                # shading. "wavefront" supports transparency + reflections;
+                # "nearest" is the single-hit opaque prototype.
+                if GBUFFER_MODE == "nearest":
+                    render_gbuffer_general(
+                        merged, memory, cam_origin, sp, pbx, pby,
+                        pixel_world_scale,
+                        int(start), int(end), int(width), int(height),
+                        float(width // 2), float(height // 2),
+                        layer_offset_triangles, layer_offset_pn,
+                        light_pos, light_col, int(num_lights),
+                        1 if transparent_background else 0, out)
+                else:
+                    render_gbuffer_wavefront_general(
+                        merged, memory, cam_origin, sp, pbx, pby,
+                        pixel_world_scale,
+                        int(start), int(end), int(width), int(height),
+                        float(width // 2), float(height // 2),
+                        layer_offset_triangles, layer_offset_pn,
+                        has_tri, has_pn, has_bez, int(MAX_BOUNCES),
+                        light_pos, light_col, int(num_lights),
+                        1 if transparent_background else 0, out)
             elif (USE_WAVEFRONT and not det_frag and has_tri
                   and not has_pn and not has_bez):
                 # Triangle-only batch via the wavefront (stage-split) path:
@@ -1647,6 +1899,12 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                                    int(num_lights), shadow_flag, kernel_aa,
                                    merged["pn_obb"], out)
             ti.sync()
+            if _ktiming:
+                import time as _kt
+                torch.cuda.synchronize()
+                ti.sync()
+                global _KERNEL_TIME_TOTAL
+                _KERNEL_TIME_TOTAL += _kt.perf_counter() - _k0
             frames = out.view(end - start, height, width, C_out)
             frames = first.post_process_frames(
                 frames, anti_alias_level=post_aa,

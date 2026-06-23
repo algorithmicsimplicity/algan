@@ -99,9 +99,18 @@ class Surface(Renderable):
         self.coord_function_active = coord_function
         self.normal_function_active = normal_function
         self.ignore_normals = ignore_normals
-        self.color_texture = color_texture
         # triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
         super().__init__(*args, **kwargs)
+        # A surface with an explicit texture map keeps it as an animatable
+        # attribute; without one (color_texture=None) the per-vertex colours are
+        # built from `color` in the else-branch below, so leave it None (the
+        # downstream texture path is guarded by `self.color_texture is not None`).
+        if color_texture is not None:
+            self.register_attrs_as_animatable(['color_texture'])
+            self.color_texture = squish(color_texture, -3, -1)
+            self.texture_height, self.texture_width = color_texture.shape[-3:-1]
+        else:
+            self.color_texture = None
         self.grid_height, self.grid_width = grid_height, grid_width
         base_grid = self.get_base_grid()
         grid_points = squish(coord_function(base_grid), -3, -2) + self.location
@@ -247,7 +256,9 @@ class Surface(Renderable):
             # Generate UV coordinates for the triangle corners from the base grid
             base_grid = self.get_base_grid()
             uvs = grid_to_triangle_vertices(base_grid).unsqueeze(0)  # [1, num_triangles * 3, 2]
-            texture_map = self.color_texture
+            texture_map = (self.color_texture
+                          ).view(self.color_texture.shape[0], self.texture_height, self.texture_width,
+                                 5).as_subclass(Color).mult_opacity(self.opacity.unsqueeze(-2))
 
         return TrianglePrimitive(
             corners=grid_to_triangle_vertices(grid),

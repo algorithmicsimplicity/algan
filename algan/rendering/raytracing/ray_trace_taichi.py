@@ -1149,7 +1149,7 @@ def _sample_texture(f, u, v, prim_uv_index, tri_tex_meta: ti.template(), texture
         cx = ti.math.clamp(cx, 0, ti.cast(width - 1.0, ti.i32))
         cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
 
-        local_idx = cy * ti.cast(width, ti.i32) + cx
+        local_idx = cx * ti.cast(height, ti.i32) + cy
         abs_idx = offset + local_idx
         abs_idx = ti.math.clamp(abs_idx, 0, num_points - 1)
 
@@ -1241,7 +1241,7 @@ def _flat_triangle_alpha(f, prim, w0, w1, w2, tri_colors: ti.template(),
             cx = ti.math.clamp(cx, 0, ti.cast(width - 1.0, ti.i32))
             cy = ti.math.clamp(cy, 0, ti.cast(height - 1.0, ti.i32))
 
-            local_idx = cy * ti.cast(width, ti.i32) + cx
+            local_idx = cx * ti.cast(height, ti.i32) + cy
             abs_idx = offset + local_idx
             abs_idx = ti.math.clamp(abs_idx, 0, num_points - 1)
 

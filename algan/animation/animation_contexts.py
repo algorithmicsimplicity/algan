@@ -393,22 +393,22 @@ class Lag(AnimationContext):
 
     """
 
-    def __init__(self, lag_ratio: float, **kwargs):
-        super().__init__(lag_ratio=lag_ratio, new_animation=True, **kwargs)
+    def __init__(self, lag_ratio: float, *args, **kwargs):
+        super().__init__(*args, lag_ratio=lag_ratio, new_animation=True, **kwargs)
 
 
 class Sync(Lag):
     """Plays all component animations synchronously."""
 
-    def __init__(self, **kwargs):
-        super().__init__(lag_ratio=0, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(lag_ratio=0, *args, **kwargs)
 
 
 class Seq(Lag):
     """Plays all component animations sequentially, with the next starting as soon as the current one finishes."""
 
-    def __init__(self, **kwargs):
-        super().__init__(lag_ratio=1, **kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(lag_ratio=1, *args, **kwargs)
 
 
 class Audio(AnimationContext):
