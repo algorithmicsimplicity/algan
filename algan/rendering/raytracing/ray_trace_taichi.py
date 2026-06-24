@@ -2620,6 +2620,343 @@ def render_triangles_stbvh(
                 ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
 
 
+@ti.func
+def _tri_verts_knots(f, prim, knot_val: ti.template(), knot_base: ti.template(),
+                     sched_id: ti.template(), sched_seg: ti.template(),
+                     sched_z: ti.template(), sched_nknots: ti.template()):
+    """Reconstruct triangle ``prim``'s three world-space corners at frame ``f``
+    from the per-primitive piecewise-linear knot representation (see
+    time_compression.py): pick the frame's knot interval ``k`` and eased blend
+    fraction ``z`` from the primitive's schedule, then
+    ``corner = lerp(knot[base + k], knot[base + k+1], z)``. Matches
+    ``expand_time`` exactly (``lo + z * (hi - lo)``), so the reconstructed
+    geometry is identical to the dense ``tri_pos`` it replaces."""
+    s = sched_id[prim]
+    fi = f % sched_seg.shape[1]
+    k = sched_seg[s, fi]
+    zf = sched_z[s, fi]
+    khi = ti.min(k + 1, sched_nknots[s] - 1)
+    lo = knot_base[prim] + k
+    hi = knot_base[prim] + khi
+    v0 = ti.math.vec3(0.0, 0.0, 0.0)
+    v1 = ti.math.vec3(0.0, 0.0, 0.0)
+    v2 = ti.math.vec3(0.0, 0.0, 0.0)
+    for c in ti.static(range(3)):
+        v0[c] = knot_val[lo, c] + zf * (knot_val[hi, c] - knot_val[lo, c])
+        v1[c] = (knot_val[lo, 3 + c]
+                 + zf * (knot_val[hi, 3 + c] - knot_val[lo, 3 + c]))
+        v2[c] = (knot_val[lo, 6 + c]
+                 + zf * (knot_val[hi, 6 + c] - knot_val[lo, 6 + c]))
+    return v0, v1, v2
+
+
+@ti.func
+def _collect_hits_tri_knots(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+                            layer_offset_triangles,
+                            hit_t: ti.template(), hit_layer: ti.template(),
+                            hit_prim: ti.template(), hit_flags: ti.template(),
+                            hit_a: ti.template(), hit_b: ti.template(),
+                            t_nodes: ti.template(), t_node_miss: ti.template(),
+                            t_leaf_prim: ti.template(),
+                            t_leaf_tspan: ti.template(), t_first_leaf,
+                            knot_val: ti.template(), knot_base: ti.template(),
+                            sched_id: ti.template(), sched_seg: ti.template(),
+                            sched_z: ti.template(),
+                            sched_nknots: ti.template()) -> ti.i32:
+    """Knot-geometry twin of :func:`_collect_hits_tri`: identical traversal and
+    acceptance rules, but each candidate triangle's corners are reconstructed
+    from the compressed knot representation (``_tri_verts_knots``) rather than
+    fetched from a dense per-frame ``tri_pos`` array."""
+    count = 0
+    worst_idx = 0
+    worst_t = 1e30
+    worst_layer = -1e30
+    opq_t = 1e30
+    opq_layer = -1e30
+
+    node = 0
+    while node != -1:
+        window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
+        window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+        if _node_intersected(node, ff, ro, inv_rd,
+                             t_prev - DEPTH_TIE_EPSILON, window_hi, t_nodes):
+            if node >= t_first_leaf:
+                base = (node - t_first_leaf) * LEAF_SIZE
+                for j in ti.static(range(LEAF_SIZE)):
+                    prim = t_leaf_prim[base + j]
+                    tspan = t_leaf_tspan[base + j]
+                    if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
+                            and (f <= ((tspan >> 16) & 0x7FFF))):
+                        v0, v1, v2 = _tri_verts_knots(
+                            f, prim, knot_val, knot_base, sched_id, sched_seg,
+                            sched_z, sched_nknots)
+                        e1 = v1 - v0
+                        e2 = v2 - v0
+                        pv = rd.cross(e2)
+                        det = e1.dot(pv)
+                        if ti.abs(det) > 1e-12:
+                            inv_det = 1.0 / det
+                            tvec = ro - v0
+                            w1 = tvec.dot(pv) * inv_det
+                            qv = tvec.cross(e1)
+                            w2 = rd.dot(qv) * inv_det
+                            if ((w1 >= -BARYCENTRIC_EPSILON)
+                                    and (w2 >= -BARYCENTRIC_EPSILON)
+                                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
+                                t = e2.dot(qv) * inv_det
+                                layer = layer_offset_triangles + ti.cast(
+                                    prim, ti.f32)
+                                accept = ((t > MIN_HIT_DISTANCE)
+                                          and _comes_after(t, layer, t_prev,
+                                                           layer_prev)
+                                          and not _comes_after(
+                                              t, layer, opq_t, opq_layer))
+                                if accept and (count == KBUF):
+                                    accept = _comes_after(worst_t, worst_layer,
+                                                          t, layer)
+                                if accept:
+                                    slot = worst_idx
+                                    if count < KBUF:
+                                        slot = count
+                                        count += 1
+                                    hit_t[slot] = t
+                                    hit_layer[slot] = layer
+                                    hit_prim[slot] = prim
+                                    w0 = 1.0 - w1 - w2
+                                    eh = 1 if (ti.min(w0, ti.min(w1, w2))
+                                               < TRIANGLE_EDGE_EPSILON) else 0
+                                    hit_flags[slot] = 1 | (eh << 2)
+                                    hit_a[slot] = w1
+                                    hit_b[slot] = w2
+                                    if (tspan < 0) and _comes_after(
+                                            opq_t, opq_layer, t, layer):
+                                        opq_t = t
+                                        opq_layer = layer
+                                    if count == KBUF:
+                                        worst_idx = 0
+                                        worst_t = hit_t[0]
+                                        worst_layer = hit_layer[0]
+                                        for q in ti.static(range(1, KBUF)):
+                                            if _comes_after(hit_t[q],
+                                                            hit_layer[q],
+                                                            worst_t,
+                                                            worst_layer):
+                                                worst_idx = q
+                                                worst_t = hit_t[q]
+                                                worst_layer = hit_layer[q]
+                node = t_node_miss[node]
+            else:
+                node = BVH_ARITY * node + 1
+        else:
+            node = t_node_miss[node]
+    return count
+
+
+@ti.func
+def _trace_triangles_ray_knots(ro, rd, inv_rd, f, ff, layer_offset_triangles,
+                               max_bounces,
+                               t_nodes: ti.template(),
+                               t_node_miss: ti.template(),
+                               t_leaf_prim: ti.template(),
+                               t_leaf_tspan: ti.template(), t_first_leaf,
+                               knot_val: ti.template(),
+                               knot_base: ti.template(),
+                               sched_id: ti.template(),
+                               sched_seg: ti.template(), sched_z: ti.template(),
+                               sched_nknots: ti.template(),
+                               tri_extra: ti.template(),
+                               tri_colors: ti.template(),
+                               tri_uvs: ti.template(),
+                               tri_tex_meta: ti.template(),
+                               textures: ti.template(),
+                               num_colored_triangles: ti.i32):
+    """Knot-geometry twin of :func:`_trace_triangles_ray` for non-reflective,
+    vertex-shaded, shadow-free triangle batches (the dispatch routes only those
+    here). Colours/reflectivity still come from the dense ``tri_colors`` /
+    ``tri_extra`` arrays (left uncompressed); only positions are reconstructed
+    from knots, so the dense ``tri_pos`` need never be materialized. Mirror
+    bounces use the geometric face normal (the dispatch guarantees no primitive
+    is reflective, so this is inert and kept only for structural parity)."""
+    acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    weight = 1.0
+    t_prev = 0.0
+    layer_prev = 1e30
+    bounces_left = max_bounces
+    seam_t = -1e30
+
+    kb_t = ti.Vector([0.0] * KBUF)
+    kb_layer = ti.Vector([0.0] * KBUF)
+    kb_prim = ti.Vector([0] * KBUF)
+    kb_flags = ti.Vector([0] * KBUF)
+    kb_a = ti.Vector([0.0] * KBUF)
+    kb_b = ti.Vector([0.0] * KBUF)
+
+    processed = 0
+    done = False
+    while (not done) and (processed < MAX_SURFACES_PER_RAY):
+        num_hits = _collect_hits_tri_knots(
+            ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+            layer_offset_triangles,
+            kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+            t_first_leaf, knot_val, knot_base, sched_id, sched_seg,
+            sched_z, sched_nknots)
+        if num_hits == 0:
+            break
+
+        bounced = False
+        drained = 0
+        while drained < num_hits:
+            sel = 0
+            sel_found = 0
+            for q in ti.static(range(KBUF)):
+                if (q < num_hits) and (kb_prim[q] >= 0):
+                    if sel_found == 0:
+                        sel = q
+                        sel_found = 1
+                    elif _comes_after(kb_t[sel], kb_layer[sel],
+                                      kb_t[q], kb_layer[q]):
+                        sel = q
+            t_hit = kb_t[sel]
+            hit_layer = kb_layer[sel]
+            prim = kb_prim[sel]
+            flags = kb_flags[sel]
+            a = kb_a[sel]
+            b = kb_b[sel]
+            kb_prim[sel] = -1
+            drained += 1
+            processed += 1
+            edge_hit = (flags >> 2) & 1
+
+            if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+                t_prev = t_hit
+                layer_prev = hit_layer
+                continue
+            seam_t = t_hit if edge_hit == 1 else -1e30
+
+            w0 = 1.0 - a - b
+            color, alpha = _flat_triangle_color(
+                f, prim, w0, a, b, tri_colors, tri_uvs, tri_tex_meta, textures,
+                num_colored_triangles)
+            reflectivity, _rough = _triangle_extra(f, prim, w0, a, b, tri_extra)
+
+            alpha = ti.math.clamp(alpha, 0.0, 1.0)
+            reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
+            if bounces_left <= 0:
+                reflectivity = 0.0
+
+            acc += (weight * alpha * (1.0 - reflectivity)) * color
+
+            if (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
+                v0, v1, v2 = _tri_verts_knots(
+                    f, prim, knot_val, knot_base, sched_id, sched_seg,
+                    sched_z, sched_nknots)
+                normal = (v1 - v0).cross(v2 - v0).normalized()
+                if normal.dot(rd) > 0.0:
+                    normal = -normal
+                hit_point = ro + t_hit * rd
+                rd = (rd - 2.0 * rd.dot(normal) * normal).normalized()
+                ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
+                inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                      _safe_inverse(rd[1]),
+                                      _safe_inverse(rd[2]))
+                weight *= alpha * reflectivity
+                t_prev = 0.0
+                layer_prev = 1e30
+                seam_t = -1e30
+                bounces_left -= 1
+                bounced = True
+                break
+            else:
+                weight *= 1.0 - alpha
+                t_prev = t_hit
+                layer_prev = hit_layer
+            if weight < MIN_WEIGHT:
+                done = True
+                break
+        if (not done) and (not bounced) and (num_hits < KBUF):
+            done = True
+    return acc, weight
+
+
+@ti.kernel
+def render_triangles_knots_stbvh(
+        # Triangle STBVH.
+        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
+        t_first_leaf: int,
+        # Compressed (knot) triangle positions -- replaces dense tri_pos.
+        knot_val: ti.types.ndarray(), knot_base: ti.types.ndarray(),
+        sched_id: ti.types.ndarray(), sched_seg: ti.types.ndarray(),
+        sched_z: ti.types.ndarray(), sched_nknots: ti.types.ndarray(),
+        # Dense (uncompressed) per-vertex shading data.
+        tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
+        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
+        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
+        # Per-frame camera.
+        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
+        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
+        # Render parameters.
+        time_start: int, time_end: int, width: int, height: int,
+        half_screen_w: float, half_screen_h: float,
+        layer_offset_triangles: float, max_bounces: int, transparent: int,
+        aa_level: int,
+        out: ti.types.ndarray()):
+    """Deterministic renderer for non-reflective, vertex-shaded, shadow-free
+    triangle-only batches whose positions are stored in the compressed knot
+    representation (see ``render_triangles_stbvh`` for the dense-geometry twin
+    and ``time_compression.py`` for the encoding). Byte-identical output to the
+    dense kernel, but the per-frame geometry is reconstructed in-register from a
+    handful of knots, so a moving scene never materializes (or uploads) a dense
+    ``[T, N, 9]`` position array."""
+    pixels_per_frame = width * height
+    num_rays = (time_end - time_start) * pixels_per_frame
+    inv_aa = 1.0 / ti.cast(aa_level, ti.f32)
+    inv_samples = inv_aa * inv_aa
+
+    for ray_id in range(num_rays):
+        f_rel = ray_id // pixels_per_frame
+        p = ray_id - f_rel * pixels_per_frame
+        f = time_start + f_rel
+        ff = ti.cast(f, ti.f32)
+        py = p // width
+        px = p - py * width
+
+        csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        asum = 0.0
+        for si in range(aa_level):
+            for sj in range(aa_level):
+                jx = (ti.cast(si, ti.f32) + 0.5) * inv_aa
+                jy = (ti.cast(sj, ti.f32) + 0.5) * inv_aa
+                ro, rd = _generate_ray(f, px, py, jx, jy,
+                                       half_screen_w, half_screen_h,
+                                       cam_origin, screen_point,
+                                       pixel_basis_x, pixel_basis_y)
+                inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                      _safe_inverse(rd[1]),
+                                      _safe_inverse(rd[2]))
+                acc, weight = _trace_triangles_ray_knots(
+                    ro, rd, inv_rd, f, ff, layer_offset_triangles, max_bounces,
+                    t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                    t_first_leaf, knot_val, knot_base, sched_id, sched_seg,
+                    sched_z, sched_nknots, tri_extra, tri_colors,
+                    tri_uvs, tri_tex_meta, textures, num_colored_triangles)
+                for ci in ti.static(range(4)):
+                    csum[ci] += (acc[ci] * 255.0
+                                 + weight * ti.cast(out[f_rel, p, ci], ti.f32))
+                if transparent != 0:
+                    asum += ((1.0 - weight) * 255.0
+                             + weight * ti.cast(out[f_rel, p, 4], ti.f32))
+
+        for ci in ti.static(range(4)):
+            out[f_rel, p, ci] = ti.cast(
+                ti.math.clamp(csum[ci] * inv_samples + 0.5, 0.0, 255.0),
+                ti.u8)
+        if transparent != 0:
+            out[f_rel, p, 4] = ti.cast(
+                ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
+
+
 @ti.kernel
 def path_trace_scene_stbvh(
         # Triangle STBVH + packed geometry.

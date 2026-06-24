@@ -42,6 +42,7 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     _bezier_normal,
     _collect_hits,
     _collect_hits_tri,
+    _collect_hits_tri_knots,
     _comes_after,
     _generate_ray,
     _pn_normal,
@@ -65,16 +66,19 @@ def wf_gen_triangle(
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
         time_start: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float, max_bounces: int,
+        ray_offset: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
         rs_int: ti.types.ndarray()):
     """Initialise per-ray state with the primary camera ray (mirrors the
-    per-ray setup at the top of ``render_triangles_stbvh``)."""
+    per-ray setup at the top of ``render_triangles_stbvh``). State is indexed
+    tile-locally by ``r``; the global ray is ``ray_offset + r`` (screen tiling)."""
     pixels_per_frame = width * height
     num_rays = rs_ro.shape[0]
     for r in range(num_rays):
-        f_rel = r // pixels_per_frame
-        p = r - f_rel * pixels_per_frame
+        g = ray_offset + r
+        f_rel = g // pixels_per_frame
+        p = g - f_rel * pixels_per_frame
         f = time_start + f_rel
         py = p // width
         px = p - py * width
@@ -104,14 +108,15 @@ def wf_traverse_triangle(
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int, tri_pos: ti.types.ndarray(),
         layer_offset_triangles: float,
-        time_start: int, width: int, height: int,
+        time_start: int, width: int, height: int, ray_offset: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
         rs_kt: ti.types.ndarray(), rs_kl: ti.types.ndarray(),
         rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
         rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray()):
     """Gather the KBUF nearest hits for each active ray into global state.
-    No shading state in its call graph -> few live registers."""
+    No shading state in its call graph -> few live registers. State is indexed
+    tile-locally by the active ray; the global ray is ``ray_offset + r``."""
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -121,7 +126,7 @@ def wf_traverse_triangle(
                               _safe_inverse(rd[2]))
         t_prev = rs_sca[r, 1]
         layer_prev = rs_sca[r, 2]
-        f = time_start + r // pixels_per_frame
+        f = time_start + (ray_offset + r) // pixels_per_frame
         ff = ti.cast(f, ti.f32)
 
         kb_t = ti.Vector([0.0] * KBUF)
@@ -150,13 +155,72 @@ def wf_traverse_triangle(
 
 
 @ti.kernel
+def wf_traverse_triangle_knots(
+        active: ti.types.ndarray(), num_active: int,
+        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
+        t_first_leaf: int,
+        knot_val: ti.types.ndarray(), knot_base: ti.types.ndarray(),
+        sched_id: ti.types.ndarray(), sched_seg: ti.types.ndarray(),
+        sched_z: ti.types.ndarray(), sched_nknots: ti.types.ndarray(),
+        layer_offset_triangles: float,
+        time_start: int, width: int, height: int, ray_offset: int,
+        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
+        rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
+        rs_kt: ti.types.ndarray(), rs_kl: ti.types.ndarray(),
+        rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
+        rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray()):
+    """Knot-geometry twin of :func:`wf_traverse_triangle`: positions are
+    reconstructed from the compressed knot representation
+    (``_collect_hits_tri_knots``). Tests whether isolating the traverse stage --
+    so the knot reconstruction's extra live registers no longer share the
+    megakernel's register budget -- closes the knot megakernel's gap."""
+    pixels_per_frame = width * height
+    for i in range(num_active):
+        r = active[i]
+        ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
+        rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
+        inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
+                              _safe_inverse(rd[2]))
+        t_prev = rs_sca[r, 1]
+        layer_prev = rs_sca[r, 2]
+        f = time_start + (ray_offset + r) // pixels_per_frame
+        ff = ti.cast(f, ti.f32)
+
+        kb_t = ti.Vector([0.0] * KBUF)
+        kb_layer = ti.Vector([0.0] * KBUF)
+        kb_prim = ti.Vector([0] * KBUF)
+        kb_flags = ti.Vector([0] * KBUF)
+        kb_a = ti.Vector([0.0] * KBUF)
+        kb_b = ti.Vector([0.0] * KBUF)
+        num_hits = _collect_hits_tri_knots(
+            ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+            layer_offset_triangles,
+            kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+            t_first_leaf, knot_val, knot_base, sched_id, sched_seg,
+            sched_z, sched_nknots)
+        rs_int[r, 3] = num_hits
+        if num_hits == 0:
+            rs_int[r, 2] = _DONE
+        else:
+            for q in ti.static(range(KBUF)):
+                rs_kt[r, q] = kb_t[q]
+                rs_kl[r, q] = kb_layer[q]
+                rs_kp[r, q] = kb_prim[q]
+                rs_kf[r, q] = kb_flags[q]
+                rs_ka[r, q] = kb_a[q]
+                rs_kb[r, q] = kb_b[q]
+
+
+@ti.kernel
 def wf_shade_triangle(
         active: ti.types.ndarray(), num_active: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        time_start: int, width: int, height: int,
+        time_start: int, width: int, height: int, ray_offset: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
         rs_int: ti.types.ndarray(),
@@ -170,7 +234,7 @@ def wf_shade_triangle(
         r = active[i]
         num_hits = rs_int[r, 3]
         if num_hits > 0:
-            f = time_start + r // pixels_per_frame
+            f = time_start + (ray_offset + r) // pixels_per_frame
             ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
             rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
             acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
@@ -286,15 +350,18 @@ def wf_shade_triangle(
 @ti.kernel
 def wf_composite(
         time_start: int, width: int, height: int, transparent: int,
+        ray_offset: int,
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
         out: ti.types.ndarray()):
     """Composite each ray's premultiplied accumulator over the pre-filled
-    background (mirrors the tail of ``render_triangles_stbvh``)."""
+    background (mirrors the tail of ``render_triangles_stbvh``). State is indexed
+    tile-locally by ``r``; the global ray is ``ray_offset + r``."""
     pixels_per_frame = width * height
     num_rays = rs_acc.shape[0]
     for r in range(num_rays):
-        f_rel = r // pixels_per_frame
-        p = r - f_rel * pixels_per_frame
+        g = ray_offset + r
+        f_rel = g // pixels_per_frame
+        p = g - f_rel * pixels_per_frame
         weight = rs_sca[r, 0]
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
@@ -329,7 +396,9 @@ def wf_gen_general(
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
         rs_int: ti.types.ndarray()):
     """Initialise per-ray state with primary rays (general path: rs_sca has a
-    5th column, base_dist, initialised to 0)."""
+    5th column, base_dist, initialised to 0). Frame-aligned screen tiling passes
+    a per-tile-adjusted ``time_start`` (and slices ``out`` at composite), so no
+    per-ray offset is threaded through this (argument-heavy) kernel."""
     pixels_per_frame = width * height
     num_rays = rs_ro.shape[0]
     for r in range(num_rays):

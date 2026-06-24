@@ -249,7 +249,7 @@ class Scene:
                 primitive.project_to_screen(camera, self.light_sources)
 
             # Reclaim animation-phase residuals before render batching.
-            empty_cache()
+            empty_cache(force_gc=False)
 
             render_pointers = self.memory.get_pointers()
             current_ind = start_ind
@@ -362,6 +362,107 @@ class Scene:
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
 
+    def _time_compress_mode(self):
+        try:
+            from algan.rendering.raytracing import primitives as rtp
+            return getattr(rtp, "TIME_COMPRESS", 0)
+        except Exception:
+            return 0
+
+    def _try_timeline_direct(self, actor, time_inds):
+        """Mode-3 timeline-direct geometry. If the actor moves along a single
+        eased straight line over this batch (probed cheaply from its dense
+        ``location``), build its render geometry at only the two segment
+        endpoints and linearly expand to every frame with the per-frame eased
+        fraction ``z`` -- geometry is affine in location, so this is exact --
+        instead of running the (expensive) per-frame geometry build over all
+        frames. Returns a primitive list, or ``None`` to tell the caller to use
+        the dense path (not linear, or a nonlinear attribute -- e.g. normals
+        under non-uniform scale -- failed the midpoint check)."""
+        if self._time_compress_mode() != 3:
+            return None
+        T = len(time_inds)
+        if T <= 2:
+            return None
+        from algan.rendering.raytracing.time_compression import (
+            extract_global_linear_z)
+
+        actor.set_state_to_time_t(time_inds)
+        for component in actor.components:
+            component.set_state_to_time_t(time_inds)
+        loc = getattr(actor, "location", None)
+        if not torch.is_tensor(loc):
+            return None
+        loc3 = loc
+        while loc3.dim() < 3:
+            loc3 = loc3.unsqueeze(0)
+        if loc3.shape[0] != T:
+            return None
+        z = extract_global_linear_z(loc3)
+        if z is None:
+            return None
+
+        mid = T // 2
+        knot_inds = time_inds[torch.tensor([0, mid, T - 1])]
+        actor.set_state_to_time_t(knot_inds)
+        for component in actor.components:
+            component.set_state_to_time_t(knot_inds)
+        prims = actor.get_render_primitives()
+        if prims is None:
+            return None
+        if not isinstance(prims, list):
+            prims = [prims]
+        z_mid = float(z[mid])
+        for p in prims:
+            if not self._expand_primitive_linear(p, z, z_mid):
+                return None
+        return prims
+
+    def _expand_primitive_linear(self, p, z, z_mid, tol=1e-3):
+        """Expand a primitive whose per-frame geometry was built at exactly the
+        three probe frames [start, mid, end] to all ``len(z)`` frames, by
+        linearly blending the endpoint values with ``z``. Each varying tensor
+        attribute (3 frames on its time axis) is verified at the midpoint against
+        the linear blend; a mismatch (a nonlinear attribute) aborts to the dense
+        path. Static attributes (1 frame) are left untouched (the kernel already
+        broadcasts them)."""
+        from algan.rendering.raytracing.time_compression import expand_linear
+
+        def expand_attr(t):
+            n0 = t.shape[0]
+            if n0 == 1:
+                return t, True            # static: leave as-is
+            if n0 != 3:
+                return t, False           # unexpected layout -> dense fallback
+            lo, md, hi = t[0], t[1], t[2]
+            recon = lo + z_mid * (hi - lo)
+            if float((md - recon).abs().amax()) > tol:
+                return t, False           # nonlinear -> dense fallback
+            return expand_linear(lo, hi, z.to(t.device)), True
+
+        for name in ("corners", "normals", "colors", "uvs"):
+            t = getattr(p, name, None)
+            if not torch.is_tensor(t) or t.dim() < 1:
+                continue
+            new_t, ok = expand_attr(t)
+            if not ok:
+                return False
+            setattr(p, name, new_t)
+
+        sp = getattr(p, "shader_param_values", None)
+        if isinstance(sp, (list, tuple)):
+            new_sp = []
+            for t in sp:
+                if torch.is_tensor(t) and t.dim() >= 1:
+                    new_t, ok = expand_attr(t)
+                    if not ok:
+                        return False
+                    new_sp.append(new_t)
+                else:
+                    new_sp.append(t)
+            p.shader_param_values = list(new_sp)
+        return True
+
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
@@ -424,11 +525,16 @@ class Scene:
                 continue
             actor.set_state_full(start_time_ind, start_time_ind + duration)
             if hasattr(actor, "get_render_primitives"):
-                actor.set_state_to_time_t(time_inds)
                 for component in actor.components:
                     component.set_state_full(start_time_ind, start_time_ind + duration)
-                    component.set_state_to_time_t(time_inds)
-                primitive = actor.get_render_primitives()
+                # Mode-3: build geometry at just the segment endpoints and expand
+                # (skips the dense per-frame build); None falls back to dense.
+                primitive = self._try_timeline_direct(actor, time_inds)
+                if primitive is None:
+                    actor.set_state_to_time_t(time_inds)
+                    for component in actor.components:
+                        component.set_state_to_time_t(time_inds)
+                    primitive = actor.get_render_primitives()
                 if primitive is not None:
                     if not isinstance(primitive, list):
                         primitive = [primitive]
@@ -601,7 +707,7 @@ class Scene:
                     )
                     del primitives
                     # Free previous batch data before allocating next batch.
-                    empty_cache()
+                    empty_cache(force_gc=False)
                     _sync_devices()
                     e = time.time()
                     print(
