@@ -60,6 +60,7 @@ from algan.rendering.raytracing.primitives import (
     set_physical_lighting,
     set_ray_traced_shadows,
     set_reflectivity,
+    set_refractive_index,
     set_roughness,
     set_samples_per_pixel,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "disable_ray_tracing",
     "is_ray_tracing_enabled",
     "set_reflectivity",
+    "set_refractive_index",
     "set_roughness",
     "set_samples_per_pixel",
     "set_indirect_bounce_strength",
