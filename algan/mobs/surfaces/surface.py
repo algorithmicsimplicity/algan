@@ -223,15 +223,32 @@ class Surface(Renderable):
                 unnormalized_normals[..., :, 0, :] = closed_normals
                 unnormalized_normals[..., :, -1, :] = closed_normals
 
-            # Merge unnormalized normals at singular poles (e.g. Sphere poles, Cone tip)
+            # Merge unnormalized normals at singular poles (e.g. Sphere poles, Cone tip).
+            # The fan of triangles around a collapsed pole column can sum to a
+            # normal pointing *inward* (the degenerate pole faces carry the
+            # opposite winding sign from the rest of the grid). An inverted pole
+            # normal makes the patches touching the pole interpolate from an
+            # inward normal at the pole to the (correct) outward normals on the
+            # neighbouring ring, sweeping the shading normal through the lit
+            # hemisphere on the way -- a bright ring around an otherwise unlit
+            # pole. Orient each pole normal into the same hemisphere as its
+            # adjacent ring (column 1 / -2), which is reliably outward.
+            def _orient_to_ring(pole_normal, ring_normal):
+                dot = (pole_normal * ring_normal).sum(-1, keepdim=True)
+                return torch.where(dot < 0, -pole_normal, pole_normal)
+
             is_south_pole = torch.allclose(grid[..., :, 0, :], grid[..., :1, 0, :], atol=1e-4, rtol=1e-4)
             if is_south_pole:
                 pole_normal = unnormalized_normals[..., :, 0, :].sum(-2, keepdim=True)
+                ring_normal = unnormalized_normals[..., :, 1, :].sum(-2, keepdim=True)
+                pole_normal = _orient_to_ring(pole_normal, ring_normal)
                 unnormalized_normals[..., :, 0, :] = pole_normal
 
             is_north_pole = torch.allclose(grid[..., :, -1, :], grid[..., :1, -1, :], atol=1e-4, rtol=1e-4)
             if is_north_pole:
                 pole_normal = unnormalized_normals[..., :, -1, :].sum(-2, keepdim=True)
+                ring_normal = unnormalized_normals[..., :, -2, :].sum(-2, keepdim=True)
+                pole_normal = _orient_to_ring(pole_normal, ring_normal)
                 unnormalized_normals[..., :, -1, :] = pole_normal
 
             vertex_normals = -F.normalize(unnormalized_normals, p=2, dim=-1)
