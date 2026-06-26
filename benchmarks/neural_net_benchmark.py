@@ -13,7 +13,7 @@ def neural_net():
 
 
 enable_ray_tracing(1, pn_triangles=True, fragment_shading=True, shadows=False)
-render_settings = HD
+render_settings = UHD
 render_settings.anti_alias_level = 2
 set_wavefront(True)
 profile_scene(neural_net, render_settings, 'neural_net')

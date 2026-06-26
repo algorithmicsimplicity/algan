@@ -106,7 +106,7 @@ def wf_gen_triangle(
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
         time_start: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float, max_bounces: int,
-        ray_offset: int,
+        ray_offset: int, jitter_x: float, jitter_y: float,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
         rs_int: ti.types.ndarray()):
@@ -122,7 +122,7 @@ def wf_gen_triangle(
         f = time_start + f_rel
         py = p // width
         px = p - py * width
-        ro, rd = _generate_ray(f, px, py, 0.5, 0.5,
+        ro, rd = _generate_ray(f, px, py, jitter_x, jitter_y,
                                half_screen_w, half_screen_h,
                                cam_origin, screen_point,
                                pixel_basis_x, pixel_basis_y)
@@ -416,6 +416,31 @@ def wf_composite(
 
 
 @ti.kernel
+def wf_composite_aa(
+        time_start: int, width: int, height: int, transparent: int,
+        ray_offset: int,
+        rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
+        out: ti.types.ndarray(), aa_accum: ti.types.ndarray()):
+    """Like ``wf_composite`` but accumulates into a float buffer for in-place
+    AA averaging. Each call adds one sub-pixel sample's composited value;
+    ``wf_finalize_aa`` averages after all ``aa^2`` passes."""
+    pixels_per_frame = width * height
+    num_rays = rs_acc.shape[0]
+    for r in range(num_rays):
+        g = ray_offset + r
+        f_rel = g // pixels_per_frame
+        p = g - f_rel * pixels_per_frame
+        idx = f_rel * pixels_per_frame + p
+        weight = rs_sca[r, 0]
+        for ci in ti.static(range(4)):
+            bg = ti.cast(out[f_rel, p, ci], ti.f32)
+            aa_accum[idx, ci] += rs_acc[r, ci] * 255.0 + weight * bg
+        if transparent != 0:
+            bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
+            aa_accum[idx, 4] += (1.0 - weight) * 255.0 + weight * bg_a
+
+
+@ti.kernel
 def wf_composite_accum(
         time_start: int, width: int, height: int, transparent: int,
         ray_offset: int,
@@ -447,6 +472,53 @@ def wf_composite_accum(
                 ti.math.clamp(val + 0.5, 0.0, 255.0), ti.u8)
 
 
+@ti.kernel
+def wf_composite_accum_aa(
+        time_start: int, width: int, height: int, transparent: int,
+        ray_offset: int,
+        pix_accum: ti.types.ndarray(), out: ti.types.ndarray(),
+        aa_accum: ti.types.ndarray()):
+    """Like ``wf_composite_accum`` but accumulates into a float buffer for
+    in-place AA averaging."""
+    pixels_per_frame = width * height
+    num_primary = pix_accum.shape[0]
+    for r in range(num_primary):
+        g = ray_offset + r
+        f_rel = g // pixels_per_frame
+        p = g - f_rel * pixels_per_frame
+        idx = f_rel * pixels_per_frame + p
+        weight = pix_accum[r, 4]
+        for ci in ti.static(range(4)):
+            bg = ti.cast(out[f_rel, p, ci], ti.f32)
+            aa_accum[idx, ci] += pix_accum[r, ci] * 255.0 + weight * bg
+        if transparent != 0:
+            bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
+            aa_accum[idx, 4] += (1.0 - weight) * 255.0 + weight * bg_a
+
+
+@ti.kernel
+def wf_finalize_aa(
+        width: int, height: int, transparent: int,
+        inv_samples: float,
+        aa_accum: ti.types.ndarray(), out: ti.types.ndarray()):
+    """Average the AA float accumulator and write the final uint8 output.
+    Called once after all ``aa^2`` sub-pixel passes have been accumulated by
+    ``wf_composite_aa`` or ``wf_composite_accum_aa``."""
+    pixels_per_frame = width * height
+    num_pixels = aa_accum.shape[0]
+    for idx in range(num_pixels):
+        f_rel = idx // pixels_per_frame
+        p = idx - f_rel * pixels_per_frame
+        for ci in ti.static(range(4)):
+            out[f_rel, p, ci] = ti.cast(
+                ti.math.clamp(aa_accum[idx, ci] * inv_samples + 0.5,
+                              0.0, 255.0), ti.u8)
+        if transparent != 0:
+            out[f_rel, p, 4] = ti.cast(
+                ti.math.clamp(aa_accum[idx, 4] * inv_samples + 0.5,
+                              0.0, 255.0), ti.u8)
+
+
 # ---------------------------------------------------------------------------
 # General (triangle + PN patch + bezier circuit) wavefront kernels.
 #
@@ -464,7 +536,7 @@ def wf_gen_general(
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
         time_start: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float, max_bounces: int,
-        ray_offset: int, num_primary: int,
+        ray_offset: int, num_primary: int, jitter_x: float, jitter_y: float,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
         rs_int: ti.types.ndarray(),
@@ -493,7 +565,7 @@ def wf_gen_general(
             f = time_start + f_rel
             py = p // width
             px = p - py * width
-            ro, rd = _generate_ray(f, px, py, 0.5, 0.5,
+            ro, rd = _generate_ray(f, px, py, jitter_x, jitter_y,
                                    half_screen_w, half_screen_h,
                                    cam_origin, screen_point,
                                    pixel_basis_x, pixel_basis_y)
