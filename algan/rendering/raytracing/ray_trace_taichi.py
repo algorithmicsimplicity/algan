@@ -957,15 +957,16 @@ def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                         x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
                                         if x_cross > u:
                                             crossings += 1
-                                    dx = x1 - x0
-                                    dy = y1 - y0
-                                    seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
-                                        dx * dx + dy * dy, 1e-12)
-                                    seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
-                                    cx = x0 + seg_t * dx - u
-                                    cy = y0 + seg_t * dy - v
-                                    min_dist_sq = ti.min(min_dist_sq,
-                                                         cx * cx + cy * cy)
+                                    if edges_2d[te, e, 4] > 0.5:
+                                        dx = x1 - x0
+                                        dy = y1 - y0
+                                        seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
+                                            dx * dx + dy * dy, 1e-12)
+                                        seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
+                                        cx = x0 + seg_t * dx - u
+                                        cy = y0 + seg_t * dy - v
+                                        min_dist_sq = ti.min(min_dist_sq,
+                                                             cx * cx + cy * cy)
 
                                 # World size of one screen pixel at this hit,
                                 # for screen-constant border/outline widths.
@@ -1799,15 +1800,16 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                             x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
                                             if x_cross > u:
                                                 crossings += 1
-                                        dx = x1 - x0
-                                        dy = y1 - y0
-                                        seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
-                                            dx * dx + dy * dy, 1e-12)
-                                        seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
-                                        cx = x0 + seg_t * dx - u
-                                        cy = y0 + seg_t * dy - v
-                                        min_dist_sq = ti.min(min_dist_sq,
-                                                             cx * cx + cy * cy)
+                                        if edges_2d[te, e, 4] > 0.5:
+                                            dx = x1 - x0
+                                            dy = y1 - y0
+                                            seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
+                                                dx * dx + dy * dy, 1e-12)
+                                            seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
+                                            cx = x0 + seg_t * dx - u
+                                            cy = y0 + seg_t * dy - v
+                                            min_dist_sq = ti.min(min_dist_sq,
+                                                                 cx * cx + cy * cy)
 
                                     pixel_size = pixel_size_per_t * (base_dist + t)
                                     border_w = (circuit_meta[tm, circuit, _M_BORDER_W]

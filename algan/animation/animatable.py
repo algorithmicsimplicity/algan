@@ -118,10 +118,11 @@ class ModificationHistory:
                 attr
             )  # current (i.e. ending) value
             history = [
-                (v, e)
+                [v, e]
                 for v, s, e in self.attribute_modifications[attr]
-                if e() > s() + 1e-3
+                if e() >= s()
             ] + [(v, lambda: float("inf"))]
+
             values, times = zip(*history)
             # Note that times are stored as functions so they can be retroactively changed by animation contexts,
             # here we evaluate them to get the actual (float) times.
@@ -208,7 +209,7 @@ class ModificationHistory:
                         sub_rate_funcs,
                     )
                 )
-        wait_for_cuda()
+
         self.cached_history = (attrs, funcs)
         return attrs, funcs
 
@@ -966,7 +967,7 @@ class Animatable:
         attr_to_values = dict()
         self.t = t
 
-        wait_for_cuda()
+
         attr_history, func_history = self.data.history.get_history(self)
         self.func_history = func_history
         for attr, new_values, end_times in attr_history:
@@ -1021,7 +1022,7 @@ class Animatable:
             rate_funcs,
         ) in self.func_history:
             (func, caller) = func
-            found = ((start_times < t) & (t < extended_end_times)).type(t.dtype)
+            found = ((start_times <= t) & (t < extended_end_times)).type(t.dtype)
             if found.nonzero().numel() == 0:
                 continue
 

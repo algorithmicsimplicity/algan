@@ -12,7 +12,7 @@ def neural_net():
     nn.move(DOWN)
 
 
-enable_ray_tracing(1, pn_triangles=True, fragment_shading=True, shadows=True)
+enable_ray_tracing(1, pn_triangles=True, fragment_shading=True, shadows=False)
 render_settings = HD
 render_settings.anti_alias_level = 2
 set_wavefront(True)

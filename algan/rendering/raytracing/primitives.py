@@ -903,6 +903,10 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         basis_u = F.normalize(torch.cross(normals, helper, dim=-1), p=2, dim=-1)
         basis_v = torch.cross(normals, basis_u, dim=-1)
 
+        segment_lengths = (corners[..., 1:, :] - corners[..., :-1, :]).square().sum(-1).sum(-1)
+        is_degenerate = segment_lengths < 1e-9
+        edge_degenerate = torch.repeat_interleave(is_degenerate, num_samples, dim=1)
+
         # Absolute polyline index of the first sample of each segment, and of
         # the sample each segment's last sample connects to (closing each
         # subpath through next_segment_inds, exactly like the rasterizer).
@@ -914,10 +918,18 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             self.next_segment_inds.shape[0], S).long()
         next_start = seg_starts[nsi]  # [Tn, S]
 
-        (verts_e, centers_e, basis_u_e, basis_v_e, next_start_e), T_geo = _unify_time(
-            [verts, centers, basis_u, basis_v, next_start.unsqueeze(-1)],
+        Tn = nsi.shape[0]
+        border_visible = torch.ones((Tn, V), device=device, dtype=torch.float32)
+        closing_mask = nsi <= torch.arange(S, device=device).view(1, -1)
+        seg_ends_expanded = seg_ends.view(1, -1).expand(Tn, -1)
+        border_visible.scatter_(1, seg_ends_expanded, torch.where(closing_mask, torch.tensor(0.0, device=device), torch.tensor(1.0, device=device)))
+
+        (verts_e, centers_e, basis_u_e, basis_v_e, next_start_e, edge_degenerate_e, border_visible_e), T_geo = _unify_time(
+            [verts, centers, basis_u, basis_v, next_start.unsqueeze(-1), edge_degenerate.unsqueeze(-1), border_visible.unsqueeze(-1)],
             "bezier geometry")
         next_start_e = next_start_e.squeeze(-1)
+        edge_degenerate_e = edge_degenerate_e.squeeze(-1)
+        border_visible_e = border_visible_e.squeeze(-1)
 
         rel = verts_e - centers_e[:, vert_circuit]
         u = (rel * basis_u_e[:, vert_circuit]).sum(-1)
@@ -926,7 +938,12 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         next_uv = locals_uv.roll(-1, dims=1)
         gather_inds = next_start_e.unsqueeze(-1).expand(T_geo, -1, 2)
         next_uv[:, seg_ends] = torch.gather(locals_uv, 1, gather_inds)
-        self._rt_edges = torch.cat((locals_uv, next_uv), -1).float().contiguous()
+        self._rt_edges = torch.cat((locals_uv, next_uv, border_visible_e.unsqueeze(-1)), -1).float().contiguous()
+        self._rt_edges = torch.where(
+            edge_degenerate_e.unsqueeze(-1),
+            torch.tensor([1e9, 1e9, 1e9, 1e9, 0.0], device=device),
+            self._rt_edges
+        )
 
         samples_per_circuit = torch.zeros((C,), dtype=torch.long, device=device)
         samples_per_circuit.index_add_(0, circuit_of_segment, num_samples)
@@ -1265,7 +1282,7 @@ def _merge_scene(primitives):
         scene["circuit_meta"] = torch.zeros((1, 1, 20), device=device)
         scene["circuit_colors"] = torch.zeros((1, 1, 1, 5), device=device)
         scene["circuit_border_colors"] = torch.zeros((1, 1, 5), device=device)
-        scene["edges_2d"] = torch.zeros((1, 1, 4), device=device)
+        scene["edges_2d"] = torch.zeros((1, 1, 5), device=device)
         scene["edge_offsets"] = torch.zeros((2,), dtype=torch.int32,
                                             device=device)
         scene["bez_bvh"] = _empty_scene_part(device)

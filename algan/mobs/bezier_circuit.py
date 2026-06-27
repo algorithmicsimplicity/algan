@@ -13,7 +13,9 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
 )
 
+from algan.animation.animatable import animated_function
 from algan.utils.tensor_utils import *
+
 
 
 class BezierCircuitCubic(Renderable):
@@ -309,6 +311,73 @@ class BezierCircuitCubic(Renderable):
         )
         prim.num_texture_points = self.num_texture_points
         return prim
+
+    @animated_function(animated_args={"t": 0.0})
+    def draw(self, t=1.0):
+        self.control_points.set_time_inds_to(self)
+        #if not hasattr(self, "_original_control_points"):
+        self._original_control_points = self.control_points.location.clone()
+        num_frames = self.control_points.location.shape[0]
+        total_control_points = self._original_control_points.shape[-2]
+        points = self._original_control_points.expand(num_frames, -1, -1)
+
+
+        if self.control_points.parent_batch_sizes is not None:
+            num_mobs = len(self.control_points.parent_batch_sizes)
+        else:
+            num_mobs = 1
+
+        num_control_points_per_mob = total_control_points // num_mobs
+        N_per_mob = num_control_points_per_mob // 4
+
+        # Reshape points to (num_frames, num_mobs, N_per_mob, 4, 3)
+        points_reshaped = points.view(num_frames, num_mobs, N_per_mob, 4, 3)
+
+        # Ensure t is a tensor and has shape (num_frames, num_mobs, 1, 1)
+        t = cast_to_tensor(t).to(points.device)
+        while t.dim() < 3:
+            t = t.unsqueeze(0)
+        if t.shape[1] != num_mobs:
+            t = t.expand(-1, num_mobs, -1)
+        t = t.unsqueeze(-1) # (num_frames, num_mobs, 1, 1)
+
+        # Calculate local b parameters
+        inds_local = torch.arange(N_per_mob, device=points.device, dtype=points.dtype)
+        b = (N_per_mob * t - inds_local.view(1, 1, N_per_mob, 1)).clamp(0.0, 1.0) # (num_frames, num_mobs, N_per_mob, 1, 1)
+
+        # Portion matrix coefficients for each segment
+        mb = 1.0 - b
+        b2 = b * b
+        mb2 = mb * mb
+        b3 = b2 * b
+        mb3 = mb2 * mb
+
+        # Construct portion_matrix of shape (num_frames, num_mobs, N_per_mob, 4, 4)
+        portion_matrix = torch.zeros((num_frames, num_mobs, N_per_mob, 4, 4), device=points.device, dtype=points.dtype)
+        portion_matrix[..., 0, 0] = 1.0
+
+        portion_matrix[..., 1, 0] = mb.squeeze(-1)
+        portion_matrix[..., 1, 1] = b.squeeze(-1)
+
+        portion_matrix[..., 2, 0] = mb2.squeeze(-1)
+        portion_matrix[..., 2, 1] = 2.0 * mb.squeeze(-1) * b.squeeze(-1)
+        portion_matrix[..., 2, 2] = b2.squeeze(-1)
+
+        portion_matrix[..., 3, 0] = mb3.squeeze(-1)
+        portion_matrix[..., 3, 1] = 3.0 * mb2.squeeze(-1) * b.squeeze(-1)
+        portion_matrix[..., 3, 2] = 3.0 * mb.squeeze(-1) * b2.squeeze(-1)
+        portion_matrix[..., 3, 3] = b3.squeeze(-1)
+
+        # Compute new control points
+        new_points = torch.matmul(portion_matrix, points_reshaped)
+
+        # Reshape back to (num_frames, total_control_points, 3)
+        new_points = new_points.view(num_frames, total_control_points, 3)
+
+        # Set the control points location absolute
+        self.control_points.location = new_points
+        return self
+
 
 
 class BezierCurveCubic(BezierCircuitCubic):
