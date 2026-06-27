@@ -76,6 +76,7 @@ from algan.rendering.raytracing.wavefront_taichi import (
     wf_gen_triangle,
     wf_shade_general,
     wf_shade_triangle,
+    wf_shadow_general,
     wf_traverse_general,
     wf_traverse_triangle,
     wf_traverse_triangle_knots,
@@ -113,6 +114,13 @@ AMBIENT_LIGHT = 0.0
 # False to force all three traversals -- used by the A/B benchmark to measure
 # the gain in isolation.
 GATE_EMPTY_TRAVERSALS = True
+# Deferred shadows for the general wavefront: when True, binary hard-shadow
+# rays are traced in a separate lean kernel (``wf_shadow_general``) between
+# traverse and shade, and the shade kernel reads packed visibility bits instead
+# of inlining the ``_shadow_occluded`` -> PN-solver call graph. Byte-identical;
+# trades one extra kernel launch + a small bit buffer for lower shade-kernel
+# register pressure (higher occupancy). Off by default (env ALGAN_WF_DEFERRED_SHADOWS=1).
+DEFER_WF_SHADOWS = os.environ.get("ALGAN_WF_DEFERRED_SHADOWS", "0") == "1"
 # When True, a batch containing only flat triangles is rendered by the
 # specialized ``render_triangles_stbvh`` kernel instead of the general
 # three-geometry-type ``render_scene_stbvh``. Output is identical; the
@@ -1636,6 +1644,10 @@ def render_general_wavefront(
     # non-refractive path keeps split_k == 1 (one slot per pixel, as before).
     split_k = REFRACT_SPLIT_SLOTS if refraction_flag else 1
     primary_per_tile = max(1, WAVEFRONT_TILE_RAYS // split_k)
+    # Deferred shadows: trace shadow rays in a separate lean kernel and have the
+    # shade kernel read packed visibility bits (lower shade register pressure).
+    # Only active when the toggle is on AND this render actually casts shadows.
+    deferred_sh = 1 if (DEFER_WF_SHADOWS and shadow_flag) else 0
 
     aa_accum = None
     if do_aa:
@@ -1667,6 +1679,10 @@ def render_general_wavefront(
                 # split ray bumps rs_used[its pixel], so distinct pixels touch
                 # distinct addresses -- no single global atomic to serialise on.
                 rs_used = memory.get_tensor((tn_primary,), i32)
+                # Packed per-ray shadow visibility bits (deferred shadows only);
+                # a 1-element placeholder otherwise (the reader compiles out).
+                rs_vis = memory.get_tensor(
+                    (pool if deferred_sh else 1,), i32)
 
                 wf_gen_general(
                     cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
@@ -1701,6 +1717,36 @@ def render_general_wavefront(
                         int(tile_start),
                         rs_ro, rs_rd, rs_sca, rs_int,
                         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
+                    if deferred_sh:
+                        wf_shadow_general(
+                            active, na,
+                            tri_bvh.nodes, tri_bvh.node_miss,
+                            tri_bvh.leaf_prim, tri_bvh.leaf_tspan,
+                            int(tri_bvh.first_leaf),
+                            merged["tri_pos"], merged["tri_norm"],
+                            merged["tri_colors"], merged["tri_uvs"],
+                            merged["tri_tex_meta"], merged["textures"],
+                            int(merged["num_colored_triangles"]),
+                            pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
+                            pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
+                            merged["pn_ctrl"], merged["pn_norm"],
+                            merged["pn_colors"], merged["pn_obb"],
+                            bez_bvh.nodes, bez_bvh.node_miss,
+                            bez_bvh.leaf_prim, bez_bvh.leaf_tspan,
+                            int(bez_bvh.first_leaf),
+                            merged["circuit_meta"], merged["circuit_colors"],
+                            merged["circuit_border_colors"],
+                            merged["edges_2d"], merged["edge_offsets"],
+                            pixel_world_scale,
+                            float(layer_offset_triangles),
+                            float(layer_offset_pn),
+                            int(has_tri), int(has_pn), int(has_bez),
+                            light_pos, int(num_lights),
+                            int(time_start), int(width), int(height),
+                            int(tile_start),
+                            rs_ro, rs_rd, rs_sca, rs_int,
+                            rs_kt, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix,
+                            rs_vis)
                     wf_shade_general(
                         active, na,
                         tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
@@ -1725,6 +1771,8 @@ def render_general_wavefront(
                         float(layer_offset_triangles), float(layer_offset_pn),
                         int(frag_flag), int(shadow_flag),
                         int(refraction_flag),
+                        int(has_tri), int(has_pn), int(has_bez),
+                        int(deferred_sh),
                         merged["tri_mat_id"], merged["tri_mat"],
                         merged["pn_mat_id"], merged["pn_mat"],
                         light_pos, light_col, int(num_lights),
@@ -1732,7 +1780,7 @@ def render_general_wavefront(
                         int(tile_start),
                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
-                        rs_pix, pix_accum, rs_used)
+                        rs_pix, pix_accum, rs_used, rs_vis)
                     ti.sync()
                     active = (rs_int[:, 2] == 0).nonzero(
                         as_tuple=True)[0].to(i32)

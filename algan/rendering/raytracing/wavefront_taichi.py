@@ -608,7 +608,7 @@ def wf_traverse_general(
         edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
         pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: float, layer_offset_pn: float,
-        has_tri: ti.i32, has_pn: ti.i32, has_bez: ti.i32,
+        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         time_start: int, width: int, height: int, ray_offset: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
@@ -668,6 +668,154 @@ def wf_traverse_general(
 
 
 @ti.kernel
+def wf_shadow_general(
+        active: ti.types.ndarray(), num_active: int,
+        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
+        t_first_leaf: int,
+        tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
+        tri_colors: ti.types.ndarray(), tri_uvs: ti.types.ndarray(),
+        tri_tex_meta: ti.types.ndarray(), textures: ti.types.ndarray(),
+        num_colored_triangles: ti.i32,
+        p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
+        p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
+        p_first_leaf: int,
+        pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
+        pn_colors: ti.types.ndarray(), pn_obb: ti.types.ndarray(),
+        b_nodes: ti.types.ndarray(), b_node_miss: ti.types.ndarray(),
+        b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
+        b_first_leaf: int,
+        circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
+        circuit_border_colors: ti.types.ndarray(),
+        edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
+        pixel_world_scale: ti.types.ndarray(),
+        layer_offset_triangles: float, layer_offset_pn: float,
+        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+        light_pos: ti.types.ndarray(), num_lights: int,
+        time_start: int, width: int, height: int, ray_offset: int,
+        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
+        rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
+        rs_kt: ti.types.ndarray(), rs_ka: ti.types.ndarray(),
+        rs_kb: ti.types.ndarray(), rs_kp: ti.types.ndarray(),
+        rs_kf: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
+        rs_vis: ti.types.ndarray()):
+    """Deferred binary hard-shadow stage for the general wavefront: for each
+    active ray, precompute per-(K-buffer hit, light) occlusion into a packed
+    int32 (bit ``q * MAX_SHADOW_LIGHTS + li``). Run between traverse and shade so
+    the shade kernel reads visibility bits instead of inlining the heavy
+    ``_shadow_occluded`` -> ``_nearest_surface_g`` -> PN-solver call graph
+    (register-pressure relief -> higher shade-kernel occupancy). The per-hit
+    shadow geometry mirrors ``wf_shade_general``'s inline block exactly, so the
+    bits drive byte-identical shading. Because ``_collect_hits`` stops gathering
+    at the first opaque hit, the K-buffer holds (almost) exactly the hits shade
+    consumes, so few bits are computed and never read."""
+    pixels_per_frame = width * height
+    for i in range(num_active):
+        r = active[i]
+        num_hits = rs_int[r, 3]
+        bits = 0
+        if num_hits > 0:
+            pix = rs_pix[r]
+            f = time_start + (ray_offset + pix) // pixels_per_frame
+            ff = ti.cast(f, ti.f32)
+            ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
+            rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
+            base_dist = rs_sca[r, 4]
+            pixel_size_per_t = pixel_world_scale[f]
+            tl = f % light_pos.shape[0]
+            for q in ti.static(range(KBUF)):
+                if q < num_hits:
+                    prim = rs_kp[r, q]
+                    if prim >= 0:
+                        htype = rs_kf[r, q] & 3
+                        if (htype == 1) or (htype == 2):
+                            a = rs_ka[r, q]
+                            b = rs_kb[r, q]
+                            t_hit = rs_kt[r, q]
+                            snrm = ti.math.vec3(0.0, 0.0, 0.0)
+                            fnrm = ti.math.vec3(0.0, 0.0, 0.0)
+                            if htype == 1:
+                                snrm = _triangle_normal(f, prim, 1.0 - a - b,
+                                                        a, b, tri_norm, tri_pos)
+                                tp = f % tri_pos.shape[0]
+                                v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+                                                  tri_pos[tp, prim, 1],
+                                                  tri_pos[tp, prim, 2])
+                                v1 = ti.math.vec3(tri_pos[tp, prim, 3],
+                                                  tri_pos[tp, prim, 4],
+                                                  tri_pos[tp, prim, 5])
+                                v2 = ti.math.vec3(tri_pos[tp, prim, 6],
+                                                  tri_pos[tp, prim, 7],
+                                                  tri_pos[tp, prim, 8])
+                                fnrm = (v1 - v0).cross(v2 - v0)
+                            else:
+                                snrm = _pn_normal(f, prim, a, b, pn_norm,
+                                                  pn_ctrl)
+                                tp = f % pn_ctrl.shape[0]
+                                su = ti.math.vec3(0.0, 0.0, 0.0)
+                                sv = ti.math.vec3(0.0, 0.0, 0.0)
+                                for ci in ti.static(range(3)):
+                                    su[ci] = (pn_ctrl[tp, prim, 3 + ci]
+                                              + 2.0 * a * pn_ctrl[tp, prim,
+                                                                  9 + ci]
+                                              + b * pn_ctrl[tp, prim, 15 + ci])
+                                    sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
+                                              + 2.0 * b * pn_ctrl[tp, prim,
+                                                                  12 + ci]
+                                              + a * pn_ctrl[tp, prim, 15 + ci])
+                                fnrm = su.cross(sv)
+                            if snrm.norm() > 1e-9:
+                                snrm = snrm.normalized()
+                            if snrm.dot(rd) > 0.0:
+                                snrm = -snrm
+                            if fnrm.norm() > 1e-9:
+                                fnrm = fnrm.normalized()
+                            if fnrm.dot(snrm) < 0.0:
+                                fnrm = -fnrm
+                            spos = ro + t_hit * rd
+                            sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
+                            for li in range(num_lights):
+                                if li < MAX_SHADOW_LIGHTS:
+                                    lp = ti.math.vec3(light_pos[tl, li, 0],
+                                                      light_pos[tl, li, 1],
+                                                      light_pos[tl, li, 2])
+                                    to_light = lp - spos
+                                    ldist = to_light.norm()
+                                    if ldist > 1e-5:
+                                        wi = to_light / ldist
+                                        if (fnrm.dot(wi) > 1e-3) and \
+                                                (snrm.dot(wi) > 1e-4):
+                                            occ = _shadow_occluded(
+                                                sorigin, wi, f, ff,
+                                                ldist - 20.0 * MIN_HIT_DISTANCE,
+                                                pixel_size_per_t, base_dist,
+                                                layer_offset_triangles,
+                                                layer_offset_pn,
+                                                has_tri, has_pn, has_bez,
+                                                t_nodes, t_node_miss,
+                                                t_leaf_prim, t_leaf_tspan,
+                                                t_first_leaf, tri_pos,
+                                                tri_colors, tri_uvs,
+                                                tri_tex_meta, textures,
+                                                num_colored_triangles,
+                                                p_nodes, p_node_miss,
+                                                p_leaf_prim, p_leaf_tspan,
+                                                p_first_leaf, pn_ctrl, pn_obb,
+                                                pn_colors,
+                                                b_nodes, b_node_miss,
+                                                b_leaf_prim, b_leaf_tspan,
+                                                b_first_leaf, circuit_meta,
+                                                circuit_colors,
+                                                circuit_border_colors,
+                                                edges_2d, edge_offsets)
+                                            if occ > 0.5:
+                                                bits |= (
+                                                    1 << (q * MAX_SHADOW_LIGHTS
+                                                          + li))
+        rs_vis[r] = bits
+
+
+@ti.kernel
 def wf_shade_general(
         active: ti.types.ndarray(), num_active: int,
         # Triangle STBVH (for shadow rays) + geometry/shading data.
@@ -701,6 +849,8 @@ def wf_shade_general(
         # transmitted ray for surfaces with a refractive index (extra cols 6-8).
         frag_shading: ti.template(), shadows: ti.template(),
         refraction: ti.template(),
+        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+        deferred_shadows: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
         pn_mat_id: ti.types.ndarray(), pn_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
@@ -713,7 +863,7 @@ def wf_shade_general(
         rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
         rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(), pix_accum: ti.types.ndarray(),
-        rs_used: ti.types.ndarray()):
+        rs_used: ti.types.ndarray(), rs_vis: ti.types.ndarray()):
     """Drain gathered hits front-to-back exactly as ``render_scene_stbvh``'s
     inner loop, with per-geometry-type shading and mirror bounces.
 
@@ -839,7 +989,18 @@ def wf_shade_general(
                     # ``_nearest_surface`` -> PN solver call graph is inlined
                     # once, not once per light.
                     vis = ti.Vector([1.0] * MAX_SHADOW_LIGHTS)
-                    if ti.static(shadows != 0):
+                    if ti.static((shadows != 0) and (deferred_shadows != 0)):
+                        # Deferred shadows: read the per-(hit, light) occlusion
+                        # bits precomputed by ``wf_shadow_general`` for this hit's
+                        # K-buffer slot (``sel``). Byte-identical to the inline
+                        # path below; just relocated to a lean kernel.
+                        sbits = rs_vis[r]
+                        for li in range(num_lights):
+                            if li < MAX_SHADOW_LIGHTS:
+                                if ((sbits >> (sel * MAX_SHADOW_LIGHTS + li))
+                                        & 1) != 0:
+                                    vis[li] = 0.0
+                    if ti.static((shadows != 0) and (deferred_shadows == 0)):
                         ff = ti.cast(f, ti.f32)
                         pixel_size_per_t = pixel_world_scale[f]
                         if (htype == 1) or (htype == 2):
@@ -913,6 +1074,7 @@ def wf_shade_general(
                                                 pixel_size_per_t, base_dist,
                                                 layer_offset_triangles,
                                                 layer_offset_pn,
+                                                has_tri, has_pn, has_bez,
                                                 t_nodes, t_node_miss,
                                                 t_leaf_prim, t_leaf_tspan,
                                                 t_first_leaf, tri_pos,

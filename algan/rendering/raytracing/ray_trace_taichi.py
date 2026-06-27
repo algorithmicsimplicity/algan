@@ -1387,7 +1387,9 @@ def _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
 
 
 @ti.func
-def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+def _nearest_surface_g(has_tri: ti.template(), has_pn: ti.template(),
+                     has_bez: ti.template(),
+                     ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
                      layer_offset_pn,
                      t_nodes: ti.template(), t_node_miss: ti.template(),
@@ -1424,18 +1426,37 @@ def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     border = 0
     edge_hit = 0
 
-    tt, t_prim, w1, w2, t_layer = _nearest_triangle_hit(
-        ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset_triangles,
-        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-        tri_pos)
-    pt, p_prim, p_u, p_v, p_layer = _nearest_pn_hit(
-        ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset_pn,
-        p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-        pn_ctrl, pn_obb)
-    bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
-        ro, rd, inv_rd, f, ff, t_prev, layer_prev, pixel_size_per_t,
-        base_dist, b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-        b_first_leaf, circuit_meta, edges_2d, edge_offsets)
+    tt = 1e30
+    t_prim = -1
+    w1 = 0.0
+    w2 = 0.0
+    t_layer = -1e30
+    if ti.static(has_tri != 0):
+        tt, t_prim, w1, w2, t_layer = _nearest_triangle_hit(
+            ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset_triangles,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+            tri_pos)
+    pt = 1e30
+    p_prim = -1
+    p_u = 0.0
+    p_v = 0.0
+    p_layer = -1e30
+    if ti.static(has_pn != 0):
+        pt, p_prim, p_u, p_v, p_layer = _nearest_pn_hit(
+            ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset_pn,
+            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+            pn_ctrl, pn_obb)
+    bt = 1e30
+    b_circ = -1
+    b_border = 0
+    b_u = 0.0
+    b_v = 0.0
+    b_layer = -1e30
+    if ti.static(has_bez != 0):
+        bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
+            ro, rd, inv_rd, f, ff, t_prev, layer_prev, pixel_size_per_t,
+            base_dist, b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+            b_first_leaf, circuit_meta, edges_2d, edge_offsets)
 
     if t_prim >= 0:
         found = 1
@@ -1478,6 +1499,35 @@ def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
 
 
 @ti.func
+def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+                     pixel_size_per_t, base_dist, layer_offset_triangles,
+                     layer_offset_pn,
+                     t_nodes: ti.template(), t_node_miss: ti.template(),
+                     t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
+                     t_first_leaf, tri_pos: ti.template(),
+                     p_nodes: ti.template(), p_node_miss: ti.template(),
+                     p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
+                     p_first_leaf, pn_ctrl: ti.template(),
+                     pn_obb: ti.template(),
+                     b_nodes: ti.template(), b_node_miss: ti.template(),
+                     b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
+                     b_first_leaf, circuit_meta: ti.template(),
+                     edges_2d: ti.template(), edge_offsets: ti.template()):
+    """All-geometry-present wrapper of :func:`_nearest_surface_g` for callers
+    (Monte-Carlo path tracers + gbuffer) that don't specialize on which geometry
+    types are present. Byte-identical to the pre-gating ``_nearest_surface``."""
+    return _nearest_surface_g(
+        1, 1, 1,
+        ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+        pixel_size_per_t, base_dist, layer_offset_triangles, layer_offset_pn,
+        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
+        p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+        pn_ctrl, pn_obb,
+        b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+        circuit_meta, edges_2d, edge_offsets)
+
+
+@ti.func
 def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                   pixel_size_per_t, base_dist, layer_offset_triangles,
                   layer_offset_pn,
@@ -1495,8 +1545,8 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                   b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                   b_first_leaf, circuit_meta: ti.template(),
                   edges_2d: ti.template(), edge_offsets: ti.template(),
-                  has_tri: ti.i32, has_pn: ti.i32,
-                  has_bez: ti.i32) -> ti.i32:
+                  has_tri: ti.template(), has_pn: ti.template(),
+                  has_bez: ti.template()) -> ti.i32:
     """Gather the up-to-``KBUF`` nearest hits strictly after
     (t_prev, layer_prev) into the caller's buffers, in one traversal of each
     BVH. Triangles are traversed first; the PN-patch and bezier traversals
@@ -1523,121 +1573,198 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     opq_layer = -1e30
 
     # --- Triangle BVH ---
-    tp = f % tri_pos.shape[0]
-    node = -1
-    if has_tri != 0:
+    if ti.static(has_tri != 0):
+        tp = f % tri_pos.shape[0]
         node = 0
-    while node != -1:
-        window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
-        window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-        if _node_intersected(node, ff, ro, inv_rd,
-                             t_prev - DEPTH_TIE_EPSILON, window_hi, t_nodes):
-            if node >= t_first_leaf:
-                base = (node - t_first_leaf) * LEAF_SIZE
-                for j in ti.static(range(LEAF_SIZE)):
-                    prim = t_leaf_prim[base + j]
-                    tspan = t_leaf_tspan[base + j]
-                    if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                            and (f <= ((tspan >> 16) & 0x7FFF))):
-                        v0 = ti.math.vec3(tri_pos[tp, prim, 0],
-                                          tri_pos[tp, prim, 1],
-                                          tri_pos[tp, prim, 2])
-                        v1 = ti.math.vec3(tri_pos[tp, prim, 3],
-                                          tri_pos[tp, prim, 4],
-                                          tri_pos[tp, prim, 5])
-                        v2 = ti.math.vec3(tri_pos[tp, prim, 6],
-                                          tri_pos[tp, prim, 7],
-                                          tri_pos[tp, prim, 8])
-                        e1 = v1 - v0
-                        e2 = v2 - v0
-                        pv = rd.cross(e2)
-                        det = e1.dot(pv)
-                        if ti.abs(det) > 1e-12:
-                            inv_det = 1.0 / det
-                            tvec = ro - v0
-                            w1 = tvec.dot(pv) * inv_det
-                            qv = tvec.cross(e1)
-                            w2 = rd.dot(qv) * inv_det
-                            if ((w1 >= -BARYCENTRIC_EPSILON)
-                                    and (w2 >= -BARYCENTRIC_EPSILON)
-                                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
-                                t = e2.dot(qv) * inv_det
-                                layer = layer_offset_triangles + ti.cast(
-                                    prim, ti.f32)
-                                accept = ((t > MIN_HIT_DISTANCE)
-                                          and _comes_after(t, layer, t_prev,
-                                                           layer_prev)
-                                          and not _comes_after(
-                                              t, layer, opq_t, opq_layer))
-                                if accept and (count == KBUF):
-                                    accept = _comes_after(worst_t, worst_layer,
-                                                          t, layer)
-                                if accept:
-                                    slot = worst_idx
-                                    if count < KBUF:
-                                        slot = count
-                                        count += 1
-                                    hit_t[slot] = t
-                                    hit_layer[slot] = layer
-                                    hit_prim[slot] = prim
-                                    w0 = 1.0 - w1 - w2
-                                    eh = 1 if (ti.min(w0, ti.min(w1, w2))
-                                               < TRIANGLE_EDGE_EPSILON) else 0
-                                    hit_flags[slot] = 1 | (eh << 2)
-                                    hit_a[slot] = w1
-                                    hit_b[slot] = w2
-                                    if (tspan < 0) and _comes_after(
-                                            opq_t, opq_layer, t, layer):
-                                        opq_t = t
-                                        opq_layer = layer
-                                    if count == KBUF:
-                                        worst_idx = 0
-                                        worst_t = hit_t[0]
-                                        worst_layer = hit_layer[0]
-                                        for q in ti.static(range(1, KBUF)):
-                                            if _comes_after(hit_t[q],
-                                                            hit_layer[q],
-                                                            worst_t,
-                                                            worst_layer):
-                                                worst_idx = q
-                                                worst_t = hit_t[q]
-                                                worst_layer = hit_layer[q]
-                node = t_node_miss[node]
+        while node != -1:
+            window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
+            window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+            if _node_intersected(node, ff, ro, inv_rd,
+                                 t_prev - DEPTH_TIE_EPSILON, window_hi, t_nodes):
+                if node >= t_first_leaf:
+                    base = (node - t_first_leaf) * LEAF_SIZE
+                    for j in ti.static(range(LEAF_SIZE)):
+                        prim = t_leaf_prim[base + j]
+                        tspan = t_leaf_tspan[base + j]
+                        if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+                                              tri_pos[tp, prim, 1],
+                                              tri_pos[tp, prim, 2])
+                            v1 = ti.math.vec3(tri_pos[tp, prim, 3],
+                                              tri_pos[tp, prim, 4],
+                                              tri_pos[tp, prim, 5])
+                            v2 = ti.math.vec3(tri_pos[tp, prim, 6],
+                                              tri_pos[tp, prim, 7],
+                                              tri_pos[tp, prim, 8])
+                            e1 = v1 - v0
+                            e2 = v2 - v0
+                            pv = rd.cross(e2)
+                            det = e1.dot(pv)
+                            if ti.abs(det) > 1e-12:
+                                inv_det = 1.0 / det
+                                tvec = ro - v0
+                                w1 = tvec.dot(pv) * inv_det
+                                qv = tvec.cross(e1)
+                                w2 = rd.dot(qv) * inv_det
+                                if ((w1 >= -BARYCENTRIC_EPSILON)
+                                        and (w2 >= -BARYCENTRIC_EPSILON)
+                                        and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
+                                    t = e2.dot(qv) * inv_det
+                                    layer = layer_offset_triangles + ti.cast(
+                                        prim, ti.f32)
+                                    accept = ((t > MIN_HIT_DISTANCE)
+                                              and _comes_after(t, layer, t_prev,
+                                                               layer_prev)
+                                              and not _comes_after(
+                                                  t, layer, opq_t, opq_layer))
+                                    if accept and (count == KBUF):
+                                        accept = _comes_after(worst_t, worst_layer,
+                                                              t, layer)
+                                    if accept:
+                                        slot = worst_idx
+                                        if count < KBUF:
+                                            slot = count
+                                            count += 1
+                                        hit_t[slot] = t
+                                        hit_layer[slot] = layer
+                                        hit_prim[slot] = prim
+                                        w0 = 1.0 - w1 - w2
+                                        eh = 1 if (ti.min(w0, ti.min(w1, w2))
+                                                   < TRIANGLE_EDGE_EPSILON) else 0
+                                        hit_flags[slot] = 1 | (eh << 2)
+                                        hit_a[slot] = w1
+                                        hit_b[slot] = w2
+                                        if (tspan < 0) and _comes_after(
+                                                opq_t, opq_layer, t, layer):
+                                            opq_t = t
+                                            opq_layer = layer
+                                        if count == KBUF:
+                                            worst_idx = 0
+                                            worst_t = hit_t[0]
+                                            worst_layer = hit_layer[0]
+                                            for q in ti.static(range(1, KBUF)):
+                                                if _comes_after(hit_t[q],
+                                                                hit_layer[q],
+                                                                worst_t,
+                                                                worst_layer):
+                                                    worst_idx = q
+                                                    worst_t = hit_t[q]
+                                                    worst_layer = hit_layer[q]
+                    node = t_node_miss[node]
+                else:
+                    node = BVH_ARITY * node + 1
             else:
-                node = BVH_ARITY * node + 1
-        else:
-            node = t_node_miss[node]
+                node = t_node_miss[node]
 
     # --- PN patch BVH (window already tightened by the triangle hits) ---
-    pp = f % pn_ctrl.shape[0]
-    po = f % pn_obb.shape[0]
-    node = -1
-    if has_pn != 0:
+    if ti.static(has_pn != 0):
+        pp = f % pn_ctrl.shape[0]
+        po = f % pn_obb.shape[0]
         node = 0
-    while node != -1:
-        window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
-        window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-        if _node_intersected(node, ff, ro, inv_rd,
-                             t_prev - DEPTH_TIE_EPSILON, window_hi, p_nodes):
-            p_is_leaf = (p_leaf_prim[node] >= 0) if ti.static(_USE_SAH) \
-                else (node >= p_first_leaf)
-            if p_is_leaf:
-                base = (node * LEAF_SIZE) if ti.static(_USE_SAH) \
-                    else (node - p_first_leaf) * LEAF_SIZE
-                for j in ti.static(range(LEAF_SIZE)):
-                    prim = p_leaf_prim[base + j]
-                    tspan = p_leaf_tspan[base + j]
-                    if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                            and (f <= ((tspan >> 16) & 0x7FFF))
-                            and (ti.static(not _PN_OBB_ON) or not _obb_misses(
-                                ro, rd, po, prim, pn_obb,
-                                t_prev - DEPTH_TIE_EPSILON, window_hi))):
-                        cnt, ts, us, vs = _pn_intersect(ro, rd, pp, prim,
-                                                        pn_ctrl)
-                        layer = layer_offset_pn + ti.cast(prim, ti.f32)
-                        for r in ti.static(range(4)):
-                            if r < cnt:
-                                t = ts[r]
+        while node != -1:
+            window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
+            window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+            if _node_intersected(node, ff, ro, inv_rd,
+                                 t_prev - DEPTH_TIE_EPSILON, window_hi, p_nodes):
+                p_is_leaf = (p_leaf_prim[node] >= 0) if ti.static(_USE_SAH) \
+                    else (node >= p_first_leaf)
+                if p_is_leaf:
+                    base = (node * LEAF_SIZE) if ti.static(_USE_SAH) \
+                        else (node - p_first_leaf) * LEAF_SIZE
+                    for j in ti.static(range(LEAF_SIZE)):
+                        prim = p_leaf_prim[base + j]
+                        tspan = p_leaf_tspan[base + j]
+                        if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))
+                                and (ti.static(not _PN_OBB_ON) or not _obb_misses(
+                                    ro, rd, po, prim, pn_obb,
+                                    t_prev - DEPTH_TIE_EPSILON, window_hi))):
+                            cnt, ts, us, vs = _pn_intersect(ro, rd, pp, prim,
+                                                            pn_ctrl)
+                            layer = layer_offset_pn + ti.cast(prim, ti.f32)
+                            for r in ti.static(range(4)):
+                                if r < cnt:
+                                    t = ts[r]
+                                    accept = ((t > MIN_HIT_DISTANCE)
+                                              and _comes_after(t, layer, t_prev,
+                                                               layer_prev)
+                                              and not _comes_after(
+                                                  t, layer, opq_t, opq_layer))
+                                    if accept and (count == KBUF):
+                                        accept = _comes_after(worst_t, worst_layer,
+                                                              t, layer)
+                                    if accept:
+                                        slot = worst_idx
+                                        if count < KBUF:
+                                            slot = count
+                                            count += 1
+                                        hit_t[slot] = t
+                                        hit_layer[slot] = layer
+                                        hit_prim[slot] = prim
+                                        u = us[r]
+                                        v = vs[r]
+                                        w0 = 1.0 - u - v
+                                        eh = 1 if (ti.min(w0, ti.min(u, v))
+                                                   < PN_EDGE_EPSILON) else 0
+                                        hit_flags[slot] = 2 | (eh << 2)
+                                        hit_a[slot] = u
+                                        hit_b[slot] = v
+                                        if (tspan < 0) and _comes_after(
+                                                opq_t, opq_layer, t, layer):
+                                            opq_t = t
+                                            opq_layer = layer
+                                        if count == KBUF:
+                                            worst_idx = 0
+                                            worst_t = hit_t[0]
+                                            worst_layer = hit_layer[0]
+                                            for q in ti.static(range(1, KBUF)):
+                                                if _comes_after(hit_t[q],
+                                                                hit_layer[q],
+                                                                worst_t,
+                                                                worst_layer):
+                                                    worst_idx = q
+                                                    worst_t = hit_t[q]
+                                                    worst_layer = hit_layer[q]
+                    node = p_node_miss[node]
+                else:
+                    node = (node + 1) if ti.static(_USE_SAH) \
+                        else (BVH_ARITY * node + 1)
+            else:
+                node = p_node_miss[node]
+
+    # --- Bezier BVH (window tightened by the triangle and patch hits) ---
+    if ti.static(has_bez != 0):
+        num_meta_frames = circuit_meta.shape[0]
+        num_edge_frames = edges_2d.shape[0]
+        node = 0
+        while node != -1:
+            window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
+            window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+            if _node_intersected(node, ff, ro, inv_rd,
+                                 t_prev - DEPTH_TIE_EPSILON, window_hi, b_nodes):
+                b_is_leaf = (b_leaf_prim[node] >= 0) if ti.static(_USE_SAH) \
+                    else (node >= b_first_leaf)
+                if b_is_leaf:
+                    base = (node * LEAF_SIZE) if ti.static(_USE_SAH) \
+                        else (node - b_first_leaf) * LEAF_SIZE
+                    for j in ti.static(range(LEAF_SIZE)):
+                        circuit = b_leaf_prim[base + j]
+                        tspan = b_leaf_tspan[base + j]
+                        if ((circuit >= 0) and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            tm = f % num_meta_frames
+                            n = ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
+                                             circuit_meta[tm, circuit, _M_NORMAL + 1],
+                                             circuit_meta[tm, circuit, _M_NORMAL + 2])
+                            denom = rd.dot(n)
+                            layer = ti.cast(circuit, ti.f32)
+                            if ti.abs(denom) > 1e-9:
+                                center = ti.math.vec3(
+                                    circuit_meta[tm, circuit, _M_CENTER],
+                                    circuit_meta[tm, circuit, _M_CENTER + 1],
+                                    circuit_meta[tm, circuit, _M_CENTER + 2])
+                                t = (center - ro).dot(n) / denom
                                 accept = ((t > MIN_HIT_DISTANCE)
                                           and _comes_after(t, layer, t_prev,
                                                            layer_prev)
@@ -1647,164 +1774,84 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                     accept = _comes_after(worst_t, worst_layer,
                                                           t, layer)
                                 if accept:
-                                    slot = worst_idx
-                                    if count < KBUF:
-                                        slot = count
-                                        count += 1
-                                    hit_t[slot] = t
-                                    hit_layer[slot] = layer
-                                    hit_prim[slot] = prim
-                                    u = us[r]
-                                    v = vs[r]
-                                    w0 = 1.0 - u - v
-                                    eh = 1 if (ti.min(w0, ti.min(u, v))
-                                               < PN_EDGE_EPSILON) else 0
-                                    hit_flags[slot] = 2 | (eh << 2)
-                                    hit_a[slot] = u
-                                    hit_b[slot] = v
-                                    if (tspan < 0) and _comes_after(
-                                            opq_t, opq_layer, t, layer):
-                                        opq_t = t
-                                        opq_layer = layer
-                                    if count == KBUF:
-                                        worst_idx = 0
-                                        worst_t = hit_t[0]
-                                        worst_layer = hit_layer[0]
-                                        for q in ti.static(range(1, KBUF)):
-                                            if _comes_after(hit_t[q],
-                                                            hit_layer[q],
-                                                            worst_t,
-                                                            worst_layer):
-                                                worst_idx = q
-                                                worst_t = hit_t[q]
-                                                worst_layer = hit_layer[q]
-                node = p_node_miss[node]
+                                    hit = ro + t * rd - center
+                                    bu = ti.math.vec3(
+                                        circuit_meta[tm, circuit, _M_BASIS_U],
+                                        circuit_meta[tm, circuit, _M_BASIS_U + 1],
+                                        circuit_meta[tm, circuit, _M_BASIS_U + 2])
+                                    bv = ti.math.vec3(
+                                        circuit_meta[tm, circuit, _M_BASIS_V],
+                                        circuit_meta[tm, circuit, _M_BASIS_V + 1],
+                                        circuit_meta[tm, circuit, _M_BASIS_V + 2])
+                                    u = hit.dot(bu)
+                                    v = hit.dot(bv)
+
+                                    te = f % num_edge_frames
+                                    crossings = 0
+                                    min_dist_sq = 1e30
+                                    for e in range(edge_offsets[circuit],
+                                                   edge_offsets[circuit + 1]):
+                                        x0 = edges_2d[te, e, 0]
+                                        y0 = edges_2d[te, e, 1]
+                                        x1 = edges_2d[te, e, 2]
+                                        y1 = edges_2d[te, e, 3]
+                                        if (y0 > v) != (y1 > v):
+                                            x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
+                                            if x_cross > u:
+                                                crossings += 1
+                                        dx = x1 - x0
+                                        dy = y1 - y0
+                                        seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
+                                            dx * dx + dy * dy, 1e-12)
+                                        seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
+                                        cx = x0 + seg_t * dx - u
+                                        cy = y0 + seg_t * dy - v
+                                        min_dist_sq = ti.min(min_dist_sq,
+                                                             cx * cx + cy * cy)
+
+                                    pixel_size = pixel_size_per_t * (base_dist + t)
+                                    border_w = (circuit_meta[tm, circuit, _M_BORDER_W]
+                                                * pixel_size)
+                                    in_border = min_dist_sq < border_w * border_w
+                                    outline_w = 0.6 * pixel_size
+                                    inside = False
+                                    if circuit_meta[tm, circuit, _M_FILLED] > 0.5:
+                                        inside = ((crossings % 2) == 1) or (
+                                            min_dist_sq < outline_w * outline_w)
+                                    if inside or in_border:
+                                        slot = worst_idx
+                                        if count < KBUF:
+                                            slot = count
+                                            count += 1
+                                        hit_t[slot] = t
+                                        hit_layer[slot] = layer
+                                        hit_prim[slot] = circuit
+                                        hit_flags[slot] = (
+                                            (1 if in_border else 0) << 3)
+                                        hit_a[slot] = u
+                                        hit_b[slot] = v
+                                        if (tspan < 0) and _comes_after(
+                                                opq_t, opq_layer, t, layer):
+                                            opq_t = t
+                                            opq_layer = layer
+                                        if count == KBUF:
+                                            worst_idx = 0
+                                            worst_t = hit_t[0]
+                                            worst_layer = hit_layer[0]
+                                            for q in ti.static(range(1, KBUF)):
+                                                if _comes_after(hit_t[q],
+                                                                hit_layer[q],
+                                                                worst_t,
+                                                                worst_layer):
+                                                    worst_idx = q
+                                                    worst_t = hit_t[q]
+                                                    worst_layer = hit_layer[q]
+                    node = b_node_miss[node]
+                else:
+                    node = (node + 1) if ti.static(_USE_SAH) \
+                        else (BVH_ARITY * node + 1)
             else:
-                node = (node + 1) if ti.static(_USE_SAH) \
-                    else (BVH_ARITY * node + 1)
-        else:
-            node = p_node_miss[node]
-
-    # --- Bezier BVH (window tightened by the triangle and patch hits) ---
-    num_meta_frames = circuit_meta.shape[0]
-    num_edge_frames = edges_2d.shape[0]
-    node = -1
-    if has_bez != 0:
-        node = 0
-    while node != -1:
-        window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
-        window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-        if _node_intersected(node, ff, ro, inv_rd,
-                             t_prev - DEPTH_TIE_EPSILON, window_hi, b_nodes):
-            b_is_leaf = (b_leaf_prim[node] >= 0) if ti.static(_USE_SAH) \
-                else (node >= b_first_leaf)
-            if b_is_leaf:
-                base = (node * LEAF_SIZE) if ti.static(_USE_SAH) \
-                    else (node - b_first_leaf) * LEAF_SIZE
-                for j in ti.static(range(LEAF_SIZE)):
-                    circuit = b_leaf_prim[base + j]
-                    tspan = b_leaf_tspan[base + j]
-                    if ((circuit >= 0) and ((tspan & 0xFFFF) <= f)
-                            and (f <= ((tspan >> 16) & 0x7FFF))):
-                        tm = f % num_meta_frames
-                        n = ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
-                                         circuit_meta[tm, circuit, _M_NORMAL + 1],
-                                         circuit_meta[tm, circuit, _M_NORMAL + 2])
-                        denom = rd.dot(n)
-                        layer = ti.cast(circuit, ti.f32)
-                        if ti.abs(denom) > 1e-9:
-                            center = ti.math.vec3(
-                                circuit_meta[tm, circuit, _M_CENTER],
-                                circuit_meta[tm, circuit, _M_CENTER + 1],
-                                circuit_meta[tm, circuit, _M_CENTER + 2])
-                            t = (center - ro).dot(n) / denom
-                            accept = ((t > MIN_HIT_DISTANCE)
-                                      and _comes_after(t, layer, t_prev,
-                                                       layer_prev)
-                                      and not _comes_after(
-                                          t, layer, opq_t, opq_layer))
-                            if accept and (count == KBUF):
-                                accept = _comes_after(worst_t, worst_layer,
-                                                      t, layer)
-                            if accept:
-                                hit = ro + t * rd - center
-                                bu = ti.math.vec3(
-                                    circuit_meta[tm, circuit, _M_BASIS_U],
-                                    circuit_meta[tm, circuit, _M_BASIS_U + 1],
-                                    circuit_meta[tm, circuit, _M_BASIS_U + 2])
-                                bv = ti.math.vec3(
-                                    circuit_meta[tm, circuit, _M_BASIS_V],
-                                    circuit_meta[tm, circuit, _M_BASIS_V + 1],
-                                    circuit_meta[tm, circuit, _M_BASIS_V + 2])
-                                u = hit.dot(bu)
-                                v = hit.dot(bv)
-
-                                te = f % num_edge_frames
-                                crossings = 0
-                                min_dist_sq = 1e30
-                                for e in range(edge_offsets[circuit],
-                                               edge_offsets[circuit + 1]):
-                                    x0 = edges_2d[te, e, 0]
-                                    y0 = edges_2d[te, e, 1]
-                                    x1 = edges_2d[te, e, 2]
-                                    y1 = edges_2d[te, e, 3]
-                                    if (y0 > v) != (y1 > v):
-                                        x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
-                                        if x_cross > u:
-                                            crossings += 1
-                                    dx = x1 - x0
-                                    dy = y1 - y0
-                                    seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
-                                        dx * dx + dy * dy, 1e-12)
-                                    seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
-                                    cx = x0 + seg_t * dx - u
-                                    cy = y0 + seg_t * dy - v
-                                    min_dist_sq = ti.min(min_dist_sq,
-                                                         cx * cx + cy * cy)
-
-                                pixel_size = pixel_size_per_t * (base_dist + t)
-                                border_w = (circuit_meta[tm, circuit, _M_BORDER_W]
-                                            * pixel_size)
-                                in_border = min_dist_sq < border_w * border_w
-                                outline_w = 0.6 * pixel_size
-                                inside = False
-                                if circuit_meta[tm, circuit, _M_FILLED] > 0.5:
-                                    inside = ((crossings % 2) == 1) or (
-                                        min_dist_sq < outline_w * outline_w)
-                                if inside or in_border:
-                                    slot = worst_idx
-                                    if count < KBUF:
-                                        slot = count
-                                        count += 1
-                                    hit_t[slot] = t
-                                    hit_layer[slot] = layer
-                                    hit_prim[slot] = circuit
-                                    hit_flags[slot] = (
-                                        (1 if in_border else 0) << 3)
-                                    hit_a[slot] = u
-                                    hit_b[slot] = v
-                                    if (tspan < 0) and _comes_after(
-                                            opq_t, opq_layer, t, layer):
-                                        opq_t = t
-                                        opq_layer = layer
-                                    if count == KBUF:
-                                        worst_idx = 0
-                                        worst_t = hit_t[0]
-                                        worst_layer = hit_layer[0]
-                                        for q in ti.static(range(1, KBUF)):
-                                            if _comes_after(hit_t[q],
-                                                            hit_layer[q],
-                                                            worst_t,
-                                                            worst_layer):
-                                                worst_idx = q
-                                                worst_t = hit_t[q]
-                                                worst_layer = hit_layer[q]
                 node = b_node_miss[node]
-            else:
-                node = (node + 1) if ti.static(_USE_SAH) \
-                    else (BVH_ARITY * node + 1)
-        else:
-            node = b_node_miss[node]
     return count
 
 
@@ -1812,6 +1859,8 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
 def _shadow_occluded(ro, rd, f, ff, max_t,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
                      layer_offset_pn,
+                     has_tri: ti.template(), has_pn: ti.template(),
+                     has_bez: ti.template(),
                      t_nodes: ti.template(), t_node_miss: ti.template(),
                      t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
                      t_first_leaf, tri_pos: ti.template(),
@@ -1850,7 +1899,8 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
     while step < MAX_SURFACES_PER_RAY:
         step += 1
         (found, t_hit, hit_layer, prim, hit_type, a, b, border,
-         edge_hit) = _nearest_surface(
+         edge_hit) = _nearest_surface_g(
+            has_tri, has_pn, has_bez,
             ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             pixel_size_per_t, base_dist, layer_offset_triangles,
             layer_offset_pn,
@@ -1907,7 +1957,7 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                      circuit_colors: ti.template(),
                      circuit_border_colors: ti.template(),
                      edges_2d: ti.template(), edge_offsets: ti.template(),
-                     has_tri: ti.i32, has_pn: ti.i32, has_bez: ti.i32,
+                     has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
                      frag_shading: ti.template(),
                      tri_mat_id: ti.template(), tri_mat: ti.template(),
                      pn_mat_id: ti.template(), pn_mat: ti.template(),
@@ -2106,6 +2156,7 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                                             pixel_size_per_t, base_dist,
                                             layer_offset_triangles,
                                             layer_offset_pn,
+                                            has_tri, has_pn, has_bez,
                                             t_nodes, t_node_miss, t_leaf_prim,
                                             t_leaf_tspan, t_first_leaf, tri_pos,
                                             tri_colors, tri_uvs, tri_tex_meta,
@@ -2215,7 +2266,7 @@ def render_scene_stbvh(
         layer_offset_triangles: float, layer_offset_pn: float,
         max_bounces: int, transparent: int,
         # Which geometry types are present (skip an absent type's empty BVH).
-        has_tri: ti.i32, has_pn: ti.i32, has_bez: ti.i32,
+        has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         # Fragment shading (compile-time): 0 = use baked vertex colours
         # (unchanged default path); 1 = material-shade triangle/PN hits per
         # fragment from the raw albedo, material blocks and scene lights.
