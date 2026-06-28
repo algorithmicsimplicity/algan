@@ -76,12 +76,13 @@ class Surface(Renderable):
         self,
         coord_function=None,
         normal_function=None,
-        grid_height=12,
+        grid_height=None,
         grid_width=None,
         grid_aspect_ratio=None,
         checkered_color=None,
         color_texture=None,
         ignore_normals=False,
+        tolerance=0.01,
         *args,
         **kwargs,
     ):
@@ -89,12 +90,6 @@ class Surface(Renderable):
             coord_function = self.coord_function
         if normal_function is None:
             normal_function = self.normal_function
-        if grid_width is None:
-            grid_width = grid_height
-        if grid_height is None:
-            grid_height = grid_width
-        if grid_aspect_ratio is not None:
-            grid_height = int(grid_width * grid_aspect_ratio)
 
         self.coord_function_active = coord_function
         self.normal_function_active = normal_function
@@ -111,6 +106,104 @@ class Surface(Renderable):
             self.texture_height, self.texture_width = color_texture.shape[-3:-1]
         else:
             self.color_texture = None
+
+        # Auto-tuning grid resolution
+        if grid_height is None and grid_width is None:
+            device = self.location.device
+            # We sample the true surface on a fine grid to determine the bounding box diagonal scale.
+            sample_u = torch.linspace(0, 1, 100, device=device)
+            sample_v = torch.linspace(0, 1, 100, device=device)
+            grid_u, grid_v = torch.meshgrid(sample_u, sample_v, indexing='ij')
+            sample_uv = torch.stack([grid_u, grid_v], dim=-1)
+            
+            # Since coord_function may modify uv in-place (e.g. Cylinder/Cone), pass a clone
+            sample_points = coord_function(sample_uv.clone())
+            
+            min_coords = sample_points.min(dim=0).values.min(dim=0).values
+            max_coords = sample_points.max(dim=0).values.max(dim=0).values
+            scale = (max_coords - min_coords).norm()
+            if scale < 1e-8:
+                scale = torch.tensor(1.0, device=device)
+
+            if grid_aspect_ratio is not None:
+                # Fixed aspect ratio: search for a single resolution parameter
+                low = 4
+                high = 200
+                best_N = high
+                while low <= high:
+                    mid = (low + high) // 2
+                    W = mid
+                    H = max(4, int(mid * grid_aspect_ratio))
+                    try:
+                        error = self._compute_pn_error(coord_function, W, H)
+                        if error < tolerance * scale:
+                            best_N = mid
+                            high = mid - 1
+                        else:
+                            low = mid + 1
+                    except Exception:
+                        low = mid + 1
+                grid_width = best_N
+                grid_height = max(4, int(best_N * grid_aspect_ratio))
+            else:
+                # Independent rectangular search
+                # 1. Search for best grid_width (W) with grid_height (H) set to a high resolution (200)
+                low = 4
+                high = 200
+                best_W = high
+                while low <= high:
+                    mid = (low + high) // 2
+                    try:
+                        error = self._compute_pn_error(coord_function, mid, 200)
+                        if error < tolerance * scale:
+                            best_W = mid
+                            high = mid - 1
+                        else:
+                            low = mid + 1
+                    except Exception:
+                        low = mid + 1
+                
+                # 2. Search for best grid_height (H) with grid_width (W) set to a high resolution (200)
+                low = 4
+                high = 200
+                best_H = high
+                while low <= high:
+                    mid = (low + high) // 2
+                    try:
+                        error = self._compute_pn_error(coord_function, 200, mid)
+                        if error < tolerance * scale:
+                            best_H = mid
+                            high = mid - 1
+                        else:
+                            low = mid + 1
+                    except Exception:
+                        low = mid + 1
+                
+                # Joint error correction loop
+                try:
+                    joint_error = self._compute_pn_error(coord_function, best_W, best_H)
+                    while joint_error > tolerance * scale and (best_W < 200 or best_H < 200):
+                        ratio = joint_error / (tolerance * scale)
+                        factor = max(1.15, float(torch.sqrt(ratio).item()))
+                        if best_W < 200:
+                            best_W = min(200, int(best_W * factor) + 1)
+                        if best_H < 200:
+                            best_H = min(200, int(best_H * factor) + 1)
+                        joint_error = self._compute_pn_error(coord_function, best_W, best_H)
+                except Exception:
+                    pass
+                
+                grid_width = best_W
+                grid_height = best_H
+        else:
+            # Fall back to specified manual resolution
+            if grid_width is None:
+                grid_width = grid_height
+            if grid_height is None:
+                grid_height = grid_width
+            if grid_aspect_ratio is not None:
+                grid_height = int(grid_width * grid_aspect_ratio)
+
         self.grid_height, self.grid_width = grid_height, grid_width
         base_grid = self.get_base_grid()
         grid_points = squish(coord_function(base_grid), -3, -2) + self.location
@@ -154,6 +247,123 @@ class Surface(Renderable):
         self.grid.is_primitive = True
         self.is_primitive = True
         self.ignore_wave_animations = True
+
+    def _compute_pn_error(self, coord_function, W, H):
+        device = self.location.device
+        grid_u = torch.linspace(0, 1, W, device=device)
+        grid_v = torch.linspace(0, 1, H, device=device)
+        grid_uu, grid_vv = torch.meshgrid(grid_u, grid_v, indexing='ij')
+        base_grid = torch.stack([grid_uu, grid_vv], dim=-1)
+
+        grid_points = coord_function(base_grid.clone())
+
+        grid_x_plus_1 = grid_points.roll(-1, -3)
+        grid_x_minus_1 = grid_points.roll(1, -3)
+        grid_y_plus_1 = grid_points.roll(-1, -2)
+        grid_y_minus_1 = grid_points.roll(1, -2)
+        triangle_sides = unsquish(
+            torch.stack(
+                (
+                    grid_x_minus_1,
+                    grid_y_minus_1,
+                    grid_y_minus_1,
+                    grid_x_plus_1,
+                    grid_x_plus_1,
+                    grid_y_plus_1,
+                    grid_y_plus_1,
+                    grid_x_minus_1,
+                ),
+                -2,
+            )
+            - grid_points.unsqueeze(-2),
+            -2,
+            2,
+        )
+        triangle_normals = broadcast_cross_product(
+            triangle_sides[..., 0, :], triangle_sides[..., 1, :]
+        )
+        triangle_normals[..., 0, :, [0, 3], :] = 0
+        triangle_normals[..., -1, :, [1, 2], :] = 0
+        triangle_normals[..., :, 0, [0, 1], :] = 0
+        triangle_normals[..., :, -1, [2, 3], :] = 0
+        unnormalized_normals = triangle_normals.sum(-2)
+
+        # Merge unnormalized normals along closed seams
+        is_closed_x = torch.allclose(grid_points[..., 0, :, :], grid_points[..., -1, :, :], atol=1e-4, rtol=1e-4)
+        if is_closed_x:
+            closed_normals = unnormalized_normals[..., 0, :, :] + unnormalized_normals[..., -1, :, :]
+            unnormalized_normals[..., 0, :, :] = closed_normals
+            unnormalized_normals[..., -1, :, :] = closed_normals
+
+        is_closed_y = torch.allclose(grid_points[..., :, 0, :], grid_points[..., :, -1, :], atol=1e-4, rtol=1e-4)
+        if is_closed_y:
+            closed_normals = unnormalized_normals[..., :, 0, :] + unnormalized_normals[..., :, -1, :]
+            unnormalized_normals[..., :, 0, :] = closed_normals
+            unnormalized_normals[..., :, -1, :] = closed_normals
+
+        def _orient_to_ring(pole_normal, ring_normal):
+            dot = (pole_normal * ring_normal).sum(-1, keepdim=True)
+            return torch.where(dot < 0, -pole_normal, pole_normal)
+
+        is_south_pole = torch.allclose(grid_points[..., :, 0, :], grid_points[..., :1, 0, :], atol=1e-4, rtol=1e-4)
+        if is_south_pole:
+            pole_normal = unnormalized_normals[..., :, 0, :].sum(-2, keepdim=True)
+            ring_normal = unnormalized_normals[..., :, 1, :].sum(-2, keepdim=True)
+            pole_normal = _orient_to_ring(pole_normal, ring_normal)
+            unnormalized_normals[..., :, 0, :] = pole_normal
+
+        is_north_pole = torch.allclose(grid_points[..., :, -1, :], grid_points[..., :1, -1, :], atol=1e-4, rtol=1e-4)
+        if is_north_pole:
+            pole_normal = unnormalized_normals[..., :, -1, :].sum(-2, keepdim=True)
+            ring_normal = unnormalized_normals[..., :, -2, :].sum(-2, keepdim=True)
+            pole_normal = _orient_to_ring(pole_normal, ring_normal)
+            unnormalized_normals[..., :, -1, :] = pole_normal
+
+        vertex_normals = -F.normalize(unnormalized_normals, p=2, dim=-1)
+
+
+
+        triangle_uvs = grid_to_triangle_vertices(base_grid)
+        triangle_corners = grid_to_triangle_vertices(grid_points)
+        triangle_normals = grid_to_triangle_vertices(vertex_normals)
+
+        corners_3d = triangle_corners.reshape(-1, 3, 3)
+        normals_3d = triangle_normals.reshape(-1, 3, 3)
+        uvs_2d = triangle_uvs.reshape(-1, 3, 2)
+
+        from algan.rendering.raytracing.pn_patch import pn_control_points, pn_patch_coefficients, evaluate_pn_patch
+        control_points = pn_control_points(corners_3d, normals_3d)
+        coefficients = pn_patch_coefficients(control_points)
+
+        bary_coords = torch.tensor([
+            [1/3, 1/3],
+            [1/2, 0.0],
+            [0.0, 1/2],
+            [1/2, 1/2],
+            [1/6, 1/6],
+            [1/6, 2/3],
+            [2/3, 1/6]
+        ], device=device)
+
+        coefs = coefficients.unsqueeze(1)
+        u = bary_coords[:, 0].unsqueeze(0)
+        v = bary_coords[:, 1].unsqueeze(0)
+
+        S_points = evaluate_pn_patch(coefs, u, v)
+
+        uv0 = uvs_2d[:, 0, :].unsqueeze(1)
+        uv1 = uvs_2d[:, 1, :].unsqueeze(1)
+        uv2 = uvs_2d[:, 2, :].unsqueeze(1)
+
+        u_expanded = u.unsqueeze(-1)
+        v_expanded = v.unsqueeze(-1)
+        w_expanded = 1.0 - u_expanded - v_expanded
+
+        uv_true = w_expanded * uv0 + u_expanded * uv1 + v_expanded * uv2
+        P_true = coord_function(uv_true.clone())
+
+        errors = (S_points - P_true).norm(p=2, dim=-1)
+        return errors.max()
 
     def get_memory_used_per_timestep(self):
         n_grid = self.grid.location.shape[-2]

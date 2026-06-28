@@ -160,6 +160,7 @@ from algan.rendering.shaders.pbr_shaders import (
 )
 
 from algan.animation.manim_animations import *
+from algan.animation.indication import *
 
 
 def clear_cache():

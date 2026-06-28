@@ -378,6 +378,85 @@ class BezierCircuitCubic(Renderable):
         self.control_points.location = new_points
         return self
 
+    def set_control_points_to_partial(self, full_control_points, start_t, end_t):
+        full_control_points = cast_to_tensor(full_control_points)
+        start_t = cast_to_tensor(start_t).to(full_control_points.device)
+        end_t = cast_to_tensor(end_t).to(full_control_points.device)
+
+        num_frames = full_control_points.shape[0]
+        total_control_points = full_control_points.shape[-2]
+
+        if start_t.dim() == 0:
+            start_t = start_t.view(1).expand(num_frames)
+
+        if end_t.dim() == 0:
+            end_t = end_t.view(1).expand(num_frames)
+        else:
+            end_t = end_t.view(num_frames)
+
+        if self.control_points.parent_batch_sizes is not None:
+            num_mobs = len(self.control_points.parent_batch_sizes)
+        else:
+            num_mobs = 1
+
+        num_control_points_per_mob = total_control_points // num_mobs
+        N_per_mob = num_control_points_per_mob // 4
+
+        points_reshaped = full_control_points.view(
+            num_frames, num_mobs, N_per_mob, 4, 3
+        )
+
+        j = torch.arange(
+            N_per_mob,
+            device=full_control_points.device,
+            dtype=full_control_points.dtype,
+        ).view(1, 1, N_per_mob, 1, 1)
+        s_start = j / N_per_mob
+        s_end = (j + 1) / N_per_mob
+
+        a = torch.clamp(start_t.view(-1, 1, 1, 1, 1), min=s_start, max=s_end)
+        b = torch.clamp(end_t.view(-1, 1, 1, 1, 1), min=s_start, max=s_end)
+
+        local_a = (a - s_start) * N_per_mob
+        local_b = (b - s_start) * N_per_mob
+
+        P0 = points_reshaped[..., 0, :]
+        P1 = points_reshaped[..., 1, :]
+        P2 = points_reshaped[..., 2, :]
+        P3 = points_reshaped[..., 3, :]
+
+        b_t = local_b.squeeze(-1)
+        mb_t = 1.0 - b_t
+
+        Q0 = P0
+        Q1 = mb_t * P0 + b_t * P1
+        Q2 = mb_t**2 * P0 + 2.0 * mb_t * b_t * P1 + b_t**2 * P2
+        Q3 = (
+            mb_t**3 * P0
+            + 3.0 * mb_t**2 * b_t * P1
+            + 3.0 * mb_t * b_t**2 * P2
+            + b_t**3 * P3
+        )
+
+        u = torch.where(
+            b_t > 1e-6, local_a.squeeze(-1) / b_t, torch.zeros_like(b_t)
+        )
+        u = torch.clamp(u, 0.0, 1.0)
+        mu = 1.0 - u
+
+        R3 = Q3
+        R2 = u * Q3 + mu * Q2
+        R1 = u**2 * Q3 + 2.0 * u * mu * Q2 + mu**2 * Q1
+        R0 = u**3 * Q3 + 3.0 * u**2 * mu * Q2 + 3.0 * u * mu**2 * Q1 + mu**3 * Q0
+
+        new_points = torch.stack([R0, R1, R2, R3], -2).view(
+            num_frames, total_control_points, 3
+        )
+        self.control_points.location = new_points
+        return self
+
+
+
 
 
 class BezierCurveCubic(BezierCircuitCubic):
