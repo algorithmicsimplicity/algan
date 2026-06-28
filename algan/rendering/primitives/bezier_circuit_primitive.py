@@ -23,6 +23,7 @@ from algan.utils.tensor_utils import (
     expand_as_left,
     unsquish,
     unsqueeze_right,
+    cast_to_tensor,
 )
 
 
@@ -371,6 +372,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         second_basis=None,
         triangle_collection=None,
         glow=0,
+        glow_radius=0.2,
         num_texture_points=0,
         filled=True,
             num_pixels_per_sample=2
@@ -407,6 +409,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 self.border_width,
                 self.border_color,
                 self.portion_of_curve_drawn,
+                self.glow_radius,
             ) = (
                 (torch.cat([(__) for __ in _], -2)).to(device)
                 for _ in zip(
@@ -416,6 +419,7 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                             triangle.border_width,
                             triangle.border_color,
                             triangle.portion_of_curve_drawn,
+                            triangle.glow_radius,
                         )
                         for triangle in triangle_collection
                     )
@@ -465,10 +469,12 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         self.colors[..., -2:-1] += glow.unsqueeze(-2)
         self.colors[..., -1:] *= opacity.unsqueeze(-2)
         self.normals = normals
-        self.border_width, self.border_color, self.portion_of_curve_drawn = (
+        self.border_width, self.border_color, self.portion_of_curve_drawn, self.glow, self.glow_radius = (
             border_width,
             border_color,
             portion_of_curve_drawn,
+            glow,
+            cast_to_tensor(glow_radius).to(self.corners.device),
         )
         self.border_color[..., -2:-1] += glow
         self.border_color[..., -1:] *= opacity

@@ -196,6 +196,7 @@ class BezierCircuitCubic(Renderable):
                 / (PREVIEW.resolution[1] * 2),
                 self.border_color,
                 self.portion_of_curve_drawn,
+                self.glow_radius,
             ],
             ignored_dims=[-1],
         )
@@ -223,7 +224,7 @@ class BezierCircuitCubic(Renderable):
         )
 
     def _get_render_primitives(
-        self, x, tpc, loc, basis, o, n, g, bw, bc, pc, num_segments_per_circuit=None
+        self, x, tpc, loc, basis, o, n, g, bw, bc, pc, gr, num_segments_per_circuit=None
     ):
         num_control_points = 4  # cubic beziers
         # x = unsquish(x, -2, num_control_points)
@@ -306,6 +307,7 @@ class BezierCircuitCubic(Renderable):
             basis[..., :3],
             basis[..., 3:6],
             glow=g,
+            glow_radius=gr,
             num_texture_points=self.num_texture_points,
             filled=self.filled,
         )

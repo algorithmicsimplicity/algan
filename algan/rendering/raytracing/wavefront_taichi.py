@@ -57,6 +57,8 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     _flat_triangle_alpha,
     _triangle_extra,
     _triangle_normal,
+    _accumulate_glow,
+    _accumulate_glow_triangles,
 )
 
 # Per-ray status codes (rs_int column 2).
@@ -182,9 +184,7 @@ def wf_traverse_triangle(
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
             t_first_leaf, tri_pos)
         rs_int[r, 3] = num_hits
-        if num_hits == 0:
-            rs_int[r, 2] = _DONE
-        else:
+        if num_hits > 0:
             for q in ti.static(range(KBUF)):
                 rs_kt[r, q] = kb_t[q]
                 rs_kl[r, q] = kb_layer[q]
@@ -256,6 +256,9 @@ def wf_traverse_triangle_knots(
 @ti.kernel
 def wf_shade_triangle(
         active: ti.types.ndarray(), num_active: int,
+        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
+        t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
@@ -268,7 +271,7 @@ def wf_shade_triangle(
         rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
         rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray()):
     """Drain the gathered hits front-to-back, blending and bouncing exactly as
-    the megakernel's inner loop. No traversal in its call graph."""
+    the megakernel's inner loop. Traverses STBVH for glow accumulation."""
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
@@ -303,6 +306,14 @@ def wf_shade_triangle(
             bounced = False
             done = False
             drained = 0
+            ro_seg = ro
+            rd_seg = rd
+            inv_rd_seg = ti.math.vec3(_safe_inverse(rd[0]),
+                                      _safe_inverse(rd[1]),
+                                      _safe_inverse(rd[2]))
+            weight_seg = weight
+            t_seg_end = 0.0
+            ff = ti.cast(f, ti.f32)
             while drained < num_hits:
                 sel = 0
                 sel_found = 0
@@ -315,6 +326,7 @@ def wf_shade_triangle(
                                           kb_t[q], kb_layer[q]):
                             sel = q
                 t_hit = kb_t[sel]
+                t_seg_end = t_hit
                 hit_layer = kb_layer[sel]
                 prim = kb_prim[sel]
                 flags = kb_flags[sel]
@@ -368,6 +380,15 @@ def wf_shade_triangle(
                     done = True
                     break
 
+            glow_rgb = _accumulate_glow_triangles(
+                ro_seg, rd_seg, inv_rd_seg, t_seg_end, f, ff,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles
+            )
+            acc[0] += weight_seg * glow_rgb[0]
+            acc[1] += weight_seg * glow_rgb[1]
+            acc[2] += weight_seg * glow_rgb[2]
+
             if (not done) and (not bounced) and (num_hits < KBUF):
                 done = True
             if processed >= MAX_SURFACES_PER_RAY:
@@ -385,6 +406,24 @@ def wf_shade_triangle(
             rs_int[r, 0] = bounces_left
             rs_int[r, 1] = processed
             rs_int[r, 2] = _DONE if done else _ACTIVE
+        else:
+            f = time_start + (ray_offset + r) // pixels_per_frame
+            ff = ti.cast(f, ti.f32)
+            ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
+            rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
+            inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                  _safe_inverse(rd[1]),
+                                  _safe_inverse(rd[2]))
+            glow_rgb = _accumulate_glow_triangles(
+                ro, rd, inv_rd, 1e30, f, ff,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles
+            )
+            weight = rs_sca[r, 0]
+            rs_acc[r, 0] += weight * glow_rgb[0]
+            rs_acc[r, 1] += weight * glow_rgb[1]
+            rs_acc[r, 2] += weight * glow_rgb[2]
+            rs_int[r, 2] = _DONE
 
 
 @ti.kernel
@@ -922,6 +961,14 @@ def wf_shade_general(
             bounced = False
             done = False
             drained = 0
+            ro_seg = ro
+            rd_seg = rd
+            inv_rd_seg = ti.math.vec3(_safe_inverse(rd[0]),
+                                      _safe_inverse(rd[1]),
+                                      _safe_inverse(rd[2]))
+            weight_seg = weight
+            t_seg_end = 0.0
+            ff = ti.cast(f, ti.f32)
             while drained < num_hits:
                 sel = 0
                 sel_found = 0
@@ -934,6 +981,7 @@ def wf_shade_general(
                                           kb_t[q], kb_layer[q]):
                             sel = q
                 t_hit = kb_t[sel]
+                t_seg_end = t_hit
                 hit_layer = kb_layer[sel]
                 prim = kb_prim[sel]
                 flags = kb_flags[sel]
@@ -1231,6 +1279,20 @@ def wf_shade_general(
                     done = True
                     break
 
+            glow_rgb = _accumulate_glow(
+                ro_seg, rd_seg, inv_rd_seg, t_seg_end, f, ff,
+                has_tri, has_pn, has_bez,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+                pn_ctrl, pn_colors, pn_extra,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                circuit_meta, circuit_colors, edges_2d, edge_offsets
+            )
+            acc[0] += weight_seg * glow_rgb[0]
+            acc[1] += weight_seg * glow_rgb[1]
+            acc[2] += weight_seg * glow_rgb[2]
+
             if (not done) and (not bounced) and (num_hits < KBUF):
                 done = True
             if processed >= MAX_SURFACES_PER_RAY:
@@ -1259,6 +1321,28 @@ def wf_shade_general(
         else:
             # Ray escaped to the background this segment: commit its colour +
             # leftover (background) throughput, then retire.
+            f = time_start + (ray_offset + pix) // pixels_per_frame
+            ff = ti.cast(f, ti.f32)
+            ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
+            rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
+            inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
+                                  _safe_inverse(rd[1]),
+                                  _safe_inverse(rd[2]))
+            glow_rgb = _accumulate_glow(
+                ro, rd, inv_rd, 1e30, f, ff,
+                has_tri, has_pn, has_bez,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+                pn_ctrl, pn_colors, pn_extra,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                circuit_meta, circuit_colors, edges_2d, edge_offsets
+            )
+            weight = rs_sca[r, 0]
+            rs_acc[r, 0] += weight * glow_rgb[0]
+            rs_acc[r, 1] += weight * glow_rgb[1]
+            rs_acc[r, 2] += weight * glow_rgb[2]
+
             for k in ti.static(range(4)):
                 ti.atomic_add(pix_accum[pix, k], rs_acc[r, k])
             ti.atomic_add(pix_accum[pix, 4], rs_sca[r, 0])

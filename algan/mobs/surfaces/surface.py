@@ -491,6 +491,7 @@ class Surface(Renderable):
             corners=grid_to_triangle_vertices(grid),
             colors=expand_grid_to_verts(grid_color),
             normals=vertex_normals,
+            glow_radius=self.grid.glow_radius,
             shader=self.shader,
             uvs=uvs,
             texture_map=texture_map,

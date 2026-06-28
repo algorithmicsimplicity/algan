@@ -194,10 +194,12 @@ class RenderPrimitive:
         reverse_perimeter=False,
         triangle_collection=None,
         glow=0,
+        glow_radius=0.2,
     ):
         self.corners = corners
         self.colors = colors
         self.normals = normals
+        self.glow_radius = glow_radius
         self.padding = 1
 
     def get_batch_identifier(self):

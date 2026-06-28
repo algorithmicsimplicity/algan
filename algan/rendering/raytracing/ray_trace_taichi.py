@@ -1500,6 +1500,290 @@ def _nearest_surface_g(has_tri: ti.template(), has_pn: ti.template(),
 
 
 @ti.func
+def _distance_sq_to_point(ro, rd, t_max, p):
+    t_proj = (p - ro).dot(rd)
+    t_proj = ti.math.clamp(t_proj, 0.0, t_max)
+    p_ray = ro + t_proj * rd
+    diff = p_ray - p
+    return diff.dot(diff)
+
+@ti.func
+def _accumulate_glow_triangles(ro, rd, inv_rd, t_max, f, ff,
+                               nodes: ti.template(), node_miss: ti.template(),
+                               leaf_prim: ti.template(), leaf_tspan: ti.template(),
+                               first_leaf, tri_pos: ti.template(),
+                               tri_colors: ti.template(), tri_extra: ti.template(),
+                               num_colored_triangles: ti.i32) -> ti.math.vec3:
+    glow_rgb = ti.math.vec3(0.0, 0.0, 0.0)
+    tp = f % tri_pos.shape[0]
+    te = f % tri_extra.shape[0]
+    tc = f % tri_colors.shape[0]
+    node = 0
+    while node != -1:
+        if _node_intersected(node, ff, ro, inv_rd, 0.0, t_max, nodes):
+            if node >= first_leaf:
+                base = (node - first_leaf) * LEAF_SIZE
+                for j in ti.static(range(LEAF_SIZE)):
+                    prim = leaf_prim[base + j]
+                    tspan = leaf_tspan[base + j]
+                    if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
+                            and (f <= ((tspan >> 16) & 0x7FFF))):
+                        g0 = tri_extra[te, prim, 9]
+                        g1 = tri_extra[te, prim, 10]
+                        g2 = tri_extra[te, prim, 11]
+                        if g0 > 0.0 or g1 > 0.0 or g2 > 0.0:
+                            v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1], tri_pos[tp, prim, 2])
+                            v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4], tri_pos[tp, prim, 5])
+                            v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7], tri_pos[tp, prim, 8])
+                            v_c = (v0 + v1 + v2) / 3.0
+                            
+                            r0 = tri_extra[te, prim, 12]
+                            r1 = tri_extra[te, prim, 13]
+                            r2 = tri_extra[te, prim, 14]
+                            r_c = (r0 + r1 + r2) / 3.0
+                            
+                            glow_0 = 0.0
+                            if g0 > 0.0 and r0 > 1e-5:
+                                d2 = _distance_sq_to_point(ro, rd, t_max, v0)
+                                glow_0 = g0 * ti.exp(-d2 / (2.0 * (r0 / 3.0) * (r0 / 3.0)))
+                            glow_1 = 0.0
+                            if g1 > 0.0 and r1 > 1e-5:
+                                d2 = _distance_sq_to_point(ro, rd, t_max, v1)
+                                glow_1 = g1 * ti.exp(-d2 / (2.0 * (r1 / 3.0) * (r1 / 3.0)))
+                            glow_2 = 0.0
+                            if g2 > 0.0 and r2 > 1e-5:
+                                d2 = _distance_sq_to_point(ro, rd, t_max, v2)
+                                glow_2 = g2 * ti.exp(-d2 / (2.0 * (r2 / 3.0) * (r2 / 3.0)))
+                            glow_c = 0.0
+                            g_c = (g0 + g1 + g2) / 3.0
+                            if g_c > 0.0 and r_c > 1e-5:
+                                d2 = _distance_sq_to_point(ro, rd, t_max, v_c)
+                                glow_c = g_c * ti.exp(-d2 / (2.0 * (r_c / 3.0) * (r_c / 3.0)))
+                                
+                            g_val = ti.max(glow_0, ti.max(glow_1, ti.max(glow_2, glow_c)))
+                            
+                            albedo = ti.math.vec3(1.0, 1.0, 1.0)
+                            if prim < num_colored_triangles:
+                                albedo = ti.math.vec3(
+                                    (tri_colors[tc, prim, 0, 0] + tri_colors[tc, prim, 1, 0] + tri_colors[tc, prim, 2, 0]) / 3.0,
+                                    (tri_colors[tc, prim, 0, 1] + tri_colors[tc, prim, 1, 1] + tri_colors[tc, prim, 2, 1]) / 3.0,
+                                    (tri_colors[tc, prim, 0, 2] + tri_colors[tc, prim, 1, 2] + tri_colors[tc, prim, 2, 2]) / 3.0
+                                )
+                            glow_rgb += albedo * g_val
+                node = node_miss[node]
+            else:
+                node = BVH_ARITY * node + 1
+        else:
+            node = node_miss[node]
+    return glow_rgb
+
+@ti.func
+def _accumulate_glow_pn(ro, rd, inv_rd, t_max, f, ff,
+                        nodes: ti.template(), node_miss: ti.template(),
+                        leaf_prim: ti.template(), leaf_tspan: ti.template(),
+                        first_leaf, pn_ctrl: ti.template(),
+                        pn_colors: ti.template(), pn_extra: ti.template()) -> ti.math.vec3:
+    glow_rgb = ti.math.vec3(0.0, 0.0, 0.0)
+    tp = f % pn_ctrl.shape[0]
+    te = f % pn_extra.shape[0]
+    tc = f % pn_colors.shape[0]
+    node = 0
+    while node != -1:
+        if _node_intersected(node, ff, ro, inv_rd, 0.0, t_max, nodes):
+            if node >= first_leaf:
+                base = (node - first_leaf) * LEAF_SIZE
+                for j in ti.static(range(LEAF_SIZE)):
+                    prim = leaf_prim[base + j]
+                    tspan = leaf_tspan[base + j]
+                    if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
+                            and (f <= ((tspan >> 16) & 0x7FFF))):
+                        g0 = pn_extra[te, prim, 9]
+                        g1 = pn_extra[te, prim, 10]
+                        g2 = pn_extra[te, prim, 11]
+                        if g0 > 0.0 or g1 > 0.0 or g2 > 0.0:
+                            k0 = ti.math.vec3(pn_ctrl[tp, prim, 0], pn_ctrl[tp, prim, 1], pn_ctrl[tp, prim, 2])
+                            ku = ti.math.vec3(pn_ctrl[tp, prim, 3], pn_ctrl[tp, prim, 4], pn_ctrl[tp, prim, 5])
+                            kv = ti.math.vec3(pn_ctrl[tp, prim, 6], pn_ctrl[tp, prim, 7], pn_ctrl[tp, prim, 8])
+                            kuu = ti.math.vec3(pn_ctrl[tp, prim, 9], pn_ctrl[tp, prim, 10], pn_ctrl[tp, prim, 11])
+                            kvv = ti.math.vec3(pn_ctrl[tp, prim, 12], pn_ctrl[tp, prim, 13], pn_ctrl[tp, prim, 14])
+                            
+                            v0 = k0
+                            v1 = k0 + ku + kuu
+                            v2 = k0 + kv + kvv
+                            v_c = (v0 + v1 + v2) / 3.0
+                            
+                            r0 = pn_extra[te, prim, 12]
+                            r1 = pn_extra[te, prim, 13]
+                            r2 = pn_extra[te, prim, 14]
+                            r_c = (r0 + r1 + r2) / 3.0
+                            
+                            glow_0 = 0.0
+                            if g0 > 0.0 and r0 > 1e-5:
+                                d2 = _distance_sq_to_point(ro, rd, t_max, v0)
+                                glow_0 = g0 * ti.exp(-d2 / (2.0 * (r0 / 3.0) * (r0 / 3.0)))
+                            glow_1 = 0.0
+                            if g1 > 0.0 and r1 > 1e-5:
+                                d2 = _distance_sq_to_point(ro, rd, t_max, v1)
+                                glow_1 = g1 * ti.exp(-d2 / (2.0 * (r1 / 3.0) * (r1 / 3.0)))
+                            glow_2 = 0.0
+                            if g2 > 0.0 and r2 > 1e-5:
+                                d2 = _distance_sq_to_point(ro, rd, t_max, v2)
+                                glow_2 = g2 * ti.exp(-d2 / (2.0 * (r2 / 3.0) * (r2 / 3.0)))
+                            glow_c = 0.0
+                            g_c = (g0 + g1 + g2) / 3.0
+                            if g_c > 0.0 and r_c > 1e-5:
+                                d2 = _distance_sq_to_point(ro, rd, t_max, v_c)
+                                glow_c = g_c * ti.exp(-d2 / (2.0 * (r_c / 3.0) * (r_c / 3.0)))
+                                
+                            g_val = ti.max(glow_0, ti.max(glow_1, ti.max(glow_2, glow_c)))
+                            
+                            albedo = ti.math.vec3(
+                                (pn_colors[tc, prim, 0, 0] + pn_colors[tc, prim, 1, 0] + pn_colors[tc, prim, 2, 0]) / 3.0,
+                                (pn_colors[tc, prim, 0, 1] + pn_colors[tc, prim, 1, 1] + pn_colors[tc, prim, 2, 1]) / 3.0,
+                                (pn_colors[tc, prim, 0, 2] + pn_colors[tc, prim, 1, 2] + pn_colors[tc, prim, 2, 2]) / 3.0
+                            )
+                            glow_rgb += albedo * g_val
+                node = node_miss[node]
+            else:
+                node = BVH_ARITY * node + 1
+        else:
+            node = node_miss[node]
+    return glow_rgb
+
+@ti.func
+def _accumulate_glow_beziers(ro, rd, inv_rd, t_max, f, ff,
+                             nodes: ti.template(), node_miss: ti.template(),
+                             leaf_prim: ti.template(), leaf_tspan: ti.template(),
+                             first_leaf, circuit_meta: ti.template(),
+                             circuit_colors: ti.template(), edges_2d: ti.template(),
+                             edge_offsets: ti.template()) -> ti.math.vec3:
+    glow_rgb = ti.math.vec3(0.0, 0.0, 0.0)
+    num_meta_frames = circuit_meta.shape[0]
+    num_edge_frames = edges_2d.shape[0]
+    node = 0
+    while node != -1:
+        if _node_intersected(node, ff, ro, inv_rd, 0.0, t_max, nodes):
+            if node >= first_leaf:
+                base = (node - first_leaf) * LEAF_SIZE
+                for j in ti.static(range(LEAF_SIZE)):
+                    circuit = leaf_prim[base + j]
+                    tspan = leaf_tspan[base + j]
+                    if ((circuit >= 0) and ((tspan & 0xFFFF) <= f)
+                            and (f <= ((tspan >> 16) & 0x7FFF))):
+                        tm = f % num_meta_frames
+                        # column 20 is glow radius
+                        R = circuit_meta[tm, circuit, 20]
+                        tc = f % circuit_colors.shape[0]
+                        glow_strength = circuit_colors[tc, circuit, 0, 3]
+                        if glow_strength > 0.0 and R > 1e-5:
+                            n = ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
+                                             circuit_meta[tm, circuit, _M_NORMAL + 1],
+                                             circuit_meta[tm, circuit, _M_NORMAL + 2])
+                            denom = rd.dot(n)
+                            if ti.abs(denom) > 1e-9:
+                                center = ti.math.vec3(
+                                    circuit_meta[tm, circuit, _M_CENTER],
+                                    circuit_meta[tm, circuit, _M_CENTER + 1],
+                                    circuit_meta[tm, circuit, _M_CENTER + 2])
+                                t = (center - ro).dot(n) / denom
+                                if t > 0.0 and t < t_max:
+                                    hit = ro + t * rd - center
+                                    bu = ti.math.vec3(
+                                        circuit_meta[tm, circuit, _M_BASIS_U],
+                                        circuit_meta[tm, circuit, _M_BASIS_U + 1],
+                                        circuit_meta[tm, circuit, _M_BASIS_U + 2])
+                                    bv = ti.math.vec3(
+                                        circuit_meta[tm, circuit, _M_BASIS_V],
+                                        circuit_meta[tm, circuit, _M_BASIS_V + 1],
+                                        circuit_meta[tm, circuit, _M_BASIS_V + 2])
+                                    u = hit.dot(bu)
+                                    v = hit.dot(bv)
+
+                                    te = f % num_edge_frames
+                                    crossings = 0
+                                    min_dist_sq = 1e30
+                                    for e in range(edge_offsets[circuit],
+                                                   edge_offsets[circuit + 1]):
+                                        x0 = edges_2d[te, e, 0]
+                                        y0 = edges_2d[te, e, 1]
+                                        x1 = edges_2d[te, e, 2]
+                                        y1 = edges_2d[te, e, 3]
+                                        if (y0 > v) != (y1 > v):
+                                            x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
+                                            if x_cross > u:
+                                                crossings += 1
+                                        if edges_2d[te, e, 4] > 0.5:
+                                            dx = x1 - x0
+                                            dy = y1 - y0
+                                            seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
+                                                dx * dx + dy * dy, 1e-12)
+                                            seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
+                                            cx = x0 + seg_t * dx - u
+                                            cy = y0 + seg_t * dy - v
+                                            min_dist_sq = ti.min(min_dist_sq,
+                                                                 cx * cx + cy * cy)
+
+                                    inside = False
+                                    if circuit_meta[tm, circuit, _M_FILLED] > 0.5:
+                                        inside = (crossings % 2) == 1
+                                    
+                                    d_sq = min_dist_sq
+                                    if inside:
+                                        d_sq = 0.0
+                                    
+                                    if d_sq < R * R:
+                                        g_val = glow_strength * ti.exp(-d_sq / (2.0 * (R / 3.0) * (R / 3.0)))
+                                        albedo = ti.math.vec3(circuit_colors[tc, circuit, 0, 0],
+                                                              circuit_colors[tc, circuit, 0, 1],
+                                                              circuit_colors[tc, circuit, 0, 2])
+                                        glow_rgb += albedo * g_val
+                node = node_miss[node]
+            else:
+                node = BVH_ARITY * node + 1
+        else:
+            node = node_miss[node]
+    return glow_rgb
+
+@ti.func
+def _accumulate_glow(ro, rd, inv_rd, t_max, f, ff,
+                     has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+                     t_nodes: ti.template(), t_node_miss: ti.template(),
+                     t_leaf_prim: ti.template(), t_leaf_tspan: ti.template(),
+                     t_first_leaf, tri_pos: ti.template(),
+                     tri_colors: ti.template(), tri_extra: ti.template(),
+                     num_colored_triangles: ti.i32,
+                     p_nodes: ti.template(), p_node_miss: ti.template(),
+                     p_leaf_prim: ti.template(), p_leaf_tspan: ti.template(),
+                     p_first_leaf, pn_ctrl: ti.template(), pn_colors: ti.template(),
+                     pn_extra: ti.template(),
+                     b_nodes: ti.template(), b_node_miss: ti.template(),
+                     b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
+                     b_first_leaf, circuit_meta: ti.template(),
+                     circuit_colors: ti.template(), edges_2d: ti.template(),
+                     edge_offsets: ti.template()) -> ti.math.vec3:
+    glow_rgb = ti.math.vec3(0.0, 0.0, 0.0)
+    if ti.static(has_tri != 0):
+        glow_rgb += _accumulate_glow_triangles(
+            ro, rd, inv_rd, t_max, f, ff,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+            tri_pos, tri_colors, tri_extra, num_colored_triangles
+        )
+    if ti.static(has_pn != 0):
+        glow_rgb += _accumulate_glow_pn(
+            ro, rd, inv_rd, t_max, f, ff,
+            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+            pn_ctrl, pn_colors, pn_extra
+        )
+    if ti.static(has_bez != 0):
+        glow_rgb += _accumulate_glow_beziers(
+            ro, rd, inv_rd, t_max, f, ff,
+            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+            circuit_meta, circuit_colors, edges_2d, edge_offsets
+        )
+    return glow_rgb
+
+
+@ti.func
 def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
                      layer_offset_pn,
@@ -1993,6 +2277,10 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
     processed = 0
     done = False
     while (not done) and (processed < MAX_SURFACES_PER_RAY):
+        ro_seg = ro
+        rd_seg = rd
+        inv_rd_seg = inv_rd
+        weight_seg = weight
         num_hits = _collect_hits(
             ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             pixel_size_per_t, base_dist, layer_offset_triangles,
@@ -2006,10 +2294,24 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
             b_first_leaf, circuit_meta, edges_2d, edge_offsets,
             has_tri, has_pn, has_bez)
         if num_hits == 0:
+            glow_rgb = _accumulate_glow(
+                ro_seg, rd_seg, inv_rd_seg, 1e30, f, ff,
+                has_tri, has_pn, has_bez,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+                pn_ctrl, pn_colors, pn_extra,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                circuit_meta, circuit_colors, edges_2d, edge_offsets
+            )
+            acc[0] += weight * glow_rgb[0]
+            acc[1] += weight * glow_rgb[1]
+            acc[2] += weight * glow_rgb[2]
             break
 
         bounced = False
         drained = 0
+        t_seg_end = 0.0
         while drained < num_hits:
             # Select the earliest unconsumed hit, with the same pairwise
             # (distance, layer) rule the traversal itself applies.
@@ -2024,6 +2326,7 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                                       kb_t[q], kb_layer[q]):
                         sel = q
             t_hit = kb_t[sel]
+            t_seg_end = t_hit
             hit_layer = kb_layer[sel]
             prim = kb_prim[sel]
             flags = kb_flags[sel]
@@ -2230,6 +2533,19 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
             if weight < MIN_WEIGHT:
                 done = True
                 break
+        glow_rgb = _accumulate_glow(
+            ro_seg, rd_seg, inv_rd_seg, t_seg_end, f, ff,
+            has_tri, has_pn, has_bez,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+            tri_pos, tri_colors, tri_extra, num_colored_triangles,
+            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+            pn_ctrl, pn_colors, pn_extra,
+            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+            circuit_meta, circuit_colors, edges_2d, edge_offsets
+        )
+        acc[0] += weight_seg * glow_rgb[0]
+        acc[1] += weight_seg * glow_rgb[1]
+        acc[2] += weight_seg * glow_rgb[2]
         if (not done) and (not bounced) and (num_hits < KBUF):
             done = True  # the batch held every remaining hit
     return acc, weight
@@ -2496,6 +2812,10 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
     processed = 0
     done = False
     while (not done) and (processed < MAX_SURFACES_PER_RAY):
+        ro_seg = ro
+        rd_seg = rd
+        inv_rd_seg = inv_rd
+        weight_seg = weight
         num_hits = _collect_hits_tri(
             ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             layer_offset_triangles,
@@ -2503,10 +2823,19 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
             t_first_leaf, tri_pos)
         if num_hits == 0:
+            glow_rgb = _accumulate_glow_triangles(
+                ro_seg, rd_seg, inv_rd_seg, 1e30, f, ff,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles
+            )
+            acc[0] += weight * glow_rgb[0]
+            acc[1] += weight * glow_rgb[1]
+            acc[2] += weight * glow_rgb[2]
             break
 
         bounced = False
         drained = 0
+        t_seg_end = 0.0
         while drained < num_hits:
             sel = 0
             sel_found = 0
@@ -2519,6 +2848,7 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
                                       kb_t[q], kb_layer[q]):
                         sel = q
             t_hit = kb_t[sel]
+            t_seg_end = t_hit
             hit_layer = kb_layer[sel]
             prim = kb_prim[sel]
             flags = kb_flags[sel]
@@ -2584,6 +2914,14 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
             if weight < MIN_WEIGHT:
                 done = True
                 break
+        glow_rgb = _accumulate_glow_triangles(
+            ro_seg, rd_seg, inv_rd_seg, t_seg_end, f, ff,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+            tri_pos, tri_colors, tri_extra, num_colored_triangles
+        )
+        acc[0] += weight_seg * glow_rgb[0]
+        acc[1] += weight_seg * glow_rgb[1]
+        acc[2] += weight_seg * glow_rgb[2]
         if (not done) and (not bounced) and (num_hits < KBUF):
             done = True
     return acc, weight
@@ -3128,6 +3466,24 @@ def path_trace_scene_stbvh(
                 p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, edges_2d, edge_offsets)
+            
+            t_seg_end = 1e30
+            if found != 0:
+                t_seg_end = t_hit
+            glow_rgb = _accumulate_glow(
+                ro, rd, inv_rd, t_seg_end, f, ff,
+                1, 1, 1,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+                pn_ctrl, pn_colors, pn_extra,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                circuit_meta, circuit_colors, edges_2d, edge_offsets
+            )
+            acc[0] += throughput[0] * glow_rgb[0]
+            acc[1] += throughput[1] * glow_rgb[1]
+            acc[2] += throughput[2] * glow_rgb[2]
+
             if found == 0:
                 escaped = True
                 break
@@ -3453,6 +3809,24 @@ def path_trace_physical_stbvh(
                 p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, edges_2d, edge_offsets)
+            
+            t_seg_end = 1e30
+            if found != 0:
+                t_seg_end = t_hit
+            glow_rgb = _accumulate_glow(
+                ro, rd, inv_rd, t_seg_end, f, ff,
+                1, 1, 1,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+                pn_ctrl, pn_colors, pn_extra,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                circuit_meta, circuit_colors, edges_2d, edge_offsets
+            )
+            acc[0] += throughput[0] * glow_rgb[0]
+            acc[1] += throughput[1] * glow_rgb[1]
+            acc[2] += throughput[2] * glow_rgb[2]
+
             if found == 0:
                 escaped = True
                 break

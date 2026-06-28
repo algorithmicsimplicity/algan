@@ -136,13 +136,14 @@ class TriangleVertices(Renderable):
         return PURE_RED
 
     def get_render_primitives(self):
-        l, c, o, n, g = broadcast_all(
+        l, c, o, n, g, gr = broadcast_all(
             [
                 self.location,
                 self.color,
                 self.opacity * self.max_opacity,
                 self.normals,
                 self.glow,
+                self.glow_radius,
             ],
             ignored_dims=[-1],
         )
@@ -159,6 +160,7 @@ class TriangleVertices(Renderable):
                 dim=-1,
             ),
             glow=g,
+            glow_radius=gr,
             shader=self.shader,
             **self.get_shader_params(),
         )

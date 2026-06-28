@@ -488,7 +488,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     # Per-vertex surface parameters consumed by the trace kernels rather
     # than by a shader; popped from the shader kwargs (see set_reflectivity
     # and set_roughness).
-    _surface_params = ("reflectivity", "roughness", "refractive_index")
+    _surface_params = ("reflectivity", "roughness", "refractive_index", "glow", "glow_radius")
 
     def __init__(self, corners=None, colors=None, opacity=1, normals=None,
                  perimeter_points=None, reverse_perimeter=False,
@@ -522,6 +522,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         else:
             params = {name: shader_kwargs.pop(name, None)
                       for name in self._surface_params}
+            if params["glow"] is None:
+                params["glow"] = glow
             super().__init__(corners, colors, opacity, normals,
                              perimeter_points, reverse_perimeter,
                              triangle_collection, glow, shader,
@@ -615,23 +617,28 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         return mat_id.contiguous(), mat.contiguous()
 
     def _pack_surface_extra(self, error_context):
-        """Per-primitive surface params [Te, N, 9]: the interleaved per-corner
+        """Per-primitive surface params [Te, N, 15]: the interleaved per-corner
         (reflectivity, roughness) pairs in columns 0-5 (unchanged; consumed by
         ``_triangle_extra`` in every kernel), followed by the per-corner
         refractive index in columns 6-8 (0 = not refractive; read by the
-        wavefront's ``_corner_ior`` for the refraction path)."""
-        (reflectivity_e, roughness_e, ior_e), _ = _unify_time(
+        wavefront's ``_corner_ior`` for the refraction path), followed by the
+        per-corner glow strength in columns 9-11, followed by the per-corner
+        glow radius in columns 12-14."""
+        (reflectivity_e, roughness_e, ior_e, glow_e, glow_radius_e), _ = _unify_time(
             [self.reflectivity.float(), self.roughness.float(),
-             self.refractive_index.float()], error_context)
+             self.refractive_index.float(), self.glow.float(),
+             self.glow_radius.float()], error_context)
         n_t, n_p = reflectivity_e.shape[0], reflectivity_e.shape[1]
         refl_rough = torch.cat((reflectivity_e, roughness_e), -1).reshape(
             n_t, n_p, 6)
         ior = ior_e.reshape(n_t, n_p, 3)
-        return torch.cat((refl_rough, ior), -1).contiguous()
+        glow = glow_e.reshape(n_t, n_p, 3)
+        glow_radius = glow_radius_e.reshape(n_t, n_p, 3)
+        return torch.cat((refl_rough, ior, glow, glow_radius), -1).contiguous()
 
     def _pack_frame_visibility(self, lo, hi, colors, error_context):
         """Per-frame bounds; frames where a primitive is fully transparent
-        are marked empty so they never enter the BVH. Fully opaque frames
+        and not glowing are marked empty so they never enter the BVH. Fully opaque frames
         are flagged so the trace kernel can prune hits behind them while
         gathering.
         """
@@ -639,18 +646,23 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # property) so this also works for textured surfaces (ImageMob), whose
         # per-vertex colors are plain tensors, not Color instances.
         alpha = colors[..., -1]
-        visible = alpha.amax(-1) > MIN_ALPHA
+        glow_f = self.glow.squeeze(-1)
+        glow_radius_f = self.glow_radius.squeeze(-1)
+
+        visible = (alpha.amax(-1) > MIN_ALPHA) | (glow_f.amax(-1) > 0.0)
         opaque = alpha.amin(-1) >= 1.0 - 1e-6
-        (lo, hi, visible, opaque), _ = _unify_time(
-            [lo, hi, visible.unsqueeze(-1), opaque.unsqueeze(-1)],
+        eff_rad = torch.where(glow_f.amax(-1, keepdim=True) > 0.0, glow_radius_f.amax(-1, keepdim=True), 0.0)
+
+        (lo, hi, visible, opaque, eff_rad), _ = _unify_time(
+            [lo, hi, visible.unsqueeze(-1), opaque.unsqueeze(-1), eff_rad],
             error_context)
         visible = visible.squeeze(-1)
         self._rt_frame_opaque = opaque.squeeze(-1).contiguous()
         self._rt_frame_lo = torch.where(
-            visible.unsqueeze(-1), lo,
+            visible.unsqueeze(-1), lo - eff_rad,
             torch.tensor(EMPTY_LO, device=lo.device)).contiguous()
         self._rt_frame_hi = torch.where(
-            visible.unsqueeze(-1), hi,
+            visible.unsqueeze(-1), hi + eff_rad,
             torch.tensor(EMPTY_HI, device=hi.device)).contiguous()
 
     def _set_frame_buffer_bytes(self, camera):
@@ -963,17 +975,19 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             self.border_width.shape[0], C)
         grid_w = self.grid_width.float().reshape(self.grid_width.shape[0], C)
         grid_h = self.grid_height.float().reshape(self.grid_height.shape[0], C)
-        (centers_m, normals_m, bu_m, bv_m, b1_m, b2_m, bw_m, gw_m, gh_m), Tm = _unify_time(
+        glow_radius = self.glow_radius.float().reshape(
+            self.glow_radius.shape[0], C)
+        (centers_m, normals_m, bu_m, bv_m, b1_m, b2_m, bw_m, gw_m, gh_m, glow_radius_m), Tm = _unify_time(
             [centers, normals, basis_u, basis_v, basis1, basis2,
              border_width.unsqueeze(-1), grid_w.unsqueeze(-1),
-             grid_h.unsqueeze(-1)], "bezier metadata")
+             grid_h.unsqueeze(-1), glow_radius.unsqueeze(-1)], "bezier metadata")
         filled = torch.full((Tm, C, 1), 1.0 if self.filled else 0.0,
                             device=device)
         tex = torch.stack((
             (b1_m * bu_m).sum(-1), (b1_m * bv_m).sum(-1),
             (b2_m * bu_m).sum(-1), (b2_m * bv_m).sum(-1)), -1).nan_to_num_()
         self._rt_circuit_meta = torch.cat(
-            (centers_m, normals_m, bu_m, bv_m, bw_m, filled, gw_m, gh_m, tex),
+            (centers_m, normals_m, bu_m, bv_m, bw_m, filled, gw_m, gh_m, tex, glow_radius_m),
             -1).contiguous()
 
         colors = self.colors.float()
@@ -985,7 +999,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
     def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h):
         """Per-frame circuit AABBs (from control-point hulls, inflated by the
-        screen-space border width), with invisible frames marked empty.
+        screen-space border width and glow radius), with invisible frames marked empty.
         """
         device = corners.device
         C = self._rt_edge_offsets.shape[0] - 1
@@ -1006,8 +1020,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             fill_alpha = torch.zeros_like(fill_alpha)
         border_alpha = self._rt_circuit_border_colors.opacity.squeeze(-1)
         border_on = self._rt_border_width > 1e-3
+        glow_alpha = self._rt_circuit_colors[..., 3].amax(-1)
         visible = (fill_alpha > MIN_ALPHA) | (
-            (border_alpha > MIN_ALPHA) & border_on)
+            (border_alpha > MIN_ALPHA) & border_on) | (glow_alpha > 0.0)
         (lo, hi, visible, fill_min, border_alpha, border_on), _ = _unify_time(
             [lo, hi, visible.unsqueeze(-1), fill_min.unsqueeze(-1),
              border_alpha.unsqueeze(-1), border_on.unsqueeze(-1)],
@@ -1028,14 +1043,18 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                          torch.tensor(EMPTY_HI, device=device))
 
         # Inflate by the border (+ anti-crack outline) width converted to
-        # world units at each circuit's distance from the camera.
+        # world units at each circuit's distance from the camera, plus the glow radius.
         b1_norm = sb[:, 1].norm(p=2, dim=-1)
         screen_dist = (sp - cam_o).norm(p=2, dim=-1)
         pixel_world_scale = 2.0 / (screen_h * b1_norm * screen_dist).clamp_min(1e-12)
         centers = self._rt_circuit_meta[..., :3]
         dist = (centers - cam_o.view(-1, 1, 3)).norm(p=2, dim=-1)
         world_per_px = (pixel_world_scale.view(-1, 1) * dist).amax(0)
-        inflate = (self._rt_border_width.amax(0) + 1.0) * world_per_px
+        
+        glow_rad = torch.where(glow_alpha > 0.0, self.glow_radius.squeeze(-1), 0.0)
+        glow_rad_max = glow_rad.amax(0)
+        
+        inflate = (self._rt_border_width.amax(0) + 1.0) * world_per_px + glow_rad_max
         self._rt_frame_lo = (lo - inflate.view(1, -1, 1)).contiguous()
         self._rt_frame_hi = (hi + inflate.view(1, -1, 1)).contiguous()
 
@@ -1159,7 +1178,7 @@ def _merge_scene(primitives):
     else:
         scene["tri_pos"] = torch.zeros((1, 1, 9), device=device)
         scene["tri_norm"] = torch.zeros((1, 1, 9), device=device)
-        scene["tri_extra"] = torch.zeros((1, 1, 9), device=device)
+        scene["tri_extra"] = torch.zeros((1, 1, 15), device=device)
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
         scene["textures"] = torch.zeros((1, 1, 5), device=device)
@@ -1226,7 +1245,7 @@ def _merge_scene(primitives):
         scene["pn_ctrl"] = torch.zeros((1, 1, 18), device=device)
         scene["pn_obb"] = torch.zeros((1, 1, 12), device=device)
         scene["pn_norm"] = torch.zeros((1, 1, 9), device=device)
-        scene["pn_extra"] = torch.zeros((1, 1, 9), device=device)
+        scene["pn_extra"] = torch.zeros((1, 1, 15), device=device)
         scene["pn_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["pn_mat_id"] = torch.zeros((1, 1), dtype=torch.int32,
                                          device=device)
@@ -1279,7 +1298,7 @@ def _merge_scene(primitives):
             opaque=opaque)
         scene["num_circuits"] = scene["circuit_meta"].shape[1]
     else:
-        scene["circuit_meta"] = torch.zeros((1, 1, 20), device=device)
+        scene["circuit_meta"] = torch.zeros((1, 1, 21), device=device)
         scene["circuit_colors"] = torch.zeros((1, 1, 1, 5), device=device)
         scene["circuit_border_colors"] = torch.zeros((1, 1, 5), device=device)
         scene["edges_2d"] = torch.zeros((1, 1, 5), device=device)
@@ -1487,7 +1506,9 @@ def render_triangles_wavefront(
                         rs_ro, rs_rd, rs_sca, rs_int,
                         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
                     wf_shade_triangle(
-                        active, na, tri_pos, tri_norm, tri_extra, tri_colors,
+                        active, na, t_nodes, t_node_miss, t_leaf_prim,
+                        t_leaf_tspan, int(t_first_leaf),
+                        tri_pos, tri_norm, tri_extra, tri_colors,
                         tri_uvs, tri_tex_meta, textures,
                         num_colored_triangles,
                         int(time_start), int(width), int(height),
@@ -1588,7 +1609,9 @@ def render_triangles_wavefront_knots(
                         rs_ro, rs_rd, rs_sca, rs_int,
                         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
                     wf_shade_triangle(
-                        active, na, dummy_pos, tri_norm, tri_extra, tri_colors,
+                        active, na, t_nodes, t_node_miss, t_leaf_prim,
+                        t_leaf_tspan, int(t_first_leaf),
+                        dummy_pos, tri_norm, tri_extra, tri_colors,
                         tri_uvs, tri_tex_meta, textures,
                         num_colored_triangles,
                         int(time_start), int(width), int(height),

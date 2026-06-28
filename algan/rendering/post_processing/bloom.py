@@ -3,6 +3,14 @@ import torch.nn.functional as F
 import torch.fft
 
 
+def _should_bypass_bloom():
+    try:
+        from algan.rendering.raytracing import is_ray_tracing_enabled
+        return is_ray_tracing_enabled()
+    except ImportError:
+        return False
+
+
 def fft_conv1d(input_tensor, kernel, dim=-1, padding="same", num_iterations=1, memory=None):
     """
     Perform 2D convolution using FFT for better performance with large kernels.
@@ -152,6 +160,8 @@ def bloom_filter_old(
     strength=10,
     scale_factor=8,
 ):
+    if _should_bypass_bloom():
+        return x
     # def bloom_filter(x, blur_width=0.01*0.0005, num_iterations=3, kernel_size=11, strength=10, scale_factor=8):
     # kernel_size = int(kernel_size * x.shape[-3] / 2160)
     scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
@@ -282,6 +292,8 @@ def bloom_filter_old(
 def bloom_filter_premultiply(
     x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8, memory=None
 ):
+    if _should_bypass_bloom():
+        return x
     if x.shape[-1] < 5:
         raise ValueError(
             "bloom_filter_premultiply only works for scenes with transparent backgrounds, please set"
@@ -329,6 +341,8 @@ def bloom_filter_premultiply(
 
 
 def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
+    if _should_bypass_bloom():
+        return x
     #return x
     if x[...,3:4].amax() <= 1e-5:
         return x
@@ -407,6 +421,8 @@ def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_fa
 
 
 def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor=8, memory=None):
+    if _should_bypass_bloom():
+        return x
     """
     FFT-based bloom filter for better performance with large kernel sizes.
 

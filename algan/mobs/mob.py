@@ -108,6 +108,7 @@ class Mob(Animatable):
         color: Color | None = None,
         opacity: float = 1,
         glow: float = 0,
+        glow_radius: float = 0.2,
         *args,
         **kwargs,
     ):
@@ -120,6 +121,7 @@ class Mob(Animatable):
                 "opacity",
                 "max_opacity",
                 "glow",
+                "glow_radius",
             ],
             Mob,
         )
@@ -168,6 +170,7 @@ class Mob(Animatable):
         self.max_opacity = cast_to_tensor(opacity)
         self.opacity = cast_to_tensor(1)  # Current opacity, can be animated
         self.glow = cast_to_tensor(glow)
+        self.glow_radius = cast_to_tensor(glow_radius)
         self.num_points_per_object = 1
         self.shader = None
 

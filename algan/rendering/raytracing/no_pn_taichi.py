@@ -46,6 +46,7 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     _flat_triangle_alpha,
     _triangle_extra,
     _triangle_normal,
+    _accumulate_glow,
 )
 
 
@@ -324,6 +325,10 @@ def _trace_no_pn_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
     processed = 0
     done = False
     while (not done) and (processed < MAX_SURFACES_PER_RAY):
+        ro_seg = ro
+        rd_seg = rd
+        inv_rd_seg = inv_rd
+        weight_seg = weight
         num_hits = _collect_hits_no_pn(
             ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             pixel_size_per_t, base_dist, layer_offset_triangles,
@@ -334,10 +339,24 @@ def _trace_no_pn_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
             b_first_leaf, circuit_meta, edges_2d, edge_offsets,
             has_tri, has_bez)
         if num_hits == 0:
+            glow_rgb = _accumulate_glow(
+                ro_seg, rd_seg, inv_rd_seg, 1e30, f, ff,
+                has_tri, 0, has_bez,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                circuit_meta, circuit_colors, edges_2d, edge_offsets
+            )
+            acc[0] += weight * glow_rgb[0]
+            acc[1] += weight * glow_rgb[1]
+            acc[2] += weight * glow_rgb[2]
             break
 
         bounced = False
         drained = 0
+        t_seg_end = 0.0
         while drained < num_hits:
             sel = 0
             sel_found = 0
@@ -350,6 +369,7 @@ def _trace_no_pn_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                                       kb_t[q], kb_layer[q]):
                         sel = q
             t_hit = kb_t[sel]
+            t_seg_end = t_hit
             hit_layer = kb_layer[sel]
             prim = kb_prim[sel]
             flags = kb_flags[sel]
@@ -437,6 +457,19 @@ def _trace_no_pn_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
             if weight < MIN_WEIGHT:
                 done = True
                 break
+        glow_rgb = _accumulate_glow(
+            ro_seg, rd_seg, inv_rd_seg, t_seg_end, f, ff,
+            has_tri, 0, has_bez,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+            tri_pos, tri_colors, tri_extra, num_colored_triangles,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+            tri_pos, tri_colors, tri_extra,
+            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+            circuit_meta, circuit_colors, edges_2d, edge_offsets
+        )
+        acc[0] += weight_seg * glow_rgb[0]
+        acc[1] += weight_seg * glow_rgb[1]
+        acc[2] += weight_seg * glow_rgb[2]
         if (not done) and (not bounced) and (num_hits < KBUF):
             done = True
     return acc, weight
