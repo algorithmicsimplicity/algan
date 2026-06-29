@@ -5,8 +5,8 @@ import torch.fft
 
 def _should_bypass_bloom():
     try:
-        from algan.rendering.raytracing import is_ray_tracing_enabled
-        return is_ray_tracing_enabled()
+        from algan.rendering.raytracing import is_ray_tracing_enabled, is_raytraced_glow_enabled
+        return is_ray_tracing_enabled() and is_raytraced_glow_enabled()
     except ImportError:
         return False
 

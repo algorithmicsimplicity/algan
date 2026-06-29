@@ -95,9 +95,11 @@ MAX_BOUNCES = 4
 # glossy reflections, optional diffuse indirect lighting).
 SAMPLES_PER_PIXEL = 1
 # ACES Filmic Tonemapping settings:
-TONEMAPPING = True
+TONEMAPPING = False
 TONEMAP_EXPOSURE = 1.0
 TONEMAP_METHOD = "neutral"
+# 3D Raytraced Glow setting:
+RAYTRACED_GLOW = True
 # Strength of diffuse indirect bounces in the Monte Carlo renderer: 0 keeps
 # surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
 # with throughput ``albedo * strength`` for color bleeding.
@@ -400,6 +402,21 @@ def _get_tonemap_t_val():
     if not TONEMAPPING:
         return 0
     return 2 if TONEMAP_METHOD == "agx" else 1
+
+
+def set_raytraced_glow(enabled):
+    """Enable or disable volumetric 3D raytraced glow.
+    If disabled, switches back to the post-processing 2D bloom filter style glow.
+    """
+    global RAYTRACED_GLOW
+    RAYTRACED_GLOW = bool(enabled)
+    from algan.rendering.raytracing import ray_trace_taichi
+    ray_trace_taichi.global_raytraced_glow[None] = 1 if RAYTRACED_GLOW else 0
+
+
+def is_raytraced_glow_enabled():
+    """Return whether 3D raytraced glow is enabled."""
+    return RAYTRACED_GLOW
 
 
 
@@ -2551,7 +2568,7 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
                        physical_lighting=None, pn_triangles=False,
                        fragment_shading=None, shadows=None,
                        tonemapping=None, tonemap_exposure=None,
-                       tonemap_method=None):
+                       tonemap_method=None, raytraced_glow=None):
     """Route newly created mobs through the ray traced render pipeline.
 
     Rebinds the primitive classes used by the mob modules; call this before
@@ -2613,6 +2630,8 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         set_tonemap_exposure(tonemap_exposure)
     if tonemap_method is not None:
         set_tonemap_method(tonemap_method)
+    if raytraced_glow is not None:
+        set_raytraced_glow(raytraced_glow)
 
     triangle_cls = (RayTracedPNTrianglePrimitive if pn_triangles
                     else RayTracedTrianglePrimitive)

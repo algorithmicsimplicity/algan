@@ -68,6 +68,9 @@ from algan.rendering.taichi_runtime import init_taichi
 
 init_taichi()
 
+global_raytraced_glow = ti.field(dtype=ti.i32, shape=())
+global_raytraced_glow[None] = 1
+
 # Cull PN-patch candidates against their tight oriented box before the
 # matrix-pencil solve (default on; env ALGAN_PN_OBB=0 disables for A/B). Output
 # is identical -- the OBB conservatively bounds the patch -- and it removes the
@@ -1598,7 +1601,10 @@ def finalize_pixel_color(csum: ti.math.vec4, inv_samples: ti.f32, tonemapping: t
         color_hdr = ti.math.clamp(color_hdr, 0.0, 255.0)
     
     glow_val = ti.math.clamp(csum[3] * inv_samples, 0.0, 255.0)
-    return ti.math.vec4(color_hdr[0] + 0.5, color_hdr[1] + 0.5, color_hdr[2] + 0.5, glow_val + 0.5)
+    return ti.math.clamp(
+        ti.math.vec4(color_hdr[0] + 0.5, color_hdr[1] + 0.5, color_hdr[2] + 0.5, glow_val + 0.5),
+        0.0, 255.0
+    )
 
 
 
@@ -1664,90 +1670,91 @@ def _accumulate_glow_triangles(ro, rd, inv_rd, t_max, f, ff,
                                tri_colors: ti.template(), tri_extra: ti.template(),
                                num_colored_triangles: ti.i32) -> ti.math.vec3:
     glow_rgb = ti.math.vec3(0.0, 0.0, 0.0)
-    tp = f % tri_pos.shape[0]
-    te = f % tri_extra.shape[0]
-    tc = f % tri_colors.shape[0]
-    node = 0
-    while node != -1:
-        if _node_intersected(node, ff, ro, inv_rd, 0.0, t_max, nodes):
-            if node >= first_leaf:
-                base = (node - first_leaf) * LEAF_SIZE
-                for j in ti.static(range(LEAF_SIZE)):
-                    prim = leaf_prim[base + j]
-                    tspan = leaf_tspan[base + j]
-                    if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                            and (f <= ((tspan >> 16) & 0x7FFF))):
-                        g0 = tri_extra[te, prim, 9]
-                        g1 = tri_extra[te, prim, 10]
-                        g2 = tri_extra[te, prim, 11]
-                        if g0 > 0.0 or g1 > 0.0 or g2 > 0.0:
-                            v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1], tri_pos[tp, prim, 2])
-                            v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4], tri_pos[tp, prim, 5])
-                            v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7], tri_pos[tp, prim, 8])
-                            
-                            r0 = tri_extra[te, prim, 12]
-                            r1 = tri_extra[te, prim, 13]
-                            r2 = tri_extra[te, prim, 14]
+    if global_raytraced_glow[None] != 0:
+        tp = f % tri_pos.shape[0]
+        te = f % tri_extra.shape[0]
+        tc = f % tri_colors.shape[0]
+        node = 0
+        while node != -1:
+            if _node_intersected(node, ff, ro, inv_rd, 0.0, t_max, nodes):
+                if node >= first_leaf:
+                    base = (node - first_leaf) * LEAF_SIZE
+                    for j in ti.static(range(LEAF_SIZE)):
+                        prim = leaf_prim[base + j]
+                        tspan = leaf_tspan[base + j]
+                        if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            g0 = tri_extra[te, prim, 9]
+                            g1 = tri_extra[te, prim, 10]
+                            g2 = tri_extra[te, prim, 11]
+                            if g0 > 0.0 or g1 > 0.0 or g2 > 0.0:
+                                v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1], tri_pos[tp, prim, 2])
+                                v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4], tri_pos[tp, prim, 5])
+                                v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7], tri_pos[tp, prim, 8])
+                                
+                                r0 = tri_extra[te, prim, 12]
+                                r1 = tri_extra[te, prim, 13]
+                                r2 = tri_extra[te, prim, 14]
 
-                            n = (v1 - v0).cross(v2 - v0)
-                            n_norm = n.norm()
-                            has_plane_hit = False
-                            p_plane_tri = ti.math.vec3(0.0, 0.0, 0.0)
-                            
-                            if n_norm > 1e-9:
-                                n_dir = n / n_norm
-                                denom = rd.dot(n_dir)
-                                if ti.abs(denom) > 1e-9:
-                                    t_plane = (v0 - ro).dot(n_dir) / denom
-                                    if t_plane > 0.0 and t_plane < t_max + 1e-4:
-                                        p_plane = ro + t_plane * rd
-                                        w0, w1, w2 = _barycentric_coords(p_plane, v0, v1, v2)
-                                        if w0 >= 0.0 and w1 >= 0.0 and w2 >= 0.0 and (w0 + w1 + w2) <= 1.0 + 1e-5:
-                                            has_plane_hit = True
-                                            p_plane_tri = p_plane
-                            
-                            d2 = 0.0
-                            p_tri = ti.math.vec3(0.0, 0.0, 0.0)
-                            if has_plane_hit:
-                                p_tri = p_plane_tri
-                            else:
-                                p_ray0, p_seg0 = _closest_point_segment_segment(ro, rd, t_max, v0, v1)
-                                p_ray1, p_seg1 = _closest_point_segment_segment(ro, rd, t_max, v1, v2)
-                                p_ray2, p_seg2 = _closest_point_segment_segment(ro, rd, t_max, v2, v0)
+                                n = (v1 - v0).cross(v2 - v0)
+                                n_norm = n.norm()
+                                has_plane_hit = False
+                                p_plane_tri = ti.math.vec3(0.0, 0.0, 0.0)
                                 
-                                d2_0 = (p_ray0 - p_seg0).dot(p_ray0 - p_seg0)
-                                d2_1 = (p_ray1 - p_seg1).dot(p_ray1 - p_seg1)
-                                d2_2 = (p_ray2 - p_seg2).dot(p_ray2 - p_seg2)
+                                if n_norm > 1e-9:
+                                    n_dir = n / n_norm
+                                    denom = rd.dot(n_dir)
+                                    if ti.abs(denom) > 1e-9:
+                                        t_plane = (v0 - ro).dot(n_dir) / denom
+                                        if t_plane > 0.0 and t_plane < t_max + 1e-4:
+                                            p_plane = ro + t_plane * rd
+                                            w0, w1, w2 = _barycentric_coords(p_plane, v0, v1, v2)
+                                            if w0 >= 0.0 and w1 >= 0.0 and w2 >= 0.0 and (w0 + w1 + w2) <= 1.0 + 1e-5:
+                                                has_plane_hit = True
+                                                p_plane_tri = p_plane
                                 
-                                d2 = d2_0
-                                p_tri = p_seg0
-                                if d2_1 < d2:
-                                    d2 = d2_1
-                                    p_tri = p_seg1
-                                if d2_2 < d2:
-                                    d2 = d2_2
-                                    p_tri = p_seg2
+                                d2 = 0.0
+                                p_tri = ti.math.vec3(0.0, 0.0, 0.0)
+                                if has_plane_hit:
+                                    p_tri = p_plane_tri
+                                else:
+                                    p_ray0, p_seg0 = _closest_point_segment_segment(ro, rd, t_max, v0, v1)
+                                    p_ray1, p_seg1 = _closest_point_segment_segment(ro, rd, t_max, v1, v2)
+                                    p_ray2, p_seg2 = _closest_point_segment_segment(ro, rd, t_max, v2, v0)
                                     
-                            w0, w1, w2 = _barycentric_coords(p_tri, v0, v1, v2)
-                            g_val, r_val = _interpolate_glow_params(w0, w1, w2, g0, g1, g2, r0, r1, r2)
-                            
-                            glow_contrib = 0.0
-                            if g_val > 0.0 and r_val > 1e-5:
-                                glow_contrib = g_val * ti.exp(-d2 / (2.0 * (r_val / 3.0) * (r_val / 3.0)))
-                            
-                            albedo = ti.math.vec3(1.0, 1.0, 1.0)
-                            if prim < num_colored_triangles:
-                                albedo = ti.math.vec3(
-                                    (tri_colors[tc, prim, 0, 0] + tri_colors[tc, prim, 1, 0] + tri_colors[tc, prim, 2, 0]) / 3.0,
-                                    (tri_colors[tc, prim, 0, 1] + tri_colors[tc, prim, 1, 1] + tri_colors[tc, prim, 2, 1]) / 3.0,
-                                    (tri_colors[tc, prim, 0, 2] + tri_colors[tc, prim, 1, 2] + tri_colors[tc, prim, 2, 2]) / 3.0
-                                )
-                            glow_rgb += albedo * glow_contrib
-                node = node_miss[node]
+                                    d2_0 = (p_ray0 - p_seg0).dot(p_ray0 - p_seg0)
+                                    d2_1 = (p_ray1 - p_seg1).dot(p_ray1 - p_seg1)
+                                    d2_2 = (p_ray2 - p_seg2).dot(p_ray2 - p_seg2)
+                                    
+                                    d2 = d2_0
+                                    p_tri = p_seg0
+                                    if d2_1 < d2:
+                                        d2 = d2_1
+                                        p_tri = p_seg1
+                                    if d2_2 < d2:
+                                        d2 = d2_2
+                                        p_tri = p_seg2
+                                        
+                                w0, w1, w2 = _barycentric_coords(p_tri, v0, v1, v2)
+                                g_val, r_val = _interpolate_glow_params(w0, w1, w2, g0, g1, g2, r0, r1, r2)
+                                
+                                glow_contrib = 0.0
+                                if g_val > 0.0 and r_val > 1e-5:
+                                    glow_contrib = g_val * ti.exp(-d2 / (2.0 * (r_val / 3.0) * (r_val / 3.0)))
+                                
+                                albedo = ti.math.vec3(1.0, 1.0, 1.0)
+                                if prim < num_colored_triangles:
+                                    albedo = ti.math.vec3(
+                                        (tri_colors[tc, prim, 0, 0] + tri_colors[tc, prim, 1, 0] + tri_colors[tc, prim, 2, 0]) / 3.0,
+                                        (tri_colors[tc, prim, 0, 1] + tri_colors[tc, prim, 1, 1] + tri_colors[tc, prim, 2, 1]) / 3.0,
+                                        (tri_colors[tc, prim, 0, 2] + tri_colors[tc, prim, 1, 2] + tri_colors[tc, prim, 2, 2]) / 3.0
+                                    )
+                                glow_rgb += albedo * glow_contrib
+                    node = node_miss[node]
+                else:
+                    node = BVH_ARITY * node + 1
             else:
-                node = BVH_ARITY * node + 1
-        else:
-            node = node_miss[node]
+                node = node_miss[node]
     return glow_rgb
 
 @ti.func
@@ -1959,24 +1966,25 @@ def _accumulate_glow(ro, rd, inv_rd, t_max, f, ff,
                      circuit_colors: ti.template(), edges_2d: ti.template(),
                      edge_offsets: ti.template()) -> ti.math.vec3:
     glow_rgb = ti.math.vec3(0.0, 0.0, 0.0)
-    if ti.static(has_tri != 0):
-        glow_rgb += _accumulate_glow_triangles(
-            ro, rd, inv_rd, t_max, f, ff,
-            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-            tri_pos, tri_colors, tri_extra, num_colored_triangles
-        )
-    if ti.static(has_pn != 0):
-        glow_rgb += _accumulate_glow_pn(
-            ro, rd, inv_rd, t_max, f, ff,
-            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-            pn_ctrl, pn_colors, pn_extra
-        )
-    if ti.static(has_bez != 0):
-        glow_rgb += _accumulate_glow_beziers(
-            ro, rd, inv_rd, t_max, f, ff,
-            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-            circuit_meta, circuit_colors, edges_2d, edge_offsets
-        )
+    if global_raytraced_glow[None] != 0:
+        if ti.static(has_tri != 0):
+            glow_rgb += _accumulate_glow_triangles(
+                ro, rd, inv_rd, t_max, f, ff,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos, tri_colors, tri_extra, num_colored_triangles
+            )
+        if ti.static(has_pn != 0):
+            glow_rgb += _accumulate_glow_pn(
+                ro, rd, inv_rd, t_max, f, ff,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+                pn_ctrl, pn_colors, pn_extra
+            )
+        if ti.static(has_bez != 0):
+            glow_rgb += _accumulate_glow_beziers(
+                ro, rd, inv_rd, t_max, f, ff,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                circuit_meta, circuit_colors, edges_2d, edge_offsets
+            )
     return glow_rgb
 
 
