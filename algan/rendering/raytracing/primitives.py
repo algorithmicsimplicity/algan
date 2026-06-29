@@ -94,6 +94,10 @@ MAX_BOUNCES = 4
 # > 1 switches to the Monte Carlo path tracer (stochastic transparency,
 # glossy reflections, optional diffuse indirect lighting).
 SAMPLES_PER_PIXEL = 1
+# ACES Filmic Tonemapping settings:
+TONEMAPPING = True
+TONEMAP_EXPOSURE = 1.0
+TONEMAP_METHOD = "neutral"
 # Strength of diffuse indirect bounces in the Monte Carlo renderer: 0 keeps
 # surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
 # with throughput ``albedo * strength`` for color bleeding.
@@ -372,6 +376,33 @@ def set_indirect_bounce_strength(strength):
     INDIRECT_BOUNCE_STRENGTH = float(strength)
 
 
+def set_tonemapping(enabled):
+    """Enable or disable ACES Filmic Tonemapping in the ray-tracing rendering kernels."""
+    global TONEMAPPING
+    TONEMAPPING = bool(enabled)
+
+
+def set_tonemap_exposure(exposure):
+    """Set the exposure multiplier for the ACES Filmic Tonemapper."""
+    global TONEMAP_EXPOSURE
+    TONEMAP_EXPOSURE = float(exposure)
+
+
+def set_tonemap_method(method):
+    """Set the tonemapping method ("neutral" or "agx")."""
+    global TONEMAP_METHOD
+    if method not in ("neutral", "agx"):
+        raise ValueError("tonemap_method must be 'neutral' or 'agx'")
+    TONEMAP_METHOD = str(method)
+
+
+def _get_tonemap_t_val():
+    if not TONEMAPPING:
+        return 0
+    return 2 if TONEMAP_METHOD == "agx" else 1
+
+
+
 def _set_surface_param(mob, name, value):
     value = cast_to_tensor(float(value)).view(1, 1)
     for descendant in reversed(mob.get_descendants()):
@@ -526,7 +557,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 params["glow"] = glow
             super().__init__(corners, colors, opacity, normals,
                              perimeter_points, reverse_perimeter,
-                             triangle_collection, glow, shader,
+                             triangle_collection, glow, shader=shader,
                              uvs=uvs, texture_map=texture_map,
                              **shader_kwargs)
             for name, value in params.items():
@@ -1451,6 +1482,7 @@ def render_triangles_wavefront(
     loop.
     """
     device = out.device
+    t_val = _get_tonemap_t_val()
     n = (time_end - time_start) * width * height
     i32 = torch.int32
     f32 = torch.float32
@@ -1529,7 +1561,7 @@ def render_triangles_wavefront(
                     wf_composite(
                         int(time_start), int(width), int(height),
                         1 if transparent else 0, int(tile_start),
-                        rs_acc, rs_sca, out)
+                        rs_acc, rs_sca, t_val, float(TONEMAP_EXPOSURE), out)
                 # Release this tile's state back to the pool before the next
                 # tile.
                 memory.set_pointers(state_ptrs)
@@ -1537,7 +1569,7 @@ def render_triangles_wavefront(
     if do_aa:
         wf_finalize_aa(int(width), int(height),
                        1 if transparent else 0,
-                       float(inv_aa * inv_aa), aa_accum, out)
+                       float(inv_aa * inv_aa), t_val, float(TONEMAP_EXPOSURE), aa_accum, out)
 
 
 def render_triangles_wavefront_knots(
@@ -1557,6 +1589,7 @@ def render_triangles_wavefront_knots(
     When ``aa_level > 1``, runs in-place MSAA (see
     ``render_triangles_wavefront``)."""
     device = out.device
+    t_val = _get_tonemap_t_val()
     n = (time_end - time_start) * width * height
     f32 = torch.float32
     i32 = torch.int32
@@ -1632,13 +1665,13 @@ def render_triangles_wavefront_knots(
                     wf_composite(
                         int(time_start), int(width), int(height),
                         1 if transparent else 0, int(tile_start),
-                        rs_acc, rs_sca, out)
+                        rs_acc, rs_sca, t_val, float(TONEMAP_EXPOSURE), out)
                 memory.set_pointers(state_ptrs)
 
     if do_aa:
         wf_finalize_aa(int(width), int(height),
                        1 if transparent else 0,
-                       float(inv_aa * inv_aa), aa_accum, out)
+                       float(inv_aa * inv_aa), t_val, float(TONEMAP_EXPOSURE), aa_accum, out)
 
 
 def render_general_wavefront(
@@ -1671,6 +1704,7 @@ def render_general_wavefront(
     resolution (in-place MSAA), accumulating into a float buffer and averaging
     at the end -- no super-sampled frame buffer needed."""
     device = out.device
+    t_val = _get_tonemap_t_val()
     i32 = torch.int32
     f32 = torch.float32
     max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
@@ -1835,7 +1869,7 @@ def render_general_wavefront(
                     wf_composite_accum(
                         int(time_start), int(width), int(height),
                         1 if transparent else 0, int(tile_start),
-                        pix_accum, out)
+                        pix_accum, t_val, float(TONEMAP_EXPOSURE), out)
                 # Release this tile's state back to the pool before the next
                 # tile.
                 memory.set_pointers(state_ptrs)
@@ -1843,7 +1877,7 @@ def render_general_wavefront(
     if do_aa:
         wf_finalize_aa(int(width), int(height),
                        1 if transparent else 0,
-                       float(inv_aa * inv_aa), aa_accum, out)
+                       float(inv_aa * inv_aa), t_val, float(TONEMAP_EXPOSURE), aa_accum, out)
 
 
 # Pixels per PyTorch shading block. The deferred shade pass runs over the
@@ -1941,6 +1975,67 @@ def render_gbuffer_general(
 
         shaded = shade_gbuffer_torch(gb_f32[off:hi], mat, mat_id, f_idx,
                                      light_pos, light_col, int(num_lights))
+        if TONEMAPPING:
+            color_exposed = shaded[:, :3] * TONEMAP_EXPOSURE
+            if TONEMAP_METHOD == "neutral":
+                # Khronos PBR Neutral
+                x, _ = torch.min(color_exposed, dim=1, keepdim=True)
+                offset = torch.where(x < 0.08, x - 6.25 * x * x, torch.tensor(0.04, device=device))
+                color_offset = color_exposed - offset
+                
+                peak, _ = torch.max(color_offset, dim=1, keepdim=True)
+                mask_compress = (peak >= 0.76).squeeze(1)
+                
+                if mask_compress.any():
+                    color_c = color_offset[mask_compress]
+                    peak_c = peak[mask_compress]
+                    
+                    d = 0.24
+                    newPeak = 1.0 - d * d / (peak_c + d - 0.76)
+                    color_c *= newPeak / peak_c
+                    
+                    g = 1.0 - 1.0 / (0.15 * (peak_c - newPeak) + 1.0)
+                    color_offset[mask_compress] = color_c + g * (newPeak - color_c)
+                
+                shaded[:, :3] = torch.clamp(color_offset, 0.0, 1.0)
+            elif TONEMAP_METHOD == "agx":
+                # AgX
+                r_rec2020 = 0.627409 * color_exposed[:, 0] + 0.329282 * color_exposed[:, 1] + 0.043309 * color_exposed[:, 2]
+                g_rec2020 = 0.069055 * color_exposed[:, 0] + 0.919540 * color_exposed[:, 1] + 0.011405 * color_exposed[:, 2]
+                b_rec2020 = 0.016390 * color_exposed[:, 0] + 0.088013 * color_exposed[:, 1] + 0.895597 * color_exposed[:, 2]
+                
+                r_inset = 0.856627153315983 * r_rec2020 + 0.0951212405381588 * g_rec2020 + 0.0482516061458583 * b_rec2020
+                g_inset = 0.137318972929847 * r_rec2020 + 0.761241990602591 * g_rec2020 + 0.101439036467562 * b_rec2020
+                b_inset = 0.11189821299995 * r_rec2020 + 0.0767994186031903 * g_rec2020 + 0.811302368396859 * b_rec2020
+                
+                r_log = torch.clamp(torch.log2(torch.clamp(r_inset, min=1e-10)), -12.47393, 4.026069)
+                g_log = torch.clamp(torch.log2(torch.clamp(g_inset, min=1e-10)), -12.47393, 4.026069)
+                b_log = torch.clamp(torch.log2(torch.clamp(b_inset, min=1e-10)), -12.47393, 4.026069)
+                
+                r_norm = (r_log - (-12.47393)) / (4.026069 - (-12.47393))
+                g_norm = (g_log - (-12.47393)) / (4.026069 - (-12.47393))
+                b_norm = (b_log - (-12.47393)) / (4.026069 - (-12.47393))
+                
+                def agx_curve(x):
+                    x2 = x * x
+                    x4 = x2 * x2
+                    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232
+                    
+                r_curve = agx_curve(r_norm)
+                g_curve = agx_curve(g_norm)
+                b_curve = agx_curve(b_norm)
+                
+                r_out = 1.1271005818144368 * r_curve - 0.11060664309660323 * g_curve - 0.016493938717834573 * b_curve
+                g_out = -0.1413297634984383 * r_curve + 1.157823702216272 * g_curve - 0.016493938717834257 * b_curve
+                b_out = -0.14132976349843826 * r_curve - 0.11060664309660294 * g_curve + 1.2519364065950405 * b_curve
+                
+                r_srgb = 1.6605 * r_out - 0.1246 * g_out - 0.0182 * b_out
+                g_srgb = -0.5876 * r_out + 1.1329 * g_out - 0.1006 * b_out
+                b_srgb = -0.0728 * r_out - 0.0083 * g_out + 1.1187 * b_out
+                
+                shaded[:, 0] = torch.clamp(r_srgb, 0.0, 1.0)
+                shaded[:, 1] = torch.clamp(g_srgb, 0.0, 1.0)
+                shaded[:, 2] = torch.clamp(b_srgb, 0.0, 1.0)
         px = (shaded * 255.0 + 0.5).clamp(0.0, 255.0).to(torch.uint8)
         block = out_v[off:hi]
         block[valid, :k] = px[valid, :k]
@@ -1970,6 +2065,7 @@ def render_gbuffer_wavefront_general(
     OOM handler bounds memory. No shadows or refractions.
     """
     device = out.device
+    t_val = _get_tonemap_t_val()
     n = (time_end - time_start) * width * height
     f32 = torch.float32
     i32 = torch.int32
@@ -2042,7 +2138,8 @@ def render_gbuffer_wavefront_general(
         it += 1
 
     wf_composite(int(time_start), int(width), int(height),
-                 1 if transparent else 0, 0, rs_acc, rs_sca, out)
+                 1 if transparent else 0, 0, rs_acc, rs_sca,
+                 t_val, float(TONEMAP_EXPOSURE), out)
 
 
 def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
@@ -2128,6 +2225,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
         has_tri = has_pn = has_bez = 1
     first = primitives[0]
     first.memory = memory
+    t_val = _get_tonemap_t_val()
 
     samples = max(1, int(SAMPLES_PER_PIXEL))
     # In-place AA folds the anti-alias super-sampling into the Monte Carlo
@@ -2231,6 +2329,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     float(AMBIENT_LIGHT), merged["pn_obb"], out, accum)
                 finalize_samples(samples_eff,
                                  1 if transparent_background else 0,
+                                 t_val, float(TONEMAP_EXPOSURE),
                                  accum, out)
             elif samples > 1:
                 path_trace_scene_stbvh(*shared_args, samples_eff,
@@ -2238,6 +2337,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                                        merged["pn_obb"], out, accum)
                 finalize_samples(samples_eff,
                                  1 if transparent_background else 0,
+                                 t_val, float(TONEMAP_EXPOSURE),
                                  accum, out)
             elif (USE_GBUFFER and det_frag and not det_shadows
                   and not refractive_det):
@@ -2353,7 +2453,8 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                         int(start), int(end), int(width), int(height),
                         float(width // 2), float(height // 2),
                         layer_offset_triangles, int(MAX_BOUNCES),
-                        1 if transparent_background else 0, kernel_aa, out)
+                        1 if transparent_background else 0, kernel_aa,
+                        t_val, float(TONEMAP_EXPOSURE), out)
             elif (USE_TRIANGLE_ONLY_KERNEL and has_tri
                   and not has_pn and not has_bez and not det_shadows):
                 # Triangle-only batch: the lean kernel (no PN/bezier code)
@@ -2373,7 +2474,8 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     layer_offset_triangles, int(MAX_BOUNCES),
                     1 if transparent_background else 0,
                     frag_flag, merged["tri_mat_id"], merged["tri_mat"],
-                    light_pos, light_col, int(num_lights), kernel_aa, out)
+                    light_pos, light_col, int(num_lights), kernel_aa,
+                    t_val, float(TONEMAP_EXPOSURE), out)
             elif USE_NO_PN_KERNEL and not has_pn and not det_shadows:
                 # No PN patches (bezier circuits, optionally with flat
                 # triangles): the no-PN kernel omits the Matrix Pencil solver from
@@ -2399,14 +2501,16 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     1 if transparent_background else 0,
                     has_tri, has_bez,
                     frag_flag, merged["tri_mat_id"], merged["tri_mat"],
-                    light_pos, light_col, int(num_lights), kernel_aa, out)
+                    light_pos, light_col, int(num_lights), kernel_aa,
+                    t_val, float(TONEMAP_EXPOSURE), out)
             else:
                 render_scene_stbvh(*shared_args, has_tri, has_pn, has_bez,
                                    frag_flag, merged["tri_mat_id"],
                                    merged["tri_mat"], merged["pn_mat_id"],
                                    merged["pn_mat"], light_pos, light_col,
                                    int(num_lights), shadow_flag, kernel_aa,
-                                   merged["pn_obb"], out)
+                                   merged["pn_obb"],
+                                   t_val, float(TONEMAP_EXPOSURE), out)
             ti.sync()
             if _ktiming:
                 import time as _kt
@@ -2445,7 +2549,9 @@ _originals = {}
 
 def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
                        physical_lighting=None, pn_triangles=False,
-                       fragment_shading=None, shadows=None):
+                       fragment_shading=None, shadows=None,
+                       tonemapping=None, tonemap_exposure=None,
+                       tonemap_method=None):
     """Route newly created mobs through the ray traced render pipeline.
 
     Rebinds the primitive classes used by the mob modules; call this before
@@ -2482,6 +2588,14 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         (see :func:`set_ray_traced_shadows`). Implies ``fragment_shading``. For
         soft or transmissive shadows use physical lighting instead. Off by
         default.
+    tonemapping
+        Enable or disable Filmic Tonemapping (see :func:`set_tonemapping`).
+        Defaults to True.
+    tonemap_exposure
+        Set the exposure multiplier for the Tonemapper (see :func:`set_tonemap_exposure`).
+        Defaults to 1.0.
+    tonemap_method
+        Set the tonemapping method ("neutral" or "agx"). Defaults to "neutral".
     """
     if samples_per_pixel is not None:
         set_samples_per_pixel(samples_per_pixel)
@@ -2493,6 +2607,13 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         set_fragment_shading(fragment_shading)
     if shadows is not None:
         set_ray_traced_shadows(shadows)
+    if tonemapping is not None:
+        set_tonemapping(tonemapping)
+    if tonemap_exposure is not None:
+        set_tonemap_exposure(tonemap_exposure)
+    if tonemap_method is not None:
+        set_tonemap_method(tonemap_method)
+
     triangle_cls = (RayTracedPNTrianglePrimitive if pn_triangles
                     else RayTracedTrianglePrimitive)
     targets = []

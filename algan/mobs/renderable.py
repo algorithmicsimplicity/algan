@@ -13,7 +13,9 @@ class Renderable(Mob):
         opacity = self.opacity
         with Off():
             self.opacity = 0
+            self.glow = 0
         self.opacity = opacity
 
     def on_destroy(self):
         self.opacity = torch.tensor((0.0,)).view(1)
+        self.glow = torch.tensor((0.0,)).view(1)

@@ -9,6 +9,7 @@ from algan.constants.rate_funcs import identity, ease_in_expo, ease_out_expo
 from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.utils.tensor_utils import dot_product, unsquish, squish
 from algan.mobs.text import Tex
+from algan.constants.rate_funcs import smooth
 
 
 def tweak_color(c, strength=0.3):
@@ -18,13 +19,16 @@ def tweak_color(c, strength=0.3):
     return c * (1 - t) + t * target_c
 
 
+gr = 0.15
+gs = 0.75
+
 class Synapse(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
         grid_height = 5
         if 'color' in kwargs:
             c = kwargs['color']
             kwargs['color'] = tweak_color(c)
-        super().__init__(grid_height=grid_height, grid_width=12, **kwargs)
+        super().__init__(grid_height=grid_height, grid_width=12, glow_radius=gr, **kwargs)
         self.scale(0.02)
 
 
@@ -38,7 +42,7 @@ class Neuron(Mob):
             .move_to(self.location)
         )
         self.shell = (
-            Sphere(opacity=0.1e-4, grid_height=grid_height, color=neuron_color, grid_aspect_ratio=2)
+            Sphere(opacity=0.1e-4, grid_height=grid_height, color=PURE_RED, grid_aspect_ratio=2, glow_radius=gr)
             .scale(0.2)
             .move_to(self.location)
             .look(direction, axis=1)
@@ -242,16 +246,16 @@ class NeuralNetMLP(Mob):
         def pulse_synapses(neuron):
             with Sync(rate_func=ease_out_expo):
                 for synapse in neuron.synapses:
-                    synapse.wave_color(color + GLOW * 0.8, 0.9, reverse,
+                    synapse.wave_color(color + GLOW * gs, 0.9, reverse,
                                        direction=self.get_forward_direction(),
                                        new_color=tweak_color(synapse.color, 0.33) if reverse else None)
 
         def pulse_neuron(neuron):
-            with Seq(run_time=3):
+            with Seq(run_time=3, rate_func=lambda t: smooth(t, inflection=1.0)):
                 neuron.shell.wave_color(
-                    (color + GLOW).set_opacity(
-                        1 / neuron.shell.opacity.clamp_min(1e-5)
-                    ),
+                    (color + GLOW * gs),#.set_opacity(
+                        #1 / neuron.shell.opacity.clamp_min(1e-5)
+                    #),
                     1,
                     reverse,
                     lag_duration=0.5,

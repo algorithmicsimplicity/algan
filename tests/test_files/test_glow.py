@@ -23,14 +23,23 @@ get_mob = (
 
 
 def test_glow():
+    enable_ray_tracing(samples_per_pixel=1, tonemapping=False)
     x = get_mob()
     x.glow = 1.0
     x.wait()
     x.glow_radius = 1
-    #x.glow_radius = 0.1
     x.wait()
     return
 
 
-#enable_ray_tracing(1, fragment_shading=True)
+def test_tonemapping():
+    enable_ray_tracing(samples_per_pixel=1, tonemapping=True, tonemap_exposure=1.5)
+    x = get_mob()
+    x.glow = 2.0
+    x.glow_radius = 1.0
+    x.wait()
+    return
+
+
 render_all_funcs(__name__, start_index=0, max_rendered=-1)
+

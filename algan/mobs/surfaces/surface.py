@@ -487,10 +487,12 @@ class Surface(Renderable):
                           ).view(self.color_texture.shape[0], self.texture_height, self.texture_width,
                                  5).as_subclass(Color).mult_opacity(self.opacity.unsqueeze(-2))
 
+        colors = expand_grid_to_verts(grid_color)
         return TrianglePrimitive(
             corners=grid_to_triangle_vertices(grid),
-            colors=expand_grid_to_verts(grid_color),
+            colors=colors,
             normals=vertex_normals,
+            glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             glow_radius=self.grid.glow_radius,
             shader=self.shader,
             uvs=uvs,

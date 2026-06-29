@@ -1521,6 +1521,88 @@ def _barycentric_coords(p, v0, v1, v2):
 
 
 @ti.func
+def agx_default_contrast_approx(x: ti.f32) -> ti.f32:
+    x2 = x * x
+    x4 = x2 * x2
+    return 15.5 * x4 * x2 - 40.14 * x4 * x + 31.96 * x4 - 6.868 * x2 * x + 0.4298 * x2 + 0.1191 * x - 0.00232
+
+
+@ti.func
+def agx_tonemap(color: ti.math.vec3) -> ti.math.vec3:
+    r_rec2020 = 0.627409 * color[0] + 0.329282 * color[1] + 0.043309 * color[2]
+    g_rec2020 = 0.069055 * color[0] + 0.919540 * color[1] + 0.011405 * color[2]
+    b_rec2020 = 0.016390 * color[0] + 0.088013 * color[1] + 0.895597 * color[2]
+    
+    r_inset = 0.856627153315983 * r_rec2020 + 0.0951212405381588 * g_rec2020 + 0.0482516061458583 * b_rec2020
+    g_inset = 0.137318972929847 * r_rec2020 + 0.761241990602591 * g_rec2020 + 0.101439036467562 * b_rec2020
+    b_inset = 0.11189821299995 * r_rec2020 + 0.0767994186031903 * g_rec2020 + 0.811302368396859 * b_rec2020
+    
+    r_log = ti.math.clamp(ti.log(ti.max(r_inset, 1e-10)) / 0.6931471805599453, -12.47393, 4.026069)
+    g_log = ti.math.clamp(ti.log(ti.max(g_inset, 1e-10)) / 0.6931471805599453, -12.47393, 4.026069)
+    b_log = ti.math.clamp(ti.log(ti.max(b_inset, 1e-10)) / 0.6931471805599453, -12.47393, 4.026069)
+    
+    r_norm = (r_log - (-12.47393)) / (4.026069 - (-12.47393))
+    g_norm = (g_log - (-12.47393)) / (4.026069 - (-12.47393))
+    b_norm = (b_log - (-12.47393)) / (4.026069 - (-12.47393))
+    
+    r_curve = agx_default_contrast_approx(r_norm)
+    g_curve = agx_default_contrast_approx(g_norm)
+    b_curve = agx_default_contrast_approx(b_norm)
+    
+    r_out = 1.1271005818144368 * r_curve - 0.11060664309660323 * g_curve - 0.016493938717834573 * b_curve
+    g_out = -0.1413297634984383 * r_curve + 1.157823702216272 * g_curve - 0.016493938717834257 * b_curve
+    b_out = -0.14132976349843826 * r_curve - 0.11060664309660294 * g_curve + 1.2519364065950405 * b_curve
+    
+    r_srgb = 1.6605 * r_out - 0.1246 * g_out - 0.0182 * b_out
+    g_srgb = -0.5876 * r_out + 1.1329 * g_out - 0.1006 * b_out
+    b_srgb = -0.0728 * r_out - 0.0083 * g_out + 1.1187 * b_out
+    
+    return ti.math.clamp(ti.math.vec3(r_srgb, g_srgb, b_srgb), 0.0, 1.0)
+
+
+@ti.func
+def pbr_neutral_tonemap(color: ti.math.vec3) -> ti.math.vec3:
+    startCompression = 0.76
+    desaturation = 0.15
+
+    x = ti.min(color[0], ti.min(color[1], color[2]))
+    offset = 0.04
+    if x < 0.08:
+        offset = x - 6.25 * x * x
+    
+    color_offset = color - offset
+
+    peak = ti.max(color_offset[0], ti.max(color_offset[1], color_offset[2]))
+    out = color_offset
+    if peak >= startCompression:
+        d = 1.0 - startCompression
+        newPeak = 1.0 - d * d / (peak + d - startCompression)
+        color_offset *= newPeak / peak
+        
+        g = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0)
+        out[0] = ti.math.mix(color_offset[0], newPeak, g)
+        out[1] = ti.math.mix(color_offset[1], newPeak, g)
+        out[2] = ti.math.mix(color_offset[2], newPeak, g)
+
+    return ti.math.clamp(out, 0.0, 1.0)
+
+
+@ti.func
+def finalize_pixel_color(csum: ti.math.vec4, inv_samples: ti.f32, tonemapping: ti.template(), tonemap_exposure: ti.f32) -> ti.math.vec4:
+    color_hdr = ti.math.vec3(csum[0], csum[1], csum[2]) * inv_samples
+    if ti.static(tonemapping == 1):
+        color_hdr = pbr_neutral_tonemap(color_hdr * (tonemap_exposure / 255.0)) * 255.0
+    elif ti.static(tonemapping == 2):
+        color_hdr = agx_tonemap(color_hdr * (tonemap_exposure / 255.0)) * 255.0
+    else:
+        color_hdr = ti.math.clamp(color_hdr, 0.0, 255.0)
+    
+    glow_val = ti.math.clamp(csum[3] * inv_samples, 0.0, 255.0)
+    return ti.math.vec4(color_hdr[0] + 0.5, color_hdr[1] + 0.5, color_hdr[2] + 0.5, glow_val + 0.5)
+
+
+
+@ti.func
 def _interpolate_glow_params(w0, w1, w2, g0, g1, g2, r0, r1, r2):
     cw1 = ti.math.clamp(w1, 0.0, 1.0)
     cw2 = ti.math.clamp(w2, 0.0, 1.0)
@@ -2717,6 +2799,9 @@ def render_scene_stbvh(
         aa_level: int,
         # Per-PN-patch oriented bounding box (12 floats) for the pre-solve cull.
         pn_obb: ti.types.ndarray(),
+        # Tonemapping parameters
+        tonemapping: ti.template(),
+        tonemap_exposure: ti.f32,
         # Output buffer [time_end - time_start, width * height, channels],
         # pre-filled with the background; blended in place.
         out: ti.types.ndarray()):
@@ -2773,10 +2858,9 @@ def render_scene_stbvh(
                              + weight * ti.cast(out[f_rel, p, 4], ti.f32))
 
         # Composite the averaged sub-pixels and write the pixel once.
+        color_final = finalize_pixel_color(csum, inv_samples, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(
-                ti.math.clamp(csum[ci] * inv_samples + 0.5, 0.0, 255.0),
-                ti.u8)
+            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
@@ -3067,6 +3151,8 @@ def render_triangles_stbvh(
         num_lights: int,
         # Anti-alias level: a^2 jittered sub-pixel rays averaged per pixel.
         aa_level: int,
+        tonemapping: ti.template(),
+        tonemap_exposure: ti.f32,
         # Output buffer, pre-filled with the background; blended in place.
         out: ti.types.ndarray()):
     """Deterministic renderer for batches that contain *only* flat triangles
@@ -3117,10 +3203,9 @@ def render_triangles_stbvh(
                     asum += ((1.0 - weight) * 255.0
                              + weight * ti.cast(out[f_rel, p, 4], ti.f32))
 
+        color_final = finalize_pixel_color(csum, inv_samples, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(
-                ti.math.clamp(csum[ci] * inv_samples + 0.5, 0.0, 255.0),
-                ti.u8)
+            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
@@ -3407,6 +3492,8 @@ def render_triangles_knots_stbvh(
         half_screen_w: float, half_screen_h: float,
         layer_offset_triangles: float, max_bounces: int, transparent: int,
         aa_level: int,
+        tonemapping: ti.template(),
+        tonemap_exposure: ti.f32,
         out: ti.types.ndarray()):
     """Deterministic renderer for non-reflective, vertex-shaded, shadow-free
     triangle-only batches whose positions are stored in the compressed knot
@@ -3454,10 +3541,9 @@ def render_triangles_knots_stbvh(
                     asum += ((1.0 - weight) * 255.0
                              + weight * ti.cast(out[f_rel, p, 4], ti.f32))
 
+        color_final = finalize_pixel_color(csum, inv_samples, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(
-                ti.math.clamp(csum[ci] * inv_samples + 0.5, 0.0, 255.0),
-                ti.u8)
+            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
@@ -3709,6 +3795,7 @@ def path_trace_scene_stbvh(
 
 @ti.kernel
 def finalize_samples(samples_per_pixel: int, transparent: int,
+                     tonemapping: ti.template(), tonemap_exposure: ti.f32,
                      accum: ti.types.ndarray(), out: ti.types.ndarray()):
     """Convert the Monte Carlo kernels' per-pixel sample sums into the u8
     output: ``out = clamp(accum / samples_per_pixel)``.
@@ -3719,10 +3806,13 @@ def finalize_samples(samples_per_pixel: int, transparent: int,
     for cell in range(num_frames * num_pixels):
         f_rel = cell // num_pixels
         p = cell - f_rel * num_pixels
+        csum = ti.math.vec4(accum[f_rel, p, 0] * 255.0,
+                            accum[f_rel, p, 1] * 255.0,
+                            accum[f_rel, p, 2] * 255.0,
+                            accum[f_rel, p, 3] * 255.0)
+        color_final = finalize_pixel_color(csum, inv_spp, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            val = accum[f_rel, p, ci] * inv_spp * 255.0
-            out[f_rel, p, ci] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),
-                                        ti.u8)
+            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             val = accum[f_rel, p, 4] * inv_spp * 255.0
             out[f_rel, p, 4] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),

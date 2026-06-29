@@ -47,6 +47,7 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     _triangle_extra,
     _triangle_normal,
     _accumulate_glow,
+    finalize_pixel_color,
 )
 
 
@@ -510,6 +511,8 @@ def render_no_pn_stbvh(
         num_lights: int,
         # Anti-alias level: a^2 jittered sub-pixel rays averaged per pixel.
         aa_level: int,
+        tonemapping: ti.template(),
+        tonemap_exposure: ti.f32,
         # Output buffer, pre-filled with the background; blended in place.
         out: ti.types.ndarray()):
     """Deterministic renderer for batches with no PN patches (flat triangles
@@ -563,10 +566,9 @@ def render_no_pn_stbvh(
                     asum += ((1.0 - weight) * 255.0
                              + weight * ti.cast(out[f_rel, p, 4], ti.f32))
 
+        color_final = finalize_pixel_color(csum, inv_samples, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(
-                ti.math.clamp(csum[ci] * inv_samples + 0.5, 0.0, 255.0),
-                ti.u8)
+            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)

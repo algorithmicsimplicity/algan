@@ -791,7 +791,7 @@ class Scene:
         if os.path.exists(file_path_out):
             os.remove(file_path_out)
         os.rename(file_path, file_path_out)
-        if not self.has_any_active_actors:
+        if (not hasattr(self, 'has_any_active_actors')) or (not self.has_any_active_actors):
             warnings.warn(
                 "You rendered an empty scene! Did you forget to spawn() your Mobs?",
                 EmptySceneWarning,

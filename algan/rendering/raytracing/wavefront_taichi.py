@@ -59,6 +59,7 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     _triangle_normal,
     _accumulate_glow,
     _accumulate_glow_triangles,
+    finalize_pixel_color,
 )
 
 # Per-ray status codes (rs_int column 2).
@@ -431,6 +432,7 @@ def wf_composite(
         time_start: int, width: int, height: int, transparent: int,
         ray_offset: int,
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
+        tonemapping: ti.template(), tonemap_exposure: ti.f32,
         out: ti.types.ndarray()):
     """Composite each ray's premultiplied accumulator over the pre-filled
     background (mirrors the tail of ``render_triangles_stbvh``). State is indexed
@@ -442,11 +444,13 @@ def wf_composite(
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
         weight = rs_sca[r, 0]
+        csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            val = rs_acc[r, ci] * 255.0 + weight * bg
-            out[f_rel, p, ci] = ti.cast(
-                ti.math.clamp(val + 0.5, 0.0, 255.0), ti.u8)
+            csum[ci] = rs_acc[r, ci] * 255.0 + weight * bg
+        color_final = finalize_pixel_color(csum, 1.0, tonemapping, tonemap_exposure)
+        for ci in ti.static(range(4)):
+            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
             val = (1.0 - weight) * 255.0 + weight * bg_a
@@ -483,7 +487,9 @@ def wf_composite_aa(
 def wf_composite_accum(
         time_start: int, width: int, height: int, transparent: int,
         ray_offset: int,
-        pix_accum: ti.types.ndarray(), out: ti.types.ndarray()):
+        pix_accum: ti.types.ndarray(),
+        tonemapping: ti.template(), tonemap_exposure: ti.f32,
+        out: ti.types.ndarray()):
     """Composite the general path's per-pixel accumulator over the pre-filled
     background. Mirrors ``wf_composite`` arithmetic exactly, but reads the shared
     ``pix_accum`` (premultiplied colour cols 0-3 + summed leftover/background
@@ -499,11 +505,13 @@ def wf_composite_accum(
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
         weight = pix_accum[r, 4]
+        csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            val = pix_accum[r, ci] * 255.0 + weight * bg
-            out[f_rel, p, ci] = ti.cast(
-                ti.math.clamp(val + 0.5, 0.0, 255.0), ti.u8)
+            csum[ci] = pix_accum[r, ci] * 255.0 + weight * bg
+        color_final = finalize_pixel_color(csum, 1.0, tonemapping, tonemap_exposure)
+        for ci in ti.static(range(4)):
+            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
             val = (1.0 - weight) * 255.0 + weight * bg_a
@@ -539,6 +547,7 @@ def wf_composite_accum_aa(
 def wf_finalize_aa(
         width: int, height: int, transparent: int,
         inv_samples: float,
+        tonemapping: ti.template(), tonemap_exposure: ti.f32,
         aa_accum: ti.types.ndarray(), out: ti.types.ndarray()):
     """Average the AA float accumulator and write the final uint8 output.
     Called once after all ``aa^2`` sub-pixel passes have been accumulated by
@@ -548,10 +557,10 @@ def wf_finalize_aa(
     for idx in range(num_pixels):
         f_rel = idx // pixels_per_frame
         p = idx - f_rel * pixels_per_frame
+        csum = ti.math.vec4(aa_accum[idx, 0], aa_accum[idx, 1], aa_accum[idx, 2], aa_accum[idx, 3])
+        color_final = finalize_pixel_color(csum, inv_samples, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(
-                ti.math.clamp(aa_accum[idx, ci] * inv_samples + 0.5,
-                              0.0, 255.0), ti.u8)
+            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(aa_accum[idx, 4] * inv_samples + 0.5,
