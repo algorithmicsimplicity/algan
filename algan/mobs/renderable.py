@@ -10,9 +10,10 @@ class Renderable(Mob):
     """
 
     def on_create(self):
+        opacity = self.opacity
         with Off():
             self.opacity = 0
-        self.opacity = self.max_opacity
+        self.opacity = opacity
 
     def on_destroy(self):
         self.opacity = torch.tensor((0.0,)).view(1)

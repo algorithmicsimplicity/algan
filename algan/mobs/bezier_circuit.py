@@ -188,7 +188,7 @@ class BezierCircuitCubic(Renderable):
 
         vars = broadcast_all(
             [
-                self.opacity * self.max_opacity,
+                self.opacity,# * self.max_opacity,
                 self.basis,
                 self.glow,
                 self.border_width

@@ -168,7 +168,7 @@ class Mob(Animatable):
             color = self.get_default_color()
         self.color = color
         self.max_opacity = cast_to_tensor(opacity)
-        self.opacity = cast_to_tensor(1)  # Current opacity, can be animated
+        self.opacity = cast_to_tensor(opacity)#cast_to_tensor(1)  # Current opacity, can be animated
         self.glow = cast_to_tensor(glow)
         self.glow_radius = cast_to_tensor(glow_radius)
         self.num_points_per_object = 1

@@ -140,7 +140,7 @@ class TriangleVertices(Renderable):
             [
                 self.location,
                 self.color,
-                self.opacity * self.max_opacity,
+                self.opacity,# * self.max_opacity,
                 self.normals,
                 self.glow,
                 self.glow_radius,

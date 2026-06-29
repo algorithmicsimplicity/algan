@@ -39,8 +39,8 @@ class Color(torch.Tensor):
     @property
     def opacity(self):
         opacity = self.data[..., -1:].as_subclass(torch.Tensor)
-        if opacity.numel() == 1:
-            opacity = opacity.item()
+        #if opacity.numel() == 1:
+        #    opacity = opacity.item()
         return opacity
 
     @opacity.setter
@@ -50,8 +50,8 @@ class Color(torch.Tensor):
     @property
     def glow(self):
         glow = self.data[..., -2:-1].as_subclass(torch.Tensor)
-        if glow.numel() == 1:
-            glow = glow.item()
+        #if glow.numel() == 1:
+        #    glow = glow.item()
         return glow
 
     def is_transparent(self):

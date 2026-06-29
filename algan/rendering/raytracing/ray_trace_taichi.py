@@ -1500,6 +1500,73 @@ def _nearest_surface_g(has_tri: ti.template(), has_pn: ti.template(),
 
 
 @ti.func
+def _barycentric_coords(p, v0, v1, v2):
+    e0 = v1 - v0
+    e1 = v2 - v0
+    e2 = p - v0
+    d00 = e0.dot(e0)
+    d01 = e0.dot(e1)
+    d11 = e1.dot(e1)
+    d20 = e2.dot(e0)
+    d21 = e2.dot(e1)
+    denom = d00 * d11 - d01 * d01
+    w0 = 1.0
+    w1 = 0.0
+    w2 = 0.0
+    if ti.abs(denom) > 1e-9:
+        w1 = (d11 * d20 - d01 * d21) / denom
+        w2 = (d00 * d21 - d01 * d20) / denom
+        w0 = 1.0 - w1 - w2
+    return w0, w1, w2
+
+
+@ti.func
+def _interpolate_glow_params(w0, w1, w2, g0, g1, g2, r0, r1, r2):
+    cw1 = ti.math.clamp(w1, 0.0, 1.0)
+    cw2 = ti.math.clamp(w2, 0.0, 1.0)
+    if cw1 + cw2 > 1.0:
+        s = cw1 + cw2
+        cw1 /= s
+        cw2 /= s
+    cw0 = 1.0 - cw1 - cw2
+    g_val = cw0 * g0 + cw1 * g1 + cw2 * g2
+    r_val = cw0 * r0 + cw1 * r1 + cw2 * r2
+    return g_val, r_val
+
+
+@ti.func
+def _closest_point_segment_segment(ro, rd, t_max, p0, p1):
+    u = rd
+    v = p1 - p0
+    w = ro - p0
+    a = 1.0
+    b = u.dot(v)
+    c = v.dot(v)
+    d = u.dot(w)
+    e = v.dot(w)
+    D = a * c - b * b
+    
+    s = 0.0
+    t = 0.0
+    if D < 1e-8:
+        s = 0.0
+        t = 0.0 if e < 0.0 else (1.0 if e > c else e / c)
+    else:
+        t = (a * e - b * d) / D
+        t = ti.math.clamp(t, 0.0, 1.0)
+        s = (b * t - d) / a
+        s = ti.math.clamp(s, 0.0, t_max)
+        t = (b * s + e) / c
+        t = ti.math.clamp(t, 0.0, 1.0)
+        s = (b * t - d) / a
+        s = ti.math.clamp(s, 0.0, t_max)
+        
+    p_ray = ro + s * rd
+    p_seg = p0 + t * v
+    return p_ray, p_seg
+
+
+@ti.func
 def _distance_sq_to_point(ro, rd, t_max, p):
     t_proj = (p - ro).dot(rd)
     t_proj = ti.math.clamp(t_proj, 0.0, t_max)
@@ -1535,32 +1602,56 @@ def _accumulate_glow_triangles(ro, rd, inv_rd, t_max, f, ff,
                             v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1], tri_pos[tp, prim, 2])
                             v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4], tri_pos[tp, prim, 5])
                             v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7], tri_pos[tp, prim, 8])
-                            v_c = (v0 + v1 + v2) / 3.0
                             
                             r0 = tri_extra[te, prim, 12]
                             r1 = tri_extra[te, prim, 13]
                             r2 = tri_extra[te, prim, 14]
-                            r_c = (r0 + r1 + r2) / 3.0
+
+                            n = (v1 - v0).cross(v2 - v0)
+                            n_norm = n.norm()
+                            has_plane_hit = False
+                            p_plane_tri = ti.math.vec3(0.0, 0.0, 0.0)
                             
-                            glow_0 = 0.0
-                            if g0 > 0.0 and r0 > 1e-5:
-                                d2 = _distance_sq_to_point(ro, rd, t_max, v0)
-                                glow_0 = g0 * ti.exp(-d2 / (2.0 * (r0 / 3.0) * (r0 / 3.0)))
-                            glow_1 = 0.0
-                            if g1 > 0.0 and r1 > 1e-5:
-                                d2 = _distance_sq_to_point(ro, rd, t_max, v1)
-                                glow_1 = g1 * ti.exp(-d2 / (2.0 * (r1 / 3.0) * (r1 / 3.0)))
-                            glow_2 = 0.0
-                            if g2 > 0.0 and r2 > 1e-5:
-                                d2 = _distance_sq_to_point(ro, rd, t_max, v2)
-                                glow_2 = g2 * ti.exp(-d2 / (2.0 * (r2 / 3.0) * (r2 / 3.0)))
-                            glow_c = 0.0
-                            g_c = (g0 + g1 + g2) / 3.0
-                            if g_c > 0.0 and r_c > 1e-5:
-                                d2 = _distance_sq_to_point(ro, rd, t_max, v_c)
-                                glow_c = g_c * ti.exp(-d2 / (2.0 * (r_c / 3.0) * (r_c / 3.0)))
+                            if n_norm > 1e-9:
+                                n_dir = n / n_norm
+                                denom = rd.dot(n_dir)
+                                if ti.abs(denom) > 1e-9:
+                                    t_plane = (v0 - ro).dot(n_dir) / denom
+                                    if t_plane > 0.0 and t_plane < t_max + 1e-4:
+                                        p_plane = ro + t_plane * rd
+                                        w0, w1, w2 = _barycentric_coords(p_plane, v0, v1, v2)
+                                        if w0 >= 0.0 and w1 >= 0.0 and w2 >= 0.0 and (w0 + w1 + w2) <= 1.0 + 1e-5:
+                                            has_plane_hit = True
+                                            p_plane_tri = p_plane
+                            
+                            d2 = 0.0
+                            p_tri = ti.math.vec3(0.0, 0.0, 0.0)
+                            if has_plane_hit:
+                                p_tri = p_plane_tri
+                            else:
+                                p_ray0, p_seg0 = _closest_point_segment_segment(ro, rd, t_max, v0, v1)
+                                p_ray1, p_seg1 = _closest_point_segment_segment(ro, rd, t_max, v1, v2)
+                                p_ray2, p_seg2 = _closest_point_segment_segment(ro, rd, t_max, v2, v0)
                                 
-                            g_val = ti.max(glow_0, ti.max(glow_1, ti.max(glow_2, glow_c)))
+                                d2_0 = (p_ray0 - p_seg0).dot(p_ray0 - p_seg0)
+                                d2_1 = (p_ray1 - p_seg1).dot(p_ray1 - p_seg1)
+                                d2_2 = (p_ray2 - p_seg2).dot(p_ray2 - p_seg2)
+                                
+                                d2 = d2_0
+                                p_tri = p_seg0
+                                if d2_1 < d2:
+                                    d2 = d2_1
+                                    p_tri = p_seg1
+                                if d2_2 < d2:
+                                    d2 = d2_2
+                                    p_tri = p_seg2
+                                    
+                            w0, w1, w2 = _barycentric_coords(p_tri, v0, v1, v2)
+                            g_val, r_val = _interpolate_glow_params(w0, w1, w2, g0, g1, g2, r0, r1, r2)
+                            
+                            glow_contrib = 0.0
+                            if g_val > 0.0 and r_val > 1e-5:
+                                glow_contrib = g_val * ti.exp(-d2 / (2.0 * (r_val / 3.0) * (r_val / 3.0)))
                             
                             albedo = ti.math.vec3(1.0, 1.0, 1.0)
                             if prim < num_colored_triangles:
@@ -1569,7 +1660,7 @@ def _accumulate_glow_triangles(ro, rd, inv_rd, t_max, f, ff,
                                     (tri_colors[tc, prim, 0, 1] + tri_colors[tc, prim, 1, 1] + tri_colors[tc, prim, 2, 1]) / 3.0,
                                     (tri_colors[tc, prim, 0, 2] + tri_colors[tc, prim, 1, 2] + tri_colors[tc, prim, 2, 2]) / 3.0
                                 )
-                            glow_rgb += albedo * g_val
+                            glow_rgb += albedo * glow_contrib
                 node = node_miss[node]
             else:
                 node = BVH_ARITY * node + 1
@@ -1610,39 +1701,63 @@ def _accumulate_glow_pn(ro, rd, inv_rd, t_max, f, ff,
                             v0 = k0
                             v1 = k0 + ku + kuu
                             v2 = k0 + kv + kvv
-                            v_c = (v0 + v1 + v2) / 3.0
                             
                             r0 = pn_extra[te, prim, 12]
                             r1 = pn_extra[te, prim, 13]
                             r2 = pn_extra[te, prim, 14]
-                            r_c = (r0 + r1 + r2) / 3.0
+
+                            n = (v1 - v0).cross(v2 - v0)
+                            n_norm = n.norm()
+                            has_plane_hit = False
+                            p_plane_tri = ti.math.vec3(0.0, 0.0, 0.0)
                             
-                            glow_0 = 0.0
-                            if g0 > 0.0 and r0 > 1e-5:
-                                d2 = _distance_sq_to_point(ro, rd, t_max, v0)
-                                glow_0 = g0 * ti.exp(-d2 / (2.0 * (r0 / 3.0) * (r0 / 3.0)))
-                            glow_1 = 0.0
-                            if g1 > 0.0 and r1 > 1e-5:
-                                d2 = _distance_sq_to_point(ro, rd, t_max, v1)
-                                glow_1 = g1 * ti.exp(-d2 / (2.0 * (r1 / 3.0) * (r1 / 3.0)))
-                            glow_2 = 0.0
-                            if g2 > 0.0 and r2 > 1e-5:
-                                d2 = _distance_sq_to_point(ro, rd, t_max, v2)
-                                glow_2 = g2 * ti.exp(-d2 / (2.0 * (r2 / 3.0) * (r2 / 3.0)))
-                            glow_c = 0.0
-                            g_c = (g0 + g1 + g2) / 3.0
-                            if g_c > 0.0 and r_c > 1e-5:
-                                d2 = _distance_sq_to_point(ro, rd, t_max, v_c)
-                                glow_c = g_c * ti.exp(-d2 / (2.0 * (r_c / 3.0) * (r_c / 3.0)))
+                            if n_norm > 1e-9:
+                                n_dir = n / n_norm
+                                denom = rd.dot(n_dir)
+                                if ti.abs(denom) > 1e-9:
+                                    t_plane = (v0 - ro).dot(n_dir) / denom
+                                    if t_plane > 0.0 and t_plane < t_max + 1e-4:
+                                        p_plane = ro + t_plane * rd
+                                        w0, w1, w2 = _barycentric_coords(p_plane, v0, v1, v2)
+                                        if w0 >= 0.0 and w1 >= 0.0 and w2 >= 0.0 and (w0 + w1 + w2) <= 1.0 + 1e-5:
+                                            has_plane_hit = True
+                                            p_plane_tri = p_plane
+                            
+                            d2 = 0.0
+                            p_tri = ti.math.vec3(0.0, 0.0, 0.0)
+                            if has_plane_hit:
+                                p_tri = p_plane_tri
+                            else:
+                                p_ray0, p_seg0 = _closest_point_segment_segment(ro, rd, t_max, v0, v1)
+                                p_ray1, p_seg1 = _closest_point_segment_segment(ro, rd, t_max, v1, v2)
+                                p_ray2, p_seg2 = _closest_point_segment_segment(ro, rd, t_max, v2, v0)
                                 
-                            g_val = ti.max(glow_0, ti.max(glow_1, ti.max(glow_2, glow_c)))
+                                d2_0 = (p_ray0 - p_seg0).dot(p_ray0 - p_seg0)
+                                d2_1 = (p_ray1 - p_seg1).dot(p_ray1 - p_seg1)
+                                d2_2 = (p_ray2 - p_seg2).dot(p_ray2 - p_seg2)
+                                
+                                d2 = d2_0
+                                p_tri = p_seg0
+                                if d2_1 < d2:
+                                    d2 = d2_1
+                                    p_tri = p_seg1
+                                if d2_2 < d2:
+                                    d2 = d2_2
+                                    p_tri = p_seg2
+                                    
+                            w0, w1, w2 = _barycentric_coords(p_tri, v0, v1, v2)
+                            g_val, r_val = _interpolate_glow_params(w0, w1, w2, g0, g1, g2, r0, r1, r2)
+                            
+                            glow_contrib = 0.0
+                            if g_val > 0.0 and r_val > 1e-5:
+                                glow_contrib = g_val * ti.exp(-d2 / (2.0 * (r_val / 3.0) * (r_val / 3.0)))
                             
                             albedo = ti.math.vec3(
                                 (pn_colors[tc, prim, 0, 0] + pn_colors[tc, prim, 1, 0] + pn_colors[tc, prim, 2, 0]) / 3.0,
                                 (pn_colors[tc, prim, 0, 1] + pn_colors[tc, prim, 1, 1] + pn_colors[tc, prim, 2, 1]) / 3.0,
                                 (pn_colors[tc, prim, 0, 2] + pn_colors[tc, prim, 1, 2] + pn_colors[tc, prim, 2, 2]) / 3.0
                             )
-                            glow_rgb += albedo * g_val
+                            glow_rgb += albedo * glow_contrib
                 node = node_miss[node]
             else:
                 node = BVH_ARITY * node + 1
@@ -1686,7 +1801,7 @@ def _accumulate_glow_beziers(ro, rd, inv_rd, t_max, f, ff,
                                     circuit_meta[tm, circuit, _M_CENTER + 1],
                                     circuit_meta[tm, circuit, _M_CENTER + 2])
                                 t = (center - ro).dot(n) / denom
-                                if t > 0.0 and t < t_max:
+                                if t > 0.0 and t < t_max + 1e-4:
                                     hit = ro + t * rd - center
                                     bu = ti.math.vec3(
                                         circuit_meta[tm, circuit, _M_BASIS_U],

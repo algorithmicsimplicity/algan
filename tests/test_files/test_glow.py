@@ -16,7 +16,7 @@ get_mob = (
                 F.normalize(LEFT + DOWN, p=2, dim=-1) * 0.5,
             )
         ),
-        color=torch.stack([PURE_RED for _ in range(3)]),
+        color=torch.stack([RED for _ in range(3)]),
     )
     .spawn()
 )
@@ -24,8 +24,9 @@ get_mob = (
 
 def test_glow():
     x = get_mob()
-    x.glow = 100.0
-    x.glow_radius = 100
+    x.glow = 1.0
+    x.wait()
+    x.glow_radius = 1
     #x.glow_radius = 0.1
     x.wait()
     return
