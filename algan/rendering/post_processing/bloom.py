@@ -444,8 +444,9 @@ def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor
 
     xdtype = x.dtype
 
-    x = x.to(torch.float)
-    x /= 255
+    if xdtype == torch.uint8:
+        x = x.to(torch.float)
+        x /= 255
     out = memory.clone(x)
     color_channels = [*range(3), 4] if x.shape[-1] == 5 else slice(0,3)
     color = x[..., color_channels]
@@ -512,7 +513,7 @@ def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor
 
     # Combine with original image
     out[..., color_channels] += color
-    out *= 255
-    out.clamp_(min=0, max=255)
+    #out *= 255
+    #out.clamp_(min=0, max=255)
 
-    return out.to(xdtype)
+    return out#.to(xdtype)

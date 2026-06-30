@@ -95,11 +95,12 @@ MAX_BOUNCES = 4
 # glossy reflections, optional diffuse indirect lighting).
 SAMPLES_PER_PIXEL = 1
 # ACES Filmic Tonemapping settings:
-TONEMAPPING = False
+TONEMAPPING = True
 TONEMAP_EXPOSURE = 1.0
 TONEMAP_METHOD = "neutral"
+POST_PROCESS_TONEMAP = True
 # 3D Raytraced Glow setting:
-RAYTRACED_GLOW = True
+RAYTRACED_GLOW = False
 # Strength of diffuse indirect bounces in the Monte Carlo renderer: 0 keeps
 # surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
 # with throughput ``albedo * strength`` for color bleeding.
@@ -398,7 +399,20 @@ def set_tonemap_method(method):
     TONEMAP_METHOD = str(method)
 
 
+def set_post_process_tonemap(enabled):
+    """Enable or disable post-process tonemapping instead of in-kernel tonemapping."""
+    global POST_PROCESS_TONEMAP
+    POST_PROCESS_TONEMAP = bool(enabled)
+
+
+def is_post_process_tonemap_enabled():
+    """Return whether post-process tonemapping is enabled."""
+    return POST_PROCESS_TONEMAP
+
+
 def _get_tonemap_t_val():
+    if POST_PROCESS_TONEMAP:
+        return 3
     if not TONEMAPPING:
         return 0
     return 2 if TONEMAP_METHOD == "agx" else 1
@@ -1408,20 +1422,20 @@ def _prefill_background(out, background_color, frame_offset, device):
     if bg.dim() <= 1 or bg.shape[0] == 1:  # solid color (in [0, 1] floats)
         vals = (bg.float().flatten()[:5] * 255).round_().clamp_(0, 255)
         k = min(vals.shape[0], C_out)
-        out[..., :k] = vals[:k].to(torch.uint8)
+        out[..., :k] = vals[:k].to(out.dtype)
         if C_out > k:
             # Alpha (and any missing channel) defaults to the background's
             # last channel, matching opaque-by-default behavior.
-            out[..., k:] = vals[-1].to(torch.uint8)
+            out[..., k:] = vals[-1].to(out.dtype)
     else:
         rows = bg.reshape(-1, bg.shape[-1])[1:]
         rows = rows[frame_offset * num_pixels:
                     (frame_offset + num_frames) * num_pixels]
         rows = rows.view(num_frames, num_pixels, -1)
         k = min(rows.shape[-1], C_out)
-        out[..., :k] = rows[..., :k].to(torch.uint8)
+        out[..., :k] = rows[..., :k].to(out.dtype)
         if C_out > k:
-            out[..., k:] = rows[..., -1:].to(torch.uint8)
+            out[..., k:] = rows[..., -1:].to(out.dtype)
 
 
 def _downsample_background(background_color, aa, num_frames, screen_height,
@@ -1992,7 +2006,7 @@ def render_gbuffer_general(
 
         shaded = shade_gbuffer_torch(gb_f32[off:hi], mat, mat_id, f_idx,
                                      light_pos, light_col, int(num_lights))
-        if TONEMAPPING:
+        if TONEMAPPING and not POST_PROCESS_TONEMAP:
             color_exposed = shaded[:, :3] * TONEMAP_EXPOSURE
             if TONEMAP_METHOD == "neutral":
                 # Khronos PBR Neutral
@@ -2053,12 +2067,20 @@ def render_gbuffer_general(
                 shaded[:, 0] = torch.clamp(r_srgb, 0.0, 1.0)
                 shaded[:, 1] = torch.clamp(g_srgb, 0.0, 1.0)
                 shaded[:, 2] = torch.clamp(b_srgb, 0.0, 1.0)
-        px = (shaded * 255.0 + 0.5).clamp(0.0, 255.0).to(torch.uint8)
-        block = out_v[off:hi]
-        block[valid, :k] = px[valid, :k]
-        if transparent and C >= 5:
-            block[valid, 4] = torch.tensor(255, dtype=torch.uint8,
-                                           device=device)
+        if POST_PROCESS_TONEMAP:
+            px = (shaded * 255.0).clamp_min(0.0)
+            block = out_v[off:hi]
+            block[valid, :k] = px[valid, :k].to(block.dtype)
+            if transparent and C >= 5:
+                block[valid, 4] = torch.tensor(255.0, dtype=block.dtype,
+                                               device=device)
+        else:
+            px = (shaded * 255.0 + 0.5).clamp(0.0, 255.0).to(torch.uint8)
+            block = out_v[off:hi]
+            block[valid, :k] = px[valid, :k]
+            if transparent and C >= 5:
+                block[valid, 4] = torch.tensor(255, dtype=torch.uint8,
+                                               device=device)
 
 
 # Pixels per PyTorch shading block for the deferred wavefront path.
@@ -2299,8 +2321,9 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
             return render_chunk(start, middle) + render_chunk(middle, end)
         entry_pointers = memory.get_pointers()
         try:
+            out_dtype = torch.float32 if is_post_process_tonemap_enabled() else torch.uint8
             out = memory.get_tensor((end - start, width * height, C_out),
-                                    torch.uint8)
+                                    out_dtype)
             _prefill_background(out, background_color, start - time_start,
                                 device)
             accum = None
@@ -2568,7 +2591,8 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
                        physical_lighting=None, pn_triangles=False,
                        fragment_shading=None, shadows=None,
                        tonemapping=None, tonemap_exposure=None,
-                       tonemap_method=None, raytraced_glow=None):
+                       tonemap_method=None, raytraced_glow=None,
+                       post_process_tonemap=False):
     """Route newly created mobs through the ray traced render pipeline.
 
     Rebinds the primitive classes used by the mob modules; call this before
@@ -2632,6 +2656,7 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
         set_tonemap_method(tonemap_method)
     if raytraced_glow is not None:
         set_raytraced_glow(raytraced_glow)
+    set_post_process_tonemap(post_process_tonemap)
 
     triangle_cls = (RayTracedPNTrianglePrimitive if pn_triangles
                     else RayTracedTrianglePrimitive)
@@ -2658,6 +2683,7 @@ def disable_ray_tracing():
     for (module, name), original in _originals.items():
         setattr(module, name, original)
     _originals.clear()
+    set_post_process_tonemap(False)
 
 
 def is_ray_tracing_enabled():

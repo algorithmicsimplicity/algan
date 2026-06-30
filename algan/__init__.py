@@ -162,6 +162,8 @@ from algan.rendering.shaders.pbr_shaders import (
 from algan.animation.manim_animations import *
 from algan.animation.indication import *
 
+from algan.rendering.raytracing import enable_ray_tracing
+
 
 def clear_cache():
     f = DIRECTORY_DEFAULTS.cache_directory

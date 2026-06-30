@@ -1597,14 +1597,21 @@ def finalize_pixel_color(csum: ti.math.vec4, inv_samples: ti.f32, tonemapping: t
         color_hdr = pbr_neutral_tonemap(color_hdr * (tonemap_exposure / 255.0)) * 255.0
     elif ti.static(tonemapping == 2):
         color_hdr = agx_tonemap(color_hdr * (tonemap_exposure / 255.0)) * 255.0
+    elif ti.static(tonemapping == 3):
+        color_hdr = ti.math.max(color_hdr, 0.0)
     else:
         color_hdr = ti.math.clamp(color_hdr, 0.0, 255.0)
     
-    glow_val = ti.math.clamp(csum[3] * inv_samples, 0.0, 255.0)
-    return ti.math.clamp(
-        ti.math.vec4(color_hdr[0] + 0.5, color_hdr[1] + 0.5, color_hdr[2] + 0.5, glow_val + 0.5),
-        0.0, 255.0
-    )
+    glow_val = csum[3] * inv_samples
+    if ti.static(tonemapping == 3):
+        glow_val = ti.math.max(glow_val, 0.0)
+        return ti.math.vec4(color_hdr[0], color_hdr[1], color_hdr[2], glow_val) / 255.0
+    else:
+        glow_val = ti.math.clamp(glow_val, 0.0, 255.0)
+        return ti.math.clamp(
+            ti.math.vec4(color_hdr[0] + 0.5, color_hdr[1] + 0.5, color_hdr[2] + 0.5, glow_val + 0.5),
+            0.0, 255.0
+        )
 
 
 
@@ -2868,7 +2875,10 @@ def render_scene_stbvh(
         # Composite the averaged sub-pixels and write the pixel once.
         color_final = finalize_pixel_color(csum, inv_samples, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
+            if ti.static(tonemapping == 3):
+                out[f_rel, p, ci] = color_final[ci]
+            else:
+                out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
@@ -3213,7 +3223,10 @@ def render_triangles_stbvh(
 
         color_final = finalize_pixel_color(csum, inv_samples, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
+            if ti.static(tonemapping == 3):
+                out[f_rel, p, ci] = color_final[ci]
+            else:
+                out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
@@ -3551,7 +3564,10 @@ def render_triangles_knots_stbvh(
 
         color_final = finalize_pixel_color(csum, inv_samples, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
+            if ti.static(tonemapping == 3):
+                out[f_rel, p, ci] = color_final[ci]
+            else:
+                out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(asum * inv_samples + 0.5, 0.0, 255.0), ti.u8)
@@ -3820,7 +3836,10 @@ def finalize_samples(samples_per_pixel: int, transparent: int,
                             accum[f_rel, p, 3] * 255.0)
         color_final = finalize_pixel_color(csum, inv_spp, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
+            if ti.static(tonemapping == 3):
+                out[f_rel, p, ci] = color_final[ci]
+            else:
+                out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             val = accum[f_rel, p, 4] * inv_spp * 255.0
             out[f_rel, p, 4] = ti.cast(ti.math.clamp(val + 0.5, 0.0, 255.0),

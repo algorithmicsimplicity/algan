@@ -450,7 +450,10 @@ def wf_composite(
             csum[ci] = rs_acc[r, ci] * 255.0 + weight * bg
         color_final = finalize_pixel_color(csum, 1.0, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
+            if ti.static(tonemapping == 3):
+                out[f_rel, p, ci] = color_final[ci]
+            else:
+                out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
             val = (1.0 - weight) * 255.0 + weight * bg_a
@@ -511,7 +514,10 @@ def wf_composite_accum(
             csum[ci] = pix_accum[r, ci] * 255.0 + weight * bg
         color_final = finalize_pixel_color(csum, 1.0, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
+            if ti.static(tonemapping == 3):
+                out[f_rel, p, ci] = color_final[ci]
+            else:
+                out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
             val = (1.0 - weight) * 255.0 + weight * bg_a
@@ -560,7 +566,10 @@ def wf_finalize_aa(
         csum = ti.math.vec4(aa_accum[idx, 0], aa_accum[idx, 1], aa_accum[idx, 2], aa_accum[idx, 3])
         color_final = finalize_pixel_color(csum, inv_samples, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
-            out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
+            if ti.static(tonemapping == 3):
+                out[f_rel, p, ci] = color_final[ci]
+            else:
+                out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(aa_accum[idx, 4] * inv_samples + 0.5,
