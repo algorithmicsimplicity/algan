@@ -626,8 +626,6 @@ class Scene:
         from algan.utils.plotting_utils import plot_tensor
         if time_stamp is None:
             time_stamp = AnimationManager.instance().context.current_time + 1.5/self.render_settings.frames_per_second
-        else:
-            time_stamp = AnimationManager.instance().context.current_time + time_stamp + 1.5 / self.render_settings.frames_per_second
         time_ind = round(time_stamp * self.render_settings.frames_per_second)
         frames = []
         for frame in self.get_frames(time_ind-1, time_ind):

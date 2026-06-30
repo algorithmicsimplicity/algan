@@ -82,7 +82,8 @@ class Surface(Renderable):
         checkered_color=None,
         color_texture=None,
         ignore_normals=False,
-        tolerance=0.01,
+        tolerance=0.005,
+            min_grid_resolution=4,
         *args,
         **kwargs,
     ):
@@ -127,15 +128,15 @@ class Surface(Renderable):
 
             if grid_aspect_ratio is not None:
                 # Fixed aspect ratio: search for a single resolution parameter
-                low = 4
+                low = min_grid_resolution
                 high = 200
                 best_N = high
                 while low <= high:
                     mid = (low + high) // 2
                     W = mid
-                    H = max(4, int(mid * grid_aspect_ratio))
+                    H = max(min_grid_resolution, int(mid * grid_aspect_ratio))
                     try:
-                        error = self._compute_pn_error(coord_function, W, H)
+                        error = self._compute_error(coord_function, W, H)
                         if error < tolerance * scale:
                             best_N = mid
                             high = mid - 1
@@ -144,17 +145,17 @@ class Surface(Renderable):
                     except Exception:
                         low = mid + 1
                 grid_width = best_N
-                grid_height = max(4, int(best_N * grid_aspect_ratio))
+                grid_height = max(min_grid_resolution, int(best_N * grid_aspect_ratio))
             else:
                 # Independent rectangular search
                 # 1. Search for best grid_width (W) with grid_height (H) set to a high resolution (200)
-                low = 4
+                low = min_grid_resolution
                 high = 200
                 best_W = high
                 while low <= high:
                     mid = (low + high) // 2
                     try:
-                        error = self._compute_pn_error(coord_function, mid, 200)
+                        error = self._compute_error(coord_function, mid, 200)
                         if error < tolerance * scale:
                             best_W = mid
                             high = mid - 1
@@ -164,13 +165,13 @@ class Surface(Renderable):
                         low = mid + 1
                 
                 # 2. Search for best grid_height (H) with grid_width (W) set to a high resolution (200)
-                low = 4
+                low = min_grid_resolution
                 high = 200
                 best_H = high
                 while low <= high:
                     mid = (low + high) // 2
                     try:
-                        error = self._compute_pn_error(coord_function, 200, mid)
+                        error = self._compute_error(coord_function, 200, mid)
                         if error < tolerance * scale:
                             best_H = mid
                             high = mid - 1
@@ -181,7 +182,7 @@ class Surface(Renderable):
                 
                 # Joint error correction loop
                 try:
-                    joint_error = self._compute_pn_error(coord_function, best_W, best_H)
+                    joint_error = self._compute_error(coord_function, best_W, best_H)
                     while joint_error > tolerance * scale and (best_W < 200 or best_H < 200):
                         ratio = joint_error / (tolerance * scale)
                         factor = max(1.15, float(torch.sqrt(ratio).item()))
@@ -189,7 +190,7 @@ class Surface(Renderable):
                             best_W = min(200, int(best_W * factor) + 1)
                         if best_H < 200:
                             best_H = min(200, int(best_H * factor) + 1)
-                        joint_error = self._compute_pn_error(coord_function, best_W, best_H)
+                        joint_error = self._compute_error(coord_function, best_W, best_H)
                 except Exception:
                     pass
                 
@@ -247,6 +248,89 @@ class Surface(Renderable):
         self.grid.is_primitive = True
         self.is_primitive = True
         self.ignore_wave_animations = True
+
+    def _uses_pn_triangles(self):
+        """True if newly created surfaces render as curved point-normal (PN)
+        triangles, i.e. ``enable_ray_tracing(pn_triangles=True)`` is active.
+
+        ``enable_ray_tracing`` rebinds this module's ``TrianglePrimitive`` name
+        to the PN primitive class in that case (and to a flat triangle class
+        otherwise), so checking the currently bound class tells us how the mesh
+        will actually be rendered.
+        """
+        try:
+            from algan.rendering.raytracing.primitives import (
+                RayTracedPNTrianglePrimitive,
+            )
+        except Exception:
+            return False
+        return isinstance(TrianglePrimitive, type) and issubclass(
+            TrianglePrimitive, RayTracedPNTrianglePrimitive
+        )
+
+    def _compute_error(self, coord_function, W, H):
+        """Max deviation between the rendered mesh and the true surface for a
+        ``W x H`` grid, used to drive auto-resolution.
+
+        With PN (curved) triangles active each triangle is bent to a quadratic
+        patch, so we measure against that patch. Otherwise the surface is drawn
+        as flat triangles, so the resolution must instead make the *flat* mesh
+        approximate the surface to within tolerance.
+        """
+        if self._uses_pn_triangles():
+            return self._compute_pn_error(coord_function, W, H)
+        return self._compute_flat_error(coord_function, W, H)
+
+    def _compute_flat_error(self, coord_function, W, H):
+        """Max deviation between the flat-triangle mesh and the true surface,
+        sampled at a fixed set of barycentric coordinates per triangle.
+
+        Mirrors :meth:`_compute_pn_error` but approximates each triangle by the
+        flat plane through its three corners (linear interpolation of the corner
+        positions) instead of a curved PN patch.
+        """
+        device = self.location.device
+        grid_u = torch.linspace(0, 1, W, device=device)
+        grid_v = torch.linspace(0, 1, H, device=device)
+        grid_uu, grid_vv = torch.meshgrid(grid_u, grid_v, indexing='ij')
+        base_grid = torch.stack([grid_uu, grid_vv], dim=-1)
+
+        grid_points = coord_function(base_grid.clone())
+
+        triangle_uvs = grid_to_triangle_vertices(base_grid)
+        triangle_corners = grid_to_triangle_vertices(grid_points)
+
+        corners_3d = triangle_corners.reshape(-1, 3, 3)
+        uvs_2d = triangle_uvs.reshape(-1, 3, 2)
+
+        bary_coords = torch.tensor([
+            [1/3, 1/3],
+            [1/2, 0.0],
+            [0.0, 1/2],
+            [1/2, 1/2],
+            [1/6, 1/6],
+            [1/6, 2/3],
+            [2/3, 1/6]
+        ], device=device)
+
+        u = bary_coords[:, 0].view(1, -1, 1)
+        v = bary_coords[:, 1].view(1, -1, 1)
+        w = 1.0 - u - v
+
+        # Flat triangle: linear (barycentric) interpolation of the corners.
+        p0 = corners_3d[:, 0, :].unsqueeze(1)
+        p1 = corners_3d[:, 1, :].unsqueeze(1)
+        p2 = corners_3d[:, 2, :].unsqueeze(1)
+        S_points = w * p0 + u * p1 + v * p2
+
+        uv0 = uvs_2d[:, 0, :].unsqueeze(1)
+        uv1 = uvs_2d[:, 1, :].unsqueeze(1)
+        uv2 = uvs_2d[:, 2, :].unsqueeze(1)
+        uv_true = w * uv0 + u * uv1 + v * uv2
+        P_true = coord_function(uv_true.clone())
+
+        errors = (S_points - P_true).norm(p=2, dim=-1)
+        return errors.max()
 
     def _compute_pn_error(self, coord_function, W, H):
         device = self.location.device

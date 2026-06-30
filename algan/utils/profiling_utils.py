@@ -56,8 +56,10 @@ from algan.utils.algan_utils import render_to_file
 from algan.rendering.taichi_runtime import taichi_init_kwargs
 KERNEL_PROFILER = False
 try:
-    ti.init(**taichi_init_kwargs(), kernel_profiler=True)
-    KERNEL_PROFILER = True
+    pass
+    #TODO doing this ti.init here causes Taichi to crash during kernel compilation, figure out why.
+    #ti.init(**taichi_init_kwargs(), kernel_profiler=True)
+    #KERNEL_PROFILER = True
 except Exception as e:  # pragma: no cover - CPU-only fallback
     print(f"Kernel profiler unavailable ({e}); continuing without it.")
     ti.init(arch=ti.gpu)

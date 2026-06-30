@@ -123,7 +123,7 @@ class Cylinder(Surface):
     def __init__(self, radius=1, height=1, closed=False, *args, **kwargs):
         self.radius = radius
         self.height = height
-        if "grid_aspect_ratio" not in kwargs:
+        if "grid_aspect_ratio" not in kwargs and "grid_height" not in kwargs:
             kwargs["grid_aspect_ratio"] = 1 / PI
         super().__init__(*args, **kwargs)
         if closed:

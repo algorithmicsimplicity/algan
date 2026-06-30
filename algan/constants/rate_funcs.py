@@ -15,7 +15,8 @@ def smooth(t, inflection=10.0):
     )
 
 def pulse_fade(t):
-    return t * 0.5 + (t/0.01).clamp_max(1) * 0.5
+    f = 0.2
+    return (t-f).clamp_min(0) * (0.5/(1-f)) + (t/f).clamp_max(1) * 0.5
     #return (t*0 + 0.25) * (t > 0.1) +
     t = 1-t
     f = 0.00

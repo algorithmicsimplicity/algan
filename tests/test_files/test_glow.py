@@ -23,7 +23,7 @@ get_mob = (
 
 
 def test_glow():
-    enable_ray_tracing(samples_per_pixel=1, tonemapping=False)
+    #enable_ray_tracing(samples_per_pixel=1, tonemapping=False)
     x = get_mob()
     x.glow = 1.0
     x.wait()

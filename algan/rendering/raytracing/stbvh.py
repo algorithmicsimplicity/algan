@@ -399,12 +399,23 @@ def segment_primitives_in_time(frame_lo, frame_hi, tightness=2.0):
     for k in range(len(levels) - 1, -1, -1):
         lo, hi, c, v = levels[k]
         nonempty = v > 0
+        # The emitted instance's [t0, t1] dyadic interval is the leaf's ``tspan``:
+        # the trace kernel treats the primitive as present -- and tests its
+        # (still-real) geometry -- on *every* frame of that range. So a block may
+        # only be emitted whole when *all* its frames are valid; a block with any
+        # empty frame (the primitive invisible / zero-opacity / pre-spawn there)
+        # must be descended instead. This trims leading/trailing empty frames off
+        # the tspan and splits around interior gaps (e.g. a surface that fades to
+        # opacity 0 for a stretch mid-batch becomes two instances with the gap
+        # culled) -- otherwise that invisible geometry stays spuriously hittable
+        # and z-fights whatever is coincident with it.
+        full = v >= float(1 << k) - 0.5
         union_cost = _box_cost(lo, hi)
         mean_cost = c / v.clamp_min(1)
         tight = union_cost <= tightness * mean_cost + 1e-12
         if k == 0:
             tight = torch.ones_like(tight)
-        emit = active & nonempty & tight
+        emit = active & nonempty & tight & full
         if emit.any():
             t_idx, n_idx = emit.nonzero(as_tuple=True)
             out_prim.append(n_idx)
@@ -413,7 +424,7 @@ def segment_primitives_in_time(frame_lo, frame_hi, tightness=2.0):
             out_lo.append(lo[t_idx, n_idx])
             out_hi.append(hi[t_idx, n_idx])
         if k > 0:
-            active = (active & nonempty & ~tight).repeat_interleave(2, dim=0)
+            active = (active & nonempty & ~(tight & full)).repeat_interleave(2, dim=0)
 
     if len(out_prim) == 0:
         empty_l = torch.empty((0,), dtype=torch.long, device=device)
