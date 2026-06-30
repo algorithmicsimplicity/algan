@@ -9,7 +9,7 @@ from algan.constants.rate_funcs import identity, ease_in_expo, ease_out_expo
 from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.utils.tensor_utils import dot_product, unsquish, squish
 from algan.mobs.text import Tex
-from algan.constants.rate_funcs import smooth
+from algan.constants.rate_funcs import smooth, pulse_fade
 
 
 def tweak_color(c, strength=0.3):
@@ -20,7 +20,7 @@ def tweak_color(c, strength=0.3):
 
 
 gr = 0.15
-gs = 0.75
+gs = 0.5
 
 class Synapse(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
@@ -244,15 +244,15 @@ class NeuralNetMLP(Mob):
         layers = self.layers
 
         def pulse_synapses(neuron):
-            with Sync(rate_func=ease_out_expo):
+            with Sync(rate_func=pulse_fade):#ease_out_expo):
                 for synapse in neuron.synapses:
                     synapse.wave_color(color + GLOW * gs, 0.9, reverse,
                                        direction=self.get_forward_direction(),
                                        new_color=tweak_color(synapse.color, 0.33) if reverse else None)
 
         def pulse_neuron(neuron):
-            with Seq(run_time=3, rate_func=lambda t: smooth(t, inflection=1.0)):
-                neuron.shell.wave_color(
+            with Seq(run_time=3, rate_func=pulse_fade):#lambda t: pulse_fade(t, inflection=1.0)):
+                neuron.core.wave_color(
                     (color + GLOW * gs),#.set_opacity(
                         #1 / neuron.shell.opacity.clamp_min(1e-5)
                     #),

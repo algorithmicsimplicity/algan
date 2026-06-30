@@ -14,6 +14,15 @@ def smooth(t, inflection=10.0):
         min=0, max=1
     )
 
+def pulse_fade(t):
+    return t * 0.5 + (t/0.01).clamp_max(1) * 0.5
+    #return (t*0 + 0.25) * (t > 0.1) +
+    t = 1-t
+    f = 0.00
+    m = t < f
+    t * m * 5 + (~m) * (((t-f) / (1-f)) * 0.5 + 0.5)
+    t = 1-t
+    return t
 
 def ease_out_quintic(t):
     return 1 - ((1 - t) ** 5)

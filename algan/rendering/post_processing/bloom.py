@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn.functional as F
 import torch.fft
@@ -420,27 +422,42 @@ def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_fa
     return (out * 255).clamp_(min=0, max=255).to(xdtype)
 
 
-def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor=8, memory=None):
-    if _should_bypass_bloom():
-        return x
-    """
-    FFT-based bloom filter for better performance with large kernel sizes.
+def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor=8,
+                 glow_spread=0.15, rim_frac=0.004, tail_weight=0.25, memory=None):
+    """FFT-based bloom filter producing a soft, natural glow.
+
+    A single Gaussian (``exp(-r^2)`` tail) plummets and leaves a hard,
+    shell-like halo border. Instead the glow source is blurred at two scales
+    and the (area-normalized) results are summed:
+
+    * a tight *rim* (``rim_frac``) that, being area-normalized, dominates the
+      peak and saturates to a thin bright halo hugging the source outline, and
+    * a faint, wide *tail* (``glow_spread``) at low ``tail_weight`` that decays
+      gently far from the source.
+
+    The result is the natural look of real glow -- a sharp bright outline, a
+    sudden drop to a much fainter level, then a long gradual falloff -- rather
+    than a uniform blurred disk with a hard edge.
 
     Args:
-        x: Input image tensor with shape (..., H, W, C) where C includes glow channel
-        num_iterations: Number of blur iterations
-        kernel_size: Size of the Gaussian blur kernel
-        strength: Glow intensity multiplier
-        scale_factor: Downsampling factor for efficiency
+        x: Input image tensor (..., H, W, C); channel 3 is the glow intensity.
+        strength: Glow intensity multiplier (also sets how far the bright rim
+            saturates beyond the source outline).
+        scale_factor: Downsampling factor for efficiency (scaled by resolution).
+        glow_spread: Sigma of the wide tail blur as a fraction of the
+            (downsampled) frame height. Larger -> the faint glow reaches further.
+        rim_frac: Sigma of the tight rim blur as a fraction of frame height.
+        tail_weight: Weight of the wide tail relative to the rim (small -> the
+            tail is much fainter than the rim, giving the sharp drop-off).
 
     Returns:
-        Bloomed image tensor with same shape as input
+        Bloomed image tensor with same shape as input.
     """
+    if _should_bypass_bloom():
+        return x
     if x[...,3:4].amax() <= 1e-5:
         return x
     scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
-    if (kernel_size % 2) == 0:
-        kernel_size = kernel_size + 1
 
     xdtype = x.dtype
 
@@ -452,24 +469,10 @@ def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor
     color = x[..., color_channels]
     glow = x[..., 3:4]
 
+    glow.pow_(3)
+
     color *= glow
     color *= strength
-
-    # Create 2D Gaussian kernel
-    #sigma = kernel_size / 4.0
-    #kernel_2d = gaussian_kernel_2d(kernel_size, sigma, x.device)
-
-    d = 3
-
-    channels = color.shape[-1]
-    def get_filters(kernel_size):
-        filter = torch.exp(-1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2))
-        filter /= filter.sum()
-        filter_horizontal = filter.view(1, 1, 1, kernel_size).expand(
-            channels, -1, -1, -1
-        )
-        filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
-        return filter_horizontal, filter_vertical
 
     # Prepare for convolution: (C, H, W) format
     color = color.permute(0, -1, 1, 2)
@@ -480,30 +483,45 @@ def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor
         color, scale_factor=1 / scale_factor, mode="bilinear", antialias=True
     )
 
-    # Expand kernel for each channel
-    #kernel_expanded = kernel_2d.unsqueeze(0).expand(color.shape[0], -1, -1)
+    channels = color.shape[1]
 
-    # Apply FFT-based convolution num_iterations times
-    #p = (kernel_size - 1) // 2
-    #color = F.conv2d(color, kernel_expanded.unsqueeze(1), padding=(p, p), groups=color.shape[0])
+    def get_filters(sigma):
+        # Area-normalized 1D Gaussian of the given standard deviation (px).
+        radius = max(1, int(math.ceil(3.0 * sigma)))
+        xs = torch.linspace(-radius, radius, 2 * radius + 1, device=color.device)
+        filter = torch.exp(-0.5 * (xs / sigma) ** 2)
+        filter /= filter.sum()
+        filter_horizontal = filter.view(1, 1, 1, -1).expand(channels, -1, -1, -1)
+        filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
+        return filter_horizontal, filter_vertical
+
+    # Two-scale "rim + tail" glow. Area-normalization makes the tight rim
+    # dominate the peak (a thin bright halo on the source outline) while the
+    # wide tail, at low weight, supplies a faint long falloff.
+    height = color.shape[-2]
+    sigma_rim = max(rim_frac * height, 1.0)
+    sigma_tail = max(glow_spread * height, sigma_rim * 1.5)
+    components = [(sigma_rim, 1.0), (sigma_tail, tail_weight)]
+
+    def convolve(color, filter_horizontal, filter_vertical):
+        for i in range(num_iterations):
+            with memory.temp():
+                color = fft_conv1d(color, filter_horizontal.squeeze(1), padding="same", num_iterations=1, dim=-1, memory=memory)
+            with memory.temp():
+                color = fft_conv1d(color, filter_vertical.squeeze(1), padding="same", num_iterations=1, dim=-2, memory=memory)
+        return color
+
+    # Accumulator lives outside the temp scope so it survives the per-scale
+    # memory resets; blurs are summed with their weights (no normalization --
+    # `strength` and the weights set the absolute glow level).
+    acc = memory.clone(color)
+    acc.zero_()
     with memory.temp(clear_persist=True):
-        _color = memory.clone(color)
-        def convolve(color, filter_horizontal, filter_vertical):
-            for i in range(num_iterations):
-                with memory.temp():
-                    color = fft_conv1d(color, filter_horizontal.squeeze(1), padding="same", num_iterations=1, dim=-1, memory=memory)
-                with memory.temp():
-                    color = fft_conv1d(color, filter_vertical.squeeze(1), padding="same", num_iterations=1, dim=-2, memory=memory)
-            return color
-        with memory.temp(clear_persist=True):
-            color1 = convolve(memory.clone(color), *get_filters(kernel_size))
-        color1 = memory.clone(color1)
-        with memory.temp(clear_persist=True):
-            color2 = convolve(memory.clone(color), *get_filters(max(kernel_size // 32, 1)))
-            color1 = torch.lerp(color1, color2, 0.4, out=color1)
-        with memory.temp(clear_persist=True):
-            color3 = convolve(color, *get_filters(max(kernel_size // 128, 1)))
-        color = torch.lerp(color1, color3, 0.25, out=color)
+        for sigma, weight in components:
+            with memory.temp(clear_persist=True):
+                blurred = convolve(memory.clone(color), *get_filters(sigma))
+                acc.add_(blurred, alpha=weight)
+    color = acc
 
     # Upsample back to original resolution
     color = F.interpolate(color, size=orig_shape, mode="bilinear", antialias=True)
@@ -513,7 +531,5 @@ def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor
 
     # Combine with original image
     out[..., color_channels] += color
-    #out *= 255
-    #out.clamp_(min=0, max=255)
 
-    return out#.to(xdtype)
+    return out
