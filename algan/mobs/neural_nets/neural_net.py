@@ -9,7 +9,7 @@ from algan.constants.rate_funcs import identity, ease_in_expo, ease_out_expo
 from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.utils.tensor_utils import dot_product, unsquish, squish
 from algan.mobs.text import Tex
-from algan.constants.rate_funcs import smooth, pulse_fade
+from algan.constants.rate_funcs import smooth, pulse_fade, delay_fade
 
 
 # Synapses jitter their colour for visual variety. Draw that jitter from a
@@ -52,11 +52,11 @@ class Neuron(Mob):
         grid_height = 12
         self.core = (
             Sphere(grid_height=grid_height, grid_width=grid_height, color=neuron_color)
-            .scale(0.175)
+            .scale(0.17)
             .move_to(self.location)
         )
         self.shell = (
-            Sphere(opacity=0.1, grid_width=grid_height, grid_height=grid_height, color=neuron_color, glow_radius=gr)
+            Sphere(opacity=0.5, grid_width=grid_height, grid_height=grid_height, color=neuron_color, glow_radius=gr)
             .scale(0.2)
             .move_to(self.location)
             .look(direction, axis=1)
@@ -268,16 +268,17 @@ class NeuralNetMLP(Mob):
                                        new_color=tweak_color(synapse.color, 0.33) if reverse else None)
 
         def pulse_neuron(neuron):
-            with Seq(run_time=1, rate_func=pulse_fade):#lambda t: pulse_fade(t, inflection=1.0)):
-                neuron.core.wave_color(
-                    (color + GLOW * gs),#.set_opacity(
-                        #1 / neuron.shell.opacity.clamp_min(1e-5)
-                    #),
-                    1,
-                    reverse,
-                    lag_duration=0.5,
-                    direction = self.get_forward_direction()
-                )
+            with Sync(run_time=1.1, rate_func=delay_fade):#lambda t: pulse_fade(t, inflection=1.0)):
+                for n in [neuron.core, neuron.shell]:
+                    n.wave_color(
+                        (color + GLOW * gs),#.set_opacity(
+                            #1 / neuron.shell.opacity.clamp_min(1e-5)
+                        #),
+                        1,
+                        reverse,
+                        lag_duration=0.5,
+                        direction = self.get_forward_direction()
+                    )
 
         pulse_funcs = [pulse_synapses, pulse_neuron]
         if reverse:
@@ -285,7 +286,7 @@ class NeuralNetMLP(Mob):
             layers = list(reversed(layers))
 
         with Seq():
-            with Lag(0.8, rate_func=identity):  # , run_time=run_time):
+            with Lag(0.70, rate_func=identity):  # , run_time=run_time):
                 for layer in layers:
                     with Sync():
                         for neuron in layer:

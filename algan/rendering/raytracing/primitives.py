@@ -2580,7 +2580,7 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
                        fragment_shading=None, shadows=None,
                        tonemapping=None, tonemap_exposure=None,
                        tonemap_method=None, raytraced_glow=None,
-                       post_process_tonemap=False):
+                       post_process_tonemap=None):
     """Route newly created mobs through the ray traced render pipeline.
 
     Rebinds the primitive classes used by the mob modules; call this before

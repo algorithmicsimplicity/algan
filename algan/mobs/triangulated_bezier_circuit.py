@@ -214,7 +214,8 @@ def tile_region(
         ((perimeter_points) if reverse_points else perimeter_points), squish(grid)
     )
 
-    torch.set_default_device(torch.device("cpu"))
+    if COMPUTING_DEFAULTS.animation_device.type != "cpu":
+        torch.set_default_device(torch.device("cpu"))
     perimeter_points = perimeter_points.cpu()
     grid4 = grid4.cpu()
 
@@ -550,7 +551,8 @@ def tile_region(
 
     out = [*triangulate_simple_polygon(all_polygons)]
     out = [_.to(COMPUTING_DEFAULTS.animation_device) for _ in out]
-    torch.set_default_device(COMPUTING_DEFAULTS.animation_device)
+    if COMPUTING_DEFAULTS.animation_device.type != "cpu":
+        torch.set_default_device(COMPUTING_DEFAULTS.animation_device)
     out[1] = [out[1], torch.tensor(all_grid_ids), (len(grid_x) - 1), len(grid_y) - 1]
     return out
 

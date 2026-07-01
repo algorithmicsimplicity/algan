@@ -38,7 +38,12 @@ class ComputingDefaults:
 
 
 COMPUTING_DEFAULTS = ComputingDefaults()
-torch.set_default_device(COMPUTING_DEFAULTS.animation_device)
+# torch.set_default_device installs a global TorchFunctionMode that intercepts
+# every torch call in Python (millions of calls per render). The animation
+# device is cpu -- torch's factory default -- so only pay that cost when a
+# non-default device is actually requested.
+if COMPUTING_DEFAULTS.animation_device.type != "cpu":
+    torch.set_default_device(COMPUTING_DEFAULTS.animation_device)
 torch.set_default_dtype(torch.float32)
 print(f"Rendering device set to {COMPUTING_DEFAULTS.render_device}")
 

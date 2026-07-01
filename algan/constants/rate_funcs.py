@@ -14,6 +14,10 @@ def smooth(t, inflection=10.0):
         min=0, max=1
     )
 
+def delay_fade(t):
+    f = 0.2
+    return ((t-f).clamp_min(0) / (1-f)).pow(2) * 0.5 + (t/f).clamp_max(1) * 0.5
+
 def pulse_fade(t):
     f = 0.2
     return (t-f).clamp_min(0) * (0.5/(1-f)) + (t/f).clamp_max(1) * 0.5

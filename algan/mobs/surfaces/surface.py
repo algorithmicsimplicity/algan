@@ -15,35 +15,34 @@ from algan.utils.file_utils import get_image
 from algan.utils.tensor_utils import unsqueeze_left, squish, unsquish, cast_to_tensor
 
 
+_grid_triangle_indices_cache = {}
+
+def get_grid_to_triangle_indices(grid_width, grid_height, device):
+    cache_key = (grid_width, grid_height, device)
+    if cache_key not in _grid_triangle_indices_cache:
+        W, H = grid_width, grid_height
+        i_indices = torch.arange(W - 1, device=device).unsqueeze(1).expand(-1, H - 1)
+        j_indices = torch.arange(H - 1, device=device).unsqueeze(0).expand(W - 1, -1)
+        
+        idx00 = i_indices * H + j_indices
+        idx01 = i_indices * H + (j_indices + 1)
+        idx10 = (i_indices + 1) * H + j_indices
+        idx11 = (i_indices + 1) * H + (j_indices + 1)
+        
+        t1 = torch.stack((idx00, idx01, idx10), dim=-1)
+        t2 = torch.stack((idx10, idx01, idx11), dim=-1)
+        stacked = torch.stack((t1, t2), dim=-2)
+        _grid_triangle_indices_cache[cache_key] = stacked.reshape(-1)
+    return _grid_triangle_indices_cache[cache_key]
+
+
 def grid_to_triangle_vertices(grid):
     if grid.dim() == 1:
         return grid
-    transformed_grid = grid
-
-    triangle_corners = torch.stack(
-        (
-            torch.stack(
-                (
-                    transformed_grid[..., :-1, :-1, :],
-                    transformed_grid[..., :-1, 1:, :],
-                    transformed_grid[..., 1:, :-1, :],
-                ),
-                -2,
-            ),
-            torch.stack(
-                (
-                    transformed_grid[..., 1:, :-1, :],
-                    transformed_grid[..., :-1, 1:, :],
-                    transformed_grid[..., 1:, 1:, :],
-                ),
-                -2,
-            ),
-        ),
-        -3,
-    )
-    return triangle_corners.reshape(
-        *grid.shape[:-3], -1, transformed_grid.shape[-1]
-    )  # unsquish(triangle_corners, -2, 3)
+    W, H = grid.shape[-3], grid.shape[-2]
+    flat_grid = grid.reshape(*grid.shape[:-3], W * H, grid.shape[-1])
+    indices = get_grid_to_triangle_indices(W, H, grid.device)
+    return flat_grid[..., indices, :]
 
 
 class Surface(Renderable):
@@ -450,7 +449,15 @@ class Surface(Renderable):
         return errors.max()
 
     def get_memory_used_per_timestep(self):
+        # Called once per surface per render batch just to size batches; the
+        # result only depends on grid size and shader-param widths (fixed per
+        # material), so cache it. Reading the shader params goes through the
+        # animated-attribute machinery, which is the expensive part.
+        names = tuple(getattr(self, "shader_specific_param_names", ()))
         n_grid = self.grid.location.shape[-2]
+        cache = getattr(self, "_memory_per_timestep_cache", None)
+        if cache is not None and cache[0] == (n_grid, names):
+            return cache[1]
         n_tri = 2 * max(self.grid_height - 1, 1) * max(self.grid_width - 1, 1)
         n_v = n_tri * 3
         # Grid animation state: location(3*4) + color(5*4) = 32 bytes per grid point.
@@ -467,7 +474,9 @@ class Surface(Renderable):
         shader_bytes = 0
         for _ in self.get_shader_params().values():
             shader_bytes += n_v * _.shape[-1] * 4
-        return int(animation_and_intermediates + primitive_bytes + bvh_bytes + shader_bytes)
+        result = int(animation_and_intermediates + primitive_bytes + bvh_bytes + shader_bytes)
+        self._memory_per_timestep_cache = ((n_grid, names), result)
+        return result
 
     def get_render_primitives(self):
         self.grid.set_time_inds_to(self)
@@ -581,16 +590,22 @@ class Surface(Renderable):
 
             if is_static:
                 if name not in self._expanded_param_cache:
-                    self._expanded_param_cache[name] = value_func()
+                    val = value_func()
+                    if val is not None and torch.is_tensor(val):
+                        val = val[:1]
+                    self._expanded_param_cache[name] = val
                 cached_val = self._expanded_param_cache[name]
                 if cached_val is None:
                     return None
                 return cached_val.expand(grid.shape[0], *cached_val.shape[1:])
             return value_func()
 
-        grid_color = self.grid.color.clone()
-        grid_color[..., -1:] *= self.grid.opacity
-        grid_color[..., -2:-1] += self.grid.glow
+        def compute_grid_color():
+            grid_color = self.grid.color.clone()
+            grid_color[..., -1:] *= self.grid.opacity
+            grid_color[..., -2:-1] += self.grid.glow
+            return grid_color
+
         uvs = None
         texture_map = None
         if self.color_texture is not None:
@@ -601,7 +616,7 @@ class Surface(Renderable):
                           ).view(self.color_texture.shape[0], self.texture_height, self.texture_width,
                                  5).as_subclass(Color).mult_opacity(self.opacity.unsqueeze(-2))
 
-        colors = get_cached_expanded_param('color', lambda: expand_grid_to_verts(grid_color))
+        colors = get_cached_expanded_param('color', lambda: expand_grid_to_verts(compute_grid_color()))
         corners = get_cached_expanded_param('location', lambda: grid_to_triangle_vertices(grid))
         normals = get_cached_expanded_param('normals', lambda: vertex_normals if vertex_normals is not None else None)
 
@@ -645,18 +660,21 @@ class Surface(Renderable):
         return OUT
 
     def get_base_grid(self):
-        grid = torch.stack(
-            (
-                torch.linspace(0, 1, self.grid_width)
-                .view(-1, 1)
-                .expand(-1, self.grid_height),
-                torch.linspace(0, 1, self.grid_height)
-                .view(1, -1)
-                .expand(self.grid_width, -1),
-            ),
-            -1,
-        )
-        return grid
+        device = self.grid.location.device if hasattr(self, "grid") and hasattr(self.grid, "location") else None
+        if not hasattr(self, "_cached_base_grid") or self._cached_base_grid.device != device:
+            grid = torch.stack(
+                (
+                    torch.linspace(0, 1, self.grid_width, device=device)
+                    .view(-1, 1)
+                    .expand(-1, self.grid_height),
+                    torch.linspace(0, 1, self.grid_height, device=device)
+                    .view(1, -1)
+                    .expand(self.grid_width, -1),
+                ),
+                -1,
+            )
+            self._cached_base_grid = grid
+        return self._cached_base_grid
 
     def set_shape_to(self, other_surface: "Surface"):
         """Changes this surface's shape to the shape defined by another surface's :meth:`~.Surface.coord_function` .
