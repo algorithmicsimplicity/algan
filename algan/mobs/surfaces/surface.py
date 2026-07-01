@@ -504,18 +504,18 @@ class Surface(Renderable):
             triangle_normals[..., :, -1, [2, 3], :] = 0
             unnormalized_normals = triangle_normals.sum(-2)
 
-            # Merge unnormalized normals along closed seams
-            is_closed_x = torch.allclose(grid[..., 0, :, :], grid[..., -1, :, :], atol=1e-4, rtol=1e-4)
-            if is_closed_x:
-                closed_normals = unnormalized_normals[..., 0, :, :] + unnormalized_normals[..., -1, :, :]
-                unnormalized_normals[..., 0, :, :] = closed_normals
-                unnormalized_normals[..., -1, :, :] = closed_normals
+            # Merge unnormalized normals along closed seams using vectorized masking to avoid CPU-GPU synchronization.
+            is_closed_x = torch.all((grid[..., 0, :, :] - grid[..., -1, :, :]).abs() < 1e-4, dim=(-1, -2))
+            mask_x = is_closed_x.view(*is_closed_x.shape, 1, 1)
+            closed_normals_x = unnormalized_normals[..., 0, :, :] + unnormalized_normals[..., -1, :, :]
+            unnormalized_normals[..., 0, :, :] = torch.where(mask_x, closed_normals_x, unnormalized_normals[..., 0, :, :])
+            unnormalized_normals[..., -1, :, :] = torch.where(mask_x, closed_normals_x, unnormalized_normals[..., -1, :, :])
 
-            is_closed_y = torch.allclose(grid[..., :, 0, :], grid[..., :, -1, :], atol=1e-4, rtol=1e-4)
-            if is_closed_y:
-                closed_normals = unnormalized_normals[..., :, 0, :] + unnormalized_normals[..., :, -1, :]
-                unnormalized_normals[..., :, 0, :] = closed_normals
-                unnormalized_normals[..., :, -1, :] = closed_normals
+            is_closed_y = torch.all((grid[..., :, 0, :] - grid[..., :, -1, :]).abs() < 1e-4, dim=(-1, -2))
+            mask_y = is_closed_y.view(*is_closed_y.shape, 1, 1)
+            closed_normals_y = unnormalized_normals[..., :, 0, :] + unnormalized_normals[..., :, -1, :]
+            unnormalized_normals[..., :, 0, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, 0, :])
+            unnormalized_normals[..., :, -1, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, -1, :])
 
             # Merge unnormalized normals at singular poles (e.g. Sphere poles, Cone tip).
             # The fan of triangles around a collapsed pole column can sum to a
@@ -531,19 +531,19 @@ class Surface(Renderable):
                 dot = (pole_normal * ring_normal).sum(-1, keepdim=True)
                 return torch.where(dot < 0, -pole_normal, pole_normal)
 
-            is_south_pole = torch.allclose(grid[..., :, 0, :], grid[..., :1, 0, :], atol=1e-4, rtol=1e-4)
-            if is_south_pole:
-                pole_normal = unnormalized_normals[..., :, 0, :].sum(-2, keepdim=True)
-                ring_normal = unnormalized_normals[..., :, 1, :].sum(-2, keepdim=True)
-                pole_normal = _orient_to_ring(pole_normal, ring_normal)
-                unnormalized_normals[..., :, 0, :] = pole_normal
+            is_south_pole = torch.all((grid[..., :, 0, :] - grid[..., :1, 0, :]).abs() < 1e-4, dim=(-1, -2))
+            mask_sp = is_south_pole.view(*is_south_pole.shape, 1, 1)
+            pole_normal_sp = unnormalized_normals[..., :, 0, :].sum(-2, keepdim=True)
+            ring_normal_sp = unnormalized_normals[..., :, 1, :].sum(-2, keepdim=True)
+            pole_normal_sp = _orient_to_ring(pole_normal_sp, ring_normal_sp)
+            unnormalized_normals[..., :, 0, :] = torch.where(mask_sp, pole_normal_sp, unnormalized_normals[..., :, 0, :])
 
-            is_north_pole = torch.allclose(grid[..., :, -1, :], grid[..., :1, -1, :], atol=1e-4, rtol=1e-4)
-            if is_north_pole:
-                pole_normal = unnormalized_normals[..., :, -1, :].sum(-2, keepdim=True)
-                ring_normal = unnormalized_normals[..., :, -2, :].sum(-2, keepdim=True)
-                pole_normal = _orient_to_ring(pole_normal, ring_normal)
-                unnormalized_normals[..., :, -1, :] = pole_normal
+            is_north_pole = torch.all((grid[..., :, -1, :] - grid[..., :1, -1, :]).abs() < 1e-4, dim=(-1, -2))
+            mask_np = is_north_pole.view(*is_north_pole.shape, 1, 1)
+            pole_normal_np = unnormalized_normals[..., :, -1, :].sum(-2, keepdim=True)
+            ring_normal_np = unnormalized_normals[..., :, -2, :].sum(-2, keepdim=True)
+            pole_normal_np = _orient_to_ring(pole_normal_np, ring_normal_np)
+            unnormalized_normals[..., :, -1, :] = torch.where(mask_np, pole_normal_np, unnormalized_normals[..., :, -1, :])
 
             vertex_normals = -F.normalize(unnormalized_normals, p=2, dim=-1)
             vertex_normals = grid_to_triangle_vertices(vertex_normals)
@@ -558,6 +558,36 @@ class Surface(Renderable):
             x = unsquish(x, -2, self.grid_height)
             return grid_to_triangle_vertices(x)
 
+        if not hasattr(self, "_expanded_param_cache"):
+            self._expanded_param_cache = {}
+
+        def get_cached_expanded_param(name, value_func):
+            is_static = True
+            if name == 'color':
+                if ('color' in self.grid.data.history.attribute_modifications or
+                    'opacity' in self.grid.data.history.attribute_modifications or
+                    'glow' in self.grid.data.history.attribute_modifications):
+                    is_static = False
+            elif name == 'location':
+                if 'location' in self.grid.data.history.attribute_modifications:
+                    is_static = False
+            elif name == 'normals':
+                if ('location' in self.grid.data.history.attribute_modifications or
+                    'basis' in self.grid.data.history.attribute_modifications):
+                    is_static = False
+            else:
+                if name in self.grid.data.history.attribute_modifications:
+                    is_static = False
+
+            if is_static:
+                if name not in self._expanded_param_cache:
+                    self._expanded_param_cache[name] = value_func()
+                cached_val = self._expanded_param_cache[name]
+                if cached_val is None:
+                    return None
+                return cached_val.expand(grid.shape[0], *cached_val.shape[1:])
+            return value_func()
+
         grid_color = self.grid.color.clone()
         grid_color[..., -1:] *= self.grid.opacity
         grid_color[..., -2:-1] += self.grid.glow
@@ -571,18 +601,21 @@ class Surface(Renderable):
                           ).view(self.color_texture.shape[0], self.texture_height, self.texture_width,
                                  5).as_subclass(Color).mult_opacity(self.opacity.unsqueeze(-2))
 
-        colors = expand_grid_to_verts(grid_color)
+        colors = get_cached_expanded_param('color', lambda: expand_grid_to_verts(grid_color))
+        corners = get_cached_expanded_param('location', lambda: grid_to_triangle_vertices(grid))
+        normals = get_cached_expanded_param('normals', lambda: vertex_normals if vertex_normals is not None else None)
+
         return TrianglePrimitive(
-            corners=grid_to_triangle_vertices(grid),
+            corners=corners,
             colors=colors,
-            normals=vertex_normals,
+            normals=normals,
             glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             glow_radius=self.grid.glow_radius,
             shader=self.shader,
             uvs=uvs,
             texture_map=texture_map,
             **{
-                k: expand_grid_to_verts(v)
+                k: get_cached_expanded_param(k, lambda k=k, v=v: expand_grid_to_verts(v))
                 for k, v in self.grid.get_shader_params().items()
             },
         )

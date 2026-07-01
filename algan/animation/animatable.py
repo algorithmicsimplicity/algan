@@ -925,12 +925,18 @@ class Animatable:
         return 0
 
     def set_state_to_time_t(self, time_inds):
-        self.data.time_inds_active = (
-            (self.data.time_inds_materialized.view(-1, 1) == time_inds.view(1, -1))
-            .sum(1)
-            .nonzero()
-            .view(-1)
-        )
+        if (self.data.time_inds_materialized is not None
+            and len(self.data.time_inds_materialized) == len(time_inds)
+            and self.data.time_inds_materialized[0] == time_inds[0]
+            and self.data.time_inds_materialized[-1] == time_inds[-1]):
+            self.data.time_inds_active = torch.arange(len(time_inds), device=time_inds.device)
+        else:
+            self.data.time_inds_active = (
+                (self.data.time_inds_materialized.view(-1, 1) == time_inds.view(1, -1))
+                .sum(1)
+                .nonzero()
+                .view(-1)
+            )
         return self
 
     def set_state_to_time_all(self):
@@ -1010,6 +1016,9 @@ class Animatable:
         #_sync_devices()
         if not self.data.set_pre_function_application:
             self.set_state_pre_function_applications(s, e)
+        if not self.func_history:
+            self.already_set_state = True
+            return True
         t = self.t
         animating_inds = [torch.zeros((1,), dtype=torch.long)]
         for (

@@ -476,6 +476,9 @@ class Scene:
             and hasattr(_, "get_render_primitives")
         ]
 
+        # Precompute memory per timestep once to avoid redundant calls inside binary search loop
+        actor_mem = {actor: actor.get_memory_used_per_timestep() for actor in primitive_actors}
+
         # Binary search to find a batch size that will fit in memory.
         def get_duration():
             #return 90
@@ -492,7 +495,7 @@ class Scene:
                 ]
                 mem_used = sum(
                     [
-                        _.get_memory_used_per_timestep() * duration
+                        actor_mem[_] * duration
                         for _ in selected_actors
                     ]
                 )
@@ -520,7 +523,7 @@ class Scene:
         for actor in sorted(actors, key=lambda x: x.anchor_priority, reverse=True):
             if hasattr(actor, "already_set_state") and actor.already_set_state:
                 continue
-            if (not actor.is_primitive) and len(list(actor.data.history.function_applications.items())) == 0:
+            if (not actor.is_primitive) and not actor.data.history.function_applications:
                 actor.reset_state()
                 continue
             actor.set_state_full(start_time_ind, start_time_ind + duration)
@@ -652,7 +655,6 @@ class Scene:
         save_image = False
 
         self.has_any_active_actors = False
-        empty_cache
         self.memory = ManualMemory(
             COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
         )

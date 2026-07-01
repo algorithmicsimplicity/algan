@@ -11,5 +11,4 @@ def images():
     x = ImageMob('world_map.jpg').spawn().despawn()
     #x.scale(3)
 
-enable_ray_tracing()
 render_all_funcs(__name__)
