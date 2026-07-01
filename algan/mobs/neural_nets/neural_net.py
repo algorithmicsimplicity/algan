@@ -12,9 +12,21 @@ from algan.mobs.text import Tex
 from algan.constants.rate_funcs import smooth, pulse_fade
 
 
+# Synapses jitter their colour for visual variety. Draw that jitter from a
+# dedicated, fixed-seed generator (reseeded per net in NeuralNetMLP.__init__)
+# rather than the global RNG: otherwise every render produced different synapse
+# colours, so the same scene rendered twice differed by tens of code values --
+# which reads as nondeterministic ("order-sensitive") output and makes the
+# frame-comparison tests impossible to satisfy. A private generator keeps the
+# synapse-to-synapse variety while making each render byte-reproducible, and
+# leaves the global torch RNG untouched for everything else.
+COLOR_JITTER_SEED = 0xA76A
+_color_rng = torch.Generator().manual_seed(COLOR_JITTER_SEED)
+
+
 def tweak_color(c, strength=0.3):
-    t = torch.rand((1,)).item() * strength
-    m = torch.randint(0, 2, (1,))
+    t = torch.rand((1,), generator=_color_rng).item() * strength
+    m = torch.randint(0, 2, (1,), generator=_color_rng)
     target_c = WHITE * m + (1 - m) * BLACK
     return c * (1 - t) + t * target_c
 
@@ -101,6 +113,9 @@ class NeuralNetMLP(Mob):
         **kwargs,
     ):
         super().__init__(**kwargs)
+        # Reseed the synapse colour jitter so each net build is reproducible
+        # regardless of how many nets (or other RNG users) preceded it.
+        _color_rng.manual_seed(COLOR_JITTER_SEED)
         self.look(direction)
         start = ORIGIN if input_locs is None else sum(input_locs) / len(input_locs)
 

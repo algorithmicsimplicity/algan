@@ -69,7 +69,7 @@ from algan.rendering.taichi_runtime import init_taichi
 init_taichi()
 
 global_raytraced_glow = ti.field(dtype=ti.i32, shape=())
-global_raytraced_glow[None] = 1
+global_raytraced_glow[None] = 0
 
 # Cull PN-patch candidates against their tight oriented box before the
 # matrix-pencil solve (default on; env ALGAN_PN_OBB=0 disables for A/B). Output
@@ -93,6 +93,8 @@ MIN_HIT_DISTANCE = 1e-4
 # Hits closer together than this along a ray are considered coplanar and are
 # ordered by layer index instead of by distance.
 DEPTH_TIE_EPSILON = 1e-4
+# Reciprocal, used to bin distances into coplanarity buckets in _comes_after.
+INV_DEPTH_TIE_EPSILON = 1.0 / DEPTH_TIE_EPSILON
 # Surfaces more transparent than this neither reflect nor terminate peeling.
 MIN_ALPHA = 1e-3
 # Marching stops once the remaining transmittance drops below this.
@@ -291,11 +293,21 @@ def _obb_misses(ro, rd, po, prim, pn_obb: ti.template(), t_lo, t_hi) -> bool:
 
 @ti.func
 def _comes_after(t, layer, t_prev, layer_prev) -> bool:
-    """Strict ordering along the ray: by distance, with near-coplanar hits
-    (within DEPTH_TIE_EPSILON) ordered by descending layer index.
+    """Strict, transitive total order along the ray: by distance, with
+    near-coplanar hits ordered by descending layer index.
+
+    Distances are floored into ``DEPTH_TIE_EPSILON``-wide bins so hits in the
+    same bin compare equal on distance and fall back to ``layer``. Binning
+    (rather than the old symmetric ``t +/- EPS`` window) keeps the comparison
+    transitive: the window version could rank A<B, B<C yet C<A, so the order in
+    which the depth-peel consumed near-coplanar hits -- and thus the composite
+    -- depended on how the hits were grouped, i.e. on KBUF (and on the BVH
+    build). With a transitive order, the peel visits hits in one fixed sequence
+    regardless of how many are gathered per traversal, so KBUF is efficiency-only.
     """
-    return (t > t_prev + DEPTH_TIE_EPSILON) or (
-        (t > t_prev - DEPTH_TIE_EPSILON) and (layer < layer_prev))
+    bt = ti.floor(t * INV_DEPTH_TIE_EPSILON)
+    bp = ti.floor(t_prev * INV_DEPTH_TIE_EPSILON)
+    return (bt > bp) or ((bt == bp) and (layer < layer_prev))
 
 
 @ti.func

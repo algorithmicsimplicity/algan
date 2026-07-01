@@ -423,7 +423,7 @@ def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_fa
 
 
 def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor=8,
-                 glow_spread=0.15, rim_frac=0.004, tail_weight=0.25, memory=None):
+                 glow_spread=1, rim_frac=0.004, tail_weight=2, memory=None):
     """FFT-based bloom filter producing a soft, natural glow.
 
     A single Gaussian (``exp(-r^2)`` tail) plummets and leaves a hard,
