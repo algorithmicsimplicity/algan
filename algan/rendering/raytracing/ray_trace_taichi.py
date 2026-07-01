@@ -68,8 +68,33 @@ from algan.rendering.taichi_runtime import init_taichi
 
 init_taichi()
 
-global_raytraced_glow = ti.field(dtype=ti.i32, shape=())
-global_raytraced_glow[None] = 0
+# Toggles volumetric ray-traced glow accumulation inside the trace kernels.
+# Allocated lazily (see ``_ensure_globals``) rather than at import: keeping the
+# only module-level Taichi field out of the runtime until the first render means
+# re-initializing Taichi beforehand -- e.g. the profiler turning on
+# ``kernel_profiler`` -- cannot leave it dangling against a destroyed runtime.
+# The glow ti.funcs below capture this name and resolve it when their kernel
+# first compiles; render setup calls ``_ensure_globals()`` before any kernel
+# launches, so it is a live field by then.
+global_raytraced_glow = None
+
+
+def _ensure_globals():
+    """Allocate the module-level Taichi field(s) on first use, after the Taichi
+    runtime is initialized. Idempotent; called from the ray-trace render entry
+    point (and the glow setter) so the fields exist before any kernel launch."""
+    global global_raytraced_glow
+    if global_raytraced_glow is None:
+        global_raytraced_glow = ti.field(dtype=ti.i32, shape=())
+        global_raytraced_glow[None] = 0
+
+
+def _reset_globals():
+    """Drop the lazily-allocated field so the next ``_ensure_globals()`` rebuilds
+    it against the current runtime. Use after a Taichi re-init (``ti.init``),
+    which destroys all previously-allocated fields."""
+    global global_raytraced_glow
+    global_raytraced_glow = None
 
 # Cull PN-patch candidates against their tight oriented box before the
 # matrix-pencil solve (default on; env ALGAN_PN_OBB=0 disables for A/B). Output

@@ -49,6 +49,7 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     KBUF,
     MAX_SURFACES_PER_RAY,
     MIN_ALPHA,
+    _ensure_globals,
     finalize_samples,
     path_trace_physical_stbvh,
     path_trace_scene_stbvh,
@@ -425,6 +426,7 @@ def set_raytraced_glow(enabled):
     global RAYTRACED_GLOW
     RAYTRACED_GLOW = bool(enabled)
     from algan.rendering.raytracing import ray_trace_taichi
+    ray_trace_taichi._ensure_globals()
     ray_trace_taichi.global_raytraced_glow[None] = 1 if RAYTRACED_GLOW else 0
 
 
@@ -2193,6 +2195,10 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
     is just the output buffer (plus post-processing), independent of scene
     depth complexity or bounce count.
     """
+    # Lazily allocate module-level Taichi fields (the glow toggle) against the
+    # live runtime, before any kernel launches -- so a runtime re-init before
+    # the first render (e.g. the profiler enabling kernel_profiler) is safe.
+    _ensure_globals()
     merged = _merge_scene(primitives)
     aa = max(1, int(anti_alias_level))
     # Refraction is only implemented by the general wavefront tracer, so a

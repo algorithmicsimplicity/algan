@@ -69,6 +69,11 @@ class Color(torch.Tensor):
     def rgb(self, value):
         self.data[..., :3] = value
 
+    def set_rgb(self, rgb):
+        out = self.prep_set(rgb)
+        out.rgb = rgb
+        return out
+
     def mult_rgb(self, other):
         orgb = other.rgb if isinstance(other, Color) else other
         out = self.new_empty()

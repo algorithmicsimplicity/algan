@@ -24,10 +24,12 @@ COLOR_JITTER_SEED = 0xA76A
 _color_rng = torch.Generator().manual_seed(COLOR_JITTER_SEED)
 
 
-def tweak_color(c, strength=0.3):
-    t = torch.rand((1,), generator=_color_rng).item() * strength
-    m = torch.randint(0, 2, (1,), generator=_color_rng)
-    target_c = WHITE * m + (1 - m) * BLACK
+def tweak_color(c, strength=0.2, min_strength=0.0):
+    t = torch.rand((1,), generator=_color_rng).item()
+    t = t * strength + (1-t) * min_strength
+    #m = torch.randint(0, 2, (1,), generator=_color_rng)
+    #target_c = WHITE * m + (1 - m) * BLACK
+    target_c = c.set_rgb(torch.rand(c.rgb.shape, device=c.rgb.device, dtype=c.rgb.dtype, generator=_color_rng))
     return c * (1 - t) + t * target_c
 
 
@@ -39,7 +41,7 @@ class Synapse(Cylinder):
         grid_height = 20
         if 'color' in kwargs:
             c = kwargs['color']
-            kwargs['color'] = tweak_color(c)
+            kwargs['color'] = tweak_color(c, strength=0.25, min_strength=0.25)
         super().__init__(grid_height=grid_height, grid_width=12, glow_radius=gr, **kwargs)
         self.scale(0.02)
 
@@ -73,7 +75,7 @@ class Neuron(Mob):
 #        self.neurons = [Neuron(input_locs, location=l) for l in neuron_locs]
 #        self.add_children(self.neurons)
 
-k = 0.99
+k = 1
 
 
 def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
