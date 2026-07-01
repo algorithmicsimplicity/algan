@@ -21,7 +21,7 @@ from algan.constants.rate_funcs import smooth, pulse_fade
 # synapse-to-synapse variety while making each render byte-reproducible, and
 # leaves the global torch RNG untouched for everything else.
 COLOR_JITTER_SEED = 0xA76A
-_color_rng = torch.Generator().manual_seed(COLOR_JITTER_SEED)
+_color_rng = torch.Generator(device=COMPUTING_DEFAULTS.animation_device).manual_seed(COLOR_JITTER_SEED)
 
 
 def tweak_color(c, strength=0.2, min_strength=0.0):

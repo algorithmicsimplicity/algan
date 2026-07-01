@@ -785,14 +785,14 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
     profiler.enable()
     render_to_file(file_name=f"profiling{tag}_run{run_index}", output_dir=OUT_DIR,
                    output_path="", render_settings=settings,
-                   file_extension="mp4", background_color=GREY.set_opacity(1.0))
+                   file_extension="mp4")
     profiler.disable()
     _sync_devices()
     total = time.perf_counter() - t0
     if sampler is not None:
         sampler.stop()
 
-    dump_path = os.path.join(os.path.dirname(__file__),
+    dump_path = os.path.join(OUT_DIR,
                              f"raytracing_cprofile{tag}_run{run_index}.txt")
     try:
         with open(dump_path, "w") as f:
@@ -852,27 +852,37 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
         label = "cold (includes Taichi JIT compile)" if i == 1 else "warm (steady state)"
         w(f"RUN {i} ({label}): end-to-end {res['total']:.2f}s")
         w("-" * 78)
-        w(f"{'stage':<52}{'calls':>6}{'seconds':>10}{'% total':>9}{'excl':>10}")
+        w(f"incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage")
+        w(f"{'stage':<52}{'calls':>6}{'incl (s)':>10}{'incl (%)':>9}{'excl (s)':>10}{'excl (%)':>10}")
         for name, secs in sorted(res["times"].items(), key=lambda kv: -kv[1]):
             excl = res["exclusive_times"].get(name, secs)
             w(f"{name:<52}{res['counts'][name]:>6}{secs:>10.3f}"
-              f"{100 * secs / res['total']:>8.1f}%{excl:>10.3f}")
-        accounted = sum(v for k, v in res["times"].items()
-                        if not k.startswith(("  -", "beziers:   -"))
-                        and k != "ray traced render total")
+              f"{100 * secs / res['total']:>8.1f}%{excl:>10.3f}"
+              f"{100 * excl / res['total']:>8.1f}%")
+        # Sum *exclusive* times so nested stages aren't double-counted (e.g.
+        # Surface.get_render_primitives runs inside Scene.get_batch_of_primitives;
+        # kernels run inside "ray traced render total"). Kernels bypass the stack
+        # machinery, so their time is already inside the render stage's exclusive
+        # time -- give them 0 here (``.get(k, 0.0)``) to avoid double-counting.
+        accounted = sum(res["exclusive_times"].get(k, 0.0) for k in res["times"])
+        unaccounted = res["total"] - accounted
         w(f"{'(unaccounted: video encode, scene mgmt, ...)':<52}{'':>6}"
-          f"{res['total'] - accounted:>10.3f}"
-          f"{100 * (res['total'] - accounted) / res['total']:>8.1f}%")
+          f"{unaccounted:>10.3f}{100 * unaccounted / res['total']:>8.1f}%")
 
-        # Precise per-kernel GPU time from the Taichi profiler.
+        # Precise per-kernel GPU time from the Taichi profiler. ``% run`` is the
+        # kernel's GPU time as a fraction of the end-to-end run wall time (not of
+        # total GPU-kernel time), so it is comparable to the stage %'s above.
         if res.get("kernel_gpu"):
+            run_ms = res["total"] * 1000.0
             w("")
             w("Taichi kernel GPU time (profiler; launch overhead excluded; "
               "'recs' = serial + range-for sub-kernels):")
-            w(f"  {'kernel':<40}{'recs':>6}{'total ms':>11}{'avg ms':>10}{'max ms':>10}")
+            w(f"  {'kernel':<40}{'recs':>6}{'total ms':>11}{'% run':>8}"
+              f"{'avg ms':>10}{'max ms':>10}")
             for r in res["kernel_gpu"]:
+                pct = 100 * r["total_ms"] / run_ms if run_ms else 0.0
                 w(f"  {r['name']:<40}{r['records']:>6}{r['total_ms']:>11.3f}"
-                  f"{r['avg_ms']:>10.4f}{r['max_ms']:>10.4f}")
+                  f"{pct:>7.1f}%{r['avg_ms']:>10.4f}{r['max_ms']:>10.4f}")
 
         # Ray throughput for the kernels we can size.
         if res["launches"]:
@@ -1024,6 +1034,8 @@ def profile_scene(scene_func, render_settings, tag="", runs=None,
         print(nvprof_command_hint(sys.argv))
     if KERNEL_PROFILER:
         try:
+            print("\n(Taichi's own table below; its % is of total GPU-kernel "
+                  "time, not of run wall time -- see '% run' above for that.)")
             ti.profiler.print_kernel_profiler_info()  # full table incl. sub-kernels
         except Exception as e:
             print(f"(taichi kernel profiler info unavailable: {e})")

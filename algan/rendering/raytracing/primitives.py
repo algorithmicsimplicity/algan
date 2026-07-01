@@ -1580,7 +1580,6 @@ def render_triangles_wavefront(
                         int(tile_start),
                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
-                    ti.sync()
                     active = (rs_int[:, 2] == 0).nonzero(
                         as_tuple=True)[0].to(i32)
                     it += 1
@@ -1684,7 +1683,6 @@ def render_triangles_wavefront_knots(
                         int(tile_start),
                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf)
-                    ti.sync()
                     active = (rs_int[:, 2] == 0).nonzero(
                         as_tuple=True)[0].to(i32)
                     it += 1
@@ -1888,7 +1886,6 @@ def render_general_wavefront(
                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
                         rs_pix, pix_accum, rs_used, rs_vis)
-                    ti.sync()
                     active = (rs_int[:, 2] == 0).nonzero(
                         as_tuple=True)[0].to(i32)
                     it += 1
@@ -1971,7 +1968,6 @@ def render_gbuffer_general(
         float(half_screen_w), float(half_screen_h),
         float(layer_offset_triangles), float(layer_offset_pn),
         gb_f32, gb_i32)
-    ti.sync()
 
     out_v = out.view(n, -1)
     C = out_v.shape[1]
@@ -2170,7 +2166,6 @@ def render_gbuffer_wavefront_general(
             rs_ro, rs_rd, rs_sca, rs_int,
             rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
             gb_f32, gb_i32, gb_count)
-        ti.sync()
         shade_accumulate_wavefront(
             active, gb_f32, gb_i32, gb_count, rs_acc, merged,
             light_pos, light_col, int(num_lights), width * height,
@@ -2362,12 +2357,6 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                 float(width // 2), float(height // 2),
                 layer_offset_triangles, layer_offset_pn, int(MAX_BOUNCES),
                 1 if transparent_background else 0)
-            _ktiming = os.environ.get("ALGAN_KERNEL_TIMING", "0") == "1"
-            if _ktiming:
-                import time as _kt
-                torch.cuda.synchronize()
-                ti.sync()
-                _k0 = _kt.perf_counter()
             if physical:
                 path_trace_physical_stbvh(
                     *shared_args, samples_eff, light_pos, light_col,
@@ -2557,13 +2546,6 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                                    int(num_lights), shadow_flag, kernel_aa,
                                    merged["pn_obb"],
                                    t_val, float(TONEMAP_EXPOSURE), out)
-            ti.sync()
-            if _ktiming:
-                import time as _kt
-                torch.cuda.synchronize()
-                ti.sync()
-                global _KERNEL_TIME_TOTAL
-                _KERNEL_TIME_TOTAL += _kt.perf_counter() - _k0
             frames = out.view(end - start, height, width, C_out)
             frames = first.post_process_frames(
                 frames, anti_alias_level=post_aa,
