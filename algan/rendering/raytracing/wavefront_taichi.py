@@ -78,6 +78,159 @@ def _corner_ior(f, prim, w0, w1, w2, extra: ti.template()):
 
 
 @ti.func
+def _tri_uv(f, prim_uv_index, w0, w1, w2, tri_uvs: ti.template()):
+    """Barycentric UV coordinate of a hit on a textured triangle."""
+    tu = f % tri_uvs.shape[0]
+    u = (w0 * tri_uvs[tu, prim_uv_index, 0]
+         + w1 * tri_uvs[tu, prim_uv_index, 2]
+         + w2 * tri_uvs[tu, prim_uv_index, 4])
+    v = (w0 * tri_uvs[tu, prim_uv_index, 1]
+         + w1 * tri_uvs[tu, prim_uv_index, 3]
+         + w2 * tri_uvs[tu, prim_uv_index, 5])
+    return u, v
+
+
+@ti.func
+def _sample_tex_vec5(f, u, v, offset, width_i, height_i,
+                     textures: ti.template()):
+    """Bilinear sample of all 5 channels of a map placed at ``offset`` in the
+    shared flat texel buffer (same filtering as ``_sample_texture``, but
+    addressed by an explicit (offset, w, h) triplet so material and normal
+    maps can share the buffer with the color maps)."""
+    width = ti.cast(width_i, ti.f32)
+    height = ti.cast(height_i, ti.f32)
+
+    px = ti.math.clamp(u * (width - 1.0), 0.0, ti.max(width - 1.0, 0.0))
+    py = ti.math.clamp(v * (height - 1.0), 0.0, ti.max(height - 1.0, 0.0))
+
+    x_floor = ti.floor(px)
+    y_floor = ti.floor(py)
+    xr = px - x_floor
+    yr = py - y_floor
+
+    out = ti.Vector([0.0, 0.0, 0.0, 0.0, 0.0])
+    sum_w = 0.0
+    tc = f % textures.shape[0]
+    num_points = textures.shape[1]
+
+    for corner in ti.static(range(4)):
+        cx = ti.cast(x_floor + (corner % 2), ti.i32)
+        cy = ti.cast(y_floor + (corner // 2), ti.i32)
+        w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
+            yr if (corner // 2) == 1 else 1.0 - yr)
+
+        cx = ti.math.clamp(cx, 0, ti.max(width_i - 1, 0))
+        cy = ti.math.clamp(cy, 0, ti.max(height_i - 1, 0))
+
+        abs_idx = ti.math.clamp(offset + cx * height_i + cy, 0,
+                                num_points - 1)
+        for ci in ti.static(range(5)):
+            out[ci] += w * textures[tc, abs_idx, ci]
+        sum_w += w
+
+    return out / ti.max(sum_w, 1e-6)
+
+
+@ti.func
+def _flat_triangle_extra(f, prim, w0, w1, w2, tri_extra: ti.template(),
+                         tri_uvs: ti.template(), tri_tex_meta: ti.template(),
+                         textures: ti.template(),
+                         num_colored_triangles: ti.i32):
+    """(reflectivity, roughness) of a triangle hit: per-vertex barycentric
+    values (``_triangle_extra``) unless the triangle carries a material map
+    (meta cols 3-5) whose bitmask (col 9) marks the property texture-driven,
+    in which case that property is sampled per fragment instead."""
+    reflectivity, roughness = _triangle_extra(f, prim, w0, w1, w2, tri_extra)
+    if prim >= num_colored_triangles:
+        idx = prim - num_colored_triangles
+        if tri_tex_meta[idx, 3] >= 0:
+            flags = tri_tex_meta[idx, 9]
+            u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
+            m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 3],
+                                 tri_tex_meta[idx, 4], tri_tex_meta[idx, 5],
+                                 textures)
+            if (flags & 1) != 0:
+                reflectivity = m[0]
+            if (flags & 2) != 0:
+                roughness = m[1]
+    return reflectivity, roughness
+
+
+@ti.func
+def _flat_corner_ior(f, prim, w0, w1, w2, extra: ti.template(),
+                     tri_uvs: ti.template(), tri_tex_meta: ti.template(),
+                     textures: ti.template(), num_colored_triangles: ti.i32):
+    """Index of refraction of a triangle hit: per-vertex (``_corner_ior``)
+    unless the material map's bitmask marks it texture-driven (bit 2 /
+    channel 2)."""
+    ior = _corner_ior(f, prim, w0, w1, w2, extra)
+    if prim >= num_colored_triangles:
+        idx = prim - num_colored_triangles
+        if tri_tex_meta[idx, 3] >= 0:
+            if (tri_tex_meta[idx, 9] & 4) != 0:
+                u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
+                m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 3],
+                                     tri_tex_meta[idx, 4],
+                                     tri_tex_meta[idx, 5], textures)
+                ior = m[2]
+    return ior
+
+
+@ti.func
+def _flat_triangle_normal(f, prim, w0, w1, w2, tri_norm: ti.template(),
+                          tri_pos: ti.template(), tri_uvs: ti.template(),
+                          tri_tex_meta: ti.template(),
+                          textures: ti.template(),
+                          num_colored_triangles: ti.i32):
+    """Shading normal of a triangle hit; when the triangle carries a
+    tangent-space normal map (meta cols 6-8) the interpolated vertex normal
+    is perturbed by the sampled tangent-space vector. The tangent frame is
+    derived per hit from the triangle's positions and UVs (x along
+    increasing u, y along increasing v, z along the smooth normal), so no
+    extra per-vertex tangent array is needed."""
+    normal = _triangle_normal(f, prim, w0, w1, w2, tri_norm, tri_pos)
+    if prim >= num_colored_triangles:
+        idx = prim - num_colored_triangles
+        if tri_tex_meta[idx, 6] >= 0:
+            u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
+            m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 6],
+                                 tri_tex_meta[idx, 7], tri_tex_meta[idx, 8],
+                                 textures)
+            tn = ti.math.vec3(m[0], m[1], m[2])
+            if tn.norm() > 1e-6 and normal.norm() > 1e-9:
+                nb = normal.normalized()
+                tp = f % tri_pos.shape[0]
+                v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                                  tri_pos[tp, prim, 2])
+                v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                                  tri_pos[tp, prim, 5])
+                v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                                  tri_pos[tp, prim, 8])
+                tu = f % tri_uvs.shape[0]
+                du1 = tri_uvs[tu, idx, 2] - tri_uvs[tu, idx, 0]
+                dv1 = tri_uvs[tu, idx, 3] - tri_uvs[tu, idx, 1]
+                du2 = tri_uvs[tu, idx, 4] - tri_uvs[tu, idx, 0]
+                dv2 = tri_uvs[tu, idx, 5] - tri_uvs[tu, idx, 1]
+                det = du1 * dv2 - du2 * dv1
+                if ti.abs(det) > 1e-12:
+                    inv_det = 1.0 / det
+                    e1 = v1 - v0
+                    e2 = v2 - v0
+                    tang = (e1 * dv2 - e2 * dv1) * inv_det
+                    tang = tang - nb * nb.dot(tang)  # Gram-Schmidt vs normal
+                    if tang.norm() > 1e-9:
+                        tang = tang.normalized()
+                        bit = (e2 * du1 - e1 * du2) * inv_det
+                        bit = bit - nb * nb.dot(bit) - tang * tang.dot(bit)
+                        if bit.norm() > 1e-9:
+                            bit = bit.normalized()
+                            pert = tang * tn[0] + bit * tn[1] + nb * tn[2]
+                            if pert.norm() > 1e-9:
+                                normal = pert.normalized()
+    return normal
+
+
+@ti.func
 def _refract_ray(rd, n_out, ior):
     """Direction of the transmitted ray for incident unit direction ``rd``
     crossing a surface with outward unit normal ``n_out`` and index of
@@ -792,8 +945,10 @@ def wf_shadow_general(
                             snrm = ti.math.vec3(0.0, 0.0, 0.0)
                             fnrm = ti.math.vec3(0.0, 0.0, 0.0)
                             if htype == 1:
-                                snrm = _triangle_normal(f, prim, 1.0 - a - b,
-                                                        a, b, tri_norm, tri_pos)
+                                snrm = _flat_triangle_normal(
+                                    f, prim, 1.0 - a - b, a, b, tri_norm,
+                                    tri_pos, tri_uvs, tri_tex_meta, textures,
+                                    num_colored_triangles)
                                 tp = f % tri_pos.shape[0]
                                 v0 = ti.math.vec3(tri_pos[tp, prim, 0],
                                                   tri_pos[tp, prim, 1],
@@ -1028,8 +1183,9 @@ def wf_shade_general(
                     color, alpha = _flat_triangle_color(f, prim, w0, a, b,
                                                         tri_colors, tri_uvs, tri_tex_meta,
                                                         textures, num_colored_triangles)
-                    reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
-                                                           tri_extra)
+                    reflectivity, _rough = _flat_triangle_extra(
+                        f, prim, w0, a, b, tri_extra, tri_uvs, tri_tex_meta,
+                        textures, num_colored_triangles)
                 elif htype == 2:
                     w0 = 1.0 - a - b
                     color, alpha = _triangle_color(f, prim, w0, a, b,
@@ -1075,8 +1231,10 @@ def wf_shade_general(
                             snrm = ti.math.vec3(0.0, 0.0, 0.0)
                             fnrm = ti.math.vec3(0.0, 0.0, 0.0)
                             if htype == 1:
-                                snrm = _triangle_normal(f, prim, 1.0 - a - b,
-                                                        a, b, tri_norm, tri_pos)
+                                snrm = _flat_triangle_normal(
+                                    f, prim, 1.0 - a - b, a, b, tri_norm,
+                                    tri_pos, tri_uvs, tri_tex_meta, textures,
+                                    num_colored_triangles)
                                 tp = f % tri_pos.shape[0]
                                 v0 = ti.math.vec3(tri_pos[tp, prim, 0],
                                                   tri_pos[tp, prim, 1],
@@ -1191,16 +1349,20 @@ def wf_shade_general(
                     if (alpha < 1.0 - MIN_ALPHA) and (bounces_left > 0) \
                             and ((htype == 1) or (htype == 2)):
                         if htype == 1:
-                            ior = _corner_ior(f, prim, 1.0 - a - b, a, b,
-                                              tri_extra)
+                            ior = _flat_corner_ior(
+                                f, prim, 1.0 - a - b, a, b, tri_extra,
+                                tri_uvs, tri_tex_meta, textures,
+                                num_colored_triangles)
                         else:
                             ior = _corner_ior(f, prim, 1.0 - a - b, a, b,
                                               pn_extra)
                         if ior > 1.0 + 1e-4:
                             is_glass = True
                             if htype == 1:
-                                gnrm = _triangle_normal(f, prim, 1.0 - a - b,
-                                                        a, b, tri_norm, tri_pos)
+                                gnrm = _flat_triangle_normal(
+                                    f, prim, 1.0 - a - b, a, b, tri_norm,
+                                    tri_pos, tri_uvs, tri_tex_meta, textures,
+                                    num_colored_triangles)
                             else:
                                 gnrm = _pn_normal(f, prim, a, b, pn_norm,
                                                   pn_ctrl)
@@ -1269,8 +1431,10 @@ def wf_shade_general(
                     # unchanged reflection, gated by opacity as before.
                     normal = ti.math.vec3(0.0, 0.0, 0.0)
                     if htype == 1:
-                        normal = _triangle_normal(f, prim, 1.0 - a - b, a, b,
-                                                  tri_norm, tri_pos)
+                        normal = _flat_triangle_normal(
+                            f, prim, 1.0 - a - b, a, b, tri_norm, tri_pos,
+                            tri_uvs, tri_tex_meta, textures,
+                            num_colored_triangles)
                     elif htype == 2:
                         normal = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
                     else:

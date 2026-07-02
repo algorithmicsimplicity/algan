@@ -508,6 +508,9 @@ class Scene:
             return False
         if actor.color_texture is not None or actor.ignore_normals:
             return False
+        if (getattr(actor, "material_texture", None) is not None
+                or getattr(actor, "normal_texture", None) is not None):
+            return False
         if (
             actor is self.camera
             or actor is self.camera.screen
@@ -767,9 +770,15 @@ class Scene:
                     )
                     primitive_collections[-1].memory = self.memory
                     primitive_collections[-1].scene = self
-                if textured:
+                # Textured primitives are batched one per collection: a
+                # collection carries a single texture map set (color/material/
+                # normal), so merging two differently-textured primitives
+                # would drop all but the first primitive's maps. Their
+                # geometry is still merged into one kernel launch downstream
+                # (see _merge_scene).
+                for p in textured:
                     primitive_collections.append(
-                        primitive_class(triangle_collection=textured)
+                        primitive_class(triangle_collection=[p])
                     )
                     primitive_collections[-1].memory = self.memory
                     primitive_collections[-1].scene = self

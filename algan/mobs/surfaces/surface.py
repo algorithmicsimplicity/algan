@@ -170,6 +170,31 @@ class Surface(Renderable):
         Width of the grid from which intrinsic coordinates are sampled.
     grid_aspect_ratio
         If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio.
+    color_texture
+        Optional color texture map ``[W, H, 5]`` (or ``[T, W, H, 5]`` for an
+        animated map), sampled bilinearly in-kernel by the ray tracer.
+    reflectivity_texture, roughness_texture, refractive_index_texture
+        Optional per-texel material property maps, each ``[W, H, 1]`` (or
+        ``[W, H]``, or ``[T, W, H, 1]``). Like ``color_texture`` they are
+        sampled bilinearly per fragment inside the ray tracing kernel (only
+        the general wavefront tracer implements this; batches containing such
+        maps are routed to it automatically). Properties without a map keep
+        the per-vertex system. Maps of different resolutions are resampled to
+        a common resolution.
+    normal_texture
+        Optional tangent-space normal map ``[W, H, 3]`` (or ``[T, W, H, 3]``),
+        with components in ``[-1, 1]``: x along increasing ``u``, y along
+        increasing ``v``, z along the smooth surface normal (``(0, 0, 1)`` =
+        unperturbed). Perturbs the shading normal per fragment in-kernel.
+        Note: under the default vertex-shaded pipeline lighting is baked at
+        the vertices, so a normal map only affects effects evaluated per
+        fragment (mirror reflections, refraction, ray traced shadows, and
+        fragment shading when enabled).
+    glow_texture, glow_radius_texture
+        Optional glow strength/radius maps, each ``[W, H, 1]`` (or ``[W, H]``).
+        These are consumed per-vertex by the glow accumulator, so they are
+        baked to the surface grid resolution (raise ``grid_width``/
+        ``grid_height`` for more detail). Static only (no time dimension).
     *args, **kwargs
         Passed to :class:`~.Mob`
 
@@ -184,6 +209,12 @@ class Surface(Renderable):
         grid_aspect_ratio=None,
         checkered_color=None,
         color_texture=None,
+        reflectivity_texture=None,
+        roughness_texture=None,
+        refractive_index_texture=None,
+        normal_texture=None,
+        glow_texture=None,
+        glow_radius_texture=None,
         ignore_normals=False,
         tolerance=0.005,
             min_grid_resolution=4,
@@ -309,6 +340,42 @@ class Surface(Renderable):
                 grid_height = int(grid_width * grid_aspect_ratio)
 
         self.grid_height, self.grid_width = grid_height, grid_width
+
+        # Optional texture-mapped material properties. Reflectivity/roughness/
+        # refractive-index maps are combined into one 5-channel "material
+        # texture" (plus a bitmask of which channels are texture-driven) that
+        # the general wavefront kernel samples per fragment; the normal map is
+        # kept separate. Glow maps are baked to per-vertex grid values (the
+        # glow accumulator interpolates triangle corners, so per-vertex is its
+        # native resolution).
+        self.material_texture = None
+        self.material_texture_flags = 0
+        self.normal_texture = None
+        material_prop_textures = {
+            'reflectivity': reflectivity_texture,
+            'roughness': roughness_texture,
+            'refractive_index': refractive_index_texture,
+        }
+        material_prop_textures = {
+            k: v for k, v in material_prop_textures.items() if v is not None
+        }
+        if material_prop_textures:
+            self.material_texture, self.material_texture_flags = (
+                self._build_material_texture(material_prop_textures))
+        if normal_texture is not None:
+            self.normal_texture = self._normalize_texture_shape(
+                normal_texture, 3).to(self.location.device)
+        if glow_texture is not None:
+            kwargs['glow'] = self._bake_texture_to_grid(glow_texture)
+        if glow_radius_texture is not None:
+            kwargs['glow_radius'] = self._bake_texture_to_grid(glow_radius_texture)
+        if ((self.material_texture is not None or self.normal_texture is not None)
+                and self._uses_pn_triangles()):
+            print("WARNING: material/normal textures are only implemented for "
+                  "flat ray traced triangles; this surface renders as curved "
+                  "PN triangles (enable_ray_tracing(pn_triangles=True)), which "
+                  "will ignore its texture maps.")
+
         base_grid = self.get_base_grid()
         grid_points = squish(coord_function(base_grid), -3, -2) + self.location
 
@@ -552,6 +619,68 @@ class Surface(Renderable):
         errors = (S_points - P_true).norm(p=2, dim=-1)
         return errors.max()
 
+    @staticmethod
+    def _normalize_texture_shape(tex, channels):
+        """Normalize a user-supplied texture to ``[T, W, H, channels]``.
+        Accepts ``[W, H]`` (single-channel maps only), ``[W, H, channels]``
+        or ``[T, W, H, channels]``; ``W`` is the ``u`` axis, ``H`` the ``v``
+        axis of the surface's intrinsic coordinates."""
+        tex = torch.as_tensor(tex).float()
+        if tex.dim() == 2:
+            if channels != 1:
+                raise ValueError(
+                    f"a 2-D texture is only valid for single-channel "
+                    f"properties, expected {channels} channels")
+            tex = tex.unsqueeze(-1)
+        if tex.dim() == 3:
+            tex = tex.unsqueeze(0)
+        if tex.dim() != 4 or tex.shape[-1] != channels:
+            raise ValueError(
+                f"texture must have shape [W, H, {channels}] or "
+                f"[T, W, H, {channels}], got {tuple(tex.shape)}")
+        return tex
+
+    def _build_material_texture(self, textures_dict):
+        """Combine per-property maps into one ``[T, W, H, 5]`` material
+        texture (channels: reflectivity, roughness, refractive index, and two
+        reserved) at the finest common resolution, plus the bitmask of which
+        channels are texture-driven (bit i = channel i has a map; unset
+        channels keep the per-vertex value in-kernel)."""
+        channel_slots = {'reflectivity': 0, 'roughness': 1,
+                         'refractive_index': 2}
+        device = self.location.device
+        texs = {k: self._normalize_texture_shape(v, 1).to(device)
+                for k, v in textures_dict.items()}
+        T = max(t.shape[0] for t in texs.values())
+        W = max(t.shape[1] for t in texs.values())
+        H = max(t.shape[2] for t in texs.values())
+        combined = torch.zeros((T, W, H, 5), device=device)
+        flags = 0
+        for name, t in texs.items():
+            if t.shape[1:3] != (W, H):
+                t = F.interpolate(t.permute(0, 3, 1, 2), size=(W, H),
+                                  mode='bilinear', align_corners=True
+                                  ).permute(0, 2, 3, 1)
+            slot = channel_slots[name]
+            combined[..., slot] = t.expand(T, W, H, 1)[..., 0]
+            flags |= 1 << slot
+        return combined, flags
+
+    def _bake_texture_to_grid(self, tex, channels=1):
+        """Resample a texture to the surface grid resolution and flatten it to
+        per-vertex values ``[W*H, channels]`` (the same bake the color path
+        applies to grid-resolution textures)."""
+        t = self._normalize_texture_shape(tex, channels).to(self.location.device)
+        if t.shape[0] != 1:
+            raise ValueError(
+                "glow/glow_radius textures must be static (no time "
+                f"dimension), got {tuple(t.shape)}")
+        t = F.interpolate(t.permute(0, 3, 1, 2),
+                          size=(self.grid_width, self.grid_height),
+                          mode='bilinear', align_corners=True
+                          ).permute(0, 2, 3, 1)
+        return squish(t, -3, -2).squeeze(0)
+
     def get_memory_used_per_timestep(self):
         # Called once per surface per render batch just to size batches; the
         # result only depends on grid size and shader-param widths (fixed per
@@ -645,10 +774,15 @@ class Surface(Renderable):
 
         uvs = None
         texture_map = None
-        if self.color_texture is not None:
+        material_texture_map = getattr(self, 'material_texture', None)
+        material_texture_flags = getattr(self, 'material_texture_flags', 0)
+        normal_texture_map = getattr(self, 'normal_texture', None)
+        if (self.color_texture is not None or material_texture_map is not None
+                or normal_texture_map is not None):
             # Generate UV coordinates for the triangle corners from the base grid
             base_grid = self.get_base_grid()
             uvs = grid_to_triangle_vertices(base_grid).unsqueeze(0)  # [1, num_triangles * 3, 2]
+        if self.color_texture is not None:
             texture_map = (self.color_texture
                           ).view(self.color_texture.shape[0], self.texture_height, self.texture_width,
                                  5).as_subclass(Color).mult_opacity(self.opacity.unsqueeze(-2))
@@ -669,6 +803,9 @@ class Surface(Renderable):
             shader=self.shader,
             uvs=uvs,
             texture_map=texture_map,
+            material_texture_map=material_texture_map,
+            material_texture_flags=material_texture_flags,
+            normal_texture_map=normal_texture_map,
             **{
                 k: get_cached_expanded_param(k, lambda k=k, v=v: expand_grid_to_verts(v))
                 for k, v in self.grid.get_shader_params().items()

@@ -1259,7 +1259,13 @@ def _flat_triangle_color(f, prim, w0, w1, w2, tri_colors: ti.template(),
                          textures: ti.template(), num_colored_triangles: ti.i32):
     color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     alpha = 0.0
-    if prim < num_colored_triangles:
+    # A "textured" triangle (prim >= num_colored_triangles) may carry only
+    # material/normal maps and no color map (meta offset -1); it then falls
+    # back to its per-vertex colors, which the scene merge keeps for every
+    # triangle. (The meta index is clamped because `or` does not
+    # short-circuit in Taichi.)
+    if (prim < num_colored_triangles) or (
+            tri_tex_meta[ti.max(prim - num_colored_triangles, 0), 0] < 0):
         tc = f % tri_colors.shape[0]
         for ci in ti.static(range(4)):
             color[ci] = (w0 * tri_colors[tc, prim, 0, ci]
@@ -1286,7 +1292,10 @@ def _flat_triangle_alpha(f, prim, w0, w1, w2, tri_colors: ti.template(),
                          tri_uvs: ti.template(), tri_tex_meta: ti.template(),
                          textures: ti.template(), num_colored_triangles: ti.i32) -> ti.f32:
     alpha = 0.0
-    if prim < num_colored_triangles:
+    # Same per-vertex fallback as _flat_triangle_color for textured triangles
+    # without a color map (meta offset -1).
+    if (prim < num_colored_triangles) or (
+            tri_tex_meta[ti.max(prim - num_colored_triangles, 0), 0] < 0):
         tc = f % tri_colors.shape[0]
         alpha = (w0 * tri_colors[tc, prim, 0, 4]
                  + w1 * tri_colors[tc, prim, 1, 4]

@@ -99,6 +99,9 @@ class TrianglePrimitive(RenderPrimitive):
         shader=None,
         uvs=None,
         texture_map=None,
+        material_texture_map=None,
+        material_texture_flags=0,
+        normal_texture_map=None,
         **shader_kwargs,
     ):
         device = COMPUTING_DEFAULTS.animation_device
@@ -120,6 +123,9 @@ class TrianglePrimitive(RenderPrimitive):
         self.min_interpolation_coord = 0
         self.uvs = None
         self.texture_map = None
+        self.material_texture_map = None
+        self.material_texture_flags = 0
+        self.normal_texture_map = None
 
         if triangle_collection is not None:
             self.shader = triangle_collection[0].shader
@@ -171,6 +177,24 @@ class TrianglePrimitive(RenderPrimitive):
                     self.texture_map = tex.to(self.corners.device)
                     break
 
+            # Texture maps cannot be concatenated across primitives (each map
+            # keeps its own resolution), so like texture_map above they are
+            # taken from the first primitive that has one. The scene batcher
+            # puts every textured primitive in its own singleton collection,
+            # which makes this exact.
+            for triangle in triangle_collection:
+                tex = getattr(triangle, "material_texture_map", None)
+                if tex is not None:
+                    self.material_texture_map = tex.to(self.corners.device)
+                    self.material_texture_flags = getattr(
+                        triangle, "material_texture_flags", 0)
+                    break
+            for triangle in triangle_collection:
+                tex = getattr(triangle, "normal_texture_map", None)
+                if tex is not None:
+                    self.normal_texture_map = tex.to(self.corners.device)
+                    break
+
             self.padding = 1
             return
 
@@ -196,6 +220,11 @@ class TrianglePrimitive(RenderPrimitive):
                 uvs = unsquish(uvs, -2, 3)
             self.uvs = uvs.to(self.corners.device)
         self.texture_map = texture_map.to(self.corners.device) if texture_map is not None else None
+        self.material_texture_map = (material_texture_map.to(self.corners.device)
+                                     if material_texture_map is not None else None)
+        self.material_texture_flags = material_texture_flags
+        self.normal_texture_map = (normal_texture_map.to(self.corners.device)
+                                   if normal_texture_map is not None else None)
 
         if shader is None:
             shader = RENDERING_DEFAULTS.shader

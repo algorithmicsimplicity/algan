@@ -558,12 +558,17 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                  perimeter_points=None, reverse_perimeter=False,
                  triangle_collection=None, glow=0, shader=None,
                  uvs=None, texture_map=None,
+                 material_texture_map=None, material_texture_flags=0,
+                 normal_texture_map=None,
                  **shader_kwargs):
         if triangle_collection is not None:
             super().__init__(corners, colors, opacity, normals,
                              perimeter_points, reverse_perimeter,
                              triangle_collection, glow, shader,
                              uvs=uvs, texture_map=texture_map,
+                             material_texture_map=material_texture_map,
+                             material_texture_flags=material_texture_flags,
+                             normal_texture_map=normal_texture_map,
                              **shader_kwargs)
             # Gather per-mob surface params with the same broadcast/cat
             # recipe the base class applies to corners/colors, so shapes
@@ -592,6 +597,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                              perimeter_points, reverse_perimeter,
                              triangle_collection, glow, shader=shader,
                              uvs=uvs, texture_map=texture_map,
+                             material_texture_map=material_texture_map,
+                             material_texture_flags=material_texture_flags,
+                             normal_texture_map=normal_texture_map,
                              **shader_kwargs)
             for name, value in params.items():
                 if value is None:
@@ -769,9 +777,20 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         if self.uvs is not None:
             self._rt_tri_uvs = self.uvs.float().reshape(self.uvs.shape[0], self.uvs.shape[1], 6).contiguous()
             self._rt_texture_map = self.texture_map.float().contiguous() if self.texture_map is not None else None
+            mtex = getattr(self, "material_texture_map", None)
+            self._rt_material_texture = (mtex.float().contiguous()
+                                         if mtex is not None else None)
+            self._rt_material_flags = int(
+                getattr(self, "material_texture_flags", 0) or 0)
+            ntex = getattr(self, "normal_texture_map", None)
+            self._rt_normal_texture = (ntex.float().contiguous()
+                                       if ntex is not None else None)
         else:
             self._rt_tri_uvs = None
             self._rt_texture_map = None
+            self._rt_material_texture = None
+            self._rt_material_flags = 0
+            self._rt_normal_texture = None
 
         self._pack_frame_visibility(corners.amin(-2), corners.amax(-2),
                                     self._rt_tri_colors,
@@ -783,6 +802,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self.reflectivity = self.roughness = self.refractive_index = None
         self.colors = self.shader_param_values = None
         self.uvs = self.texture_map = None
+        self.material_texture_map = self.normal_texture_map = None
 
         self._set_frame_buffer_bytes(camera)
 
@@ -1188,41 +1208,71 @@ def _merge_scene(primitives):
         scene["tri_extra"] = _cat_collections(
             [p._rt_tri_extra for p in all_triangles], 1, "triangle merge")
 
-        if colored_triangles:
-            scene["tri_colors"] = _cat_collections(
-                [p._rt_tri_colors for p in colored_triangles], 1, "triangle merge")
-        else:
-            scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
+        # Vertex colors are merged for *all* triangles (textured included):
+        # a textured primitive may carry only material/normal maps, in which
+        # case the kernel falls back to its per-vertex colors (color-map
+        # meta offset -1).
+        scene["tri_colors"] = _cat_collections(
+            [p._rt_tri_colors for p in all_triangles], 1, "triangle merge")
+
+        scene["has_material_textures"] = any(
+            getattr(p, "_rt_material_texture", None) is not None
+            or getattr(p, "_rt_normal_texture", None) is not None
+            for p in textured_triangles)
+        scene["tex_has_refractive"] = False
 
         if textured_triangles:
             scene["tri_uvs"] = _cat_collections(
                 [p._rt_tri_uvs for p in textured_triangles], 1, "triangle merge")
 
+            # All maps (color / material / normal) share one flat texel buffer
+            # [T_tex, P, 5]; each map's placement is a (offset, w, h) triplet
+            # in the per-triangle meta row (offset -1 = no map -> per-vertex
+            # fallback). Meta layout: cols 0-2 color map, 3-5 material map
+            # (channels: reflectivity, roughness, refractive index), 6-8
+            # normal map, 9 bitmask of texture-driven material properties.
             flat_textures = []
-            for p in textured_triangles:
-                tex = p._rt_texture_map
-                if tex.dim() == 3:  # [H, W, 5]
-                    tex = tex.unsqueeze(0)  # [1, H, W, 5]
-                # Flatten H and W (dimensions 1 and 2)
-                tex = tex.reshape(tex.shape[0], -1, 5)  # [T_tex, H*W, 5]
-                flat_textures.append(tex)
-            scene["textures"] = _cat_collections(flat_textures, 1, "texture merge")
-
-            offset = 0
             tex_meta_list = []
-            for p in textured_triangles:
-                tex = p._rt_texture_map
-                w = tex.shape[-3]
-                h = tex.shape[-2]
-                num_tris = p._rt_tri_pos.shape[1]
-                meta = torch.tensor([offset, w, h], dtype=torch.int32, device=device).view(1, 3).expand(num_tris, 3)
-                tex_meta_list.append(meta)
+            offset = 0
+
+            def _append_texture(tex):
+                nonlocal offset
+                if tex is None:
+                    return (-1, 0, 0)
+                if tex.dim() == 3:  # [W, H, C]
+                    tex = tex.unsqueeze(0)  # [1, W, H, C]
+                w, h, c = tex.shape[-3], tex.shape[-2], tex.shape[-1]
+                if c < 5:
+                    tex = torch.cat(
+                        (tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
+                # Flatten W and H (dimensions 1 and 2)
+                flat_textures.append(tex.reshape(tex.shape[0], -1, 5))
+                o = offset
                 offset += w * h
+                return (o, w, h)
+
+            for p in textured_triangles:
+                color_meta = _append_texture(p._rt_texture_map)
+                mtex = getattr(p, "_rt_material_texture", None)
+                material_meta = _append_texture(mtex)
+                normal_meta = _append_texture(
+                    getattr(p, "_rt_normal_texture", None))
+                flags = int(getattr(p, "_rt_material_flags", 0) or 0)
+                if (mtex is not None and (flags & 4)
+                        and bool((mtex[..., 2] > 1.0 + 1e-4).any())):
+                    scene["tex_has_refractive"] = True
+                num_tris = p._rt_tri_pos.shape[1]
+                meta = torch.tensor(
+                    [*color_meta, *material_meta, *normal_meta, flags],
+                    dtype=torch.int32, device=device).view(1, 10).expand(
+                        num_tris, 10)
+                tex_meta_list.append(meta)
+            scene["textures"] = _cat_collections(flat_textures, 1, "texture merge")
             scene["tri_tex_meta"] = torch.cat(tex_meta_list, 0).contiguous()
         else:
             scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
             scene["textures"] = torch.zeros((1, 1, 5), device=device)
-            scene["tri_tex_meta"] = torch.zeros((1, 3), dtype=torch.int32, device=device)
+            scene["tri_tex_meta"] = torch.full((1, 10), -1, dtype=torch.int32, device=device)
 
         scene["tri_mat_id"] = _cat_collections(
             [p._rt_tri_mat_id for p in all_triangles], 1, "triangle merge")
@@ -1250,8 +1300,10 @@ def _merge_scene(primitives):
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
         scene["textures"] = torch.zeros((1, 1, 5), device=device)
-        scene["tri_tex_meta"] = torch.zeros((1, 3), dtype=torch.int32, device=device)
+        scene["tri_tex_meta"] = torch.full((1, 10), -1, dtype=torch.int32, device=device)
         scene["num_colored_triangles"] = 0
+        scene["has_material_textures"] = False
+        scene["tex_has_refractive"] = False
         scene["tri_mat_id"] = torch.zeros((1, 1), dtype=torch.int32,
                                           device=device)
         scene["tri_mat"] = torch.zeros((1, 1, MAT_W), device=device)
@@ -1268,7 +1320,7 @@ def _merge_scene(primitives):
     # Only mode 2 (in-kernel knot kernel) consumes the compressed positions.
     # Mode 3 (timeline-direct) already expanded geometry to dense upstream and
     # renders through the existing dense kernel, so it must not compress here.
-    if TIME_COMPRESS == 2 and triangles:
+    if TIME_COMPRESS == 2 and triangles and not scene["has_material_textures"]:
         tc = compress_time(scene["tri_pos"])
         scene["tri_tc"] = tc
         refl = scene["tri_extra"][..., 0:6:2]  # per-corner reflectivity columns
@@ -1328,7 +1380,8 @@ def _merge_scene(primitives):
     def _extra_has_refractive(extra):
         return bool((extra[..., 6:9] > 1.0 + 1e-4).any())
     scene["has_refractive"] = (_extra_has_refractive(scene["tri_extra"])
-                               or _extra_has_refractive(scene["pn_extra"]))
+                               or _extra_has_refractive(scene["pn_extra"])
+                               or bool(scene.get("tex_has_refractive")))
 
     if beziers:
         scene["circuit_meta"] = _cat_collections(
@@ -1383,6 +1436,7 @@ def _merge_scene(primitives):
         p._rt_tri_extra = p._rt_tri_colors = None
         p._rt_tri_mat_id = p._rt_tri_mat = None
         p._rt_tri_uvs = p._rt_texture_map = None
+        p._rt_material_texture = p._rt_normal_texture = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     for p in pn_patches:
         p._rt_pn_ctrl = p._rt_pn_norm = None
@@ -2208,7 +2262,14 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
     refractive_det = (bool(merged.get("has_refractive"))
                       and not bool(PHYSICAL_LIGHTING)
                       and int(SAMPLES_PER_PIXEL) <= 1)
-    use_wavefront = USE_WAVEFRONT or refractive_det
+    # Texture-mapped material properties (reflectivity/roughness/IOR/normal
+    # maps) are likewise only sampled by the general wavefront tracer, so a
+    # deterministic batch containing them is routed there too. The megakernel
+    # and Monte Carlo paths fall back to the per-vertex values.
+    mat_tex_det = (bool(merged.get("has_material_textures"))
+                   and not bool(PHYSICAL_LIGHTING)
+                   and int(SAMPLES_PER_PIXEL) <= 1)
+    use_wavefront = USE_WAVEFRONT or refractive_det or mat_tex_det
     # Anti-aliasing strategy. All deterministic renderers (megakernels and
     # wavefront) average ``aa^2`` jittered sub-pixel rays *in place* at the
     # output resolution, so the frame buffer stays ``screen_width x
@@ -2379,7 +2440,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                                  t_val, float(TONEMAP_EXPOSURE),
                                  accum, out)
             elif (USE_GBUFFER and det_frag and not det_shadows
-                  and not refractive_det):
+                  and not refractive_det and not mat_tex_det):
                 # Deferred-shading (G-buffer) path: trace/drain in Taichi, shade
                 # in PyTorch. Replaces the megakernel's in-kernel fragment
                 # shading. "wavefront" supports transparency + reflections;
@@ -2409,6 +2470,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                    or (WAVEFRONT_MIN_PIXELS
                        and width * height >= WAVEFRONT_MIN_PIXELS))
                   and not det_frag and not det_shadows and not refractive_det
+                  and not mat_tex_det
                   and has_tri and not has_pn and not has_bez
                   and merged.get("tri_tc") is None):
                 # Triangle-only batch via the (tiled, stage-split) wavefront
