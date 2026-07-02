@@ -7,6 +7,7 @@ import threading
 import time
 import wave
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
 import torch
@@ -211,35 +212,26 @@ class Scene:
         post_processes=[],
         transparent_background=False,
         background_color=None,
+        render_state=None,
     ):
         with torch.no_grad():
-            time_inds = torch.arange(start_ind, end_ind)
             camera = self.camera
-            camera.screen.reset_state()
-            camera.reset_state()
-            camera.set_state_full(time_inds[0], time_inds[-1]+1)
-            camera.set_state_to_time_t(time_inds)
-            camera.screen.set_state_full(time_inds[0], time_inds[-1] + 1)
-            camera.screen.set_state_to_time_t(time_inds)
-            camera.ray_origin = camera.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
-            camera.screen_point = camera.screen.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
-            camera.screen_basis = camera.get_render_screen_basis().to(COMPUTING_DEFAULTS.render_device)
+            if render_state is None:
+                render_state = self._materialize_render_state(start_ind, end_ind)
+            camera.ray_origin = render_state["ray_origin"]
+            camera.screen_point = render_state["screen_point"]
+            camera.screen_basis = render_state["screen_basis"]
             camera.screen_width = (
                 self.num_pixels_screen_width * self.render_settings.anti_alias_level
             )
             camera.screen_height = (
                 self.num_pixels_screen_height * self.render_settings.anti_alias_level
             )
-            for l in self.light_sources:
-                l.reset_state()
-                l.set_state_full(time_inds[0], time_inds[-1]+1)
-                l.set_state_to_time_t(time_inds)
-                l.origin = l.location.unsqueeze(-2).to(COMPUTING_DEFAULTS.render_device)
-                l.light_color = (
-                    (l.color[..., :-1] * l.color[..., -1:] * l.opacity)
-                    .unsqueeze(-2)
-                    .to(COMPUTING_DEFAULTS.render_device)
-                )
+            for l, (origin, light_color) in zip(
+                self.light_sources, render_state["lights"]
+            ):
+                l.origin = origin
+                l.light_color = light_color
 
             #torch.compiler.cudagraph_mark_step_begin()
             self.memory.scene = self
@@ -331,8 +323,10 @@ class Scene:
 
             self.memory.set_pointers(original_pointers)
             self.memory.max_pointer = self.memory.current_pointer = (len(self.memory) - self.memory.current_reverse_pointer)
-            for actor in [self.camera, self.camera.screen, *self.light_sources]:
-                actor.reset_state()
+            # Camera/screen/light state is no longer reset here: batch prep
+            # (get_batch_of_primitives) resets and re-materializes it at the
+            # start of each batch, and may already be running on a worker
+            # thread for the next batch while this render executes.
 
     def get_frame(self, i):
         actors = self.actors[-1]
@@ -466,6 +460,15 @@ class Scene:
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
+        # Camera, screen and light animation state is owned by batch prep: it
+        # is reset here (this used to happen at the end of
+        # render_primitive_batch), re-materialized by the actor loop below for
+        # this batch's range, and the plain tensors the renderer consumes are
+        # snapshot just before returning (_materialize_render_state). The
+        # render path then never touches animated state, which lets the next
+        # batch be prepped on a worker thread while the current one renders.
+        for _ in (self.camera, self.camera.screen, *self.light_sources):
+            _.reset_state()
         max_end_time = max_end_time_ind / self.frames_per_second
         start_time = start_time_ind / self.frames_per_second
         primitive_actors = [
@@ -599,7 +602,52 @@ class Scene:
                     )
                     primitive_collections[-1].memory = self.memory
                     primitive_collections[-1].scene = self
-        return primitive_collections, start_time_ind + duration
+        render_state = self._materialize_render_state(
+            start_time_ind, start_time_ind + duration
+        )
+        return primitive_collections, start_time_ind + duration, render_state
+
+    def _materialize_render_state(self, start_ind, end_ind):
+        """Materialize camera/screen/light state over ``[start_ind, end_ind)``
+        and extract the plain tensors the renderer consumes (this used to be
+        the first thing render_primitive_batch did). Returning a snapshot
+        instead of writing camera attributes means the render thread never
+        reads animated state -- by the time a batch renders, prep for the
+        *next* batch may be mutating that state on a worker thread.
+
+        The camera uses the base ``Animatable.set_state_to_time_t``: the
+        Camera override additionally writes ray_origin/screen_point/
+        screen_basis onto the camera object, which would race with the render
+        thread reading those attributes for the batch currently on screen.
+        """
+        from algan.animation.animatable import Animatable
+
+        time_inds = torch.arange(start_ind, end_ind)
+        camera = self.camera
+        camera.screen.reset_state()
+        camera.reset_state()
+        camera.set_state_full(time_inds[0], time_inds[-1] + 1)
+        Animatable.set_state_to_time_t(camera, time_inds)
+        camera.screen.set_state_full(time_inds[0], time_inds[-1] + 1)
+        camera.screen.set_state_to_time_t(time_inds)
+        device = COMPUTING_DEFAULTS.render_device
+        lights = []
+        for l in self.light_sources:
+            l.reset_state()
+            l.set_state_full(time_inds[0], time_inds[-1] + 1)
+            l.set_state_to_time_t(time_inds)
+            lights.append((
+                l.location.unsqueeze(-2).to(device),
+                (l.color[..., :-1] * l.color[..., -1:] * l.opacity)
+                .unsqueeze(-2)
+                .to(device),
+            ))
+        return dict(
+            ray_origin=camera.location.unsqueeze(-2).to(device),
+            screen_point=camera.screen.location.unsqueeze(-2).to(device),
+            screen_basis=camera.get_render_screen_basis().to(device),
+            lights=lights,
+        )
 
     def background_is_transparent(self):
         if hasattr(self.background_frame, '__call__'):
@@ -671,54 +719,104 @@ class Scene:
                     * get_num_available_bytes(COMPUTING_DEFAULTS.render_device)
                 )
 
-            while True:
-                _sync_devices()
-                s = time.time()
-                print(
-                    f"Fetching batch {current_time_ind}:{end_time_ind}."
-                )
-                primitives, new_time_ind = self.get_batch_of_primitives(
-                    current_time_ind, end_time_ind, actors, max_animate_mem
-                )
-                _sync_devices()
-                e = time.time()
-                print(
-                    f"Batch fetch took {e - s} seconds"
-                )
-                if new_time_ind <= current_time_ind:
-                    raise OutOfRenderMemory(
-                        "Insufficient memory to render this scene,"
-                        "please reduce the number of Mobs used."
-                    )
-                if len(primitives) > 0:
-                    self.has_any_active_actors = True
+            # Prefetch pipeline: while batch b renders on this thread, batch
+            # b+1 is prepped (CPU geometry generation + host-to-GPU upload) on
+            # a single worker thread. Batch prep touches only animated mob
+            # state (owned by prep; preps run strictly sequentially on the one
+            # worker) while rendering consumes only the primitive tensors and
+            # the render-state snapshot handed over by prep, so the two phases
+            # share no mutable state. All Taichi work stays on this thread.
+            # Set ALGAN_PREFETCH_BATCHES=0 to fall back to serial (also
+            # reduces peak memory by one batch's tensors).
+            prefetch_enabled = (
+                os.environ.get("ALGAN_PREFETCH_BATCHES", "1") != "0"
+            )
+            # inference_mode is thread-local; mirror the caller's mode in the
+            # worker so prep-created tensors can be mutated in-place later by
+            # the render thread (inference tensors may only be modified while
+            # inference mode is on).
+            inference_mode_enabled = torch.is_inference_mode_enabled()
 
+            def fetch_batch(time_ind):
+                with torch.inference_mode(inference_mode_enabled):
+                    return self.get_batch_of_primitives(
+                        time_ind, end_time_ind, actors, max_animate_mem
+                    )
+
+            executor = (
+                ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="algan-batch-prep"
+                )
+                if prefetch_enabled
+                else None
+            )
+            pending = None
+            try:
+                while True:
                     _sync_devices()
                     s = time.time()
                     print(
-                        f"Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video."
+                        f"Fetching batch {current_time_ind}:{end_time_ind}."
                     )
-                    yield from self.render_primitive_batch(
-                        primitives,
-                        current_time_ind,
-                        new_time_ind,
-                        save_image,
-                        post_processes,
-                        transparent_background,
-                        background_color,
-                    )
-                    del primitives
-                    # Free previous batch data before allocating next batch.
-                    empty_cache(force_gc=False)
+                    if pending is not None:
+                        primitives, new_time_ind, render_state = pending.result()
+                        pending = None
+                    else:
+                        primitives, new_time_ind, render_state = fetch_batch(
+                            current_time_ind
+                        )
                     _sync_devices()
                     e = time.time()
                     print(
-                        f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
+                        f"Batch fetch took {e - s} seconds"
                     )
+                    if new_time_ind <= current_time_ind:
+                        raise OutOfRenderMemory(
+                            "Insufficient memory to render this scene,"
+                            "please reduce the number of Mobs used."
+                        )
+                    if executor is not None and new_time_ind < end_time_ind:
+                        pending = executor.submit(fetch_batch, new_time_ind)
+                    if len(primitives) > 0:
+                        self.has_any_active_actors = True
 
-                current_time_ind = new_time_ind
-                if new_time_ind >= end_time_ind:
-                    break
+                        s = time.time()
+                        print(
+                            f"Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video."
+                        )
+                        yield from self.render_primitive_batch(
+                            primitives,
+                            current_time_ind,
+                            new_time_ind,
+                            save_image,
+                            post_processes,
+                            transparent_background,
+                            background_color,
+                            render_state=render_state,
+                        )
+                        del primitives
+                        # Free previous batch data before allocating next batch.
+                        empty_cache(force_gc=False)
+                        _sync_devices()
+                        e = time.time()
+                        print(
+                            f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
+                        )
+
+                    current_time_ind = new_time_ind
+                    if new_time_ind >= end_time_ind:
+                        break
+            finally:
+                # Always drain the worker before leaving (normal completion,
+                # error, or abandoned generator): a prep still running while
+                # the caller resets or reuses the scene would race it.
+                if pending is not None:
+                    try:
+                        pending.result()
+                    except Exception:
+                        pass
+                if executor is not None:
+                    executor.shutdown(wait=True)
 
         self.background_frame = self.original_background_frame
 

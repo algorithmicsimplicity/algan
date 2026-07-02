@@ -100,6 +100,12 @@ SPP = 1
 # Device sync
 # ---------------------------------------------------------------------------
 def _sync_devices():
+    # Stage boundaries may now run on the batch-prep worker thread (scene
+    # prefetch). Syncing there would serialize against the render thread's
+    # GPU work (misattributing it) and ti.sync() is not safe off the main
+    # thread, so only sync from the main thread.
+    if threading.current_thread() is not threading.main_thread():
+        return
     if torch.cuda.is_available():
         torch.cuda.synchronize()
     try:
@@ -125,20 +131,30 @@ class StageTimers:
     def reset(self):
         self.times = defaultdict(float)
         self.exclusive_times = defaultdict(float)
-        self.stack_level = 0
-        self.level_times = defaultdict(float)
         self.counts = defaultdict(int)
-        self.active = set()
+        # Stage nesting (stack level / re-entrancy) is tracked per thread:
+        # with scene batch prefetch, prep stages run on a worker thread
+        # concurrently with render stages on the main thread.
+        self._tls = threading.local()
         # (kernel_name, num_frames, num_rays, seconds)
         self.kernel_launches = []
 
+    def _thread_state(self):
+        tls = self._tls
+        if not hasattr(tls, "stack_level"):
+            tls.stack_level = 0
+            tls.level_times = defaultdict(float)
+            tls.active = set()
+        return tls
+
     @contextmanager
     def stage(self, name):
-        if name in self.active:
+        tls = self._thread_state()
+        if name in tls.active:
             yield
             return
-        self.active.add(name)
-        self.stack_level += 1
+        tls.active.add(name)
+        tls.stack_level += 1
         _sync_devices()
         t0 = time.perf_counter()
         try:
@@ -146,13 +162,13 @@ class StageTimers:
         finally:
             _sync_devices()
             t = time.perf_counter() - t0
-            self.stack_level -= 1
-            self.level_times[self.stack_level] += t
+            tls.stack_level -= 1
+            tls.level_times[tls.stack_level] += t
             self.times[name] += t
-            self.exclusive_times[name] += t - self.level_times[self.stack_level + 1]
-            self.level_times[self.stack_level + 1] = 0
+            self.exclusive_times[name] += t - tls.level_times[tls.stack_level + 1]
+            tls.level_times[tls.stack_level + 1] = 0
             self.counts[name] += 1
-            self.active.discard(name)
+            tls.active.discard(name)
 
     def wrap_function(self, obj, attr, name):
         """Wrap ``obj.attr`` in a stage timer (idempotent)."""
