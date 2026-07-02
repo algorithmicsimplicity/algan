@@ -77,7 +77,7 @@ from algan.utils.algan_utils import render_to_file
 # Optional pipeline-hook targets. Imported defensively: a rename upstream must
 # degrade the hook, not break the whole profiler.
 try:
-    from algan import SceneManager, Animatable, Surface, BezierCircuitCubic
+    from algan import SceneManager, Animatable, Surface, BezierCircuitCubic, TrianglePrimitive
 except Exception:  # pragma: no cover
     SceneManager = Animatable = Surface = BezierCircuitCubic = None
 
@@ -412,6 +412,7 @@ def install_pipeline_hooks():
     _try_wrap(Animatable, "reset_state", "Animatable.reset_state")
     _try_wrap(Animatable, "set_state_full", "Animatable.set_state_full")
     _try_wrap(Animatable, "set_state_to_time_t", "Animatable.set_state_to_time_t")
+    _try_wrap(TrianglePrimitive, "__init__", "TrianglePrimitive.__init__")
     _try_wrap(Surface, "get_render_primitives", "Surface.get_render_primitives")
     _try_wrap(BezierCircuitCubic, "get_render_primitives",
               "BezierCircuitCubic.get_render_primitives")
@@ -880,7 +881,8 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
         # kernels run inside "ray traced render total"). Kernels bypass the stack
         # machinery, so their time is already inside the render stage's exclusive
         # time -- give them 0 here (``.get(k, 0.0)``) to avoid double-counting.
-        accounted = sum(res["exclusive_times"].get(k, 0.0) for k in res["times"])
+        kp = 'kernel: '
+        accounted = sum(res["exclusive_times"].get(k, 0.0) for k in res["times"] if k[:len(kp)] != kp)
         unaccounted = res["total"] - accounted
         w(f"{'(unaccounted: video encode, scene mgmt, ...)':<52}{'':>6}"
           f"{unaccounted:>10.3f}{100 * unaccounted / res['total']:>8.1f}%")

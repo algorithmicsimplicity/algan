@@ -1235,10 +1235,14 @@ def _merge_scene(primitives):
                               "triangle merge")
         opaque = _cat_collections([p._rt_frame_opaque for p in all_triangles], 1,
                                   "triangle merge")
+        # Median-split ordering: ~25% faster traversal than Morton at ~0.2s
+        # extra build per batch; byte-identical for triangles (the depth-peel
+        # is arrangement-invariant). PN/bezier BVHs below stay Morton -- their
+        # seam de-dup is discovery-order sensitive (see stbvh._BVH_BUILD).
         scene["tri_bvh"] = build_stbvh(
             lo, hi, num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
-            opaque=opaque)
+            opaque=opaque, builder="split")
     else:
         scene["tri_pos"] = torch.zeros((1, 1, 9), device=device)
         scene["tri_norm"] = torch.zeros((1, 1, 9), device=device)

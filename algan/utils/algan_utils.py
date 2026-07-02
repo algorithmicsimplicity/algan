@@ -192,7 +192,7 @@ def render_to_file(
 def render_all_funcs(
     module_name,
     render_settings=None,
-    profile=True,
+    profile=False,
     overwrite=True,
     start_index=0,
     max_rendered=-1,

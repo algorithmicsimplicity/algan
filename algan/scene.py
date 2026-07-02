@@ -457,6 +457,146 @@ class Scene:
             p.shader_param_values = list(new_sp)
         return True
 
+    def _ensure_actor_state(self, actor, start_time_ind, end_time_ind):
+        """Materialize the actor's animated state for this batch. In
+        full-range mode (see get_frames) the state is materialized once over
+        the whole render window and reused by every later batch -- attribute
+        reads slice it through set_state_to_time_t -- which is valid because
+        animation history cannot change during rendering. Per-frame values are
+        identical either way (materialization is per-frame math), so output is
+        unchanged. Camera/screen/lights keep the per-batch protocol: their
+        state is reset every batch as part of the render-state snapshot
+        handover."""
+        full = getattr(self, "_full_state_range", None)
+        if full is None or (
+            actor is self.camera
+            or actor is self.camera.screen
+            or actor in self.light_sources
+        ):
+            actor.set_state_full(start_time_ind, end_time_ind)
+            return
+        d = actor.data
+        tm = d.time_inds_materialized
+        if (
+            getattr(actor, "_full_state_applied", False)
+            and d.set_pre_function_application
+            and tm is not None
+            and int(tm[0]) <= start_time_ind
+            and int(tm[-1]) >= end_time_ind - 1
+        ):
+            # Reused from an earlier batch. Mark as set so a duplicate
+            # occurrence later in this batch's actor loop is skipped, exactly
+            # as set_state_full would have caused.
+            actor.already_set_state = True
+            return
+        actor.set_state_full(*full)
+        actor._full_state_applied = True
+
+    def _is_batchable_surface(self, actor):
+        """True if this actor's geometry build can be stacked with same-shaped
+        peers into one tensor pass (see surface.get_render_primitives_batched).
+        Requires the stock Surface build (no subclass override), the plain
+        vertex-color path, and computed normals. Set ALGAN_BATCH_SURFACE_PREP=0
+        to disable batching (A/B against the per-surface path)."""
+        if os.environ.get("ALGAN_BATCH_SURFACE_PREP", "1") == "0":
+            return False
+        from algan.mobs.surfaces.surface import Surface
+
+        if not isinstance(actor, Surface):
+            return False
+        if type(actor).get_render_primitives is not Surface.get_render_primitives:
+            return False
+        if actor.color_texture is not None or actor.ignore_normals:
+            return False
+        if (
+            actor is self.camera
+            or actor is self.camera.screen
+            or actor in self.light_sources
+        ):
+            return False
+        return True
+
+    def _prepare_deferred_surface(self, actor, time_inds):
+        """Materialize the actor's state for the deferred geometry build --
+        at the three mode-3 knot frames when its motion is linear over this
+        batch (mirroring _try_timeline_direct), else densely at every frame --
+        and return the deferred entry consumed by _build_deferred_surfaces."""
+        entry = {"actor": actor, "z": None, "z_mid": None, "prims": None}
+        T = len(time_inds)
+        if self._time_compress_mode() == 3 and T > 2:
+            from algan.rendering.raytracing.time_compression import (
+                extract_global_linear_z)
+
+            actor.set_state_to_time_t(time_inds)
+            for component in actor.components:
+                component.set_state_to_time_t(time_inds)
+            loc = getattr(actor, "location", None)
+            if torch.is_tensor(loc):
+                loc3 = loc
+                while loc3.dim() < 3:
+                    loc3 = loc3.unsqueeze(0)
+                if loc3.shape[0] == T:
+                    z = extract_global_linear_z(loc3)
+                    if z is not None:
+                        mid = T // 2
+                        knot_inds = time_inds[torch.tensor([0, mid, T - 1])]
+                        actor.set_state_to_time_t(knot_inds)
+                        for component in actor.components:
+                            component.set_state_to_time_t(knot_inds)
+                        entry["z"] = z
+                        entry["z_mid"] = float(z[mid])
+                        return entry
+        actor.set_state_to_time_t(time_inds)
+        for component in actor.components:
+            component.set_state_to_time_t(time_inds)
+        return entry
+
+    def _build_deferred_surfaces(self, deferred, time_inds):
+        """Build geometry for all deferred surfaces, one stacked tensor pass
+        per (grid shape, materialized location shape) group, then apply the
+        mode-3 linear expansion per surface (dense per-surface rebuild on a
+        failed midpoint check) and release the actors' animated state."""
+        from algan.mobs.surfaces.surface import get_render_primitives_batched
+
+        groups = collections.defaultdict(list)
+        for entry in deferred:
+            actor = entry["actor"]
+            key = (
+                actor.grid_width,
+                actor.grid_height,
+                tuple(actor.grid.location.shape),
+            )
+            groups[key].append(entry)
+
+        for entries in groups.values():
+            prims = get_render_primitives_batched([e["actor"] for e in entries])
+            for entry, p in zip(entries, prims):
+                if entry["z"] is not None:
+                    if not self._expand_primitive_linear(p, entry["z"], entry["z_mid"]):
+                        # A nonlinear attribute failed the midpoint check:
+                        # rebuild this surface densely, as the per-surface
+                        # path would have.
+                        actor = entry["actor"]
+                        actor.set_state_to_time_t(time_inds)
+                        for component in actor.components:
+                            component.set_state_to_time_t(time_inds)
+                        p = actor.get_render_primitives()
+                if isinstance(p, list):
+                    entry["prims"] = p
+                else:
+                    entry["prims"] = [p] if p is not None else []
+
+        for entry in deferred:
+            actor = entry["actor"]
+            if getattr(self, "_full_state_range", None) is not None:
+                actor.already_set_state = False
+                for component in actor.components:
+                    component.already_set_state = False
+            else:
+                actor.reset_state()
+                for component in actor.components:
+                    component.reset_state()
+
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
@@ -523,16 +663,31 @@ class Scene:
         time_inds = torch.arange(start_time_ind, start_time_ind + duration)
 
         grouped_primitives = collections.defaultdict(lambda: [None, []])
+        # Surfaces sharing a grid shape are not built one-by-one: their state
+        # is materialized per-actor below (in anchor-priority order, exactly as
+        # before), but the geometry build is deferred so all of them can run as
+        # one stacked tensor pass (_build_deferred_surfaces). ordered_items
+        # records primitives / deferred entries in actor order so the final
+        # grouping (and thus the merged collection layout) is unchanged.
+        ordered_items = []
+        deferred_surfaces = []
         for actor in sorted(actors, key=lambda x: x.anchor_priority, reverse=True):
             if hasattr(actor, "already_set_state") and actor.already_set_state:
                 continue
             if (not actor.is_primitive) and not actor.data.history.function_applications:
                 actor.reset_state()
                 continue
-            actor.set_state_full(start_time_ind, start_time_ind + duration)
+            self._ensure_actor_state(actor, start_time_ind, start_time_ind + duration)
             if hasattr(actor, "get_render_primitives"):
                 for component in actor.components:
-                    component.set_state_full(start_time_ind, start_time_ind + duration)
+                    self._ensure_actor_state(component, start_time_ind, start_time_ind + duration)
+                if self._is_batchable_surface(actor):
+                    entry = self._prepare_deferred_surface(actor, time_inds)
+                    deferred_surfaces.append(entry)
+                    ordered_items.append(entry)
+                    # State must stay materialized for the batched build; the
+                    # reset happens in _build_deferred_surfaces.
+                    continue
                 # Mode-3: build geometry at just the segment endpoints and expand
                 # (skips the dense per-frame build); None falls back to dense.
                 primitive = self._try_timeline_direct(actor, time_inds)
@@ -544,17 +699,33 @@ class Scene:
                 if primitive is not None:
                     if not isinstance(primitive, list):
                         primitive = [primitive]
-                    for p in primitive:
-                        grouped_primitives[p.get_batch_identifier()][0] = p.__class__
-                        grouped_primitives[p.get_batch_identifier()][1].append(p)
+                    ordered_items.append(primitive)
             if not (
                 actor == self.camera
                 or actor == self.camera.screen
                 or actor in self.light_sources
             ):
-                actor.reset_state()
-                for component in actor.components:
-                    component.reset_state()
+                if getattr(self, "_full_state_range", None) is not None:
+                    # Keep the materialized state for later batches; only the
+                    # per-batch dedup flag set_state_full raised is cleared.
+                    actor.already_set_state = False
+                    for component in actor.components:
+                        component.already_set_state = False
+                else:
+                    actor.reset_state()
+                    for component in actor.components:
+                        component.reset_state()
+
+        if deferred_surfaces:
+            self._build_deferred_surfaces(deferred_surfaces, time_inds)
+
+        for item in ordered_items:
+            primitives = item["prims"] if isinstance(item, dict) else item
+            if not primitives:
+                continue
+            for p in primitives:
+                grouped_primitives[p.get_batch_identifier()][0] = p.__class__
+                grouped_primitives[p.get_batch_identifier()][1].append(p)
 
         primitive_collections = []
         max_bezier_batch_size = 50000
@@ -702,6 +873,39 @@ class Scene:
         actors = [self.camera, self.camera.screen, *self.light_sources, *self.actors[-1]]
         save_image = False
 
+        # Full-range state reuse: animation history is frozen while rendering
+        # (the Off context below records nothing), so each actor's animated
+        # state can be materialized ONCE over the whole render window and
+        # sliced per batch by set_state_to_time_t, instead of re-walking its
+        # attribute/function history for every batch (set_state_full was ~25%
+        # of batch prep). OPT-IN (ALGAN_FULL_RANGE_STATE=1): output is not
+        # byte-identical to the per-batch protocol -- rate funcs evaluate
+        # transcendentals (sigmoid) whose CPU vector lanes round 1 ULP
+        # differently by tensor size, so the eased fraction z at a few frames
+        # shifts by 1 ULP, which can flip the odd silhouette-edge pixel
+        # (measured 0.00006% of values on neural_net). Also guarded by an
+        # estimate of the total CPU-side state (per-frame attr bytes x
+        # frames); ALGAN_FULL_RANGE_STATE_MB overrides the cap.
+        self._full_state_range = None
+        if os.environ.get("ALGAN_FULL_RANGE_STATE", "0") == "1":
+            total_frames = int(end_time_ind) - int(start_time_ind)
+            state_bytes_per_frame = 0
+            for a in self.actors[-1]:
+                for m in (a, *getattr(a, "components", [])):
+                    data = getattr(m, "data", None)
+                    if data is None:
+                        continue
+                    for v in data.data_dict_active.values():
+                        if torch.is_tensor(v):
+                            state_bytes_per_frame += (
+                                v.numel() // max(v.shape[0], 1)
+                            ) * v.element_size()
+            cap = float(
+                os.environ.get("ALGAN_FULL_RANGE_STATE_MB", "2048")
+            ) * 2**20
+            if state_bytes_per_frame * total_frames <= cap:
+                self._full_state_range = (int(start_time_ind), int(end_time_ind))
+
         self.has_any_active_actors = False
         self.memory = ManualMemory(
             COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
@@ -817,6 +1021,15 @@ class Scene:
                         pass
                 if executor is not None:
                     executor.shutdown(wait=True)
+                # Full-range mode keeps actor state materialized across
+                # batches; release it now so the scene is left exactly as the
+                # per-batch protocol leaves it (all actors reset).
+                if getattr(self, "_full_state_range", None) is not None:
+                    self._full_state_range = None
+                    for a in self.actors[-1]:
+                        a.reset_state()
+                        for component in getattr(a, "components", []):
+                            component.reset_state()
 
         self.background_frame = self.original_background_frame
 

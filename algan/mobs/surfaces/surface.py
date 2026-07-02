@@ -45,6 +45,110 @@ def grid_to_triangle_vertices(grid):
     return flat_grid[..., indices, :]
 
 
+def compute_grid_vertex_normals(grid):
+    """Area-weighted vertex normals for a surface grid ``[..., W, H, 3]``,
+    with closed-seam and pole merging. All computations broadcast over any
+    leading dims (time, or a stack of same-shaped surfaces), which lets
+    :func:`get_render_primitives_batched` run this once for many surfaces."""
+    grid_x_plus_1 = grid.roll(-1, -3)
+    grid_x_minus_1 = grid.roll(1, -3)
+    grid_y_plus_1 = grid.roll(-1, -2)
+    grid_y_minus_1 = grid.roll(1, -2)
+    triangle_sides = unsquish(
+        torch.stack(
+            (
+                grid_x_minus_1,
+                grid_y_minus_1,
+                grid_y_minus_1,
+                grid_x_plus_1,
+                grid_x_plus_1,
+                grid_y_plus_1,
+                grid_y_plus_1,
+                grid_x_minus_1,
+            ),
+            -2,
+        )
+        - grid.unsqueeze(-2),
+        -2,
+        2,
+    )
+    triangle_normals = broadcast_cross_product(
+        triangle_sides[..., 0, :], triangle_sides[..., 1, :]
+    )
+    triangle_normals[..., 0, :, [0, 3], :] = 0
+    triangle_normals[..., -1, :, [1, 2], :] = 0
+    triangle_normals[..., :, 0, [0, 1], :] = 0
+    triangle_normals[..., :, -1, [2, 3], :] = 0
+    unnormalized_normals = triangle_normals.sum(-2)
+
+    # Merge unnormalized normals along closed seams using vectorized masking to avoid CPU-GPU synchronization.
+    is_closed_x = torch.all((grid[..., 0, :, :] - grid[..., -1, :, :]).abs() < 1e-4, dim=(-1, -2))
+    mask_x = is_closed_x.view(*is_closed_x.shape, 1, 1)
+    closed_normals_x = unnormalized_normals[..., 0, :, :] + unnormalized_normals[..., -1, :, :]
+    unnormalized_normals[..., 0, :, :] = torch.where(mask_x, closed_normals_x, unnormalized_normals[..., 0, :, :])
+    unnormalized_normals[..., -1, :, :] = torch.where(mask_x, closed_normals_x, unnormalized_normals[..., -1, :, :])
+
+    is_closed_y = torch.all((grid[..., :, 0, :] - grid[..., :, -1, :]).abs() < 1e-4, dim=(-1, -2))
+    mask_y = is_closed_y.view(*is_closed_y.shape, 1, 1)
+    closed_normals_y = unnormalized_normals[..., :, 0, :] + unnormalized_normals[..., :, -1, :]
+    unnormalized_normals[..., :, 0, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, 0, :])
+    unnormalized_normals[..., :, -1, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, -1, :])
+
+    # Merge unnormalized normals at singular poles (e.g. Sphere poles, Cone tip).
+    # The fan of triangles around a collapsed pole column can sum to a
+    # normal pointing *inward* (the degenerate pole faces carry the
+    # opposite winding sign from the rest of the grid). An inverted pole
+    # normal makes the patches touching the pole interpolate from an
+    # inward normal at the pole to the (correct) outward normals on the
+    # neighbouring ring, sweeping the shading normal through the lit
+    # hemisphere on the way -- a bright ring around an otherwise unlit
+    # pole. Orient each pole normal into the same hemisphere as its
+    # adjacent ring (column 1 / -2), which is reliably outward.
+    def _orient_to_ring(pole_normal, ring_normal):
+        dot = (pole_normal * ring_normal).sum(-1, keepdim=True)
+        return torch.where(dot < 0, -pole_normal, pole_normal)
+
+    is_south_pole = torch.all((grid[..., :, 0, :] - grid[..., :1, 0, :]).abs() < 1e-4, dim=(-1, -2))
+    mask_sp = is_south_pole.view(*is_south_pole.shape, 1, 1)
+    pole_normal_sp = unnormalized_normals[..., :, 0, :].sum(-2, keepdim=True)
+    ring_normal_sp = unnormalized_normals[..., :, 1, :].sum(-2, keepdim=True)
+    pole_normal_sp = _orient_to_ring(pole_normal_sp, ring_normal_sp)
+    unnormalized_normals[..., :, 0, :] = torch.where(mask_sp, pole_normal_sp, unnormalized_normals[..., :, 0, :])
+
+    is_north_pole = torch.all((grid[..., :, -1, :] - grid[..., :1, -1, :]).abs() < 1e-4, dim=(-1, -2))
+    mask_np = is_north_pole.view(*is_north_pole.shape, 1, 1)
+    pole_normal_np = unnormalized_normals[..., :, -1, :].sum(-2, keepdim=True)
+    ring_normal_np = unnormalized_normals[..., :, -2, :].sum(-2, keepdim=True)
+    pole_normal_np = _orient_to_ring(pole_normal_np, ring_normal_np)
+    unnormalized_normals[..., :, -1, :] = torch.where(mask_np, pole_normal_np, unnormalized_normals[..., :, -1, :])
+
+    return -F.normalize(unnormalized_normals, p=2, dim=-1)
+
+
+def get_render_primitives_batched(surfaces):
+    """Build render primitives for N surfaces that share a grid shape and
+    frame count, running the geometry pipeline (normal computation and
+    triangle-vertex gathers) once on a ``[N, T, W, H, 3]`` stack instead of
+    once per surface. Numerically identical to calling
+    :meth:`Surface.get_render_primitives` on each surface (all ops are
+    elementwise or reduce over non-batch dims), but with N times fewer
+    Python/torch dispatches. Callers must ensure every surface uses the stock
+    ``Surface.get_render_primitives``, has no ``color_texture``, has
+    ``ignore_normals`` False, and has identical grid dimensions and
+    ``grid.location`` shape."""
+    for s in surfaces:
+        s.grid.set_time_inds_to(s)
+    grids = torch.stack(
+        [unsquish(s.grid.location, -2, s.grid_height) for s in surfaces]
+    )
+    vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grids))
+    corners = grid_to_triangle_vertices(grids)
+    return [
+        s._build_render_primitive(grids[i], vertex_normals[i], precomputed_corners=corners[i])
+        for i, s in enumerate(surfaces)
+    ]
+
+
 class Surface(Renderable):
     """A smooth 2-D surface, embedded in 3-D space, A.K.A a manifold.
     The surface is implemented by sampling a uniform grid of 2-D points
@@ -482,83 +586,16 @@ class Surface(Renderable):
         self.grid.set_time_inds_to(self)
         grid = unsquish(self.grid.location, -2, self.grid_height)
         if not self.ignore_normals:
-            grid_x_plus_1 = grid.roll(-1, -3)
-            grid_x_minus_1 = grid.roll(1, -3)
-            grid_y_plus_1 = grid.roll(-1, -2)
-            grid_y_minus_1 = grid.roll(1, -2)
-            triangle_sides = unsquish(
-                torch.stack(
-                    (
-                        grid_x_minus_1,
-                        grid_y_minus_1,
-                        grid_y_minus_1,
-                        grid_x_plus_1,
-                        grid_x_plus_1,
-                        grid_y_plus_1,
-                        grid_y_plus_1,
-                        grid_x_minus_1,
-                    ),
-                    -2,
-                )
-                - grid.unsqueeze(-2),
-                -2,
-                2,
-            )
-            triangle_normals = broadcast_cross_product(
-                triangle_sides[..., 0, :], triangle_sides[..., 1, :]
-            )
-            triangle_normals[..., 0, :, [0, 3], :] = 0
-            triangle_normals[..., -1, :, [1, 2], :] = 0
-            triangle_normals[..., :, 0, [0, 1], :] = 0
-            triangle_normals[..., :, -1, [2, 3], :] = 0
-            unnormalized_normals = triangle_normals.sum(-2)
-
-            # Merge unnormalized normals along closed seams using vectorized masking to avoid CPU-GPU synchronization.
-            is_closed_x = torch.all((grid[..., 0, :, :] - grid[..., -1, :, :]).abs() < 1e-4, dim=(-1, -2))
-            mask_x = is_closed_x.view(*is_closed_x.shape, 1, 1)
-            closed_normals_x = unnormalized_normals[..., 0, :, :] + unnormalized_normals[..., -1, :, :]
-            unnormalized_normals[..., 0, :, :] = torch.where(mask_x, closed_normals_x, unnormalized_normals[..., 0, :, :])
-            unnormalized_normals[..., -1, :, :] = torch.where(mask_x, closed_normals_x, unnormalized_normals[..., -1, :, :])
-
-            is_closed_y = torch.all((grid[..., :, 0, :] - grid[..., :, -1, :]).abs() < 1e-4, dim=(-1, -2))
-            mask_y = is_closed_y.view(*is_closed_y.shape, 1, 1)
-            closed_normals_y = unnormalized_normals[..., :, 0, :] + unnormalized_normals[..., :, -1, :]
-            unnormalized_normals[..., :, 0, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, 0, :])
-            unnormalized_normals[..., :, -1, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, -1, :])
-
-            # Merge unnormalized normals at singular poles (e.g. Sphere poles, Cone tip).
-            # The fan of triangles around a collapsed pole column can sum to a
-            # normal pointing *inward* (the degenerate pole faces carry the
-            # opposite winding sign from the rest of the grid). An inverted pole
-            # normal makes the patches touching the pole interpolate from an
-            # inward normal at the pole to the (correct) outward normals on the
-            # neighbouring ring, sweeping the shading normal through the lit
-            # hemisphere on the way -- a bright ring around an otherwise unlit
-            # pole. Orient each pole normal into the same hemisphere as its
-            # adjacent ring (column 1 / -2), which is reliably outward.
-            def _orient_to_ring(pole_normal, ring_normal):
-                dot = (pole_normal * ring_normal).sum(-1, keepdim=True)
-                return torch.where(dot < 0, -pole_normal, pole_normal)
-
-            is_south_pole = torch.all((grid[..., :, 0, :] - grid[..., :1, 0, :]).abs() < 1e-4, dim=(-1, -2))
-            mask_sp = is_south_pole.view(*is_south_pole.shape, 1, 1)
-            pole_normal_sp = unnormalized_normals[..., :, 0, :].sum(-2, keepdim=True)
-            ring_normal_sp = unnormalized_normals[..., :, 1, :].sum(-2, keepdim=True)
-            pole_normal_sp = _orient_to_ring(pole_normal_sp, ring_normal_sp)
-            unnormalized_normals[..., :, 0, :] = torch.where(mask_sp, pole_normal_sp, unnormalized_normals[..., :, 0, :])
-
-            is_north_pole = torch.all((grid[..., :, -1, :] - grid[..., :1, -1, :]).abs() < 1e-4, dim=(-1, -2))
-            mask_np = is_north_pole.view(*is_north_pole.shape, 1, 1)
-            pole_normal_np = unnormalized_normals[..., :, -1, :].sum(-2, keepdim=True)
-            ring_normal_np = unnormalized_normals[..., :, -2, :].sum(-2, keepdim=True)
-            pole_normal_np = _orient_to_ring(pole_normal_np, ring_normal_np)
-            unnormalized_normals[..., :, -1, :] = torch.where(mask_np, pole_normal_np, unnormalized_normals[..., :, -1, :])
-
-            vertex_normals = -F.normalize(unnormalized_normals, p=2, dim=-1)
-            vertex_normals = grid_to_triangle_vertices(vertex_normals)
+            vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grid))
         else:
             vertex_normals = None
+        return self._build_render_primitive(grid, vertex_normals)
 
+    def _build_render_primitive(self, grid, vertex_normals, precomputed_corners=None):
+        """Assemble the :class:`TrianglePrimitive` for this surface from an
+        already-materialized grid ``[T, W, H, 3]`` and (triangle-gathered)
+        vertex normals. ``precomputed_corners`` lets the batched path pass in
+        corners gathered on the whole surface stack at once."""
         def expand_grid_to_verts(x):
             if x.shape[-2] == 1:
                 x = x.expand(
@@ -617,7 +654,10 @@ class Surface(Renderable):
                                  5).as_subclass(Color).mult_opacity(self.opacity.unsqueeze(-2))
 
         colors = get_cached_expanded_param('color', lambda: expand_grid_to_verts(compute_grid_color()))
-        corners = get_cached_expanded_param('location', lambda: grid_to_triangle_vertices(grid))
+        corners = get_cached_expanded_param(
+            'location',
+            lambda: grid_to_triangle_vertices(grid) if precomputed_corners is None else precomputed_corners,
+        )
         normals = get_cached_expanded_param('normals', lambda: vertex_normals if vertex_normals is not None else None)
 
         return TrianglePrimitive(

@@ -68,6 +68,13 @@ LEAF_SIZE = max(1, int(os.environ.get("ALGAN_STBVH_LEAF_SIZE", "1")))
 # be >= 2.
 BVH_ARITY = max(2, int(os.environ.get("ALGAN_BVH_ARITY", "4")))
 
+# Relative weight of the (normalized) time axis in the median-split builder's
+# widest-axis choice. > 1 makes time splits happen higher in the tree, so
+# subtrees become frame-pure sooner and the traversal's frame gate rejects
+# them wholesale for rays in other frames. Purely a build-quality knob: the
+# traversal is arrangement-invariant, so renders are byte-identical.
+SPLIT_TIME_WEIGHT = float(os.environ.get("ALGAN_SPLIT_TIME_WEIGHT", "1"))
+
 
 class STBVH:
     """Flat tensor representation of the spatio-temporal BVH.
@@ -149,15 +156,24 @@ def _quantize(c, lo, hi):
     return q.clamp_(min=0, max=2 ** _QUANT_BITS - 1)
 
 
-# Build the instance ordering by recursive median split (env ALGAN_BVH_BUILD)
-# instead of the default 4D-Morton sort. A space-filling curve is cheap but
-# packs spatially-distant instances into the same balanced subtree at its
-# discontinuities, leaving loose internal node boxes; a top-down median split
-# bisects each node along its longest (normalized) axis, giving tighter boxes
-# and fewer traversal steps. It is purely a reordering -- same instances, same
-# opaque flags, same tree shape -- so the traversal code is untouched and the
-# set of intersections found is unchanged.
-_BVH_BUILD = os.environ.get("ALGAN_BVH_BUILD", "morton")
+# Instance-ordering builder: "morton" (4D-Morton sort), "split" (recursive
+# longest-axis median split) or "sah" (experimental explicit-DFS SAH tree). A
+# space-filling curve is cheap but packs spatially-distant instances into the
+# same balanced subtree at its discontinuities, leaving loose internal node
+# boxes; a top-down median split bisects each node along its longest
+# (normalized) axis, giving tighter boxes and ~20-25% fewer traversal steps.
+# Both are pure reorderings -- same instances, same opaque flags, same tree
+# shape -- so the traversal code is untouched and the set of intersections
+# found is unchanged.
+#
+# The default is per geometry type (chosen by the caller of build_stbvh):
+# "split" for triangles, whose depth-peel is provably arrangement-invariant
+# (verified byte-identical), "morton" for PN patches / bezier circuits, whose
+# seam de-duplication is discovery-order sensitive (split changes output at
+# the epsilon level there -- faster, but kept off to preserve baselines).
+# Setting ALGAN_BVH_BUILD forces one builder for every type (A/B escape
+# hatch).
+_BVH_BUILD = os.environ.get("ALGAN_BVH_BUILD")
 
 
 def _median_split_slots(centers, P):
@@ -461,7 +477,7 @@ def _compute_miss_links(num_leaves, device):
 
 
 def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
-                opaque=None):
+                opaque=None, builder="morton"):
     """Build a spatio-temporal BVH from per-frame primitive bounds.
 
     Parameters
@@ -479,7 +495,13 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
         marked opaque (``leaf_tspan`` bit 31) when the primitive is opaque on
         *every* frame of the instance's interval, allowing the renderer to
         prune hits behind it during gathering.
+    builder : str
+        Instance-ordering strategy: "morton", "split" or "sah" (see the
+        ``_BVH_BUILD`` comment above for the trade-offs and per-geometry-type
+        defaults). Overridden globally by env ALGAN_BVH_BUILD when set.
     """
+    if _BVH_BUILD is not None:
+        builder = _BVH_BUILD
     Tc, N, _ = frame_lo.shape
     device = frame_lo.device
     if num_frames is None:
@@ -523,7 +545,7 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
         else:
             inst_opaque = None
 
-    if _BVH_BUILD == "sah":
+    if builder == "sah":
         # Explicit-DFS unbalanced SAH tree (experimental; consumed by the
         # ti.static SAH branch of the deterministic traversal).
         return _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque,
@@ -539,7 +561,7 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
     num_nodes = (a * P - 1) // (a - 1)
     first_leaf = num_nodes - P
 
-    use_split = (_BVH_BUILD == "split") and (L == 1) and (M > 0)
+    use_split = (builder == "split") and (L == 1) and (M > 0)
     if use_split:
         # Recursive longest-axis median split: tighter internal boxes than the
         # Morton curve, fewer traversal steps. The four axes are normalized so
@@ -552,6 +574,7 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
         smax = inst_hi.amax(0)
         cn = (center - smin) / (smax - smin).clamp_min(1e-12)
         tn = (t_center / float(max(num_frames - 1, 1))).unsqueeze(-1)
+        tn = tn * SPLIT_TIME_WEIGHT
         slot_src = _median_split_slots(torch.cat((cn, tn), -1), P)  # [P]
         real = slot_src >= 0
         src = slot_src.clamp_min(0)
