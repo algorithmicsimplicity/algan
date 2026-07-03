@@ -53,6 +53,29 @@ def image_to_texture_map(image):
     return image.transpose(-3, -2).flip(-2).as_subclass(Color)
 
 
+def image_to_normal_map(image, flip_green=True):
+    """Convert a tangent-space normal map image ``[H, W, 3]`` in ``[0, 1]``
+    (rgb-encoded, ``n = 2*rgb - 1``) to the ``[W, H, 3]`` layout the ray tracer
+    samples, with components in ``[-1, 1]`` (x along +u, y along +v, z along the
+    smooth normal).
+
+    Uses the same spatial transform as :func:`image_to_texture_map` so the map
+    aligns with the (v-flipped) UVs. Because that v-flip reverses the tangent's
+    v direction, the map's green (y) channel is flipped by default so a glTF
+    (+Y / OpenGL) normal map lights correctly; set ``flip_green=False`` for
+    already-agreeing (DirectX-style) maps.
+    """
+    image = cast_to_tensor(image).float()
+    if image.dim() != 3 or image.shape[-1] < 3:
+        raise ValueError(
+            f"normal map must be [H, W, >=3], got shape {tuple(image.shape)}")
+    n = image[..., :3] * 2.0 - 1.0
+    if flip_green:
+        n = n.clone()
+        n[..., 1] = -n[..., 1]
+    return n.transpose(-3, -2).flip(-2).contiguous()
+
+
 class TriangleMesh(Renderable):
     """An arbitrary indexed triangle mesh with optional per-corner normals,
     UVs and a texture map.
@@ -100,6 +123,7 @@ class TriangleMesh(Renderable):
         material_texture_flags=0,
         normal_texture_map=None,
         ignore_normals=False,
+        recompute_normals=False,
         **kwargs,
     ):
         vertices = cast_to_tensor(vertices).view(-1, 3)
@@ -109,11 +133,22 @@ class TriangleMesh(Renderable):
         # ordering the TrianglePrimitive / trace kernel expect.
         corner_index = faces.reshape(-1)  # [3F]
         self.num_triangles = faces.shape[0]
+        self.num_vertices = vertices.shape[0]
+        # If True, per-corner normals are recomputed (area-weighted smooth) from
+        # the *current* corner geometry every frame instead of rotating the
+        # authored normals by the (static) basis. This keeps smooth shading
+        # correct when the geometry itself deforms per frame (rigid node /
+        # skeletal / morph animation), where the authored local normals no
+        # longer describe the world surface.
+        self.recompute_normals = recompute_normals
 
         super().__init__(**kwargs)
         device = self.location.device
         vertices = vertices.to(device)
         corner_index = corner_index.to(device)
+        # Per-corner vertex index (into the [V] vertex array); kept for smooth
+        # normal recomputation and for re-baking corners under animation.
+        self.corner_index = corner_index
 
         corner_positions = vertices[corner_index]  # [3F, 3]
 
@@ -164,8 +199,11 @@ class TriangleMesh(Renderable):
         if self.texture_map is not None:
             corner_colors = WHITE.view(1, -1).expand(corner_positions.shape[0], -1)
         elif vertex_colors is not None:
-            vertex_colors = Color.add_defaults(
-                cast_to_tensor(vertex_colors).to(device))
+            # Flatten to [V, C] (cast_to_tensor may prepend a batch axis) before
+            # padding to the 5-slot colour and indexing per corner.
+            vertex_colors = cast_to_tensor(vertex_colors).to(device)
+            vertex_colors = vertex_colors.reshape(-1, vertex_colors.shape[-1])
+            vertex_colors = Color.add_defaults(vertex_colors)
             corner_colors = vertex_colors[corner_index]
         else:
             corner_colors = self.color.view(1, -1).expand(
@@ -197,18 +235,46 @@ class TriangleMesh(Renderable):
         """
         if self.ignore_normals:
             return None
+        if self.recompute_normals and self.corner_normals is not None:
+            # Smooth (area-weighted) per-vertex normals from the *current*
+            # geometry -- correct under any per-frame deformation.
+            return self._smooth_corner_normals(corners_flat)
         if self.corner_normals is not None:
             n_local = self.corner_normals.unsqueeze(0).expand_as(corners_flat)
             world = map_local_to_global_coords(
                 corners_flat, self.grid.basis, n_local) - corners_flat
             return F.normalize(world, p=2, dim=-1)
         # Flat face normals: cross product of two edges, shared by all 3 corners.
+        return self._flat_corner_normals(corners_flat)
+
+    def _flat_corner_normals(self, corners_flat):
+        """Flat per-face normals (one per triangle, shared by its 3 corners)."""
         tris = unsquish(corners_flat, -2, 3)  # [T, F, 3, 3]
         e1 = tris[..., 1, :] - tris[..., 0, :]
         e2 = tris[..., 2, :] - tris[..., 0, :]
         face_n = F.normalize(torch.cross(e1, e2, dim=-1), p=2, dim=-1)  # [T, F, 3]
         return face_n.unsqueeze(-2).expand(*face_n.shape[:-1], 3, 3).reshape(
             corners_flat.shape)
+
+    def _smooth_corner_normals(self, corners_flat):
+        """Area-weighted smooth per-vertex normals from the current corner
+        positions ``[T, 3F, 3]``. Un-normalized face normals (whose magnitude is
+        twice the triangle area) are scattered onto shared vertices so larger
+        faces contribute more, then gathered back to the corners. Preserves
+        smooth shading across shared edges under arbitrary deformation."""
+        T = corners_flat.shape[0]
+        tris = unsquish(corners_flat, -2, 3)          # [T, F, 3, 3]
+        e1 = tris[..., 1, :] - tris[..., 0, :]
+        e2 = tris[..., 2, :] - tris[..., 0, :]
+        face_n = torch.cross(e1, e2, dim=-1)          # [T, F, 3] (area-weighted)
+        # Each face contributes its normal to all three of its vertices.
+        per_corner = face_n.unsqueeze(-2).expand(*face_n.shape[:-1], 3, 3)
+        per_corner = per_corner.reshape(T, -1, 3)     # [T, 3F, 3]
+        idx = self.corner_index.view(1, -1, 1).expand(T, -1, 3)
+        vert_n = corners_flat.new_zeros(T, self.num_vertices, 3)
+        vert_n.scatter_add_(1, idx, per_corner)
+        vert_n = F.normalize(vert_n, p=2, dim=-1)
+        return vert_n.gather(1, idx)                   # [T, 3F, 3]
 
     def get_render_primitives(self):
         self.grid.set_time_inds_to(self)

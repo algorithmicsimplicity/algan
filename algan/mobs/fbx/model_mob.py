@@ -25,9 +25,15 @@ import os
 
 import torch
 
-from algan.animation.animation_contexts import Off
+from algan.animation.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
-from algan.mobs.fbx.mesh import TriangleMesh, image_to_texture_map
+from algan.constants.rate_funcs import identity
+from algan.mobs.fbx import animation as _anim
+from algan.mobs.fbx.mesh import (
+    TriangleMesh,
+    image_to_normal_map,
+    image_to_texture_map,
+)
 from algan.mobs.fbx.scene_data import SceneData
 from algan.mobs.mob import Mob
 
@@ -132,6 +138,15 @@ class ThreeDModelMob(Mob):
         Use the mesh's authored / generated per-vertex normals for smooth
         shading (default True). When False, flat per-face normals are derived
         at render time.
+    normal_maps : bool
+        Apply tangent-space normal maps from materials (default True), adding
+        per-fragment surface detail. Requires per-vertex UVs; batches carrying a
+        normal map render through the general wavefront tracer.
+    pbr_materials : bool
+        Apply each material's PBR parameters (metalness / roughness / emissive)
+        as a :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`
+        (default True), so imported meshes shade with Cook-Torrance GGX. When
+        False the default lit shader is kept.
     *args, **kwargs
         Passed to :class:`~.Mob` (e.g. ``location`` to place the model).
     """
@@ -144,10 +159,14 @@ class ThreeDModelMob(Mob):
         normalize: bool = False,
         normalize_size: float = 2.0,
         smooth_normals: bool = True,
+        normal_maps: bool = True,
+        pbr_materials: bool = True,
         **kwargs,
     ):
         super().__init__(**kwargs)
         device = self.location.device
+        self.normal_maps = normal_maps
+        self.pbr_materials = pbr_materials
 
         if scene_data is None:
             if file_path is None:
@@ -163,17 +182,34 @@ class ThreeDModelMob(Mob):
         # Cache loaded texture maps by file path (materials commonly share one).
         self._texture_cache: dict[str, object] = {}
 
+        # Recenter/scale applied by normalize(), also folded into animation
+        # baking so baked poses land in the same space as the built geometry.
+        self._norm_center = torch.zeros(3, device=device)
+        self._norm_scale = 1.0
+
         self.mesh_mobs: list[TriangleMesh] = []
+        # Node name -> the mesh mobs built for that node (for part access).
+        self.parts: dict[str, list[TriangleMesh]] = {}
         with Off():
             for mesh_idx, mesh in enumerate(scene_data.meshes):
                 node_indices = mesh_nodes.get(mesh_idx, [-1])
                 for node_idx in node_indices:
                     matrix = (world[node_idx] if 0 <= node_idx < len(world)
                               else _eye4(device))
-                    self.mesh_mobs.append(
-                        self._build_mesh_mob(
-                            scene_data, mesh, matrix, device,
-                            load_textures, smooth_normals))
+                    mob = self._build_mesh_mob(
+                        scene_data, mesh, matrix, device,
+                        load_textures, smooth_normals)
+                    node_name = (scene_data.nodes[node_idx].name
+                                 if 0 <= node_idx < len(scene_data.nodes)
+                                 else mesh.name) or mesh.name or f"mesh_{mesh_idx}"
+                    mob.node_name = node_name
+                    # Animation hooks: the node this instance came from, and the
+                    # mesh's *local* (pre-world-bake) vertices, so per-frame
+                    # world corners can be re-baked from animated transforms.
+                    mob._node_idx = node_idx
+                    mob._local_vertices = mesh.vertices.to(device)
+                    self.mesh_mobs.append(mob)
+                    self.parts.setdefault(node_name, []).append(mob)
 
         if not self.mesh_mobs:
             raise ValueError(
@@ -208,6 +244,10 @@ class ThreeDModelMob(Mob):
         if texture is not None and uvs is None:
             texture = None
 
+        normal_texture_map = None
+        if self.normal_maps and uvs is not None and material is not None:
+            normal_texture_map = self._resolve_normal_map(material, device)
+
         mesh_kwargs = {}
         if color is not None and texture is None and vertex_colors is None:
             mesh_kwargs["color"] = color
@@ -221,8 +261,16 @@ class ThreeDModelMob(Mob):
             uvs=uvs,
             texture=texture,
             vertex_colors=vertex_colors,
+            normal_texture_map=normal_texture_map,
             **mesh_kwargs,
         )
+
+        # PBR shading: apply the material's metalness/roughness/emissive as a
+        # MeshStandardMaterial (Cook-Torrance GGX per fragment). The texture (or
+        # per-vertex colour) still supplies albedo; the material colour is only
+        # the flat fallback.
+        if self.pbr_materials and material is not None:
+            self._apply_pbr_material(mob, material, color, has_texture=texture is not None)
 
         # Optional non-default material response, applied before spawn.
         if material is not None:
@@ -235,6 +283,45 @@ class ThreeDModelMob(Mob):
                 )
                 set_refractive_index(mob, float(material.refractive_index))
         return mob
+
+    def _apply_pbr_material(self, mob, material, color, has_texture):
+        """Apply ``material``'s PBR params as a MeshStandardMaterial. Metalness
+        and roughness are per-primitive constants for the in-kernel GGX shader;
+        when a packed metallic-roughness map is present they are taken as its
+        mean (modulated by the factors) since the deterministic fragment shader
+        reads them per triangle, not per texel."""
+        from algan.rendering.shaders.materials import MeshStandardMaterial
+
+        metalness = float(material.metallic_factor)
+        roughness = float(material.roughness_factor)
+        mr = material.metallic_roughness_image
+        if mr is not None and mr.shape[-1] >= 3:
+            # glTF packing: G = roughness, B = metallic.
+            roughness *= float(mr[..., 1].mean())
+            metalness *= float(mr[..., 2].mean())
+        emissive = tuple(float(x) for x in material.emissive)
+        mat = MeshStandardMaterial(
+            color=color,
+            metalness=metalness,
+            roughness=roughness,
+            emissive=(emissive if any(e > 0 for e in emissive) else 0x000000),
+        )
+        # Suppress the "textures not sampled" parity warning: this renderer does
+        # sample maps (they are wired through TriangleMesh, not the Material).
+        mat._textures = {}
+        mob.set_material(mat)
+        return mob
+
+    def _resolve_normal_map(self, material, device):
+        """Tangent-space normal map for a material as a ``[W, H, 3]`` tensor in
+        ``[-1, 1]``: an embedded image takes precedence over a file path."""
+        if material.normal_image is not None:
+            return image_to_normal_map(material.normal_image.to(device)).to(device)
+        if material.normal_texture and os.path.exists(material.normal_texture):
+            image = _load_image_hwc(material.normal_texture)
+            if image is not None:
+                return image_to_normal_map(image).to(device)
+        return None
 
     def _resolve_texture(self, material, device):
         """Diffuse texture map for a material: an embedded in-memory image
@@ -273,6 +360,157 @@ class ThreeDModelMob(Mob):
         with Off():
             for mob in self.mesh_mobs:
                 mob.grid.location = (mob.grid.location - center) * scale
+        # Record so bake_animation lands baked poses in the same space.
+        self._norm_center = center
+        self._norm_scale = scale
+        return self
+
+    @property
+    def node_names(self):
+        """The names of the model's nodes that carry geometry."""
+        return list(self.parts.keys())
+
+    def get_part(self, name):
+        """The imported mesh mob(s) for a named node, so a sub-part of the model
+        can be manipulated (moved, coloured, animated) on its own. Returns a
+        single :class:`~algan.mobs.fbx.mesh.TriangleMesh` when the node has one
+        mesh, else a list. Raises ``KeyError`` for an unknown node."""
+        if name not in self.parts:
+            raise KeyError(
+                f"no node named {name!r}; available: {self.node_names}")
+        mobs = self.parts[name]
+        return mobs[0] if len(mobs) == 1 else list(mobs)
+
+    # --- Phase 3: rigid node-keyframe animation -----------------------------
+    @property
+    def animations(self):
+        """The animation clips (:class:`~.AnimationData`) parsed from the model
+        file, if any."""
+        return self.scene_data.animations
+
+    @property
+    def animation_names(self):
+        """Names of the model's animation clips."""
+        return [a.name for a in self.scene_data.animations]
+
+    def _resolve_clip(self, name):
+        clips = self.scene_data.animations
+        if not clips:
+            raise ValueError(
+                f"model {self.source_path!r} carries no animation clips")
+        if name is None:
+            return clips[0]
+        for clip in clips:
+            if clip.name == name:
+                return clip
+        raise KeyError(
+            f"no animation named {name!r}; available: {self.animation_names}")
+
+    def bake_animation(self, name=None, times=None, fps=30):
+        """Bake an animation clip to per-frame world-space corner positions.
+
+        Evaluates every node's animated local transform at each sample time,
+        composes them down the hierarchy and transforms each mesh instance's
+        local vertices, yielding the exact geometry the ray tracer renders per
+        frame. Pure computation (no scene mutation), so it is unit-testable and
+        also drives :meth:`play_animation`.
+
+        Parameters
+        ----------
+        name : str, optional
+            Clip name; defaults to the first clip.
+        times : sequence of float, optional
+            Explicit sample times (seconds). Defaults to an ``fps`` grid over
+            the clip duration unioned with the authored keyframe times.
+        fps : int
+            Sampling rate used when ``times`` is not given.
+
+        Returns
+        -------
+        (times, corners) : (list[float], dict[TriangleMesh, torch.Tensor])
+            The sample times and, per mesh mob, a ``[T, 3F, 3]`` stack of
+            world-space corner positions (one slice per sample time).
+        """
+        clip = self._resolve_clip(name)
+        device = self.location.device
+        if times is None:
+            times = _anim.sample_times(
+                clip.duration, fps, _anim.clip_key_times(clip))
+        times = [float(t) for t in times]
+
+        nodes = self.scene_data.nodes
+        # World transform per node at each sample time.
+        worlds = []
+        for t in times:
+            locals_ = _anim.evaluate_animated_locals(nodes, clip, t, device=device)
+            worlds.append(_anim.compose_world_from_locals(nodes, locals_))
+
+        center = self._norm_center.to(device)
+        scale = self._norm_scale
+        corners = {}
+        for mob in self.mesh_mobs:
+            local_corners = mob._local_vertices[mob.corner_index]  # [3F, 3] local
+            frames = []
+            for w in worlds:
+                matrix = (w[mob._node_idx]
+                          if 0 <= mob._node_idx < len(w) else _eye4(device))
+                world_corners = _transform_points(local_corners, matrix)
+                # Fold in the same recenter/scale normalize() applied.
+                frames.append((world_corners - center) * scale)
+            corners[mob] = torch.stack(frames, dim=0)  # [T, 3F, 3]
+        return times, corners
+
+    def play_animation(self, name=None, run_time=None, fps=30, loop=1,
+                       rate_func=identity):
+        """Play a baked node-keyframe animation on the timeline.
+
+        The clip is baked to per-frame world corners (see
+        :meth:`bake_animation`) and each mesh instance's corners are driven
+        through those poses, so rigid node motion (a bone/part translating,
+        rotating or scaling, composed down the hierarchy) plays back. Meshes
+        with authored normals are switched to per-frame smooth-normal
+        recomputation so shading stays correct as the geometry moves.
+
+        Parameters
+        ----------
+        name : str, optional
+            Clip name; defaults to the first clip.
+        run_time : float, optional
+            Playback duration in seconds (per loop). Defaults to the clip's
+            authored duration.
+        fps : int
+            Sampling rate for baking (higher = smoother rotation, since corners
+            are linearly interpolated between baked poses).
+        loop : int
+            Number of times to repeat the clip.
+        rate_func : callable
+            Timeline rate function; defaults to linear playback.
+        """
+        clip = self._resolve_clip(name)
+        times, corners = self.bake_animation(name, fps=fps)
+        if len(times) < 2:
+            return self
+        if run_time is None:
+            run_time = clip.duration or float(times[-1]) or 1.0
+
+        # Recompute smooth normals per frame so authored-normal meshes shade
+        # correctly under the deformation.
+        for mob in self.mesh_mobs:
+            if mob.corner_normals is not None:
+                mob.recompute_normals = True
+
+        # Frame 0 is set instantly, then the geometry is swept through the
+        # remaining baked poses; each Sync step moves every mesh together and
+        # Seq sequences the steps (rescaled to run_time).
+        with Off():
+            for mob in self.mesh_mobs:
+                mob.grid.set_location(corners[mob][0])
+        for _lap in range(max(1, int(loop))):
+            with Seq(run_time=run_time, rate_func=rate_func):
+                for k in range(1, len(times)):
+                    with Sync():
+                        for mob in self.mesh_mobs:
+                            mob.grid.set_location(corners[mob][k])
         return self
 
     def get_default_color(self):

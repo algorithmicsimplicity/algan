@@ -37,14 +37,19 @@ class MaterialData:
     name: str = ""
     base_color: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
     diffuse_texture: str | None = None
-    # In-memory diffuse image [H, W, C] in [0, 1] (for embedded textures, e.g.
-    # glB), used in preference to ``diffuse_texture`` when present.
+    # In-memory images [H, W, C] in [0, 1] (for embedded textures, e.g. glB),
+    # used in preference to the corresponding ``*_texture`` file path.
     diffuse_image: "torch.Tensor | None" = None
     normal_texture: str | None = None
+    # Tangent-space normal map [H, W, 3] in [0, 1] (rgb-encoded; = 2*n-1).
+    normal_image: "torch.Tensor | None" = None
     metallic_factor: float = 0.0
     roughness_factor: float = 1.0
     metallic_roughness_texture: str | None = None
+    # glTF-packed metallic-roughness map [H, W, 3]: G = roughness, B = metallic.
+    metallic_roughness_image: "torch.Tensor | None" = None
     emissive: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    emissive_image: "torch.Tensor | None" = None
     reflectivity: float = 0.0
     opacity: float = 1.0
     refractive_index: float = 0.0

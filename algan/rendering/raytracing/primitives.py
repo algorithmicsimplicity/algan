@@ -2819,7 +2819,7 @@ def enable_ray_tracing(samples_per_pixel=None, indirect_bounce_strength=None,
     targets.append((bezier_circuit, "BezierCircuitPrimitive",
                     RayTracedBezierCircuitPrimitive))
     try:
--        import algan.mobs.fbx.mesh as fbx_mesh
+        import algan.mobs.fbx.mesh as fbx_mesh
         targets.append((fbx_mesh, "TrianglePrimitive", triangle_cls))
     except Exception:
         pass  # fbx package optional (needs the mesh mob only for imports)
