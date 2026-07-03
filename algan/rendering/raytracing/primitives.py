@@ -863,6 +863,31 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
         self._rt_pn_mat_id, self._rt_pn_mat = self._pack_material()
         self._rt_num_frames = camera.ray_origin.shape[0]
 
+        # Texture maps (color / material / normal). PN patches have no kernel
+        # argument budget left (the general wavefront shade kernel is at
+        # Taichi's 64-arg ceiling), so unlike flat triangles the UVs and the
+        # per-patch texture metadata are folded into the cold pn_extra array at
+        # merge time (see _merge_scene); here we just stash the raw maps + UVs.
+        if self.uvs is not None:
+            self._rt_pn_uvs = self.uvs.float().reshape(
+                self.uvs.shape[0], self.uvs.shape[1], 6).contiguous()
+            self._rt_texture_map = (self.texture_map.float().contiguous()
+                                    if self.texture_map is not None else None)
+            mtex = getattr(self, "material_texture_map", None)
+            self._rt_material_texture = (mtex.float().contiguous()
+                                         if mtex is not None else None)
+            self._rt_material_flags = int(
+                getattr(self, "material_texture_flags", 0) or 0)
+            ntex = getattr(self, "normal_texture_map", None)
+            self._rt_normal_texture = (ntex.float().contiguous()
+                                       if ntex is not None else None)
+        else:
+            self._rt_pn_uvs = None
+            self._rt_texture_map = None
+            self._rt_material_texture = None
+            self._rt_material_flags = 0
+            self._rt_normal_texture = None
+
         # The patch lies in the convex hull of its control points, so
         # the control net bounds it.
         self._pack_frame_visibility(control_points.amin(-2),
@@ -873,6 +898,8 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
         self.corners = self.normals = None
         self.reflectivity = self.roughness = self.refractive_index = None
         self.colors = self.shader_param_values = None
+        self.uvs = self.texture_map = None
+        self.material_texture_map = self.normal_texture_map = None
 
         self._set_frame_buffer_bytes(camera)
 
@@ -1193,7 +1220,41 @@ def _merge_scene(primitives):
             "enable_ray_tracing() called before the mobs were created?")
     num_frames = max(p._rt_num_frames for p in primitives)
 
+    # Any PN patch carrying a texture map forces the whole batch onto the
+    # general wavefront tracer (the only kernel that samples PN textures); the
+    # megakernel's PN path has no UVs. Flags PN color maps too (unlike flat
+    # colour maps, which the megakernel can sample).
+    has_pn_textures = any(
+        getattr(p, "_rt_pn_uvs", None) is not None for p in pn_patches)
+
     scene = {}
+    scene["has_pn_textures"] = has_pn_textures
+    # Shared flat texel buffer for *all* texture maps, flat-triangle and
+    # PN-patch alike (color / material / normal). Each map is appended once,
+    # padded to 5 channels and flattened to [T, W*H, 5]; its placement is a
+    # (offset, w, h) triplet recorded in the consuming geometry's metadata
+    # (offset -1 = no map). Flat triangles key those triplets by tri_tex_meta;
+    # PN patches fold them into pn_extra (no kernel-arg budget left). Assembled
+    # into scene["textures"] once both geometry blocks below have appended.
+    _texture_tensors = []
+    _texel_offset = [0]
+
+    def _append_texture(tex):
+        if tex is None:
+            return (-1, 0, 0)
+        if tex.dim() == 3:  # [W, H, C]
+            tex = tex.unsqueeze(0)  # [1, W, H, C]
+        w, h, c = tex.shape[-3], tex.shape[-2], tex.shape[-1]
+        if c < 5:
+            tex = torch.cat(
+                (tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
+        # Flatten W and H (dimensions 1 and 2).
+        _texture_tensors.append(tex.reshape(tex.shape[0], -1, 5))
+        o = _texel_offset[0]
+        _texel_offset[0] += w * h
+        return (o, w, h)
+
+    scene["tex_has_refractive"] = False
     if triangles:
         colored_triangles = [p for p in triangles if getattr(p, "_rt_tri_uvs", None) is None]
         textured_triangles = [p for p in triangles if getattr(p, "_rt_tri_uvs", None) is not None]
@@ -1219,38 +1280,17 @@ def _merge_scene(primitives):
             getattr(p, "_rt_material_texture", None) is not None
             or getattr(p, "_rt_normal_texture", None) is not None
             for p in textured_triangles)
-        scene["tex_has_refractive"] = False
 
         if textured_triangles:
             scene["tri_uvs"] = _cat_collections(
                 [p._rt_tri_uvs for p in textured_triangles], 1, "triangle merge")
 
-            # All maps (color / material / normal) share one flat texel buffer
-            # [T_tex, P, 5]; each map's placement is a (offset, w, h) triplet
-            # in the per-triangle meta row (offset -1 = no map -> per-vertex
+            # Each map's placement is a (offset, w, h) triplet in the
+            # per-triangle meta row (offset -1 = no map -> per-vertex
             # fallback). Meta layout: cols 0-2 color map, 3-5 material map
             # (channels: reflectivity, roughness, refractive index), 6-8
             # normal map, 9 bitmask of texture-driven material properties.
-            flat_textures = []
             tex_meta_list = []
-            offset = 0
-
-            def _append_texture(tex):
-                nonlocal offset
-                if tex is None:
-                    return (-1, 0, 0)
-                if tex.dim() == 3:  # [W, H, C]
-                    tex = tex.unsqueeze(0)  # [1, W, H, C]
-                w, h, c = tex.shape[-3], tex.shape[-2], tex.shape[-1]
-                if c < 5:
-                    tex = torch.cat(
-                        (tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
-                # Flatten W and H (dimensions 1 and 2)
-                flat_textures.append(tex.reshape(tex.shape[0], -1, 5))
-                o = offset
-                offset += w * h
-                return (o, w, h)
-
             for p in textured_triangles:
                 color_meta = _append_texture(p._rt_texture_map)
                 mtex = getattr(p, "_rt_material_texture", None)
@@ -1267,11 +1307,9 @@ def _merge_scene(primitives):
                     dtype=torch.int32, device=device).view(1, 10).expand(
                         num_tris, 10)
                 tex_meta_list.append(meta)
-            scene["textures"] = _cat_collections(flat_textures, 1, "texture merge")
             scene["tri_tex_meta"] = torch.cat(tex_meta_list, 0).contiguous()
         else:
             scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
-            scene["textures"] = torch.zeros((1, 1, 5), device=device)
             scene["tri_tex_meta"] = torch.full((1, 10), -1, dtype=torch.int32, device=device)
 
         scene["tri_mat_id"] = _cat_collections(
@@ -1299,11 +1337,9 @@ def _merge_scene(primitives):
         scene["tri_extra"] = torch.zeros((1, 1, 15), device=device)
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
-        scene["textures"] = torch.zeros((1, 1, 5), device=device)
         scene["tri_tex_meta"] = torch.full((1, 10), -1, dtype=torch.int32, device=device)
         scene["num_colored_triangles"] = 0
         scene["has_material_textures"] = False
-        scene["tex_has_refractive"] = False
         scene["tri_mat_id"] = torch.zeros((1, 1), dtype=torch.int32,
                                           device=device)
         scene["tri_mat"] = torch.zeros((1, 1, MAT_W), device=device)
@@ -1320,7 +1356,8 @@ def _merge_scene(primitives):
     # Only mode 2 (in-kernel knot kernel) consumes the compressed positions.
     # Mode 3 (timeline-direct) already expanded geometry to dense upstream and
     # renders through the existing dense kernel, so it must not compress here.
-    if TIME_COMPRESS == 2 and triangles and not scene["has_material_textures"]:
+    if (TIME_COMPRESS == 2 and triangles
+            and not scene["has_material_textures"] and not has_pn_textures):
         tc = compress_time(scene["tri_pos"])
         scene["tri_tc"] = tc
         refl = scene["tri_extra"][..., 0:6:2]  # per-corner reflectivity columns
@@ -1343,8 +1380,49 @@ def _merge_scene(primitives):
             [p._rt_pn_obb for p in pn_patches], 1, "pn merge")
         scene["pn_norm"] = _cat_collections(
             [p._rt_pn_norm for p in pn_patches], 1, "pn merge")
-        scene["pn_extra"] = _cat_collections(
-            [p._rt_pn_extra for p in pn_patches], 1, "pn merge")
+        # Fold per-patch UVs + texture metadata into the (cold, hit-only)
+        # pn_extra array: PN has no kernel-arg budget for its own uv/meta/
+        # texture arrays (the general wavefront shade kernel is at Taichi's
+        # 64-arg cap), so it reads them from widened pn_extra. Layout appended
+        # after the existing 15 material cols: cols 15-20 per-corner UV, 21-23
+        # color map (offset, w, h) into the shared ``textures`` buffer, 24-26
+        # material map, 27-29 normal map, 30 material bitmask. A color-map
+        # offset of -1 means fall back to per-vertex pn_colors. The array is
+        # widened unconditionally (even with no maps -> all -1) because the
+        # default wavefront path shades every PN scene through this kernel, so
+        # the texture-sampling code always executes and must find 31 columns.
+        # Every patch keeps its slot (no colored/textured reorder -- the PN
+        # morton BVH seam de-dup is discovery-order sensitive).
+        pn_extra_list = []
+        for p in pn_patches:
+            extra = p._rt_pn_extra                # [Te, Np, 15]
+            Np = extra.shape[1]
+            uvs = getattr(p, "_rt_pn_uvs", None)
+            if uvs is None:
+                uvs = torch.zeros((1, Np, 6), device=device)
+            if has_pn_textures:
+                color_meta = _append_texture(getattr(p, "_rt_texture_map", None))
+                mtex = getattr(p, "_rt_material_texture", None)
+                material_meta = _append_texture(mtex)
+                normal_meta = _append_texture(
+                    getattr(p, "_rt_normal_texture", None))
+                flags = int(getattr(p, "_rt_material_flags", 0) or 0)
+                if (mtex is not None and (flags & 4)
+                        and bool((mtex[..., 2] > 1.0 + 1e-4).any())):
+                    scene["tex_has_refractive"] = True
+                meta_vals = [*color_meta, *material_meta, *normal_meta, flags]
+            else:
+                meta_vals = [-1, 0, 0, -1, 0, 0, -1, 0, 0, 0]
+            T = max(extra.shape[0], uvs.shape[0])
+            # UVs inherit the (CPU) animation device from the per-mob build,
+            # while extra/meta are on the render device -- unify before cat.
+            extra_e = _expand_frames(extra, T).to(device)
+            uvs_e = _expand_frames(uvs, T).to(device)
+            meta_e = torch.tensor(
+                meta_vals, dtype=torch.float32, device=device
+            ).view(1, 1, 10).expand(T, Np, 10)
+            pn_extra_list.append(torch.cat([extra_e, uvs_e, meta_e], -1))
+        scene["pn_extra"] = _cat_collections(pn_extra_list, 1, "pn merge")
         scene["pn_colors"] = _cat_collections(
             [p._rt_pn_colors for p in pn_patches], 1, "pn merge")
         scene["pn_mat_id"] = _cat_collections(
@@ -1365,13 +1443,25 @@ def _merge_scene(primitives):
         scene["pn_ctrl"] = torch.zeros((1, 1, 18), device=device)
         scene["pn_obb"] = torch.zeros((1, 1, 12), device=device)
         scene["pn_norm"] = torch.zeros((1, 1, 9), device=device)
-        scene["pn_extra"] = torch.zeros((1, 1, 15), device=device)
+        # 31 cols (15 material + 6 UV + 10 tex-meta) to match the real path, so
+        # the wavefront's PN texture reads never run off the stub (see above).
+        scene["pn_extra"] = torch.zeros((1, 1, 31), device=device)
         scene["pn_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["pn_mat_id"] = torch.zeros((1, 1), dtype=torch.int32,
                                          device=device)
         scene["pn_mat"] = torch.zeros((1, 1, MAT_W), device=device)
         scene["pn_bvh"] = _empty_scene_part(device)
     scene["num_pn"] = scene["pn_ctrl"].shape[1] if pn_patches else 0
+
+    # Assemble the shared texel buffer now that both the flat-triangle and PN
+    # blocks above have appended their maps (offsets recorded in tri_tex_meta /
+    # pn_extra respectively).
+    if _texture_tensors:
+        scene["textures"] = _cat_collections(
+            _texture_tensors, 1, "texture merge")
+    else:
+        scene["textures"] = torch.zeros((1, 1, 5), device=device)
+    scene["has_pn_textures"] = has_pn_textures
 
     # Refraction is active iff some triangle/PN surface carries a meaningful
     # index of refraction (extra columns 6-8, per-corner; 0/1 = no bending).
@@ -1443,6 +1533,8 @@ def _merge_scene(primitives):
         p._rt_pn_obb = None
         p._rt_pn_extra = p._rt_pn_colors = None
         p._rt_pn_mat_id = p._rt_pn_mat = None
+        p._rt_pn_uvs = p._rt_texture_map = None
+        p._rt_material_texture = p._rt_normal_texture = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
     for p in beziers:
         p._rt_circuit_meta = p._rt_circuit_colors = None
@@ -1893,6 +1985,7 @@ def render_general_wavefront(
                             pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
                             pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
                             merged["pn_ctrl"], merged["pn_norm"],
+                            merged["pn_extra"],
                             merged["pn_colors"], merged["pn_obb"],
                             bez_bvh.nodes, bez_bvh.node_miss,
                             bez_bvh.leaf_prim, bez_bvh.leaf_tspan,
@@ -2266,9 +2359,12 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
     # maps) are likewise only sampled by the general wavefront tracer, so a
     # deterministic batch containing them is routed there too. The megakernel
     # and Monte Carlo paths fall back to the per-vertex values.
+    # ``has_pn_textures`` folds in ANY textured PN patch (color included):
+    # unlike flat colour maps the megakernel cannot sample a PN texture (no PN
+    # UVs there), so any textured PN must render through the general wavefront.
     mat_tex_det = (bool(merged.get("has_material_textures"))
-                   and not bool(PHYSICAL_LIGHTING)
-                   and int(SAMPLES_PER_PIXEL) <= 1)
+                   or bool(merged.get("has_pn_textures"))
+                   ) and not bool(PHYSICAL_LIGHTING) and int(SAMPLES_PER_PIXEL) <= 1
     use_wavefront = USE_WAVEFRONT or refractive_det or mat_tex_det
     # Anti-aliasing strategy. All deterministic renderers (megakernels and
     # wavefront) average ``aa^2`` jittered sub-pixel rays *in place* at the

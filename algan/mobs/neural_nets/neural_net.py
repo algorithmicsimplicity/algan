@@ -38,11 +38,12 @@ gs = 0.5
 
 class Synapse(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
-        grid_height = 20
+        grid_height = 20#None
+        grid_width = 12
         if 'color' in kwargs:
             c = kwargs['color']
             kwargs['color'] = tweak_color(c, strength=0.25, min_strength=0.25)
-        super().__init__(grid_height=grid_height, grid_width=12, glow_radius=gr, **kwargs)
+        super().__init__(grid_height=grid_height, grid_width=grid_width, glow_radius=gr, **kwargs)
         self.scale(0.02)
 
 

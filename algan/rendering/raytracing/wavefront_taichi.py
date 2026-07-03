@@ -230,6 +230,144 @@ def _flat_triangle_normal(f, prim, w0, w1, w2, tri_norm: ti.template(),
     return normal
 
 
+# ---------------------------------------------------------------------------
+# PN (curved point-normal) patch texture sampling. Unlike flat triangles, PN
+# patches have no dedicated uv/tex-meta kernel arrays (the general wavefront
+# shade kernel is at Taichi's 64-arg ceiling); the per-corner UVs and the
+# per-patch texture metadata ride in the *widened* pn_extra array built by
+# _merge_scene: cols 15-20 per-corner UV (u0,v0,u1,v1,u2,v2), 21-23 color map
+# (offset, w, h) into the shared ``textures`` buffer, 24-26 material map, 27-29
+# normal map, 30 material bitmask. A map offset of -1 means "no map" (fall back
+# to the per-vertex value). All three maps sample the same shared ``textures``
+# buffer the flat path uses.
+# ---------------------------------------------------------------------------
+
+
+@ti.func
+def _pn_uv(te, prim, w0, w1, w2, pn_extra: ti.template()):
+    """Barycentric UV of a PN hit (per-corner UVs live in pn_extra cols 15-20)."""
+    u = (w0 * pn_extra[te, prim, 15] + w1 * pn_extra[te, prim, 17]
+         + w2 * pn_extra[te, prim, 19])
+    v = (w0 * pn_extra[te, prim, 16] + w1 * pn_extra[te, prim, 18]
+         + w2 * pn_extra[te, prim, 20])
+    return u, v
+
+
+@ti.func
+def _pn_hit_color(f, prim, w0, w1, w2, pn_colors: ti.template(),
+                  pn_extra: ti.template(), textures: ti.template()):
+    """Color + alpha of a PN hit: the bilinearly-sampled color map (pn_extra
+    cols 21-23) if present, else the per-vertex pn_colors."""
+    te = f % pn_extra.shape[0]
+    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    alpha = 0.0
+    coff = ti.cast(pn_extra[te, prim, 21], ti.i32)
+    if coff < 0:
+        color, alpha = _triangle_color(f, prim, w0, w1, w2, pn_colors)
+    else:
+        u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
+        m = _sample_tex_vec5(f, u, v, coff,
+                             ti.cast(pn_extra[te, prim, 22], ti.i32),
+                             ti.cast(pn_extra[te, prim, 23], ti.i32), textures)
+        color = ti.math.vec4(m[0], m[1], m[2], m[3])
+        alpha = m[4]
+    return color, alpha
+
+
+@ti.func
+def _pn_hit_extra(f, prim, w0, w1, w2, pn_extra: ti.template(),
+                  textures: ti.template()):
+    """(reflectivity, roughness) of a PN hit: per-vertex (``_triangle_extra``
+    on pn_extra cols 0-5) unless the material map (cols 24-26) overrides the
+    channel marked in the bitmask (col 30)."""
+    reflectivity, roughness = _triangle_extra(f, prim, w0, w1, w2, pn_extra)
+    te = f % pn_extra.shape[0]
+    moff = ti.cast(pn_extra[te, prim, 24], ti.i32)
+    if moff >= 0:
+        flags = ti.cast(pn_extra[te, prim, 30], ti.i32)
+        u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
+        m = _sample_tex_vec5(f, u, v, moff,
+                             ti.cast(pn_extra[te, prim, 25], ti.i32),
+                             ti.cast(pn_extra[te, prim, 26], ti.i32), textures)
+        if (flags & 1) != 0:
+            reflectivity = m[0]
+        if (flags & 2) != 0:
+            roughness = m[1]
+    return reflectivity, roughness
+
+
+@ti.func
+def _pn_hit_ior(f, prim, w0, w1, w2, pn_extra: ti.template(),
+                textures: ti.template()):
+    """Index of refraction of a PN hit: per-vertex (``_corner_ior``) unless the
+    material map's bitmask marks it texture-driven (bit 2 / channel 2)."""
+    ior = _corner_ior(f, prim, w0, w1, w2, pn_extra)
+    te = f % pn_extra.shape[0]
+    moff = ti.cast(pn_extra[te, prim, 24], ti.i32)
+    if moff >= 0:
+        if (ti.cast(pn_extra[te, prim, 30], ti.i32) & 4) != 0:
+            u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
+            m = _sample_tex_vec5(f, u, v, moff,
+                                 ti.cast(pn_extra[te, prim, 25], ti.i32),
+                                 ti.cast(pn_extra[te, prim, 26], ti.i32),
+                                 textures)
+            ior = m[2]
+    return ior
+
+
+@ti.func
+def _pn_hit_normal(f, prim, a, b, pn_norm: ti.template(),
+                   pn_ctrl: ti.template(), pn_extra: ti.template(),
+                   textures: ti.template()):
+    """Shading normal of a PN hit, perturbed by a tangent-space normal map
+    (pn_extra cols 27-29) when present. The tangent frame is derived per hit
+    from the patch's surface derivatives (dP/da, dP/db) and the UV gradients --
+    the curved analogue of the flat triangle's edge/UV tangent frame."""
+    normal = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
+    te = f % pn_extra.shape[0]
+    noff = ti.cast(pn_extra[te, prim, 27], ti.i32)
+    if noff >= 0:
+        w0 = 1.0 - a - b
+        u, v = _pn_uv(te, prim, w0, a, b, pn_extra)
+        m = _sample_tex_vec5(f, u, v, noff,
+                             ti.cast(pn_extra[te, prim, 28], ti.i32),
+                             ti.cast(pn_extra[te, prim, 29], ti.i32), textures)
+        tn = ti.math.vec3(m[0], m[1], m[2])
+        if tn.norm() > 1e-6 and normal.norm() > 1e-9:
+            nb = normal.normalized()
+            # Patch surface derivatives dP/da (su) and dP/db (sv) at the hit.
+            tp = f % pn_ctrl.shape[0]
+            su = ti.math.vec3(0.0, 0.0, 0.0)
+            sv = ti.math.vec3(0.0, 0.0, 0.0)
+            for ci in ti.static(range(3)):
+                su[ci] = (pn_ctrl[tp, prim, 3 + ci]
+                          + 2.0 * a * pn_ctrl[tp, prim, 9 + ci]
+                          + b * pn_ctrl[tp, prim, 15 + ci])
+                sv[ci] = (pn_ctrl[tp, prim, 6 + ci]
+                          + 2.0 * b * pn_ctrl[tp, prim, 12 + ci]
+                          + a * pn_ctrl[tp, prim, 15 + ci])
+            # UV gradients w.r.t. barycentric (a, b): linear in the corner UVs.
+            du1 = pn_extra[te, prim, 17] - pn_extra[te, prim, 15]
+            dv1 = pn_extra[te, prim, 18] - pn_extra[te, prim, 16]
+            du2 = pn_extra[te, prim, 19] - pn_extra[te, prim, 15]
+            dv2 = pn_extra[te, prim, 20] - pn_extra[te, prim, 16]
+            det = du1 * dv2 - du2 * dv1
+            if ti.abs(det) > 1e-12:
+                inv_det = 1.0 / det
+                tang = (su * dv2 - sv * dv1) * inv_det
+                tang = tang - nb * nb.dot(tang)  # Gram-Schmidt vs normal
+                if tang.norm() > 1e-9:
+                    tang = tang.normalized()
+                    bit = (sv * du1 - su * du2) * inv_det
+                    bit = bit - nb * nb.dot(bit) - tang * tang.dot(bit)
+                    if bit.norm() > 1e-9:
+                        bit = bit.normalized()
+                        pert = tang * tn[0] + bit * tn[1] + nb * tn[2]
+                        if pert.norm() > 1e-9:
+                            normal = pert.normalized()
+    return normal
+
+
 @ti.func
 def _refract_ray(rd, n_out, ior):
     """Direction of the transmitted ray for incident unit direction ``rd``
@@ -891,6 +1029,7 @@ def wf_shadow_general(
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
         p_first_leaf: int,
         pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
+        pn_extra: ti.types.ndarray(),
         pn_colors: ti.types.ndarray(), pn_obb: ti.types.ndarray(),
         b_nodes: ti.types.ndarray(), b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
@@ -961,8 +1100,9 @@ def wf_shadow_general(
                                                   tri_pos[tp, prim, 8])
                                 fnrm = (v1 - v0).cross(v2 - v0)
                             else:
-                                snrm = _pn_normal(f, prim, a, b, pn_norm,
-                                                  pn_ctrl)
+                                snrm = _pn_hit_normal(f, prim, a, b, pn_norm,
+                                                      pn_ctrl, pn_extra,
+                                                      textures)
                                 tp = f % pn_ctrl.shape[0]
                                 su = ti.math.vec3(0.0, 0.0, 0.0)
                                 sv = ti.math.vec3(0.0, 0.0, 0.0)
@@ -1188,10 +1328,10 @@ def wf_shade_general(
                         textures, num_colored_triangles)
                 elif htype == 2:
                     w0 = 1.0 - a - b
-                    color, alpha = _triangle_color(f, prim, w0, a, b,
-                                                   pn_colors)
-                    reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
-                                                           pn_extra)
+                    color, alpha = _pn_hit_color(f, prim, w0, a, b,
+                                                 pn_colors, pn_extra, textures)
+                    reflectivity, _rough = _pn_hit_extra(f, prim, w0, a, b,
+                                                         pn_extra, textures)
                 else:
                     color, alpha = _sample_circuit_color(
                         prim, f, a, b, border,
@@ -1247,8 +1387,9 @@ def wf_shade_general(
                                                   tri_pos[tp, prim, 8])
                                 fnrm = (v1 - v0).cross(v2 - v0)
                             else:
-                                snrm = _pn_normal(f, prim, a, b, pn_norm,
-                                                  pn_ctrl)
+                                snrm = _pn_hit_normal(f, prim, a, b, pn_norm,
+                                                      pn_ctrl, pn_extra,
+                                                      textures)
                                 tp = f % pn_ctrl.shape[0]
                                 su = ti.math.vec3(0.0, 0.0, 0.0)
                                 sv = ti.math.vec3(0.0, 0.0, 0.0)
@@ -1354,8 +1495,8 @@ def wf_shade_general(
                                 tri_uvs, tri_tex_meta, textures,
                                 num_colored_triangles)
                         else:
-                            ior = _corner_ior(f, prim, 1.0 - a - b, a, b,
-                                              pn_extra)
+                            ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
+                                              pn_extra, textures)
                         if ior > 1.0 + 1e-4:
                             is_glass = True
                             if htype == 1:
@@ -1364,8 +1505,9 @@ def wf_shade_general(
                                     tri_pos, tri_uvs, tri_tex_meta, textures,
                                     num_colored_triangles)
                             else:
-                                gnrm = _pn_normal(f, prim, a, b, pn_norm,
-                                                  pn_ctrl)
+                                gnrm = _pn_hit_normal(f, prim, a, b, pn_norm,
+                                                      pn_ctrl, pn_extra,
+                                                      textures)
                             gnrm = gnrm.normalized()
                             # Fresnel reflectance of the dielectric (Schlick):
                             # R0 = ((1-ior)/(1+ior))^2, fr = R0 + (1-R0)(1-cos)^5.
@@ -1436,7 +1578,8 @@ def wf_shade_general(
                             tri_uvs, tri_tex_meta, textures,
                             num_colored_triangles)
                     elif htype == 2:
-                        normal = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
+                        normal = _pn_hit_normal(f, prim, a, b, pn_norm,
+                                                pn_ctrl, pn_extra, textures)
                     else:
                         normal = _bezier_normal(f, prim, circuit_meta)
                     normal = normal.normalized()

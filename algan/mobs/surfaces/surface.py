@@ -178,9 +178,9 @@ class Surface(Renderable):
         ``[W, H]``, or ``[T, W, H, 1]``). Like ``color_texture`` they are
         sampled bilinearly per fragment inside the ray tracing kernel (only
         the general wavefront tracer implements this; batches containing such
-        maps are routed to it automatically). Properties without a map keep
-        the per-vertex system. Maps of different resolutions are resampled to
-        a common resolution.
+        maps are routed to it automatically, for both flat and curved PN
+        triangles). Properties without a map keep the per-vertex system. Maps
+        of different resolutions are resampled to a common resolution.
     normal_texture
         Optional tangent-space normal map ``[W, H, 3]`` (or ``[T, W, H, 3]``),
         with components in ``[-1, 1]``: x along increasing ``u``, y along
@@ -369,12 +369,6 @@ class Surface(Renderable):
             kwargs['glow'] = self._bake_texture_to_grid(glow_texture)
         if glow_radius_texture is not None:
             kwargs['glow_radius'] = self._bake_texture_to_grid(glow_radius_texture)
-        if ((self.material_texture is not None or self.normal_texture is not None)
-                and self._uses_pn_triangles()):
-            print("WARNING: material/normal textures are only implemented for "
-                  "flat ray traced triangles; this surface renders as curved "
-                  "PN triangles (enable_ray_tracing(pn_triangles=True)), which "
-                  "will ignore its texture maps.")
 
         base_grid = self.get_base_grid()
         grid_points = squish(coord_function(base_grid), -3, -2) + self.location

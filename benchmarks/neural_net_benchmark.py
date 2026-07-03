@@ -13,5 +13,7 @@ def neural_net():
 
 
 enable_ray_tracing(1, pn_triangles=False, fragment_shading=True, shadows=False)
-render_settings = PREVIEW.set_anti_alias_level(1).set_frames_per_second(60)
-profile_scene(neural_net, render_settings, 'neural_net', runs=2)
+render_settings = UHD.set_anti_alias_level(2).set_frames_per_second(60)
+#profile_scene(neural_net, render_settings, 'neural_net', runs=2)
+neural_net()
+render_to_file('nn_profile2', render_settings=render_settings)
