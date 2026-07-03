@@ -170,6 +170,23 @@ from algan.rendering.shaders.pbr_shaders import (
     basic_pbr_shader,
     null_shader,
 )
+from algan.rendering.shaders.fragment_shaders import (
+    FragmentStage,
+    cosine_color,
+    STAGE_DEFAULT,
+    STAGE_UNLIT,
+    STAGE_LAMBERT,
+    STAGE_PHONG,
+    STAGE_STANDARD,
+)
+from algan.rendering.raytracing.shading_taichi import (
+    _ggx_distribution as ggx_distribution,
+    _smith_geometry as smith_geometry,
+    _shading_normal as shading_normal,
+    _prep_normal as prep_normal,
+    _light as fragment_light,
+    _light_vis as fragment_light_vis,
+)
 
 from algan.animation.manim_animations import *
 from algan.animation.indication import *

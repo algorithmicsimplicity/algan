@@ -1199,7 +1199,8 @@ def wf_shade_general(
         # out -- byte-identical to the megakernel's vertex path) and their data.
         # ``refraction`` (also compile-time) enables Snell-law bending of the
         # transmitted ray for surfaces with a refractive index (extra cols 6-8).
-        frag_shading: ti.template(), shadows: ti.template(),
+        frag_shading: ti.template(), frag_pipelines: ti.template(),
+        shadows: ti.template(),
         refraction: ti.template(),
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         deferred_shadows: ti.template(),
@@ -1458,14 +1459,14 @@ def wf_shade_general(
                                                 edges_2d, edge_offsets)
                                             vis[li] = 1.0 - occ
                     if htype == 1:
-                        color = _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
-                                               tri_pos, tri_norm,
+                        color = _shade_tri_hit(frag_pipelines, f, prim, a, b, rd,
+                                               t_hit, ro, tri_pos, tri_norm,
                                                tri_mat_id, tri_mat,
                                                light_pos, light_col, num_lights,
                                                color, shadows, vis)
                     elif htype == 2:
-                        color = _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
-                                              pn_ctrl, pn_norm,
+                        color = _shade_pn_hit(frag_pipelines, f, prim, a, b, rd,
+                                              t_hit, ro, pn_ctrl, pn_norm,
                                               pn_mat_id, pn_mat,
                                               light_pos, light_col, num_lights,
                                               color, shadows, vis)

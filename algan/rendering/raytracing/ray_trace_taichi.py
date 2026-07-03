@@ -61,7 +61,7 @@ import taichi as ti
 
 from algan.rendering.raytracing.stbvh import BVH_ARITY, LEAF_SIZE
 from algan.rendering.raytracing.shading_taichi import (
-    MAX_SHADOW_LIGHTS, _shade_fragment)
+    MAX_SHADOW_LIGHTS, _run_frag_pipeline)
 
 
 from algan.rendering.taichi_runtime import init_taichi
@@ -1428,16 +1428,18 @@ def _bezier_normal(f, circuit, circuit_meta: ti.template()):
 
 
 @ti.func
-def _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
+def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
                    tri_pos: ti.template(), tri_norm: ti.template(),
                    tri_mat_id: ti.template(), tri_mat: ti.template(),
                    light_pos: ti.template(), light_col: ti.template(),
                    num_lights, albedo, shadows: ti.template(), vis):
     """Per-fragment material shading of a confirmed flat-triangle hit: feeds the
     interpolated shading normal, geometric face normal, hit position and the
-    per-primitive material block into :func:`_shade_fragment`. ``albedo`` is the
-    interpolated (raw) base RGB + glow; returns the shaded RGB + glow. ``vis``
-    holds the caller's per-light shadow visibilities (used iff ``shadows``)."""
+    per-primitive parameter block into :func:`_run_frag_pipeline`. ``albedo`` is
+    the interpolated (raw) base RGB + glow; ``tri_mat_id``/``tri_mat`` carry the
+    per-primitive pipeline id and parameter block; returns the shaded RGB + glow.
+    ``vis`` holds the caller's per-light shadow visibilities (used iff
+    ``shadows``)."""
     w0 = 1.0 - a - b
     n = _triangle_normal(f, prim, w0, a, b, tri_norm, tri_pos)
     tp = f % tri_pos.shape[0]
@@ -1450,13 +1452,13 @@ def _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
     face_n = (v1 - v0).cross(v2 - v0)
     pos = ro + t_hit * rd
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
-    return _shade_fragment(prim, f, pos, -rd, n, face_n, rgb, albedo[3],
-                           light_pos, light_col, num_lights,
-                           tri_mat_id, tri_mat, shadows, vis)
+    return _run_frag_pipeline(frag_pipelines, prim, f, pos, -rd, n, face_n, rgb,
+                              albedo[3], light_pos, light_col, num_lights,
+                              tri_mat_id, tri_mat, shadows, vis)
 
 
 @ti.func
-def _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
+def _shade_pn_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
                   pn_ctrl: ti.template(), pn_norm: ti.template(),
                   pn_mat_id: ti.template(), pn_mat: ti.template(),
                   light_pos: ti.template(), light_col: ti.template(),
@@ -1478,9 +1480,9 @@ def _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
     face_n = su.cross(sv)
     pos = ro + t_hit * rd
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
-    return _shade_fragment(prim, f, pos, -rd, n, face_n, rgb, albedo[3],
-                           light_pos, light_col, num_lights,
-                           pn_mat_id, pn_mat, shadows, vis)
+    return _run_frag_pipeline(frag_pipelines, prim, f, pos, -rd, n, face_n, rgb,
+                              albedo[3], light_pos, light_col, num_lights,
+                              pn_mat_id, pn_mat, shadows, vis)
 
 
 @ti.func
@@ -2688,7 +2690,7 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                      circuit_border_colors: ti.template(),
                      edges_2d: ti.template(), edge_offsets: ti.template(),
                      has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
-                     frag_shading: ti.template(),
+                     frag_shading: ti.template(), frag_pipelines: ti.template(),
                      tri_mat_id: ti.template(), tri_mat: ti.template(),
                      pn_mat_id: ti.template(), pn_mat: ti.template(),
                      light_pos: ti.template(), light_col: ti.template(),
@@ -2921,14 +2923,14 @@ def _trace_scene_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                                             edges_2d, edge_offsets)
                                         vis[li] = 1.0 - occ
                 if htype == 1:
-                    color = _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
-                                           tri_pos, tri_norm,
+                    color = _shade_tri_hit(frag_pipelines, f, prim, a, b, rd,
+                                           t_hit, ro, tri_pos, tri_norm,
                                            tri_mat_id, tri_mat,
                                            light_pos, light_col, num_lights,
                                            color, shadows, vis)
                 elif htype == 2:
-                    color = _shade_pn_hit(f, prim, a, b, rd, t_hit, ro,
-                                          pn_ctrl, pn_norm,
+                    color = _shade_pn_hit(frag_pipelines, f, prim, a, b, rd,
+                                          t_hit, ro, pn_ctrl, pn_norm,
                                           pn_mat_id, pn_mat,
                                           light_pos, light_col, num_lights,
                                           color, shadows, vis)
@@ -3031,8 +3033,11 @@ def render_scene_stbvh(
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         # Fragment shading (compile-time): 0 = use baked vertex colours
         # (unchanged default path); 1 = material-shade triangle/PN hits per
-        # fragment from the raw albedo, material blocks and scene lights.
-        frag_shading: ti.template(),
+        # fragment from the raw albedo, parameter blocks and scene lights.
+        # ``frag_pipelines`` is the flat tuple of composed user pipeline funcs
+        # (empty for built-in-only scenes); ``tri_mat_id``/``tri_mat`` carry the
+        # per-primitive pipeline id and parameter block.
+        frag_shading: ti.template(), frag_pipelines: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
         pn_mat_id: ti.types.ndarray(), pn_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
@@ -3095,7 +3100,8 @@ def render_scene_stbvh(
                     b_first_leaf, circuit_meta, circuit_colors,
                     circuit_border_colors, edges_2d, edge_offsets,
                     has_tri, has_pn, has_bez,
-                    frag_shading, tri_mat_id, tri_mat, pn_mat_id, pn_mat,
+                    frag_shading, frag_pipelines,
+                    tri_mat_id, tri_mat, pn_mat_id, pn_mat,
                     light_pos, light_col, num_lights, shadows)
                 for ci in ti.static(range(4)):
                     csum[ci] += (acc[ci] * 255.0
@@ -3235,7 +3241,7 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
                          tri_colors: ti.template(), tri_uvs: ti.template(),
                          tri_tex_meta: ti.template(), textures: ti.template(),
                          num_colored_triangles: ti.i32,
-                         frag_shading: ti.template(),
+                         frag_shading: ti.template(), frag_pipelines: ti.template(),
                          tri_mat_id: ti.template(), tri_mat: ti.template(),
                          light_pos: ti.template(), light_col: ti.template(),
                          num_lights):
@@ -3325,8 +3331,8 @@ def _trace_triangles_ray(ro, rd, inv_rd, f, ff, layer_offset_triangles,
             # The lean kernel never casts shadows (the shadowed render is forced
             # onto the general kernel), so shadows are disabled here.
             if ti.static(frag_shading != 0):
-                color = _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
-                                       tri_pos, tri_norm, tri_mat_id, tri_mat,
+                color = _shade_tri_hit(frag_pipelines, f, prim, a, b, rd, t_hit,
+                                       ro, tri_pos, tri_norm, tri_mat_id, tri_mat,
                                        light_pos, light_col, num_lights, color,
                                        0, ti.Vector([1.0] * MAX_SHADOW_LIGHTS))
 
@@ -3394,8 +3400,10 @@ def render_triangles_stbvh(
         half_screen_w: float, half_screen_h: float,
         layer_offset_triangles: float, max_bounces: int, transparent: int,
         # Fragment shading (compile-time): 0 = baked vertex colours (default);
-        # 1 = material-shade each triangle hit per fragment.
-        frag_shading: ti.template(),
+        # 1 = material-shade each triangle hit per fragment. ``frag_pipelines``
+        # is the flat tuple of composed user pipeline funcs (empty for
+        # built-in-only scenes).
+        frag_shading: ti.template(), frag_pipelines: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int,
@@ -3444,7 +3452,7 @@ def render_triangles_stbvh(
                     t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
                     t_first_leaf, tri_pos, tri_norm, tri_extra, tri_colors,
                     tri_uvs, tri_tex_meta, textures, num_colored_triangles,
-                    frag_shading, tri_mat_id, tri_mat,
+                    frag_shading, frag_pipelines, tri_mat_id, tri_mat,
                     light_pos, light_col, num_lights)
                 for ci in ti.static(range(4)):
                     csum[ci] += (acc[ci] * 255.0

@@ -66,7 +66,10 @@ from algan.rendering.raytracing.gbuffer_taichi import (
     wf_drain_record_gbuffer,
     wf_traverse_gbuffer,
 )
-from algan.rendering.raytracing.shading_taichi import MAT_W
+from algan.rendering.raytracing.shading_taichi import MAT_W, _USER_PIPELINE_BASE
+# ``build_frag_pipelines`` is imported lazily in the render dispatch to avoid a
+# module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
+# package __init__ -> primitives).
 from algan.rendering.raytracing.wavefront_taichi import (
     wf_composite,
     wf_composite_aa,
@@ -544,6 +547,39 @@ def _cat_collections(tensors, dim, error_context):
     return torch.cat(tensors, dim).contiguous()
 
 
+def _cat_mat_blocks(blocks, error_context):
+    """Concatenate per-collection parameter blocks ``[Tm, N, W]`` along the
+    primitive axis, right-zero-padding narrower blocks to the widest ``W`` first.
+
+    Built-in materials pack a 12-slot block while custom fragment pipelines pack
+    a wider one; padding lets them share a single per-scene array. The padding
+    slots are never read (each stage reads only its own slice), so a built-in
+    (or built-in-only) scene is unaffected -- with no wide blocks present ``W``
+    stays 12 and no padding happens.
+    """
+    if len(blocks) == 1:
+        return blocks[0]
+    max_w = max(b.shape[-1] for b in blocks)
+    padded = []
+    for b in blocks:
+        if b.shape[-1] < max_w:
+            pad = torch.zeros((*b.shape[:-1], max_w - b.shape[-1]),
+                              dtype=b.dtype, device=b.device)
+            b = torch.cat([b, pad], dim=-1)
+        padded.append(b)
+    return _cat_collections(padded, 1, error_context)
+
+
+def _scene_has_user_pipeline(merged):
+    """True if any merged primitive carries a custom fragment-pipeline id
+    (``>= _USER_PIPELINE_BASE``), so the render must enable fragment shading."""
+    for key in ("tri_mat_id", "pn_mat_id"):
+        arr = merged.get(key)
+        if arr is not None and arr.numel() and int(arr.max()) >= _USER_PIPELINE_BASE:
+            return True
+    return False
+
+
 class RayTracedTrianglePrimitive(TrianglePrimitive):
     """Triangle batch rendered by ray tracing a spatio-temporal BVH."""
 
@@ -613,11 +649,17 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
     def _shaded_per_fragment(self):
         """True when this primitive's hits are shaded per fragment in-kernel
-        (deterministic renderer, fragment shading on, core lit material) rather
-        than baked per vertex -- in which case ``colors`` stays raw albedo."""
+        (deterministic renderer, fragment shading on, core lit material or a
+        custom fragment pipeline) rather than baked per vertex -- in which case
+        ``colors`` stays raw albedo."""
+        shader = getattr(self, "shader", None)
+        if getattr(shader, "_frag_pipeline_id", None) is not None:
+            # A custom pipeline always shades in-kernel on the deterministic
+            # renderer (fragment shading is forced on for such a scene).
+            return not PHYSICAL_LIGHTING and SAMPLES_PER_PIXEL <= 1
         return (FRAGMENT_SHADING and not PHYSICAL_LIGHTING
                 and SAMPLES_PER_PIXEL <= 1
-                and _shader_is_core(getattr(self, "shader", None)))
+                and _shader_is_core(shader))
 
     def _shade_vertex_colors(self, camera, light_sources):
         """Vertex shading, identical to the rasterized pipeline. Skipped in
@@ -654,15 +696,23 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         colors = self.colors
         N = colors.shape[1]
         device = colors.device
-        shader = getattr(self, "shader", None)
-        mat_id = torch.full((1, N), _shader_material_id(shader),
-                            dtype=torch.int32, device=device)
         def per_triangle(value):
             v = value.float().to(device)
             if v.dim() >= 4:              # [T, N, 3, w] -> per-triangle corner 0
                 v = v[:, :, 0, :]
             return v
 
+        # Custom fragment pipeline (Mob.set_fragment_shader): the pipeline
+        # metadata rides on the marker shader object (so it flows to the
+        # primitive via the ordinary ``shader=`` handoff). A per-primitive
+        # pipeline id (>= _USER_PIPELINE_BASE) and a variable-width param block
+        # laid out by the pipeline's stages.
+        shader = getattr(self, "shader", None)
+        if getattr(shader, "_frag_pipeline_id", None) is not None:
+            return self._pack_frag_pipeline(shader, N, device, per_triangle)
+
+        mat_id = torch.full((1, N), _shader_material_id(shader),
+                            dtype=torch.int32, device=device)
         pairs = []
         if _shader_is_core(shader):
             # The material's shader params, addressed by their real names (the
@@ -686,6 +736,49 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             if v.shape[-1] != width:      # broadcast a scalar into a vector slot
                 v = v.expand(*v.shape[:-1], width)
             mat[:, :, start:start + width] = v
+        return mat_id.contiguous(), mat.contiguous()
+
+    def _pack_frag_pipeline(self, shader, N, device, per_triangle):
+        """Per-primitive pipeline id ``[1, N]`` and the custom-pipeline parameter
+        block ``[Tm, N, W]`` for a mob with a fragment pipeline
+        (:meth:`~algan.mobs.mob.Mob.set_fragment_shader`). Each stage's
+        parameters occupy a contiguous slot range (the marker shader's
+        ``_frag_param_layout`` maps attr name -> absolute slot); values are the
+        materialised animated ``shader_param_values``, with defaults filling any
+        slot whose attr is absent. A param whose name collides with a popped
+        surface param (e.g. ``roughness``) is read back from that attribute, as
+        the built-in :meth:`_pack_material` path does."""
+        pid = int(shader._frag_pipeline_id)
+        W = int(shader._frag_total_width)
+        layout = shader._frag_param_layout  # list of (name, slot, width, default)
+        mat_id = torch.full((1, N), pid, dtype=torch.int32, device=device)
+
+        names = list(getattr(self, "shader_param_names", None) or [])
+        values = list(getattr(self, "shader_param_values", None) or [])
+        val_by_name = {n: v for n, v in zip(names, values)}
+
+        # Default row (every slot is covered by exactly one layout entry).
+        default_row = torch.zeros(W, dtype=torch.float32, device=device)
+        for name, slot, width, default in layout:
+            dv = torch.as_tensor(default, dtype=torch.float32,
+                                 device=device).flatten()
+            if dv.numel() == 1 and width > 1:
+                dv = dv.expand(width)
+            default_row[slot:slot + width] = dv[:width]
+
+        pairs = []
+        for name, slot, width, default in layout:
+            v = val_by_name.get(name, None)
+            if v is None and name in self._surface_params:
+                v = getattr(self, name, None)   # popped into a surface attribute
+            if v is not None:
+                pairs.append((slot, width, per_triangle(v)))
+        Tm = max([1] + [v.shape[0] for _s, _w, v in pairs])
+        mat = default_row.view(1, 1, W).expand(Tm, N, W).contiguous()
+        for slot, width, v in pairs:
+            if v.shape[-1] != width:      # broadcast a scalar into a vector slot
+                v = v.expand(*v.shape[:-1], width)
+            mat[:, :, slot:slot + width] = v
         return mat_id.contiguous(), mat.contiguous()
 
     def _pack_surface_extra(self, error_context):
@@ -1314,8 +1407,8 @@ def _merge_scene(primitives):
 
         scene["tri_mat_id"] = _cat_collections(
             [p._rt_tri_mat_id for p in all_triangles], 1, "triangle merge")
-        scene["tri_mat"] = _cat_collections(
-            [p._rt_tri_mat for p in all_triangles], 1, "triangle merge")
+        scene["tri_mat"] = _cat_mat_blocks(
+            [p._rt_tri_mat for p in all_triangles], "triangle merge")
 
         lo = _cat_collections([p._rt_frame_lo for p in all_triangles], 1,
                               "triangle merge")
@@ -1427,8 +1520,8 @@ def _merge_scene(primitives):
             [p._rt_pn_colors for p in pn_patches], 1, "pn merge")
         scene["pn_mat_id"] = _cat_collections(
             [p._rt_pn_mat_id for p in pn_patches], 1, "pn merge")
-        scene["pn_mat"] = _cat_collections(
-            [p._rt_pn_mat for p in pn_patches], 1, "pn merge")
+        scene["pn_mat"] = _cat_mat_blocks(
+            [p._rt_pn_mat for p in pn_patches], "pn merge")
         lo = _cat_collections([p._rt_frame_lo for p in pn_patches], 1,
                               "pn merge")
         hi = _cat_collections([p._rt_frame_hi for p in pn_patches], 1,
@@ -1861,7 +1954,7 @@ def render_general_wavefront(
         pixel_world_scale, time_start, time_end, width, height,
         half_screen_w, half_screen_h, layer_offset_triangles, layer_offset_pn,
         has_tri, has_pn, has_bez, max_bounces,
-        light_pos, light_col, num_lights, frag_flag, shadow_flag,
+        light_pos, light_col, num_lights, frag_flag, frag_pipelines, shadow_flag,
         refraction_flag, transparent, memory, out, aa_level=1):
     """Wavefront orchestration for the general (triangle + PN + bezier) case:
     byte-identical to ``render_scene_stbvh`` but stage-split over per-ray global
@@ -2025,7 +2118,7 @@ def render_general_wavefront(
                         merged["edges_2d"], merged["edge_offsets"],
                         pixel_world_scale,
                         float(layer_offset_triangles), float(layer_offset_pn),
-                        int(frag_flag), int(shadow_flag),
+                        int(frag_flag), frag_pipelines, int(shadow_flag),
                         int(refraction_flag),
                         int(has_tri), int(has_pn), int(has_bez),
                         int(deferred_sh),
@@ -2447,10 +2540,21 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
     # Deterministic hard shadows are evaluated inside the per-fragment lighting
     # model, so enabling them implies fragment shading for this render.
     det_shadows = bool(SHADOWS) and not physical and samples <= 1
-    det_frag = ((bool(FRAGMENT_SHADING) or det_shadows)
+    # A mob with a custom fragment pipeline (Mob.set_fragment_shader) forces
+    # fragment shading on for this render, without a persistent global toggle.
+    scene_has_frag_pipeline = _scene_has_user_pipeline(merged)
+    det_frag = ((bool(FRAGMENT_SHADING) or det_shadows or scene_has_frag_pipeline)
                 and not physical and samples <= 1)
     frag_flag = 1 if det_frag else 0
     shadow_flag = 1 if det_shadows else 0
+    # Composed custom fragment-shader pipelines injected into the shade kernel as
+    # a flat ti.template() tuple; empty () keeps the built-in / vertex-shaded
+    # kernel specialization unchanged (see shading_taichi._run_frag_pipeline).
+    if det_frag:
+        from algan.rendering.shaders.fragment_shaders import build_frag_pipelines
+        frag_pipelines = build_frag_pipelines()
+    else:
+        frag_pipelines = ()
     # Refraction (general wavefront only; see refractive_det above).
     refraction_flag = 1 if refractive_det else 0
     if physical or det_frag:
@@ -2608,7 +2712,7 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     layer_offset_triangles, layer_offset_pn,
                     has_tri, has_pn, has_bez, int(MAX_BOUNCES),
                     light_pos, light_col, int(num_lights),
-                    frag_flag, shadow_flag, refraction_flag,
+                    frag_flag, frag_pipelines, shadow_flag, refraction_flag,
                     1 if transparent_background else 0, memory, out,
                     kernel_aa)
             elif (merged.get("tri_tc") is not None and has_tri
@@ -2670,7 +2774,8 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     float(width // 2), float(height // 2),
                     layer_offset_triangles, int(MAX_BOUNCES),
                     1 if transparent_background else 0,
-                    frag_flag, merged["tri_mat_id"], merged["tri_mat"],
+                    frag_flag, frag_pipelines,
+                    merged["tri_mat_id"], merged["tri_mat"],
                     light_pos, light_col, int(num_lights), kernel_aa,
                     t_val, float(TONEMAP_EXPOSURE), out)
             elif USE_NO_PN_KERNEL and not has_pn and not det_shadows:
@@ -2697,12 +2802,14 @@ def render_batch_ray_traced(primitives, scene, screen_width, screen_height,
                     layer_offset_triangles, int(MAX_BOUNCES),
                     1 if transparent_background else 0,
                     has_tri, has_bez,
-                    frag_flag, merged["tri_mat_id"], merged["tri_mat"],
+                    frag_flag, frag_pipelines,
+                    merged["tri_mat_id"], merged["tri_mat"],
                     light_pos, light_col, int(num_lights), kernel_aa,
                     t_val, float(TONEMAP_EXPOSURE), out)
             else:
                 render_scene_stbvh(*shared_args, has_tri, has_pn, has_bez,
-                                   frag_flag, merged["tri_mat_id"],
+                                   frag_flag, frag_pipelines,
+                                   merged["tri_mat_id"],
                                    merged["tri_mat"], merged["pn_mat_id"],
                                    merged["pn_mat"], light_pos, light_col,
                                    int(num_lights), shadow_flag, kernel_aa,

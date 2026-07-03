@@ -2916,6 +2916,66 @@ class Mob(Animatable):
             d.shader_specific_param_names = shader_specific_param_names
         return self
 
+    def set_fragment_shader(self, shader):
+        """Sets a custom **fragment shader** for this mob and its descendants,
+        evaluated per fragment inside the deterministic ray tracer's shade
+        kernel (rather than per vertex like :meth:`set_shader`). MUST be called
+        before the mob is spawned.
+
+        ``shader`` is a
+        :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage`
+        (a Taichi ``@ti.func`` stage plus its parameter specs), a built-in
+        material shader function (e.g. ``phong_shader``), or a **list** of
+        these forming a *pipeline* run left-to-right -- each stage receives the
+        previous stage's output colour. For example
+        ``mob.set_fragment_shader([cosine_color, phong_shader])`` recolours each
+        fragment with a cosine wave and then lights the result with Blinn-Phong.
+
+        The stages' parameters become animatable attributes (duplicate names
+        across stages are suffixed). Setting a fragment shader forces the
+        deterministic renderer's per-fragment path on for any scene the mob
+        appears in; it is ignored by the Monte Carlo / physical path tracer.
+
+        Parameters
+        ----------
+        shader
+            A fragment stage, a built-in material shader, or a list of these
+            (a pipeline). ``None`` clears the fragment shader.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            The mob instance itself, allowing for method chaining.
+
+        Raises
+        ------
+        :class:`.ModifiedProtectedAttributeError`
+            If called on an already spawned mob.
+        """
+        if self.data.spawn_time() >= 0:
+            raise ModifiedProtectedAttributeError(
+                "You are attempting to change the fragment shader of a mob that "
+                "is already spawned. This is not allowed. See docs for help.")
+
+        if shader is None:
+            for d in reversed(self.get_descendants()):
+                d.shader = None
+            return self
+
+        from algan.rendering.shaders.fragment_shaders import (
+            build_fragment_pipeline,
+        )
+
+        marker, param_specs = build_fragment_pipeline(shader)
+        names = [n for n, _d in param_specs]
+        for d in reversed(self.get_descendants()):
+            d.register_attrs_as_animatable(names)
+            for n, default in param_specs:
+                d.__setattr__(n, default)
+            d.shader_specific_param_names = names
+            d.shader = marker
+        return self
+
     def set_material(self, material, apply_to_raytracer=None):
         """Applies a Three.js-style :class:`~algan.rendering.shaders.materials.Material`
         to this mob and all of its descendants.

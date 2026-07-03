@@ -299,7 +299,7 @@ def _trace_no_pn_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
                      circuit_border_colors: ti.template(),
                      edges_2d: ti.template(), edge_offsets: ti.template(),
                      has_tri: ti.i32, has_bez: ti.i32,
-                     frag_shading: ti.template(),
+                     frag_shading: ti.template(), frag_pipelines: ti.template(),
                      tri_mat_id: ti.template(), tri_mat: ti.template(),
                      light_pos: ti.template(), light_col: ti.template(),
                      num_lights):
@@ -413,8 +413,8 @@ def _trace_no_pn_ray(ro, rd, inv_rd, f, ff, pixel_size_per_t,
             # forced onto the general kernel -- so shadows are disabled here.)
             if ti.static(frag_shading != 0):
                 if htype == 1:
-                    color = _shade_tri_hit(f, prim, a, b, rd, t_hit, ro,
-                                           tri_pos, tri_norm,
+                    color = _shade_tri_hit(frag_pipelines, f, prim, a, b, rd,
+                                           t_hit, ro, tri_pos, tri_norm,
                                            tri_mat_id, tri_mat,
                                            light_pos, light_col, num_lights,
                                            color, 0,
@@ -504,8 +504,10 @@ def render_no_pn_stbvh(
         max_bounces: int, transparent: int,
         has_tri: ti.i32, has_bez: ti.i32,
         # Fragment shading (compile-time): 0 = baked vertex colours (default);
-        # 1 = material-shade each triangle hit per fragment.
-        frag_shading: ti.template(),
+        # 1 = material-shade each triangle hit per fragment. ``frag_pipelines``
+        # is the flat tuple of composed user pipeline funcs (empty for
+        # built-in-only scenes).
+        frag_shading: ti.template(), frag_pipelines: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int,
@@ -557,7 +559,7 @@ def render_no_pn_stbvh(
                     b_first_leaf, circuit_meta, circuit_colors,
                     circuit_border_colors, edges_2d, edge_offsets,
                     has_tri, has_bez,
-                    frag_shading, tri_mat_id, tri_mat,
+                    frag_shading, frag_pipelines, tri_mat_id, tri_mat,
                     light_pos, light_col, num_lights)
                 for ci in ti.static(range(4)):
                     csum[ci] += (acc[ci] * 255.0
