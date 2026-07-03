@@ -916,6 +916,13 @@ class Scene:
                 self._full_state_range = (int(start_time_ind), int(end_time_ind))
 
         self.has_any_active_actors = False
+        # Animation timestamps are final for the duration of a render: start a
+        # global-animation-state session so the sorted modification log is
+        # built (and its time callables evaluated) once, then reused by every
+        # batch window.
+        from algan.animation.global_state import GlobalAnimationState
+
+        GlobalAnimationState.instance().begin_session(self.frames_per_second)
         self.memory = ManualMemory(
             COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
         )

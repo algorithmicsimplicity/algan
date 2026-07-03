@@ -26,7 +26,8 @@ def test_parents():
     with Sync():
         # TODO add in support for synchronized animating of parent and children,
         # currently it doesn't work because render_all always forces children -> parent state materialization
-        # (even if parent needs to be called first, as it is below, so what we need to do is stratafy
+        # (even if parent needs to be called first, as it is below (when you do [x.move(RIGHT * 0.5) for x in xs] before xs.rotate(90, OUT),
+        # so what we need to do is stratafy
         # state materialization into levels, each level is the number of animations playing previously in the same time.
         # we already have code which yoinks out the i'th level in animatable modification history,
         # all we need to do is, in render, iterate through levels one by one until no actor returns a non-zero state.
@@ -38,4 +39,4 @@ def test_parents():
     return
 
 
-render_all_funcs(__name__, start_index=-1, max_rendered=-1)
+render_all_funcs(__name__, start_index=0, max_rendered=-1)

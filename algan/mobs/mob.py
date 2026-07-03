@@ -321,6 +321,136 @@ class Mob(Animatable):
             ).contiguous()
         return value
 
+    # -- batched hierarchy writes -------------------------------------------
+    #
+    # A recursive attribute change (move, rotate, color pulse, ...) used to be
+    # a Python recursion through every descendant Mob, each doing its own
+    # tensor read/write and history bookkeeping.  Since all animated
+    # attributes now live in rows of the global attribute buffers, the same
+    # change is applied as ONE tensor operation over the concatenated row
+    # indices of all descendants, with ONE entry in the global modification
+    # log.  The per-child recursion remains as the fallback for hierarchies /
+    # changes the batch can't represent (per-point changes that need
+    # parent_batch_sizes expansion, shared-data sub-mobs, ...).
+
+    def _hierarchy_write_plan(self, key, include_self=True, allow_missing=False):
+        """The concatenated global-buffer rows of ``key`` over self and all
+        descendants (cached until the hierarchy or row allocation changes).
+        Returns None when this hierarchy can't take the batched path, or the
+        string "empty" when there is simply nothing to write."""
+        from algan.animation.global_state import GlobalAnimationState
+
+        gs = GlobalAnimationState.instance()
+        cache = self.__dict__.get("_hier_plan_cache")
+        if cache is None:
+            cache = {}
+            self.__dict__["_hier_plan_cache"] = cache
+        cache_key = (key, include_self, allow_missing)
+        entry = cache.get(cache_key)
+        if entry is not None and entry[0] == gs.topology_version:
+            return entry[1]
+        plan = self._build_hierarchy_write_plan(key, include_self, allow_missing)
+        cache[cache_key] = (gs.topology_version, plan)
+        return plan
+
+    def _build_hierarchy_write_plan(self, key, include_self, allow_missing):
+        mobs = self.get_descendants(include_self=include_self)
+        buffer = None
+        rows_list = []
+        entries = []
+        for m in mobs:
+            d = getattr(m, "data", None)
+            if d is None or m.data_sub_inds is not None or key in d.side:
+                return None
+            rows = d.rows.get(key)
+            if rows is None:
+                if hasattr(m, key):
+                    # The attribute exists through some other mechanism
+                    # (computed property, ...): only the per-mob path knows
+                    # how to write it.
+                    return None
+                if allow_missing:
+                    continue
+                return None
+            if buffer is None:
+                buffer = rows.buffer
+            elif rows.buffer is not buffer:
+                return None
+            rows_list.append(rows.indices)
+            entries.append((m, rows.indices))
+        if buffer is None:
+            return "empty"
+        return dict(buffer=buffer, rows=torch.cat(rows_list), entries=entries)
+
+    def _batched_hierarchy_apply(self, key, transform, include_self=True,
+                                 allow_missing=False):
+        """Apply ``transform`` ([T?, R, W] -> broadcastable) to the ``key``
+        rows of self and all descendants in one batched tensor operation.
+        Records one global modification covering every (spawned) descendant.
+        Returns False when the batched path doesn't apply (caller falls back
+        to the per-child recursion)."""
+        ctx = self.animation_manager.context
+        if ctx.trace_mode:
+            return False
+        plan = self._hierarchy_write_plan(key, include_self, allow_missing)
+        if plan is None:
+            return False
+        if plan == "empty":
+            return True
+        buffer, rows, entries = plan["buffer"], plan["rows"], plan["entries"]
+        d = self.data
+        if d.time_inds_materialized is None:
+            old = buffer.values[rows]  # gathered copy of the current values
+            new = transform(old.unsqueeze(0))
+            if ctx.record_attr_modifications:
+                spawned = [m.data.spawn_time() >= 0 for m, _ in entries]
+                if any(spawned):
+                    start_time = ctx.get_current_time()
+                    end_time = ctx.get_current_end_time()
+                    ctx.end_time = max(
+                        ctx.end_time, ctx.current_time + ctx.run_time_unit
+                    )
+                    if all(spawned):
+                        rec_rows, rec_old = rows, old
+                    else:
+                        rec_rows = torch.cat(
+                            [r for (m, r), s in zip(entries, spawned) if s]
+                        )
+                        rec_old = buffer.values[rec_rows]
+                    buffer.record(rec_rows, rec_old, start_time, end_time)
+                    for (m, _), s in zip(entries, spawned):
+                        if not s:
+                            continue
+                        h = m.data.history
+                        if key not in h.attribute_modifications:
+                            h.attribute_modifications[key].append(end_time)
+                        h.cached_history = None
+            buffer.values[rows] = new.squeeze(0) if new.dim() > 2 else new
+        else:
+            # Render time: make sure every descendant is bound to this window
+            # first (binding applies the spawn/despawn opacity mask, which
+            # must precede function writes, as in the per-child path), then
+            # read-modify-write the dense window state in one pass.
+            tm = d.time_inds_materialized
+            s_w, e_w = int(tm[0]), int(tm[-1]) + 1
+            time_sel = d.time_inds_active
+            for m, _ in entries:
+                md = m.data
+                if md is not d:
+                    if (
+                        md.time_inds_materialized is None
+                        or md.time_inds_materialized[0] != tm[0]
+                    ):
+                        md.animatable.set_state_pre_function_applications(s_w, e_w)
+                    # The per-child recursion aligned every descendant's
+                    # active time indices to the caller's (set_time_inds_to);
+                    # later dependent-mob reads rely on that.
+                    md.time_inds_active = time_sel
+            cur = d.window.read(buffer, rows, time_sel=time_sel)
+            new = transform(cur)
+            d.window.write(buffer, rows, new, time_sel=time_sel)
+        return True
+
     @animated_function(
         animated_args={"interpolation": 0.0}, unique_args=["key", "recursive"]
     )
@@ -371,6 +501,19 @@ class Mob(Animatable):
         )
 
         if recursive == "True":
+            # Batched path: descendants replace their value with the parent's
+            # interpolated value (the child recursion applies the default
+            # replacement relation), one tensor op over all their rows.
+            if (
+                isinstance(interpolated_value, torch.Tensor)
+                and interpolated_value.shape[-2] == 1
+                and self._batched_hierarchy_apply(
+                    key,
+                    lambda cur, iv=interpolated_value: iv.expand_as(cur),
+                    include_self=False,
+                )
+            ):
+                return self
             for c in self.children:
                 c.set_time_inds_to(self)
                 interpolated_value_c = interpolated_value
@@ -521,6 +664,21 @@ class Mob(Animatable):
         """
         change = change * interpolation
         relation = self.attr_to_relations[relation_key][0]
+
+        # Batched path: a change that is uniform over the batch dimension is
+        # applied to the rows of the whole hierarchy in one tensor op
+        # (per-point changes need the per-child parent_batch_sizes expansion
+        # below).
+        if (
+            recursive == "True"
+            and isinstance(change, torch.Tensor)
+            and change.shape[-2] == 1
+            and self._batched_hierarchy_apply(
+                key, lambda cur: relation(cur, change)
+            )
+        ):
+            return self
+
         current_value = self.__getattribute__(key)
 
         self.setattr_and_record_modification(key, relation(current_value, change))
@@ -633,6 +791,26 @@ class Mob(Animatable):
 
         """
         original_change_value = change  # Store original to propagate to children
+        # Batched path: every descendant interpolates its own current value
+        # toward the same target, so the whole hierarchy is one tensor op when
+        # the target and interpolation are uniform over the batch dimension.
+        if (
+            recursive == "True"
+            and isinstance(change, torch.Tensor)
+            and change.shape[-2] == 1
+            and (
+                not isinstance(interpolation, torch.Tensor)
+                or interpolation.shape[-2] == 1
+            )
+        ):
+            relation_batched = self.attr_to_relations[key][0]
+
+            def transform(cur, change=change, interpolation=interpolation):
+                interpolated = torch.lerp(cur, change, interpolation)
+                return relation_batched(cur, interpolated)
+
+            if self._batched_hierarchy_apply(key, transform, allow_missing=True):
+                return self
         if hasattr(self, key):
             relation_func = self.attr_to_relations[key][0]
             current_value = self.__getattribute__(key)
@@ -937,11 +1115,26 @@ class Mob(Animatable):
         Mob: The Mob instance itself, allowing for method chaining.
 
         """
-        if recursive == "True":
-            ds = self.get_descendants(include_self=False)
-            [d.set_time_inds_to(self) for d in ds]
         old_basis = self.basis if hasattr(self, "basis") else basis
         interpolated_basis = old_basis * (1 - interpolation) + interpolation * basis
+
+        if recursive == "True":
+            # The per-child location adjustment below (set_basis_inner) needs
+            # every descendant aligned to this mob's time indices; the batched
+            # path handles binding itself, so the O(descendants) prep loop
+            # only runs when we will fall back to the recursion.
+            fast_inner = (
+                isinstance(old_basis, torch.Tensor)
+                and old_basis.shape[-2] == 1
+                and isinstance(interpolated_basis, torch.Tensor)
+                and interpolated_basis.shape[-2] == 1
+                and not self.animation_manager.context.trace_mode
+                and self._hierarchy_write_plan("location", include_self=False)
+                is not None
+            )
+            if not fast_inner:
+                ds = self.get_descendants(include_self=False)
+                [d.set_time_inds_to(self) for d in ds]
 
         # Temporarily set recursing flag to control setattr_relative behavior
         original_recursing_state = self.recursing
@@ -951,8 +1144,24 @@ class Mob(Animatable):
 
         if recursive == "True":
             # Adjust children's locations to maintain relative positions after basis change
-            for child in self.children:
-                child.set_basis_inner(self.location, old_basis, interpolated_basis)
+            parent_location = self.location
+            if not (
+                fast_inner
+                and isinstance(parent_location, torch.Tensor)
+                and parent_location.shape[-2] == 1
+                and self._batched_hierarchy_apply(
+                    "location",
+                    lambda cur, pl=parent_location, ob=old_basis,
+                    nb=interpolated_basis: map_local_to_global_coords(
+                        pl, nb, map_global_to_local_coords(pl, ob, cur)
+                    ),
+                    include_self=False,
+                )
+            ):
+                for child in self.children:
+                    child.set_basis_inner(
+                        self.location, old_basis, interpolated_basis
+                    )
         return self
 
     @basis.setter
@@ -2087,6 +2296,11 @@ class Mob(Animatable):
         for mob in self.get_descendants():
             mob.data.history = ModificationHistory()
             mob.data.spawn_time = lambda: -1
+            # Re-allocate the mob's buffer rows (keeping current values): the
+            # old rows' recorded modifications stay with the old rows, so this
+            # mob's attribute history starts fresh.
+            for attr, rows in list(mob.data.rows.items()):
+                mob.data.alloc_rows_like(attr, rows.read().clone())
 
     def detach_history(self):
         """Detaches the Mob's current animation history into a new, independent clone of this Mob.
@@ -3141,6 +3355,9 @@ class Mob(Animatable):
             sub_pbs = self.parent_batch_sizes
         self.data_sub_inds = data_sub_inds
         self.parent_batch_sizes = sub_pbs
+        from algan.animation.global_state import GlobalAnimationState
+
+        GlobalAnimationState.instance().bump_topology()
         for c in self.children:
             c.set_data_sub_inds(data_sub_inds)
 

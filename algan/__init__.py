@@ -89,6 +89,14 @@ from algan.settings.logging_defaults import *
 
 from algan.utils.memory_utils import ManualMemory
 
+# Pre-allocate the global animation buffer arena at import time: all Mobs'
+# animated attributes live in rows of these shared buffers (see
+# algan/animation/global_state.py). Size configurable via
+# ALGAN_ANIMATION_ARENA_MB (default 1024).
+from algan.animation.global_state import GlobalAnimationState
+
+GlobalAnimationState.instance()
+
 
 class SceneManager:
     _instance = None
@@ -106,6 +114,9 @@ class SceneManager:
 
     @classmethod
     def reset(cls):
+        from algan.animation.global_state import GlobalAnimationState
+
+        GlobalAnimationState.reset()
         AnimationManager.reset()
         cls._instance = None
         return cls.instance()

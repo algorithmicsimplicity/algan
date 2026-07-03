@@ -15,6 +15,7 @@ from algan.animation.animation_contexts import (
     AnimationContext,
     Off,
 )
+from algan.animation.global_state import GlobalAnimationState, RowBlock
 from algan.constants.color import BLACK
 from algan.utils.tensor_utils import (
     broadcast_all,
@@ -43,8 +44,16 @@ class TimeInterval:
 
 
 class ModificationHistory:
-    """A complete record of every change applied to a particular Mob, and the timestamps those changes occur over.
-    At render time, this history will be used to construct the animated (interpolated) attributes of the mob for all timesteps.
+    """A record of every animated_function applied to a particular Mob, and the
+    timestamps those changes occur over.  At render time this history is used
+    to re-execute the functions with interpolated parameters.
+
+    Attribute-value modifications are no longer stored here: they are recorded
+    in the :class:`~.GlobalAnimationState` modification log (row-indexed into
+    the global attribute buffers), which materializes the pre-function state of
+    every mob in one batched pass.  ``attribute_modifications`` remains as a
+    lightweight marker dict (attr name -> list of end-time callables) so
+    callers can still ask *whether* an attribute was ever modified.
     """
 
     def __init__(self):
@@ -53,7 +62,7 @@ class ModificationHistory:
         )  # contains all animated_functions applied to the mob.
         self.attribute_modifications = defaultdict(
             list
-        )  # contains every instance that one of the mob's animatable attributes is changed.
+        )  # marker only: which attrs were modified, and when.
         self.attribute_overwrites = (
             dict()
         )  # overwrites are not supported at the moment.
@@ -64,19 +73,6 @@ class ModificationHistory:
         if attr not in self.attribute_overwrites:
             self.attribute_overwrites[attr] = []
         self.attribute_overwrites[attr].append(end_time)
-
-    def insert_attr_modification(self, attr, new_value, animation_context):
-        if not animation_context.record_attr_modifications:
-            return
-        start_time = animation_context.get_current_time()
-        end_time = animation_context.get_current_end_time()
-        animation_context.end_time = max(
-            animation_context.end_time,
-            animation_context.current_time + animation_context.run_time_unit,
-        )
-        self.attribute_modifications[attr].append([new_value, start_time, end_time])
-        self.cached_history = None
-        return self
 
     def insert_function_application(
         self, func_name, func, animated_args, kwargs, animation_context
@@ -108,27 +104,13 @@ class ModificationHistory:
         self.most_recent_function_added = self.function_applications[func_name][2][-1]
         self.cached_history = None
 
-    def get_history(self, animatable):
+    def get_func_history(self, animatable):
+        """The animated_function history, batched and split into
+        non-overlapping groups, ready for re-execution at render time.
+        (Attribute-value history is materialized globally, see
+        :class:`~.GlobalAnimationState`.)"""
         if self.cached_history is not None:
             return self.cached_history
-        attrs = []
-
-        for attr in self.attribute_modifications:
-            v = animatable.data.animatable.__getattribute__(
-                attr
-            )  # current (i.e. ending) value
-            history = [
-                [v, e]
-                for v, s, e in self.attribute_modifications[attr]
-                if e() >= s()
-            ] + [(v, lambda: float("inf"))]
-
-            values, times = zip(*history)
-            # Note that times are stored as functions so they can be retroactively changed by animation contexts,
-            # here we evaluate them to get the actual (float) times.
-            attrs.append(
-                (attr, robust_concat(values), torch.tensor([_() for _ in times]))
-            )
 
         funcs = []
 
@@ -210,8 +192,8 @@ class ModificationHistory:
                     )
                 )
 
-        self.cached_history = (attrs, funcs)
-        return attrs, funcs
+        self.cached_history = funcs
+        return funcs
 
 
 def animated_function(
@@ -263,25 +245,143 @@ def animated_function(
     return _decorate
 
 
+class _ActiveView:
+    """Dict-like view of a mob's *current* attribute values, backed by the
+    global attribute buffers.  ``view[attr]`` reads the mob's rows as a
+    ``[1, B, W]`` tensor; ``view[attr] = value`` writes the rows in place
+    (allocating or resizing them as needed) without recording a modification,
+    exactly like the old direct ``data_dict_active[attr] = value`` assignment.
+    Values that cannot live in the buffers (non-tensors, non-float dtypes)
+    fall back to a per-mob side dict."""
+
+    __slots__ = ("data",)
+
+    def __init__(self, data):
+        self.data = data
+
+    def __contains__(self, key):
+        return key in self.data.rows or key in self.data.side
+
+    def __getitem__(self, key):
+        d = self.data
+        if key in d.side:
+            return d.side[key]
+        rows = d.rows.get(key)
+        if rows is None:
+            raise KeyError(key)
+        return d.read_current(key, rows)
+
+    def __setitem__(self, key, value):
+        self.data.write_current(key, value)
+
+    def keys(self):
+        seen = list(self.data.rows.keys())
+        return seen + [k for k in self.data.side.keys() if k not in self.data.rows]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        return len(self.keys())
+
+    def values(self):
+        return [self[k] for k in self.keys()]
+
+    def items(self):
+        return [(k, self[k]) for k in self.keys()]
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+
+class _WindowView:
+    """Dict-like view of a mob's *materialized* (per-frame) attribute values,
+    backed by the bound :class:`~.MaterializedWindow`.  Reads return
+    ``[T, B, W]`` for attributes with recorded modifications and the constant
+    ``[1, B, W]`` current value otherwise (the caller broadcasts constants
+    over time, as before).  Membership additionally mirrors the old
+    materialized-dict quirk: an attribute counts as present only once it has
+    per-frame (dense) state in the window."""
+
+    __slots__ = ("data",)
+
+    def __init__(self, data):
+        self.data = data
+
+    def __contains__(self, key):
+        d = self.data
+        if key in d.side:
+            return True
+        rows = d.rows.get(key)
+        if rows is None or d.window is None:
+            return False
+        return d.window.any_dense(rows.buffer, rows.indices)
+
+    def __getitem__(self, key):
+        d = self.data
+        if key in d.side:
+            return d.side[key]
+        rows = d.rows.get(key)
+        if rows is None or d.window is None:
+            raise KeyError(key)
+        value = d.window.read(rows.buffer, rows.indices)
+        cls = d.attr_cls.get(key)
+        if cls is not None:
+            value = value.as_subclass(cls)
+        return value
+
+    def __setitem__(self, key, value):
+        d = self.data
+        rows = d.rows.get(key)
+        if rows is None or d.window is None or not isinstance(value, torch.Tensor):
+            d.write_current(key, value)
+            return
+        # Write over all frames of the window.
+        value = cast_to_tensor(value)
+        d.window.write(rows.buffer, rows.indices, value)
+
+    def keys(self):
+        return self.data.data_dict_active.keys()
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        return len(self.keys())
+
+    def values(self):
+        return [self.data.data_dict_active[k] for k in self.keys()]
+
+    def items(self):
+        return [(k, self.data.data_dict_active[k]) for k in self.keys()]
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+
 class AnimatableData:
-    """A container for all of the animation-relevant data for a mob, including its ModificationHistory.
+    """A container for all of the animation-relevant data for a mob.
+
+    The mob's animated attribute values live in rows of the global attribute
+    buffers (:class:`~.GlobalAnimationState`); this object holds the row
+    allocations (``rows``: attr name -> :class:`~.RowBlock`), the per-mob
+    function history, and the binding to the current render-time
+    materialization window.
+
+    ``data_dict_active`` / ``data_dict_materialized`` keep their old roles as
+    the current-value and per-frame views of the data, but are now adapters
+    over the global buffers / the materialized window rather than plain dicts.
 
     Parameters
     ----------
     animatable
         The mob for which we are recording data.
-    data_dict_active
-        The dictionary used for storing active animatable attribute values. At animate time this is simply the current value,
-        at render time it is all values for the current batch of timesteps being rendered.
-    data_dict_materialized
-        The dictionary used for storing all materialized animatable attribute values. At animate time this isn't used,
-        at render time this contains all values for a (larger) batch of timesteps being materialized.
     history
-        The ModificationHistory object to which modifications will be recorded.
+        The ModificationHistory object to which function applications will be recorded.
     time_inds_materialized
-        A list of all time-inds which have been materialized (i.e. are in data_dict_materialized).
+        The time-inds materialized by the bound window.
     time_inds_active
-        A list of all time-inds which are currently active (i.e. are in data_dict_active).
+        The currently active subset of the materialized time-inds.
     spawn_time
         (function which yields) the timestamp at which the mob spawned.
     despawn_time
@@ -300,14 +400,18 @@ class AnimatableData:
         despawn_time=lambda: -1,
     ):
         self.animatable = animatable
-        if data_dict_active is None:
-            data_dict_active = dict()
-        if data_dict_materialized is None:
-            data_dict_materialized = dict()
         if history is None:
             history = ModificationHistory()
-        self.data_dict_active = data_dict_active
-        self.data_dict_materialized = data_dict_materialized
+        self.rows = dict()
+        self.side = dict()
+        self.attr_cls = dict()
+        self.window = None
+        self.stale_window = None
+        self.data_dict_active = _ActiveView(self)
+        self.data_dict_materialized = _WindowView(self)
+        if data_dict_active:
+            for k, v in data_dict_active.items():
+                self.data_dict_active[k] = v
         self.history = history
         self.time_inds_active = time_inds_active
         self.time_inds_materialized = time_inds_materialized
@@ -315,6 +419,128 @@ class AnimatableData:
         self.spawn_time = spawn_time
         self.despawn_time = despawn_time
         self.set_pre_function_application = False
+
+    # -- global-buffer plumbing --------------------------------------------
+
+    def _buffer_for(self, key, width):
+        return GlobalAnimationState.instance().get_buffer(key, width)
+
+    def read_current(self, key, rows=None):
+        """Current value of ``key`` as a [1, B, W] snapshot of the global
+        buffer rows (a copy: later writes must not mutate captured reads)."""
+        if rows is None:
+            rows = self.rows[key]
+        value = rows.read(snapshot=True).unsqueeze(0)
+        cls = self.attr_cls.get(key)
+        if cls is not None:
+            value = value.as_subclass(cls)
+        return value
+
+    def write_current(self, key, value):
+        """Set the current value of ``key`` without recording a modification
+        (the old direct dict-assignment semantics).  Allocates rows on first
+        write; re-allocates on batch-size or width change."""
+        if (
+            not isinstance(value, torch.Tensor)
+            or value.dtype != torch.get_default_dtype()
+            or value.dim() > 3
+        ):
+            if key not in self.side or key in self.rows:
+                GlobalAnimationState.instance().bump_topology()
+            self.side[key] = value
+            self.rows.pop(key, None)
+            return
+        self.side.pop(key, None)
+        if type(value) is not torch.Tensor:
+            self.attr_cls[key] = type(value)
+        while value.dim() < 3:
+            value = value.unsqueeze(0)
+        value = value[-1]  # [B, W]; current value keeps the latest timestep.
+        n, width = value.shape
+        rows = self.rows.get(key)
+        if rows is None or rows.size != n or rows.buffer.width != width:
+            buffer = self._buffer_for(key, width)
+            old_rows = rows
+            rows = buffer.alloc(n)
+            if old_rows is not None and old_rows.buffer is buffer:
+                # Batch-size change of an existing attribute (become / batch
+                # expansion): carry the recorded history over to the new rows
+                # so pre-existing animation still materializes. Rows beyond
+                # the old batch inherit the last old row's history (the old
+                # pad-with-last broadcast semantics).
+                m = min(old_rows.size, n)
+                buffer.copy_row_history(
+                    old_rows.indices[:m], rows.indices[:m]
+                )
+                if n > m:
+                    buffer._duplicate_row_history(
+                        int(old_rows.indices[-1]), rows.indices[m:]
+                    )
+            self.rows[key] = rows
+            GlobalAnimationState.instance().bump_topology()
+        rows.write(value)
+
+    def alloc_rows_like(self, key, value_2d):
+        """Allocate rows for ``key`` initialised to ``value_2d`` [n, W]."""
+        buffer = self._buffer_for(key, value_2d.shape[-1])
+        rows = buffer.alloc(value_2d.shape[0])
+        rows.write(value_2d)
+        self.rows[key] = rows
+        GlobalAnimationState.instance().bump_topology()
+        return rows
+
+    def grow_rows(self, key, n_total):
+        """Grow ``key``'s rows to ``n_total`` by padding with the last row's
+        value; the new rows inherit the last row's modification history (this
+        matches the old pad-with-last batch expansion)."""
+        rows = self.rows[key]
+        n_extra = n_total - rows.size
+        if n_extra <= 0:
+            return rows
+        last_row = int(rows.indices[-1])
+        init = rows.buffer.values[last_row:last_row + 1].expand(n_extra, -1)
+        rows.buffer.grow(
+            rows, n_extra, init.clone(), inherit_history_from_row=last_row
+        )
+        GlobalAnimationState.instance().bump_topology()
+        return rows
+
+    def record_modification(self, key, rows_idx, old_values, animation_context):
+        """Record a batched modification (the values ``rows_idx`` held before
+        this write) into the global modification log."""
+        if not animation_context.record_attr_modifications:
+            return
+        start_time = animation_context.get_current_time()
+        end_time = animation_context.get_current_end_time()
+        animation_context.end_time = max(
+            animation_context.end_time,
+            animation_context.current_time + animation_context.run_time_unit,
+        )
+        rows = self.rows[key]
+        rows.buffer.record(rows_idx, old_values, start_time, end_time)
+        self.history.attribute_modifications[key].append(end_time)
+        self.history.cached_history = None
+
+    def __deepcopy__(self, memo):
+        # Fresh row allocations holding a copy of the current values; the
+        # caller (Animatable.__deepcopy__) decides about history sharing and
+        # re-assigns animatable/history/spawn times.
+        clone = AnimatableData(self.animatable)
+        for key, rows in self.rows.items():
+            clone.alloc_rows_like(key, rows.read().clone())
+        clone.side = copy.deepcopy(self.side, memo)
+        clone.attr_cls = dict(self.attr_cls)
+        clone.history = self.history
+        return clone
+
+    def copy_history_from(self, source):
+        """Replay the recorded modifications of ``source``'s rows onto this
+        data's rows (used by clones that share their source's history)."""
+        for key, rows in self.rows.items():
+            src = source.rows.get(key)
+            if src is None or src.size != rows.size:
+                continue
+            rows.buffer.copy_row_history(src.indices, rows.indices)
 
 
 class Animatable:
@@ -416,13 +642,13 @@ class Animatable:
             self.init()
 
     def to(self, device):
+        # Attribute values live in the global animation buffers (which stay on
+        # the animation device); only side-stored tensors are moved.
         for attr in self.animatable_attrs:
-            if attr in self.data.data_dict:
-                self.data.data_dict[attr] = self.data.data_dict[attr].to(device)
-            elif attr in self.data.data_dict_active:
-                self.data.data_dict_active[attr] = self.data.data_dict_active[attr].to(
-                    device
-                )
+            if attr in self.data.side and isinstance(
+                self.data.side[attr], torch.Tensor
+            ):
+                self.data.side[attr] = self.data.side[attr].to(device)
         return self
 
     def _set_dependant_mobs_time_inds_to_self_then_run_function(self, function):
@@ -612,63 +838,83 @@ class Animatable:
         if self.animation_manager.context.trace_mode:
             self.animation_manager.context.traced_mobs.add(self)
             return
-        dd = self.data.data_dict
+        d = self.data
+        if not isinstance(value, torch.Tensor):
+            d.side[key] = value
+            return
         self.batch_size = max(self.batch_size, value.shape[-2])
-        n1, n2 = (
-            1
-            if self.data.time_inds_materialized is None
-            else len(self.data.time_inds_materialized),
-            self.batch_size,
-        )
-        data_inds = (
-            self.data_sub_inds if self.data_sub_inds is not None else slice(None)
-        )
-        data_inds = torch.arange(n2)[data_inds]
-        time_inds = (
-            self.data.time_inds_active
-            if self.data.time_inds_materialized is not None
-            else slice(None)
-        )
-        time_inds = torch.arange(n1)[time_inds].unsqueeze(-1)
-        if key not in dd:
-            if self.data.time_inds_materialized is None:
+        n2 = self.batch_size
+        at_render = d.time_inds_materialized is not None
+        rows = d.rows.get(key)
+        if rows is None:
+            if not at_render:
                 # This is the first time this attr's value has been set.
                 old_value = self.getattribute_animated_full(key)
                 if old_value is None:
                     old_value = torch.zeros_like(value[:1, :1])
                 else:
                     old_value = unsqueeze_dims(old_value, value)
-                if (old_value.shape[0] < n1) or (old_value.shape[1] < n2):
-                    old_value = old_value.expand(n1, n2, -1).contiguous()
-                new_value = old_value.clone()
-                new_value[time_inds, data_inds] = value
-                dd[key] = new_value
-                self.data.history.insert_attr_modification(
-                    key, old_value, self.animation_manager.context
+                if old_value.shape[1] < n2:
+                    old_value = old_value.expand(-1, n2, -1)
+                old_value = old_value[-1].contiguous()  # [n2, W]
+                rows = d.alloc_rows_like(key, old_value)
+                if type(value) is not torch.Tensor:
+                    d.attr_cls[key] = type(value)
+                d.record_modification(
+                    key, rows.indices, old_value.clone(),
+                    self.animation_manager.context,
                 )
+                target = (
+                    rows.indices
+                    if self.data_sub_inds is None
+                    else rows.indices[self.data_sub_inds]
+                )
+                rows.buffer.write_rows(target, value[-1])
             else:
-                # We are at render time and this attr has never been modified, just fill with current value.
-                dd[key] = self.__getattribute__(key)[-1:].expand(
-                    len(self.data.time_inds_materialized), -1, -1
-                )
+                # We are at render time and this attr has never been modified:
+                # snapshot the current value across the window (the incoming
+                # value is dropped, matching the previous behavior).
+                current = self.__getattribute__(key)[-1:]
+                rows = d.alloc_rows_like(key, current[-1])
+                d.window.ensure_dense(rows.buffer, rows.indices)
             return
-        if (dd[key].shape[0] < n1) or (dd[key].shape[1] < n2):
-            if dd[key].shape[1] > 1 and (dd[key].shape[1] < n2):
-                dd[key] = torch.cat(
-                    (dd[key], dd[key][:, -1:].expand(-1, n2 - dd[key].shape[1], -1)), 1
-                )
+        # Batch expansion: pad with the last element (the new rows inherit the
+        # last row's history), exactly like the old pad-with-last dict growth.
+        if rows.size < n2:
+            if rows.size > 1 and value.shape[1] < n2:
                 value = torch.cat(
                     (value, value[:, -1:].expand(-1, n2 - value.shape[1], -1)), 1
                 )
-            dd[key] = dd[key].expand(n1, n2, -1).contiguous()
-        old_value = dd[key]
-        new_value = old_value.clone()
-        new_value[time_inds, data_inds] = value
-        dd[key] = new_value
-        if self.data.spawn_time() >= 0:
-            self.data.history.insert_attr_modification(
-                key, old_value, self.animation_manager.context
-            )
+            old_size = rows.size
+            src_row = int(rows.indices[-1])
+            d.grow_rows(key, n2)
+            if at_render and d.window is not None:
+                # The new columns must start from the source column's
+                # materialized per-frame trajectory (the old code broadcast
+                # the private dense tensor), not from the live buffer value.
+                d.window.clone_row_state(
+                    rows.buffer, src_row, rows.indices[old_size:]
+                )
+        target = (
+            rows.indices
+            if self.data_sub_inds is None
+            else rows.indices[self.data_sub_inds]
+        )
+        if not at_render:
+            if self.data.spawn_time() >= 0:
+                d.record_modification(
+                    key, rows.indices, rows.read().clone(),
+                    self.animation_manager.context,
+                )
+            rows.buffer.write_rows(target, value[-1])
+        else:
+            if not d.window.any_dense(rows.buffer, rows.indices):
+                # First render-time write to a never-modified attr: snapshot
+                # the current value and drop the write (previous behavior).
+                d.window.ensure_dense(rows.buffer, rows.indices)
+                return
+            time_sel = d.time_inds_active
+            d.window.write(rows.buffer, target, value, time_sel=time_sel)
 
     def getattribute_animated_full(self, key):
         if key not in self.data.data_dict:
@@ -680,27 +926,49 @@ class Animatable:
     def getattribute_animated(self, key):
         if self.animation_manager.context.trace_mode:
             self.animation_manager.context.traced_mobs.add(self)
-        if key not in self.data.data_dict:
-            if key not in self.data.data_dict_active:
-                raise AttributeError
-            value = self.data.data_dict_active[key]
-        else:
-            value = self.data.data_dict[key]
-
+        d = self.data
+        rows = d.rows.get(key)
+        at_render = d.time_inds_materialized is not None
+        if rows is not None:
+            if not at_render:
+                value = d.read_current(key, rows)  # [1, B, W] buffer view
+                if value.shape[1] == 1 or self.data_sub_inds is None:
+                    return value
+                return value[:, self.data_sub_inds]
+            # Render time: gather the active frames of this mob's rows from
+            # the materialization window in one indexing op.  Rows without
+            # any recorded modification are constant and served as a
+            # broadcast view.
+            time_sel = d.time_inds_active
+            value = d.window.read(rows.buffer, rows.indices, time_sel=time_sel)
+            if value.shape[0] == 1 and time_sel is not None:
+                n_t = (
+                    time_sel.numel()
+                    if isinstance(time_sel, torch.Tensor)
+                    else len(d.time_inds_materialized)
+                )
+                # Materialize (the old per-mob dense state was always a
+                # private copy; callers mutate reads in place).
+                value = value.expand(n_t, -1, -1).clone()
+            cls = d.attr_cls.get(key)
+            if cls is not None:
+                value = value.as_subclass(cls)
+            if value.shape[1] == 1 or self.data_sub_inds is None:
+                return value
+            return value[:, self.data_sub_inds]
+        if key not in d.side:
+            raise AttributeError
+        value = d.side[key]
         if not isinstance(value, torch.Tensor):
             return value
         while value.dim() < 3:
             value = value.unsqueeze(0)
-        if self.data.time_inds_materialized is not None and value.shape[0] == 1:
-            value = value.expand(self.data.time_inds_active.amax() + 1, -1, -1)
+        if at_render and value.shape[0] == 1:
+            value = value.expand(d.time_inds_active.amax() + 1, -1, -1)
         data_inds = (
             self.data_sub_inds if self.data_sub_inds is not None else slice(None)
         )
-        time_inds = (
-            self.data.time_inds_active
-            if self.data.time_inds_materialized is not None
-            else slice(None)
-        )
+        time_inds = d.time_inds_active if at_render else slice(None)
         if value.shape[1] == 1 and self.data_sub_inds is not None:
             return value[time_inds]
         return value[time_inds][:, data_inds]
@@ -767,6 +1035,11 @@ class Animatable:
             ti.despawn_time = lambda: -1
             self.data.animatable = oa
             self.data.history = oh
+            if not reset_history:
+                # The clone shares its source's (function) history; replay the
+                # source rows' recorded value modifications onto the clone's
+                # rows so its attribute history matches too.
+                ti.copy_history_from(self.data)
         else:
             ti = self.data
 
@@ -802,6 +1075,7 @@ class Animatable:
                 "_animation_manager",
                 "time_inds",
                 "history",
+                "_hier_plan_cache",
             ]:
                 continue
             if k == "data":  # and not clone_data:
@@ -946,7 +1220,12 @@ class Animatable:
         if make_new_state:
             self.data = AnimatableData(self)
             self.data.spawn_time = self.animation_manager.context.get_current_time()
-        self.data.data_dict_materialized = dict()
+        # Remember the window this data was bound to: if it is re-bound to the
+        # very same window later (camera/screen/lights are re-materialized per
+        # batch), its rows must be restored to their pre-function state first.
+        if self.data.window is not None:
+            self.data.stale_window = self.data.window
+        self.data.window = None
         self.data.time_inds_materialized = None
         self.data.time_inds_active = None
         self.data.data_dict = self.data.data_dict_active
@@ -954,11 +1233,26 @@ class Animatable:
         self.already_set_state = False
 
     def set_state_pre_function_applications(self, spawn_ind, despawn_ind):
-        """Sets all animatable attribute values to the values they had before any animated_function applications take place."""
+        """Binds this mob to the batched materialization window covering
+        frames [spawn_ind, despawn_ind).  The window holds the pre-function
+        state of *every* modified row (one batched bisect over the global
+        modification log per attribute), so no per-mob history walk happens
+        here; this method only applies the mob's spawn/despawn opacity masking
+        and prepares its function history for re-execution."""
         fps = self.scene.frames_per_second
-        time_inds = torch.arange(spawn_ind, despawn_ind)
-        self.spawn_ind = int(self.data.spawn_time() * fps)
-        if self.data.despawn_time() < 0:
+        window = GlobalAnimationState.instance().ensure_window(
+            spawn_ind, despawn_ind, fps
+        )
+        d = self.data
+        if getattr(d, "stale_window", None) is window:
+            # Re-binding to a window whose dense rows this mob's functions
+            # already wrote: restore its rows to pristine pre-function state.
+            for rows in d.rows.values():
+                window.rematerialize_rows(rows.buffer, rows.indices)
+        d.stale_window = None
+        d.window = window
+        self.spawn_ind = int(d.spawn_time() * fps)
+        if d.despawn_time() < 0:
             self.despawn_ind = despawn_ind+1
         else:
             # Hide the mob from its own despawn frame onwards. We must use the
@@ -966,45 +1260,30 @@ class Animatable:
             # despawned without an animation (despawn(animate=False), as used by
             # become()/detach_history()) actually disappear instead of lingering
             # at full opacity until the end of the current render batch.
-            self.despawn_ind = max(int(self.data.despawn_time() * fps), self.spawn_ind + 1)
+            self.despawn_ind = max(int(d.despawn_time() * fps), self.spawn_ind + 1)
 
-        t = time_inds / fps
-        t = t.unsqueeze(-1)
-        attr_to_values = dict()
-        self.t = t
+        self.t = window.t
+        self.func_history = d.history.get_func_history(self)
 
-
-        attr_history, func_history = self.data.history.get_history(self)
-        self.func_history = func_history
-        for attr, new_values, end_times in attr_history:
-            if hasattr(self.__class__, attr) and isinstance(
-                getattr(self.__class__, attr), property
-            ):
-                attr = f"{attr}"
-            i = (
-                (t >= end_times)
-                .sum(-1, keepdim=True)
-                .clamp_max_(end_times.shape[-1] - 1)
-            )
-            attr_to_values[attr] = broadcast_gather(
-                new_values, 0, i.unsqueeze(-1), keepdim=True
-            )
-
-        if "opacity" not in attr_to_values:
-            opacity = self.opacity
-            if opacity.shape[0] == 1:
-                opacity = opacity.expand(
-                    despawn_ind - spawn_ind, -1, -1
-                ).clone()
-            attr_to_values["opacity"] = opacity
-        attr_to_values["opacity"][: max(self.spawn_ind - (spawn_ind), 0)] = 0
-        attr_to_values["opacity"][max(self.despawn_ind - spawn_ind, 0) :] = 0
-        self.data.data_dict_materialized = attr_to_values
-        self.data.data_dict = self.data.data_dict_materialized
-        self.data.time_inds_active = torch.arange(len(time_inds))
-        self.data.time_inds_materialized = time_inds
-        self.data.set_pre_function_application = True
-        #_sync_devices()
+        # Zero opacity outside the [spawn, despawn) frame range. Rows are only
+        # densified when the mask actually cuts into this window.
+        opacity_rows = d.rows.get("opacity")
+        if opacity_rows is not None:
+            T = window.T
+            z1 = self.spawn_ind - spawn_ind
+            z2 = self.despawn_ind - spawn_ind
+            if z1 > 0:
+                window.zero_time_range(
+                    opacity_rows.buffer, opacity_rows.indices, 0, min(z1, T)
+                )
+            if z2 < T:
+                window.zero_time_range(
+                    opacity_rows.buffer, opacity_rows.indices, max(z2, 0), T
+                )
+        d.data_dict = d.data_dict_materialized
+        d.time_inds_active = torch.arange(window.T)
+        d.time_inds_materialized = window.time_inds
+        d.set_pre_function_application = True
 
     #@compiled
     def set_state_full(self, s, e):
@@ -1142,8 +1421,10 @@ class Animatable:
             self.children.append(mob)
             mob.set_parent_to(self)
             self.anchor_priority = max(self.anchor_priority, 1 + mob.anchor_priority)
+        GlobalAnimationState.instance().bump_topology()
         return self
 
     def remove_child(self, mob):
         self.children.remove(mob)
+        GlobalAnimationState.instance().bump_topology()
         return self
