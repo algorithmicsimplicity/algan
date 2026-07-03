@@ -121,11 +121,9 @@ def _convert_mesh(geom, material_index, name):
     visual = getattr(geom, "visual", None)
     uv = getattr(visual, "uv", None) if visual is not None else None
     if uv is not None and len(uv) == vertices.shape[0]:
+        # trimesh already flips the v axis to be v-up when loading glTF, so we
+        # don't need to flip it again.
         uvs = _to_tensor(uv)[..., :2].contiguous()
-        # glTF UV origin is the *top-left* (v increases downward); the engine's
-        # texture sampler is v-up (see image_to_texture_map), so flip v.
-        uvs = uvs.clone()
-        uvs[:, 1] = 1.0 - uvs[:, 1]
 
     vertex_colors = None
     vc = getattr(visual, "vertex_colors", None) if visual is not None else None

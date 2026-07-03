@@ -52,7 +52,7 @@ LD = RenderSettings((854, 480), 15)
 # Render at (1280, 720) resolution, 30 fps.
 MD = RenderSettings((1280, 720), 30)
 
-# Render at (1920, 1080) resolution, 60 fps.
+# Render at (1920, 1080) resolution, 30 fps.
 HD = RenderSettings((1920, 1080), 30)
 
 # Render at (2560, 1440) resolution, 60 fps.

@@ -299,7 +299,14 @@ class ThreeDModelMob(Mob):
             # glTF packing: G = roughness, B = metallic.
             roughness *= float(mr[..., 1].mean())
             metalness *= float(mr[..., 2].mean())
-        emissive = tuple(float(x) for x in material.emissive)
+        emissive = list(float(x) for x in material.emissive)
+        ei = material.emissive_image
+        if ei is not None and ei.shape[-1] >= 3:
+            # Scale emissive by the mean of the emissive texture.
+            emissive[0] *= float(ei[..., 0].mean())
+            emissive[1] *= float(ei[..., 1].mean())
+            emissive[2] *= float(ei[..., 2].mean())
+        emissive = tuple(emissive)
         mat = MeshStandardMaterial(
             color=color,
             metalness=metalness,
