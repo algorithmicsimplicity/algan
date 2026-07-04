@@ -373,5 +373,5 @@ def _run_frag_pipeline(frag_pipelines: ti.template(),
                        light_pos, light_col, num_lights, shadows, vis)
                 out = ti.math.vec3(r[0], r[1], r[2])
                 g = r[3]
-    out = ti.math.clamp(out, 0.0, 1.0)
+    #out = ti.math.clamp(out, 0.0, 1.0)
     return ti.math.vec4(out[0], out[1], out[2], g)

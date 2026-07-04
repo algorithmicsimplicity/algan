@@ -1784,7 +1784,13 @@ def _accumulate_glow_triangles(ro, rd, inv_rd, t_max, f, ff,
                     for j in ti.static(range(LEAF_SIZE)):
                         prim = leaf_prim[base + j]
                         tspan = leaf_tspan[base + j]
-                        if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
+                        # A promoted constant-material triangle (see
+                        # _merge_scene) is non-glowing and carries no per-vertex
+                        # extra row (its prim sits past the shrunk tri_extra), so
+                        # skip it. The guard is a no-op for every non-promoted
+                        # batch, where tri_extra spans all prims.
+                        if ((prim >= 0) and (prim < tri_extra.shape[1])
+                                and ((tspan & 0xFFFF) <= f)
                                 and (f <= ((tspan >> 16) & 0x7FFF))):
                             g0 = tri_extra[te, prim, 9]
                             g1 = tri_extra[te, prim, 10]

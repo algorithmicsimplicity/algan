@@ -203,6 +203,30 @@ _KERNEL_TIME_TOTAL = 0.0
 # set_fragment_shading(True). Ignored by the Monte Carlo / physical paths.
 FRAGMENT_SHADING = False
 
+# Promote a mob whose colour AND material params (reflectivity/roughness/index
+# of refraction) are constant across the whole surface to a 1x1 texture at merge
+# time, dropping its per-vertex ``tri_colors``/``tri_extra`` rows, instead of
+# broadcasting the constant to every vertex. The shared texel buffer keeps one
+# copy per mob (and, when the colour is also constant across frames, one copy
+# total) rather than [T, N, 3, 5] / [T, N, 15]. Only applied on the
+# deterministic fragment-shading general wavefront path -- the only path where a
+# "constant colour" mob genuinely has constant per-fragment colour (vertex
+# lighting bakes per-vertex variation, so a promoted mob would be wrong there).
+# The trace kernels guard every per-vertex read with ``prim < array.shape[1]``,
+# so the shrunk arrays are never indexed for a promoted prim and every other
+# render path stays byte-identical. Sampling a 1x1 map reduces exactly to the
+# stored constant, so a promoted render matches the per-vertex one to <=1 ULP
+# (the barycentric sum ``w0+w1+w2`` is not exactly 1.0 in f32). Default on;
+# ALGAN_PROMOTE_CONSTANTS=0 disables it (for A/B and validation).
+PROMOTE_CONSTANTS = os.environ.get("ALGAN_PROMOTE_CONSTANTS", "1") == "1"
+
+
+def set_promote_constants(enabled):
+    """Toggle constant-property -> 1x1-texture promotion at runtime (for
+    in-process A/B against the per-vertex path)."""
+    global PROMOTE_CONSTANTS
+    PROMOTE_CONSTANTS = bool(enabled)
+
 # Temporal compression of per-frame geometry (see time_compression.py). When
 # > 0, animated geometry arrays are compressed to a per-primitive piecewise
 # linear knot representation instead of a dense [T, N, D] tensor. Mode 1 is a
@@ -458,6 +482,14 @@ def set_reflectivity(mob, reflectivity):
     shader parameter. Call before the mob is spawned; only the ray traced
     pipeline uses it (the rasterizer's shaders would reject the extra
     parameter).
+
+    This is a convenience shortcut for the corresponding
+    :class:`~algan.rendering.shaders.materials.Material` property: applying a
+    material with :meth:`~algan.mobs.mob.Mob.set_material` routes the same
+    surface parameter (from :meth:`Material.physical_surface_params`). Use this
+    setter directly when you want mirror-ness without configuring a full
+    material (e.g. a mirror in the deterministic renderer, where ``set_material``
+    deliberately does not auto-route metalness).
     """
     return _set_surface_param(mob, "reflectivity", reflectivity)
 
@@ -467,12 +499,22 @@ def set_roughness(mob, roughness):
     values blur its reflections. Only used by the Monte Carlo renderer
     (``set_samples_per_pixel`` > 1); the deterministic renderer reflects
     sharply. Call before the mob is spawned.
+
+    Convenience shortcut for the ``roughness`` surface parameter that
+    :meth:`~algan.mobs.mob.Mob.set_material` routes from a material's
+    :meth:`Material.physical_surface_params`.
     """
     return _set_surface_param(mob, "roughness", roughness)
 
 
 def set_refractive_index(mob, ior):
     """Make a mob refract light (glass) under the ray traced renderer.
+
+    Convenience shortcut for the refractive-index surface parameter that
+    :meth:`~algan.mobs.mob.Mob.set_material` routes from a transmissive
+    :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`
+    (``transmission > 0``); use it directly to make a mob glass without
+    configuring a full material.
 
     Attaches a (static) index of refraction to the mob and its descendants:
     1.0 means no bending (the default for unset mobs is 0, treated as "not
@@ -1277,6 +1319,107 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             **kwargs)
 
 
+def _constant_promotion_active():
+    """True when constant-property -> 1x1-texture promotion applies to this
+    render: it is enabled, and the batch will render through the deterministic
+    fragment-shading general wavefront (the only path where a mob's colours are
+    raw albedo, so a "constant colour" is genuinely constant per fragment, and
+    the only kernel whose per-vertex reads are guarded for shrunk arrays). The
+    material maps the promotion adds set ``has_material_textures``, which routes
+    the batch to that kernel (see render_batch_ray_traced)."""
+    return (PROMOTE_CONSTANTS and FRAGMENT_SHADING and USE_WAVEFRONT
+            and not PHYSICAL_LIGHTING and SAMPLES_PER_PIXEL <= 1)
+
+
+def _dedup_time(x):
+    """Collapse a leading (time) dimension that is constant across frames to
+    length 1, so a temporally-constant map/colour is stored once instead of T
+    times. The kernels index the time axis as ``f % shape[0]``, so a length-1
+    axis is read by every frame."""
+    if x.shape[0] > 1 and bool((x == x[:1]).all()):
+        return x[:1].contiguous()
+    return x
+
+
+def _split_promotable(p, _append_texture, device, scene):
+    """Partition a non-textured triangle primitive into the triangles that must
+    stay per-vertex and the triangles whose colour + material are constant
+    across their three corners and every frame (and are non-glowing). The
+    constant triangles are grouped by value -- so a uniform mob is one group even
+    when it was batched into a primitive alongside differently-coloured mobs --
+    and each group is promoted to one shared 1x1 colour map + 1x1 material map
+    (appended here to the shared texel buffer).
+
+    Returns ``(keep_idx, promo_idx, promo_meta)``: ascending ``keep_idx`` selects
+    the per-vertex triangles; ``promo_idx`` selects the promoted triangles
+    grouped by value; ``promo_meta`` is the ``[len(promo_idx), 10]`` tex-meta
+    (colour map cols 0-2, material map 3-5, no normal map 6-8 = -1, bitmask 9 =
+    refl|rough|ior) aligned to ``promo_idx``. The kernel reads all three material
+    properties from the material map, so promoted triangles need no per-vertex
+    ``tri_colors``/``tri_extra`` row."""
+    colors = p._rt_tri_colors           # [Tc, N, 3, 5]
+    extra = p._rt_tri_extra             # [Te, N, 15]
+    N = colors.shape[1]
+    all_idx = torch.arange(N, device=colors.device)
+    if N == 0:
+        empty = torch.zeros((0, 10), dtype=torch.int32, device=device)
+        return all_idx, all_idx, empty
+    # Per-triangle promotable: the three corners share one colour (all channels,
+    # all frames) and one material (reflectivity 0/2/4, roughness 1/3/5, index of
+    # refraction 6/7/8), and the triangle is non-glowing (glow magnitude cols
+    # 9-11 zero; a nonzero default glow_radius in 12-14 is irrelevant once glow
+    # is 0). Only such a triangle is fully described by a single 1x1 texel.
+    color_eq = (colors == colors[:, :, :1, :]).all(-1).all(-1).all(0)      # [N]
+    e = extra
+    mat_eq = ((e[..., 0] == e[..., 2]) & (e[..., 0] == e[..., 4])
+              & (e[..., 1] == e[..., 3]) & (e[..., 1] == e[..., 5])
+              & (e[..., 6] == e[..., 7]) & (e[..., 6] == e[..., 8])).all(0)  # [N]
+    nonglow = (e[..., 9:12] == 0).all(-1).all(0)                            # [N]
+    promotable = color_eq & mat_eq & nonglow
+    keep_idx = all_idx[~promotable]
+    promo_all = all_idx[promotable]
+    if promo_all.numel() == 0:
+        empty = torch.zeros((0, 10), dtype=torch.int32, device=device)
+        return keep_idx, promo_all, empty
+
+    # Group promoted triangles by their (per-frame) constant colour + material
+    # value, so identical mobs share one pair of maps. The key is the corner-0
+    # colour [T,5] plus material (refl, rough, ior) [T,3] over all frames.
+    Tc, Te = colors.shape[0], extra.shape[0]
+    T = max(Tc, Te)
+    col0 = _expand_frames(colors[:, :, 0, :], T)[:, promo_all, :]           # [T,P,5]
+    mat3 = _expand_frames(
+        torch.stack([extra[..., 0], extra[..., 1], extra[..., 6]], -1),
+        T)[:, promo_all, :]                                                 # [T,P,3]
+    key = torch.cat([col0, mat3], -1).permute(1, 0, 2).reshape(
+        promo_all.numel(), -1)                                             # [P, 8T]
+    uniq, inv = torch.unique(key, dim=0, return_inverse=True)             # inv [P]
+    order = torch.argsort(inv, stable=True)   # group identical values contiguously
+    promo_idx = promo_all[order]
+    inv_sorted = inv[order]
+
+    # One colour + material map per distinct value; each promoted triangle's meta
+    # row points at its group's maps.
+    group_meta = []
+    for gid in range(uniq.shape[0]):
+        rep = int(promo_all[int((inv == gid).nonzero()[0])])
+        cmap = _dedup_time(colors[:, rep:rep + 1, 0, :].contiguous())      # [T',1,5]
+        color_meta = _append_texture(
+            cmap.reshape(cmap.shape[0], 1, 1, 5).float().contiguous())
+        e0 = extra[:, rep:rep + 1, :]
+        z = torch.zeros_like(e0[..., 0])
+        mmap = _dedup_time(torch.stack(
+            [e0[..., 0], e0[..., 1], e0[..., 6], z, z], -1).contiguous())
+        material_meta = _append_texture(
+            mmap.reshape(mmap.shape[0], 1, 1, 5).float().contiguous())
+        if bool((mmap[..., 2] > 1.0 + 1e-4).any()):
+            scene["tex_has_refractive"] = True
+        group_meta.append([*color_meta, *material_meta, -1, 0, 0, 1 | 2 | 4])
+    group_meta = torch.tensor(group_meta, dtype=torch.int32, device=device)
+    promo_meta = group_meta[inv_sorted]                                    # [P,10]
+    return keep_idx, promo_idx, promo_meta
+
+
 def _empty_scene_part(device):
     """Placeholder STBVH + arrays for an absent geometry type."""
     lo = torch.full((1, 1, 3), EMPTY_LO, device=device)
@@ -1349,73 +1492,128 @@ def _merge_scene(primitives):
 
     scene["tex_has_refractive"] = False
     if triangles:
-        colored_triangles = [p for p in triangles if getattr(p, "_rt_tri_uvs", None) is None]
-        textured_triangles = [p for p in triangles if getattr(p, "_rt_tri_uvs", None) is not None]
-        all_triangles = colored_triangles + textured_triangles
-        num_colored = sum(p._rt_tri_pos.shape[1] for p in colored_triangles)
+        # Constant-property promotion: triangles whose colour + material params
+        # are constant across their corners (and frames) are rendered from a
+        # shared 1x1 colour + material map instead of per-vertex tri_colors /
+        # tri_extra rows (see _split_promotable). Detection is per triangle and
+        # grouped by value, so a uniform mob is promoted even when it was batched
+        # into one primitive alongside differently-coloured mobs. Promoted
+        # triangles are ordered LAST (their prims sit past the shrunk arrays,
+        # which the guarded kernel reads never index). With promotion inactive
+        # every triangle is kept and this reduces byte-identically to the plain
+        # per-vertex merge (see _sel: an all-keep selection returns the original
+        # tensor, uncopied).
+        promote = _constant_promotion_active()
+        plain_triangles = [p for p in triangles
+                           if getattr(p, "_rt_tri_uvs", None) is None]
+        textured_triangles = [p for p in triangles
+                              if getattr(p, "_rt_tri_uvs", None) is not None]
+        keep_idx, promo_idx, promo_meta = {}, {}, {}
+        for p in plain_triangles:
+            if promote:
+                k, pr, meta = _split_promotable(p, _append_texture, device, scene)
+            else:
+                Np = p._rt_tri_pos.shape[1]
+                k = torch.arange(Np, device=device)
+                pr = torch.zeros((0,), dtype=torch.long, device=device)
+                meta = torch.zeros((0, 10), dtype=torch.int32, device=device)
+            keep_idx[id(p)] = k
+            promo_idx[id(p)] = pr
+            promo_meta[id(p)] = meta
 
+        def _sel(arr, idx):
+            # Index the primitive axis (dim 1) by ``idx``; an in-order all-keep
+            # selection returns the original tensor uncopied so the inactive path
+            # is byte-identical.
+            if idx.numel() == arr.shape[1]:
+                return arr
+            return arr.index_select(1, idx.to(arr.device))
+
+        def _geom(name):
+            # Global order: kept triangles of the plain primitives, then the
+            # whole textured primitives, then the promoted triangles. Empty
+            # selections are dropped so the promotion-inactive path passes each
+            # original tensor through _cat_collections uncopied.
+            keep = [_sel(getattr(p, name), keep_idx[id(p)]) for p in plain_triangles
+                    if keep_idx[id(p)].numel()]
+            tex = [getattr(p, name) for p in textured_triangles]
+            promo = [_sel(getattr(p, name), promo_idx[id(p)]) for p in plain_triangles
+                     if promo_idx[id(p)].numel()]
+            return keep + tex + promo
+
+        num_colored = sum(int(keep_idx[id(p)].numel()) for p in plain_triangles)
         scene["num_colored_triangles"] = num_colored
-        scene["tri_pos"] = _cat_collections(
-            [p._rt_tri_pos for p in all_triangles], 1, "triangle merge")
-        scene["tri_norm"] = _cat_collections(
-            [p._rt_tri_norm for p in all_triangles], 1, "triangle merge")
-        scene["tri_extra"] = _cat_collections(
-            [p._rt_tri_extra for p in all_triangles], 1, "triangle merge")
+        scene["tri_pos"] = _cat_collections(_geom("_rt_tri_pos"), 1, "triangle merge")
+        scene["tri_norm"] = _cat_collections(_geom("_rt_tri_norm"), 1, "triangle merge")
+        scene["tri_mat_id"] = _cat_collections(_geom("_rt_tri_mat_id"), 1,
+                                               "triangle merge")
+        scene["tri_mat"] = _cat_mat_blocks(_geom("_rt_tri_mat"), "triangle merge")
+        lo = _cat_collections(_geom("_rt_frame_lo"), 1, "triangle merge")
+        hi = _cat_collections(_geom("_rt_frame_hi"), 1, "triangle merge")
+        opaque = _cat_collections(_geom("_rt_frame_opaque"), 1, "triangle merge")
 
-        # Vertex colors are merged for *all* triangles (textured included):
-        # a textured primitive may carry only material/normal maps, in which
-        # case the kernel falls back to its per-vertex colors (color-map
-        # meta offset -1).
-        scene["tri_colors"] = _cat_collections(
-            [p._rt_tri_colors for p in all_triangles], 1, "triangle merge")
+        # tri_colors / tri_extra span only the kept per-vertex triangles + the
+        # textured primitives (a textured primitive may carry only material /
+        # normal maps and fall back to per-vertex colour, color-map offset -1).
+        # Promoted triangles have no row here; guarded kernel reads keep their
+        # (past-the-end) prims from ever indexing these.
+        vcolors = ([_sel(p._rt_tri_colors, keep_idx[id(p)]) for p in plain_triangles
+                    if keep_idx[id(p)].numel()]
+                   + [p._rt_tri_colors for p in textured_triangles])
+        vextra = ([_sel(p._rt_tri_extra, keep_idx[id(p)]) for p in plain_triangles
+                   if keep_idx[id(p)].numel()]
+                  + [p._rt_tri_extra for p in textured_triangles])
+        if any(t.shape[1] for t in vcolors):
+            scene["tri_colors"] = _cat_collections(vcolors, 1, "triangle merge")
+            scene["tri_extra"] = _cat_collections(vextra, 1, "triangle merge")
+        else:  # every triangle promoted -> minimal placeholder rows
+            scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
+            scene["tri_extra"] = torch.zeros((1, 1, 15), device=device)
 
-        scene["has_material_textures"] = any(
+        # Any promoted group synthesises material maps, so the batch carries
+        # material textures -> it is routed to the general wavefront (the guarded
+        # kernel), never the megakernel / lean path.
+        has_promoted = any(promo_idx[id(p)].numel() for p in plain_triangles)
+        scene["has_material_textures"] = bool(has_promoted) or any(
             getattr(p, "_rt_material_texture", None) is not None
             or getattr(p, "_rt_normal_texture", None) is not None
             for p in textured_triangles)
 
-        if textured_triangles:
-            scene["tri_uvs"] = _cat_collections(
-                [p._rt_tri_uvs for p in textured_triangles], 1, "triangle merge")
-
-            # Each map's placement is a (offset, w, h) triplet in the
-            # per-triangle meta row (offset -1 = no map -> per-vertex
-            # fallback). Meta layout: cols 0-2 color map, 3-5 material map
-            # (channels: reflectivity, roughness, refractive index), 6-8
-            # normal map, 9 bitmask of texture-driven material properties.
-            tex_meta_list = []
-            for p in textured_triangles:
-                color_meta = _append_texture(p._rt_texture_map)
-                mtex = getattr(p, "_rt_material_texture", None)
-                material_meta = _append_texture(mtex)
-                normal_meta = _append_texture(
-                    getattr(p, "_rt_normal_texture", None))
-                flags = int(getattr(p, "_rt_material_flags", 0) or 0)
-                if (mtex is not None and (flags & 4)
-                        and bool((mtex[..., 2] > 1.0 + 1e-4).any())):
-                    scene["tex_has_refractive"] = True
-                num_tris = p._rt_tri_pos.shape[1]
-                meta = torch.tensor(
-                    [*color_meta, *material_meta, *normal_meta, flags],
-                    dtype=torch.int32, device=device).view(1, 10).expand(
-                        num_tris, 10)
-                tex_meta_list.append(meta)
-            scene["tri_tex_meta"] = torch.cat(tex_meta_list, 0).contiguous()
+        # UVs + tex-meta cover the [textured ++ promoted] tiers, indexed by
+        # ``prim - num_colored_triangles``. Meta layout: cols 0-2 color map, 3-5
+        # material map (reflectivity, roughness, index of refraction), 6-8 normal
+        # map, 9 bitmask of texture-driven material properties (offset -1 = no
+        # map -> per-vertex fallback).
+        meta_parts, uvs_parts = [], []
+        for p in textured_triangles:
+            color_meta = _append_texture(p._rt_texture_map)
+            mtex = getattr(p, "_rt_material_texture", None)
+            material_meta = _append_texture(mtex)
+            normal_meta = _append_texture(getattr(p, "_rt_normal_texture", None))
+            flags = int(getattr(p, "_rt_material_flags", 0) or 0)
+            if (mtex is not None and (flags & 4)
+                    and bool((mtex[..., 2] > 1.0 + 1e-4).any())):
+                scene["tex_has_refractive"] = True
+            meta_parts.append(torch.tensor(
+                [*color_meta, *material_meta, *normal_meta, flags],
+                dtype=torch.int32, device=device).view(1, 10).expand(
+                    p._rt_tri_pos.shape[1], 10))
+            uvs_parts.append(p._rt_tri_uvs)
+        for p in plain_triangles:
+            n = int(promo_idx[id(p)].numel())
+            if n:
+                # A 1x1 map ignores UVs (both texels clamp to index 0), so a
+                # single-frame zero UV row per promoted triangle suffices.
+                meta_parts.append(promo_meta[id(p)])
+                uvs_parts.append(torch.zeros((1, n, 6), device=device))
+        if meta_parts:
+            scene["tri_tex_meta"] = torch.cat(meta_parts, 0).contiguous()
+            scene["tri_uvs"] = _cat_collections(uvs_parts, 1, "triangle merge")
         else:
             scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
-            scene["tri_tex_meta"] = torch.full((1, 10), -1, dtype=torch.int32, device=device)
+            scene["tri_tex_meta"] = torch.full((1, 10), -1, dtype=torch.int32,
+                                               device=device)
 
-        scene["tri_mat_id"] = _cat_collections(
-            [p._rt_tri_mat_id for p in all_triangles], 1, "triangle merge")
-        scene["tri_mat"] = _cat_mat_blocks(
-            [p._rt_tri_mat for p in all_triangles], "triangle merge")
-
-        lo = _cat_collections([p._rt_frame_lo for p in all_triangles], 1,
-                              "triangle merge")
-        hi = _cat_collections([p._rt_frame_hi for p in all_triangles], 1,
-                              "triangle merge")
-        opaque = _cat_collections([p._rt_frame_opaque for p in all_triangles], 1,
-                                  "triangle merge")
         # Median-split ordering: ~25% faster traversal than Morton at ~0.2s
         # extra build per batch; byte-identical for triangles (the depth-peel
         # is arrangement-invariant). PN/bezier BVHs below stay Morton -- their

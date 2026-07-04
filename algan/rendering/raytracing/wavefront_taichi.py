@@ -140,7 +140,16 @@ def _flat_triangle_extra(f, prim, w0, w1, w2, tri_extra: ti.template(),
     values (``_triangle_extra``) unless the triangle carries a material map
     (meta cols 3-5) whose bitmask (col 9) marks the property texture-driven,
     in which case that property is sampled per fragment instead."""
-    reflectivity, roughness = _triangle_extra(f, prim, w0, w1, w2, tri_extra)
+    reflectivity = 0.0
+    roughness = 0.0
+    # A promoted constant-material triangle (see _merge_scene) carries no
+    # per-vertex extra row -- its prim sits past the (shrunk) tri_extra -- so the
+    # vertex read is skipped and every property comes from the material map
+    # below (its bitmask covers reflectivity+roughness). For every other batch
+    # tri_extra spans all prims, so this guard is always true and the result is
+    # byte-identical to the plain per-vertex read.
+    if prim < tri_extra.shape[1]:
+        reflectivity, roughness = _triangle_extra(f, prim, w0, w1, w2, tri_extra)
     if prim >= num_colored_triangles:
         idx = prim - num_colored_triangles
         if tri_tex_meta[idx, 3] >= 0:
@@ -163,7 +172,12 @@ def _flat_corner_ior(f, prim, w0, w1, w2, extra: ti.template(),
     """Index of refraction of a triangle hit: per-vertex (``_corner_ior``)
     unless the material map's bitmask marks it texture-driven (bit 2 /
     channel 2)."""
-    ior = _corner_ior(f, prim, w0, w1, w2, extra)
+    # See _flat_triangle_extra: a promoted constant-material triangle has no
+    # per-vertex extra row, so its IOR is read from the material map (bit 4);
+    # the guard is a no-op (always true) for every non-promoted batch.
+    ior = 1.0
+    if prim < extra.shape[1]:
+        ior = _corner_ior(f, prim, w0, w1, w2, extra)
     if prim >= num_colored_triangles:
         idx = prim - num_colored_triangles
         if tri_tex_meta[idx, 3] >= 0:

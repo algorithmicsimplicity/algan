@@ -2976,7 +2976,7 @@ class Mob(Animatable):
             d.shader = marker
         return self
 
-    def set_material(self, material, apply_to_raytracer=None):
+    def set_material(self, material):
         """Applies a Three.js-style :class:`~algan.rendering.shaders.materials.Material`
         to this mob and all of its descendants.
 
@@ -2987,25 +2987,32 @@ class Mob(Animatable):
         colour, and ``opacity`` drives its max opacity. Like :meth:`set_shader`,
         this MUST be called before the mob is spawned.
 
-        Under physical lighting (``enable_ray_tracing(physical_lighting=True)``)
-        the material is *also* shaded per ray hit by the path tracer: the
-        material's ``(metalness, roughness)`` (see
-        :meth:`Material.physical_surface_params`) are routed into the renderer's
-        per-hit surface parameters. This happens automatically when physical
-        lighting is active, so enable it before applying materials.
+        The material is also the single source of truth for the ray traced
+        renderer's *transport* parameters -- reflectivity (mirror), roughness
+        and refractive index -- unifying the standalone
+        :func:`~algan.rendering.raytracing.primitives.set_reflectivity` /
+        :func:`~algan.rendering.raytracing.primitives.set_roughness` /
+        :func:`~algan.rendering.raytracing.primitives.set_refractive_index`
+        setters (see :meth:`Material.physical_surface_params`). Routing is
+        automatic and depends only on the material and the active render mode:
+
+        * Under physical lighting
+          (``enable_ray_tracing(physical_lighting=True)``) the material's
+          ``(metalness, roughness)`` are shaded per ray hit by the path tracer.
+          They are *not* routed in the default deterministic renderer, so a
+          matte metal is not silently turned into a mirror (use
+          :func:`~algan.rendering.raytracing.primitives.set_reflectivity`
+          directly for that).
+        * A transmissive material (``MeshPhysicalMaterial`` with
+          ``transmission > 0``) routes its ``ior`` so it renders as glass in the
+          general wavefront tracer, in both the deterministic and Monte Carlo
+          renderers (the only paths that honour refraction).
 
         Parameters
         ----------
         material
             A :class:`~algan.rendering.shaders.materials.Material` instance, e.g.
             ``MeshStandardMaterial(metalness=1.0, roughness=0.2)``.
-        apply_to_raytracer
-            Controls routing of ``(metalness, roughness)`` into the ray traced
-            renderer's per-hit surface parameters. ``None`` (default)
-            auto-enables it exactly when physical lighting is active under the
-            ray traced pipeline. Pass ``True`` to force it on regardless (note:
-            in the *deterministic* ray tracer a non-zero ``metalness`` becomes a
-            mirror reflection), or ``False`` to suppress it.
 
         Returns
         -------
@@ -3041,22 +3048,25 @@ class Mob(Animatable):
 
         material.emit_warnings()
 
-        # Route the material onto the ray traced renderer's per-hit surface
-        # parameters (reflectivity = metalness, plus roughness), so the physical
-        # path tracer shades each hit from the material. The deterministic
-        # renderer instead treats reflectivity as mirror-ness, so by default we
-        # only auto-route when physical lighting is active under the ray traced
-        # pipeline.
+        # Route the material's transport params onto the ray traced renderer's
+        # per-hit surface parameters (the single unified path -- the standalone
+        # set_reflectivity / set_roughness / set_refractive_index setters share
+        # these attributes). reflectivity(=metalness) and roughness are shaded by
+        # the physical path tracer, so route them only under physical lighting;
+        # the deterministic renderer treats reflectivity as mirror-ness and must
+        # not turn a matte metal into a mirror. A refractive (glass) material
+        # routes its ior in every mode -- the wavefront tracer honours it in both
+        # the deterministic and Monte Carlo renderers.
         import algan.rendering.raytracing.primitives as _rt
 
-        if apply_to_raytracer is None:
-            apply_to_raytracer = (
-                _rt.PHYSICAL_LIGHTING and _rt.is_ray_tracing_enabled()
-            )
-        if apply_to_raytracer:
-            metalness, roughness = material.physical_surface_params()
-            _rt.set_reflectivity(self, metalness)
+        if _rt.is_ray_tracing_enabled():
+            reflectivity, roughness, refractive_index = (
+                material.physical_surface_params())
             _rt.set_roughness(self, roughness)
+            if reflectivity > 0.0:
+                _rt.set_reflectivity(self, reflectivity)
+            if refractive_index > 0.0:
+                _rt.set_refractive_index(self, refractive_index)
 
         return self
 

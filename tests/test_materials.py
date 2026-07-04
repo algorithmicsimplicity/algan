@@ -269,12 +269,38 @@ def test_set_material_wires_shader_and_attrs():
 
 
 def test_physical_surface_params():
-    assert Material().physical_surface_params() == (0.0, 1.0)
-    assert MeshStandardMaterial(metalness=1.0, roughness=0.4).physical_surface_params() == (1.0, 0.4)
-    m, r = MeshPhongMaterial(shininess=30).physical_surface_params()
-    assert m == 0.0 and 0.2 < r < 0.3
-    assert MeshPhysicalMaterial(metalness=0.5, roughness=0.6).physical_surface_params() == (0.5, 0.6)
+    # (reflectivity, roughness, refractive_index) -- the unified ray-transport
+    # surface params the material routes onto the ray traced renderer.
+    assert Material().physical_surface_params() == (0.0, 1.0, 0.0)
+    assert MeshStandardMaterial(metalness=1.0, roughness=0.4).physical_surface_params() == (1.0, 0.4, 0.0)
+    m, r, ior = MeshPhongMaterial(shininess=30).physical_surface_params()
+    assert m == 0.0 and 0.2 < r < 0.3 and ior == 0.0
+    # Opaque physical material: no refraction routed.
+    assert MeshPhysicalMaterial(metalness=0.5, roughness=0.6).physical_surface_params() == (0.5, 0.6, 0.0)
+    # Transmissive physical material routes its index of refraction (glass).
+    assert MeshPhysicalMaterial(transmission=0.9, ior=1.5).physical_surface_params() == (0.0, 1.0, 1.5)
     print("ok: physical_surface_params mapping")
+
+
+def test_transmissive_material_routes_refraction():
+    from algan import Sphere
+    from algan.rendering.raytracing import (
+        enable_ray_tracing,
+        disable_ray_tracing,
+    )
+
+    try:
+        enable_ray_tracing()  # deterministic (non-physical) renderer
+        s = Sphere().set_material(
+            MeshPhysicalMaterial(transmission=0.9, ior=1.5, opacity=0.2))
+        # ior routes even without physical lighting -- the wavefront honours it.
+        assert abs(_v(s.refractive_index)[0] - 1.5) < 1e-6
+        assert "refractive_index" in s.shader_specific_param_names
+        # ...but metalness must NOT become a deterministic mirror.
+        assert not hasattr(s, "reflectivity"), "metalness leaked to RT mirror param"
+    finally:
+        disable_ray_tracing()
+    print("ok: transmissive material routes ior (glass) but not mirror")
 
 
 def test_physical_mode_routes_surface_params():

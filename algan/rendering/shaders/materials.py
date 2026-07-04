@@ -141,17 +141,24 @@ class Material:
     def _flat(self):
         return 1.0 if self.flatShading else 0.0
 
-    # -- physical (path traced) renderer ----------------------------------
+    # -- ray traced renderer (single source of truth for transport params) --
     def physical_surface_params(self):
-        """``(metalness, roughness)`` consumed by the physical path tracer when
-        this material is applied under physical lighting.
+        """``(reflectivity, roughness, refractive_index)`` -- the ray-transport
+        surface parameters this material routes onto the ray traced renderer
+        (see :meth:`Mob.set_material`), unifying the standalone
+        :func:`~algan.rendering.raytracing.primitives.set_reflectivity` /
+        :func:`~algan.rendering.raytracing.primitives.set_roughness` /
+        :func:`~algan.rendering.raytracing.primitives.set_refractive_index`
+        setters into the material.
 
-        The path tracer shades each ray hit from these (reflectivity = metalness,
-        plus roughness), giving per-fragment material accuracy. The base default
-        is a non-metallic, fully rough (diffuse) surface; PBR materials override
-        it. Emissive colour, clearcoat, sheen, etc. are not yet routed to the
-        path tracer (they remain a vertex-shading feature)."""
-        return 0.0, 1.0
+        ``reflectivity`` (= metalness) and ``roughness`` are shaded per ray hit
+        by the physical path tracer; ``refractive_index`` (> 0 only for a
+        transmissive material) makes the surface refract (glass) in the general
+        wavefront tracer. The base default is a non-metallic, fully rough,
+        non-refractive (diffuse) surface; PBR materials override it. Emissive
+        colour, clearcoat, sheen, etc. are not yet routed to the path tracer
+        (they remain a vertex-shading feature)."""
+        return 0.0, 1.0, 0.0
 
     # -- warnings ---------------------------------------------------------
     def emit_warnings(self):
@@ -247,8 +254,9 @@ class MeshPhongMaterial(Material):
 
     def physical_surface_params(self):
         # Map the Blinn-Phong exponent to a GGX-like roughness so the glossy
-        # highlight survives in the path tracer; dielectric (no metalness).
-        return 0.0, float((2.0 / (float(self.shininess) + 2.0)) ** 0.5)
+        # highlight survives in the path tracer; dielectric (no metalness),
+        # opaque (no refraction).
+        return 0.0, float((2.0 / (float(self.shininess) + 2.0)) ** 0.5), 0.0
 
 
 class MeshStandardMaterial(Material):
@@ -285,7 +293,8 @@ class MeshStandardMaterial(Material):
         }
 
     def physical_surface_params(self):
-        return float(self.metalness), float(self.roughness)
+        # Metalness-driven mirror + GGX roughness; opaque (no refraction).
+        return float(self.metalness), float(self.roughness), 0.0
 
 
 class MeshPhysicalMaterial(MeshStandardMaterial):
@@ -352,6 +361,14 @@ class MeshPhysicalMaterial(MeshStandardMaterial):
             "transmission": self.transmission,
             "iridescence": self.iridescence,
         }
+
+    def physical_surface_params(self):
+        # As MeshStandardMaterial, but a transmissive material also routes its
+        # index of refraction so it renders as glass in the general wavefront
+        # tracer. ior is only emitted when there is transmission to carry it
+        # (an opaque physical material stays non-refractive, ior 0).
+        refractive_index = float(self.ior) if float(self.transmission) > 0.0 else 0.0
+        return float(self.metalness), float(self.roughness), refractive_index
 
 
 class MeshToonMaterial(Material):
