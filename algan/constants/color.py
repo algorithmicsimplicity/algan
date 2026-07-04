@@ -33,8 +33,8 @@ class Color(torch.Tensor):
     def __eq__(self, other):
         eq = super().__eq__(other)
         if self.numel() == 5 and hasattr(other, 'numel') and other.numel() == 5:
-            return eq.all().item()
-        return eq
+            eq = eq.all()
+        return eq.as_subclass(torch.Tensor)
 
     @property
     def opacity(self):

@@ -1522,10 +1522,16 @@ def _merge_scene(primitives):
             promo_meta[id(p)] = meta
 
         def _sel(arr, idx):
-            # Index the primitive axis (dim 1) by ``idx``; an in-order all-keep
-            # selection returns the original tensor uncopied so the inactive path
-            # is byte-identical.
-            if idx.numel() == arr.shape[1]:
+            # Index the primitive axis (dim 1) by ``idx``. Only an *identity*
+            # selection (every prim, in order) may return the original tensor
+            # uncopied -- that keeps the promotion-inactive path byte-identical.
+            # ``promo_idx`` covers every prim too (when a whole primitive is
+            # promoted) but is a *permutation* (grouped by value, see
+            # _split_promotable), so it must still be applied: skipping it would
+            # leave the geometry in source order while ``promo_meta`` is in
+            # group order, pairing each triangle with another group's maps.
+            if idx.numel() == arr.shape[1] and bool(
+                    (idx == torch.arange(idx.numel(), device=idx.device)).all()):
                 return arr
             return arr.index_select(1, idx.to(arr.device))
 
