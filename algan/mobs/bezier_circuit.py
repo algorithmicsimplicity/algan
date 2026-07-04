@@ -4,17 +4,14 @@ import torch
 from algan.constants.spatial import OUT
 from algan import RIGHT, PREVIEW, rotate_vector_around_axis
 from algan.animation.animation_contexts import Off
-from algan.logging.logger import LoggerManager
 from algan.mobs.renderable import Renderable
 from algan.constants.color import *
 from algan.geometry.geometry import get_roots_of_quadratic, get_orthonormal_vector
 from algan.mobs.mob import Mob
-from algan.rendering.primitives.bezier_circuit_primitive import (
-    BezierCircuitPrimitive,
-)
 
 from algan.animation.animatable import animated_function
 from algan.utils.tensor_utils import *
+from algan.settings.renderer_settings import RENDERER_SETTINGS
 
 
 
@@ -154,7 +151,7 @@ class BezierCircuitCubic(Renderable):
         self.portion_of_curve_drawn = cast_to_tensor(portion_of_curve_drawn)
         self.normals = normals
         self.is_primitive = True
-        self.render_primitive = BezierCircuitPrimitive
+        self.render_primitive = RENDERER_SETTINGS.bezier_circuit_primitive
 
     def get_animatable_attrs(self):
         return {"border_width", "border_color", "portion_of_curve_drawn"}.union(
@@ -286,10 +283,6 @@ class BezierCircuitCubic(Renderable):
                 c = c.expand([-1, -1, self.num_texture_points, -1])
         else:
             c = unsquish(tpc, -2, self.num_texture_points)
-        #LoggerManager.instance().set_class("batching").log_message(
-        #    f"Making bezier with num_segments_per_circuit: {num_segments_per_circuit}"
-        #)
-        # num_segments_per_circuit = torch.cat((starting_inds, torch.tensor((len(inds)-(starting_inds.amax() if len(starting_inds) > 0 else 0),), device=x.device)), -1)
 
         prim = self.render_primitive(
             x,

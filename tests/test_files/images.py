@@ -1,5 +1,4 @@
 from algan import *
-from algan.rendering.raytracing import enable_ray_tracing
 from algan.utils.algan_utils import render_all_funcs
 
 

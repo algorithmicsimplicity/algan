@@ -188,10 +188,13 @@ from algan.rendering.raytracing.shading_taichi import (
     _light_vis as fragment_light_vis,
 )
 
+from algan.rendering.raytracing.tracer import render_batch_raytraced
+
+from algan.settings.kernel_settings import KERNEL_SETTINGS
+KERNEL_SETTINGS.render_kernel = render_batch_raytraced
+
 from algan.animation.manim_animations import *
 from algan.animation.indication import *
-
-from algan.rendering.raytracing import enable_ray_tracing
 
 
 def clear_cache():

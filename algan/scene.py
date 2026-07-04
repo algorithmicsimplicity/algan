@@ -17,7 +17,6 @@ from moviepy import CompositeAudioClip
 
 import algan
 from algan import not_compiled
-from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan import compiled
@@ -32,6 +31,8 @@ import numpy as np
 
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.primitive import OutOfRenderMemory
+from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
+from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.utils.memory_utils import get_num_available_bytes, ManualMemory, empty_cache
 from algan.utils.tensor_utils import unsquish
 from algan.utils.file_utils import get_image
@@ -313,8 +314,6 @@ class Scene:
                     memory=self.memory,
                     post_processes=post_processes,
                 )
-
-                empty_cache
 
                 self.memory.set_pointers(render_pointers)
                 current_ind = new_ind

@@ -2,8 +2,6 @@ import torch.nn.functional as F
 
 from algan.constants.spatial import *  # RIGHT, LEFT, IN, OUT, ORIGIN, UP
 from algan.mobs.shapes_2d import TriangleTriangulated
-from algan.rendering.raytracing import enable_ray_tracing
-from algan.settings.render_settings import UHD
 from algan.utils.algan_utils import render_all_funcs
 
 

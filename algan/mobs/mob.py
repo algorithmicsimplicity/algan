@@ -3059,14 +3059,13 @@ class Mob(Animatable):
         # the deterministic and Monte Carlo renderers.
         import algan.rendering.raytracing.primitives as _rt
 
-        if _rt.is_ray_tracing_enabled():
-            reflectivity, roughness, refractive_index = (
-                material.physical_surface_params())
-            _rt.set_roughness(self, roughness)
-            if reflectivity > 0.0:
-                _rt.set_reflectivity(self, reflectivity)
-            if refractive_index > 0.0:
-                _rt.set_refractive_index(self, refractive_index)
+        reflectivity, roughness, refractive_index = (
+            material.physical_surface_params())
+        _rt.set_roughness(self, roughness)
+        if reflectivity > 0.0:
+            _rt.set_reflectivity(self, reflectivity)
+        if refractive_index > 0.0:
+            _rt.set_refractive_index(self, refractive_index)
 
         return self
 

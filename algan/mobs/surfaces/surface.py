@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 
 from algan.mobs.renderable import Renderable
+from algan.settings.renderer_settings import RENDERER_SETTINGS
 from algan.utils.tensor_utils import broadcast_cross_product
-from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.animation.animation_contexts import Sync, Off
 from algan.constants.color import *
 from algan.constants.spatial import ORIGIN, OUT
@@ -428,8 +428,8 @@ class Surface(Renderable):
             )
         except Exception:
             return False
-        return isinstance(TrianglePrimitive, type) and issubclass(
-            TrianglePrimitive, RayTracedPNTrianglePrimitive
+        return isinstance(RENDERER_SETTINGS.triangle_primitive, type) and issubclass(
+            RENDERER_SETTINGS.triangle_primitive, RayTracedPNTrianglePrimitive
         )
 
     def _compute_error(self, coord_function, W, H):
@@ -788,7 +788,7 @@ class Surface(Renderable):
         )
         normals = get_cached_expanded_param('normals', lambda: vertex_normals if vertex_normals is not None else None)
 
-        return TrianglePrimitive(
+        return RENDERER_SETTINGS.triangle_primitive(
             corners=corners,
             colors=colors,
             normals=normals,

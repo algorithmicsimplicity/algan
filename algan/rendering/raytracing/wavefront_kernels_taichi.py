@@ -1,37 +1,24 @@
-"""Wavefront (stage-split) variant of the deterministic triangle ray-trace
+"""Wavefront (stage-split) variant of deterministic general ray-trace
 kernel.
 
-The megakernel ``render_triangles_stbvh`` runs the whole per-ray state machine
--- BVH traversal, hit gathering, depth-peel shading and mirror bounces -- in a
-single thread, which on the GTX 1050 is occupancy-starved by register pressure
-(~78 regs) and divergence-bound (rays in a warp finish their traversal/peel
-loops at wildly different iteration counts; ~30% warp execution efficiency).
-
-This module splits that state machine into small per-stage kernels connected by
+This module splits the tracing process into small per-stage kernels connected by
 per-ray state in global memory, driven by a host-side iteration loop:
 
-* :func:`wf_gen_triangle`      -- initialise per-ray state with primary rays.
-* :func:`wf_traverse_triangle` -- for each *active* ray, gather the KBUF nearest
+* :func:`wavefront_generate_rays`      -- initialise per-ray state with primary rays.
+* :func:`wavefront_traverse` -- for each *active* ray, gather the KBUF nearest
   hits (reusing the unchanged ``_collect_hits_tri``) into global state.
-* :func:`wf_shade_triangle`    -- replicate the megakernel's inner drain loop
-  exactly (seam-merge, shade, mirror bounce, transmittance) on global state.
+* :func:`wavefront_shade`    -- applies a pipeline of built-in fragment shaders (and optionally user-provided custom fragment shaders)..
 * :func:`wf_composite`         -- composite each ray's accumulator over the
   background.
 
 Between iterations the host compacts the still-active rays with a PyTorch
 ``nonzero`` (see ``render_triangles_wavefront`` in ``primitives.py``), so each
 launch processes only rays that still have work -- warps refill as rays drop
-out, which is the divergence fix. Each stage kernel is small (few live
-registers) so it runs at much higher occupancy than the megakernel.
-
-The math is byte-for-byte the megakernel's: every intersection / shading
-helper is imported unchanged from :mod:`ray_trace_taichi`; only the
-*orchestration* (where state lives, and that rays advance in lockstep host
-iterations rather than a per-thread ``while``) differs.
+out, which is the divergence fix.
 """
 import taichi as ti
 
-from algan.rendering.raytracing.ray_trace_taichi import (
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
     DEPTH_TIE_EPSILON,
     KBUF,
     MAX_SHADOW_LIGHTS,
@@ -42,8 +29,6 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     PN_SEAM_DEPTH_EPSILON,
     _bezier_normal,
     _collect_hits,
-    _collect_hits_tri,
-    _collect_hits_tri_knots,
     _comes_after,
     _generate_ray,
     _pn_normal,
@@ -54,11 +39,8 @@ from algan.rendering.raytracing.ray_trace_taichi import (
     _shadow_occluded,
     _triangle_color,
     _flat_triangle_color,
-    _flat_triangle_alpha,
     _triangle_extra,
     _triangle_normal,
-    _accumulate_glow,
-    _accumulate_glow_triangles,
     finalize_pixel_color,
 )
 
@@ -409,330 +391,6 @@ def _refract_ray(rd, n_out, ior):
 
 
 @ti.kernel
-def wf_gen_triangle(
-        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
-        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
-        time_start: int, width: int, height: int,
-        half_screen_w: float, half_screen_h: float, max_bounces: int,
-        ray_offset: int, jitter_x: float, jitter_y: float,
-        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
-        rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
-        rs_int: ti.types.ndarray()):
-    """Initialise per-ray state with the primary camera ray (mirrors the
-    per-ray setup at the top of ``render_triangles_stbvh``). State is indexed
-    tile-locally by ``r``; the global ray is ``ray_offset + r`` (screen tiling)."""
-    pixels_per_frame = width * height
-    num_rays = rs_ro.shape[0]
-    for r in range(num_rays):
-        g = ray_offset + r
-        f_rel = g // pixels_per_frame
-        p = g - f_rel * pixels_per_frame
-        f = time_start + f_rel
-        py = p // width
-        px = p - py * width
-        ro, rd = _generate_ray(f, px, py, jitter_x, jitter_y,
-                               half_screen_w, half_screen_h,
-                               cam_origin, screen_point,
-                               pixel_basis_x, pixel_basis_y)
-        for k in ti.static(range(3)):
-            rs_ro[r, k] = ro[k]
-            rs_rd[r, k] = rd[k]
-        for k in ti.static(range(4)):
-            rs_acc[r, k] = 0.0
-        rs_sca[r, 0] = 1.0     # weight
-        rs_sca[r, 1] = 0.0     # t_prev
-        rs_sca[r, 2] = 1e30    # layer_prev
-        rs_sca[r, 3] = -1e30   # seam_t
-        rs_int[r, 0] = max_bounces  # bounces_left
-        rs_int[r, 1] = 0            # processed
-        rs_int[r, 2] = _ACTIVE      # status
-        rs_int[r, 3] = 0            # num_hits
-
-
-@ti.kernel
-def wf_traverse_triangle(
-        active: ti.types.ndarray(), num_active: int,
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
-        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
-        t_first_leaf: int, tri_pos: ti.types.ndarray(),
-        layer_offset_triangles: float,
-        time_start: int, width: int, height: int, ray_offset: int,
-        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
-        rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
-        rs_kt: ti.types.ndarray(), rs_kl: ti.types.ndarray(),
-        rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
-        rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray()):
-    """Gather the KBUF nearest hits for each active ray into global state.
-    No shading state in its call graph -> few live registers. State is indexed
-    tile-locally by the active ray; the global ray is ``ray_offset + r``."""
-    pixels_per_frame = width * height
-    for i in range(num_active):
-        r = active[i]
-        ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
-        rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
-        inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
-                              _safe_inverse(rd[2]))
-        t_prev = rs_sca[r, 1]
-        layer_prev = rs_sca[r, 2]
-        f = time_start + (ray_offset + r) // pixels_per_frame
-        ff = ti.cast(f, ti.f32)
-
-        kb_t = ti.Vector([0.0] * KBUF)
-        kb_layer = ti.Vector([0.0] * KBUF)
-        kb_prim = ti.Vector([0] * KBUF)
-        kb_flags = ti.Vector([0] * KBUF)
-        kb_a = ti.Vector([0.0] * KBUF)
-        kb_b = ti.Vector([0.0] * KBUF)
-        num_hits = _collect_hits_tri(
-            ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-            layer_offset_triangles,
-            kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
-            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-            t_first_leaf, tri_pos)
-        rs_int[r, 3] = num_hits
-        if num_hits > 0:
-            for q in ti.static(range(KBUF)):
-                rs_kt[r, q] = kb_t[q]
-                rs_kl[r, q] = kb_layer[q]
-                rs_kp[r, q] = kb_prim[q]
-                rs_kf[r, q] = kb_flags[q]
-                rs_ka[r, q] = kb_a[q]
-                rs_kb[r, q] = kb_b[q]
-
-
-@ti.kernel
-def wf_traverse_triangle_knots(
-        active: ti.types.ndarray(), num_active: int,
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
-        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
-        t_first_leaf: int,
-        knot_val: ti.types.ndarray(), knot_base: ti.types.ndarray(),
-        sched_id: ti.types.ndarray(), sched_seg: ti.types.ndarray(),
-        sched_z: ti.types.ndarray(), sched_nknots: ti.types.ndarray(),
-        layer_offset_triangles: float,
-        time_start: int, width: int, height: int, ray_offset: int,
-        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
-        rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
-        rs_kt: ti.types.ndarray(), rs_kl: ti.types.ndarray(),
-        rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
-        rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray()):
-    """Knot-geometry twin of :func:`wf_traverse_triangle`: positions are
-    reconstructed from the compressed knot representation
-    (``_collect_hits_tri_knots``). Tests whether isolating the traverse stage --
-    so the knot reconstruction's extra live registers no longer share the
-    megakernel's register budget -- closes the knot megakernel's gap."""
-    pixels_per_frame = width * height
-    for i in range(num_active):
-        r = active[i]
-        ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
-        rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
-        inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
-                              _safe_inverse(rd[2]))
-        t_prev = rs_sca[r, 1]
-        layer_prev = rs_sca[r, 2]
-        f = time_start + (ray_offset + r) // pixels_per_frame
-        ff = ti.cast(f, ti.f32)
-
-        kb_t = ti.Vector([0.0] * KBUF)
-        kb_layer = ti.Vector([0.0] * KBUF)
-        kb_prim = ti.Vector([0] * KBUF)
-        kb_flags = ti.Vector([0] * KBUF)
-        kb_a = ti.Vector([0.0] * KBUF)
-        kb_b = ti.Vector([0.0] * KBUF)
-        num_hits = _collect_hits_tri_knots(
-            ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-            layer_offset_triangles,
-            kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
-            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-            t_first_leaf, knot_val, knot_base, sched_id, sched_seg,
-            sched_z, sched_nknots)
-        rs_int[r, 3] = num_hits
-        if num_hits == 0:
-            rs_int[r, 2] = _DONE
-        else:
-            for q in ti.static(range(KBUF)):
-                rs_kt[r, q] = kb_t[q]
-                rs_kl[r, q] = kb_layer[q]
-                rs_kp[r, q] = kb_prim[q]
-                rs_kf[r, q] = kb_flags[q]
-                rs_ka[r, q] = kb_a[q]
-                rs_kb[r, q] = kb_b[q]
-
-
-@ti.kernel
-def wf_shade_triangle(
-        active: ti.types.ndarray(), num_active: int,
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
-        t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
-        t_first_leaf: int,
-        tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
-        tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
-        tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
-        textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
-        time_start: int, width: int, height: int, ray_offset: int,
-        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
-        rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
-        rs_int: ti.types.ndarray(),
-        rs_kt: ti.types.ndarray(), rs_kl: ti.types.ndarray(),
-        rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
-        rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray()):
-    """Drain the gathered hits front-to-back, blending and bouncing exactly as
-    the megakernel's inner loop. Traverses STBVH for glow accumulation."""
-    pixels_per_frame = width * height
-    for i in range(num_active):
-        r = active[i]
-        num_hits = rs_int[r, 3]
-        if num_hits > 0:
-            f = time_start + (ray_offset + r) // pixels_per_frame
-            ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
-            rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
-            acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
-                               rs_acc[r, 3])
-            weight = rs_sca[r, 0]
-            t_prev = rs_sca[r, 1]
-            layer_prev = rs_sca[r, 2]
-            seam_t = rs_sca[r, 3]
-            bounces_left = rs_int[r, 0]
-            processed = rs_int[r, 1]
-
-            kb_t = ti.Vector([0.0] * KBUF)
-            kb_layer = ti.Vector([0.0] * KBUF)
-            kb_prim = ti.Vector([0] * KBUF)
-            kb_flags = ti.Vector([0] * KBUF)
-            kb_a = ti.Vector([0.0] * KBUF)
-            kb_b = ti.Vector([0.0] * KBUF)
-            for q in ti.static(range(KBUF)):
-                kb_t[q] = rs_kt[r, q]
-                kb_layer[q] = rs_kl[r, q]
-                kb_prim[q] = rs_kp[r, q]
-                kb_flags[q] = rs_kf[r, q]
-                kb_a[q] = rs_ka[r, q]
-                kb_b[q] = rs_kb[r, q]
-
-            bounced = False
-            done = False
-            drained = 0
-            ro_seg = ro
-            rd_seg = rd
-            inv_rd_seg = ti.math.vec3(_safe_inverse(rd[0]),
-                                      _safe_inverse(rd[1]),
-                                      _safe_inverse(rd[2]))
-            weight_seg = weight
-            t_seg_end = 0.0
-            ff = ti.cast(f, ti.f32)
-            while drained < num_hits:
-                sel = 0
-                sel_found = 0
-                for q in ti.static(range(KBUF)):
-                    if (q < num_hits) and (kb_prim[q] >= 0):
-                        if sel_found == 0:
-                            sel = q
-                            sel_found = 1
-                        elif _comes_after(kb_t[sel], kb_layer[sel],
-                                          kb_t[q], kb_layer[q]):
-                            sel = q
-                t_hit = kb_t[sel]
-                t_seg_end = t_hit
-                hit_layer = kb_layer[sel]
-                prim = kb_prim[sel]
-                flags = kb_flags[sel]
-                a = kb_a[sel]
-                b = kb_b[sel]
-                kb_prim[sel] = -1
-                drained += 1
-                processed += 1
-                edge_hit = (flags >> 2) & 1
-
-                if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
-                    t_prev = t_hit
-                    layer_prev = hit_layer
-                    continue
-                seam_t = t_hit if edge_hit == 1 else -1e30
-
-                w0 = 1.0 - a - b
-                color, alpha = _flat_triangle_color(f, prim, w0, a, b,
-                                                    tri_colors, tri_uvs, tri_tex_meta,
-                                                    textures, num_colored_triangles)
-                reflectivity, _rough = _triangle_extra(f, prim, w0, a, b,
-                                                       tri_extra)
-                alpha = ti.math.clamp(alpha, 0.0, 1.0)
-                reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
-                if bounces_left <= 0:
-                    reflectivity = 0.0
-
-                acc += (weight * alpha * (1.0 - reflectivity)) * color
-
-                if (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
-                    normal = _triangle_normal(f, prim, 1.0 - a - b, a, b,
-                                              tri_norm, tri_pos)
-                    normal = normal.normalized()
-                    if normal.dot(rd) > 0.0:
-                        normal = -normal
-                    hit_point = ro + t_hit * rd
-                    rd = (rd - 2.0 * rd.dot(normal) * normal).normalized()
-                    ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
-                    weight *= alpha * reflectivity
-                    t_prev = 0.0
-                    layer_prev = 1e30
-                    seam_t = -1e30
-                    bounces_left -= 1
-                    bounced = True
-                    break
-                else:
-                    weight *= 1.0 - alpha
-                    t_prev = t_hit
-                    layer_prev = hit_layer
-                if weight < MIN_WEIGHT:
-                    done = True
-                    break
-
-            glow_rgb = _accumulate_glow_triangles(
-                ro_seg, rd_seg, inv_rd_seg, t_seg_end, f, ff,
-                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-                tri_pos, tri_colors, tri_extra, num_colored_triangles
-            )
-            acc[0] += weight_seg * glow_rgb[0]
-            acc[1] += weight_seg * glow_rgb[1]
-            acc[2] += weight_seg * glow_rgb[2]
-
-            if (not done) and (not bounced) and (num_hits < KBUF):
-                done = True
-            if processed >= MAX_SURFACES_PER_RAY:
-                done = True
-
-            for k in ti.static(range(3)):
-                rs_ro[r, k] = ro[k]
-                rs_rd[r, k] = rd[k]
-            for k in ti.static(range(4)):
-                rs_acc[r, k] = acc[k]
-            rs_sca[r, 0] = weight
-            rs_sca[r, 1] = t_prev
-            rs_sca[r, 2] = layer_prev
-            rs_sca[r, 3] = seam_t
-            rs_int[r, 0] = bounces_left
-            rs_int[r, 1] = processed
-            rs_int[r, 2] = _DONE if done else _ACTIVE
-        else:
-            f = time_start + (ray_offset + r) // pixels_per_frame
-            ff = ti.cast(f, ti.f32)
-            ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
-            rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
-            inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
-                                  _safe_inverse(rd[1]),
-                                  _safe_inverse(rd[2]))
-            glow_rgb = _accumulate_glow_triangles(
-                ro, rd, inv_rd, 1e30, f, ff,
-                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-                tri_pos, tri_colors, tri_extra, num_colored_triangles
-            )
-            weight = rs_sca[r, 0]
-            rs_acc[r, 0] += weight * glow_rgb[0]
-            rs_acc[r, 1] += weight * glow_rgb[1]
-            rs_acc[r, 2] += weight * glow_rgb[2]
-            rs_int[r, 2] = _DONE
-
-
-@ti.kernel
 def wf_composite(
         time_start: int, width: int, height: int, transparent: int,
         ray_offset: int,
@@ -893,7 +551,7 @@ def wf_finalize_aa(
 
 
 @ti.kernel
-def wf_gen_general(
+def wavefront_generate_rays(
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
         time_start: int, width: int, height: int,
@@ -955,7 +613,7 @@ def wf_gen_general(
 
 
 @ti.kernel
-def wf_traverse_general(
+def wavefront_traverse(
         active: ti.types.ndarray(), num_active: int,
         t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
@@ -1030,7 +688,7 @@ def wf_traverse_general(
 
 
 @ti.kernel
-def wf_shadow_general(
+def wavefront_shadow(
         active: ti.types.ndarray(), num_active: int,
         t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
@@ -1182,7 +840,7 @@ def wf_shadow_general(
 
 
 @ti.kernel
-def wf_shade_general(
+def wavefront_shade(
         active: ti.types.ndarray(), num_active: int,
         # Triangle STBVH (for shadow rays) + geometry/shading data.
         t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
@@ -1619,20 +1277,6 @@ def wf_shade_general(
                     done = True
                     break
 
-            glow_rgb = _accumulate_glow(
-                ro_seg, rd_seg, inv_rd_seg, t_seg_end, f, ff,
-                has_tri, has_pn, has_bez,
-                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-                tri_pos, tri_colors, tri_extra, num_colored_triangles,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-                pn_ctrl, pn_colors, pn_extra,
-                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-                circuit_meta, circuit_colors, edges_2d, edge_offsets
-            )
-            acc[0] += weight_seg * glow_rgb[0]
-            acc[1] += weight_seg * glow_rgb[1]
-            acc[2] += weight_seg * glow_rgb[2]
-
             if (not done) and (not bounced) and (num_hits < KBUF):
                 done = True
             if processed >= MAX_SURFACES_PER_RAY:
@@ -1668,20 +1312,6 @@ def wf_shade_general(
             inv_rd = ti.math.vec3(_safe_inverse(rd[0]),
                                   _safe_inverse(rd[1]),
                                   _safe_inverse(rd[2]))
-            glow_rgb = _accumulate_glow(
-                ro, rd, inv_rd, 1e30, f, ff,
-                has_tri, has_pn, has_bez,
-                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-                tri_pos, tri_colors, tri_extra, num_colored_triangles,
-                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-                pn_ctrl, pn_colors, pn_extra,
-                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-                circuit_meta, circuit_colors, edges_2d, edge_offsets
-            )
-            weight = rs_sca[r, 0]
-            rs_acc[r, 0] += weight * glow_rgb[0]
-            rs_acc[r, 1] += weight * glow_rgb[1]
-            rs_acc[r, 2] += weight * glow_rgb[2]
 
             for k in ti.static(range(4)):
                 ti.atomic_add(pix_accum[pix, k], rs_acc[r, k])
