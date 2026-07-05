@@ -110,6 +110,101 @@ def _empty_scene_part(device):
     return build_stbvh(lo, hi, num_frames=1)
 
 
+def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
+    """Build the 'Family A+B' memory-trim triangle arrays (see
+    settings.WF_MEM_TRIM). Reorders prims into material-class bands -- band 0
+    ``needs_mat`` (lit), band 1 ``needs_norm`` only (reflective / normal-mapped /
+    promoted), band 2 bare (unlit matte) -- so that ``tri_norm`` and ``tri_mat``
+    become compacted PREFIXES (needs_mat subset needs_norm, so both nest under a
+    single permutation). ``tri_colors``/``tri_extra`` stay in their original
+    (promotion-compacted) order, addressed by a per-prim remap ``col_row`` (-1 =
+    promoted, colour/material from its 1x1 maps); ``tex_meta``/``uvs`` are widened
+    to full band-order arrays indexed directly by prim. Byte-identical to the
+    untrimmed path (only indexing/layout changes). Stores ``*_t`` variants +
+    ``col_row`` + a band-reordered BVH; the wavefront picks them when engaged."""
+    tri_pos = scene["tri_pos"].to(device)
+    N = tri_pos.shape[1]
+    if N == 0:
+        scene["mem_trim_active"] = False
+        return
+    tri_norm = scene["tri_norm"].to(device)
+    tri_mat = scene["tri_mat"].to(device)
+    tri_mat_id = scene["tri_mat_id"].to(device)
+    tri_extra = scene["tri_extra"].to(device)
+    tri_uvs = scene["tri_uvs"].to(device)
+    tri_tex_meta = scene["tri_tex_meta"].to(device)
+    num_colored = int(scene["num_colored_triangles"])
+    _UNLIT = 1
+    Nc = tri_extra.shape[1]        # prims with a per-vertex colour/extra row
+
+    lit = (tri_mat_id != _UNLIT).any(0)                       # [N]
+    refl = torch.zeros(N, dtype=torch.bool, device=device)
+    if Nc > 0:
+        e = tri_extra
+        refl[:Nc] = ((e[..., 0] > 0) | (e[..., 2] > 0)
+                     | (e[..., 4] > 0)).any(0)
+    promoted = torch.zeros(N, dtype=torch.bool, device=device)
+    if Nc < N:
+        promoted[Nc:] = True       # constant-material prims: value in 1x1 map
+    normalmapped = torch.zeros(N, dtype=torch.bool, device=device)
+    if tri_tex_meta.shape[0] > 0 and num_colored < N:
+        nm = tri_tex_meta[:, 6] >= 0
+        k = min(nm.shape[0], N - num_colored)
+        normalmapped[num_colored:num_colored + k] = nm[:k]
+
+    needs_mat = lit
+    needs_norm = needs_mat | refl | promoted | normalmapped
+    n_lit = int(needs_mat.sum().item())
+    n_norm = int(needs_norm.sum().item())
+
+    zeros = torch.zeros(N, dtype=torch.long, device=device)
+    band = torch.where(needs_mat, zeros,
+                       torch.where(needs_norm, zeros + 1, zeros + 2))
+    perm = torch.argsort(band, stable=True)                   # band 0 first
+    orig = perm                                               # orig idx of prim p
+
+    tri_pos_t = tri_pos.index_select(1, perm).contiguous()
+    tri_norm_t = tri_norm.index_select(
+        1, perm)[:, :max(n_norm, 1)].contiguous()
+    tri_mat_t = tri_mat.index_select(1, perm)[:, :max(n_lit, 1)].contiguous()
+    tri_mat_id_t = tri_mat_id.index_select(1, perm).contiguous()
+    col_row = torch.where(orig < Nc, orig,
+                          torch.full_like(orig, -1)).to(torch.int32).contiguous()
+
+    tex_meta_t = torch.zeros((N, 10), dtype=torch.int32, device=device)
+    tex_meta_t[:, 0] = -1
+    tex_meta_t[:, 3] = -1
+    tex_meta_t[:, 6] = -1
+    Tuv = tri_uvs.shape[0]
+    tri_uvs_t = torch.zeros((Tuv, N, 6), dtype=tri_uvs.dtype, device=device)
+    if tri_tex_meta.shape[0] > 0:
+        has_meta = orig >= num_colored
+        meta_src = (orig - num_colored).clamp(0, tri_tex_meta.shape[0] - 1)
+        tex_meta_t = torch.where(has_meta.unsqueeze(1),
+                                 tri_tex_meta.index_select(0, meta_src).int(),
+                                 tex_meta_t)
+        uv_src = (orig - num_colored).clamp(0, tri_uvs.shape[1] - 1)
+        tri_uvs_t = (tri_uvs.index_select(1, uv_src)
+                     * has_meta.view(1, N, 1).to(tri_uvs.dtype))
+
+    tri_bvh_t = build_stbvh(
+        lo.index_select(1, perm).contiguous(),
+        hi.index_select(1, perm).contiguous(),
+        num_frames=num_frames,
+        tightness=RayTracedTrianglePrimitive.stbvh_tightness,
+        opaque=opaque.index_select(1, perm).contiguous(), builder="split")
+
+    scene["tri_pos_t"] = tri_pos_t
+    scene["tri_norm_t"] = tri_norm_t
+    scene["tri_mat_t"] = tri_mat_t
+    scene["tri_mat_id_t"] = tri_mat_id_t
+    scene["tri_uvs_t"] = tri_uvs_t
+    scene["tri_tex_meta_t"] = tex_meta_t
+    scene["tri_col_row"] = col_row
+    scene["tri_bvh_t"] = tri_bvh_t
+    scene["mem_trim_active"] = True
+
+
 def _merge_scene(primitives):
     """Merge the batch's collections into one set per geometry type --
     triangles, PN patches and bezier circuits, each with a single STBVH
@@ -311,6 +406,9 @@ def _merge_scene(primitives):
             lo, hi, num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
             opaque=opaque, builder="split")
+        from algan.rendering.raytracing import settings as _rts
+        if _rts.WF_MEM_TRIM:
+            _build_mem_trim(scene, lo, hi, opaque, num_frames, device)
     else:
         scene["tri_pos"] = torch.zeros((1, 1, 9), device=device)
         scene["tri_norm"] = torch.zeros((1, 1, 9), device=device)

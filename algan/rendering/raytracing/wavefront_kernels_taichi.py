@@ -43,7 +43,10 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _triangle_normal,
     finalize_pixel_color,
 )
-from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
+from algan.rendering.raytracing.shading_taichi import (
+    _MID_UNLIT,
+    _USER_PIPELINE_BASE,
+)
 
 # Per-ray status codes (rs_int column 2).
 _ACTIVE = 0
@@ -224,6 +227,199 @@ def _flat_triangle_normal(f, prim, w0, w1, w2, tri_norm: ti.template(),
                             pert = tang * tn[0] + bit * tn[1] + nb * tn[2]
                             if pert.norm() > 1e-9:
                                 normal = pert.normalized()
+    return normal
+
+
+# ---------------------------------------------------------------------------
+# "Family A+B" memory-trim variants of the flat-triangle samplers. In the trim
+# layout the triangles are reordered into material-class bands ([needs-mat |
+# needs-norm-only | bare]) so ``tri_norm``/``tri_mat`` are compacted PREFIXES
+# (guarded by ``prim < shape[1]``), while the promotion-compacted
+# ``tri_colors``/``tri_extra`` are addressed through a per-prim remap
+# ``col_row[prim]`` (-1 = promoted -> its colour/material comes from the 1x1
+# maps). ``tex_meta``/``uvs`` are full band-order arrays here (one row per prim),
+# so texture metadata is indexed directly by ``prim`` (no ``prim-num_colored``).
+# These mirror the non-trim samplers 1:1; only the indexing differs, so the trim
+# path is byte-identical to the baseline. Opt-in (ALGAN_WF_MEM_TRIM); see
+# scene_builder._build_mem_trim.
+# ---------------------------------------------------------------------------
+
+
+@ti.func
+def _flat_triangle_color_trim(f, prim, w0, w1, w2, tri_colors: ti.template(),
+                              col_row: ti.template(), tri_uvs: ti.template(),
+                              tex_meta: ti.template(), textures: ti.template()):
+    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    alpha = 0.0
+    coff = tex_meta[prim, 0]
+    if coff < 0:  # no colour map -> per-vertex row (never -1 here: promoted
+        cr = col_row[prim]                              # prims always get a map)
+        color, alpha = _triangle_color(f, cr, w0, w1, w2, tri_colors)
+    else:
+        u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
+        m = _sample_tex_vec5(f, u, v, tex_meta[prim, 0], tex_meta[prim, 1],
+                             tex_meta[prim, 2], textures)
+        color = ti.math.vec4(m[0], m[1], m[2], m[3])
+        alpha = m[4]
+    return color, alpha
+
+
+@ti.func
+def _flat_triangle_extra_trim(f, prim, w0, w1, w2, tri_extra: ti.template(),
+                              col_row: ti.template(), tri_uvs: ti.template(),
+                              tex_meta: ti.template(), textures: ti.template()):
+    reflectivity = 0.0
+    roughness = 0.0
+    cr = col_row[prim]
+    if cr >= 0:
+        reflectivity, roughness = _triangle_extra(f, cr, w0, w1, w2, tri_extra)
+    if tex_meta[prim, 3] >= 0:
+        flags = tex_meta[prim, 9]
+        u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
+        m = _sample_tex_vec5(f, u, v, tex_meta[prim, 3], tex_meta[prim, 4],
+                             tex_meta[prim, 5], textures)
+        if (flags & 1) != 0:
+            reflectivity = m[0]
+        if (flags & 2) != 0:
+            roughness = m[1]
+    return reflectivity, roughness
+
+
+@ti.func
+def _flat_corner_ior_trim(f, prim, w0, w1, w2, tri_extra: ti.template(),
+                          col_row: ti.template(), tri_uvs: ti.template(),
+                          tex_meta: ti.template(), textures: ti.template()):
+    ior = 1.0
+    cr = col_row[prim]
+    if cr >= 0:
+        ior = _corner_ior(f, cr, w0, w1, w2, tri_extra)
+    if tex_meta[prim, 3] >= 0:
+        if (tex_meta[prim, 9] & 4) != 0:
+            u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
+            m = _sample_tex_vec5(f, u, v, tex_meta[prim, 3], tex_meta[prim, 4],
+                                 tex_meta[prim, 5], textures)
+            ior = m[2]
+    return ior
+
+
+@ti.func
+def _flat_triangle_normal_trim(f, prim, w0, w1, w2, tri_norm: ti.template(),
+                               tri_pos: ti.template(), tri_uvs: ti.template(),
+                               tex_meta: ti.template(), textures: ti.template()):
+    # ``tri_norm`` is the compacted needs-normal prefix; a bare prim (index past
+    # the prefix) never consumes the shading normal, so return 0 for it.
+    normal = ti.math.vec3(0.0, 0.0, 0.0)
+    if prim < tri_norm.shape[1]:
+        normal = _triangle_normal(f, prim, w0, w1, w2, tri_norm, tri_pos)
+        if tex_meta[prim, 6] >= 0:
+            u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
+            m = _sample_tex_vec5(f, u, v, tex_meta[prim, 6], tex_meta[prim, 7],
+                                 tex_meta[prim, 8], textures)
+            tn = ti.math.vec3(m[0], m[1], m[2])
+            if tn.norm() > 1e-6 and normal.norm() > 1e-9:
+                nb = normal.normalized()
+                tp = f % tri_pos.shape[0]
+                v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                                  tri_pos[tp, prim, 2])
+                v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                                  tri_pos[tp, prim, 5])
+                v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                                  tri_pos[tp, prim, 8])
+                tu = f % tri_uvs.shape[0]
+                du1 = tri_uvs[tu, prim, 2] - tri_uvs[tu, prim, 0]
+                dv1 = tri_uvs[tu, prim, 3] - tri_uvs[tu, prim, 1]
+                du2 = tri_uvs[tu, prim, 4] - tri_uvs[tu, prim, 0]
+                dv2 = tri_uvs[tu, prim, 5] - tri_uvs[tu, prim, 1]
+                det = du1 * dv2 - du2 * dv1
+                if ti.abs(det) > 1e-12:
+                    inv_det = 1.0 / det
+                    e1 = v1 - v0
+                    e2 = v2 - v0
+                    tang = (e1 * dv2 - e2 * dv1) * inv_det
+                    tang = tang - nb * nb.dot(tang)
+                    if tang.norm() > 1e-9:
+                        tang = tang.normalized()
+                        bit = (e2 * du1 - e1 * du2) * inv_det
+                        bit = bit - nb * nb.dot(bit) - tang * tang.dot(bit)
+                        if bit.norm() > 1e-9:
+                            bit = bit.normalized()
+                            pert = tang * tn[0] + bit * tn[1] + nb * tn[2]
+                            if pert.norm() > 1e-9:
+                                normal = pert.normalized()
+    return normal
+
+
+# --- mem-trim dispatch wrappers: pick trim vs baseline sampler at compile time
+# (``mem_trim`` template), so the shade kernel's hit sites are a 1-line swap and
+# the ``mem_trim == 0`` branch inlines to the exact baseline call. ---
+
+
+@ti.func
+def _tri_color_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
+                 tri_colors: ti.template(), col_row: ti.template(),
+                 tri_uvs: ti.template(), tex_meta: ti.template(),
+                 textures: ti.template(), num_colored: ti.template()):
+    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    alpha = 0.0
+    if ti.static(mem_trim != 0):
+        color, alpha = _flat_triangle_color_trim(
+            f, prim, w0, w1, w2, tri_colors, col_row, tri_uvs, tex_meta,
+            textures)
+    else:
+        color, alpha = _flat_triangle_color(
+            f, prim, w0, w1, w2, tri_colors, tri_uvs, tex_meta, textures,
+            num_colored)
+    return color, alpha
+
+
+@ti.func
+def _tri_extra_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
+                 tri_extra: ti.template(), col_row: ti.template(),
+                 tri_uvs: ti.template(), tex_meta: ti.template(),
+                 textures: ti.template(), num_colored: ti.template()):
+    reflectivity = 0.0
+    roughness = 0.0
+    if ti.static(mem_trim != 0):
+        reflectivity, roughness = _flat_triangle_extra_trim(
+            f, prim, w0, w1, w2, tri_extra, col_row, tri_uvs, tex_meta,
+            textures)
+    else:
+        reflectivity, roughness = _flat_triangle_extra(
+            f, prim, w0, w1, w2, tri_extra, tri_uvs, tex_meta, textures,
+            num_colored)
+    return reflectivity, roughness
+
+
+@ti.func
+def _tri_ior_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
+               tri_extra: ti.template(), col_row: ti.template(),
+               tri_uvs: ti.template(), tex_meta: ti.template(),
+               textures: ti.template(), num_colored: ti.template()):
+    ior = 1.0
+    if ti.static(mem_trim != 0):
+        ior = _flat_corner_ior_trim(
+            f, prim, w0, w1, w2, tri_extra, col_row, tri_uvs, tex_meta,
+            textures)
+    else:
+        ior = _flat_corner_ior(
+            f, prim, w0, w1, w2, tri_extra, tri_uvs, tex_meta, textures,
+            num_colored)
+    return ior
+
+
+@ti.func
+def _tri_normal_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
+                  tri_norm: ti.template(), tri_pos: ti.template(),
+                  tri_uvs: ti.template(), tex_meta: ti.template(),
+                  textures: ti.template(), num_colored: ti.template()):
+    normal = ti.math.vec3(0.0, 0.0, 0.0)
+    if ti.static(mem_trim != 0):
+        normal = _flat_triangle_normal_trim(
+            f, prim, w0, w1, w2, tri_norm, tri_pos, tri_uvs, tex_meta, textures)
+    else:
+        normal = _flat_triangle_normal(
+            f, prim, w0, w1, w2, tri_norm, tri_pos, tri_uvs, tex_meta, textures,
+            num_colored)
     return normal
 
 
@@ -965,6 +1161,10 @@ def wavefront_shade(
         tri_extra: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
+        # Family A+B memory-trim: reordered/compacted triangle arrays + the
+        # per-prim colour/extra remap ``col_row`` (see scene_builder._build_mem_
+        # _trim). Unused when ``mem_trim == 0`` (col_row is a 1-elem stub).
+        col_row: ti.types.ndarray(),
         # PN patch STBVH + geometry/shading data.
         p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
@@ -980,7 +1180,9 @@ def wavefront_shade(
         circuit_border_colors: ti.types.ndarray(),
         edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
         pixel_world_scale: ti.types.ndarray(),
-        layer_offset_triangles: float, layer_offset_pn: float,
+        # Two floats packed into one ndarray to free an arg slot for ``col_row``
+        # (this kernel is at Taichi's 64 runtime-arg ceiling): [tri, pn].
+        layer_offsets: ti.types.ndarray(),
         # Fragment shading + binary hard shadows (compile-time templates, both
         # 0 on the default vertex-shaded path so the whole block below compiles
         # out -- byte-identical to the megakernel's vertex path) and their data.
@@ -992,6 +1194,8 @@ def wavefront_shade(
         refraction: ti.template(),
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         deferred_shadows: ti.template(),
+        skip_unlit_normal: ti.template(),
+        mem_trim: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
         pn_mat_id: ti.types.ndarray(), pn_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
@@ -1028,6 +1232,10 @@ def wavefront_shade(
     # pix_accum has one row per pixel; the pool is num_primary * split_k slots.
     num_primary = pix_accum.shape[0]
     splits_per_pixel = rs_ro.shape[0] // num_primary - 1
+    # Unpack the two layer offsets (packed into one ndarray to stay within the
+    # 64-arg ceiling); the body below references these names unchanged.
+    layer_offset_triangles = layer_offsets[0]
+    layer_offset_pn = layer_offsets[1]
     for i in range(num_active):
         r = active[i]
         pix = rs_pix[r]
@@ -1109,12 +1317,13 @@ def wavefront_shade(
                 reflectivity = 0.0
                 if htype == 1:
                     w0 = 1.0 - a - b
-                    color, alpha = _flat_triangle_color(f, prim, w0, a, b,
-                                                        tri_colors, tri_uvs, tri_tex_meta,
-                                                        textures, num_colored_triangles)
-                    reflectivity, _rough = _flat_triangle_extra(
-                        f, prim, w0, a, b, tri_extra, tri_uvs, tri_tex_meta,
-                        textures, num_colored_triangles)
+                    color, alpha = _tri_color_g(mem_trim, f, prim, w0, a, b,
+                                                tri_colors, col_row, tri_uvs,
+                                                tri_tex_meta, textures,
+                                                num_colored_triangles)
+                    reflectivity, _rough = _tri_extra_g(
+                        mem_trim, f, prim, w0, a, b, tri_extra, col_row,
+                        tri_uvs, tri_tex_meta, textures, num_colored_triangles)
                 elif htype == 2:
                     w0 = 1.0 - a - b
                     color, alpha = _pn_hit_color(f, prim, w0, a, b,
@@ -1160,10 +1369,10 @@ def wavefront_shade(
                             snrm = ti.math.vec3(0.0, 0.0, 0.0)
                             fnrm = ti.math.vec3(0.0, 0.0, 0.0)
                             if htype == 1:
-                                snrm = _flat_triangle_normal(
-                                    f, prim, 1.0 - a - b, a, b, tri_norm,
-                                    tri_pos, tri_uvs, tri_tex_meta, textures,
-                                    num_colored_triangles)
+                                snrm = _tri_normal_g(
+                                    mem_trim, f, prim, 1.0 - a - b, a, b,
+                                    tri_norm, tri_pos, tri_uvs, tri_tex_meta,
+                                    textures, num_colored_triangles)
                                 tp = f % tri_pos.shape[0]
                                 v0 = ti.math.vec3(tri_pos[tp, prim, 0],
                                                   tri_pos[tp, prim, 1],
@@ -1250,18 +1459,38 @@ def wavefront_shade(
                         # Light with the *normal-mapped* shading normal (equals
                         # the interpolated vertex normal when the triangle has
                         # no normal map, so unmapped scenes are byte-identical).
-                        sn = _flat_triangle_normal(
-                            f, prim, 1.0 - a - b, a, b, tri_norm, tri_pos,
-                            tri_uvs, tri_tex_meta, textures,
-                            num_colored_triangles)
+                        # UNLIT hits pass their colour through unchanged and
+                        # never consume the shading normal (a reflective/glass
+                        # continuation recomputes its own normal below), so skip
+                        # the normal work for them when the template is on.
+                        sn = ti.math.vec3(0.0, 0.0, 0.0)
+                        if ti.static(skip_unlit_normal != 0):
+                            if tri_mat_id[f % tri_mat_id.shape[0], prim] \
+                                    != _MID_UNLIT:
+                                sn = _tri_normal_g(
+                                    mem_trim, f, prim, 1.0 - a - b, a, b,
+                                    tri_norm, tri_pos, tri_uvs, tri_tex_meta,
+                                    textures, num_colored_triangles)
+                        else:
+                            sn = _tri_normal_g(
+                                mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
+                                tri_pos, tri_uvs, tri_tex_meta, textures,
+                                num_colored_triangles)
                         color = _shade_tri_hit(frag_pipelines, f, prim, a, b, rd,
                                                t_hit, ro, tri_pos, sn,
                                                tri_mat_id, tri_mat,
                                                light_pos, light_col, num_lights,
                                                color, shadows, vis)
                     elif htype == 2:
-                        sn = _pn_hit_normal(f, prim, a, b, pn_norm, pn_ctrl,
-                                            pn_extra, textures)
+                        sn = ti.math.vec3(0.0, 0.0, 0.0)
+                        if ti.static(skip_unlit_normal != 0):
+                            if pn_mat_id[f % pn_mat_id.shape[0], prim] \
+                                    != _MID_UNLIT:
+                                sn = _pn_hit_normal(f, prim, a, b, pn_norm,
+                                                    pn_ctrl, pn_extra, textures)
+                        else:
+                            sn = _pn_hit_normal(f, prim, a, b, pn_norm, pn_ctrl,
+                                                pn_extra, textures)
                         color = _shade_pn_hit(frag_pipelines, f, prim, a, b, rd,
                                               t_hit, ro, pn_ctrl, sn,
                                               pn_mat_id, pn_mat,
@@ -1293,20 +1522,21 @@ def wavefront_shade(
                         if (alpha < 1.0 - MIN_ALPHA) and (bounces_left > 0) \
                                 and ((htype == 1) or (htype == 2)):
                             if htype == 1:
-                                ior = _flat_corner_ior(
-                                    f, prim, 1.0 - a - b, a, b, tri_extra,
-                                    tri_uvs, tri_tex_meta, textures,
-                                    num_colored_triangles)
+                                ior = _tri_ior_g(
+                                    mem_trim, f, prim, 1.0 - a - b, a, b,
+                                    tri_extra, col_row, tri_uvs, tri_tex_meta,
+                                    textures, num_colored_triangles)
                             else:
                                 ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
                                                   pn_extra, textures)
                             if ior > 1.0 + 1e-4:
                                 is_glass = True
                                 if htype == 1:
-                                    gnrm = _flat_triangle_normal(
-                                        f, prim, 1.0 - a - b, a, b, tri_norm,
-                                        tri_pos, tri_uvs, tri_tex_meta,
-                                        textures, num_colored_triangles)
+                                    gnrm = _tri_normal_g(
+                                        mem_trim, f, prim, 1.0 - a - b, a, b,
+                                        tri_norm, tri_pos, tri_uvs,
+                                        tri_tex_meta, textures,
+                                        num_colored_triangles)
                                 else:
                                     gnrm = _pn_hit_normal(f, prim, a, b,
                                                           pn_norm, pn_ctrl,
@@ -1378,9 +1608,9 @@ def wavefront_shade(
                         # unchanged reflection, gated by opacity as before.
                         normal = ti.math.vec3(0.0, 0.0, 0.0)
                         if htype == 1:
-                            normal = _flat_triangle_normal(
-                                f, prim, 1.0 - a - b, a, b, tri_norm, tri_pos,
-                                tri_uvs, tri_tex_meta, textures,
+                            normal = _tri_normal_g(
+                                mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
+                                tri_pos, tri_uvs, tri_tex_meta, textures,
                                 num_colored_triangles)
                         elif htype == 2:
                             normal = _pn_hit_normal(f, prim, a, b, pn_norm,
@@ -1416,9 +1646,9 @@ def wavefront_shade(
                     sni = ti.math.vec3(0.0, 0.0, 0.0)
                     sfn = ti.math.vec3(0.0, 0.0, 0.0)
                     if htype == 1:
-                        sni = _flat_triangle_normal(
-                            f, prim, 1.0 - a - b, a, b, tri_norm, tri_pos,
-                            tri_uvs, tri_tex_meta, textures,
+                        sni = _tri_normal_g(
+                            mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
+                            tri_pos, tri_uvs, tri_tex_meta, textures,
                             num_colored_triangles)
                         tp = f % tri_pos.shape[0]
                         v0 = ti.math.vec3(tri_pos[tp, prim, 0],
@@ -1451,9 +1681,9 @@ def wavefront_shade(
                     s_ior = 1.0
                     if ti.static(refraction != 0):
                         if htype == 1:
-                            s_ior = _flat_corner_ior(
-                                f, prim, 1.0 - a - b, a, b, tri_extra,
-                                tri_uvs, tri_tex_meta, textures,
+                            s_ior = _tri_ior_g(
+                                mem_trim, f, prim, 1.0 - a - b, a, b, tri_extra,
+                                col_row, tri_uvs, tri_tex_meta, textures,
                                 num_colored_triangles)
                         elif htype == 2:
                             s_ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,

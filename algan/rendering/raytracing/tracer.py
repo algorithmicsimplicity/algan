@@ -48,6 +48,10 @@ from algan.rendering.raytracing.settings import _get_tonemap_t_val, REFRACT_SPLI
 
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.rendering.raytracing.shading_taichi import MAT_W, _USER_PIPELINE_BASE
+
+# Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
+# path (used by benchmarks/_wf_mem_trim_ab.py to confirm the trim actually fired).
+_MEM_TRIM_ENGAGED = [0]
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 # ``build_frag_pipelines`` is imported lazily in the render dispatch to avoid a
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
@@ -410,6 +414,32 @@ def raytrace_render_wavefront(
     split_k = REFRACT_SPLIT_SLOTS if refraction_flag else 1
     primary_per_tile = max(1, WAVEFRONT_TILE_RAYS // split_k)
 
+    # Family A+B memory-trim: engage only for the no-shadow, non-refractive,
+    # scatter-free triangle path (the trim arrays are built by scene_builder
+    # only when ALGAN_WF_MEM_TRIM). Rebinds the triangle geometry + BVH to the
+    # band-reordered/compacted variants and supplies the col_row remap; PN and
+    # bezier are untouched. tri_colors/tri_extra stay in their original order
+    # (addressed via col_row). ``mem_trim == 0`` leaves everything byte-identical.
+    mem_trim = (1 if (rt_settings.WF_MEM_TRIM and merged.get("mem_trim_active")
+                      and shadow_flag == 0 and len(frag_scatters) == 0
+                      and refraction_flag == 0) else 0)
+    if mem_trim:
+        _MEM_TRIM_ENGAGED[0] += 1
+        t_bvh = merged["tri_bvh_t"]
+        a_pos, a_norm = merged["tri_pos_t"], merged["tri_norm_t"]
+        a_mat, a_matid = merged["tri_mat_t"], merged["tri_mat_id_t"]
+        a_uvs, a_meta = merged["tri_uvs_t"], merged["tri_tex_meta_t"]
+        col_row_arr = merged["tri_col_row"]
+    else:
+        t_bvh = tri_bvh
+        a_pos, a_norm = merged["tri_pos"], merged["tri_norm"]
+        a_mat, a_matid = merged["tri_mat"], merged["tri_mat_id"]
+        a_uvs, a_meta = merged["tri_uvs"], merged["tri_tex_meta"]
+        col_row_arr = torch.zeros(1, dtype=i32, device=device)
+    layer_offsets_t = torch.tensor(
+        [float(layer_offset_triangles), float(layer_offset_pn)],
+        dtype=f32, device=device)
+
     aa_accum = None
     if do_aa:
         aa_accum = memory.get_tensor((n, 5 if transparent else 4), f32)
@@ -460,9 +490,9 @@ def raytrace_render_wavefront(
                     na = int(active.numel())
                     wavefront_traverse(
                         active, na,
-                        tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
-                        tri_bvh.leaf_tspan, int(tri_bvh.first_leaf),
-                        merged["tri_pos"],
+                        t_bvh.nodes, t_bvh.node_miss, t_bvh.leaf_prim,
+                        t_bvh.leaf_tspan, int(t_bvh.first_leaf),
+                        a_pos,
                         pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
                         pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
                         merged["pn_ctrl"],
@@ -480,14 +510,15 @@ def raytrace_render_wavefront(
                         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
                     wavefront_shade(
                         active, na,
-                        tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
-                        tri_bvh.leaf_tspan, int(tri_bvh.first_leaf),
-                        merged["tri_pos"], merged["tri_norm"],
+                        t_bvh.nodes, t_bvh.node_miss, t_bvh.leaf_prim,
+                        t_bvh.leaf_tspan, int(t_bvh.first_leaf),
+                        a_pos, a_norm,
                         merged["tri_extra"],
-                        merged["tri_colors"], merged["tri_uvs"],
-                        merged["tri_tex_meta"],
+                        merged["tri_colors"], a_uvs,
+                        a_meta,
                         merged["textures"],
                         int(merged["num_colored_triangles"]),
+                        col_row_arr,
                         pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
                         pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
                         merged["pn_ctrl"], merged["pn_norm"],
@@ -499,13 +530,15 @@ def raytrace_render_wavefront(
                         merged["circuit_border_colors"],
                         merged["edges_2d"], merged["edge_offsets"],
                         pixel_world_scale,
-                        float(layer_offset_triangles), float(layer_offset_pn),
+                        layer_offsets_t,
                         int(frag_flag), frag_pipelines, frag_scatters,
                         int(shadow_flag),
                         int(refraction_flag),
                         int(has_tri), int(has_pn), int(has_bez),
                         0,
-                        merged["tri_mat_id"], merged["tri_mat"],
+                        int(rt_settings.WF_SKIP_UNLIT_NORMAL),
+                        int(mem_trim),
+                        a_matid, a_mat,
                         merged["pn_mat_id"], merged["pn_mat"],
                         light_pos, light_col, int(num_lights),
                         int(time_start), int(width), int(height),

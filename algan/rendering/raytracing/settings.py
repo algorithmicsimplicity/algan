@@ -65,6 +65,31 @@ FRAGMENT_SHADING = True
 # ALGAN_PROMOTE_CONSTANTS=0 disables it (for A/B and validation).
 PROMOTE_CONSTANTS = os.environ.get("ALGAN_PROMOTE_CONSTANTS", "1") == "1"
 
+# Skip the up-front per-fragment shading-normal computation for UNLIT hits on
+# the fragment-shading wavefront. An UNLIT material passes its colour through
+# unchanged (``_run_frag_pipeline`` ignores the shading normal for it), so
+# computing the interpolated/normal-mapped normal for such a hit is wasted work.
+# Reflective/refractive continuation recomputes its own normal on demand, so
+# this is byte-identical. Compile-time template of the shade kernel (no runtime
+# arg -- the shade kernel is already at Taichi's 64-arg ceiling); this is the
+# speed-relevant core of the "Family A" material-field trim (skipping the
+# normal work), decoupled from the memory-side array trimming.
+# ALGAN_WF_SKIP_UNLIT_NORMAL=0 disables it (for A/B and validation).
+WF_SKIP_UNLIT_NORMAL = os.environ.get("ALGAN_WF_SKIP_UNLIT_NORMAL", "1") == "1"
+
+# "Family A+B" full material-field memory trim for the fragment-shading
+# wavefront. When on, triangles are reordered into material-class bands so
+# ``tri_norm`` (needs-normal prims) and ``tri_mat`` (lit prims) are stored as
+# compacted PREFIXES, and the promotion-compacted ``tri_colors``/``tri_extra``
+# are addressed through a per-prim remap ``col_row`` (Family B), with
+# ``tex_meta``/``uvs`` widened to full band-order arrays. Saves per-primitive
+# memory at the cost of a per-hit indirection gather (``col_row``) -- an
+# experimental measurement of that trade-off (expected slightly SLOWER on the
+# occupancy-bound kernel; see benchmarks/_wf_mem_trim_ab.py). Byte-identical to
+# the baseline. Opt-in; only engaged for a no-shadow, non-refractive,
+# scatter-free triangle path (the common case). Default OFF.
+WF_MEM_TRIM = os.environ.get("ALGAN_WF_MEM_TRIM", "0") == "1"
+
 # Cycles-style sorted material dispatch for the deterministic wavefront's
 # *fragment-shading* path. When active, the monolithic shade kernel is replaced
 # by a peel (surface-eval) kernel that suspends each ray at its next material

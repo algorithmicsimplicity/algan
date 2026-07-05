@@ -5,7 +5,7 @@ from algan.utils.profiling_utils import profile_scene
 
 def neural_net():
     with Off():
-        nn = NeuralNetMLP([10, 10, 10]).set_material(MeshStandardMaterial(color=GREEN)).spawn()
+        nn = NeuralNetMLP([10, 10, 10]).set_material(MeshBasicMaterial(color=GREEN)).spawn()
         label = Text('Neural Network').move_next_to(nn, UP).spawn()
     with Seq(run_time=1):
         nn.move(DOWN)
