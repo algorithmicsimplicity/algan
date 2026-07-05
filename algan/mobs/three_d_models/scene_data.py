@@ -1,8 +1,8 @@
 """Backend-independent intermediate representation (IR) for imported 3-D models.
 
-An importer backend (:mod:`algan.mobs.fbx.gltf_loader` for glB/glTF via trimesh,
-or :mod:`algan.mobs.fbx.assimp_loader` for FBX via pyassimp) parses a model file
-into these plain dataclasses; :class:`~algan.mobs.fbx.model_mob.ThreeDModelMob`
+An importer backend (:mod:`algan.mobs.three_d_models.gltf_loader` for glB/glTF via trimesh,
+or :mod:`algan.mobs.three_d_models.assimp_loader` for FBX via pyassimp) parses a model file
+into these plain dataclasses; :class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob`
 consumes them and builds the Algan mob tree. Keeping the IR separate from both
 the parser and the mob builder means:
 

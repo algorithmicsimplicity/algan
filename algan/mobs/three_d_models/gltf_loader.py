@@ -8,7 +8,7 @@ normals / UVs / colours, the node-instance transforms, and PBR materials
 in-memory images).
 
 The output is the same backend-independent :class:`SceneData` the FBX loader
-produces, so :class:`~algan.mobs.fbx.model_mob.ThreeDModelMob` builds both
+produces, so :class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob` builds both
 through one shared path.
 """
 from __future__ import annotations
@@ -18,8 +18,8 @@ import os
 import numpy as np
 import torch
 
-from algan.mobs.fbx import animation as _anim
-from algan.mobs.fbx.scene_data import (
+from algan.mobs.three_d_models import animation as _anim
+from algan.mobs.three_d_models.scene_data import (
     AnimationData,
     MaterialData,
     MeshData,

@@ -212,3 +212,48 @@ animatable attributes.
     During rendering, mobs with different shaders will be batched separately.
     This means you should reuse the same function definition where possible,
     as it will allow mobs to be batched more effectively.
+
+Custom Fragment Shaders (Ray Tracer)
+====================================
+
+The PyTorch shaders above are evaluated *per vertex* before upload (Gouraud
+shading). The deterministic ray tracer can instead shade **per fragment**,
+in-kernel: each ray hit evaluates a pipeline of Taichi stages, so specular
+highlights stay crisp and coarse meshes shade smoothly. Use
+:meth:`~.Mob.set_fragment_shader` (before spawning) with a built-in material
+shader, a :class:`~.FragmentStage`, or a list of stages composed left to
+right::
+
+    from algan.rendering.shaders.fragment_shaders import cosine_color
+    from algan.rendering.shaders.material_shaders import phong_shader
+
+    mob.set_fragment_shader([cosine_color, phong_shader])
+
+A custom stage is a Taichi ``@ti.func`` plus its (animatable) parameter
+specs -- see ``cosine_color`` in
+``algan/rendering/shaders/fragment_shaders.py`` for the template.
+
+Custom Ray Bouncing (Scatter Stages)
+------------------------------------
+
+Under the ray tracer's sorted material dispatch (entered automatically
+whenever a scene pipeline carries a custom scatter; force it always-on or
+off with ``algan.rendering.raytracing.settings.set_material_sorting``), each
+material pipeline also owns a **scatter function** deciding how a ray continues after shading a surface: pass
+through (transparency), mirror-bounce, or split into a reflected +
+refracted pair (glass). The default scatter implements the standard
+opacity / reflectivity / Fresnel-glass behaviour; attach your own to any
+stage to customise it::
+
+    FragmentStage(my_stage_func, my_param_specs, scatter=my_scatter_func)
+
+See ``forced_mirror_scatter`` in ``fragment_shaders.py`` for a complete
+example, and the scatter contract documentation in
+``algan/rendering/raytracing/shading_taichi.py``.
+
+.. note::
+
+    Fragments are sorted and shaded in per-material batches (as in Blender
+    Cycles), with one dedicated GPU kernel compiled per distinct pipeline;
+    reuse stage/scatter function objects across mobs to keep the number of
+    compiled kernels small.

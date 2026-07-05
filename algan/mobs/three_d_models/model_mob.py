@@ -1,8 +1,8 @@
 """Import a 3-D model file (glB/glTF, FBX, OBJ, ...) as an Algan :class:`~.Mob`.
 
 :class:`ThreeDModelMob` parses the file into the backend-independent
-:class:`~algan.mobs.fbx.scene_data.SceneData` IR and builds one
-:class:`~algan.mobs.fbx.mesh.TriangleMesh` child per mesh instance, with
+:class:`~algan.mobs.three_d_models.scene_data.SceneData` IR and builds one
+:class:`~algan.mobs.three_d_models.mesh.TriangleMesh` child per mesh instance, with
 geometry baked into the model's world space.
 
 The parser backend is chosen from the file extension:
@@ -10,7 +10,7 @@ The parser backend is chosen from the file extension:
 * ``.glb`` / ``.gltf`` (and other trimesh formats) -> trimesh, which is
   pure-Python and needs no native library.
 * ``.fbx`` -> pyassimp, which needs the native ``assimp`` library installed
-  separately (see :mod:`algan.mobs.fbx.assimp_loader`).
+  separately (see :mod:`algan.mobs.three_d_models.assimp_loader`).
 
 Baking the node hierarchy to world-space vertices (rather than reconstructing a
 live Algan transform hierarchy) keeps static import unambiguous and is also the
@@ -28,13 +28,13 @@ import torch
 from algan.animation.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
 from algan.constants.rate_funcs import identity
-from algan.mobs.fbx import animation as _anim
-from algan.mobs.fbx.mesh import (
+from algan.mobs.three_d_models import animation as _anim
+from algan.mobs.three_d_models.mesh import (
     TriangleMesh,
     image_to_normal_map,
     image_to_texture_map,
 )
-from algan.mobs.fbx.scene_data import SceneData
+from algan.mobs.three_d_models.scene_data import SceneData
 from algan.mobs.mob import Mob
 
 # File extensions routed to the trimesh backend; everything else falls to the
@@ -50,9 +50,9 @@ def _load_scene_for(file_path):
     """Dispatch to a parser backend by file extension."""
     ext = os.path.splitext(file_path)[1].lower()
     if ext in _TRIMESH_EXTS:
-        from algan.mobs.fbx.gltf_loader import load_scene
+        from algan.mobs.three_d_models.gltf_loader import load_scene
     else:  # .fbx and anything else -> assimp
-        from algan.mobs.fbx.assimp_loader import load_scene
+        from algan.mobs.three_d_models.assimp_loader import load_scene
     return load_scene(file_path)
 
 
@@ -380,7 +380,7 @@ class ThreeDModelMob(Mob):
     def get_part(self, name):
         """The imported mesh mob(s) for a named node, so a sub-part of the model
         can be manipulated (moved, coloured, animated) on its own. Returns a
-        single :class:`~algan.mobs.fbx.mesh.TriangleMesh` when the node has one
+        single :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` when the node has one
         mesh, else a list. Raises ``KeyError`` for an unknown node."""
         if name not in self.parts:
             raise KeyError(

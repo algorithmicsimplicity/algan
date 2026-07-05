@@ -65,6 +65,48 @@ FRAGMENT_SHADING = True
 # ALGAN_PROMOTE_CONSTANTS=0 disables it (for A/B and validation).
 PROMOTE_CONSTANTS = os.environ.get("ALGAN_PROMOTE_CONSTANTS", "1") == "1"
 
+# Cycles-style sorted material dispatch for the deterministic wavefront's
+# *fragment-shading* path. When active, the monolithic shade kernel is replaced
+# by a peel (surface-eval) kernel that suspends each ray at its next material
+# event, a host-side sort of the pending events by (geometry type, material
+# pipeline id), and one small geometry-free shade kernel *per material bucket*
+# with the material's pipeline + scatter funcs injected at compile time -- so a
+# warp never mixes materials and no kernel carries another material's code.
+# Shadows become a separate per-event kernel (they are material-independent).
+# The vertex-shaded (fragment-shading off) path has no per-material work and
+# always keeps the classic single shade kernel.
+#
+# Values: "auto" (default) routes a render to the sorted pipeline only when
+# the scene *needs* it -- some pipeline carries a custom scatter func, which
+# the monolithic kernel cannot express. True/"1" always sorts (worthwhile when
+# the scene mixes many/expensive material pipelines); False/"0" never sorts
+# (custom scatter funcs are then ignored). Measured on the built-in analytic
+# materials the sorted path is byte-identical but slower (the monolith drains
+# up to KBUF hits per launch and its material switch is cheap, while sorting
+# pays per-event kernel round trips + host syncs; see
+# benchmarks/_wf_sorted_ab.py), hence "auto" rather than always-on.
+def _parse_sort_mode(v):
+    v = str(v).strip().lower()
+    if v in ("1", "true", "on"):
+        return True
+    if v in ("0", "false", "off"):
+        return False
+    return "auto"
+
+
+WAVEFRONT_SORT_MATERIALS = _parse_sort_mode(
+    os.environ.get("ALGAN_WF_SORT_MATERIALS", "auto"))
+
+
+def set_material_sorting(enabled):
+    """Set Cycles-style sorted per-material shading of the deterministic
+    wavefront's fragment-shading path: ``True`` (always), ``False`` (never;
+    custom scatter funcs are ignored) or ``"auto"`` (default: only when a
+    scene pipeline carries a custom scatter func, which requires it). See
+    ``WAVEFRONT_SORT_MATERIALS``."""
+    global WAVEFRONT_SORT_MATERIALS
+    WAVEFRONT_SORT_MATERIALS = _parse_sort_mode(enabled)
+
 
 def set_fragment_shading(enabled):
     """Toggle per-fragment shading of the *deterministic* ray tracer.

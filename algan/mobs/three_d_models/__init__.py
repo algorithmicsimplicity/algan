@@ -1,6 +1,6 @@
-from algan.mobs.fbx.mesh import TriangleMesh, image_to_texture_map
-from algan.mobs.fbx.model_mob import ThreeDModelMob
-from algan.mobs.fbx.scene_data import (
+from algan.mobs.three_d_models.mesh import TriangleMesh, image_to_texture_map
+from algan.mobs.three_d_models.model_mob import ThreeDModelMob
+from algan.mobs.three_d_models.scene_data import (
     AnimationData,
     MaterialData,
     MeshData,

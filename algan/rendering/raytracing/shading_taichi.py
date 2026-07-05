@@ -320,6 +320,57 @@ def make_pipeline_func(stages, offsets):
     return pipeline_fn
 
 
+# ---------------------------------------------------------------------------
+# Sorted material dispatch (Cycles-style) support.
+#
+# The sorted wavefront (see ``wavefront_sorted_kernels_taichi``) launches one
+# small shade kernel per material bucket with that material's *pipeline func*
+# injected as a ``ti.template()`` -- so the runtime pid switch of
+# ``_run_frag_pipeline`` disappears and a warp never mixes materials. The five
+# built-in single-stage materials are wrapped into composed pipeline funcs here
+# (lazily, cached) so built-in and user pipelines share one injection contract.
+#
+# **Scatter contract** (user-customisable ray-bouncing): a scatter is a
+# ``@ti.func`` deciding how a shaded surface event continues its ray::
+#
+#     scatter(rd, n_interp, face_n, hit_point, shaded, alpha, reflectivity,
+#             ior, params: ti.template(), f, prim, bounces_left,
+#             refraction: ti.template())
+#         -> (contrib, pass_w,
+#             refl_orig, refl_dir, refl_w,
+#             trans_orig, trans_dir, trans_w)
+#
+# ``rd`` is the unit ray direction, ``shaded`` the pipeline's output colour
+# (vec4: RGB + glow), ``contrib`` the premultiplied colour committed to the ray
+# (the kernel adds ``weight * contrib``). ``pass_w`` is the throughput
+# multiplier for continuing *through* the surface to the next depth layer
+# (used only when ``refl_w == 0``). A positive ``refl_w`` bounces the ray from
+# ``refl_orig`` along ``refl_dir`` with throughput ``weight * refl_w``; a
+# positive ``trans_w`` additionally *splits* off a transmitted branch (glass)
+# from ``trans_orig`` along ``trans_dir``. The default scatter
+# (``wavefront_sorted_kernels_taichi.default_scatter``) reproduces the classic
+# opacity/reflectivity/Fresnel-glass behaviour; attach a custom one to a
+# :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage` via its
+# ``scatter=`` argument to override how rays bounce.
+# ---------------------------------------------------------------------------
+
+_BUILTIN_STAGE_FNS = (_stage_default, _stage_unlit, _stage_lambert,
+                      _stage_phong, _stage_standard)
+_BUILTIN_PIPELINE_FNS = {}
+
+
+def builtin_pipeline_fn(pid):
+    """Composed single-stage pipeline func for built-in material id ``pid``
+    (0 default, 1 unlit, 2 lambert, 3 phong, 4 standard), for injection into a
+    sorted per-material shade kernel. Lazily created and cached so every render
+    reuses the same func objects (stable Taichi template instantiations)."""
+    pid = int(pid)
+    if pid not in _BUILTIN_PIPELINE_FNS:
+        _BUILTIN_PIPELINE_FNS[pid] = make_pipeline_func(
+            [_BUILTIN_STAGE_FNS[pid]], [0])
+    return _BUILTIN_PIPELINE_FNS[pid]
+
+
 @ti.func
 def _run_frag_pipeline(frag_pipelines: ti.template(),
                        prim, f, pos, view_dir, n_interp, face_n, albedo, glow,

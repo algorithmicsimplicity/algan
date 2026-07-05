@@ -17,6 +17,15 @@ from algan.settings.kernel_settings import KERNEL_SETTINGS
 def _set_surface_param(mob, name, value):
     value = cast_to_tensor(float(value)).view(1, 1)
     for descendant in reversed(mob.get_descendants()):
+        # Register the attr as animatable BEFORE setting it. A plain
+        # ``setattr`` here would store an instance attribute that is later
+        # shadowed if another mob's shader registers ``name`` as a class-level
+        # animatable property (e.g. standard_shader registering ``roughness``
+        # after a phong mob's set_material routed its roughness through this
+        # helper) -- the shadowed value then reads as AttributeError at batch
+        # prep. Registering first routes the value through the animated
+        # storage, which stays readable regardless of registration order.
+        descendant.register_attrs_as_animatable([name])
         setattr(descendant, name, value)
         names = list(getattr(descendant, "shader_specific_param_names", []))
         if name not in names:
@@ -126,6 +135,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                          triangle.normals[:1], v], ignored_dims=[-1]
                     )[-1][..., :1]
                     values.append(v)
+                # A registered (animatable) surface param on an *animated* mob
+                # materializes per batch timestep ([T, ...]) while static
+                # mobs' params stay single-frame; unify the time dims before
+                # the cat (the kernels index time as ``f % T`` either way).
+                values, _ = _unify_time(values, "surface param merge")
                 setattr(self, name, unsquish(torch.cat(values, 1), -2, 3
                                              ).to(COMPUTING_DEFAULTS.render_device))
         else:

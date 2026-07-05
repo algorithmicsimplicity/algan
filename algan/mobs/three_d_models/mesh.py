@@ -4,7 +4,7 @@ Unlike :class:`~algan.mobs.surfaces.surface.Surface` (which is parametric -- a
 ``coord_function`` sampled on a regular UV grid), :class:`TriangleMesh` renders
 an arbitrary triangle soup: explicit per-corner positions, normals and UVs plus
 an optional texture map. This is the geometry container that
-:class:`~algan.mobs.fbx.model_mob.ThreeDModelMob` builds each imported mesh node
+:class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob` builds each imported mesh node
 from, but it is usable on its own for any hand-built or procedurally generated
 mesh.
 

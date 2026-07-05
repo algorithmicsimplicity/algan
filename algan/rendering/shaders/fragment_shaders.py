@@ -42,12 +42,22 @@ class FragmentStage:
     parameters; the stage reads them from ``params[tm, prim, off + slot]`` where
     ``slot`` is that parameter's cumulative offset within the stage (so the first
     param is at ``off + 0``). ``width`` is 1 for a scalar, 3 for an RGB triple.
+
+    ``scatter`` optionally customises how a ray *continues* after this stage's
+    pipeline shades a surface hit (reflection / refraction / pass-through) on
+    the sorted-material wavefront: a ``@ti.func`` following the scatter
+    contract documented in
+    :mod:`algan.rendering.raytracing.shading_taichi`. When no stage of a
+    pipeline supplies one, the default scatter applies the classic
+    opacity/reflectivity/Fresnel-glass behaviour. When several stages supply
+    one, the last stage's scatter wins.
     """
 
-    def __init__(self, ti_func, param_specs=()):
+    def __init__(self, ti_func, param_specs=(), scatter=None):
         self.ti_func = ti_func
         self.param_specs = [(str(n), int(w), d) for (n, w, d) in param_specs]
         self.width = sum(w for _n, w, _d in self.param_specs)
+        self.scatter = scatter
 
 
 # Canonical 12-slot built-in material parameter layout (matches the slot map in
@@ -121,8 +131,11 @@ def resolve_stage(shader):
 # --- Pipeline registry (session-global; ids are stable so the packed pipeline
 # --- ids stay consistent with the injected pipeline tuple). ------------------
 # key -> (pipeline_id, composed_func); _PIPELINE_LIST[pid - _USER_PIPELINE_BASE].
+# _PIPELINE_SCATTERS parallels _PIPELINE_LIST: the pipeline's custom scatter
+# ``@ti.func`` (the last stage-supplied one), or None for the default scatter.
 _PIPELINE_REGISTRY = {}
 _PIPELINE_LIST = []
+_PIPELINE_SCATTERS = []
 
 
 def register_pipeline(stages):
@@ -131,7 +144,8 @@ def register_pipeline(stages):
     Returns ``(pipeline_id, total_width, layout)`` where ``layout`` is a list of
     ``(name, slot, width, default)`` for every parameter across all stages (with
     ``slot`` the absolute offset into the per-primitive param block). Identical
-    pipelines (same stage funcs + widths) reuse the same id and composed func.
+    pipelines (same stage funcs + widths + scatter) reuse the same id and
+    composed func.
     """
     stages = list(stages)
     offsets = []
@@ -140,9 +154,12 @@ def register_pipeline(stages):
         offsets.append(off)
         off += s.width
     total_width = off
+    scatters = [s.scatter for s in stages if getattr(s, "scatter", None)]
+    scatter = scatters[-1] if scatters else None
 
     key = (tuple(id(s.ti_func) for s in stages),
-           tuple(s.width for s in stages))
+           tuple(s.width for s in stages),
+           id(scatter) if scatter is not None else None)
     if key in _PIPELINE_REGISTRY:
         pid = _PIPELINE_REGISTRY[key][0]
     else:
@@ -150,6 +167,7 @@ def register_pipeline(stages):
         composed = make_pipeline_func([s.ti_func for s in stages], offsets)
         _PIPELINE_REGISTRY[key] = (pid, composed)
         _PIPELINE_LIST.append(composed)
+        _PIPELINE_SCATTERS.append(scatter)
 
     layout = []
     for s, base in zip(stages, offsets):
@@ -164,6 +182,12 @@ def build_frag_pipelines():
     """Flat tuple of every registered composed pipeline func, ordered by id, for
     injection as the shade kernel's ``frag_pipelines`` template argument."""
     return tuple(_PIPELINE_LIST)
+
+
+def build_frag_scatters():
+    """Per-registered-pipeline custom scatter funcs (None = default scatter),
+    ordered by id, for the sorted-material wavefront's per-bucket dispatch."""
+    return tuple(_PIPELINE_SCATTERS)
 
 
 class FragmentPipelineShader:
@@ -245,3 +269,38 @@ cosine_color = FragmentStage(
     _stage_cosine_color,
     [("frequency", 1, 4.0), ("phase", 1, 0.0)],
 )
+
+
+# ---------------------------------------------------------------------------
+# Example custom scatter (ray-bouncing behaviour). See the scatter contract in
+# ``algan.rendering.raytracing.shading_taichi``.
+# ---------------------------------------------------------------------------
+
+@ti.func
+def _scatter_forced_mirror(rd, n_interp, face_n, hit_point, shaded, alpha,
+                           reflectivity, ior, params: ti.template(), f, prim,
+                           bounces_left, refraction: ti.template()):
+    """Treat the surface as a 85% mirror regardless of its per-vertex
+    reflectivity: commit 15% of the shaded colour and bounce the remaining
+    throughput along the mirror direction (no transmission)."""
+    n = n_interp.normalized()
+    if n.dot(rd) > 0.0:
+        n = -n
+    refl_dir = (rd - 2.0 * rd.dot(n) * n).normalized()
+    refl_orig = hit_point + n * 1e-3  # 10 * MIN_HIT_DISTANCE
+    contrib = (alpha * 0.15) * shaded
+    zero3 = ti.math.vec3(0.0, 0.0, 0.0)
+    refl_w = 0.85 * alpha
+    if bounces_left <= 0:  # out of bounces: absorb instead of reflecting
+        refl_w = 0.0
+    return (contrib, 1.0 - alpha, refl_orig, refl_dir, refl_w,
+            zero3, zero3, 0.0)
+
+
+#: Example custom scatter: forces mirror bouncing regardless of the mob's
+#: reflectivity. Attach to a stage, e.g.
+#: ``mob.set_fragment_shader(FragmentStage(_stage, specs, scatter=...))`` or
+#: compose with a built-in stage: ``FragmentStage(STAGE_PHONG.ti_func,
+#: STAGE_PHONG.param_specs, scatter=forced_mirror_scatter.scatter)``.
+forced_mirror_scatter = FragmentStage(
+    _stage_unlit, _BUILTIN_MAT_SPECS, scatter=_scatter_forced_mirror)

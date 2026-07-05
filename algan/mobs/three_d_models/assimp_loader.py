@@ -19,7 +19,7 @@ import os
 import numpy as np
 import torch
 
-from algan.mobs.fbx.scene_data import (
+from algan.mobs.three_d_models.scene_data import (
     AnimationData,
     MaterialData,
     MeshData,

@@ -147,7 +147,7 @@ from algan.mobs.surfaces.surface import *
 from algan.mobs.shapes_3d import *
 from algan.mobs.shapes_2d import *
 from algan.mobs.bezier_circuit import *
-from algan.mobs.fbx import ThreeDModelMob, TriangleMesh
+from algan.mobs.three_d_models import ThreeDModelMob, TriangleMesh
 from algan.scene import Scene
 
 from algan.animation.animation_contexts import *
