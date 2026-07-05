@@ -204,13 +204,23 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # Composed custom fragment-shader pipelines injected into the shade kernel as
     # a flat ti.template() tuple; empty () keeps the built-in / vertex-shaded
     # kernel specialization unchanged (see shading_taichi._run_frag_pipeline).
+    # A non-empty ``frag_scatters`` tuple switches the monolithic shade kernel's
+    # bounce block to per-material scatter dispatch (custom ray bouncing); it is
+    # only assembled when a pipeline in *this* scene overrides bouncing, so an
+    # ordinary scene keeps the byte-identical built-in bounce block (empty ()).
     if det_frag:
-        from algan.rendering.shaders.fragment_shaders import build_frag_pipelines
+        from algan.rendering.shaders.fragment_shaders import (
+            build_frag_pipelines, build_frag_scatters)
         frag_pipelines = build_frag_pipelines()
+        frag_scatters = (build_frag_scatters()
+                         if _scene_has_custom_scatter(merged) else ())
     else:
         frag_pipelines = ()
-    # Refraction (general wavefront only; see refractive_det above).
-    refraction_flag = 1 if refractive_det else 0
+        frag_scatters = ()
+    # Refraction (general wavefront only; see refractive_det above). A custom
+    # scatter may spawn a transmitted branch, so it needs the same split pool +
+    # transmitted-branch code the refraction path compiles in.
+    refraction_flag = 1 if (refractive_det or frag_scatters) else 0
     if det_frag:
         light_pos, light_col, num_lights = _pack_lights(
             light_sources, num_frames, device)
@@ -293,7 +303,8 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                     layer_offset_triangles, layer_offset_pn,
                     has_tri, has_pn, has_bez, int(MAX_BOUNCES),
                     light_pos, light_col, int(num_lights),
-                    frag_flag, frag_pipelines, shadow_flag, refraction_flag,
+                    frag_flag, frag_pipelines, frag_scatters, shadow_flag,
+                    refraction_flag,
                     1 if transparent_background else 0, memory, out,
                     kernel_aa)
             frames = out.view(end - start, height, width, C_out)
@@ -328,7 +339,8 @@ def raytrace_render_wavefront(
         pixel_world_scale, time_start, time_end, width, height,
         half_screen_w, half_screen_h, layer_offset_triangles, layer_offset_pn,
         has_tri, has_pn, has_bez, max_bounces,
-        light_pos, light_col, num_lights, frag_flag, frag_pipelines, shadow_flag,
+        light_pos, light_col, num_lights, frag_flag, frag_pipelines,
+        frag_scatters, shadow_flag,
         refraction_flag, transparent, memory, out, aa_level=1):
     """Wavefront orchestration for the general (triangle + PN + bezier) case:
     stage-split over per-ray global state, with PyTorch ray compaction between host iterations. State carries a
@@ -338,32 +350,41 @@ def raytrace_render_wavefront(
     and binary hard-shadow paths (compile-time templates of the shade kernel,
     matching ``render_scene_stbvh``); ``light_pos``/``light_col`` feed both.
 
+    ``frag_scatters`` is the per-pipeline custom ray-continuation (scatter) tuple
+    (empty when no scene pipeline overrides bouncing); a non-empty tuple switches
+    the monolithic shade kernel's bounce block from the built-in
+    opacity/reflectivity/Fresnel logic to per-material scatter dispatch
+    (``_run_frag_scatter``), so users can customise reflection / refraction /
+    pass-through. Empty keeps the built-in bounce block byte-identical.
+
     ``refraction_flag`` enables simultaneous reflection + refraction (glass): the
     shade kernel SPLITS such a ray, continuing the reflected branch in place and
     spawning the refracted branch into a free pool slot. The pool is therefore
-    over-allocated by ``split_k`` (only when refraction is on) -- it holds
-    ``primary_per_tile`` one-per-pixel rays plus spare slots for split branches,
-    at fixed total memory (fewer pixels per tile instead of bigger per-ray
-    state). Each ray commits into a shared per-pixel accumulator (``pix_accum``)
-    on termination, so a pixel's reflected and refracted branches sum.
+    over-allocated by ``split_k`` (only when refraction / custom scatter is on)
+    -- it holds ``primary_per_tile`` one-per-pixel rays plus spare slots for
+    split branches, at fixed total memory (fewer pixels per tile instead of
+    bigger per-ray state). Each ray commits into a shared per-pixel accumulator
+    (``pix_accum``) on termination, so a pixel's reflected and refracted branches
+    sum.
 
     When fragment shading is active, ``settings.WAVEFRONT_SORT_MATERIALS``
     selects the shade architecture: the Cycles-style *sorted* pipeline (rays
     suspended at their material events, bucketed by (geometry type, material
     pipeline id) and shaded by dedicated per-material kernels -- see
-    ``wavefront_sorted_kernels_taichi``) or the monolithic ``wavefront_shade``
-    kernel below. The default ``"auto"`` sorts only when the scene *requires*
-    it (a pipeline with a custom scatter func, which the monolith cannot run):
-    on the built-in analytic materials the sorted path renders byte-identical
-    but slower, since the monolith drains up to KBUF hits per launch while
-    sorting pays per-event kernel round trips and host syncs. The
-    vertex-shaded path below is unaffected either way.
+    ``wavefront_sorted_kernels_taichi``), used only when explicitly forced
+    (``set_material_sorting(True)``), or the monolithic ``wavefront_shade``
+    kernel below (the default). The monolith now handles both custom scatter and
+    normal-mapped lighting, and on the built-in materials it is faster than the
+    sorted path (it drains up to KBUF hits per launch, while sorting pays
+    per-event kernel round trips and host syncs), so ``"auto"`` keeps the
+    monolith. The vertex-shaded path below is unaffected either way.
     """
     from algan.rendering.raytracing import settings as rt_settings
     sort_mode = rt_settings.WAVEFRONT_SORT_MATERIALS
-    use_sorted = bool(frag_flag) and (
-        sort_mode is True
-        or (sort_mode == "auto" and _scene_has_custom_scatter(merged)))
+    # The monolith now handles custom scatter + normal maps, so it is the
+    # default for every fragment-shaded scene; the sorted pipeline runs only
+    # when explicitly forced (it is slower on built-in materials -- see docs).
+    use_sorted = bool(frag_flag) and (sort_mode is True)
     if use_sorted:
         return _raytrace_render_wavefront_sorted(
             tri_bvh, pn_bvh, bez_bvh, merged,
@@ -479,7 +500,8 @@ def raytrace_render_wavefront(
                         merged["edges_2d"], merged["edge_offsets"],
                         pixel_world_scale,
                         float(layer_offset_triangles), float(layer_offset_pn),
-                        int(frag_flag), frag_pipelines, int(shadow_flag),
+                        int(frag_flag), frag_pipelines, frag_scatters,
+                        int(shadow_flag),
                         int(refraction_flag),
                         int(has_tri), int(has_pn), int(has_bez),
                         0,

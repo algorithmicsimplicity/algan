@@ -76,15 +76,15 @@ PROMOTE_CONSTANTS = os.environ.get("ALGAN_PROMOTE_CONSTANTS", "1") == "1"
 # The vertex-shaded (fragment-shading off) path has no per-material work and
 # always keeps the classic single shade kernel.
 #
-# Values: "auto" (default) routes a render to the sorted pipeline only when
-# the scene *needs* it -- some pipeline carries a custom scatter func, which
-# the monolithic kernel cannot express. True/"1" always sorts (worthwhile when
-# the scene mixes many/expensive material pipelines); False/"0" never sorts
-# (custom scatter funcs are then ignored). Measured on the built-in analytic
-# materials the sorted path is byte-identical but slower (the monolith drains
-# up to KBUF hits per launch and its material switch is cheap, while sorting
-# pays per-event kernel round trips + host syncs; see
-# benchmarks/_wf_sorted_ab.py), hence "auto" rather than always-on.
+# Values: "auto" (default) and False/"0" both use the monolithic shade kernel,
+# which now supports *everything* the sorted path does -- custom ray-bouncing
+# (scatter) and normal-mapped lighting -- while staying faster on the built-in
+# materials (it drains up to KBUF hits per launch, whereas sorting pays
+# per-event kernel round trips + host syncs; see benchmarks/_wf_sorted_ab.py and
+# _wf_monolith_scatter_ab.py). True/"1" forces the sorted pipeline (retained for
+# research / potential future workloads with very many heavy material
+# pipelines); it is byte-identical to the monolith. "auto" is kept as a distinct
+# label so the engine can revisit this heuristic later without an API change.
 def _parse_sort_mode(v):
     v = str(v).strip().lower()
     if v in ("1", "true", "on"):
@@ -100,10 +100,10 @@ WAVEFRONT_SORT_MATERIALS = _parse_sort_mode(
 
 def set_material_sorting(enabled):
     """Set Cycles-style sorted per-material shading of the deterministic
-    wavefront's fragment-shading path: ``True`` (always), ``False`` (never;
-    custom scatter funcs are ignored) or ``"auto"`` (default: only when a
-    scene pipeline carries a custom scatter func, which requires it). See
-    ``WAVEFRONT_SORT_MATERIALS``."""
+    wavefront's fragment-shading path: ``True`` forces the sorted pipeline;
+    ``False`` / ``"auto"`` (default) use the monolithic kernel, which handles
+    custom scatter + normal maps itself and is faster on built-in materials.
+    See ``WAVEFRONT_SORT_MATERIALS``."""
     global WAVEFRONT_SORT_MATERIALS
     WAVEFRONT_SORT_MATERIALS = _parse_sort_mode(enabled)
 

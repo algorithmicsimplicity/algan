@@ -1401,19 +1401,21 @@ def _bezier_normal(f, circuit, circuit_meta: ti.template()):
 
 @ti.func
 def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
-                   tri_pos: ti.template(), tri_norm: ti.template(),
+                   tri_pos: ti.template(), shade_normal,
                    tri_mat_id: ti.template(), tri_mat: ti.template(),
                    light_pos: ti.template(), light_col: ti.template(),
                    num_lights, albedo, shadows: ti.template(), vis):
     """Per-fragment material shading of a confirmed flat-triangle hit: feeds the
-    interpolated shading normal, geometric face normal, hit position and the
-    per-primitive parameter block into :func:`_run_frag_pipeline`. ``albedo`` is
-    the interpolated (raw) base RGB + glow; ``tri_mat_id``/``tri_mat`` carry the
-    per-primitive pipeline id and parameter block; returns the shaded RGB + glow.
-    ``vis`` holds the caller's per-light shadow visibilities (used iff
-    ``shadows``)."""
-    w0 = 1.0 - a - b
-    n = _triangle_normal(f, prim, w0, a, b, tri_norm, tri_pos)
+    caller-supplied shading normal ``shade_normal``, the geometric face normal,
+    the hit position and the per-primitive parameter block into
+    :func:`_run_frag_pipeline`. The caller passes the *normal-mapped* shading
+    normal (``_flat_triangle_normal``), so a tangent-space normal map perturbs
+    the lighting -- with no map that equals the plain interpolated vertex
+    normal, so unmapped surfaces are byte-identical to the previous vertex-only
+    shading. ``albedo`` is the interpolated (raw) base RGB + glow;
+    ``tri_mat_id``/``tri_mat`` carry the per-primitive pipeline id and parameter
+    block; returns the shaded RGB + glow. ``vis`` holds the caller's per-light
+    shadow visibilities (used iff ``shadows``)."""
     tp = f % tri_pos.shape[0]
     v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
                       tri_pos[tp, prim, 2])
@@ -1424,21 +1426,22 @@ def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
     face_n = (v1 - v0).cross(v2 - v0)
     pos = ro + t_hit * rd
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
-    return _run_frag_pipeline(frag_pipelines, prim, f, pos, -rd, n, face_n, rgb,
+    return _run_frag_pipeline(frag_pipelines, prim, f, pos, -rd, shade_normal,
+                              face_n, rgb,
                               albedo[3], light_pos, light_col, num_lights,
                               tri_mat_id, tri_mat, shadows, vis)
 
 
 @ti.func
 def _shade_pn_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
-                  pn_ctrl: ti.template(), pn_norm: ti.template(),
+                  pn_ctrl: ti.template(), shade_normal,
                   pn_mat_id: ti.template(), pn_mat: ti.template(),
                   light_pos: ti.template(), light_col: ti.template(),
                   num_lights, albedo, shadows: ti.template(), vis):
     """Per-fragment material shading of a confirmed PN-patch hit. Like
-    :func:`_shade_tri_hit` but the geometric face normal is the cross product of
-    the patch's parametric tangents at (u, v) = (a, b)."""
-    n = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
+    :func:`_shade_tri_hit` (caller-supplied normal-mapped ``shade_normal``) but
+    the geometric face normal is the cross product of the patch's parametric
+    tangents at (u, v) = (a, b)."""
     tp = f % pn_ctrl.shape[0]
     su = ti.math.vec3(0.0, 0.0, 0.0)
     sv = ti.math.vec3(0.0, 0.0, 0.0)
@@ -1452,7 +1455,8 @@ def _shade_pn_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
     face_n = su.cross(sv)
     pos = ro + t_hit * rd
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
-    return _run_frag_pipeline(frag_pipelines, prim, f, pos, -rd, n, face_n, rgb,
+    return _run_frag_pipeline(frag_pipelines, prim, f, pos, -rd, shade_normal,
+                              face_n, rgb,
                               albedo[3], light_pos, light_col, num_lights,
                               pn_mat_id, pn_mat, shadows, vis)
 

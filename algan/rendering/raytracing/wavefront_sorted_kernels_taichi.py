@@ -61,7 +61,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     KBUF,
     MAX_SHADOW_LIGHTS,
     MAX_SURFACES_PER_RAY,
-    MIN_ALPHA,
     MIN_HIT_DISTANCE,
     MIN_WEIGHT,
     PN_SEAM_DEPTH_EPSILON,
@@ -80,7 +79,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _pn_hit_extra,
     _pn_hit_ior,
     _pn_hit_normal,
-    _refract_ray,
+    default_scatter,
 )
 
 # Ray status codes (rs_int column 2). ST_TRAVERSE/ST_DONE alias the classic
@@ -90,81 +89,6 @@ ST_TRAVERSE = _ACTIVE   # 0: needs a (re-)traverse to refill the K-buffer
 ST_DONE = _DONE         # 1: retired; contribution committed to pix_accum
 ST_PEEL = 2             # 2: K-buffer holds unconsumed hits
 ST_SHADE = 3            # 3: suspended at a material event (rs_key/rs_hit valid)
-
-
-@ti.func
-def default_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
-                    reflectivity, ior, params: ti.template(), f, prim,
-                    bounces_left, refraction: ti.template()):
-    """Default ray-continuation (scatter) behaviour of a shaded surface event;
-    exactly the monolithic kernel's opacity / reflectivity / Fresnel-glass
-    logic (see the scatter contract in ``shading_taichi``).
-
-    Returns ``(contrib, pass_w, refl_orig, refl_dir, refl_w, trans_orig,
-    trans_dir, trans_w)``: the premultiplied colour contribution (the caller
-    adds ``weight * contrib``), the pass-through weight multiplier, and the
-    origin/direction/weight of the reflected branch and of the transmitted
-    (glass split) branch (a weight of 0 disables that branch).
-    """
-    alpha = ti.math.clamp(alpha, 0.0, 1.0)
-    reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
-    if bounces_left <= 0:
-        reflectivity = 0.0
-
-    # Glass = a transparent refractive surface: Fresnel reflectance R (Schlick)
-    # from the IOR + incidence angle drives the energy split (diffuse
-    # alpha*(1-R) + reflected R + refracted (1-R)*(1-alpha)). Non-refractive
-    # surfaces keep R = reflectivity. Compiles out when refraction is off.
-    is_glass = False
-    gnrm = ti.math.vec3(0.0, 0.0, 0.0)
-    R = reflectivity
-    if ti.static(refraction != 0):
-        if (alpha < 1.0 - MIN_ALPHA) and (bounces_left > 0) \
-                and (ior > 1.0 + 1e-4):
-            is_glass = True
-            gnrm = n_interp.normalized()
-            cosi = ti.abs(rd.dot(gnrm))
-            r0 = (1.0 - ior) / (1.0 + ior)
-            r0 = r0 * r0
-            fr = r0 + (1.0 - r0) * ti.pow(1.0 - cosi, 5.0)
-            # A manual ``reflectivity`` raises the reflectance floor like a
-            # mirror coating (0 = pure Fresnel glass).
-            R = reflectivity + (1.0 - reflectivity) * fr
-
-    contrib = (alpha * (1.0 - R)) * shaded
-    pass_w = 0.0
-    refl_w = 0.0
-    trans_w = 0.0
-    zero3 = ti.math.vec3(0.0, 0.0, 0.0)
-    refl_dir = zero3
-    refl_orig = zero3
-    trans_dir = zero3
-    trans_orig = zero3
-    if is_glass:
-        rdt = _refract_ray(rd, gnrm, ior)
-        trans_dir = rdt
-        trans_orig = hit_point + rdt * (10.0 * MIN_HIT_DISTANCE)
-        trans_w = (1.0 - R) * (1.0 - alpha)
-        # Reflect the parent ray, Fresnel-weighted (decoupled from opacity --
-        # a clear glass still reflects per R).
-        nref = gnrm
-        if nref.dot(rd) > 0.0:
-            nref = -nref
-        refl_dir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
-        refl_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
-        refl_w = R
-    elif (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
-        # Opaque / translucent mirror (no refractive index).
-        n = n_interp.normalized()
-        if n.dot(rd) > 0.0:
-            n = -n
-        refl_dir = (rd - 2.0 * rd.dot(n) * n).normalized()
-        refl_orig = hit_point + n * (10.0 * MIN_HIT_DISTANCE)
-        refl_w = alpha * reflectivity
-    else:
-        pass_w = 1.0 - alpha
-    return (contrib, pass_w, refl_orig, refl_dir, refl_w,
-            trans_orig, trans_dir, trans_w)
 
 
 @ti.kernel

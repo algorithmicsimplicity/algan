@@ -236,14 +236,11 @@ specs -- see ``cosine_color`` in
 Custom Ray Bouncing (Scatter Stages)
 ------------------------------------
 
-Under the ray tracer's sorted material dispatch (entered automatically
-whenever a scene pipeline carries a custom scatter; force it always-on or
-off with ``algan.rendering.raytracing.settings.set_material_sorting``), each
-material pipeline also owns a **scatter function** deciding how a ray continues after shading a surface: pass
-through (transparency), mirror-bounce, or split into a reflected +
-refracted pair (glass). The default scatter implements the standard
-opacity / reflectivity / Fresnel-glass behaviour; attach your own to any
-stage to customise it::
+Each material pipeline also owns a **scatter function** deciding how a ray
+continues after shading a surface: pass through (transparency),
+mirror-bounce, or split into a reflected + refracted pair (glass). The
+default scatter implements the standard opacity / reflectivity /
+Fresnel-glass behaviour; attach your own to any stage to customise it::
 
     FragmentStage(my_stage_func, my_param_specs, scatter=my_scatter_func)
 
@@ -253,7 +250,10 @@ example, and the scatter contract documentation in
 
 .. note::
 
-    Fragments are sorted and shaded in per-material batches (as in Blender
-    Cycles), with one dedicated GPU kernel compiled per distinct pipeline;
-    reuse stage/scatter function objects across mobs to keep the number of
-    compiled kernels small.
+    Custom scatter (and normal-mapped lighting) run inside the deterministic
+    ray tracer's regular shade kernel. Algan also ships an alternative
+    *sorted* material-dispatch pipeline (one GPU kernel per material, as in
+    Blender Cycles) that renders identically; it is off by default because
+    the regular kernel is faster on the built-in materials. Force it on with
+    ``algan.rendering.raytracing.settings.set_material_sorting(True)`` if you
+    are experimenting with very many heavy material pipelines.
