@@ -90,6 +90,46 @@ WF_SKIP_UNLIT_NORMAL = os.environ.get("ALGAN_WF_SKIP_UNLIT_NORMAL", "1") == "1"
 # scatter-free triangle path (the common case). Default OFF.
 WF_MEM_TRIM = os.environ.get("ALGAN_WF_MEM_TRIM", "0") == "1"
 
+# Experimental "textured surface" wavefront (Surface / flat-triangle scenes
+# only). When on, the deterministic wavefront shades from three per-triangle
+# texture lookups instead of per-vertex arrays: a colour texture (RGBA+glow), a
+# material texture (the shading parameter block) and a surface texture
+# (reflectivity/roughness/index-of-refraction used for scatter). At build time a
+# property group that is constant across a triangle is promoted to a shared 1x1
+# texture and one that varies per vertex to a per-triangle 2x2 texture whose
+# bilinear lookup approximates the barycentric blend (see
+# scene_builder._build_textured_scene + wavefront_textured_kernels_taichi). A
+# proof-of-concept alternative to the per-vertex + constant-promotion path used
+# to benchmark the texture-lookup shading architecture. Default OFF.
+WF_TEXTURED = os.environ.get("ALGAN_WF_TEXTURED", "1") == "1"
+
+
+def set_textured_wavefront(enabled):
+    """Enable the experimental texture-lookup wavefront shader (Surface /
+    flat-triangle scenes only; see ``WF_TEXTURED``)."""
+    global WF_TEXTURED
+    WF_TEXTURED = bool(enabled)
+
+
+# Feature bitmask for the textured wavefront: each bit compiles one of the
+# monolith's features back into the (otherwise lean) textured shade kernel, so
+# the marginal occupancy / performance cost of each can be measured one at a
+# time (see benchmarks/_wf_textured_features_ab.py). The features are added in
+# the order beziers -> custom scatter -> shadows -> normal maps.
+WF_TEX_BEZ = 1        # bezier-circuit traversal + shading
+WF_TEX_SCATTER = 2    # per-material custom scatter dispatch (ray bouncing)
+WF_TEX_SHADOWS = 4    # binary hard shadow rays (triangle occluders)
+WF_TEX_NORMALMAP = 8  # tangent-space normal-map perturbation of the shading normal
+WF_TEXTURED_FEATURES = int(os.environ.get("ALGAN_WF_TEXTURED_FEATURES", "0"))
+
+
+def set_textured_features(mask):
+    """Set which monolith features are compiled into the textured wavefront
+    shade kernel (a bitmask of WF_TEX_BEZ / _SCATTER / _SHADOWS / _NORMALMAP)."""
+    global WF_TEXTURED_FEATURES
+    WF_TEXTURED_FEATURES = int(mask)
+
+
 # Cycles-style sorted material dispatch for the deterministic wavefront's
 # *fragment-shading* path. When active, the monolithic shade kernel is replaced
 # by a peel (surface-eval) kernel that suspends each ray at its next material
