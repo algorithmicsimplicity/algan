@@ -76,10 +76,7 @@ from algan.utils.algan_utils import render_to_file
 
 # Optional pipeline-hook targets. Imported defensively: a rename upstream must
 # degrade the hook, not break the whole profiler.
-try:
-    from algan import SceneManager, Animatable, Surface, BezierCircuitCubic, TrianglePrimitive
-except Exception:  # pragma: no cover
-    SceneManager = Animatable = Surface = BezierCircuitCubic = None
+from algan import SceneManager, Animatable, Surface, BezierCircuitCubic
 
 import algan.rendering.raytracing.primitives as rtp
 import algan.rendering.raytracing.stbvh as stbvh_mod
@@ -412,7 +409,6 @@ def install_pipeline_hooks():
     _try_wrap(Animatable, "reset_state", "Animatable.reset_state")
     _try_wrap(Animatable, "set_state_full", "Animatable.set_state_full")
     _try_wrap(Animatable, "set_state_to_time_t", "Animatable.set_state_to_time_t")
-    _try_wrap(TrianglePrimitive, "__init__", "TrianglePrimitive.__init__")
     _try_wrap(Surface, "get_render_primitives", "Surface.get_render_primitives")
     _try_wrap(BezierCircuitCubic, "get_render_primitives",
               "BezierCircuitCubic.get_render_primitives")
