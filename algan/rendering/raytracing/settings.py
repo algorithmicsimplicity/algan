@@ -101,7 +101,7 @@ WF_MEM_TRIM = os.environ.get("ALGAN_WF_MEM_TRIM", "0") == "1"
 # scene_builder._build_textured_scene + wavefront_textured_kernels_taichi). A
 # proof-of-concept alternative to the per-vertex + constant-promotion path used
 # to benchmark the texture-lookup shading architecture. Default OFF.
-WF_TEXTURED = os.environ.get("ALGAN_WF_TEXTURED", "1") == "1"
+WF_TEXTURED = os.environ.get("ALGAN_WF_TEXTURED", "0") == "1"
 
 
 def set_textured_wavefront(enabled):
