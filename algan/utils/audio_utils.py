@@ -14,10 +14,6 @@ class Timer:
 
 import os
 import torch
-import torchaudio
-#import pandas as pd
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-import torchaudio.functional as F
 
 import re, string
 pattern = re.compile('[\W_]+', re.UNICODE)
@@ -59,6 +55,17 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
     Aligns a large audio file with its transcript using a robust, optimized
     CTC-based chunking strategy powered by torchaudio, including a retry guard.
     """
+    try:
+        import torchaudio
+        import torchaudio.functional as F
+        from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+    except ImportError as e:
+        raise ImportError(
+            "Synchronizing to a recorded speech audio file requires the optional"
+            " audio dependencies (torchaudio and transformers). Install them with:"
+            " pip install algan[audio]"
+        ) from e
+
     print("Loading model and processor...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")

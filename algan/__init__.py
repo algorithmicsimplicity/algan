@@ -153,6 +153,8 @@ from algan.scene import Scene
 from algan.animation.animation_contexts import *
 from algan.utils.algan_utils import *
 from algan.rendering.lights import *
+
+set_environment_map = Scene.set_environment_map
 from algan.rendering.shaders.materials import *
 from algan.rendering.shaders.material_shaders import (
     basic_material_shader,

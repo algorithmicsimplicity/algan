@@ -17,10 +17,12 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Natural Language :: English",
     ]
 
-requires-python = ">=3.9,<3.13"
+# Upper bound tracks taichi, which publishes no Python 3.14 wheels yet.
+requires-python = ">=3.9,<3.14"
 
 dependencies = [
     # from manim
@@ -35,7 +37,7 @@ dependencies = [
     "manim>=0.18.0",
     # for algan
 
-    "forcealign>=1.1.0",
+    "taichi>=1.7.4",
     "pyttsx3>=2.0",
     "moviepy>=2.2.0",
     "dendroid>=1.6.0",
@@ -60,6 +62,13 @@ homepage = "https://github.com/algorithmicsimplicity/algan"
 "Discord" = "https://discord.gg/NvarFmvXKm"
 
 [project.optional-dependencies]
+# Word-level alignment of recorded speech audio to a transcript (used by the
+# Speech/Audio animation contexts when synchronizing to a pre-recorded audio
+# file). The default pyttsx3 text-to-speech path does not need these.
+audio = [
+    "torchaudio>=2.0.0",
+    "transformers>=4.30.0",
+]
 # 3-D model import (FBX / OBJ / glTF / ...) via FBXMob. pyassimp is the Python
 # binding only; it also needs the native `assimp` library installed separately
 # (conda-forge assimp, apt libassimp5, brew assimp, or assimp*.dll on PATH).

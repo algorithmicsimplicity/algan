@@ -42,6 +42,8 @@ its multi-light behaviour: each light is applied in sequence with the running
 colour as the albedo (the renderer's vertex path overwrites the colour per
 light), which is identical to a single light -- the common case.
 """
+import os
+
 import taichi as ti
 
 # Width of the built-in per-primitive material parameter block (see slot map).
@@ -61,12 +63,24 @@ _USER_PIPELINE_BASE = 5
 # Base ambient coefficient (matches material_shaders.AMBIENT_STRENGTH).
 AMBIENT_STRENGTH = 0.1
 
-# Maximum number of point lights that can cast deterministic ray-traced
-# shadows. The caller fires one shadow ray per light up to this cap and packs
-# the per-light visibilities (1 = lit, 0 = occluded) into a fixed-size vector;
-# lights past the cap are still shaded but never shadowed. Eight covers every
-# realistic explanatory-video setup while keeping the visibility vector small.
-MAX_SHADOW_LIGHTS = 8
+# Maximum number of lights that can cast deterministic ray-traced shadows.
+# Each shaded fragment collects one visibility scalar per light (1 = lit,
+# 0 = occluded) into a fixed-size ``ti.Vector`` -- Taichi vector lengths are
+# compile-time, so this is a compile-time cap, not a runtime one. Lights past
+# the cap are still *lit*, just never shadowed. The visibility vector is
+# dead-code-eliminated when shadows are off (the default), so a larger cap
+# only costs registers on opt-in shadow renders.
+#
+# Default 8. This is also how many samples of a soft area light actually cast
+# shadows: a RectAreaLight with more samples still *lights* from all of them,
+# but only the first 8 are shadow-tested. That is deliberate -- 8 gives a clean
+# penumbra, and pushing this higher can (with the non-physical default diffuse
+# shader, whose per-light contributions are summed unnormalised) over-brighten
+# the umbra of a large area light. Raise ALGAN_MAX_SHADOW_LIGHTS if you have a
+# rig of more than 8 distinct shadow-casters and have verified the look; a truly
+# unbounded (runtime) count would need the per-fragment visibilities in a global
+# scratch buffer instead of a stack vector (see the docs on soft shadows).
+MAX_SHADOW_LIGHTS = max(1, int(os.environ.get("ALGAN_MAX_SHADOW_LIGHTS", "8")))
 
 
 @ti.func
@@ -132,6 +146,102 @@ def _light(light_pos: ti.template(), light_col: ti.template(), f, li):
     return lp, lc
 
 
+# Light type ids (column 3 of an extended packed light row; mirrors
+# algan.rendering.lights.LIGHT_*).
+_LT_POINT = 0
+_LT_DIRECTIONAL = 1
+_LT_AMBIENT = 2
+_LT_HEMISPHERE = 3
+_LT_SPOT = 4
+_LT_AREA_SAMPLE = 5
+_LT_ENV_SH = 6
+
+
+@ti.func
+def _light_eval(light_pos: ti.template(), light_col: ti.template(),
+                f, li, pos, n):
+    """Evaluate light ``li`` for a surface point ``pos`` with shading normal
+    ``n``: returns ``(ld, lc, spec_w)`` -- the unit direction toward the light,
+    its effective RGB radiance (falloff / cone / hemisphere blending applied)
+    and the specular gate (0 for the direction-less ambient-like types).
+
+    Compact rows (``light_col`` width 3, the legacy packing used whenever the
+    scene has only plain point lights) take the original point-light path with
+    identical arithmetic. Extended rows (width 16) carry a type id + parameters
+    (packed by ``scene_builder._pack_lights``; layout documented on
+    :meth:`algan.rendering.lights.Light.build_aux`).
+
+    Ambient-like types (ambient / hemisphere / env-SH) return ``ld = n`` so the
+    material stages' ``n . ld`` diffuse factor becomes 1 -- they reuse the
+    stages' diffuse term unchanged, with the specular term gated off.
+    """
+    tl = f % light_pos.shape[0]
+    lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
+                      light_pos[tl, li, 2])
+    lc = ti.math.vec3(light_col[tl, li, 0], light_col[tl, li, 1],
+                      light_col[tl, li, 2])
+    ld = (lp - pos).normalized()
+    spec_w = 1.0
+    if light_col.shape[2] > 3:
+        ltype = ti.cast(light_col[tl, li, 3] + 0.5, ti.i32)
+        if ltype == _LT_DIRECTIONAL:
+            ld = -ti.math.vec3(light_col[tl, li, 6], light_col[tl, li, 7],
+                               light_col[tl, li, 8])
+        elif ltype == _LT_AMBIENT:
+            ld = n
+            spec_w = 0.0
+        elif ltype == _LT_HEMISPHERE:
+            up = ti.math.vec3(light_col[tl, li, 6], light_col[tl, li, 7],
+                              light_col[tl, li, 8])
+            ground = ti.math.vec3(light_col[tl, li, 12],
+                                  light_col[tl, li, 13],
+                                  light_col[tl, li, 14])
+            h = 0.5 + 0.5 * n.dot(up)
+            lc = ground * (1.0 - h) + lc * h
+            ld = n
+            spec_w = 0.0
+        elif ltype == _LT_ENV_SH:
+            # Order-1 spherical-harmonics irradiance of the environment map,
+            # as a linear form A + B . n (coefficients packed host-side).
+            bx = ti.math.vec3(light_col[tl, li, 6], light_col[tl, li, 7],
+                              light_col[tl, li, 8])
+            by = ti.math.vec3(light_col[tl, li, 9], light_col[tl, li, 10],
+                              light_col[tl, li, 11])
+            bz = ti.math.vec3(light_col[tl, li, 12], light_col[tl, li, 13],
+                              light_col[tl, li, 14])
+            lc = ti.max(lc + bx * n[0] + by * n[1] + bz * n[2],
+                        ti.math.vec3(0.0, 0.0, 0.0))
+            ld = n
+            spec_w = 0.0
+        if (ltype == _LT_POINT) or (ltype == _LT_SPOT) \
+                or (ltype == _LT_AREA_SAMPLE):
+            d = (lp - pos).norm()
+            decay = light_col[tl, li, 4]
+            if decay > 0.0:
+                lc = lc / ti.pow(ti.max(d, 1e-4), decay)
+            rng = light_col[tl, li, 5]
+            if rng > 0.0:
+                q = ti.math.clamp(d / rng, 0.0, 1.0)
+                q2 = q * q
+                fade = ti.math.clamp(1.0 - q2 * q2, 0.0, 1.0)
+                lc = lc * (fade * fade)
+        if ltype == _LT_SPOT:
+            sd = ti.math.vec3(light_col[tl, li, 6], light_col[tl, li, 7],
+                              light_col[tl, li, 8])
+            cos_outer = light_col[tl, li, 9]
+            cos_inner = light_col[tl, li, 10]
+            c = (-ld).dot(sd)
+            t = ti.math.clamp((c - cos_outer)
+                              / ti.max(cos_inner - cos_outer, 1e-6), 0.0, 1.0)
+            lc = lc * (t * t * (3.0 - 2.0 * t))
+        elif ltype == _LT_AREA_SAMPLE:
+            # One-sided cosine emission of the rectangle sample.
+            an = ti.math.vec3(light_col[tl, li, 6], light_col[tl, li, 7],
+                              light_col[tl, li, 8])
+            lc = lc * ti.max((-ld).dot(an), 0.0)
+    return ld, lc, spec_w
+
+
 @ti.func
 def _light_vis(shadows: ti.template(), vis, li):
     """Per-light shadow visibility (1 lit / 0 occluded). Compiled out entirely
@@ -172,17 +282,35 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                    params: ti.template(), f, prim, off,
                    light_pos: ti.template(), light_col: ti.template(),
                    num_lights, shadows: ti.template(), vis):
-    """default_shader: diffuse lerp of the colour toward each light colour."""
+    """default_shader: diffuse lerp of the colour toward each light colour.
+
+    Additive over lights: gather every light's lerp weight, then blend once.
+    For a single light this equals the legacy per-light lerp
+    (``out*(1-w) + lc*w``); for many lights it stays stable (an area light's
+    sample fan, or a key/fill/rim rig) instead of the old sequential lerp
+    driving the colour toward the last light's."""
     flat = params[f % params.shape[0], prim, off + 10]
     n = _prep_normal(n_interp, face_n, flat, view_dir)
     out = in_rgb
+    acc = ti.math.vec3(0.0, 0.0, 0.0)
+    wsum = 0.0
     for li in range(num_lights):
-        lp, lc = _light(light_pos, light_col, f, li)
+        ld, lc, _spec_w = _light_eval(light_pos, light_col, f, li, pos, n)
         v = _light_vis(shadows, vis, li)
-        inc = (pos - lp).normalized()
-        d = ti.max(-inc.dot(n), 0.0)
-        diffuse = d * d * d * d * d * 0.5 * v
-        out = out * (1.0 - diffuse) + lc * diffuse
+        d = ti.max(ld.dot(n), 0.0)
+        w = d * d * d * d * d * 0.5 * v
+        acc += lc * w
+        wsum += w
+    # Blend the base toward the lights' weighted-average colour (``acc/wsum``)
+    # with total weight ``min(wsum, 1)``. Normalising ``acc`` by the weight sum
+    # keeps many lights (an area light's sample fan, a large shadow-caster rig)
+    # from summing past a single light's brightness -- the over-bright shadow
+    # core we saw when raising the shadow-light cap. Dividing by ``max(wsum, 1)``
+    # makes the single-/low-light case (``wsum <= 1``, which is *every* single
+    # point light, since ``w <= 0.5``) bit-identical to the un-normalised form
+    # (``x / 1.0 == x``); normalisation only engages once the summed weight
+    # would otherwise blow out.
+    out = out * (1.0 - ti.min(wsum, 1.0)) + acc / ti.max(wsum, 1.0)
     return ti.math.vec4(out[0], out[1], out[2], in_glow)
 
 
@@ -199,16 +327,19 @@ def _stage_lambert(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     flat = params[tm, prim, off + 10]
     env = params[tm, prim, off + 11]
     n = _prep_normal(n_interp, face_n, flat, view_dir)
-    out = in_rgb
+    # Additive multi-light accumulation over a fixed albedo: ambient + emissive
+    # once, then each light's direct diffuse. For a single light this equals
+    # the legacy expression; for many lights it sums correctly (the old
+    # per-light overwrite collapsed the colour and re-added ambient/emissive
+    # per light -- e.g. an area light's sample fan came out wrong).
+    acc = (in_rgb * (AMBIENT_STRENGTH * env)
+           + emissive * emissive_intensity)
     for li in range(num_lights):
-        lp, lc = _light(light_pos, light_col, f, li)
+        ld, lc, _spec_w = _light_eval(light_pos, light_col, f, li, pos, n)
         v = _light_vis(shadows, vis, li)
-        ld = (lp - pos).normalized()
         n_dot_l = ti.max(n.dot(ld), 0.0)
-        ambient = out * (AMBIENT_STRENGTH * env)
-        out = (ambient + out * lc * n_dot_l * v
-               + emissive * emissive_intensity)
-    return ti.math.vec4(out[0], out[1], out[2], in_glow)
+        acc += in_rgb * lc * (n_dot_l * v)
+    return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 
 @ti.func
@@ -227,21 +358,21 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     flat = params[tm, prim, off + 10]
     env = params[tm, prim, off + 11]
     n = _prep_normal(n_interp, face_n, flat, view_dir)
-    out = in_rgb
+    # Additive over lights (see _stage_lambert): ambient + emissive once, then
+    # each light's Blinn-Phong diffuse + specular.
+    acc = (in_rgb * (AMBIENT_STRENGTH * env)
+           + emissive * emissive_intensity)
     for li in range(num_lights):
-        lp, lc = _light(light_pos, light_col, f, li)
+        ld, lc, spec_w = _light_eval(light_pos, light_col, f, li, pos, n)
         v = _light_vis(shadows, vis, li)
-        ld = (lp - pos).normalized()
         half = (ld + view_dir).normalized()
         n_dot_l = ti.max(n.dot(ld), 0.0)
         n_dot_h = ti.max(n.dot(half), 0.0)
-        ambient = out * (AMBIENT_STRENGTH * env)
-        diffuse = out * lc * n_dot_l
         spec_term = ti.pow(ti.max(n_dot_h, 1e-4), ti.max(shininess, 1e-3))
-        gate = 1.0 if n_dot_l > 0.0 else 0.0
-        out = (ambient + (diffuse + specular * lc * spec_term * gate)
-               * v + emissive * emissive_intensity)
-    return ti.math.vec4(out[0], out[1], out[2], in_glow)
+        gate = spec_w if n_dot_l > 0.0 else 0.0
+        acc += (in_rgb * lc * n_dot_l
+                + specular * lc * spec_term * gate) * v
+    return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 
 @ti.func
@@ -259,33 +390,29 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     flat = params[tm, prim, off + 10]
     env = params[tm, prim, off + 11]
     n = _prep_normal(n_interp, face_n, flat, view_dir)
-    out = in_rgb
+    # Additive over lights (see _stage_lambert): the metalness/F0 ambient +
+    # emissive base once, then each light's Cook-Torrance direct term.
+    one = ti.math.vec3(1.0, 1.0, 1.0)
+    rgb = in_rgb
+    f0 = ti.math.vec3(0.04, 0.04, 0.04) * (1.0 - metalness) + rgb * metalness
+    acc = ((rgb * (1.0 - metalness) + f0 * metalness) * (AMBIENT_STRENGTH * env)
+           + emissive * emissive_intensity)
     for li in range(num_lights):
-        lp, lc = _light(light_pos, light_col, f, li)
+        ld, lc, spec_w = _light_eval(light_pos, light_col, f, li, pos, n)
         v = _light_vis(shadows, vis, li)
-        rgb = out
-        ld = (lp - pos).normalized()
         half = (ld + view_dir).normalized()
         n_dot_l = ti.max(n.dot(ld), 0.0)
         n_dot_v = ti.max(n.dot(view_dir), 1e-4)
         n_dot_h = ti.max(n.dot(half), 0.0)
         v_dot_h = ti.max(view_dir.dot(half), 0.0)
-        one = ti.math.vec3(1.0, 1.0, 1.0)
-        f0 = ti.math.vec3(0.04, 0.04, 0.04) * (1.0 - metalness) \
-            + rgb * metalness
-        fresnel = f0 + (one - f0) * ti.pow(
-            ti.max(1.0 - v_dot_h, 0.0), 5.0)
+        fresnel = f0 + (one - f0) * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
         ndf = _ggx_distribution(n_dot_h, roughness)
         geom = _smith_geometry(n_dot_v, n_dot_l, roughness)
-        spec = (ndf * geom) * fresnel / ti.max(
-            4.0 * n_dot_v * n_dot_l, 1e-4)
+        spec = (ndf * geom) * fresnel / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
         k_d = (one - fresnel) * (1.0 - metalness)
         diffuse = k_d * rgb * lc * n_dot_l
-        direct = diffuse + spec * lc * n_dot_l
-        ambient = (rgb * (1.0 - metalness) + f0 * metalness) * (
-            AMBIENT_STRENGTH * env)
-        out = ambient + direct * v + emissive * emissive_intensity
-    return ti.math.vec4(out[0], out[1], out[2], in_glow)
+        acc += (diffuse + spec * lc * (n_dot_l * spec_w)) * v
+    return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 
 def make_pipeline_func(stages, offsets):

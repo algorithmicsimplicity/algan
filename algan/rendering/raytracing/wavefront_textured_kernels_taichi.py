@@ -44,6 +44,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     MIN_ALPHA,
     MIN_HIT_DISTANCE,
     MIN_WEIGHT,
+    NODE_ARG,
     _bezier_normal,
     _comes_after,
     _nearest_triangle_hit,
@@ -241,7 +242,7 @@ def wf_shade_textured(
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
         # Shadow feature: triangle BVH for the shadow rays.
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int,
         pixel_world_scale: ti.types.ndarray(),

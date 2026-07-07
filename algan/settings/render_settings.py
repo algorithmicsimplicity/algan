@@ -42,7 +42,7 @@ THUMBNAIL = RenderSettings((1280, 720), 1, save_image=True)
 
 SMOKE_TEST = RenderSettings((100, 100), 2, anti_alias_level=1, fxaa=False)
 
-# Render at (600, 400) resolution, 10 fps.
+# Render at (640, 400) resolution, 10 fps.
 PREVIEW = RenderSettings((640, 400), 10)
 
 # Render at (854, 480) resolution, 30 fps.

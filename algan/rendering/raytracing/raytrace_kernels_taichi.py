@@ -59,7 +59,7 @@ import os
 
 import taichi as ti
 
-from algan.rendering.raytracing.stbvh import BVH_ARITY, LEAF_SIZE
+from algan.rendering.raytracing.stbvh import BLOCK_F16, BVH_ARITY, LEAF_SIZE
 from algan.rendering.raytracing.shading_taichi import (
     MAX_SHADOW_LIGHTS, _run_frag_pipeline)
 
@@ -75,30 +75,13 @@ init_taichi()
 # box but misses the (thin, often diagonal) patch itself.
 _PN_OBB_ON = os.environ.get("ALGAN_PN_OBB", "1") == "1"
 
-# Traverse an explicit-DFS unbalanced SAH tree (env ALGAN_BVH_BUILD=sah) instead
-# of the implicit balanced heap tree. Compile-time: when on, a node is a leaf iff
-# its per-node ``leaf_prim`` slot is >= 0, its first child is ``node + 1`` (DFS
-# order), and ``node_miss`` is the subtree-escape pointer; when off, the implicit
-# heap rules apply (leaf iff ``node >= first_leaf``, child ``BVH_ARITY*node+1``).
-# The leaf-processing body is shared between the two. Currently wired into the
-# deterministic primary path (_collect_hits). See stbvh._build_sah_dfs.
-_USE_SAH = os.environ.get("ALGAN_BVH_BUILD", "morton") == "sah"
-
-# Ordered (near-to-far) traversal of the triangle STBVH in the deterministic
-# hit gather (env ALGAN_ORDERED_TRAV=0 disables for A/B). Instead of the fixed
-# miss-pointer walk, internal nodes push their intersected children on a small
-# per-ray stack sorted by slab entry distance, so the nearest surfaces are
-# discovered first and the shrinking depth window (KBUF-worst / nearest-opaque)
-# prunes far subtrees without visiting them. The accepted-hit set is unchanged
-# (same acceptance tests against the same transitive order), so output is
-# byte-identical; only the discovery order -- and thus the visit count --
-# differs. Implemented for the default implicit heap only (not the SAH-DFS
-# layout, whose child indexing differs).
-_ORDERED_TRAV = (os.environ.get("ALGAN_ORDERED_TRAV", "0") == "1"
-                 and not _USE_SAH)
-# Stack capacity: (BVH_ARITY - 1) pushes per level; 48 covers a 4-ary tree of
-# 4^16 leaves (the largest practical build is ~4^12).
-_TRAV_STACK = 48
+# Sibling-block traversal stack. The walk descends into one intersected
+# child at a time and pushes the sibling group's *remaining* mask; a complete
+# BVH_ARITY-ary tree over P leaves is log_ARITY(P) levels deep with at most
+# one push per level, so 16 covers 4^16 leaves (the largest practical build
+# is ~4^12). Entries pack ``node << BVH_ARITY | mask``.
+_GROUP_STACK = 16
+_GROUP_MASK = (1 << BVH_ARITY) - 1
 
 # Minimum hit distance along a ray (also the self-intersection guard for
 # reflected rays, together with a normal offset at the bounce origin).
@@ -176,6 +159,20 @@ PN_SEAM_DEPTH_EPSILON = 8e-3
 # KBUF re-traverses less on deep translucent stacks.
 KBUF = max(1, int(os.environ.get("ALGAN_KBUF", "4")))
 
+# Kernel-argument annotation for STBVH sibling-block arrays (see
+# stbvh._build_blocks): entry [i, lane] holds one attribute of internal node
+# i's BVH_ARITY children -- lanes 0-5 the box dims lo.x/lo.y/lo.z/hi.x/hi.y/
+# hi.z, lanes 6(-7) their packed frame intervals -- so one aligned 128-byte
+# (f32) or 64-byte (f16, conservatively out-rounded bounds) fetch tests a
+# whole sibling group per dependent memory round. The vector element type
+# makes Taichi issue the lanes as vector loads.
+if BLOCK_F16:
+    NODE_ARG = ti.types.ndarray(dtype=ti.types.vector(BVH_ARITY, ti.f16),
+                                ndim=2)
+else:
+    NODE_ARG = ti.types.ndarray(dtype=ti.types.vector(BVH_ARITY, ti.f32),
+                                ndim=2)
+
 # circuit_meta channel layout.
 _M_CENTER = 0      # 0-2   plane origin
 _M_NORMAL = 3      # 3-5   unit plane normal
@@ -247,54 +244,64 @@ def _cosine_hemisphere_direction(normal):
 
 
 @ti.func
-def _node_intersected(node, ff, ro, inv_rd, t_lo, t_hi,
-                      nodes: ti.template()) -> bool:
-    """Spatio-temporal node test: frame containment + slab test restricted to
-    the parametric window [t_lo, t_hi] of still-relevant hits. The node's
-    bounds and frame interval live in one packed 8-float row.
+def _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
+    """Spatio-temporal test of internal node ``blk``'s whole sibling group:
+    per-child frame containment + slab test restricted to the parametric
+    window [t_lo, t_hi] of still-relevant hits. The children's bounds and
+    packed frame intervals live in one aligned SoA block (see
+    stbvh._build_blocks) -- a single fetch feeds ``BVH_ARITY`` independent
+    box tests, so a whole sibling group costs one dependent memory round.
+    Returns the bitmask of intersected children (bit c = child
+    ``BVH_ARITY * blk + 1 + c``).
+
+    f16 blocks decode exactly (f16 -> f32 casts are lossless) to the
+    conservatively out-rounded bounds baked at build time, so the mask is a
+    superset of the exact-box mask and the rendered output is unchanged.
     """
-    hit = False
-    if (nodes[node, 6] <= ff) and (ff <= nodes[node, 7]):
-        tx0 = (nodes[node, 0] - ro[0]) * inv_rd[0]
-        tx1 = (nodes[node, 3] - ro[0]) * inv_rd[0]
-        t_near = ti.min(tx0, tx1)
-        t_far = ti.max(tx0, tx1)
-        ty0 = (nodes[node, 1] - ro[1]) * inv_rd[1]
-        ty1 = (nodes[node, 4] - ro[1]) * inv_rd[1]
-        t_near = ti.max(t_near, ti.min(ty0, ty1))
-        t_far = ti.min(t_far, ti.max(ty0, ty1))
-        tz0 = (nodes[node, 2] - ro[2]) * inv_rd[2]
-        tz1 = (nodes[node, 5] - ro[2]) * inv_rd[2]
-        t_near = ti.max(t_near, ti.min(tz0, tz1))
-        t_far = ti.min(t_far, ti.max(tz0, tz1))
-        hit = (t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi) and (t_far >= t_lo)
-    return hit
+    lox = blocks[blk, 0]
+    loy = blocks[blk, 1]
+    loz = blocks[blk, 2]
+    hix = blocks[blk, 3]
+    hiy = blocks[blk, 4]
+    hiz = blocks[blk, 5]
+    ts_a = blocks[blk, 6]
+    ts_b = blocks[blk, 7]
+    mask = 0
+    for c in ti.static(range(BVH_ARITY)):
+        tspan = 0
+        if ti.static(BLOCK_F16):
+            tspan = ti.cast(ti.bit_cast(ts_a[c], ti.u16), ti.i32) | (
+                ti.cast(ti.bit_cast(ts_b[c], ti.u16), ti.i32) << 16)
+        else:
+            tspan = ti.bit_cast(ts_a[c], ti.i32)
+        if ((tspan & 0xFFFF) <= f) and (f <= ((tspan >> 16) & 0x7FFF)):
+            tx0 = (ti.cast(lox[c], ti.f32) - ro[0]) * inv_rd[0]
+            tx1 = (ti.cast(hix[c], ti.f32) - ro[0]) * inv_rd[0]
+            t_near = ti.min(tx0, tx1)
+            t_far = ti.max(tx0, tx1)
+            ty0 = (ti.cast(loy[c], ti.f32) - ro[1]) * inv_rd[1]
+            ty1 = (ti.cast(hiy[c], ti.f32) - ro[1]) * inv_rd[1]
+            t_near = ti.max(t_near, ti.min(ty0, ty1))
+            t_far = ti.min(t_far, ti.max(ty0, ty1))
+            tz0 = (ti.cast(loz[c], ti.f32) - ro[2]) * inv_rd[2]
+            tz1 = (ti.cast(hiz[c], ti.f32) - ro[2]) * inv_rd[2]
+            t_near = ti.max(t_near, ti.min(tz0, tz1))
+            t_far = ti.min(t_far, ti.max(tz0, tz1))
+            if ((t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi)
+                    and (t_far >= t_lo)):
+                mask |= 1 << c
+    return mask
 
 
 @ti.func
-def _node_hit_near(node, ff, ro, inv_rd, t_lo, t_hi, nodes: ti.template()):
-    """:func:`_node_intersected` returning the slab entry distance as well
-    (clamped to the ray origin), for ordered near-to-far traversal."""
-    hit = False
-    tn = 1e30
-    if (nodes[node, 6] <= ff) and (ff <= nodes[node, 7]):
-        tx0 = (nodes[node, 0] - ro[0]) * inv_rd[0]
-        tx1 = (nodes[node, 3] - ro[0]) * inv_rd[0]
-        t_near = ti.min(tx0, tx1)
-        t_far = ti.max(tx0, tx1)
-        ty0 = (nodes[node, 1] - ro[1]) * inv_rd[1]
-        ty1 = (nodes[node, 4] - ro[1]) * inv_rd[1]
-        t_near = ti.max(t_near, ti.min(ty0, ty1))
-        t_far = ti.min(t_far, ti.max(ty0, ty1))
-        tz0 = (nodes[node, 2] - ro[2]) * inv_rd[2]
-        tz1 = (nodes[node, 5] - ro[2]) * inv_rd[2]
-        t_near = ti.max(t_near, ti.min(tz0, tz1))
-        t_far = ti.min(t_far, ti.max(tz0, tz1))
-        if ((t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi)
-                and (t_far >= t_lo)):
-            hit = True
-            tn = ti.max(t_near, 0.0)
-    return hit, tn
+def _lowest_bit(mask):
+    """Index of the lowest set bit of a BVH_ARITY-wide mask (ascending-index
+    child order, matching the old depth-first sibling order)."""
+    c = BVH_ARITY - 1
+    for k in ti.static(range(BVH_ARITY - 2, -1, -1)):
+        if mask & (1 << k) != 0:
+            c = k
+    return c
 
 
 @ti.func
@@ -823,13 +830,24 @@ def _nearest_triangle_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     best_w1 = 0.0
     best_w2 = 0.0
     tp = f % tri_pos.shape[0]
-    node = 0
-    while node != -1:
-        if _node_intersected(node, ff, ro, inv_rd,
-                             t_prev - DEPTH_TIE_EPSILON,
-                             best_t + DEPTH_TIE_EPSILON, nodes):
-            if node >= first_leaf:
-                base = (node - first_leaf) * LEAF_SIZE
+    g_sp = 0
+    g_st = ti.Vector([0] * _GROUP_STACK)
+    g_cur = 0
+    g_pend = _test_children(0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+                            best_t + DEPTH_TIE_EPSILON, nodes)
+    while True:
+        if g_pend == 0:
+            if g_sp == 0:
+                break
+            g_sp -= 1
+            g_cur = g_st[g_sp] >> BVH_ARITY
+            g_pend = g_st[g_sp] & _GROUP_MASK
+        else:
+            g_c = _lowest_bit(g_pend)
+            g_pend &= g_pend - 1
+            g_child = BVH_ARITY * g_cur + 1 + g_c
+            if g_child >= first_leaf:
+                base = (g_child - first_leaf) * LEAF_SIZE
                 for j in ti.static(range(LEAF_SIZE)):
                     prim = leaf_prim[base + j]
                     tspan = leaf_tspan[base + j]
@@ -869,11 +887,14 @@ def _nearest_triangle_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                     best_prim = prim
                                     best_w1 = w1
                                     best_w2 = w2
-                node = node_miss[node]
             else:
-                node = BVH_ARITY * node + 1
-        else:
-            node = node_miss[node]
+                if g_pend != 0:
+                    g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                    g_sp += 1
+                g_cur = g_child
+                g_pend = _test_children(g_cur, f, ro, inv_rd,
+                                        t_prev - DEPTH_TIE_EPSILON,
+                                        best_t + DEPTH_TIE_EPSILON, nodes)
     return best_t, best_prim, best_w1, best_w2, best_layer
 
 
@@ -900,13 +921,24 @@ def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset,
     best_v = 0.0
     tp = f % pn_ctrl.shape[0]
     po = f % pn_obb.shape[0]
-    node = 0
-    while node != -1:
-        if _node_intersected(node, ff, ro, inv_rd,
-                             t_prev - DEPTH_TIE_EPSILON,
-                             best_t + DEPTH_TIE_EPSILON, nodes):
-            if node >= first_leaf:
-                base = (node - first_leaf) * LEAF_SIZE
+    g_sp = 0
+    g_st = ti.Vector([0] * _GROUP_STACK)
+    g_cur = 0
+    g_pend = _test_children(0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+                            best_t + DEPTH_TIE_EPSILON, nodes)
+    while True:
+        if g_pend == 0:
+            if g_sp == 0:
+                break
+            g_sp -= 1
+            g_cur = g_st[g_sp] >> BVH_ARITY
+            g_pend = g_st[g_sp] & _GROUP_MASK
+        else:
+            g_c = _lowest_bit(g_pend)
+            g_pend &= g_pend - 1
+            g_child = BVH_ARITY * g_cur + 1 + g_c
+            if g_child >= first_leaf:
+                base = (g_child - first_leaf) * LEAF_SIZE
                 for j in ti.static(range(LEAF_SIZE)):
                     prim = leaf_prim[base + j]
                     tspan = leaf_tspan[base + j]
@@ -932,11 +964,14 @@ def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, layer_offset,
                                     best_prim = prim
                                     best_u = us[r]
                                     best_v = vs[r]
-                node = node_miss[node]
             else:
-                node = BVH_ARITY * node + 1
-        else:
-            node = node_miss[node]
+                if g_pend != 0:
+                    g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                    g_sp += 1
+                g_cur = g_child
+                g_pend = _test_children(g_cur, f, ro, inv_rd,
+                                        t_prev - DEPTH_TIE_EPSILON,
+                                        best_t + DEPTH_TIE_EPSILON, nodes)
     return best_t, best_prim, best_u, best_v, best_layer
 
 
@@ -962,13 +997,24 @@ def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     best_v = 0.0
     num_meta_frames = circuit_meta.shape[0]
     num_edge_frames = edges_2d.shape[0]
-    node = 0
-    while node != -1:
-        if _node_intersected(node, ff, ro, inv_rd,
-                             t_prev - DEPTH_TIE_EPSILON,
-                             best_t + DEPTH_TIE_EPSILON, nodes):
-            if node >= first_leaf:
-                base = (node - first_leaf) * LEAF_SIZE
+    g_sp = 0
+    g_st = ti.Vector([0] * _GROUP_STACK)
+    g_cur = 0
+    g_pend = _test_children(0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+                            best_t + DEPTH_TIE_EPSILON, nodes)
+    while True:
+        if g_pend == 0:
+            if g_sp == 0:
+                break
+            g_sp -= 1
+            g_cur = g_st[g_sp] >> BVH_ARITY
+            g_pend = g_st[g_sp] & _GROUP_MASK
+        else:
+            g_c = _lowest_bit(g_pend)
+            g_pend &= g_pend - 1
+            g_child = BVH_ARITY * g_cur + 1 + g_c
+            if g_child >= first_leaf:
+                base = (g_child - first_leaf) * LEAF_SIZE
                 for j in ti.static(range(LEAF_SIZE)):
                     circuit = leaf_prim[base + j]
                     tspan = leaf_tspan[base + j]
@@ -1045,11 +1091,14 @@ def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                     best_border = 1 if in_border else 0
                                     best_u = u
                                     best_v = v
-                node = node_miss[node]
             else:
-                node = BVH_ARITY * node + 1
-        else:
-            node = node_miss[node]
+                if g_pend != 0:
+                    g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                    g_sp += 1
+                g_cur = g_child
+                g_pend = _test_children(g_cur, f, ro, inv_rd,
+                                        t_prev - DEPTH_TIE_EPSILON,
+                                        best_t + DEPTH_TIE_EPSILON, nodes)
     return best_t, best_circuit, best_border, best_u, best_v, best_layer
 
 
@@ -1803,242 +1852,145 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     # --- Triangle BVH ---
     if ti.static(has_tri != 0):
         tp = f % tri_pos.shape[0]
-        if ti.static(_ORDERED_TRAV):
-            # Ordered near-to-far walk: pop the closest pending subtree, test
-            # its children, push the intersected ones sorted by entry
-            # distance. A subtree pushed before the window tightened is
-            # discarded on pop by the entry-distance check.
-            sp = 0
-            st_node = ti.Vector([0] * _TRAV_STACK)
-            st_t = ti.Vector([0.0] * _TRAV_STACK)
-            hit0, tn0 = _node_hit_near(0, ff, ro, inv_rd,
-                                       t_prev - DEPTH_TIE_EPSILON, 1e30,
-                                       t_nodes)
-            if hit0:
-                st_node[0] = 0
-                st_t[0] = tn0
-                sp = 1
-            while sp > 0:
-                sp -= 1
-                node = st_node[sp]
-                window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF \
-                    else 1e30
-                window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                if st_t[sp] <= window_hi:
-                    if node >= t_first_leaf:
-                        base = (node - t_first_leaf) * LEAF_SIZE
-                        for j in ti.static(range(LEAF_SIZE)):
-                            prim = t_leaf_prim[base + j]
-                            tspan = t_leaf_tspan[base + j]
-                            if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                                    and (f <= ((tspan >> 16) & 0x7FFF))):
-                                v0 = ti.math.vec3(tri_pos[tp, prim, 0],
-                                                  tri_pos[tp, prim, 1],
-                                                  tri_pos[tp, prim, 2])
-                                v1 = ti.math.vec3(tri_pos[tp, prim, 3],
-                                                  tri_pos[tp, prim, 4],
-                                                  tri_pos[tp, prim, 5])
-                                v2 = ti.math.vec3(tri_pos[tp, prim, 6],
-                                                  tri_pos[tp, prim, 7],
-                                                  tri_pos[tp, prim, 8])
-                                e1 = v1 - v0
-                                e2 = v2 - v0
-                                pv = rd.cross(e2)
-                                det = e1.dot(pv)
-                                if ti.abs(det) > 1e-12:
-                                    inv_det = 1.0 / det
-                                    tvec = ro - v0
-                                    w1 = tvec.dot(pv) * inv_det
-                                    qv = tvec.cross(e1)
-                                    w2 = rd.dot(qv) * inv_det
-                                    if ((w1 >= -BARYCENTRIC_EPSILON)
-                                            and (w2 >= -BARYCENTRIC_EPSILON)
-                                            and (w1 + w2
-                                                 <= 1.0 + BARYCENTRIC_EPSILON)):
-                                        t = e2.dot(qv) * inv_det
-                                        layer = (layer_offset_triangles
-                                                 + ti.cast(prim, ti.f32))
-                                        accept = ((t > MIN_HIT_DISTANCE)
-                                                  and _comes_after(
-                                                      t, layer, t_prev,
-                                                      layer_prev)
-                                                  and not _comes_after(
-                                                      t, layer, opq_t,
-                                                      opq_layer))
-                                        if accept and (count == KBUF):
-                                            accept = _comes_after(
-                                                worst_t, worst_layer, t, layer)
-                                        if accept:
-                                            slot = worst_idx
-                                            if count < KBUF:
-                                                slot = count
-                                                count += 1
-                                            hit_t[slot] = t
-                                            hit_layer[slot] = layer
-                                            hit_prim[slot] = prim
-                                            w0 = 1.0 - w1 - w2
-                                            eh = 1 if (ti.min(w0,
-                                                              ti.min(w1, w2))
-                                                       < TRIANGLE_EDGE_EPSILON) \
-                                                else 0
-                                            hit_flags[slot] = 1 | (eh << 2)
-                                            hit_a[slot] = w1
-                                            hit_b[slot] = w2
-                                            if (tspan < 0) and _comes_after(
-                                                    opq_t, opq_layer, t, layer):
-                                                opq_t = t
-                                                opq_layer = layer
-                                            if count == KBUF:
-                                                worst_idx = 0
-                                                worst_t = hit_t[0]
-                                                worst_layer = hit_layer[0]
-                                                for q in ti.static(
-                                                        range(1, KBUF)):
-                                                    if _comes_after(
-                                                            hit_t[q],
-                                                            hit_layer[q],
-                                                            worst_t,
-                                                            worst_layer):
-                                                        worst_idx = q
-                                                        worst_t = hit_t[q]
-                                                        worst_layer = \
-                                                            hit_layer[q]
-                    else:
-                        c0 = BVH_ARITY * node + 1
-                        tns = ti.Vector([1e30] * BVH_ARITY)
-                        cid = ti.Vector([0] * BVH_ARITY)
-                        for c in ti.static(range(BVH_ARITY)):
-                            hc, tnc = _node_hit_near(
-                                c0 + c, ff, ro, inv_rd,
+        window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
+        window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+        g_sp = 0
+        g_st = ti.Vector([0] * _GROUP_STACK)
+        g_cur = 0
+        g_pend = _test_children(0, f, ro, inv_rd,
                                 t_prev - DEPTH_TIE_EPSILON, window_hi,
                                 t_nodes)
-                            cid[c] = c0 + c
-                            if hc:
-                                tns[c] = tnc
-                        # Unrolled insertion sort, ascending entry distance.
-                        for a in ti.static(range(1, BVH_ARITY)):
-                            for b in ti.static(range(a, 0, -1)):
-                                if tns[b - 1] > tns[b]:
-                                    tmp_t = tns[b - 1]
-                                    tns[b - 1] = tns[b]
-                                    tns[b] = tmp_t
-                                    tmp_i = cid[b - 1]
-                                    cid[b - 1] = cid[b]
-                                    cid[b] = tmp_i
-                        # Push far-to-near so the nearest child pops first.
-                        for c in ti.static(range(BVH_ARITY - 1, -1, -1)):
-                            if tns[c] < 1e30:
-                                st_node[sp] = cid[c]
-                                st_t[sp] = tns[c]
-                                sp += 1
-        else:
-            node = 0
-            while node != -1:
-                window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF \
-                    else 1e30
-                window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                if _node_intersected(node, ff, ro, inv_rd,
-                                     t_prev - DEPTH_TIE_EPSILON, window_hi,
-                                     t_nodes):
-                    if node >= t_first_leaf:
-                        base = (node - t_first_leaf) * LEAF_SIZE
-                        for j in ti.static(range(LEAF_SIZE)):
-                            prim = t_leaf_prim[base + j]
-                            tspan = t_leaf_tspan[base + j]
-                            if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                                    and (f <= ((tspan >> 16) & 0x7FFF))):
-                                v0 = ti.math.vec3(tri_pos[tp, prim, 0],
-                                                  tri_pos[tp, prim, 1],
-                                                  tri_pos[tp, prim, 2])
-                                v1 = ti.math.vec3(tri_pos[tp, prim, 3],
-                                                  tri_pos[tp, prim, 4],
-                                                  tri_pos[tp, prim, 5])
-                                v2 = ti.math.vec3(tri_pos[tp, prim, 6],
-                                                  tri_pos[tp, prim, 7],
-                                                  tri_pos[tp, prim, 8])
-                                e1 = v1 - v0
-                                e2 = v2 - v0
-                                pv = rd.cross(e2)
-                                det = e1.dot(pv)
-                                if ti.abs(det) > 1e-12:
-                                    inv_det = 1.0 / det
-                                    tvec = ro - v0
-                                    w1 = tvec.dot(pv) * inv_det
-                                    qv = tvec.cross(e1)
-                                    w2 = rd.dot(qv) * inv_det
-                                    if ((w1 >= -BARYCENTRIC_EPSILON)
-                                            and (w2 >= -BARYCENTRIC_EPSILON)
-                                            and (w1 + w2
-                                                 <= 1.0 + BARYCENTRIC_EPSILON)):
-                                        t = e2.dot(qv) * inv_det
-                                        layer = (layer_offset_triangles
-                                                 + ti.cast(prim, ti.f32))
-                                        accept = ((t > MIN_HIT_DISTANCE)
-                                                  and _comes_after(
-                                                      t, layer, t_prev,
-                                                      layer_prev)
-                                                  and not _comes_after(
-                                                      t, layer, opq_t,
-                                                      opq_layer))
-                                        if accept and (count == KBUF):
-                                            accept = _comes_after(
-                                                worst_t, worst_layer, t, layer)
-                                        if accept:
-                                            slot = worst_idx
-                                            if count < KBUF:
-                                                slot = count
-                                                count += 1
-                                            hit_t[slot] = t
-                                            hit_layer[slot] = layer
-                                            hit_prim[slot] = prim
-                                            w0 = 1.0 - w1 - w2
-                                            eh = 1 if (ti.min(w0,
-                                                              ti.min(w1, w2))
-                                                       < TRIANGLE_EDGE_EPSILON) \
-                                                else 0
-                                            hit_flags[slot] = 1 | (eh << 2)
-                                            hit_a[slot] = w1
-                                            hit_b[slot] = w2
-                                            if (tspan < 0) and _comes_after(
-                                                    opq_t, opq_layer, t, layer):
-                                                opq_t = t
-                                                opq_layer = layer
-                                            if count == KBUF:
-                                                worst_idx = 0
-                                                worst_t = hit_t[0]
-                                                worst_layer = hit_layer[0]
-                                                for q in ti.static(
-                                                        range(1, KBUF)):
-                                                    if _comes_after(
-                                                            hit_t[q],
-                                                            hit_layer[q],
-                                                            worst_t,
-                                                            worst_layer):
-                                                        worst_idx = q
-                                                        worst_t = hit_t[q]
-                                                        worst_layer = \
-                                                            hit_layer[q]
-                        node = t_node_miss[node]
-                    else:
-                        node = BVH_ARITY * node + 1
+        while True:
+            if g_pend == 0:
+                if g_sp == 0:
+                    break
+                g_sp -= 1
+                g_cur = g_st[g_sp] >> BVH_ARITY
+                g_pend = g_st[g_sp] & _GROUP_MASK
+            else:
+                g_c = _lowest_bit(g_pend)
+                g_pend &= g_pend - 1
+                g_child = BVH_ARITY * g_cur + 1 + g_c
+                if g_child >= t_first_leaf:
+                    base = (g_child - t_first_leaf) * LEAF_SIZE
+                    for j in ti.static(range(LEAF_SIZE)):
+                        prim = t_leaf_prim[base + j]
+                        tspan = t_leaf_tspan[base + j]
+                        if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+                                              tri_pos[tp, prim, 1],
+                                              tri_pos[tp, prim, 2])
+                            v1 = ti.math.vec3(tri_pos[tp, prim, 3],
+                                              tri_pos[tp, prim, 4],
+                                              tri_pos[tp, prim, 5])
+                            v2 = ti.math.vec3(tri_pos[tp, prim, 6],
+                                              tri_pos[tp, prim, 7],
+                                              tri_pos[tp, prim, 8])
+                            e1 = v1 - v0
+                            e2 = v2 - v0
+                            pv = rd.cross(e2)
+                            det = e1.dot(pv)
+                            if ti.abs(det) > 1e-12:
+                                inv_det = 1.0 / det
+                                tvec = ro - v0
+                                w1 = tvec.dot(pv) * inv_det
+                                qv = tvec.cross(e1)
+                                w2 = rd.dot(qv) * inv_det
+                                if ((w1 >= -BARYCENTRIC_EPSILON)
+                                        and (w2 >= -BARYCENTRIC_EPSILON)
+                                        and (w1 + w2
+                                             <= 1.0 + BARYCENTRIC_EPSILON)):
+                                    t = e2.dot(qv) * inv_det
+                                    layer = (layer_offset_triangles
+                                             + ti.cast(prim, ti.f32))
+                                    accept = ((t > MIN_HIT_DISTANCE)
+                                              and _comes_after(
+                                                  t, layer, t_prev,
+                                                  layer_prev)
+                                              and not _comes_after(
+                                                  t, layer, opq_t,
+                                                  opq_layer))
+                                    if accept and (count == KBUF):
+                                        accept = _comes_after(
+                                            worst_t, worst_layer, t, layer)
+                                    if accept:
+                                        slot = worst_idx
+                                        if count < KBUF:
+                                            slot = count
+                                            count += 1
+                                        hit_t[slot] = t
+                                        hit_layer[slot] = layer
+                                        hit_prim[slot] = prim
+                                        w0 = 1.0 - w1 - w2
+                                        eh = 1 if (ti.min(w0,
+                                                          ti.min(w1, w2))
+                                                   < TRIANGLE_EDGE_EPSILON) \
+                                            else 0
+                                        hit_flags[slot] = 1 | (eh << 2)
+                                        hit_a[slot] = w1
+                                        hit_b[slot] = w2
+                                        if (tspan < 0) and _comes_after(
+                                                opq_t, opq_layer, t, layer):
+                                            opq_t = t
+                                            opq_layer = layer
+                                        if count == KBUF:
+                                            worst_idx = 0
+                                            worst_t = hit_t[0]
+                                            worst_layer = hit_layer[0]
+                                            for q in ti.static(
+                                                    range(1, KBUF)):
+                                                if _comes_after(
+                                                        hit_t[q],
+                                                        hit_layer[q],
+                                                        worst_t,
+                                                        worst_layer):
+                                                    worst_idx = q
+                                                    worst_t = hit_t[q]
+                                                    worst_layer = \
+                                                        hit_layer[q]
                 else:
-                    node = t_node_miss[node]
+                    if g_pend != 0:
+                        g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                        g_sp += 1
+                    g_cur = g_child
+                    window_hi = worst_t + DEPTH_TIE_EPSILON \
+                        if count == KBUF else 1e30
+                    window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+                    g_pend = _test_children(g_cur, f, ro, inv_rd,
+                                            t_prev - DEPTH_TIE_EPSILON,
+                                            window_hi, t_nodes)
 
     # --- PN patch BVH (window already tightened by the triangle hits) ---
     if ti.static(has_pn != 0):
         pp = f % pn_ctrl.shape[0]
         po = f % pn_obb.shape[0]
-        node = 0
-        while node != -1:
-            window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
-            window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-            if _node_intersected(node, ff, ro, inv_rd,
-                                 t_prev - DEPTH_TIE_EPSILON, window_hi, p_nodes):
-                p_is_leaf = (p_leaf_prim[node] >= 0) if ti.static(_USE_SAH) \
-                    else (node >= p_first_leaf)
-                if p_is_leaf:
-                    base = (node * LEAF_SIZE) if ti.static(_USE_SAH) \
-                        else (node - p_first_leaf) * LEAF_SIZE
+        window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
+        window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+        g_sp = 0
+        g_st = ti.Vector([0] * _GROUP_STACK)
+        g_cur = 0
+        g_pend = _test_children(0, f, ro, inv_rd,
+                                t_prev - DEPTH_TIE_EPSILON, window_hi,
+                                p_nodes)
+        while True:
+            if g_pend == 0:
+                if g_sp == 0:
+                    break
+                g_sp -= 1
+                g_cur = g_st[g_sp] >> BVH_ARITY
+                g_pend = g_st[g_sp] & _GROUP_MASK
+            else:
+                g_c = _lowest_bit(g_pend)
+                g_pend &= g_pend - 1
+                g_child = BVH_ARITY * g_cur + 1 + g_c
+                if g_child >= p_first_leaf:
+                    # Refresh the depth window at the leaf so the OBB cull
+                    # prunes with the hits gathered since the parent's test.
+                    window_hi = worst_t + DEPTH_TIE_EPSILON \
+                        if count == KBUF else 1e30
+                    window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+                    base = (g_child - p_first_leaf) * LEAF_SIZE
                     for j in ti.static(range(LEAF_SIZE)):
                         prim = p_leaf_prim[base + j]
                         tspan = p_leaf_tspan[base + j]
@@ -2093,28 +2045,43 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                                     worst_idx = q
                                                     worst_t = hit_t[q]
                                                     worst_layer = hit_layer[q]
-                    node = p_node_miss[node]
                 else:
-                    node = (node + 1) if ti.static(_USE_SAH) \
-                        else (BVH_ARITY * node + 1)
-            else:
-                node = p_node_miss[node]
+                    if g_pend != 0:
+                        g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                        g_sp += 1
+                    g_cur = g_child
+                    window_hi = worst_t + DEPTH_TIE_EPSILON \
+                        if count == KBUF else 1e30
+                    window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+                    g_pend = _test_children(g_cur, f, ro, inv_rd,
+                                            t_prev - DEPTH_TIE_EPSILON,
+                                            window_hi, p_nodes)
 
     # --- Bezier BVH (window tightened by the triangle and patch hits) ---
     if ti.static(has_bez != 0):
         num_meta_frames = circuit_meta.shape[0]
         num_edge_frames = edges_2d.shape[0]
-        node = 0
-        while node != -1:
-            window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
-            window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-            if _node_intersected(node, ff, ro, inv_rd,
-                                 t_prev - DEPTH_TIE_EPSILON, window_hi, b_nodes):
-                b_is_leaf = (b_leaf_prim[node] >= 0) if ti.static(_USE_SAH) \
-                    else (node >= b_first_leaf)
-                if b_is_leaf:
-                    base = (node * LEAF_SIZE) if ti.static(_USE_SAH) \
-                        else (node - b_first_leaf) * LEAF_SIZE
+        window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
+        window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+        g_sp = 0
+        g_st = ti.Vector([0] * _GROUP_STACK)
+        g_cur = 0
+        g_pend = _test_children(0, f, ro, inv_rd,
+                                t_prev - DEPTH_TIE_EPSILON, window_hi,
+                                b_nodes)
+        while True:
+            if g_pend == 0:
+                if g_sp == 0:
+                    break
+                g_sp -= 1
+                g_cur = g_st[g_sp] >> BVH_ARITY
+                g_pend = g_st[g_sp] & _GROUP_MASK
+            else:
+                g_c = _lowest_bit(g_pend)
+                g_pend &= g_pend - 1
+                g_child = BVH_ARITY * g_cur + 1 + g_c
+                if g_child >= b_first_leaf:
+                    base = (g_child - b_first_leaf) * LEAF_SIZE
                     for j in ti.static(range(LEAF_SIZE)):
                         circuit = b_leaf_prim[base + j]
                         tspan = b_leaf_tspan[base + j]
@@ -2214,12 +2181,17 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                                     worst_idx = q
                                                     worst_t = hit_t[q]
                                                     worst_layer = hit_layer[q]
-                    node = b_node_miss[node]
                 else:
-                    node = (node + 1) if ti.static(_USE_SAH) \
-                        else (BVH_ARITY * node + 1)
-            else:
-                node = b_node_miss[node]
+                    if g_pend != 0:
+                        g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                        g_sp += 1
+                    g_cur = g_child
+                    window_hi = worst_t + DEPTH_TIE_EPSILON \
+                        if count == KBUF else 1e30
+                    window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
+                    g_pend = _test_children(g_cur, f, ro, inv_rd,
+                                            t_prev - DEPTH_TIE_EPSILON,
+                                            window_hi, b_nodes)
     return count
 
 
@@ -2306,7 +2278,7 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
 @ti.kernel
 def path_trace_scene_stbvh(
         # Triangle STBVH + packed geometry.
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
@@ -2314,13 +2286,13 @@ def path_trace_scene_stbvh(
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         # PN patch STBVH + packed geometry.
-        p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
+        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
         p_first_leaf: int,
         pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
         pn_extra: ti.types.ndarray(), pn_colors: ti.types.ndarray(),
         # Bezier STBVH + packed geometry.
-        b_nodes: ti.types.ndarray(), b_node_miss: ti.types.ndarray(),
+        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
@@ -2636,7 +2608,7 @@ def _transmittance(ro, rd, f, ff, max_t,
 @ti.kernel
 def path_trace_physical_stbvh(
         # Triangle STBVH + packed geometry.
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
@@ -2644,13 +2616,13 @@ def path_trace_physical_stbvh(
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         # PN patch STBVH + packed geometry.
-        p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
+        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
         p_first_leaf: int,
         pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
         pn_extra: ti.types.ndarray(), pn_colors: ti.types.ndarray(),
         # Bezier STBVH + packed geometry.
-        b_nodes: ti.types.ndarray(), b_node_miss: ti.types.ndarray(),
+        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),

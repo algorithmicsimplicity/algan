@@ -193,9 +193,18 @@ def set_fragment_shading(enabled):
 # shaded triangle/PN fragment fires one shadow ray per point light and an
 # opaque occluder (alpha >= SHADOW_ALPHA_THRESHOLD) fully blocks that light's
 # direct contribution. Implies per-fragment shading (shadows are evaluated in
-# the lighting model) and forces the general kernel. No soft/transmissive
-# shadows -- use the physical path tracer for those. Off by default.
+# the lighting model) and forces the general kernel. Lights with a non-zero
+# ``shadow_radius`` / ``shadow_angle`` (and area lights) get *soft* shadows: a
+# fixed deterministic fan of SOFT_SHADOW_SAMPLES rays is traced across the
+# emitter instead of a single ray. Off by default.
 SHADOWS = False
+
+# Number of shadow rays in the deterministic soft-shadow fan (per light with a
+# non-zero shadow radius, per shaded fragment). More = smoother penumbras,
+# linearly more shadow cost. Baked into the shade kernel at compile time; set
+# the env var ALGAN_SOFT_SHADOW_SAMPLES before the first render to change it.
+SOFT_SHADOW_SAMPLES = max(2, int(os.environ.get(
+    "ALGAN_SOFT_SHADOW_SAMPLES", "8")))
 
 
 def set_ray_traced_shadows(enabled):

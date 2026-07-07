@@ -187,6 +187,12 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         d = -1
         if getattr(self, "shader", None) is not None:
             for light_source in light_sources:
+                if getattr(light_source, "_render_aux", None) is not None:
+                    # Extended light types (directional / ambient / spot /
+                    # area / ...) are evaluated by the per-fragment lighting
+                    # path, which their presence forces on; the per-vertex
+                    # shader convention only knows point lights.
+                    continue
                 with self.memory.temp():
                     self.colors[..., :d] = self.shader(
                         self.memory,
@@ -376,7 +382,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_num_frames = camera.ray_origin.shape[0]
 
         if self.uvs is not None:
-            self._rt_tri_uvs = self.uvs.float().reshape(self.uvs.shape[0], self.uvs.shape[1], 6).contiguous()
+            self._rt_tri_uvs = self.uvs.float().reshape(self.uvs.shape[0], self.uvs.shape[1], 6).contiguous().to(COMPUTING_DEFAULTS.render_device)
             self._rt_texture_map = self.texture_map.float().contiguous() if self.texture_map is not None else None
             mtex = getattr(self, "material_texture_map", None)
             self._rt_material_texture = (mtex.float().contiguous()

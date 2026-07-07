@@ -44,10 +44,10 @@ Of course, if you know what you are doing and prefer to setup a virtual
 environment yourself, feel free to do so!
 
 :::{important}
-If you run into issues when following our instructions below, do
-not worry: check our [installation FAQs](<project:/faq/installation.md>) to
-see whether the problem is already addressed there -- and otherwise go and
-check [how to contact our community](<project:/faq/help.md>) to get help.
+If you run into issues when following our instructions below, do not worry:
+you can ask for help on our [Discord server](https://discord.gg/NvarFmvXKm),
+or report the problem on our
+[GitHub issue tracker](https://github.com/algorithmicsimplicity/algan/issues).
 :::
 
 
@@ -56,17 +56,18 @@ check [how to contact our community](<project:/faq/help.md>) to get help.
 ### Step 1: Installing Python
 
 We first need to check that an appropriate version of Python is available
-on your machine. Open a terminal to run
+on your machine. Algan supports Python 3.9 through 3.13 (Python 3.14 is not
+supported yet). Open a terminal to run
 ```bash
-uv python install
+uv python install 3.13
 ```
-to install the latest version of Python. 
+to install Python 3.13.
 
 Once installed, we can create a new folder 'alganimations' and instantiate a uv virtual 
 environment by running these commands
 
 ```bash
-uv init alganimations
+uv init --python 3.13 alganimations
 cd alganimations
 uv venv
 ```
@@ -193,7 +194,7 @@ Follow the instructions for your operating system below:
 
 Run this command
 ```powershell
-uv pip install --extra-index-url https://test.pypi.org/simple/ algan --index-strategy unsafe-best-match
+uv pip install algan
 ```
 
 :::::
@@ -229,7 +230,7 @@ With all of this preparation out of the way, now it is time to actually install
 Algan itself!
 
 ```bash
-uv pip install --extra-index-url https://test.pypi.org/simple/ algan --index-strategy unsafe-best-match
+uv pip install algan
 ```
 :::::
 
@@ -272,14 +273,34 @@ sudo pacman -Syu base-devel cairo pango
 
 As soon as the required dependencies are installed, you can run
 ```bash
-uv pip install --extra-index-url https://test.pypi.org/simple/ algan --index-strategy unsafe-best-match
+uv pip install algan
 ```
 
 :::::
 
 ::::::
 
+:::{note}
+If you prefer to manage your dependencies through your project's
+`pyproject.toml` (the recommended `uv` workflow), you can run
+`uv add algan` instead of `uv pip install algan`.
+:::
+
+Some features require optional extras:
+
+- `uv pip install "algan[audio]"` — synchronizing animations to a
+  pre-recorded speech audio file (installs `torchaudio` and `transformers`).
+- `uv pip install "algan[fbx]"` — importing FBX 3-D model files (also
+  requires the native `assimp` library to be installed separately).
+
 If you completed the installation instructions with no errors, then you are ready to Alganimate!
+
+:::{important}
+The very first time you render a scene, Algan compiles its GPU render
+kernels. This can take several minutes, during which the render will appear
+to hang. This is normal! Compiled kernels are cached on disk, so all
+subsequent renders start immediately.
+:::
 
 At this point, you can also open your project folder with the
 IDE of your choice. All modern Python IDEs (for example VS Code

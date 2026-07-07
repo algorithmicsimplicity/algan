@@ -17,11 +17,14 @@ Memory footprint is optimized in two ways:
    nothing at all.
 2. **Pointer-free layout** -- instances are sorted along a 4D (x, y, z, t)
    Morton curve so that nodes are coherent in space *and* time, then grouped
-   ``LEAF_SIZE`` at a time into the leaves of an implicit complete binary
-   tree (heap order). Children are found by index arithmetic and traversal is
-   stackless via precomputed "miss" links. Each node is packed into a single
-   32-byte row (bounds + frame interval) so a node visit touches one cache
-   line.
+   ``LEAF_SIZE`` at a time into the leaves of an implicit complete
+   ``BVH_ARITY``-ary tree (heap order), so children are found by index
+   arithmetic. The kernels traverse *sibling blocks*: each internal node
+   stores the bounds + frame intervals of its ``BVH_ARITY`` children
+   contiguously (``blocks``, one aligned 128-byte fetch -- or 64 bytes
+   f16-compressed -- per visit), so one dependent memory round tests a whole
+   sibling group instead of one box, and the walk needs no per-node miss
+   links (a small packed node/mask stack in the kernel replaces them).
 
 Intersection tests remain exact: a leaf slot stores only the primitive index
 and its frame interval (packed into one int32); the traversal kernel fetches
@@ -29,7 +32,7 @@ the primitive's geometry at the ray's exact frame and skips slots whose
 instance does not cover that frame.
 
 Everything in this module is implemented with vectorized PyTorch ops (the
-per-ray traversal lives in ``ray_trace_taichi.py``).
+per-ray traversal lives in ``raytrace_kernels_taichi.py``).
 """
 from __future__ import annotations
 
@@ -75,6 +78,87 @@ BVH_ARITY = max(2, int(os.environ.get("ALGAN_BVH_ARITY", "4")))
 # traversal is arrangement-invariant, so renders are byte-identical.
 SPLIT_TIME_WEIGHT = float(os.environ.get("ALGAN_SPLIT_TIME_WEIGHT", "1"))
 
+# Store the sibling-block child bounds as conservatively rounded float16
+# (64-byte blocks) instead of exact float32 (128-byte blocks). Lower bounds
+# round toward -inf and upper bounds toward +inf, so the f16 boxes strictly
+# contain the exact ones: the box test stays conservative and the rendered
+# output is byte-identical (box tests only cull, they never accept hits) --
+# the only cost is a sliver of false-positive leaf visits. Read once at
+# import by both this module (build) and the traversal kernels (block
+# decode + ndarray element type).
+BLOCK_F16 = os.environ.get("ALGAN_BVH_BLOCK_F16", "1") == "1"
+
+# Smallest normal float16. Conservative rounding pushes would-be-subnormal
+# magnitudes outward to 0 or +-this, so a flush-to-zero f16->f32 conversion
+# in the kernel could never shrink a box.
+_F16_MIN_NORMAL = 6.103515625e-05
+_F16_MAX = 65504.0
+
+
+def _half_bits_directed(x, up):
+    """float16 bit patterns (int16) of ``x`` rounded toward +inf (``up``) or
+    -inf, with subnormal results pushed outward to 0 / +-min-normal. The
+    decoded f16 is guaranteed ``>= x`` (``up``) or ``<= x`` (down)."""
+    x = x.float().clamp(-_F16_MAX, _F16_MAX)
+    h = x.half()
+    dec = h.float()
+    # Map bit patterns to a monotone integer line so +-1 is nextafter.
+    b = (h.view(torch.int16).to(torch.int32)) & 0xFFFF
+    m = torch.where(b < 0x8000, b + 0x8000, 0xFFFF - b)
+    wrong = (dec < x) if up else (dec > x)
+    m = torch.where(wrong, m + (1 if up else -1), m)
+    b2 = torch.where(m >= 0x8000, m - 0x8000, 0xFFFF - m)
+    h2 = (b2 - ((b2 & 0x8000) << 1)).to(torch.int16).view(torch.float16)
+    # Outward-flush subnormals (see _F16_MIN_NORMAL note).
+    v = h2.float()
+    sub = (v != 0) & (v.abs() < _F16_MIN_NORMAL)
+    if up:
+        v2 = torch.where(v > 0, torch.full_like(v, _F16_MIN_NORMAL),
+                         torch.zeros_like(v))
+    else:
+        v2 = torch.where(v < 0, torch.full_like(v, -_F16_MIN_NORMAL),
+                         torch.zeros_like(v))
+    h2 = torch.where(sub, v2.half(), h2)
+    return h2.view(torch.int16)
+
+
+def _build_blocks(nodes, first_leaf):
+    """Fuse each internal node's children into one kernel-facing sibling
+    block.
+
+    ``nodes`` is the builders' unpacked ``[num_nodes, 8]`` float32 rows
+    ``(lo.xyz, hi.xyz, tmin, tmax)`` in heap order, so the children of the
+    ``first_leaf`` internal nodes are exactly rows ``1 .. ARITY*first_leaf``
+    in order. Returns ``[first_leaf, 8, BVH_ARITY]`` -- SoA across the
+    sibling group: lanes 0-5 hold the children's ``lo.x/lo.y/lo.z/hi.x/hi.y/
+    hi.z``, lanes 6-7 their packed frame interval ``tmin | (tmax << 16)``.
+    float32 blocks bit-cast the int32 tspan into lane 6 (lane 7 pads the
+    block to an aligned 128 bytes); float16 blocks (``BLOCK_F16``) store
+    conservatively rounded bounds plus the tspan's low/high u16 halves as
+    lanes 6/7 (64 bytes).
+    """
+    a = BVH_ARITY
+    device = nodes.device
+    child = nodes[1:1 + a * first_leaf].view(first_leaf, a, 8)
+    t0 = child[..., 6].to(torch.int32).clamp(0, (1 << 15) - 1)
+    t1 = child[..., 7].to(torch.int32).clamp(0, (1 << 15) - 1)
+    tspan = (t0 | (t1 << 16)).contiguous()
+    if BLOCK_F16:
+        blk = torch.zeros((first_leaf, 8, a), dtype=torch.int16,
+                          device=device)
+        for d in range(3):
+            blk[:, d] = _half_bits_directed(child[..., d], up=False)
+            blk[:, 3 + d] = _half_bits_directed(child[..., 3 + d], up=True)
+        halves = tspan.view(torch.int16).view(first_leaf, a, 2)
+        blk[:, 6] = halves[..., 0]
+        blk[:, 7] = halves[..., 1]
+        return blk.view(torch.float16).contiguous()
+    blk = torch.zeros((first_leaf, 8, a), dtype=torch.float32, device=device)
+    for d in range(6):
+        blk[:, d] = child[..., d]
+    blk[:, 6] = tspan.view(torch.float32)
+    return blk.contiguous()
+
 
 class STBVH:
     """Flat tensor representation of the spatio-temporal BVH.
@@ -88,14 +172,23 @@ class STBVH:
     Attributes
     ----------
     nodes : Tensor[num_nodes, 8] (float32)
-        Packed per-node data: spatial bounds ``lo.xyz, hi.xyz`` (union over
+        Unpacked per-node data: spatial bounds ``lo.xyz, hi.xyz`` (union over
         the node's frame interval) and the inclusive frame interval
-        ``tmin, tmax`` stored as floats (exact for < 2**24 frames). A ray
-        belonging to frame ``f`` may only enter nodes with
-        ``tmin <= f <= tmax``.
+        ``tmin, tmax`` stored as floats (exact for < 2**24 frames). Host-side
+        source of truth (block construction, debugging); the traversal
+        kernels read ``blocks``.
+    blocks : Tensor[first_leaf, 8, BVH_ARITY] (float32 or float16)
+        Kernel-facing sibling blocks: the bounds + packed frame interval of
+        internal node ``i``'s children, SoA across the group (see
+        :func:`_build_blocks`). One aligned fetch per node visit tests the
+        whole sibling group; a ray belonging to frame ``f`` may only enter
+        children whose interval satisfies ``tmin <= f <= tmax``. float16
+        blocks store conservatively out-rounded bounds (``BLOCK_F16``), which
+        cannot change the rendered output -- box tests only cull.
     node_miss : Tensor[num_nodes] (int32)
-        Stackless traversal links: the next node in depth-first order when a
-        node is skipped or a leaf has been processed (-1 terminates).
+        Stackless DFS miss links (next node when a node is skipped or a leaf
+        has been processed, -1 terminates). Host-side/debug only: the block
+        walk keeps a small in-kernel stack instead of following miss links.
     leaf_prim : Tensor[num_leaves * LEAF_SIZE] (int32)
         Primitive index for each leaf slot, -1 for padding slots. Slot ``j``
         of leaf ``l`` is at index ``l * LEAF_SIZE + j``.
@@ -117,6 +210,7 @@ class STBVH:
         num_nodes = nodes.shape[0]
         self.num_leaves = (num_nodes * (BVH_ARITY - 1) + 1) // BVH_ARITY
         self.first_leaf = num_nodes - self.num_leaves
+        self.blocks = _build_blocks(nodes, self.first_leaf)
 
     @property
     def num_nodes(self):
@@ -125,7 +219,7 @@ class STBVH:
     def get_memory_used(self):
         return sum(
             t.numel() * t.element_size()
-            for t in (self.nodes, self.node_miss, self.leaf_prim,
+            for t in (self.nodes, self.blocks, self.node_miss, self.leaf_prim,
                       self.leaf_tspan)
         )
 
@@ -218,14 +312,20 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
     with stackless skip pointers -- the explicit-tree counterpart of the implicit
     balanced layout. Returns the same flat arrays the traversal consumes, but
     addressed per-node: ``leaf_prim[node] >= 0`` marks a leaf (one instance), an
-    internal node's first child is ``node + 1``, and ``node_miss[node]`` is the
-    subtree-escape ("skip") index (-1 to terminate).
+    internal node's first child is ``node + 1``, and the node's miss link (the
+    subtree-escape "skip" index, -1 to terminate) is packed into its row by
+    ``_pack_nodes`` like every other builder's.
 
     SAH cost is the surface-area heuristic on the 3D union boxes; the temporal
     dimension rides along via each node's frame interval (checked by the kernel's
     ``tspan`` test) plus the upstream temporal segmentation. Built on the CPU
     (NumPy) -- a from-scratch unbalanced build is awkward to vectorize; this is
     the correctness/validation version (see notes on build cost).
+
+    Currently *not consumed by the kernels*: the skip-pointer row walk was
+    retired with the sibling-block traversal (``build_stbvh`` raises on
+    ``builder="sah"``). Kept as the reference SAH build for a future explicit
+    child-link block layout.
     """
     import numpy as np
     import sys
@@ -546,16 +646,26 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
             inst_opaque = None
 
     if builder == "sah":
-        # Explicit-DFS unbalanced SAH tree (experimental; consumed by the
-        # ti.static SAH branch of the deterministic traversal).
-        return _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque,
-                              num_frames, device)
+        # The explicit-DFS SAH tree's in-kernel walk (skip pointers over
+        # per-node rows) was retired with the sibling-block traversal; the
+        # builder is kept below as the reference for a future ST-SAH layout
+        # with explicit per-block child links (an unbalanced tree cannot use
+        # the implicit-heap child indexing the block walk relies on).
+        raise NotImplementedError(
+            "The SAH DFS traversal was removed with the sibling-block "
+            "traversal rework; unset ALGAN_BVH_BUILD=sah (see "
+            "stbvh._build_sah_dfs).")
 
     M = prim_id.shape[0]
     L = LEAF_SIZE
     a = BVH_ARITY
     num_groups = max((M + L - 1) // L, 1)
-    P = 1  # leaf count: the smallest power of the arity that holds all groups
+    # Leaf count: the smallest power of the arity that holds all groups, and
+    # at least one full sibling group -- the block walk always fetches
+    # ARITY-wide child blocks starting at the root, so even empty or
+    # single-instance trees keep one internal root + ARITY leaves (padding
+    # slots carry an impossible frame interval and never pass the gate).
+    P = a
     while P < num_groups:
         P *= a
     num_nodes = (a * P - 1) // (a - 1)

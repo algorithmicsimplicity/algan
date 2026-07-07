@@ -25,6 +25,8 @@ import os
 
 import taichi as ti
 
+from algan.settings.defaults import COMPUTING_DEFAULTS
+
 
 def _already_initialized():
     try:
@@ -42,7 +44,7 @@ def taichi_init_kwargs():
     measures a different (much faster) config than real renders. See
     [[algan-render-benchmarking]].
     """
-    kwargs = dict(arch=ti.gpu, fast_math=True,
+    kwargs = dict(arch=ti.cpu if COMPUTING_DEFAULTS.render_on_cpu else ti.gpu, fast_math=True,
                   # advanced_optimization defaults off (it raised register
                   # pressure on the big megakernels); env ALGAN_ADV_OPT=1 to A/B.
                   advanced_optimization=os.environ.get("ALGAN_ADV_OPT", "0") == "1",
@@ -60,7 +62,7 @@ def taichi_init_kwargs():
                   # it (disk-backed) so every kernel stays cached. The field is
                   # a 32-bit int, so stay just under 2^31 bytes (~1.9 GB, still
                   # 19x the default).
-                  offline_cache_max_size_of_files=2_000_000_000)
+                  offline_cache_max_size_of_files=1_000_000_000)
     max_reg = int(os.environ.get("ALGAN_GPU_MAX_REG", "0"))
     if max_reg > 0:
         kwargs["gpu_max_reg"] = max_reg

@@ -33,6 +33,7 @@ class ComputingDefaults:
     max_cpu_memory_used = 2 * GIGABYTES
     animation_device = torch.device("cpu")
     render_device = accelerator
+    render_on_cpu = False
     use_torch_scatter = True
     allow_save_frame = True
 

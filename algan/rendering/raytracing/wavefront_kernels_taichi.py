@@ -26,6 +26,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     MIN_ALPHA,
     MIN_HIT_DISTANCE,
     MIN_WEIGHT,
+    NODE_ARG,
     PN_SEAM_DEPTH_EPSILON,
     _bezier_normal,
     _collect_hits,
@@ -47,10 +48,48 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
 )
+from algan.rendering.raytracing.settings import SOFT_SHADOW_SAMPLES
 
 # Per-ray status codes (rs_int column 2).
 _ACTIVE = 0
 _DONE = 1
+
+# Light type ids of the extended packed light rows (see
+# algan.rendering.lights and scene_builder._pack_lights). Only the ids the
+# shadow code branches on are needed here.
+_LT_DIRECTIONAL = 1
+_LT_AMBIENT = 2
+_LT_HEMISPHERE = 3
+_LT_ENV_SH = 6
+
+# Golden-angle increment of the deterministic soft-shadow sample fan.
+_GOLDEN_ANGLE = 2.3999632297286533
+
+_PI = 3.141592653589793
+
+# Deferred shadows (opt-in ``DEFER_WF_SHADOWS``) pack a per-(K-buffer hit,
+# light) occlusion bit into a single int32, so at most 32 // KBUF lights fit.
+# The inline (default) shadow path uses the full ``MAX_SHADOW_LIGHTS``; only
+# the deferred bit-packing is bounded here (lights past it stay lit in
+# deferred mode -- a no-op unless a user both enables deferred shadows and
+# uses more than 32 // KBUF lights).
+_DEFERRED_SHADOW_LIGHTS = max(1, min(MAX_SHADOW_LIGHTS, 32 // KBUF))
+
+
+@ti.func
+def _sample_env_map(f, rd, env_off, env_w, env_h, env_intensity,
+                    textures: ti.template()):
+    """RGB of the equirectangular environment map in unit direction ``rd``.
+
+    The map lives at ``(env_off, env_w, env_h)`` in the shared flat texel
+    buffer (appended by the tracer after the material textures). ``u`` wraps
+    the azimuth (+x at the image's horizontal center), ``v = 0`` is straight
+    up (+y), matching the usual equirect convention of sky at the top row.
+    """
+    u = ti.atan2(rd[2], rd[0]) * (0.5 / _PI) + 0.5
+    v = 0.5 - ti.asin(ti.math.clamp(rd[1], -1.0, 1.0)) / _PI
+    smp = _sample_tex_vec5(f, u, v, env_off, env_w, env_h, textures)
+    return ti.math.vec3(smp[0], smp[1], smp[2]) * env_intensity
 
 
 @ti.func
@@ -868,6 +907,7 @@ def wavefront_generate_rays(
         time_start: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float, max_bounces: int,
         ray_offset: int, num_primary: int, jitter_x: float, jitter_y: float,
+        near_clip: ti.f32,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
         rs_int: ti.types.ndarray(),
@@ -900,6 +940,19 @@ def wavefront_generate_rays(
                                    half_screen_w, half_screen_h,
                                    cam_origin, screen_point,
                                    pixel_basis_x, pixel_basis_y)
+            t_near = 0.0
+            if near_clip > 0.0:
+                # Near plane: advance the ray origin to the plane at
+                # ``near_clip`` along the camera's forward axis, so geometry
+                # closer than the plane is skipped (planar, like Three.js).
+                # The skipped distance seeds base_dist, keeping distances
+                # (far clip, screen-space border widths) camera-relative.
+                fwd = (ti.math.vec3(screen_point[f, 0], screen_point[f, 1],
+                                    screen_point[f, 2])
+                       - ti.math.vec3(cam_origin[f, 0], cam_origin[f, 1],
+                                      cam_origin[f, 2])).normalized()
+                t_near = near_clip / ti.max(rd.dot(fwd), 1e-6)
+                ro = ro + rd * t_near
             for k in ti.static(range(3)):
                 rs_ro[r, k] = ro[k]
                 rs_rd[r, k] = rd[k]
@@ -909,7 +962,7 @@ def wavefront_generate_rays(
             rs_sca[r, 1] = 0.0     # t_prev
             rs_sca[r, 2] = 1e30    # layer_prev
             rs_sca[r, 3] = -1e30   # seam_t
-            rs_sca[r, 4] = 0.0     # base_dist
+            rs_sca[r, 4] = t_near  # base_dist
             rs_int[r, 0] = max_bounces
             rs_int[r, 1] = 0
             rs_int[r, 2] = _ACTIVE
@@ -926,14 +979,14 @@ def wavefront_generate_rays(
 @ti.kernel
 def wavefront_traverse(
         active: ti.types.ndarray(), num_active: int,
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int, tri_pos: ti.types.ndarray(),
-        p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
+        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
         p_first_leaf: int, pn_ctrl: ti.types.ndarray(),
         pn_obb: ti.types.ndarray(),
-        b_nodes: ti.types.ndarray(), b_node_miss: ti.types.ndarray(),
+        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int, circuit_meta: ti.types.ndarray(),
         edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
@@ -1001,20 +1054,20 @@ def wavefront_traverse(
 @ti.kernel
 def wavefront_shadow(
         active: ti.types.ndarray(), num_active: int,
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
         tri_colors: ti.types.ndarray(), tri_uvs: ti.types.ndarray(),
         tri_tex_meta: ti.types.ndarray(), textures: ti.types.ndarray(),
         num_colored_triangles: ti.i32,
-        p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
+        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
         p_first_leaf: int,
         pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
         pn_extra: ti.types.ndarray(),
         pn_colors: ti.types.ndarray(), pn_obb: ti.types.ndarray(),
-        b_nodes: ti.types.ndarray(), b_node_miss: ti.types.ndarray(),
+        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
@@ -1110,7 +1163,7 @@ def wavefront_shadow(
                             spos = ro + t_hit * rd
                             sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
                             for li in range(num_lights):
-                                if li < MAX_SHADOW_LIGHTS:
+                                if li < _DEFERRED_SHADOW_LIGHTS:
                                     lp = ti.math.vec3(light_pos[tl, li, 0],
                                                       light_pos[tl, li, 1],
                                                       light_pos[tl, li, 2])
@@ -1145,7 +1198,8 @@ def wavefront_shadow(
                                                 edges_2d, edge_offsets)
                                             if occ > 0.5:
                                                 bits |= (
-                                                    1 << (q * MAX_SHADOW_LIGHTS
+                                                    1 << (q
+                                                          * _DEFERRED_SHADOW_LIGHTS
                                                           + li))
         rs_vis[r] = bits
 
@@ -1154,7 +1208,7 @@ def wavefront_shadow(
 def wavefront_shade(
         active: ti.types.ndarray(), num_active: int,
         # Triangle STBVH (for shadow rays) + geometry/shading data.
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_norm: ti.types.ndarray(),
@@ -1166,14 +1220,14 @@ def wavefront_shade(
         # _trim). Unused when ``mem_trim == 0`` (col_row is a 1-elem stub).
         col_row: ti.types.ndarray(),
         # PN patch STBVH + geometry/shading data.
-        p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
+        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
         p_first_leaf: int,
         pn_ctrl: ti.types.ndarray(), pn_norm: ti.types.ndarray(),
         pn_extra: ti.types.ndarray(), pn_colors: ti.types.ndarray(),
         pn_obb: ti.types.ndarray(),
         # Bezier STBVH + geometry/shading data.
-        b_nodes: ti.types.ndarray(), b_node_miss: ti.types.ndarray(),
+        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
@@ -1236,6 +1290,23 @@ def wavefront_shade(
     # 64-arg ceiling); the body below references these names unchanged.
     layer_offset_triangles = layer_offsets[0]
     layer_offset_pn = layer_offsets[1]
+    # Optional extras ride behind the two layer offsets in the same packed
+    # ndarray (again: 64-arg ceiling): [2..5] = environment map placement
+    # (offset, width, height, intensity) in the shared texel buffer -- rays
+    # that retire without consuming all their throughput pick up the
+    # environment in their final direction (skybox + correct reflections) --
+    # and [6] = the camera's far clip distance (0 = disabled).
+    env_off = 0
+    env_w = 0
+    env_h = 0
+    env_intensity = 0.0
+    far_clip = 0.0
+    if layer_offsets.shape[0] > 6:
+        env_off = ti.cast(layer_offsets[2] + 0.5, ti.i32)
+        env_w = ti.cast(layer_offsets[3] + 0.5, ti.i32)
+        env_h = ti.cast(layer_offsets[4] + 0.5, ti.i32)
+        env_intensity = layer_offsets[5]
+        far_clip = layer_offsets[6]
     for i in range(num_active):
         r = active[i]
         pix = rs_pix[r]
@@ -1297,6 +1368,12 @@ def wavefront_shade(
                 flags = kb_flags[sel]
                 a = kb_a[sel]
                 b = kb_b[sel]
+                if (far_clip > 0.0) and (base_dist + t_hit > far_clip):
+                    # Past the camera's far distance. Hits drain front-to-back,
+                    # so everything left is farther still -- retire the ray to
+                    # the background/environment.
+                    done = True
+                    break
                 kb_prim[sel] = -1
                 drained += 1
                 processed += 1
@@ -1356,8 +1433,9 @@ def wavefront_shade(
                         # path below; just relocated to a lean kernel.
                         sbits = rs_vis[r]
                         for li in range(num_lights):
-                            if li < MAX_SHADOW_LIGHTS:
-                                if ((sbits >> (sel * MAX_SHADOW_LIGHTS + li))
+                            if li < _DEFERRED_SHADOW_LIGHTS:
+                                if ((sbits
+                                     >> (sel * _DEFERRED_SHADOW_LIGHTS + li))
                                         & 1) != 0:
                                     vis[li] = 0.0
                     if ti.static((shadows != 0) and (deferred_shadows == 0)):
@@ -1422,39 +1500,111 @@ def wavefront_shade(
                                     lp = ti.math.vec3(light_pos[tl, li, 0],
                                                       light_pos[tl, li, 1],
                                                       light_pos[tl, li, 2])
+                                    # Extended light rows carry a type id and a
+                                    # soft-shadow radius; the compact 3-column
+                                    # packing (plain point lights) keeps the
+                                    # original single-ray path bit-for-bit.
+                                    ltype = 0
+                                    radius = 0.0
+                                    if light_col.shape[2] > 3:
+                                        ltype = ti.cast(
+                                            light_col[tl, li, 3] + 0.5, ti.i32)
+                                        radius = light_col[tl, li, 11]
                                     to_light = lp - spos
                                     ldist = to_light.norm()
-                                    if ldist > 1e-5:
+                                    wi = ti.math.vec3(0.0, 0.0, 0.0)
+                                    valid = 0
+                                    if ltype == _LT_DIRECTIONAL:
+                                        # Parallel rays: occlusion along the
+                                        # (reversed) emission direction,
+                                        # unbounded range.
+                                        wi = -ti.math.vec3(
+                                            light_col[tl, li, 6],
+                                            light_col[tl, li, 7],
+                                            light_col[tl, li, 8])
+                                        ldist = 1e7
+                                        valid = 1
+                                    elif (ltype != _LT_AMBIENT) \
+                                            and (ltype != _LT_HEMISPHERE) \
+                                            and (ltype != _LT_ENV_SH) \
+                                            and (ldist > 1e-5):
                                         wi = to_light / ldist
-                                        # Skip lights below the geometric/shading
-                                        # horizon (self-shadow acne / no direct
-                                        # light to occlude anyway).
-                                        if (fnrm.dot(wi) > 1e-3) and \
-                                                (snrm.dot(wi) > 1e-4):
-                                            occ = _shadow_occluded(
-                                                sorigin, wi, f, ff,
-                                                ldist - 20.0 * MIN_HIT_DISTANCE,
-                                                pixel_size_per_t, base_dist,
-                                                layer_offset_triangles,
-                                                layer_offset_pn,
-                                                has_tri, has_pn, has_bez,
-                                                t_nodes, t_node_miss,
-                                                t_leaf_prim, t_leaf_tspan,
-                                                t_first_leaf, tri_pos,
-                                                tri_colors, tri_uvs,
-                                                tri_tex_meta, textures,
-                                                num_colored_triangles,
-                                                p_nodes, p_node_miss,
-                                                p_leaf_prim, p_leaf_tspan,
-                                                p_first_leaf, pn_ctrl, pn_obb,
-                                                pn_colors,
-                                                b_nodes, b_node_miss,
-                                                b_leaf_prim, b_leaf_tspan,
-                                                b_first_leaf, circuit_meta,
-                                                circuit_colors,
-                                                circuit_border_colors,
-                                                edges_2d, edge_offsets)
-                                            vis[li] = 1.0 - occ
+                                        valid = 1
+                                    if valid == 1:
+                                        # Soft shadows: a fixed golden-angle fan
+                                        # of samples across the emitter disk
+                                        # (directional: an angular cone,
+                                        # radius = tan(half-angle)). radius 0
+                                        # keeps the single hard ray.
+                                        ns = 1
+                                        b1 = ti.math.vec3(0.0, 0.0, 0.0)
+                                        b2 = ti.math.vec3(0.0, 0.0, 0.0)
+                                        if radius > 0.0:
+                                            ns = SOFT_SHADOW_SAMPLES
+                                            aref = ti.math.vec3(1.0, 0.0, 0.0)
+                                            if ti.abs(wi[0]) > 0.9:
+                                                aref = ti.math.vec3(
+                                                    0.0, 1.0, 0.0)
+                                            b1 = wi.cross(aref).normalized()
+                                            b2 = wi.cross(b1)
+                                        occ_sum = 0.0
+                                        n_valid = 0.0
+                                        for s in range(ns):
+                                            wis = wi
+                                            ldn = ldist
+                                            ok = 1
+                                            if radius > 0.0:
+                                                ang = _GOLDEN_ANGLE * s
+                                                rr = radius * ti.sqrt(
+                                                    (ti.cast(s, ti.f32) + 0.5)
+                                                    / ti.cast(ns, ti.f32))
+                                                off = (ti.cos(ang) * b1
+                                                       + ti.sin(ang) * b2) * rr
+                                                if ltype == _LT_DIRECTIONAL:
+                                                    wis = (wi + off) \
+                                                        .normalized()
+                                                else:
+                                                    tls = lp + off - spos
+                                                    ldn = tls.norm()
+                                                    if ldn > 1e-5:
+                                                        wis = tls / ldn
+                                                    else:
+                                                        ok = 0
+                                            # Skip samples below the geometric/
+                                            # shading horizon (self-shadow acne
+                                            # / no direct light to occlude
+                                            # anyway).
+                                            if (ok == 1) \
+                                                    and (fnrm.dot(wis) > 1e-3) \
+                                                    and (snrm.dot(wis) > 1e-4):
+                                                n_valid += 1.0
+                                                occ_sum += _shadow_occluded(
+                                                    sorigin, wis, f, ff,
+                                                    ldn - 20.0
+                                                    * MIN_HIT_DISTANCE,
+                                                    pixel_size_per_t, base_dist,
+                                                    layer_offset_triangles,
+                                                    layer_offset_pn,
+                                                    has_tri, has_pn, has_bez,
+                                                    t_nodes, t_node_miss,
+                                                    t_leaf_prim, t_leaf_tspan,
+                                                    t_first_leaf, tri_pos,
+                                                    tri_colors, tri_uvs,
+                                                    tri_tex_meta, textures,
+                                                    num_colored_triangles,
+                                                    p_nodes, p_node_miss,
+                                                    p_leaf_prim, p_leaf_tspan,
+                                                    p_first_leaf, pn_ctrl,
+                                                    pn_obb,
+                                                    pn_colors,
+                                                    b_nodes, b_node_miss,
+                                                    b_leaf_prim, b_leaf_tspan,
+                                                    b_first_leaf, circuit_meta,
+                                                    circuit_colors,
+                                                    circuit_border_colors,
+                                                    edges_2d, edge_offsets)
+                                        if n_valid > 0.0:
+                                            vis[li] = 1.0 - occ_sum / n_valid
                     if htype == 1:
                         # Light with the *normal-mapped* shading normal (equals
                         # the interpolated vertex normal when the triangle has
@@ -1779,7 +1929,15 @@ def wavefront_shade(
             if done:
                 # Terminated: commit this branch's premultiplied colour and its
                 # leftover throughput (what the background shows through) into
-                # the shared per-pixel accumulator.
+                # the shared per-pixel accumulator. With an environment map the
+                # leftover throughput samples the map in the ray's final
+                # direction instead (so mirrors and glass reflect the sky).
+                if (env_w > 0) and (weight > 0.0):
+                    ec = _sample_env_map(f, rd, env_off, env_w, env_h,
+                                         env_intensity, textures)
+                    for k in ti.static(range(3)):
+                        acc[k] += weight * ec[k]
+                    weight = 0.0
                 for k in ti.static(range(4)):
                     ti.atomic_add(pix_accum[pix, k], acc[k])
                 ti.atomic_add(pix_accum[pix, 4], weight)
@@ -1794,7 +1952,14 @@ def wavefront_shade(
                                   _safe_inverse(rd[1]),
                                   _safe_inverse(rd[2]))
 
+            w_bg = rs_sca[r, 0]
+            if (env_w > 0) and (w_bg > 0.0):
+                ec = _sample_env_map(f, rd, env_off, env_w, env_h,
+                                     env_intensity, textures)
+                for k in ti.static(range(3)):
+                    ti.atomic_add(pix_accum[pix, k], w_bg * ec[k])
+                w_bg = 0.0
             for k in ti.static(range(4)):
                 ti.atomic_add(pix_accum[pix, k], rs_acc[r, k])
-            ti.atomic_add(pix_accum[pix, 4], rs_sca[r, 0])
+            ti.atomic_add(pix_accum[pix, 4], w_bg)
             rs_int[r, 2] = _DONE

@@ -2834,6 +2834,12 @@ class Mob(Animatable):
             )
         return self
 
+    def check_properties_are_valid(self, property_names):
+        for p in property_names:
+            if not hasattr(self, p) and (p not in self.animatable_attrs):
+                raise AttributeError(f'"{p}" is not recognized as an animatable Mob property. '
+                                     f'Available properties are: {self.animatable_attrs}.')
+
     def set_non_recursive(self, **kwargs) -> Mob:
         """Sets multiple attributes non-recursively (i.e., only for this Mob, not its children).
         This is useful for applying changes that should not propagate down the hierarchy.
@@ -2850,9 +2856,8 @@ class Mob(Animatable):
             The Mob instance itself, allowing for method chaining.
 
         """
-        with (
-            Sync()
-        ):  # Ensure all these attribute sets happen in one synchronized animation step
+        self.check_properties_are_valid(kwargs.keys())
+        with Sync():
             for key, value in kwargs.items():
                 self.setattr_non_recursive(key, value)
         return self
@@ -3077,17 +3082,14 @@ class Mob(Animatable):
         return dict()
 
     def set(self, **kwargs) -> Mob:
-        """Sets multiple attributes, applying changes recursively to children by default.
-        This is the primary method for changing a Mob's properties and
-        triggering animations for those changes.
+        """Sets multiple attributes, applying changes recursively to descendants.
 
         Parameters
         ----------
         **kwargs
             Keyword arguments where keys are attribute names (e.g., 'location', 'color')
             and values are the new values for those attributes. These changes will
-            be animated and propagated to children unless `recursing` is set to False
-            (via :meth:`~.Mob.setattr_non_recursive` or `_set_recursing_state`).
+            be animated and propagated to children.
 
         Returns
         -------
@@ -3103,11 +3105,12 @@ class Mob(Animatable):
             from algan import *
 
             mob = Square().spawn()
-            mob.set(location=RIGHT, color=BLUE)
+            mob.set(location=ORIGIN+RIGHT, color=BLUE)
 
             render_to_file()
 
         """
+        self.check_properties_are_valid(kwargs.keys())
         with Sync():
             for key, value in kwargs.items():
                 self.__setattr__(

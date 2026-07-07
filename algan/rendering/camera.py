@@ -1,3 +1,5 @@
+import math
+
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.animation.animation_contexts import Off, Sync
 from algan.constants.spatial import *  # CAMERA_ORIGIN
@@ -18,8 +20,18 @@ import torch.nn.functional as F
 
 class Camera(Mob):
     def __init__(
-        self, orthographic=False, screen_distance=5, screen_scale=2.5, *args, **kwargs
+        self, orthographic=False, screen_distance=5, screen_scale=2.5,
+        fov=None, near=0.0, far=0.0, *args, **kwargs
     ):
+        # fov (vertical, degrees) is an alternative way to specify the
+        # perspective: it fixes the camera-to-screen distance for the given
+        # screen size. near/far are the clip distances (0 disables each);
+        # near is a plane, far is a distance along the ray.
+        if fov is not None:
+            screen_distance = screen_scale / math.tan(
+                math.radians(float(fov)) * 0.5)
+        self.near = float(near)
+        self.far = float(far)
         super().__init__(add_to_scene=False, init=False, *args, **kwargs)
         self.animatable_attrs.remove("color")
         with Off():
@@ -62,6 +74,55 @@ class Camera(Mob):
     def set_to_orthographic(self):
         """Changes the camera to be orthographic, useful for showing 2-D scenes without perspective."""
         return self.set_distance_to_screen(1e5)
+
+    def get_fov(self):
+        """The camera's vertical field of view in degrees (like Three.js's
+        ``PerspectiveCamera.fov``), derived from the screen size and the
+        camera-to-screen distance."""
+        d = (
+            (self.screen.location - self.location)
+            .norm(p=2, dim=-1)
+            .flatten()[0]
+            .item()
+        )
+        return math.degrees(2.0 * math.atan(self.screen_scale_factor / max(d, 1e-9)))
+
+    def set_fov(self, fov):
+        """Set the vertical field of view (degrees). The camera stays where it
+        is; its screen moves along the forward axis so that the given angle is
+        spanned (small fov = telephoto, large fov = wide angle). Animatable.
+
+        Parameters
+        ----------
+        fov
+            Vertical field of view in degrees, in (0, 180).
+        """
+        d = self.screen_scale_factor / math.tan(math.radians(float(fov)) * 0.5)
+        self.screen.move_to(self.location + self.get_forward_direction() * d)
+        return self
+
+    fov = property(get_fov, set_fov)
+
+    def get_near(self):
+        """Near clip distance (world units from the camera along its forward
+        axis); geometry closer than this is not rendered. 0 = disabled."""
+        return getattr(self, "near", 0.0)
+
+    def set_near(self, near):
+        """Set the near clip plane distance (0 disables near clipping)."""
+        self.near = float(near)
+        return self
+
+    def get_far(self):
+        """Far clip distance (world units of ray travel from the camera);
+        geometry farther than this shows the background/environment instead.
+        0 = disabled."""
+        return getattr(self, "far", 0.0)
+
+    def set_far(self, far):
+        """Set the far clip distance (0 disables far clipping)."""
+        self.far = float(far)
+        return self
 
     def set_distance_to_screen(self, distance):
         """Moves the camera focus to be the given distance away from its screen, thereby changing the perspective.

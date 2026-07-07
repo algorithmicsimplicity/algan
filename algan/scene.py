@@ -123,6 +123,57 @@ class Scene:
     def add_light_source(light_source):
         algan.SceneManager.instance().light_sources.append(light_source)
 
+    @staticmethod
+    def set_environment_map(source, intensity=1.0, ambient=True):
+        """Set an equirectangular environment map for the scene.
+
+        The map is used as a skybox (rays that leave the scene show the map,
+        including in reflections and refractions) and -- when ``ambient`` is
+        True -- as diffuse image-based lighting: every lit surface receives
+        the map's irradiance (an order-1 spherical-harmonics approximation)
+        in addition to the scene's explicit lights.
+
+        Supported by the deterministic (single-sample) ray tracer.
+
+        Parameters
+        ----------
+        source
+            Path to an image file, or a ``[H, W, >=3]`` tensor/array holding
+            an equirectangular (longitude x latitude, sky at the top row)
+            RGB image. Values may be 0-255 or 0-1. Pass ``None`` to remove
+            the environment map.
+        intensity
+            Brightness multiplier applied to the map.
+        ambient
+            Whether the map also lights surfaces (image-based lighting), or
+            is only visible as a background/in reflections.
+        """
+        scene = algan.SceneManager.instance()
+        if source is None:
+            scene.environment_map = None
+            return
+        env = source
+        if isinstance(env, str):
+            import cv2
+
+            img = cv2.imread(env, cv2.IMREAD_COLOR)
+            if img is None:
+                raise FileNotFoundError(
+                    f"Could not read environment map image: {env}")
+            env = torch.from_numpy(img[..., ::-1].copy())  # BGR -> RGB
+        if not torch.is_tensor(env):
+            env = torch.tensor(env)
+        env = env.float()
+        if env.dim() != 3 or env.shape[-1] < 3:
+            raise ValueError(
+                "Environment map must have shape [height, width, >=3], got "
+                f"{tuple(env.shape)}")
+        if env.max() > 1.5:
+            env = env / 255.0
+        scene.environment_map = env[..., :3].contiguous()
+        scene.environment_intensity = float(intensity)
+        scene.environment_ambient = bool(ambient)
+
     def length_to_num_pixels(self, length):
         return length * 0.5 * self.num_pixels_screen_height
 
@@ -228,11 +279,12 @@ class Scene:
             camera.screen_height = (
                 self.num_pixels_screen_height * self.render_settings.anti_alias_level
             )
-            for l, (origin, light_color) in zip(
+            for l, (origin, light_color, aux) in zip(
                 self.light_sources, render_state["lights"]
             ):
                 l.origin = origin
                 l.light_color = light_color
+                l._render_aux = aux
 
             #torch.compiler.cudagraph_mark_step_begin()
             self.memory.scene = self
@@ -815,12 +867,32 @@ class Scene:
             l.reset_state()
             l.set_state_full(time_inds[0], time_inds[-1] + 1)
             l.set_state_to_time_t(time_inds)
-            lights.append((
-                l.location.unsqueeze(-2).to(device),
-                (l.color[..., :-1] * l.color[..., -1:] * l.opacity)
-                .unsqueeze(-2)
-                .to(device),
-            ))
+            loc = l.location
+            col = l.color[..., :-1] * l.color[..., -1:] * l.opacity
+            intensity = float(getattr(l, "intensity", 1.0))
+            if intensity != 1.0:
+                col = col * intensity
+            is_ext = getattr(l, "is_extended", None)
+            if is_ext is not None and is_ext():
+                # Extended light (see algan.rendering.lights): snapshot its
+                # emitter sample positions and packed aux parameter columns.
+                # Area lights expand into K samples, each carrying 1/K of the
+                # light's power.
+                loc_f = loc.reshape(loc.shape[0], -1)[:, :3]   # [T, 3]
+                col_f = col.reshape(col.shape[0], -1)          # [T, C]
+                pos_rows = l.get_sample_positions(loc_f)       # [T, K, 3]
+                k = pos_rows.shape[-2]
+                col_rows = ((col_f / k if k > 1 else col_f)
+                            .unsqueeze(-2).expand(-1, k, -1))
+                aux = l.build_aux(loc_f)                       # [T, K, 13]
+                lights.append((pos_rows.to(device), col_rows.to(device),
+                               aux.to(device)))
+            else:
+                lights.append((
+                    loc.unsqueeze(-2).to(device),
+                    col.unsqueeze(-2).to(device),
+                    None,
+                ))
         return dict(
             ray_origin=camera.location.unsqueeze(-2).to(device),
             screen_point=camera.screen.location.unsqueeze(-2).to(device),
@@ -1021,6 +1093,7 @@ class Scene:
                         print(
                             f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
                         )
+                        break #TODO debug
 
                     current_time_ind = new_time_ind
                     if new_time_ind >= end_time_ind:

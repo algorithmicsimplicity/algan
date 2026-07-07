@@ -43,7 +43,7 @@ def _split_promotable(p, _append_texture, device, scene):
     colors = p._rt_tri_colors           # [Tc, N, 3, 5]
     extra = p._rt_tri_extra             # [Te, N, 15]
     N = colors.shape[1]
-    all_idx = torch.arange(N, device=colors.device)
+    all_idx = torch.arange(N, device=device)
     if N == 0:
         empty = torch.zeros((0, 10), dtype=torch.int32, device=device)
         return all_idx, all_idx, empty
@@ -775,20 +775,58 @@ def _merge_scene(primitives):
 
 
 def _pack_lights(light_sources, num_frames, device):
-    """Per-frame positions [T, L, 3] and RGB radiances [T, L, 3] of the
-    scene's point lights (as prepared by the scene before rendering).
+    """Per-frame packed light rows for the deterministic tracer's fragment
+    lighting: positions ``[T, L, 3]`` and color rows ``[T, L, C]``.
+
+    ``C == 3`` (the legacy compact packing: RGB radiance only) whenever every
+    light is a plain point light -- keeping such scenes on the kernels'
+    original point-light arithmetic. Any *extended* light (a non-point type,
+    or falloff / soft-shadow parameters; see :mod:`algan.rendering.lights`)
+    widens every row to ``C == 16``::
+
+        0:3  RGB radiance (intensity premultiplied)   9  cos outer (spot)
+        3    light type id                            10 cos inner (spot)
+        4    decay exponent                           11 shadow softness
+        5    range (0 = infinite)                     12:15 ground RGB / SH
+        6:9  direction                                15 spare
+
+    Area lights arrive pre-expanded into K emitter sample rows (see
+    ``Scene._materialize_render_state``), each occupying its own light slot.
     """
-    positions, colors = [], []
+    any_ext = any(getattr(light, "_render_aux", None) is not None
+                  for light in (light_sources or ()))
+    if not any_ext:
+        positions, colors = [], []
+        for light in light_sources or ():
+            positions.append(_expand_frames(
+                _flat_frames(light.origin, (3,)), num_frames))
+            col = light.light_color.reshape(light.light_color.shape[0], -1)
+            colors.append(_expand_frames(col[:, :3].float(), num_frames))
+        if not positions:
+            return (torch.zeros((1, 1, 3), device=device),
+                    torch.zeros((1, 1, 3), device=device), 0)
+        light_pos = torch.stack(positions, 1).to(device).contiguous()
+        light_col = torch.stack(colors, 1).to(device).contiguous()
+        return light_pos, light_col, light_pos.shape[1]
+
+    positions, rows = [], []
     for light in light_sources or ():
-        positions.append(_expand_frames(
-            _flat_frames(light.origin, (3,)), num_frames))
-        col = light.light_color.reshape(light.light_color.shape[0], -1)
-        colors.append(_expand_frames(col[:, :3].float(), num_frames))
-    if not positions:
-        return (torch.zeros((1, 1, 3), device=device),
-                torch.zeros((1, 1, 3), device=device), 0)
+        pos = light.origin                         # [T, K, 3]
+        col = light.light_color                    # [T, K, >=3]
+        aux = getattr(light, "_render_aux", None)  # [T, K, 13] or None
+        num_samples = pos.shape[-2]
+        pos = pos.reshape(pos.shape[0], num_samples, -1)[..., :3].float()
+        col = col.reshape(col.shape[0], col.shape[-2], -1)[..., :3].float()
+        for k in range(num_samples):
+            positions.append(_expand_frames(pos[:, k], num_frames))
+            c = _expand_frames(col[:, min(k, col.shape[1] - 1)], num_frames)
+            if aux is None:
+                a = torch.zeros((c.shape[0], 13), dtype=torch.float32)
+            else:
+                a = _expand_frames(aux[:, k].float(), num_frames)
+            rows.append(torch.cat((c, a), -1))
     light_pos = torch.stack(positions, 1).to(device).contiguous()
-    light_col = torch.stack(colors, 1).to(device).contiguous()
+    light_col = torch.stack(rows, 1).to(device).contiguous()
     return light_pos, light_col, light_pos.shape[1]
 
 

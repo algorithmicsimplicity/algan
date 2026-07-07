@@ -63,6 +63,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     MAX_SURFACES_PER_RAY,
     MIN_HIT_DISTANCE,
     MIN_WEIGHT,
+    NODE_ARG,
     PN_SEAM_DEPTH_EPSILON,
     _comes_after,
     _sample_circuit_color,
@@ -324,20 +325,20 @@ def wf_peel(
 def wf_shadow_event(
         active: ti.types.ndarray(), num_active: int,
         # Triangle STBVH + occlusion data.
-        t_nodes: ti.types.ndarray(), t_node_miss: ti.types.ndarray(),
+        t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int,
         tri_pos: ti.types.ndarray(), tri_colors: ti.types.ndarray(),
         tri_uvs: ti.types.ndarray(), tri_tex_meta: ti.types.ndarray(),
         textures: ti.types.ndarray(), num_colored_triangles: ti.i32,
         # PN patch STBVH + occlusion data.
-        p_nodes: ti.types.ndarray(), p_node_miss: ti.types.ndarray(),
+        p_nodes: NODE_ARG, p_node_miss: ti.types.ndarray(),
         p_leaf_prim: ti.types.ndarray(), p_leaf_tspan: ti.types.ndarray(),
         p_first_leaf: int,
         pn_ctrl: ti.types.ndarray(), pn_obb: ti.types.ndarray(),
         pn_colors: ti.types.ndarray(),
         # Bezier STBVH + occlusion data.
-        b_nodes: ti.types.ndarray(), b_node_miss: ti.types.ndarray(),
+        b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
