@@ -121,12 +121,12 @@ class Tex(Mob):
             self.wave_color(
                 None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=0
             )
-            old_ct = self.animation_manager.context.current_time
-            self.animation_manager.context.current_time = (
-                self.animation_manager.context.end_time
+            old_ct = self.animation_manager.context.timespan.current_time
+            self.animation_manager.context.timespan.current_time = (
+                self.animation_manager.context.timespan.original_end
             )
             self._destroy_recursive(animate=False)
-            self.animation_manager.context.current_time = old_ct
+            self.animation_manager.context.timespan.current_time = old_ct
         return self
 
 

@@ -44,15 +44,15 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
 
     run_time = amc.run_time_unit  # max(amc.run_time_unit - lag_duration, 0)
     # lag_duration = min(lag_duration, amc.run_time_unit - run_time)
-    start_time = amc.current_time
-    old_max_time = amc.end_time
+    start_time = amc.timespan.current_time
+    old_max_time = amc.timespan.original_end
     # amc.max_max_time = max(amc.max_time, start_time + (run_time + lag_duration))
     for i in range(len(mobs)):
-        amc.current_time = (start_time + ts[i].amin()).item()
+        amc.timespan.current_time = (start_time + ts[i].amin()).item()
         rf = lambda x, t=ts[i], r=run_time, l=(lag_duration): rfd(
             x, t, r, l
         )  # ((x - t).clamp_(min=0) / lag_duration).clamp_(max=1)
         with ComposeRateFunc(rf, run_time=run_time + lag_duration):
             animation_func(mobs[i])
-    amc.end_time = max(old_max_time, start_time + (run_time + lag_duration))
-    amc.current_time = start_time + amc.lag_ratio * (run_time + lag_duration)
+    amc.timespan.original_end_time = max(old_max_time, start_time + (run_time + lag_duration))
+    amc.timespan.current_time = start_time + amc.lag_ratio * (run_time + lag_duration)

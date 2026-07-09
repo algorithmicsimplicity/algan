@@ -748,7 +748,7 @@ class Surface(Renderable):
                 if name in self.grid.data.history.attribute_modifications:
                     is_static = False
 
-            if is_static:
+            if False:#is_static:
                 if name not in self._expanded_param_cache:
                     val = value_func()
                     if val is not None and torch.is_tensor(val):

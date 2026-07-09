@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn.functional as F
 
+from algan import ORIGIN
 from algan.animation.animation_contexts import Off, Sync
 from algan.constants.spatial import UP, RIGHT, IN
 from algan.constants.color import *
@@ -363,7 +364,7 @@ class Circle(BezierCircuitCubic):
         control_points = torch.cat(
             [control_points, torch.zeros_like(control_points[..., :1])], -1
         )
-        l = 0
+        l = ORIGIN
         if "location" in kwargs:
             l = kwargs["location"]
             del kwargs["location"]

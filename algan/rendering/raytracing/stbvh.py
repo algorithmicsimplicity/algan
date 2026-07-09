@@ -81,11 +81,14 @@ SPLIT_TIME_WEIGHT = float(os.environ.get("ALGAN_SPLIT_TIME_WEIGHT", "1"))
 # Store the sibling-block child bounds as conservatively rounded float16
 # (64-byte blocks) instead of exact float32 (128-byte blocks). Lower bounds
 # round toward -inf and upper bounds toward +inf, so the f16 boxes strictly
-# contain the exact ones: the box test stays conservative and the rendered
-# output is byte-identical (box tests only cull, they never accept hits) --
-# the only cost is a sliver of false-positive leaf visits. Read once at
-# import by both this module (build) and the traversal kernels (block
-# decode + ndarray element type).
+# contain the exact ones and can never falsely cull a hit. NOT byte-identical
+# though: hits routinely lie exactly on their (exact) box faces, and the
+# looser boxes admit candidates within a float ulp of the traversal's
+# DEPTH_TIE_EPSILON window boundaries that the exact boxes cull -- measured
+# as epsilon-level image changes (few % of pixels by a few LSB), the same
+# class of deviation as changing ``tightness``. Opt-in, default off. Read
+# once at import by both this module (build) and the traversal kernels
+# (block decode + ndarray element type).
 BLOCK_F16 = os.environ.get("ALGAN_BVH_BLOCK_F16", "1") == "1"
 
 # Smallest normal float16. Conservative rounding pushes would-be-subnormal
@@ -183,8 +186,8 @@ class STBVH:
         :func:`_build_blocks`). One aligned fetch per node visit tests the
         whole sibling group; a ray belonging to frame ``f`` may only enter
         children whose interval satisfies ``tmin <= f <= tmax``. float16
-        blocks store conservatively out-rounded bounds (``BLOCK_F16``), which
-        cannot change the rendered output -- box tests only cull.
+        blocks store conservatively out-rounded bounds (``BLOCK_F16``, opt-in
+        and epsilon-level non-identical -- see its comment).
     node_miss : Tensor[num_nodes] (int32)
         Stackless DFS miss links (next node when a node is skipped or a leaf
         has been processed, -1 terminates). Host-side/debug only: the block

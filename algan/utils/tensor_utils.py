@@ -457,32 +457,6 @@ def implements(torch_function):
 HANDLED_FUNCTIONS = {}
 
 
-def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
-    """Combine args and kwargs into one dict, using default values where arg is missing"""
-    params = inspect.signature(func).parameters
-    arg_names = list(params.keys())[1:]
-    kwargs.update({arg_names[i]: args[i] for i in range(len(args))})
-    default_kwargs = {
-        param.name: param.default
-        for param in params.values()
-        if not (param.default is inspect._empty)
-    }
-    default_kwargs.update(kwargs)
-    kwargs = {
-        k: cast_to_tensor(v) if k in initial_args else v
-        for k, v in default_kwargs.items()
-    }
-    # func_name needs to be a unique identifier, as all funcs with the same func_name will be put in the same batch.
-    # This is why unique_args are part of the name.
-    func_name = (
-        f"{func.__name__}_{'_'.join([str(kwargs[a]) for a in unique_args])}_{id(self)}"
-    )
-    self.data.history.insert_function_application(
-        func_name, (func, self), initial_args, kwargs, self.animation_manager.context
-    )
-    return kwargs
-
-
 def wait_for_cuda():
     return
     if torch.cuda.is_available():

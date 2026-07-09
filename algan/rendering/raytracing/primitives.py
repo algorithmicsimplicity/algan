@@ -1,3 +1,4 @@
+from algan import Color
 from algan.utils.memory_utils import empty_cache
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.rendering.primitives.bezier_circuit_primitive import batch_arange, BezierCircuitPrimitive
@@ -714,8 +715,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         colors = self.colors.float()
         if colors.dim() == 3:  # plain fills: a 1x1 "texture" grid
             colors = colors.unsqueeze(-2)
-        self._rt_circuit_colors = colors.contiguous()
-        self._rt_circuit_border_colors = self.border_color.float().contiguous()
+        self._rt_circuit_colors = colors.contiguous().as_subclass(Color)
+        self._rt_circuit_border_colors = self.border_color.float().contiguous().as_subclass(Color)
         self._rt_border_width = border_width
 
     def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h):

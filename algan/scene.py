@@ -37,6 +37,7 @@ from algan.utils.memory_utils import get_num_available_bytes, ManualMemory, empt
 from algan.utils.tensor_utils import unsquish
 from algan.utils.file_utils import get_image
 from algan import _sync_devices
+from algan.animation.timeline import TimelineManager
 
 
 class EmptySceneWarning(Warning):
@@ -228,13 +229,13 @@ class Scene:
             for actor in list(
                 sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)
             ):
-                if actor.data.spawn_time() >= 0:
+                if actor.data.lifespan.start() >= 0:
                     actor.despawn(**kwargs)
 
     def clear_scene(self, **kwargs):
         with Seq(run_time=0.5):
             self.despawn_scene(**kwargs)
-        self.actors[-1] = [_ for _ in self.actors[-1] if (_.data.spawn_time() >= 0 and _.data.despawn_time() >= 0)]
+        self.actors[-1] = [_ for _ in self.actors[-1] if (_.data.lifespan.start() >= 0 and _.data.lifespan.end() >= 0)]
 
     def render_audio_to_file(self, file_path, frames_per_second=44100, codec='pcm_s32le', nbytes=4):
         if len(self.effects) == 0:
@@ -378,17 +379,6 @@ class Scene:
             # (get_batch_of_primitives) resets and re-materializes it at the
             # start of each batch, and may already be running on a worker
             # thread for the next batch while this render executes.
-
-    def get_frame(self, i):
-        actors = self.actors[-1]
-        for actor_id, actor in enumerate(
-            list(sorted(actors, key=lambda x: x.anchor_priority, reverse=True))
-        ):
-            actor.set_state_full()
-        self.camera.set_state_full()
-        return next(
-            self.get_frames_from_fragments(self.get_fragments(actors, i, i + 1))
-        )
 
     def reset_scene(self):
         self.actors = [[]]
@@ -576,33 +566,6 @@ class Scene:
         batch (mirroring _try_timeline_direct), else densely at every frame --
         and return the deferred entry consumed by _build_deferred_surfaces."""
         entry = {"actor": actor, "z": None, "z_mid": None, "prims": None}
-        T = len(time_inds)
-        if self._time_compress_mode() == 3 and T > 2:
-            from algan.rendering.raytracing.time_compression import (
-                extract_global_linear_z)
-
-            actor.set_state_to_time_t(time_inds)
-            for component in actor.components:
-                component.set_state_to_time_t(time_inds)
-            loc = getattr(actor, "location", None)
-            if torch.is_tensor(loc):
-                loc3 = loc
-                while loc3.dim() < 3:
-                    loc3 = loc3.unsqueeze(0)
-                if loc3.shape[0] == T:
-                    z = extract_global_linear_z(loc3)
-                    if z is not None:
-                        mid = T // 2
-                        knot_inds = time_inds[torch.tensor([0, mid, T - 1])]
-                        actor.set_state_to_time_t(knot_inds)
-                        for component in actor.components:
-                            component.set_state_to_time_t(knot_inds)
-                        entry["z"] = z
-                        entry["z_mid"] = float(z[mid])
-                        return entry
-        actor.set_state_to_time_t(time_inds)
-        for component in actor.components:
-            component.set_state_to_time_t(time_inds)
         return entry
 
     def _build_deferred_surfaces(self, deferred, time_inds):
@@ -668,8 +631,8 @@ class Scene:
         primitive_actors = [
             _
             for _ in actors
-            if (_.data.spawn_time() <= max_end_time)
-            and ((_.data.despawn_time() >= start_time) or _.data.despawn_time() < 0)
+            if (_.data.lifespan.start() <= max_end_time)
+            and ((_.data.lifespan.end() >= start_time) or _.data.lifespan.end() < 0)
             and hasattr(_, "get_render_primitives")
         ]
 
@@ -686,7 +649,7 @@ class Scene:
                     _
                     for _ in primitive_actors
                     if (
-                        _.data.spawn_time()
+                        _.data.lifespan.start()
                         <= (start_time_ind + duration) / self.frames_per_second
                     )
                 ]
@@ -709,12 +672,15 @@ class Scene:
             _
             for _ in actors
             if (
-                _.data.spawn_time()
+                _.data.lifespan.start()
                 <= (start_time_ind + duration) / self.frames_per_second
             )
-            and ((_.data.despawn_time() >= start_time_ind / self.frames_per_second) or (_.data.despawn_time() < 0))
+            and ((_.data.lifespan.end() >= start_time_ind / self.frames_per_second) or (_.data.lifespan.end() < 0))
         ]
         time_inds = torch.arange(start_time_ind, start_time_ind + duration)
+
+        timeline = TimelineManager.instance()
+        timeline.set_state_to_times(time_inds / self.frames_per_second)
 
         grouped_primitives = collections.defaultdict(lambda: [None, []])
         # Surfaces sharing a grid shape are not built one-by-one: their state
@@ -726,49 +692,20 @@ class Scene:
         ordered_items = []
         deferred_surfaces = []
         for actor in sorted(actors, key=lambda x: x.anchor_priority, reverse=True):
-            if hasattr(actor, "already_set_state") and actor.already_set_state:
+            if not hasattr(actor, "get_render_primitives"):
                 continue
-            if (not actor.is_primitive) and not actor.data.history.function_applications:
-                actor.reset_state()
+            if self._is_batchable_surface(actor):
+                entry = self._prepare_deferred_surface(actor, time_inds)
+                deferred_surfaces.append(entry)
+                ordered_items.append(entry)
+                # State must stay materialized for the batched build; the
+                # reset happens in _build_deferred_surfaces.
                 continue
-            self._ensure_actor_state(actor, start_time_ind, start_time_ind + duration)
-            if hasattr(actor, "get_render_primitives"):
-                for component in actor.components:
-                    self._ensure_actor_state(component, start_time_ind, start_time_ind + duration)
-                if self._is_batchable_surface(actor):
-                    entry = self._prepare_deferred_surface(actor, time_inds)
-                    deferred_surfaces.append(entry)
-                    ordered_items.append(entry)
-                    # State must stay materialized for the batched build; the
-                    # reset happens in _build_deferred_surfaces.
-                    continue
-                # Mode-3: build geometry at just the segment endpoints and expand
-                # (skips the dense per-frame build); None falls back to dense.
-                primitive = self._try_timeline_direct(actor, time_inds)
-                if primitive is None:
-                    actor.set_state_to_time_t(time_inds)
-                    for component in actor.components:
-                        component.set_state_to_time_t(time_inds)
-                    primitive = actor.get_render_primitives()
-                if primitive is not None:
-                    if not isinstance(primitive, list):
-                        primitive = [primitive]
-                    ordered_items.append(primitive)
-            if not (
-                actor == self.camera
-                or actor == self.camera.screen
-                or actor in self.light_sources
-            ):
-                if getattr(self, "_full_state_range", None) is not None:
-                    # Keep the materialized state for later batches; only the
-                    # per-batch dedup flag set_state_full raised is cleared.
-                    actor.already_set_state = False
-                    for component in actor.components:
-                        component.already_set_state = False
-                else:
-                    actor.reset_state()
-                    for component in actor.components:
-                        component.reset_state()
+            primitive = actor.get_render_primitives()
+            if primitive is not None:
+                if not isinstance(primitive, list):
+                    primitive = [primitive]
+                ordered_items.append(primitive)
 
         if deferred_surfaces:
             self._build_deferred_surfaces(deferred_surfaces, time_inds)
@@ -855,18 +792,9 @@ class Scene:
 
         time_inds = torch.arange(start_ind, end_ind)
         camera = self.camera
-        camera.screen.reset_state()
-        camera.reset_state()
-        camera.set_state_full(time_inds[0], time_inds[-1] + 1)
-        Animatable.set_state_to_time_t(camera, time_inds)
-        camera.screen.set_state_full(time_inds[0], time_inds[-1] + 1)
-        camera.screen.set_state_to_time_t(time_inds)
         device = COMPUTING_DEFAULTS.render_device
         lights = []
         for l in self.light_sources:
-            l.reset_state()
-            l.set_state_full(time_inds[0], time_inds[-1] + 1)
-            l.set_state_to_time_t(time_inds)
             loc = l.location
             col = l.color[..., :-1] * l.color[..., -1:] * l.opacity
             intensity = float(getattr(l, "intensity", 1.0))
@@ -925,9 +853,9 @@ class Scene:
     def save_frame(self, filename, time_stamp=None):
         if not COMPUTING_DEFAULTS.allow_save_frame:
             return
-        from algan.utils.plotting_utils import plot_tensor
+
         if time_stamp is None:
-            time_stamp = AnimationManager.instance().context.current_time + 1.5/self.render_settings.frames_per_second
+            time_stamp = AnimationManager.instance().context.timespan.current_time + 1.5/self.render_settings.frames_per_second
         time_ind = round(time_stamp * self.render_settings.frames_per_second)
         frames = []
         for frame in self.get_frames(time_ind-1, time_ind):
@@ -935,6 +863,12 @@ class Scene:
             frames.append(frame.squeeze(0).permute(-1,0,1))
         torchvision.utils.save_image(frames[-1], filename)
         return frames
+
+    def save_frames(self, filename, time_stamps=None):
+        if not hasattr(time_stamps, '__len__'):
+            time_stamps = [time_stamps]
+        return [self.save_frame(f'{".".join(filename.split(".")[:-1])}_{t}.{filename.split(".")[-1]}',
+                                t) for t in time_stamps]
 
     def get_frames(self, start_time_ind, end_time_ind, background_color=None, post_processes=[bloom_filter], manual_memory=True):
         if end_time_ind <= start_time_ind:
@@ -953,47 +887,7 @@ class Scene:
         actors = [self.camera, self.camera.screen, *self.light_sources, *self.actors[-1]]
         save_image = False
 
-        # Full-range state reuse: animation history is frozen while rendering
-        # (the Off context below records nothing), so each actor's animated
-        # state can be materialized ONCE over the whole render window and
-        # sliced per batch by set_state_to_time_t, instead of re-walking its
-        # attribute/function history for every batch (set_state_full was ~25%
-        # of batch prep). OPT-IN (ALGAN_FULL_RANGE_STATE=1): output is not
-        # byte-identical to the per-batch protocol -- rate funcs evaluate
-        # transcendentals (sigmoid) whose CPU vector lanes round 1 ULP
-        # differently by tensor size, so the eased fraction z at a few frames
-        # shifts by 1 ULP, which can flip the odd silhouette-edge pixel
-        # (measured 0.00006% of values on neural_net). Also guarded by an
-        # estimate of the total CPU-side state (per-frame attr bytes x
-        # frames); ALGAN_FULL_RANGE_STATE_MB overrides the cap.
-        self._full_state_range = None
-        if os.environ.get("ALGAN_FULL_RANGE_STATE", "0") == "1":
-            total_frames = int(end_time_ind) - int(start_time_ind)
-            state_bytes_per_frame = 0
-            for a in self.actors[-1]:
-                for m in (a, *getattr(a, "components", [])):
-                    data = getattr(m, "data", None)
-                    if data is None:
-                        continue
-                    for v in data.data_dict_active.values():
-                        if torch.is_tensor(v):
-                            state_bytes_per_frame += (
-                                v.numel() // max(v.shape[0], 1)
-                            ) * v.element_size()
-            cap = float(
-                os.environ.get("ALGAN_FULL_RANGE_STATE_MB", "2048")
-            ) * 2**20
-            if state_bytes_per_frame * total_frames <= cap:
-                self._full_state_range = (int(start_time_ind), int(end_time_ind))
-
         self.has_any_active_actors = False
-        # Animation timestamps are final for the duration of a render: start a
-        # global-animation-state session so the sorted modification log is
-        # built (and its time callables evaluated) once, then reused by every
-        # batch window.
-        from algan.animation.global_state import GlobalAnimationState
-
-        GlobalAnimationState.instance().begin_session(self.frames_per_second)
         self.memory = ManualMemory(
             COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
         )
@@ -1093,11 +987,11 @@ class Scene:
                         print(
                             f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
                         )
-                        break #TODO debug
 
                     current_time_ind = new_time_ind
                     if new_time_ind >= end_time_ind:
                         break
+                TimelineManager.instance().clear_buffers()
             finally:
                 # Always drain the worker before leaving (normal completion,
                 # error, or abandoned generator): a prep still running while
@@ -1150,7 +1044,7 @@ class Scene:
                 self.scene_times[-1][0],
                 (
                     round(
-                        AnimationManager.instance().context.end_time
+                        AnimationManager.instance().context.timespan.original_end
                         * self.frames_per_second
                     )
                 ),
@@ -1197,58 +1091,6 @@ class Scene:
                 "You rendered an empty scene! Did you forget to spawn() your Mobs?",
                 EmptySceneWarning,
             )
-
-    @not_compiled  #@torch.compiler.disable(recursive=True)
-    def get_frames_from_fragments(self, fragments, window, frame, anti_alias_level=1):
-        device = fragments[0].device if fragments is not None else frame.device
-        bgf = self.background_frame
-        if bgf.shape[-1] == 3:
-            bgf = torch.cat((bgf, torch.zeros_like(bgf[..., :1])), -1)
-        bgf = (bgf * 255).to(device, torch.uint8)
-        window_height = window[3] - window[1]
-        window_width = window[2] - window[0]
-        window_size = window_width * window_height
-
-        if fragments is None:
-            frame[:] = bgf[..., : frame.shape[-1]]
-            frame_out = unsquish(frame, 0, -window_height)
-            yield frame_out
-            return
-            frame_out = (
-                F.avg_pool2d(frame_out.float().permute(2, 0, 1), anti_alias_level)
-                .permute(1, 2, 0)
-                .to(torch.uint8)
-            )
-            frame_out = bloom_filter(frame_out)
-            yield frame_out.cpu().flip((-3, -1)).numpy()
-            return
-
-        frames, inds, num_pixels_in_frame = fragments
-        frames = frames[..., : frame.shape[-1]]
-        if inds is None:
-            frame[:] = bgf
-            frame = unsquish(frame, 0, -window_height)  # .cpu().flip((-3, -1)).numpy()
-            for i in range(len(frames)):
-                yield frame
-            return
-
-        frame_ind_delimits = num_pixels_in_frame.cumsum(0)
-        inds = inds % window_size
-        inds = inds.unsqueeze(-1).expand([-1, frames.shape[-1]])
-        frames *= 255
-        frames = self.memory.cast(frames, torch.uint8)
-
-        for i in range(len(frame_ind_delimits)):
-            frame[:] = bgf[..., :frame.shape[-1]]
-            ind_begin = frame_ind_delimits[i - 1] if i > 0 else 0
-            ind_end = frame_ind_delimits[i]
-            frame.scatter_(0, inds[ind_begin:ind_end], frames[ind_begin:ind_end])
-
-            frame_out = unsquish(frame, 0, -window_height)
-            yield frame_out
-
-    def get_current_frame(self):
-        return self.background_frame
 
     def get_new_id(self):
         self.id_count += 1

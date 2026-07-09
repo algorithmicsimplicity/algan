@@ -294,8 +294,8 @@ class NeuralNetMLP(Mob):
                             with Lag(0.5):
                                 for f in pulse_funcs:
                                     f(neuron)
-            self.animation_manager.context.current_time = (
-                self.animation_manager.context.current_time - 1.7
+            self.animation_manager.context.timespan.current_time = (
+                self.animation_manager.context.timespan.current_time - 1.7
             )
             if output_generator is None:
                 return

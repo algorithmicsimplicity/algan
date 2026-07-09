@@ -8,6 +8,7 @@ from typing import Dict
 import torch
 import torch.nn.functional as F
 
+from algan.animation.timeline import TimelineManager
 from algan.scene import Scene
 from algan.animation.animation_contexts import (
     Sync,
@@ -21,7 +22,6 @@ from algan.utils.tensor_utils import (
     broadcast_all,
     robust_concat,
     concat_dicts,
-    prepare_kwargs,
     HANDLED_FUNCTIONS, wait_for_cuda,
 )
 from algan import SceneManager, compiled
@@ -32,6 +32,7 @@ from algan.utils.tensor_utils import (
     cast_to_tensor_single,
     unsqueeze_dims,
 )
+from algan.animation.timeline import TimelineSpan
 
 
 TIME_PARAMETER_NAME = "time_elapsed"
@@ -69,131 +70,33 @@ class ModificationHistory:
         self.most_recent_function_added = None
         self.cached_history = None
 
-    def overwrite_attr_history(self, attr, end_time):
-        if attr not in self.attribute_overwrites:
-            self.attribute_overwrites[attr] = []
-        self.attribute_overwrites[attr].append(end_time)
-
-    def insert_function_application(
-        self, func_name, func, animated_args, kwargs, animation_context
-    ):
-        if animation_context.run_time_unit <= 0 or not animation_context.record_funcs:
-            return
-        start_time = animation_context.get_current_time()
-        end_time = animation_context.get_current_end_time()
-        rate_func = animation_context.rate_func
-        rate_func_compose = animation_context.rate_func_compose
-        prio = 1 if (animation_context.updater is not None and animation_context.updater) else 0
-        func_name = f'{prio}_{func_name}'
-
-        if func_name not in self.function_applications:
-            self.function_applications[func_name] = [func, [], [], -1]
-        self.function_applications[func_name][2].append(
-            [
-                animated_args,
-                kwargs,
-                start_time,
-                end_time,
-                end_time,
-                (rate_func, rate_func_compose),
-            ]
-        )
-        self.function_applications[func_name][3] = (
-            AnimationManager.get_execution_count() + prio * 1e12
-        )
-        self.most_recent_function_added = self.function_applications[func_name][2][-1]
-        self.cached_history = None
-
-    def get_func_history(self, animatable):
-        """The animated_function history, batched and split into
-        non-overlapping groups, ready for re-execution at render time.
-        (Attribute-value history is materialized globally, see
-        :class:`~.GlobalAnimationState`.)"""
-        if self.cached_history is not None:
-            return self.cached_history
-
-        funcs = []
-
-        # For overlapping animations, if one ends in the middle of another, we need to extend
-        # the end time to match the end of the longest animation, otherwise the remaining portion
-        # of the time won't be animated.
-        # TODO rewrite this into non-awful code.
-        for func_name_outer, func_data_outer in sorted(
-            self.function_applications.items(),
-            key=lambda _: (
-                0 if "setattr_" in _[0] else (1 if "update_relative" in _[0] else 2)
-            ),
-        ):
-            for func_name, func_data in self.function_applications.items():
-                for func_application_outer in func_data_outer[2]:
-                    for func_application in func_data[2]:
-                        if (
-                            func_application[2]()
-                            < func_application_outer[2]()
-                            < func_application_outer[4]()
-                            < func_application[3]()
-                        ):
-                            func_application_outer[4] = func_application[3]
-
-        for func_name, (func, modified_attrs, arg_list, execution_order) in sorted(
-            self.function_applications.items(),
-            key=lambda _: (
-                0 if "setattr_" in _[0] else (1 if "update_relative" in _[0] else (2 if _[0][0] == '0' else 3))
-            ),
-        ):  # , _[1][-1])):
-            (
-                animated_args,
-                kwargs,
-                start_time,
-                end_time,
-                extended_end_time,
-                rate_funcs,
-            ) = zip(*arg_list)
-            kwargs = concat_dicts(kwargs)
-            animated_args = concat_dicts(animated_args)
-            animated_args = {
-                k: unsqueeze_dims(v, kwargs[k], 1) for k, v in animated_args.items()
-            }  # TODO shouldn't the unsqueeze dim be 0?
-            start_time, end_time, extended_end_time = (
-                torch.tensor([_() for _ in start_time]),
-                torch.tensor([_() for _ in end_time]),
-                torch.tensor([_() for _ in extended_end_time]),
-            )
-
-            # In the event where 2 or more functions take place at the same time (overlap), we manually split them up.
-            # into separate funcs.
-            overlaps = (
-                ~(
-                    (start_time > extended_end_time.unsqueeze(-1))
-                    | (extended_end_time < start_time.unsqueeze(-1))
-                )
-            ).float()
-            orders = (overlaps * torch.triu(torch.ones_like(overlaps), diagonal=1)).sum(
-                -2
-            )
-            unique_orders, uinds = torch.unique(orders, return_inverse=True)
-            for order in unique_orders:  # [-1:]:
-
-                def g(x):
-                    if not isinstance(x, torch.Tensor):
-                        return x
-                    return x[uinds == order]
-
-                sub_rate_funcs = [rate_funcs[i] for i in (uinds == order).nonzero()]
-                funcs.append(
-                    (
-                        func,
-                        {k: g(v) for k, v in animated_args.items()},
-                        {k: g(v) for k, v in kwargs.items()},
-                        g(start_time),
-                        g(end_time),
-                        g(extended_end_time),
-                        sub_rate_funcs,
-                    )
-                )
-
-        self.cached_history = funcs
-        return funcs
+def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
+    """Combine args and kwargs into one dict, using default values where arg is missing"""
+    params = inspect.signature(func).parameters
+    arg_names = list(params.keys())[1:]
+    kwargs.update({arg_names[i]: args[i] for i in range(len(args))})
+    default_kwargs = {
+        param.name: param.default
+        for param in params.values()
+        if not (param.default is inspect._empty)
+    }
+    default_kwargs.update(kwargs)
+    kwargs = {
+        k: cast_to_tensor(v) if k in initial_args else v
+        for k, v in default_kwargs.items()
+    }
+    # func_name needs to be a unique identifier, as all funcs with the same func_name will be put in the same batch.
+    # This is why unique_args are part of the name.
+    func_name = (
+        f"{func.__name__}_{'_'.join([str(kwargs[a]) for a in unique_args])}_{id(self)}"
+    )
+    timeline = TimelineManager.instance()
+    #self.data.history.insert_function_application(
+    #    func_name, (func, self), initial_args, kwargs, self.animation_manager.context
+    #)
+    c = self.animation_manager.context
+    timeline.record_function(func, self, initial_args, kwargs, c)
+    return kwargs
 
 
 def animated_function(
@@ -229,13 +132,14 @@ def animated_function(
             if not self.is_animating():
                 with AnimationContext(record_funcs=False):
                     return func(self, *args, **kwargs)
-            with AnimationContext():
-                kwargs = prepare_kwargs(
-                    self, func, args, kwargs, animated_args, unique_args
-                )
-                with AnimationContext(record_funcs=False):
-                    out = func(self, **kwargs)
-            self.animation_manager.context.increment_times()
+            else:
+                with AnimationContext():
+                    kwargs = prepare_kwargs(
+                        self, func, args, kwargs, animated_args, unique_args
+                    )
+                    with AnimationContext(record_funcs=False):
+                        out = func(self, **kwargs)
+                    self.animation_manager.context.increment_times()
             return out
 
         return wrapper_func
@@ -416,110 +320,8 @@ class AnimatableData:
         self.time_inds_active = time_inds_active
         self.time_inds_materialized = time_inds_materialized
         self.data_dict = self.data_dict_active
-        self.spawn_time = spawn_time
-        self.despawn_time = despawn_time
+        self.lifespan = TimelineSpan(spawn_time, despawn_time)
         self.set_pre_function_application = False
-
-    # -- global-buffer plumbing --------------------------------------------
-
-    def _buffer_for(self, key, width):
-        return GlobalAnimationState.instance().get_buffer(key, width)
-
-    def read_current(self, key, rows=None):
-        """Current value of ``key`` as a [1, B, W] snapshot of the global
-        buffer rows (a copy: later writes must not mutate captured reads)."""
-        if rows is None:
-            rows = self.rows[key]
-        value = rows.read(snapshot=True).unsqueeze(0)
-        cls = self.attr_cls.get(key)
-        if cls is not None:
-            value = value.as_subclass(cls)
-        return value
-
-    def write_current(self, key, value):
-        """Set the current value of ``key`` without recording a modification
-        (the old direct dict-assignment semantics).  Allocates rows on first
-        write; re-allocates on batch-size or width change."""
-        if (
-            not isinstance(value, torch.Tensor)
-            or value.dtype != torch.get_default_dtype()
-            or value.dim() > 3
-        ):
-            if key not in self.side or key in self.rows:
-                GlobalAnimationState.instance().bump_topology()
-            self.side[key] = value
-            self.rows.pop(key, None)
-            return
-        self.side.pop(key, None)
-        if type(value) is not torch.Tensor:
-            self.attr_cls[key] = type(value)
-        while value.dim() < 3:
-            value = value.unsqueeze(0)
-        value = value[-1]  # [B, W]; current value keeps the latest timestep.
-        n, width = value.shape
-        rows = self.rows.get(key)
-        if rows is None or rows.size != n or rows.buffer.width != width:
-            buffer = self._buffer_for(key, width)
-            old_rows = rows
-            rows = buffer.alloc(n)
-            if old_rows is not None and old_rows.buffer is buffer:
-                # Batch-size change of an existing attribute (become / batch
-                # expansion): carry the recorded history over to the new rows
-                # so pre-existing animation still materializes. Rows beyond
-                # the old batch inherit the last old row's history (the old
-                # pad-with-last broadcast semantics).
-                m = min(old_rows.size, n)
-                buffer.copy_row_history(
-                    old_rows.indices[:m], rows.indices[:m]
-                )
-                if n > m:
-                    buffer._duplicate_row_history(
-                        int(old_rows.indices[-1]), rows.indices[m:]
-                    )
-            self.rows[key] = rows
-            GlobalAnimationState.instance().bump_topology()
-        rows.write(value)
-
-    def alloc_rows_like(self, key, value_2d):
-        """Allocate rows for ``key`` initialised to ``value_2d`` [n, W]."""
-        buffer = self._buffer_for(key, value_2d.shape[-1])
-        rows = buffer.alloc(value_2d.shape[0])
-        rows.write(value_2d)
-        self.rows[key] = rows
-        GlobalAnimationState.instance().bump_topology()
-        return rows
-
-    def grow_rows(self, key, n_total):
-        """Grow ``key``'s rows to ``n_total`` by padding with the last row's
-        value; the new rows inherit the last row's modification history (this
-        matches the old pad-with-last batch expansion)."""
-        rows = self.rows[key]
-        n_extra = n_total - rows.size
-        if n_extra <= 0:
-            return rows
-        last_row = int(rows.indices[-1])
-        init = rows.buffer.values[last_row:last_row + 1].expand(n_extra, -1)
-        rows.buffer.grow(
-            rows, n_extra, init.clone(), inherit_history_from_row=last_row
-        )
-        GlobalAnimationState.instance().bump_topology()
-        return rows
-
-    def record_modification(self, key, rows_idx, old_values, animation_context):
-        """Record a batched modification (the values ``rows_idx`` held before
-        this write) into the global modification log."""
-        if not animation_context.record_attr_modifications:
-            return
-        start_time = animation_context.get_current_time()
-        end_time = animation_context.get_current_end_time()
-        animation_context.end_time = max(
-            animation_context.end_time,
-            animation_context.current_time + animation_context.run_time_unit,
-        )
-        rows = self.rows[key]
-        rows.buffer.record(rows_idx, old_values, start_time, end_time)
-        self.history.attribute_modifications[key].append(end_time)
-        self.history.cached_history = None
 
     def __deepcopy__(self, memo):
         # Fresh row allocations holding a copy of the current values; the
@@ -532,15 +334,6 @@ class AnimatableData:
         clone.attr_cls = dict(self.attr_cls)
         clone.history = self.history
         return clone
-
-    def copy_history_from(self, source):
-        """Replay the recorded modifications of ``source``'s rows onto this
-        data's rows (used by clones that share their source's history)."""
-        for key, rows in self.rows.items():
-            src = source.rows.get(key)
-            if src is None or src.size != rows.size:
-                continue
-            rows.buffer.copy_row_history(src.indices, rows.indices)
 
 
 class Animatable:
@@ -715,13 +508,13 @@ class Animatable:
             Passed to function.
 
         """
-        start_time = self.animation_manager.context.current_time
-        end_time = self.animation_manager.context.end_time
+        start_time = self.animation_manager.context.timespan.current_time
+        end_time = self.animation_manager.context.timespan.original_end
         self._set_dependant_mobs_time_inds_to_self_then_run_function(
             lambda: function(self, cast_to_tensor(time_elapsed), *args, **kwargs)
         )
-        self.animation_manager.context.current_time = start_time
-        self.animation_manager.context.end_time = end_time
+        self.animation_manager.context.timespan.current_time = start_time
+        self.animation_manager.context.timespan.end = end_time
         return self
 
     def add_updater(self, update_function, *args, **kwargs):
@@ -746,13 +539,13 @@ class Animatable:
 
         """
         start_pointer = self.animation_manager.context.get_current_time()
-        start_time = self.animation_manager.context.current_time
-        end_time = self.animation_manager.context.end_time
+        start_time = self.animation_manager.context.timespan.current_time
+        end_time = self.animation_manager.context.timespan.end
         with AnimationContext(record_funcs=True, updater=True):
             self.animate_function_of_time(update_function, *args, **kwargs)
         self.passive_animations.append(self.data.history.most_recent_function_added)
-        self.animation_manager.context.current_time = start_time
-        self.animation_manager.context.end_time = end_time
+        self.animation_manager.context.timespan.current_time = start_time
+        self.animation_manager.context.timespan.end_time = end_time
         self._passive_animation_functions.append(
             lambda mob, t: update_function(mob, cast_to_tensor(t), *args, **kwargs)
         )
@@ -816,7 +609,7 @@ class Animatable:
         if not (hasattr(self, "animation_manager") and hasattr(self, "data")):
             return False
         return (
-            self.animation_manager.context.record_funcs and self.data.spawn_time() >= 0
+            self.animation_manager.context.record_funcs and self.data.lifespan.start() >= 0
         )
 
     def generate_animatable_attr_set_get_methods(self):
@@ -834,10 +627,37 @@ class Animatable:
                 f"get_{attr}", lambda attr=attr: self.__getattribute__(attr)
             )
 
-    def setattr_and_record_modification(self, key, value):
+    def _try_add_to_timeline(self, key, value):
+        timeline = TimelineManager.instance()
+        timeline.add_mob_attr(self, key, value)
+        return self
+
+    def setattr_without_record(self, key, value, include_descendants=False):
+        self._try_add_to_timeline(key, value)
+        inds = self.get_attr_inds(key, include_descendants=include_descendants)
+        timeline = TimelineManager.instance()
+        timeline.modify_attribute(key, inds, value)
+        return self
+
+    def is_spawned(self):
+        return self.data.lifespan.start() >= 0
+
+    def setattr_and_record_modification(self, key, value, include_descendants=False):
         if self.animation_manager.context.trace_mode:
             self.animation_manager.context.traced_mobs.add(self)
             return
+        inds = self.get_attr_inds(key, include_descendants=include_descendants)
+        timeline = TimelineManager.instance()
+
+        context = self.animation_manager.context
+        if (self.data.lifespan.start() < 0) or (not context.record_attr_modifications):
+            timeline.modify_attribute(key, inds, value)
+            return self
+        ts = context.timespan
+        nt = ts.current_time + (context.run_time_unit if self.is_spawned() else 0)
+        ts.original_end = max(ts.original_end, nt)
+        timeline.modify_attribute_and_record(key, inds, value, ts.get_time(nt))
+        return self
         d = self.data
         if not isinstance(value, torch.Tensor):
             d.side[key] = value
@@ -923,9 +743,23 @@ class Animatable:
             return self.data.data_dict_active[key]
         return self.data.data_dict[key]
 
-    def getattribute_animated(self, key):
+    def get_attr_inds(self, key, include_descendants=False, value=None):
+        timeline = TimelineManager.instance()
+        inds = timeline.get_inds(key, self, value)
+        if inds is None:
+            return inds
+        if include_descendants:
+            inds = torch.cat([timeline.get_inds(key, m, value) for m in self.get_descendants(include_self=True)])
+        return inds
+
+    def get_animated_attribute(self, key, value=None, include_descendants=False, default=None):
         if self.animation_manager.context.trace_mode:
             self.animation_manager.context.traced_mobs.add(self)
+        if default is not None:
+            self._prepare_buffers(key, default)
+        inds = self.get_attr_inds(key, include_descendants=include_descendants, value=value)
+        timeline = TimelineManager.instance()
+        return timeline.get_attr(key, inds)
         d = self.data
         rows = d.rows.get(key)
         at_render = d.time_inds_materialized is not None
@@ -1141,7 +975,7 @@ class Animatable:
             a simple fade-in. Defaults to True.
 
         """
-        if (self.data.spawn_time() >= 0) or self.animation_manager.context.spawn_at_end:
+        if (self.data.lifespan.start() >= 0) or self.animation_manager.context.spawn_at_end:
             return self
         self._create_recursive(animate)
         self.animation_manager.context.on_create(self)
@@ -1149,8 +983,9 @@ class Animatable:
 
     def _create_recursive(self, animate=True):
         with Sync():
-            if self.data.spawn_time() < 0:
-                self.data.spawn_time = self.animation_manager.context.get_current_time()
+            if self.data.lifespan.start() < 0:
+                self.data.lifespan.start = self.animation_manager.context.get_current_time()
+                TimelineManager.instance().register_spawn(self, self.data.lifespan)
                 if animate:
                     self.on_create()
             for c in self.children:
@@ -1158,7 +993,7 @@ class Animatable:
         return self
 
     def despawn(self, animate=True):
-        if self.data.despawn_time() >= 0:  # or (self.data.spawn_time() < 0):
+        if self.data.lifespan.end() >= 0:  # or (self.data.spawn_time() < 0):
             return self
         self._destroy_recursive(animate)
         self.animation_manager.context.on_destroy(self)
@@ -1167,10 +1002,11 @@ class Animatable:
 
     def _destroy_recursive(self, animate=True):
         with Sync():
-            if self.data.despawn_time() < 0:
+            if self.data.lifespan.end() < 0:
                 if animate:
                     self.on_destroy()
-                self.data.despawn_time = self.animation_manager.context.get_end_time()
+                self.data.lifespan.end = self.animation_manager.context.get_end_time()
+                TimelineManager.instance().register_spawn(self, self.data.lifespan)
                 # self.remove_all_passive_animations()
             for c in self.children:
                 c._destroy_recursive(animate)
@@ -1198,28 +1034,14 @@ class Animatable:
     def get_memory_used_per_timestep(self):
         return 0
 
-    def set_state_to_time_t(self, time_inds):
-        if (self.data.time_inds_materialized is not None
-            and len(self.data.time_inds_materialized) == len(time_inds)
-            and self.data.time_inds_materialized[0] == time_inds[0]
-            and self.data.time_inds_materialized[-1] == time_inds[-1]):
-            self.data.time_inds_active = torch.arange(len(time_inds), device=time_inds.device)
-        else:
-            self.data.time_inds_active = (
-                (self.data.time_inds_materialized.view(-1, 1) == time_inds.view(1, -1))
-                .sum(1)
-                .nonzero()
-                .view(-1)
-            )
-        return self
-
     def set_state_to_time_all(self):
         return self.set_state_to_time_t(self.time_inds.time_inds_materialized)
 
     def reset_state(self, make_new_state=False):
         if make_new_state:
             self.data = AnimatableData(self)
-            self.data.spawn_time = self.animation_manager.context.get_current_time()
+            #self.data.spawn_time = self.animation_manager.context.get_current_time()
+            self.data.lifespan.start = self.animation_manager.context.get_current_time()
         # Remember the window this data was bound to: if it is re-bound to the
         # very same window later (camera/screen/lights are re-materialized per
         # batch), its rows must be restored to their pre-function state first.

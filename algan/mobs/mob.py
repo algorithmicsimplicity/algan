@@ -15,6 +15,7 @@ from algan.animation.animatable import (
     animated_function,
 )
 from algan.animation.animation_contexts import AnimationContext, NoExtra, Off, Seq, Sync
+from algan.animation.timeline import TimelineManager
 from algan.constants.math import RADIANS_TO_DEGREES
 from algan.constants.rate_funcs import ease_out_exp, inversed
 from algan.constants.spatial import *
@@ -126,12 +127,14 @@ class Mob(Animatable):
             Mob,
         )
         self.singleton_batch_indexing = False
-        self.recursing = True
         self.exclude_from_boundary = False
+        self._prevent_recursive_sets = False
         super().__init__(*args, **kwargs)
         # Defines how attributes changes are inherited by children Mobs (e.g., additive for location, multiplicative for scale)
         self.attr_to_relations = defaultdict(lambda: (lambda x, y: y, lambda x, y: y))
-        additive_relation = (lambda x, y: x + y, lambda x, y: y - x)
+        additive_relation = (lambda x, y: x + y,
+                             lambda x, y: y - x
+                             )
         self.attr_to_relations.update(
             {
                 "location": additive_relation,
@@ -244,11 +247,11 @@ class Mob(Animatable):
 
         @property
         def prop(self):
-            return self.getattribute_animated(property_name)
+            return self.get_animated_attribute(property_name)
 
         @prop.setter
         def prop(self, value):
-            return self.setattr_absolute(property_name, value)
+            return self.set_animated_attribute(property_name, value)
 
         setattr(class_to_attach_to, property_name, prop)
 
@@ -299,6 +302,7 @@ class Mob(Animatable):
             mob (Mob): The Mob whose time indices will be copied.
 
         """
+        return self
         time_inds = mob.data
         if (time_inds.time_inds_materialized is not None and
             (self.data.time_inds_materialized is None or
@@ -321,136 +325,6 @@ class Mob(Animatable):
             ).contiguous()
         return value
 
-    # -- batched hierarchy writes -------------------------------------------
-    #
-    # A recursive attribute change (move, rotate, color pulse, ...) used to be
-    # a Python recursion through every descendant Mob, each doing its own
-    # tensor read/write and history bookkeeping.  Since all animated
-    # attributes now live in rows of the global attribute buffers, the same
-    # change is applied as ONE tensor operation over the concatenated row
-    # indices of all descendants, with ONE entry in the global modification
-    # log.  The per-child recursion remains as the fallback for hierarchies /
-    # changes the batch can't represent (per-point changes that need
-    # parent_batch_sizes expansion, shared-data sub-mobs, ...).
-
-    def _hierarchy_write_plan(self, key, include_self=True, allow_missing=False):
-        """The concatenated global-buffer rows of ``key`` over self and all
-        descendants (cached until the hierarchy or row allocation changes).
-        Returns None when this hierarchy can't take the batched path, or the
-        string "empty" when there is simply nothing to write."""
-        from algan.animation.global_state import GlobalAnimationState
-
-        gs = GlobalAnimationState.instance()
-        cache = self.__dict__.get("_hier_plan_cache")
-        if cache is None:
-            cache = {}
-            self.__dict__["_hier_plan_cache"] = cache
-        cache_key = (key, include_self, allow_missing)
-        entry = cache.get(cache_key)
-        if entry is not None and entry[0] == gs.topology_version:
-            return entry[1]
-        plan = self._build_hierarchy_write_plan(key, include_self, allow_missing)
-        cache[cache_key] = (gs.topology_version, plan)
-        return plan
-
-    def _build_hierarchy_write_plan(self, key, include_self, allow_missing):
-        mobs = self.get_descendants(include_self=include_self)
-        buffer = None
-        rows_list = []
-        entries = []
-        for m in mobs:
-            d = getattr(m, "data", None)
-            if d is None or m.data_sub_inds is not None or key in d.side:
-                return None
-            rows = d.rows.get(key)
-            if rows is None:
-                if hasattr(m, key):
-                    # The attribute exists through some other mechanism
-                    # (computed property, ...): only the per-mob path knows
-                    # how to write it.
-                    return None
-                if allow_missing:
-                    continue
-                return None
-            if buffer is None:
-                buffer = rows.buffer
-            elif rows.buffer is not buffer:
-                return None
-            rows_list.append(rows.indices)
-            entries.append((m, rows.indices))
-        if buffer is None:
-            return "empty"
-        return dict(buffer=buffer, rows=torch.cat(rows_list), entries=entries)
-
-    def _batched_hierarchy_apply(self, key, transform, include_self=True,
-                                 allow_missing=False):
-        """Apply ``transform`` ([T?, R, W] -> broadcastable) to the ``key``
-        rows of self and all descendants in one batched tensor operation.
-        Records one global modification covering every (spawned) descendant.
-        Returns False when the batched path doesn't apply (caller falls back
-        to the per-child recursion)."""
-        ctx = self.animation_manager.context
-        if ctx.trace_mode:
-            return False
-        plan = self._hierarchy_write_plan(key, include_self, allow_missing)
-        if plan is None:
-            return False
-        if plan == "empty":
-            return True
-        buffer, rows, entries = plan["buffer"], plan["rows"], plan["entries"]
-        d = self.data
-        if d.time_inds_materialized is None:
-            old = buffer.values[rows]  # gathered copy of the current values
-            new = transform(old.unsqueeze(0))
-            if ctx.record_attr_modifications:
-                spawned = [m.data.spawn_time() >= 0 for m, _ in entries]
-                if any(spawned):
-                    start_time = ctx.get_current_time()
-                    end_time = ctx.get_current_end_time()
-                    ctx.end_time = max(
-                        ctx.end_time, ctx.current_time + ctx.run_time_unit
-                    )
-                    if all(spawned):
-                        rec_rows, rec_old = rows, old
-                    else:
-                        rec_rows = torch.cat(
-                            [r for (m, r), s in zip(entries, spawned) if s]
-                        )
-                        rec_old = buffer.values[rec_rows]
-                    buffer.record(rec_rows, rec_old, start_time, end_time)
-                    for (m, _), s in zip(entries, spawned):
-                        if not s:
-                            continue
-                        h = m.data.history
-                        if key not in h.attribute_modifications:
-                            h.attribute_modifications[key].append(end_time)
-                        h.cached_history = None
-            buffer.values[rows] = new.squeeze(0) if new.dim() > 2 else new
-        else:
-            # Render time: make sure every descendant is bound to this window
-            # first (binding applies the spawn/despawn opacity mask, which
-            # must precede function writes, as in the per-child path), then
-            # read-modify-write the dense window state in one pass.
-            tm = d.time_inds_materialized
-            s_w, e_w = int(tm[0]), int(tm[-1]) + 1
-            time_sel = d.time_inds_active
-            for m, _ in entries:
-                md = m.data
-                if md is not d:
-                    if (
-                        md.time_inds_materialized is None
-                        or md.time_inds_materialized[0] != tm[0]
-                    ):
-                        md.animatable.set_state_pre_function_applications(s_w, e_w)
-                    # The per-child recursion aligned every descendant's
-                    # active time indices to the caller's (set_time_inds_to);
-                    # later dependent-mob reads rely on that.
-                    md.time_inds_active = time_sel
-            cur = d.window.read(buffer, rows, time_sel=time_sel)
-            new = transform(cur)
-            d.window.write(buffer, rows, new, time_sel=time_sel)
-        return True
-
     @animated_function(
         animated_args={"interpolation": 0.0}, unique_args=["key", "recursive"]
     )
@@ -460,7 +334,7 @@ class Mob(Animatable):
         change1: any,
         change2: any,
         interpolation: float = 1.0,
-        recursive: str = "True",
+        recursive: bool = True,
     ):
         """Applies an animated change to an attribute, interpolating between two target values.
 
@@ -481,8 +355,9 @@ class Mob(Animatable):
             Mob: The Mob instance itself, allowing for method chaining.
 
         """
+        #self._prepare_buffers(key, value)
+        current_value = self.get_animated_attribute(key, include_descendants=recursive, default=change1)
         relation_func = self.attr_to_relations[key][0]
-        current_value = self.__getattribute__(key)
         interpolation = (
             cast_to_tensor(interpolation) * 2
         )  # Double interpolation for 2-stage animation
@@ -495,6 +370,9 @@ class Mob(Animatable):
         ) * (1 - mask_interp_gt_1) + mask_interp_gt_1 * (
             change1 * (2 - interpolation) + (interpolation - 1) * change2
         )
+
+        self.setattr_and_record_modification(key, interpolated_value, include_descendants=recursive)
+        return self
 
         self.setattr_and_record_modification(
             key, relation_func(current_value, interpolated_value)
@@ -569,10 +447,19 @@ class Mob(Animatable):
         if new_color is None:
             new_color = self.color
         with Sync():
-            if color is not None:
-                self.apply_absolute_change_two("color", color, new_color, recursive="True" if recursive else "False")
-            if opacity is not None:
-                self.apply_absolute_change_two("opacity", opacity, opacity, recursive="True" if recursive else "False")
+            for attr, v1, v2 in [("color", color, new_color), ("opacity", opacity, opacity)]:
+                if v1 is None:
+                    continue
+                n = self.location.shape[-2]
+                try:
+                    self.apply_absolute_change_two(attr, *[cast_to_tensor(_).expand(-1,n,-1)
+                        for _ in [v1, v2]], recursive=recursive)
+                except:
+                    print('debug')
+            #if color is not None:
+            #    self.apply_absolute_change_two("color", color, new_color, recursive=recursive)
+            #if opacity is not None:
+            #    self.apply_absolute_change_two("opacity", opacity, opacity, recursive=recursive)
         return self
 
     def wave_color(
@@ -626,309 +513,58 @@ class Mob(Animatable):
             )
         return self
 
-    @animated_function(
-        animated_args={"interpolation": 0.0},
-        unique_args=["key", "recursive", "relation_key"],
-    )
-    def apply_relative_change(
-        self,
-        key: str,
-        change: any,
-        interpolation: float = 1.0,
-        recursive: str = "True",
-        relation_key: str = "None",
-    ) -> Mob:
-        """Applies an animated relative change to an attribute.
+    def _prepare_buffers(self, key, value):
+        tm = TimelineManager.instance()
+        tm.add_mob_attr(self, key, value, add_mob=False)
+        tl = tm.attr_to_timeline[key]
+        if self.id not in tl.mob_id_to_inds:
+            self._try_add_to_timeline(key, value)
+            return self
+        current_inds = tl.mob_id_to_inds[self.id]
+        value = cast_to_tensor(value)
+        if current_inds.shape[0] == value.shape[-2]:
+            return self
+        current_value = self.get_animated_attribute(key, value, include_descendants=False)
+        if value.shape[-2] == 1:
+            return self
+        if current_value.shape[-2] != 1:
+            raise ValueError(f"Attempting to set {key} which currently has value of shape {current_value.shape}"
+                             f"to new value with shape {value.shape}, which is not broadcastable.")
+        tl.add(self, current_value.expand(-1, value.shape[-2], -1), overwrite=True)
+        return self
 
-        The `change` is scaled by `interpolation` and then combined with the
-        current attribute value using a predefined relation (e.g., addition
-        for location, multiplication for scale).
-
-        parameters
-        ----------
-            key (str): The name of the attribute to change.
-            change (Any): The relative change to apply (e.g., a displacement vector, a scaling factor).
-            interpolation (float, optional): The interpolation factor for the change.
-                A value of 0.0 means no change; 1.0 applies the full `change`.
-                Defaults to 1.0.
-            recursive (str, optional): If equal to "True", applies the change recursively
-                to all child Mobs. Defaults to "True".
-            relation_key (str, optional): The key to look up the specific relation function
-                (how the `change` is combined with the current value). If "None",
-                `key` is used as the relation key. Defaults to "None".
-
-        Returns
-        -------
-            Mob: The Mob instance itself, allowing for method chaining.
-
-        """
+    @animated_function(animated_args={"interpolation": 0.0})
+    def _apply_change(self, attr, change, recursive=True, interpolation=1.0):
         change = change * interpolation
-        relation = self.attr_to_relations[relation_key][0]
+        current_value = self.get_animated_attribute(attr, include_descendants=recursive)
+        new_value = current_value + change
+        return self.setattr_and_record_modification(attr, new_value, include_descendants=recursive)
 
-        # Batched path: a change that is uniform over the batch dimension is
-        # applied to the rows of the whole hierarchy in one tensor op
-        # (per-point changes need the per-child parent_batch_sizes expansion
-        # below).
-        if (
-            recursive == "True"
-            and isinstance(change, torch.Tensor)
-            and change.shape[-2] == 1
-            and self._batched_hierarchy_apply(
-                key, lambda cur: relation(cur, change)
-            )
-        ):
-            return self
+    @animated_function(animated_args={"interpolation": 0.0})
+    def _apply_set(self, attr, value, recursive=True, interpolation=1.0):
+        new_value = value * interpolation
+        return self.setattr_and_record_modification(attr, new_value, include_descendants=recursive)
 
-        current_value = self.__getattribute__(key)
-
-        self.setattr_and_record_modification(key, relation(current_value, change))
-        if recursive == "True":
-            for c in self.children:
-                c.set_time_inds_to(self)
-                change2 = change
-                if c.parent_batch_sizes is not None:
-
-                    def expand(x):
-                        if x.shape[-2] == 1:
-                            x = x.expand(
-                                torch.Size(
-                                    [
-                                        *([-1 for _ in range(x.dim() - 2)]),
-                                        len(c.parent_batch_sizes),
-                                        -1,
-                                    ]
-                                )
-                            ).contiguous()
-                        return x
-
-                    change2 = torch.repeat_interleave(
-                        expand(change2), c.parent_batch_sizes, -2
-                    )
-                c.apply_relative_change(
-                    key,
-                    change2,
-                    interpolation=1,
-                    recursive=recursive,
-                    relation_key=relation_key,
-                )
-        return self
-
-    @animated_function(animated_args={"interpolation": 0.0}, unique_args=["key"])
-    def apply_set_value(
-        self, key: str, change: any, interpolation: float = 1.0
-    ) -> Mob:
-        """Sets an attribute's value, interpolating from its current value to the target `change`.
-
-        This is a direct linear interpolation (lerp) from the current value to the target,
-        rather than applying a relative change.
-
-        parameters
-        ----------
-            key (str): The name of the attribute to set.
-            change (Any): The target value for the attribute (e.g., a specific location, a final color).
-            interpolation (float, optional): The interpolation factor.
-                0.0 means the attribute remains its current value; 1.0 means it becomes `change`.
-                Defaults to 1.0.
-
-        Returns
-        -------
-            Mob: The Mob instance itself, allowing for method chaining.
-
-        """
-        current_value = self.__getattribute__(key)
-        try:
-            # Direct linear interpolation
-            interpolated_value = (
-                current_value * (1 - interpolation) + interpolation * change
-            )
-        except RuntimeError:
-            # Handle cases where interpolation tensor dimensions don't match exactly,
-            # typically for batched values where interpolation might need expansion.
-            # This logic ensures the interpolation tensor matches the batch dimensions of the value.
-            interpolation = torch.cat(
-                (
-                    interpolation,
-                    torch.zeros_like(
-                        current_value[
-                            ...,
-                            -(current_value.shape[-2] - interpolation.shape[-2]) :,
-                            :,
-                        ]
-                    ),
-                ),
-                -2,
-            )
-            interpolated_value = (
-                current_value * (1 - interpolation) + interpolation * change
-            )
-        self.setattr_and_record_modification(key, interpolated_value)
-        return self
-
-    @animated_function(
-        animated_args={"interpolation": 0.0}, unique_args=["key", "recursive"]
-    )
-    def apply_absolute_change(
-        self, key: str, change: any, interpolation: float = 1.0, recursive: str = "True"
-    ) -> Mob:
-        """Applies an animated absolute change to an attribute, interpolating to a target value.
-
-        This method smoothly transitions the attribute's value from its current state
-        to the specified `change` value over time, according to the `interpolation` factor.
-
-        parameters
-        ----------
-            key (str): The name of the attribute to change (e.g., 'location', 'opacity').
-            change (Any): The target absolute value for the attribute.
-            interpolation (float, optional): The interpolation factor.
-                0.0 means no change from the current value; 1.0 means the attribute becomes `change`.
-                Defaults to 1.0.
-            recursive (str, optional): If equal to "True", applies the change recursively
-                to all child Mobs. Defaults to "True".
-
-        Returns
-        -------
-            Mob: The Mob instance itself, allowing for method chaining.
-
-        """
-        original_change_value = change  # Store original to propagate to children
-        # Batched path: every descendant interpolates its own current value
-        # toward the same target, so the whole hierarchy is one tensor op when
-        # the target and interpolation are uniform over the batch dimension.
-        if (
-            recursive == "True"
-            and isinstance(change, torch.Tensor)
-            and change.shape[-2] == 1
-            and (
-                not isinstance(interpolation, torch.Tensor)
-                or interpolation.shape[-2] == 1
-            )
-        ):
-            relation_batched = self.attr_to_relations[key][0]
-
-            def transform(cur, change=change, interpolation=interpolation):
-                interpolated = torch.lerp(cur, change, interpolation)
-                return relation_batched(cur, interpolated)
-
-            if self._batched_hierarchy_apply(key, transform, allow_missing=True):
-                return self
-        if hasattr(self, key):
-            relation_func = self.attr_to_relations[key][0]
-            current_value = self.__getattribute__(key)
-            try:
-                # Direct linear interpolation
-                interpolated_value = (
-                    current_value * (1 - interpolation) + interpolation * change
-                )
-            except RuntimeError:
-                # Adjust interpolation tensor dimensions if necessary for batching
-                interpolation = torch.cat(
-                    (
-                        interpolation,
-                        torch.zeros_like(
-                            current_value[
-                                ...,
-                                -(current_value.shape[-2] - interpolation.shape[-2]) :,
-                                :,
-                            ]
-                        ),
-                    ),
-                    -2,
-                )
-                interpolated_value = (
-                    current_value * (1 - interpolation) + interpolation * change
-                )
-            self.setattr_and_record_modification(
-                key, relation_func(current_value, interpolated_value)
-            )
-
-        if recursive == "True":
-            change = original_change_value
-            for c in self.children:
-                c.set_time_inds_to(self)
-                change2 = change
-                interpolation2 = interpolation
-                if c.parent_batch_sizes is not None:
-
-                    def expand(x):
-                        if x.shape[-2] == 1:
-                            x = x.expand(
-                                torch.Size(
-                                    [
-                                        *([-1 for _ in range(x.dim() - 2)]),
-                                        len(c.parent_batch_sizes),
-                                        -1,
-                                    ]
-                                )
-                            ).contiguous()
-                        return x
-
-                    change2 = torch.repeat_interleave(
-                        expand(change2), c.parent_batch_sizes, -2
-                    )
-                    if isinstance(interpolation2, torch.Tensor):
-                        interpolation2 = torch.repeat_interleave(
-                            expand(interpolation2), c.parent_batch_sizes, -2
-                        )
-                c.apply_absolute_change(
-                    key, change2, interpolation=interpolation2, recursive=recursive
-                )
-        return self
-
-    def setattr_basic(self, key: str, value: any) -> Mob:
-        """Sets an attribute's value directly without complex animation logic.
-
-        If the attribute is animatable and an animation context is active,
-        this will still record the change as a step-change (instantaneous transition).
-        This method does not support recursive application to children. For animated or
-        recursive changes, use `setattr_absolute` or `setattr_relative`.
-
-        parameters
-        ----------
-            key (str): The name of the attribute to set.
-            value (Any): The new value for the attribute.
-
-        Returns
-        -------
-            Mob: The Mob instance itself, allowing for method chaining.
-
-        """
+    #@animated_function(animated_args={"interpolation": 0.0})
+    def set_animated_attribute(self, attr, value, recursive=True):
+        if self._prevent_recursive_sets:
+            recursive = False
         value = cast_to_tensor(value)
-        if not hasattr(self, "data"):
-            # If data is not initialized, set attribute directly
-            self.__setattr__(f"_{key}", value)
-            return self
-        if not hasattr(self, key):
-            # If attribute doesn't exist yet as a property, store in data_dict_active
-            self.data.data_dict_active[key] = value
-            return self
 
-        # For existing animatable attributes, record as an instantaneous "set value"
-        self.apply_set_value(key, value)
+        current_value = self.get_animated_attribute(attr, include_descendants=recursive, default=value)
+        change = value - current_value
+        self._apply_change(attr, change, recursive=recursive)
         return self
 
-    def setattr_relative(
-        self, key: str, value: any, relation_key: str | None = None
-    ) -> Mob:
-        """Sets an attribute by applying a relative change.
+        #interpolated_value = torch.lerp(current_value, value, interpolation)
+        #relative_change = inverse_relation_func(current_value, interpolated_value)
+        change = inverse_relation_func(current_value, value)# * interpolation
+        initial_change = inverse_relation_func(current_value, current_value)
+        self._apply_relative_interpolation(attr, initial_change, change, recursive=recursive)
+        return self
 
-        This method calculates the `change` needed to transition from the current
-        value to the target `value` based on the inverse of the predefined relation.
-        It then applies this `change` relatively to all children.
-
-        parameters
-        ----------
-        key
-            The name of the attribute to set.
-        value
-            The target value for the attribute.
-        relation_key
-            The key to use for looking up the relation functions. If None, `key` itself is used.
-
-        Returns
-        -------
-        Mob: The Mob instance itself, allowing for method chaining.
-
-        """
+    #@animated_function(animated_args={"interpolation": 0.0})
+    def set_animated_attribute2(self, attr, value, recursive=True, relative=False, interpolation=1.0):
         if self.animation_manager.context.trace_mode:
             self.animation_manager.context.traced_mobs = (
                 self.animation_manager.context.traced_mobs.union(
@@ -936,64 +572,25 @@ class Mob(Animatable):
                 )
             )
             return self
+
+        if self._prevent_recursive_sets:
+            recursive = False
+        key = attr
         value = cast_to_tensor(value)
-        if not hasattr(self, "data"):
-            self.__setattr__(f"_{key}", value)
-            return self
-        if not hasattr(self, key):
-            self.data.data_dict_active[key] = value
-            return self
+        relation_func, inverse_relation_func = self.attr_to_relations[key]
 
-        resolved_relation_key = key if relation_key is None else relation_key
-        # Get the relative and inverse relative functions for the attribute
-        _, inverse_relation_func = self.attr_to_relations[resolved_relation_key]
-        current_value = self.__getattribute__(key)
-        # Calculate the 'change' that, when applied relatively, results in 'value'
-        change = inverse_relation_func(current_value, value)
-        # Apply the calculated relative change, respecting recursion flag
-        return self.apply_relative_change(
-            key,
-            change,
-            recursive="True" if self.recursing else "False",
-            relation_key=resolved_relation_key,
-        )
+        current_value = self.get_animated_attribute(key, include_descendants=False, default=value)
 
-    def setattr_absolute(self, key: str, value: any) -> Mob:
-        """Sets an attribute to a value absolutely, animating the transition.
+        #interpolated_value = torch.lerp(current_value, value, interpolation)
+        #relative_change = inverse_relation_func(current_value, interpolated_value)
+        change = inverse_relation_func(current_value, value)# * interpolation
+        initial_change = inverse_relation_func(current_value, current_value)
+        self._apply_relative_interpolation(attr, initial_change, change, recursive=recursive)
+        return self
 
-        This method directly interpolates the attribute's value from its current
-        state to the specified `value`.
-
-        Parameters
-        ----------
-        key
-            The name of the attribute to set.
-        value
-            The target absolute value.
-
-        Returns
-        -------
-        Mob: The Mob instance itself, allowing for method chaining.
-
-        """
-        if self.animation_manager.context.trace_mode:
-            self.animation_manager.context.traced_mobs = (
-                self.animation_manager.context.traced_mobs.union(
-                    set(self.get_descendants())
-                )
-            )
-            return self
-        value = cast_to_tensor(value)
-        if not hasattr(self, "data"):
-            self.__setattr__(f"_{key}", value)
-            return self
-        if not hasattr(self, key):
-            self.data.data_dict_active[key] = value
-            return self
-
-        return self.apply_absolute_change(
-            key, value, recursive="True" if self.recursing else "False"
-        )
+        #child_value = self.get_animated_attribute(attr, include_descendants=recursive)
+        #new_child_value = relation_func(child_value, relative_change)
+        #self.setattr_and_record_modification(attr, new_child_value, include_descendants=recursive)
 
     @property
     def location(self) -> torch.Tensor:
@@ -1003,11 +600,18 @@ class Mob(Animatable):
         maintaining child Mob positions relative to the parent..
 
         """
-        return self.getattribute_animated("location")
+        return self.get_animated_attribute("location")
 
     @location.setter
     def location(self, location: torch.Tensor):
-        self.setattr_relative("location", location)
+        recursive = not self._prevent_recursive_sets
+        value = cast_to_tensor(location)
+        attr = "location"
+
+        current_value = self.get_animated_attribute(attr, include_descendants=False, default=value)
+        change = value - current_value
+        self._apply_change(attr, change, recursive=recursive)
+        return self
 
     @property
     def basis(self) -> torch.Tensor:
@@ -1021,7 +625,7 @@ class Mob(Animatable):
         maintaining child Mob positions relative to the parent.
 
         """
-        return self.getattribute_animated("basis")
+        return self.get_animated_attribute("basis")
 
     @property
     def normalized_basis(self) -> torch.Tensor:
@@ -1033,140 +637,26 @@ class Mob(Animatable):
             unsquish(self.basis, -1, 3) / self.scale_coefficient.unsqueeze(-1), -2, -1
         )
 
-    def set_basis_inner(
-        self,
-        parent_location: torch.Tensor,
-        old_basis: torch.Tensor,
-        new_basis: torch.Tensor,
-    ) -> Mob:
-        """Internal method to set the basis of a child Mob relative to its parent,
-        ensuring its global position is maintained despite parent's basis change.
-
-        """
-        if self.parent_batch_sizes is not None:
-            # Expand parent data to match child's batch size for batched operations
-            def expand_for_child(x: torch.Tensor) -> torch.Tensor:
-                return x.expand(torch.Size([-1, self.parent_batch_sizes.shape[0], -1]))
-
-            parent_location, old_basis, new_basis = [
-                torch.repeat_interleave(
-                    expand_for_child(val), self.parent_batch_sizes, -2
-                )
-                for val in [parent_location, old_basis, new_basis]
-            ]
-
-        local_coords = map_global_to_local_coords(
-            parent_location, old_basis, self.location
-        )
-        new_global_location = map_local_to_global_coords(
-            parent_location, new_basis, local_coords
-        )
-        self.setattr_and_record_modification("location", new_global_location)
-
-        if self.recursing:
-            for child in self.children:
-                child.set_basis_inner(parent_location, old_basis, new_basis)
-        return self
-
-    def set_basis_interpolated(self, *args, **kwargs) -> Mob:
-        """Wrapper around `_set_basis_interpolated` to handle recursive flag.
-        Sets the Mob's basis, interpolating from the current basis to the target.
-
-        """
-        if self.animation_manager.context.trace_mode:
-            self.animation_manager.context.traced_mobs = (
-                self.animation_manager.context.traced_mobs.union(
-                    set(self.get_descendants())
-                )
-            )
-            return self
-        return self._set_basis_interpolated(
-            *args, **kwargs, recursive="True" if self.recursing else "False"
-        )
-
-    @animated_function(
-        animated_args={"interpolation": 0}, unique_args=["relation_key", "recursive"]
-    )
-    def _set_basis_interpolated(
-        self,
-        basis: torch.Tensor,
-        interpolation: float = 1,
-        relation_key: str = "basis",
-        recursive: str = "True",
-    ) -> Mob:
-        """Internal method to set the Mob's basis, interpolating from the current basis to the target.
-
-        This method also ensures that child Mobs maintain their positions
-        relative to this Mob during the basis change by adjusting their locations.
-
-        Parameters
-        ----------
-        basis
-            The target 3x3 basis matrix (flattened to 9 elements).
-        interpolation
-            Interpolation factor (0.0 to 1.0). 0.0 means current basis, 1.0 means target `basis`.
-        relation_key
-            Key for the relation function, typically 'basis' or 'scale_coefficient'.
-        recursive
-            If "True", applies the rotation recursively to children, maintaining their relative positions.
-
-        Returns
-        -------
-        Mob: The Mob instance itself, allowing for method chaining.
-
-        """
-        old_basis = self.basis if hasattr(self, "basis") else basis
-        interpolated_basis = old_basis * (1 - interpolation) + interpolation * basis
-
-        if recursive == "True":
-            # The per-child location adjustment below (set_basis_inner) needs
-            # every descendant aligned to this mob's time indices; the batched
-            # path handles binding itself, so the O(descendants) prep loop
-            # only runs when we will fall back to the recursion.
-            fast_inner = (
-                isinstance(old_basis, torch.Tensor)
-                and old_basis.shape[-2] == 1
-                and isinstance(interpolated_basis, torch.Tensor)
-                and interpolated_basis.shape[-2] == 1
-                and not self.animation_manager.context.trace_mode
-                and self._hierarchy_write_plan("location", include_self=False)
-                is not None
-            )
-            if not fast_inner:
-                ds = self.get_descendants(include_self=False)
-                [d.set_time_inds_to(self) for d in ds]
-
-        # Temporarily set recursing flag to control setattr_relative behavior
-        original_recursing_state = self.recursing
-        self.recursing = recursive == "True"
-        self.setattr_relative("basis", interpolated_basis, relation_key)
-        self.recursing = original_recursing_state  # Restore original state
-
-        if recursive == "True":
-            # Adjust children's locations to maintain relative positions after basis change
-            parent_location = self.location
-            if not (
-                fast_inner
-                and isinstance(parent_location, torch.Tensor)
-                and parent_location.shape[-2] == 1
-                and self._batched_hierarchy_apply(
-                    "location",
-                    lambda cur, pl=parent_location, ob=old_basis,
-                    nb=interpolated_basis: map_local_to_global_coords(
-                        pl, nb, map_global_to_local_coords(pl, ob, cur)
-                    ),
-                    include_self=False,
-                )
-            ):
-                for child in self.children:
-                    child.set_basis_inner(
-                        self.location, old_basis, interpolated_basis
-                    )
-        return self
-
     @basis.setter
     def basis(self, basis: torch.Tensor):
-        self.set_basis_interpolated(basis)
+        recursive = not self._prevent_recursive_sets
+        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=basis)
+        my_loc = self.get_animated_attribute('location', include_descendants=False)
+        child_loc = self.get_animated_attribute('location', include_descendants=recursive)
+        local_coords = map_global_to_local_coords(my_loc, my_basis, child_loc)
+        new_child_location = map_local_to_global_coords(my_loc, basis, local_coords)
+
+        value = cast_to_tensor(basis)
+        attr = "basis"
+
+        relation, inverse_relation = self.attr_to_relations[attr]
+        change = inverse_relation(my_basis, basis)
+        child_basis = self.get_animated_attribute('basis', include_descendants=recursive)
+        new_child_basis = relation(child_basis, change)
+
+        with Sync():
+            self._apply_set("location", new_child_location, recursive=recursive)
+            self._apply_set("basis", new_child_basis, recursive=recursive)
 
     @property
     def scale_coefficient(self) -> torch.Tensor:
@@ -1191,7 +681,7 @@ class Mob(Animatable):
             -2,
             -1,
         )
-        self.set_basis_interpolated(new_basis, relation_key="scale_coefficient")
+        self.basis = new_basis
         return self
 
     def clear_cache(self):
@@ -1940,19 +1430,6 @@ class Mob(Animatable):
         for child in self.children:
             parts.extend(child.get_parts_as_mobs())
         return parts
-
-    def scale_global_axes(self, scale_factor, recursive: bool = True):
-        scale_factor = cast_to_tensor(scale_factor)
-        new_basis = squish(unsquish(self.basis, -1, 3) * scale_factor.unsqueeze(-2), -2, -1)
-        self.set_basis_interpolated(new_basis, relation_key="scale_coefficient")
-        return self
-        if recursive:
-            for d in self.get_descendants(include_self=False):
-                d.setattr_and_record_modification('basis',
-                            squish(unsquish(d.basis, -1, 3) * scale_factor.unsqueeze(
-                                                                -2), -2, -1))
-        return self.setattr_and_record_modification('basis',
-                    squish(unsquish(self.basis, -1, 3) * scale_factor.unsqueeze(-2), -2, -1))
 
     def scale(
         self, scale_factor: float | torch.Tensor, recursive: bool = True
@@ -2856,10 +2333,10 @@ class Mob(Animatable):
             The Mob instance itself, allowing for method chaining.
 
         """
-        self.check_properties_are_valid(kwargs.keys())
-        with Sync():
-            for key, value in kwargs.items():
-                self.setattr_non_recursive(key, value)
+        prs = self._prevent_recursive_sets
+        self._prevent_recursive_sets = True
+        self.set(**kwargs)
+        self._prevent_recursive_sets = prs
         return self
 
     def set_shader(self, shader):
@@ -2885,7 +2362,7 @@ class Mob(Animatable):
             If set_shader is used on an already spawned mob.
 
         """
-        if self.data.spawn_time() >= 0:
+        if self.data.lifespan.start() >= 0:
             raise ModifiedProtectedAttributeError(
                 "You are attempting to change the shader"
                 "of a mob that is already spawned. This is not allowed."
@@ -3031,7 +2508,7 @@ class Mob(Animatable):
         """
         from algan.rendering.shaders.materials import _to_color5
 
-        if self.data.spawn_time() >= 0:
+        if self.data.lifespan.start() >= 0:
             raise ModifiedProtectedAttributeError(
                 "You are attempting to set the material "
                 "of a mob that is already spawned. This is not allowed. "

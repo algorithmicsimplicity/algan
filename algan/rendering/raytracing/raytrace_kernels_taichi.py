@@ -254,9 +254,19 @@ def _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
     Returns the bitmask of intersected children (bit c = child
     ``BVH_ARITY * blk + 1 + c``).
 
+    The per-child predicate is float-for-float the retired per-node walk's
+    box test, and callers re-validate pending masks whenever the depth window
+    tightens (see the walk skeletons), so the set of nodes whose leaf slots
+    get tested is *bit-identical* to the old walk's -- this matters because
+    triangle hits routinely lie exactly on their bounding boxes' faces, where
+    a test evaluated against a stale (looser) window can admit hits within a
+    float ulp of the ``DEPTH_TIE_EPSILON`` acceptance boundary that the old
+    walk never tested (observed as epsilon-level image changes).
+
     f16 blocks decode exactly (f16 -> f32 casts are lossless) to the
-    conservatively out-rounded bounds baked at build time, so the mask is a
-    superset of the exact-box mask and the rendered output is unchanged.
+    conservatively out-rounded bounds baked at build time: never a false
+    cull, but the *looser* boxes shift those same boundary cracks, so f16 is
+    epsilon-level non-identical and stays opt-in (``ALGAN_BVH_BLOCK_F16``).
     """
     lox = blocks[blk, 0]
     loy = blocks[blk, 1]
@@ -302,6 +312,76 @@ def _lowest_bit(mask):
         if mask & (1 << k) != 0:
             c = k
     return c
+
+
+@ti.func
+def _test_root(f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
+    """Box test of the tree's root, reconstructed from block 0: the retired
+    per-node walk tested the root's stored row, which the builders computed
+    as the (min/max) union of its children -- min/max are exact, so unioning
+    block 0's lanes here recovers the very same floats and the test is
+    bit-identical to the old root visit. Matters only for rays grazing the
+    scene bound (a hit exactly on the root box face can sit within an ulp of
+    the test boundary), but bit-parity needs it.
+    """
+    lox = blocks[0, 0]
+    loy = blocks[0, 1]
+    loz = blocks[0, 2]
+    hix = blocks[0, 3]
+    hiy = blocks[0, 4]
+    hiz = blocks[0, 5]
+    ts_a = blocks[0, 6]
+    ts_b = blocks[0, 7]
+    lo_x = ti.cast(lox[0], ti.f32)
+    lo_y = ti.cast(loy[0], ti.f32)
+    lo_z = ti.cast(loz[0], ti.f32)
+    hi_x = ti.cast(hix[0], ti.f32)
+    hi_y = ti.cast(hiy[0], ti.f32)
+    hi_z = ti.cast(hiz[0], ti.f32)
+    t0 = 0
+    t1 = 0
+    if ti.static(BLOCK_F16):
+        t0 = ti.cast(ti.bit_cast(ts_a[0], ti.u16), ti.i32)
+        t1 = ti.cast(ti.bit_cast(ts_b[0], ti.u16), ti.i32)
+    else:
+        ts = ti.bit_cast(ts_a[0], ti.i32)
+        t0 = ts & 0xFFFF
+        t1 = (ts >> 16) & 0x7FFF
+    for c in ti.static(range(1, BVH_ARITY)):
+        lo_x = ti.min(lo_x, ti.cast(lox[c], ti.f32))
+        lo_y = ti.min(lo_y, ti.cast(loy[c], ti.f32))
+        lo_z = ti.min(lo_z, ti.cast(loz[c], ti.f32))
+        hi_x = ti.max(hi_x, ti.cast(hix[c], ti.f32))
+        hi_y = ti.max(hi_y, ti.cast(hiy[c], ti.f32))
+        hi_z = ti.max(hi_z, ti.cast(hiz[c], ti.f32))
+        tc0 = 0
+        tc1 = 0
+        if ti.static(BLOCK_F16):
+            tc0 = ti.cast(ti.bit_cast(ts_a[c], ti.u16), ti.i32)
+            tc1 = ti.cast(ti.bit_cast(ts_b[c], ti.u16), ti.i32)
+        else:
+            ts = ti.bit_cast(ts_a[c], ti.i32)
+            tc0 = ts & 0xFFFF
+            tc1 = (ts >> 16) & 0x7FFF
+        t0 = ti.min(t0, tc0)
+        t1 = ti.max(t1, tc1)
+    hit = False
+    if (t0 <= f) and (f <= t1):
+        tx0 = (lo_x - ro[0]) * inv_rd[0]
+        tx1 = (hi_x - ro[0]) * inv_rd[0]
+        t_near = ti.min(tx0, tx1)
+        t_far = ti.max(tx0, tx1)
+        ty0 = (lo_y - ro[1]) * inv_rd[1]
+        ty1 = (hi_y - ro[1]) * inv_rd[1]
+        t_near = ti.max(t_near, ti.min(ty0, ty1))
+        t_far = ti.min(t_far, ti.max(ty0, ty1))
+        tz0 = (lo_z - ro[2]) * inv_rd[2]
+        tz1 = (hi_z - ro[2]) * inv_rd[2]
+        t_near = ti.max(t_near, ti.min(tz0, tz1))
+        t_far = ti.min(t_far, ti.max(tz0, tz1))
+        hit = ((t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi)
+               and (t_far >= t_lo))
+    return hit
 
 
 @ti.func

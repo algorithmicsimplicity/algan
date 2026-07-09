@@ -4,6 +4,7 @@ from typing import Any, Callable, Optional
 from moviepy import AudioFileClip
 
 from algan import SceneManager
+from algan.animation.timeline import TimelineSpan
 from algan.sound.audio_effect import AudioEffect, AudioManager
 from algan.constants import rate_funcs
 from dataclasses import dataclass, field
@@ -38,9 +39,6 @@ class AnimationManager:
                 record_attr_modifications=True,
                 spawn_at_end=False,
             )
-            cls._instance.context.begin_time = 0
-            cls._instance.context.current_time = 0
-            cls._instance.context.end_time = 0
             cls._instance.execution_count = 0
         return cls._instance
 
@@ -156,6 +154,7 @@ class AnimationContext:
             self.child_contexts = list()
         if self.kwargs is None:
             self.kwargs = dict()
+        self.timespan = TimelineSpan()
 
     def __enter__(self):
         am = AnimationManager.instance()
@@ -203,35 +202,24 @@ class AnimationContext:
         new_kwargs = self.kwargs
         self.kwargs = self.prev_context.kwargs | new_kwargs
 
-        self.begin_time = self.prev_context.current_time
-        self.current_time = self.begin_time
-        self.end_time = self.begin_time
-        self.rescaler = lambda x: x
+        t = self.prev_context.timespan.current_time
+        self.timespan = TimelineSpan(t, t, t)
         return self
 
     def add_child_context(self, c):
         self.child_contexts.append(c)
 
-    def get_rescaling_time(self, t):
-        return lambda t=t: self.get_rescaled(t)
-
-    def get_current_time(self):
-        return self.get_rescaling_time(self.current_time)
+    def get_timespan(self):
+        return self.timespan
 
     def get_end_time(self):
-        return self.get_rescaling_time(self.end_time)
+        return self.timespan.get_time(self.timespan.original_end)
+
+    def get_current_time(self):
+        return self.timespan.get_current_time()
 
     def get_current_end_time(self):
-        return self.get_rescaling_time(self.current_time + self.run_time_unit)
-
-    def get_rescaled(self, x):
-        if not self.finished:
-            return x
-        my_run_time = max(self.end_time - self.begin_time, 1e-6)
-        parent_run_time = max(self.end_time_r - self.begin_time_r, 1e-6)
-        return self.begin_time_r + (x - self.begin_time) * (
-            parent_run_time / my_run_time
-        )
+        return self.timespan.current_time + self.run_time_unit
 
     def add_mob(self, mob):
         self.new_mobs.append(mob)
@@ -250,7 +238,7 @@ class AnimationContext:
         )
 
     def rewind(self, num_frames):
-        self.current_time = self.current_time - num_frames
+        self.timespan.current_time = self.timespan.current_time - num_frames
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
         for c in self.child_contexts:
@@ -261,42 +249,41 @@ class AnimationContext:
         if self.ignored:
             return False
 
-        def rescale(x, b=self.begin_time, s=1):
+        def rescale(x, b=self.timespan.original_start, s=1):
             return (x - b) * s + b
 
         def rescale_run_time(context, s):
             for c in context.get_descendants(include_self=True):
-                c.begin_time_r = rescale(c.begin_time_r, s=s)
-                c.end_time_r = rescale(c.end_time_r, s=s)
+                c.timespan.start = rescale(c.timespan.start, s=s)
+                c.timespan.end = rescale(c.timespan.end, s=s)
             return False
 
         if self.same_run_time:
             max_run_time = 0
             for c in self.child_contexts:
-                max_run_time = max(max_run_time, c.end_time_r - c.begin_time_r)
+                max_run_time = max(max_run_time, c.timespan.end - c.timespan.start)
             for c in self.child_contexts:
-                rescale_run_time(c, max_run_time / (c.end_time_r - c.begin_time_r))
+                rescale_run_time(c, max_run_time / (c.timespan.end - c.timespan.start))
 
         if self.run_time is not None:
-            my_run_time = max(self.end_time - self.begin_time, 1e-6)
+            my_run_time = max(self.timespan.original_end - self.timespan.original_start, 1e-6)
             s = self.run_time / my_run_time
 
             for c in self.get_descendants(include_self=False):
-                c.begin_time_r = rescale(c.begin_time_r, s=s)
-                c.end_time_r = rescale(c.end_time_r, s=s)
-            self.begin_time_r = rescale(self.begin_time, s=s)
-            self.end_time_r = rescale(self.end_time, s=s)
-            self.current_time = rescale(self.current_time, s=s)
+                c.timespan.start = rescale(c.timespan.start, s=s)
+                c.timespan.end = rescale(c.timespan.end, s=s)
+            self.timespan.start = rescale(self.timespan.original_start, s=s)
+            self.timespan.end = rescale(self.timespan.original_end, s=s)
+            self.timespan.current_time = rescale(self.timespan.current_time, s=s)
         else:
-            self.begin_time_r = self.begin_time
-            self.end_time_r = self.end_time
+            self.timespan.start = self.timespan.original_start
+            self.timespan.end = self.timespan.original_end
         if self.combine_rate_func:
-
             def wrap(rate_func):
                 if rate_func is None:
                     return rate_func
                 rate_func.set_full_time(
-                    lambda s=self: s.begin_time_r, lambda s=self: s.end_time_r
+                    lambda s=self: s.timespan.start, lambda s=self: s.timespan.end
                 )
                 rate_func.time_set = True
                 return rate_func
@@ -307,14 +294,15 @@ class AnimationContext:
         self.finished = True
         am = AnimationManager.instance()
         am.context = self.prev_context
-        am.context.end_time = max(am.context.end_time, self.end_time_r)
-        if self.new_animation:
-            am.context.current_time = (
-                self.begin_time_r
-                + (self.end_time_r - self.begin_time_r) * am.context.lag_ratio
-            )
-        else:
-            am.context.current_time = self.current_time
+        if self.record_funcs:
+            am.context.timespan.original_end = max(am.context.timespan.original_end, self.timespan.end)
+            if self.new_animation:
+                am.context.timespan.current_time = (
+                    self.timespan.start
+                    + (self.timespan.end - self.timespan.start) * am.context.lag_ratio
+                )
+            else:
+                am.context.timespan.current_time = self.timespan.current_time
 
         if not (self.spawn_at_end and not am.context.spawn_at_end):
             return False
@@ -324,14 +312,15 @@ class AnimationContext:
         return False
 
     def increment_times(self):
-        self.end_time = max(self.end_time, self.current_time + self.run_time_unit)
-        self.current_time = self.current_time + self.run_time_unit * self.lag_ratio
+        #self.end_time = max(self.end_time, self.current_time + self.run_time_unit)
+        self.timespan.original_end = max(self.timespan.original_end, self.timespan.current_time + self.run_time_unit)
+        self.timespan.current_time = self.timespan.current_time + self.run_time_unit * self.lag_ratio
 
     def wait(self, t=None):
         if t is None:
             t = self.run_time_unit
-        self.end_time = max(self.end_time, self.current_time + t)
-        self.current_time = self.current_time + t * self.lag_ratio
+        self.timespan.original_end = max(self.timespan.original_end, self.timespan.current_time + t)
+        self.timespan.current_time = self.timespan.current_time + t * self.lag_ratio
 
     def on_create_extra(self, animatable):
         return self

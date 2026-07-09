@@ -114,10 +114,8 @@ class SceneManager:
 
     @classmethod
     def reset(cls):
-        from algan.animation.global_state import GlobalAnimationState
-
-        GlobalAnimationState.reset()
         AnimationManager.reset()
+        TimelineManager.reset()
         cls._instance = None
         return cls.instance()
 
@@ -197,6 +195,7 @@ KERNEL_SETTINGS.render_kernel = render_batch_raytraced
 
 from algan.animation.manim_animations import *
 from algan.animation.indication import *
+from algan.animation.timeline import TimelineManager
 
 
 def clear_cache():

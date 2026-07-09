@@ -54,7 +54,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         normals=None,
         border_width=None,
         border_color=None,
-        portion_of_curve_drawn=None,
         mob_center=None,
         grid_width=None,
         grid_height=None,
@@ -98,7 +97,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                 self.normals,
                 self.border_width,
                 self.border_color,
-                self.portion_of_curve_drawn,
                 self.glow_radius,
             ) = (
                 (torch.cat([(__) for __ in _], -2)).to(device)
@@ -108,7 +106,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                             triangle.normals,
                             triangle.border_width,
                             triangle.border_color,
-                            triangle.portion_of_curve_drawn,
                             triangle.glow_radius,
                         )
                         for triangle in triangle_collection
@@ -147,7 +144,6 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
             else:
                 self.colors = self.colors[..., (-self.num_texture_points):, :]
             self.padding = max(self.border_width.amax().ceil().long()+1, 2)
-            # self.portion_of_curve_drawn = self.portion_of_curve_drawn[...,0,:1]
             return
         self.corners = corners
         self.next_segment_inds = next_segment_inds
@@ -159,10 +155,9 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
         self.colors[..., -2:-1] += glow.unsqueeze(-2)
         self.colors[..., -1:] *= opacity.unsqueeze(-2)
         self.normals = normals
-        self.border_width, self.border_color, self.portion_of_curve_drawn, self.glow, self.glow_radius = (
+        self.border_width, self.border_color, self.glow, self.glow_radius = (
             border_width,
             border_color,
-            portion_of_curve_drawn,
             glow,
             cast_to_tensor(glow_radius).to(self.corners.device),
         )

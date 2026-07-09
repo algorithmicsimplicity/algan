@@ -109,7 +109,7 @@ class BezierCircuitCubic(Renderable):
         self.filled = filled
         self.empty = empty
         if self.empty:
-            self.color = self.color.set_opacity(0)
+            self.color = self.color.as_subclass(Color).set_opacity(0)
 
         texture_triangle_vertices = self.location.squeeze(0)
         if add_texture_grid:
@@ -148,13 +148,12 @@ class BezierCircuitCubic(Renderable):
             self.control_points.num_points_per_object = 4
             self.components = [self.texture_points, self.control_points]
 
-        self.portion_of_curve_drawn = cast_to_tensor(portion_of_curve_drawn)
         self.normals = normals
         self.is_primitive = True
         self.render_primitive = RENDERER_SETTINGS.bezier_circuit_primitive
 
     def get_animatable_attrs(self):
-        return {"border_width", "border_color", "portion_of_curve_drawn"}.union(
+        return {"border_width", "border_color"}.union(
             super().get_animatable_attrs()
         )
 
@@ -180,6 +179,7 @@ class BezierCircuitCubic(Renderable):
     def get_render_primitives(self):
         if self.empty:
             return None
+        self.control_points.location
         self.texture_points.set_time_inds_to(self)
         self.control_points.set_time_inds_to(self)
 
@@ -192,7 +192,6 @@ class BezierCircuitCubic(Renderable):
                 * self.scene.render_settings.resolution[1] * self.scene.render_settings.anti_alias_level
                 / (PREVIEW.resolution[1] * 2),
                 self.border_color,
-                self.portion_of_curve_drawn,
                 self.glow_radius,
             ],
             ignored_dims=[-1],
@@ -221,7 +220,7 @@ class BezierCircuitCubic(Renderable):
         )
 
     def _get_render_primitives(
-        self, x, tpc, loc, basis, o, n, g, bw, bc, pc, gr, num_segments_per_circuit=None
+        self, x, tpc, loc, basis, o, n, g, bw, bc, gr, num_segments_per_circuit=None
     ):
         num_control_points = 4  # cubic beziers
         # x = unsquish(x, -2, num_control_points)
@@ -293,7 +292,6 @@ class BezierCircuitCubic(Renderable):
             basis[..., -3:],
             bw,
             bc,
-            pc,
             loc,
             cast_to_tensor(self.grid_width).expand(-1, loc.shape[1], -1),
             cast_to_tensor(self.grid_height).expand(-1, loc.shape[1], -1),
