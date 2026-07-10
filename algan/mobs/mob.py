@@ -641,13 +641,20 @@ class Mob(Animatable):
         # scale in the same Sync) compose instead of overriding each other.
         my_basis = self.get_animated_attribute('basis', include_descendants=False, default=value)
         change = inverse_relation(my_basis, value)
-        self._apply_basis_change(change, default_basis=value)
+        # recursive must be passed as an explicit kwarg (not read from
+        # self._prevent_recursive_sets inside _apply_basis_change) so that it
+        # is recorded with the function application and replays correctly at
+        # render time, when _prevent_recursive_sets has been restored.
+        self._apply_basis_change(
+            change, default_basis=value, recursive=not self._prevent_recursive_sets
+        )
 
     @animated_function(animated_args={'interpolation': 0.0})
-    def _apply_basis_change(self, change, default_basis=None, interpolation=1.0):
+    def _apply_basis_change(
+        self, change, default_basis=None, recursive=True, interpolation=1.0
+    ):
         attr = "basis"
         relation, inverse_relation = self.attr_to_relations[attr]
-        recursive = not self._prevent_recursive_sets
 
         my_basis = self.get_animated_attribute('basis', include_descendants=False, default=default_basis)
         my_loc = self.get_animated_attribute('location', include_descendants=False)
@@ -1758,11 +1765,6 @@ class Mob(Animatable):
         for mob in self.get_descendants():
             mob.data.history = ModificationHistory()
             mob.data.lifespan.start = lambda: -1
-            # Re-allocate the mob's buffer rows (keeping current values): the
-            # old rows' recorded modifications stay with the old rows, so this
-            # mob's attribute history starts fresh.
-            for attr, rows in list(mob.data.rows.items()):
-                mob.data.alloc_rows_like(attr, rows.read().clone())
 
     def detach_history(self):
         """Detaches the Mob's current animation history into a new, independent clone of this Mob.
@@ -1776,17 +1778,43 @@ class Mob(Animatable):
         with Off(), NoExtra(priority_level=1):
             clone_mob = self.clone(reset_history=False, spawn=False)
             descendant_map = dict(zip(self.get_descendants(), clone_mob.get_descendants()))
-            for clone in clone_mob.get_descendants():
-                h = clone.data.history
-                for _, func_data in list(h.function_applications.items()):
-                    func_tuple = func_data[0]
-                    if isinstance(func_tuple, tuple) and len(func_tuple) == 2:
-                        func_callable, caller = func_tuple
-                        if caller in descendant_map:
-                            func_data[0] = (func_callable, descendant_map[caller])
 
-            for orig, clone in zip(self.get_descendants(), clone_mob.get_descendants()):
+            # Hand this mob's recorded history over to the clone. All recorded
+            # attribute edits reference this mob's current rows in the global
+            # attribute timelines, so the clone takes ownership of those rows,
+            # while this mob keeps the fresh rows allocated during cloning
+            # (which hold the current values and no history). Past function
+            # applications are re-targeted at the clone so that at render time
+            # they replay onto the old rows.
+            timeline = TimelineManager.instance()
+            for orig, clone in descendant_map.items():
+                for attr_timeline in timeline.attr_to_timeline.values():
+                    orig_inds = attr_timeline.mob_id_to_inds.get(orig.id)
+                    if orig_inds is None:
+                        continue
+                    clone_inds = attr_timeline.mob_id_to_inds.get(clone.id)
+                    if clone_inds is None:
+                        # The clone allocated no rows for this attr; give it
+                        # the old rows and allocate fresh rows (holding the
+                        # current values) for the original.
+                        del attr_timeline.mob_id_to_inds[orig.id]
+                        attr_timeline.mob_id_to_inds[clone.id] = orig_inds
+                        attr_timeline.add(
+                            orig, attr_timeline.get(orig_inds), overwrite=True
+                        )
+                    else:
+                        attr_timeline.mob_id_to_inds[orig.id] = clone_inds
+                        attr_timeline.mob_id_to_inds[clone.id] = orig_inds
+            for f in timeline.function_timeline.function_applications:
+                if f.caller in descendant_map:
+                    f.caller = descendant_map[f.caller]
+
+            for orig, clone in descendant_map.items():
+                # The clone inherits the original's spawn time (this mob is
+                # re-spawned at the current time below).
                 clone.data.lifespan.start = orig.data.lifespan.start
+                if "opacity" in timeline.attr_to_timeline:
+                    timeline.register_spawn(clone, clone.data.lifespan)
             clone_mob.despawn(animate=False)
             self.refresh_history()
             self.spawn(animate=False)
@@ -1906,6 +1934,9 @@ class Mob(Animatable):
 
         # Iterate over animatable attributes and expand their batch dimensions
         for attr in self.animatable_attrs:
+            if not hasattr(self, attr):
+                # Attr has no rows in the global attribute timeline yet.
+                continue
             value = cast_to_tensor(self.__getattribute__(attr))[
                 0
             ]  # Get the current value (first time step)
@@ -1934,10 +1965,11 @@ class Mob(Animatable):
                             )
                         )
                     )
-            # Stack the new batched values and squish back to original shape for storage
-            self.data.data_dict[attr] = squish(
-                torch.stack(new_batched_values, -3), -3, -2
-            ).unsqueeze(0)
+            # Stack the new batched values and write them back to the global
+            # attribute timeline, re-allocating this mob's rows for the new size.
+            self.setattr_and_rebatch_without_record(
+                attr, squish(torch.stack(new_batched_values, -3), -3, -2).unsqueeze(0)
+            )
         return self
 
     def reorder_batch_to_minimize_movement(self, target: Mob):
@@ -1983,6 +2015,9 @@ class Mob(Animatable):
         # Apply the same object permutation to every (non-broadcast) batched attribute so
         # all of this Mob's data stays consistent.
         for attr in self.animatable_attrs:
+            if not hasattr(self, attr):
+                # Attr has no rows in the global attribute timeline yet.
+                continue
             value = cast_to_tensor(self.__getattribute__(attr))[0]
             if (value.shape[-2] == 1) or (
                 value.shape[-2] % num_points_per_object != 0
@@ -1992,9 +2027,9 @@ class Mob(Animatable):
             if value_per_object.shape[-3] != num_objects:
                 continue
             value_per_object = value_per_object.index_select(-3, permutation)
-            self.data.data_dict[attr] = squish(
-                value_per_object, -3, -2
-            ).unsqueeze(0)
+            self.setattr_and_rebatch_without_record(
+                attr, squish(value_per_object, -3, -2).unsqueeze(0)
+            )
         return self
 
     def get_non_component_children(self):
@@ -2184,12 +2219,12 @@ class Mob(Animatable):
                         my_cs.append(my_c)
                         other_cs.append(other_c)
 
-                    new_self.data.data_dict["location"] = squish(
-                        torch.cat(my_cs, -3), -3, -2
-                    ).unsqueeze(0)
-                    other_mob.data.data_dict["location"] = squish(
-                        torch.cat(other_cs, -3), -3, -2
-                    ).unsqueeze(0)
+                    new_self.setattr_and_rebatch_without_record(
+                        "location", squish(torch.cat(my_cs, -3), -3, -2).unsqueeze(0)
+                    )
+                    other_mob.setattr_and_rebatch_without_record(
+                        "location", squish(torch.cat(other_cs, -3), -3, -2).unsqueeze(0)
+                    )
                 else:
                     batch_difference = (
                         other_mob.location.shape[-2] - new_self.location.shape[-2]
@@ -2206,7 +2241,9 @@ class Mob(Animatable):
 
                 # Set all animatable attributes non-recursively to match the target mob's values
                 for attr_name in new_self.animatable_attrs:
-                    if not hasattr(new_self, attr_name):
+                    if not hasattr(new_self, attr_name) or not hasattr(
+                        other_mob, attr_name
+                    ):
                         continue
                     # Use getattr to safely access attributes, as not all mobs may have all listed attributes
                     new_self.set_non_recursive(

@@ -233,7 +233,7 @@ class TimelineSpan:
         self._rescaled_end = value
 
 class FunctionApplicationEvent:
-    def __init__(self, function, caller, animated_args, kwargs, rate_func, time):
+    def __init__(self, function, caller, animated_args=None, kwargs=None, rate_func=None, time=None):
         self.function = function
         self.caller = caller
         self.animated_args = animated_args
@@ -244,17 +244,21 @@ class FunctionApplicationEvent:
 class FunctionTimeline:
     def __init__(self):
         self.function_applications = []
+        self.updaters = []
 
     def add(self, function_application):
         self.function_applications.append(function_application)
+
+    def add_updater(self, updater):
+        self.updaters.append(updater)
 
     def get_functions_for_times(self, times):
         return [f for f in self.function_applications if ((f.time.start <= times) &
                 (times < f.time.end)).any()]
 
-    def apply_functions_at_times(self, times):
-        for f in self.get_functions_for_times(times):
-            f.function(f.caller, *f.animated_args, *f.other_args)
+    def get_updaters_for_times(self, times):
+        return [f for f in self.updaters if ((f.time.start <= times) &
+                (times < f.time.end)).any()]
 
 
 class AnimationTimeline:
@@ -309,6 +313,18 @@ class AnimationTimeline:
         self.function_timeline.add(FunctionApplicationEvent(
             function, caller, animated_args, kwargs, rf, c.timespan))
         return kwargs
+
+    def record_updater(self, function, caller, animated_args, kwargs, animation_context):
+        c = animation_context
+        ts = TimelineSpan(c.timespan.get_current_time(), lambda: 1e12)
+        self.function_timeline.add_updater(FunctionApplicationEvent(function, caller,
+                                                animated_args, kwargs, ts
+                                    ))
+        updater_id = len(self.function_timeline.updaters)
+        return updater_id
+
+    def end_updater(self, updater_id, animation_context):
+        self.function_timeline.updaters[updater_id].end_time = animation_context.get_current_time()
 
     def get_timeline_inds(self, mob, new_value, attr_name):
         timeline = self.attr_to_timeline[attr_name]

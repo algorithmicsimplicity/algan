@@ -538,6 +538,7 @@ class Animatable:
              If it is never ignored, the updater will continue forever.
 
         """
+        TimelineManager.instance().record_updater(update_function, self.animation_manager.context, *args, *kwargs)
         start_pointer = self.animation_manager.context.get_current_time()
         start_time = self.animation_manager.context.timespan.current_time
         end_time = self.animation_manager.context.timespan.end
@@ -637,6 +638,25 @@ class Animatable:
         inds = self.get_attr_inds(key, include_descendants=include_descendants)
         timeline = TimelineManager.instance()
         timeline.modify_attribute(key, inds, value)
+        return self
+
+    def setattr_and_rebatch_without_record(self, key, value):
+        """Overwrites this mob's current value for ``key`` without recording a
+        modification, re-allocating the mob's rows in the global attribute
+        timeline when the batch size of ``value`` differs from the current
+        rows. Past recorded modifications stay with the old rows, so this must
+        only be used for structural rewrites (e.g. the batch expansions in
+        :meth:`~.Mob.become`) on mobs whose history is fresh."""
+        value = cast_to_tensor(value)
+        timeline = TimelineManager.instance()
+        timeline.add_mob_attr(self, key, value)
+        attr_timeline = timeline.attr_to_timeline[key]
+        inds = attr_timeline.mob_id_to_inds[self.id]
+        if inds.shape[0] == value.shape[-2]:
+            attr_timeline.modify(inds, value)
+        else:
+            attr_timeline.add(self, value, overwrite=True)
+        self.batch_size = max(self.batch_size, value.shape[-2])
         return self
 
     def is_spawned(self):
