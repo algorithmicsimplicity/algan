@@ -357,6 +357,7 @@ class AnimationTimeline:
     def add_mob_attr(self, mob, attr, value, add_mob=True):
         if attr not in self.attr_to_timeline:
             self.attr_to_timeline[attr] = AttributeTimeline(value.shape[-1],
+                                                            attr_name=attr,
                                                             record_end_points=attr=='opacity')
         if not add_mob:
             return

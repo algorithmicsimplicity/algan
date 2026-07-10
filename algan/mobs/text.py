@@ -85,9 +85,10 @@ class Tex(Mob):
     def on_create(self):
         with Seq(run_time=1):
             with Off():  # Ensure initial state setting is not recorded as an animation
+                opacity = self.opacity
                 self.opacity = 0
             self._create_recursive(animate=False)  # Mark as created without immediate animation
-            self.wave_color( None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=1)
+            self.wave_color( None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=opacity)
             #self.opacity = 1
         return self
         tiles = list(traverse([c.children for c in self.children]))

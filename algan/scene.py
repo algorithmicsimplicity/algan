@@ -232,7 +232,7 @@ class Scene:
             clips_to_compose.append(timed_clip)
 
         audio_clip = CompositeAudioClip(clips_to_compose)
-        audio_clip.duration = AnimationManager.instance().context.end_time
+        audio_clip.duration = AnimationManager.instance().context.timespan.original_end
         audio_clip.write_audiofile(file_path, fps=frames_per_second, codec=codec, nbytes=nbytes)
         audio_clip.close()
         return file_path

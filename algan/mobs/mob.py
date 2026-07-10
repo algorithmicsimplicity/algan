@@ -245,9 +245,11 @@ class Mob(Animatable):
         if hasattr(class_to_attach_to, property_name):
             return
 
+        tensor_subclass = Color if property_name == 'color' else torch.Tensor
+
         @property
         def prop(self):
-            return self.get_animated_attribute(property_name)
+            return self.get_animated_attribute(property_name).as_subclass(tensor_subclass)
 
         @prop.setter
         def prop(self, value):

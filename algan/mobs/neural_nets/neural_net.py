@@ -245,8 +245,8 @@ class NeuralNetMLP(Mob):
                 with Lag(0.65, run_time=6):
                     zap(label, output, color=color)
                     zap(output, self.layers[-1][0].shell, color=color)
-                self.animation_manager.context.current_time = (
-                    self.animation_manager.context.current_time - 1.5
+                self.animation_manager.context.timespan.current_time = (
+                    self.animation_manager.context.timespan.current_time - 1.5
                 )
             self.activate(reverse=True, color=color, run_time=run_time)
             self.reset_input_synapses()
