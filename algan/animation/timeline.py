@@ -1,10 +1,42 @@
 import math
-from collections import defaultdict
 
 import torch
 
 from algan import cast_to_tensor
 from algan.animation.utils_taichi import _query_state_from_edits
+
+
+#: Name of the special kwarg that animated functions receive the per-frame
+#: elapsed time through (see :meth:`AnimationTimeline.set_state_to_times`).
+TIME_PARAMETER_NAME = "time_elapsed"
+
+#: Sentinel timestamp for "not yet spawned/despawned".
+def _never():
+    return -1
+
+
+#: Timestamp used as the end of an updater that was never removed.
+UPDATER_FOREVER = 1e12
+
+
+class Lifespan:
+    """The [spawn, despawn) interval of one mob on the global timeline.
+
+    ``start`` and ``end`` are zero-argument callables returning the spawn /
+    despawn timestamp in seconds, or -1 when the mob has not (yet) spawned /
+    despawned. They are stored as callables (:class:`TimelineEvent` s) because
+    animation contexts rescale timestamps retroactively, so the final value is
+    only known at render time.
+
+    Lifespans are owned by the :class:`AnimationTimeline`
+    (:meth:`AnimationTimeline.get_lifespan`), keyed by mob id.
+    """
+
+    __slots__ = ("start", "end")
+
+    def __init__(self):
+        self.start = _never
+        self.end = _never
 
 
 def generate_array_states_taichi(times, N, edits):
@@ -18,8 +50,6 @@ def generate_array_states_taichi(times, N, edits):
             - 'indexes': Tensor of shape [M_i] (values in [0, N-1])
             - 'values': Tensor of shape [M_i, D]
             - 'timestamp': float scalar
-        future_only (bool): If True, finds the smallest timestamp > t.
-                            If False, finds the largest timestamp <= t.
     """
     device = times.device
     T = times.shape[0]
@@ -241,6 +271,43 @@ class FunctionApplicationEvent:
         self.rate_func = rate_func
         self.time = time
 
+
+class UpdaterSpan:
+    """The [added, removed) interval of one updater. ``start``/``end`` expose
+    the (lazily rescaled) timestamps as numbers, matching the protocol of the
+    context timespans carried by ordinary :class:`FunctionApplicationEvent` s.
+    An updater that was never removed ends at :data:`UPDATER_FOREVER`."""
+
+    __slots__ = ("start_event", "end_event")
+
+    def __init__(self, start_event):
+        self.start_event = start_event
+        self.end_event = None
+
+    @property
+    def start(self):
+        return self.start_event.time
+
+    @property
+    def end(self):
+        return UPDATER_FOREVER if self.end_event is None else self.end_event.time
+
+
+class UpdaterEvent:
+    """An updater: ``function(mob, time_elapsed, *args, **kwargs)`` is applied
+    at every frame in ``time.start <= t < time.end``, with ``time_elapsed``
+    equal to ``t - time.start``."""
+
+    __slots__ = ("function", "caller", "args", "kwargs", "time")
+
+    def __init__(self, function, caller, args, kwargs, time):
+        self.function = function
+        self.caller = caller
+        self.args = args
+        self.kwargs = kwargs
+        self.time = time
+
+
 class FunctionTimeline:
     def __init__(self):
         self.function_applications = []
@@ -263,14 +330,29 @@ class FunctionTimeline:
 
 class AnimationTimeline:
     def __init__(self):
-        self.attr_to_timeline = dict()#defaultdict(AttributeTimeline)
+        self.attr_to_timeline = dict()
         self.function_timeline = FunctionTimeline()
+        self.mob_id_to_lifespan = dict()
 
-    def register_spawn(self, mob, time):
-        self.attr_to_timeline['opacity'].set_start_point(mob, time)
+    def get_lifespan(self, mob_id):
+        """The :class:`Lifespan` of the mob with the given id, created on
+        first access (start = end = "never")."""
+        lifespan = self.mob_id_to_lifespan.get(mob_id)
+        if lifespan is None:
+            lifespan = self.mob_id_to_lifespan[mob_id] = Lifespan()
+        return lifespan
 
-    def register_despawn(self, mob, time):
-        self.attr_to_timeline['opacity'].set_end_point(mob, time)
+    def register_spawn(self, mob, lifespan):
+        # Visibility masking: the opacity timeline zeroes a mob's opacity
+        # outside its [spawn, despawn) interval when materializing state.
+        timeline = self.attr_to_timeline.get('opacity')
+        if timeline is not None:
+            timeline.set_start_point(mob, lifespan)
+
+    def register_despawn(self, mob, lifespan):
+        timeline = self.attr_to_timeline.get('opacity')
+        if timeline is not None:
+            timeline.set_end_point(mob, lifespan)
 
     def add_mob_attr(self, mob, attr, value, add_mob=True):
         if attr not in self.attr_to_timeline:
@@ -314,17 +396,18 @@ class AnimationTimeline:
             function, caller, animated_args, kwargs, rf, c.timespan))
         return kwargs
 
-    def record_updater(self, function, caller, animated_args, kwargs, animation_context):
-        c = animation_context
-        ts = TimelineSpan(c.timespan.get_current_time(), lambda: 1e12)
-        self.function_timeline.add_updater(FunctionApplicationEvent(function, caller,
-                                                animated_args, kwargs, ts
-                                    ))
-        updater_id = len(self.function_timeline.updaters)
-        return updater_id
+    def record_updater(self, function, caller, args, kwargs, animation_context):
+        """Register an updater starting at the context's current time and
+        lasting until :meth:`end_updater` (or forever). Returns its id."""
+        span = UpdaterSpan(animation_context.timespan.get_current_time())
+        self.function_timeline.add_updater(
+            UpdaterEvent(function, caller, args, kwargs, span))
+        return len(self.function_timeline.updaters) - 1
 
     def end_updater(self, updater_id, animation_context):
-        self.function_timeline.updaters[updater_id].end_time = animation_context.get_current_time()
+        span = self.function_timeline.updaters[updater_id].time
+        span.end_event = animation_context.timespan.get_current_time()
+        return span
 
     def get_timeline_inds(self, mob, new_value, attr_name):
         timeline = self.attr_to_timeline[attr_name]
@@ -356,15 +439,29 @@ class AnimationTimeline:
 
             s = f.time.start
             e = f.time.end
-            a = (times[active_time_inds.squeeze(-1)] - s) / (e - s + 1e-6)
-            a = a.view(-1,1,1)
+            elapsed = times[active_time_inds.squeeze(-1)] - s
+            a = (elapsed / (e - s + 1e-6)).view(-1, 1, 1)
             a = f.rate_func(a)
 
             kwargs = {k: v for k, v in f.kwargs.items()}
             for k in f.animated_args:
                 kwargs[k] = torch.lerp(cast_to_tensor(f.animated_args[k]), f.kwargs[k], a)
+            if TIME_PARAMETER_NAME in kwargs:
+                # Functions of time (animate_function_of_time) receive the
+                # per-frame elapsed seconds instead of an interpolated value.
+                kwargs[TIME_PARAMETER_NAME] = elapsed.view(-1, 1, 1)
 
             f.function(f.caller, **kwargs)
+
+        for f in self.function_timeline.get_updaters_for_times(times):
+            active_time_inds = ((f.time.start <= times) & (times < f.time.end)).nonzero()
+            if active_time_inds.numel() == 0:
+                continue
+            for timeline in self.attr_to_timeline.values():
+                timeline.set_active_time_inds(active_time_inds)
+            elapsed = times[active_time_inds.squeeze(-1)] - f.time.start
+            f.function(f.caller, elapsed.view(-1, 1, 1), *f.args, **f.kwargs)
+
         for timeline in self.attr_to_timeline.values():
             timeline.set_active_time_inds(slice(None, None, None))
         return self

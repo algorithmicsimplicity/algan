@@ -8,16 +8,20 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
     mobs = list(traverse(mobs))
     if len(mobs) == 0:
         return None
-    orig_parent_batch_sizes = parent_batch_sizes
     with Off(record_funcs=False, record_attr_modifications=False):
-        batch_mob = mobs[0].clone(reset_history=True, recursive=False, clone_data=True, add_to_scene=add_to_scene)
+        batch_mob = mobs[0].clone(recursive=False, clone_data=True, add_to_scene=add_to_scene)
         for attr in batch_mob.animatable_attrs:
-            batch_mob.data.data_dict[attr] = torch.cat(
-                [
-                    _.__getattribute__(attr).expand(-1, _.location.shape[-2], -1)
-                    for _ in mobs
-                ],
-                -2,
+            if not all(hasattr(mob, attr) for mob in mobs):
+                continue
+            batch_mob.setattr_and_rebatch_without_record(
+                attr,
+                torch.cat(
+                    [
+                        mob.__getattribute__(attr).expand(-1, mob.location.shape[-2], -1)
+                        for mob in mobs
+                    ],
+                    -2,
+                ),
             )
 
         batch_sizes = [torch.tensor((_.location.shape[-2],)).view(-1) for _ in mobs]

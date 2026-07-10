@@ -5,9 +5,9 @@ Animating Out of Order
 In Algan, when you change an animatable attribute, or run an animated function, Algan
 does not actually perform that animation immediately. Instead, Algan makes a record
 of the fact that this animation took place, and the times at which the animation
-begins and ends. Algan stores this information inside of the :class:`.Mob` s :attr:`~.Animatable.data`
-attribute, which is an :class:`.AnimatableData` object. The time at which the animation
-takes place is controlled by the AnimationContexts. For example,
+begins and ends. Algan stores this information on the global animation timeline
+(an :class:`.AnimationTimeline`, accessed through :class:`.TimelineManager`).
+The time at which the animation takes place is controlled by the AnimationContexts. For example,
 in a Seq context, once an animation is done, the context will write the animation
 to the current time, then increment the current time by 1. So the next animation
 will be written to one second later on the timeline, and so on.

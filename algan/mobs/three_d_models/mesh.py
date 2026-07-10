@@ -277,7 +277,6 @@ class TriangleMesh(Renderable):
         return vert_n.gather(1, idx)                   # [T, 3F, 3]
 
     def get_render_primitives(self):
-        self.grid.set_time_inds_to(self)
         corners = self.grid.location  # [T, 3F, 3]
 
         normals = self._compute_corner_normals(corners)

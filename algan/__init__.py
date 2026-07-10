@@ -24,13 +24,8 @@ def exported(function=None, *, example_inputs=None, dynamic_shapes=None):
             #    return self.func(*args, **kwargs)
 
         mod = ModuleWrapper(func)
-        #mod.forward = func
         ep = torch.export.export_for_inference(mod, example_inputs, dynamic_shapes=dynamic_shapes, strict=False,)
         return ep.module()
-        @wraps(func)
-        def wrapper_func(*args, **kwargs):
-            return ep.module()(*args, **kwargs)
-        return wrapper_func
     if function:
         return _decorate(function)
     return _decorate
@@ -70,7 +65,7 @@ try:
     # compiled = torch.compile
     # print('using torch.compile')
     compiled = lambda x: x
-except Exception as e:
+except Exception:
     compiled = lambda x: x
 
 #not_compiled = torch.compiler.disable(recursive=True)
@@ -88,14 +83,6 @@ from algan.settings.style_defaults import *
 from algan.settings.logging_defaults import *
 
 from algan.utils.memory_utils import ManualMemory
-
-# Pre-allocate the global animation buffer arena at import time: all Mobs'
-# animated attributes live in rows of these shared buffers (see
-# algan/animation/global_state.py). Size configurable via
-# ALGAN_ANIMATION_ARENA_MB (default 1024).
-from algan.animation.global_state import GlobalAnimationState
-
-GlobalAnimationState.instance()
 
 
 class SceneManager:

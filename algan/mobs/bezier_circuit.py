@@ -1,12 +1,11 @@
-import gc
-
 import torch
+import torch.nn.functional as F
+
 from algan.constants.spatial import OUT
 from algan import RIGHT, PREVIEW, rotate_vector_around_axis
 from algan.animation.animation_contexts import Off
 from algan.mobs.renderable import Renderable
 from algan.constants.color import *
-from algan.geometry.geometry import get_roots_of_quadratic, get_orthonormal_vector
 from algan.mobs.mob import Mob
 
 from algan.animation.animatable import animated_function
@@ -179,10 +178,6 @@ class BezierCircuitCubic(Renderable):
     def get_render_primitives(self):
         if self.empty:
             return None
-        self.control_points.location
-        self.texture_points.set_time_inds_to(self)
-        self.control_points.set_time_inds_to(self)
-
         vars = broadcast_all(
             [
                 self.opacity,# * self.max_opacity,
@@ -307,8 +302,6 @@ class BezierCircuitCubic(Renderable):
 
     @animated_function(animated_args={"t": 0.0})
     def draw(self, t=1.0):
-        self.control_points.set_time_inds_to(self)
-        #if not hasattr(self, "_original_control_points"):
         self._original_control_points = self.control_points.location.clone()
         num_frames = self.control_points.location.shape[0]
         total_control_points = self._original_control_points.shape[-2]

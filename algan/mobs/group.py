@@ -68,7 +68,7 @@ class Group(Mob):
         )
 
         self.traversable = False
-        if all([_.data.lifespan.start() >= 0 for _ in mobs]):
+        if all([mob.is_spawned() for mob in mobs]):
             self.spawn(animate=False)
         self.add_children(mobs)
 

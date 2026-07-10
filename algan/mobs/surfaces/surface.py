@@ -1,18 +1,15 @@
-import math
-
 import torch
 import torch.nn.functional as F
 
 from algan.mobs.renderable import Renderable
 from algan.settings.renderer_settings import RENDERER_SETTINGS
 from algan.utils.tensor_utils import broadcast_cross_product
-from algan.animation.animation_contexts import Sync, Off
+from algan.animation.animation_contexts import Sync
 from algan.constants.color import *
-from algan.constants.spatial import ORIGIN, OUT
-from algan.mobs.mob import Mob
+from algan.constants.spatial import OUT
 from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.utils.file_utils import get_image
-from algan.utils.tensor_utils import unsqueeze_left, squish, unsquish, cast_to_tensor
+from algan.utils.tensor_utils import unsqueeze_left, squish, unsquish
 
 
 _grid_triangle_indices_cache = {}
@@ -136,8 +133,6 @@ def get_render_primitives_batched(surfaces):
     ``Surface.get_render_primitives``, has no ``color_texture``, has
     ``ignore_normals`` False, and has identical grid dimensions and
     ``grid.location`` shape."""
-    for s in surfaces:
-        s.grid.set_time_inds_to(s)
     grids = torch.stack(
         [unsquish(s.grid.location, -2, s.grid_height) for s in surfaces]
     )
@@ -706,7 +701,6 @@ class Surface(Renderable):
         return result
 
     def get_render_primitives(self):
-        self.grid.set_time_inds_to(self)
         grid = unsquish(self.grid.location, -2, self.grid_height)
         if not self.ignore_normals:
             vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grid))
@@ -726,39 +720,6 @@ class Surface(Renderable):
                 )
             x = unsquish(x, -2, self.grid_height)
             return grid_to_triangle_vertices(x)
-
-        if not hasattr(self, "_expanded_param_cache"):
-            self._expanded_param_cache = {}
-
-        def get_cached_expanded_param(name, value_func):
-            is_static = True
-            if name == 'color':
-                if ('color' in self.grid.data.history.attribute_modifications or
-                    'opacity' in self.grid.data.history.attribute_modifications or
-                    'glow' in self.grid.data.history.attribute_modifications):
-                    is_static = False
-            elif name == 'location':
-                if 'location' in self.grid.data.history.attribute_modifications:
-                    is_static = False
-            elif name == 'normals':
-                if ('location' in self.grid.data.history.attribute_modifications or
-                    'basis' in self.grid.data.history.attribute_modifications):
-                    is_static = False
-            else:
-                if name in self.grid.data.history.attribute_modifications:
-                    is_static = False
-
-            if False:#is_static:
-                if name not in self._expanded_param_cache:
-                    val = value_func()
-                    if val is not None and torch.is_tensor(val):
-                        val = val[:1]
-                    self._expanded_param_cache[name] = val
-                cached_val = self._expanded_param_cache[name]
-                if cached_val is None:
-                    return None
-                return cached_val.expand(grid.shape[0], *cached_val.shape[1:])
-            return value_func()
 
         def compute_grid_color():
             grid_color = self.grid.color.clone()
@@ -781,12 +742,13 @@ class Surface(Renderable):
                           ).view(self.color_texture.shape[0], self.texture_height, self.texture_width,
                                  5).as_subclass(Color).mult_opacity(self.opacity.unsqueeze(-2))
 
-        colors = get_cached_expanded_param('color', lambda: expand_grid_to_verts(compute_grid_color()))
-        corners = get_cached_expanded_param(
-            'location',
-            lambda: grid_to_triangle_vertices(grid) if precomputed_corners is None else precomputed_corners,
+        colors = expand_grid_to_verts(compute_grid_color())
+        corners = (
+            grid_to_triangle_vertices(grid)
+            if precomputed_corners is None
+            else precomputed_corners
         )
-        normals = get_cached_expanded_param('normals', lambda: vertex_normals if vertex_normals is not None else None)
+        normals = vertex_normals
 
         return RENDERER_SETTINGS.triangle_primitive(
             corners=corners,

@@ -10,7 +10,7 @@ from algan.mobs.group import Group
 from algan.mobs.mob import Mob
 from algan.mobs.renderable import Renderable
 from algan.mobs.shapes_2d import Quad, TriangleTriangulated, Rectangle
-from algan.rendering.primitives.triangle import TrianglePrimitive
+from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.utils.tensor_utils import squish, broadcast_all
 from algan.utils.tensor_utils import (
     mean,
@@ -144,7 +144,7 @@ class Bar(Quad):
             **kwargs,
         )
         with Off():
-            self.setattr_non_recursive("location", start)
+            self.set_non_recursive(location=start)
 
     @animated_function(animated_args={"interpolation": 0}, unique_args=["height_func"])
     def move_to_with_height_matching(

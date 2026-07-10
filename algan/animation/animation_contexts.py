@@ -7,7 +7,7 @@ from algan import SceneManager
 from algan.animation.timeline import TimelineSpan
 from algan.sound.audio_effect import AudioEffect, AudioManager
 from algan.constants import rate_funcs
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from algan.utils.python_utils import traverse
 
@@ -60,10 +60,6 @@ class RateFuncWrapper:
         self.rf = rf
         self.time_set = False
 
-    def set_part_time(self, sf, ef):
-        self.s_part = sf
-        self.e_part = ef
-
     def set_full_time(self, sf, ef):
         self.s_full = sf
         self.e_full = ef
@@ -109,9 +105,9 @@ class AnimationContext:
         Setting this parameter sets the rate_func to be the composition of the parent context's `rate_func` with this
         `rate_func_compose`.
     record_funcs
-        Whether :func:`~.animated_function` s within this context should be recorded in :class:`~.ModificationHistory` s.
+        Whether :func:`~.animated_function` s within this context should be recorded on the global timeline.
     record_attr_modifications
-        Whether changes to `animatable_attributes` within this context should be recorded in :class:`~.ModificationHistory` s.
+        Whether changes to `animatable_attributes` within this context should be recorded on the global timeline.
     prev_context : :class:`~.AnimationContext`
         The parent context in which this AnimationContext was created.
     spawn_at_end
@@ -134,20 +130,11 @@ class AnimationContext:
     spawn_at_end: bool | None = None
     new_animation: bool | None = False
     finished: bool = False
-    trace_mode: bool | None = None
-    traced_mobs: set | None = None
     new_mobs: list | None = None
     child_contexts: list | None = None
-    updater: bool | None = None
     kwargs: Any = None
-    # traced_mobs: set = field(default_factory=set)
-    # new_mobs: list = field(default_factory=list)
-    # child_contexts: list = field(default_factory=list)
-    # kwargs: Any = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.traced_mobs is None:
-            self.traced_mobs = set()
         if self.new_mobs is None:
             self.new_mobs = list()
         if self.child_contexts is None:
@@ -173,21 +160,17 @@ class AnimationContext:
             if self.__getattribute__(attr) is None:
                 self.__setattr__(attr, self.prev_context.__getattribute__(attr))
 
-        [
+        for attr in [
+            "run_time_unit",
+            "lag_ratio",
+            "priority_level",
+            "rate_func",
+            "rate_func_compose",
+            "record_funcs",
+            "record_attr_modifications",
+            "spawn_at_end",
+        ]:
             inherit_missing_value(attr)
-            for attr in [
-                "run_time_unit",
-                "lag_ratio",
-                "priority_level",
-                "rate_func",
-                "rate_func_compose",
-                "record_funcs",
-                "record_attr_modifications",
-                "spawn_at_end",
-                "trace_mode",
-                "updater"
-            ]
-        ]
 
         if self.rate_func is not None and not isinstance(
             self.rate_func, RateFuncWrapper
@@ -241,11 +224,8 @@ class AnimationContext:
         self.timespan.current_time = self.timespan.current_time - num_frames
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
-        for c in self.child_contexts:
-            self.traced_mobs = self.traced_mobs.union(c.traced_mobs)
         if exc_type is not None:
             return False
-            # raise exc_value
         if self.ignored:
             return False
 
@@ -420,11 +400,12 @@ class Audio(AnimationContext):
         self.audio_clip = audio_clip
 
     def __enter__(self):
-        super().__enter__()
+        context = super().__enter__()
         if self.prev_context.run_time_unit > 0:
             SceneManager.instance().add_effect(
                 AudioEffect(self.audio_clip, self.get_current_time())
             )
+        return context
 
 
 class Speech(Audio):
@@ -457,7 +438,7 @@ class SlideShow(Seq):
     def __exit__(self, exc_type, exc_val, exc_tb):
         super().__exit__(exc_type, exc_val, exc_tb)
         with Sync():
-            for mob in self.created_mobs:
+            for mob in self.new_mobs:
                 mob.despawn()
         self.wait()
 

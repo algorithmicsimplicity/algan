@@ -406,9 +406,9 @@ def install_pipeline_hooks():
     """Wrap the (non-kernel) pipeline entry points with stage timers."""
     # Scene-side preparation (mob state evaluation + geometry generation).
     _try_wrap(Scene, "get_batch_of_primitives", "Scene.get_batch_of_primitives")
-    _try_wrap(Animatable, "reset_state", "Animatable.reset_state")
-    _try_wrap(Animatable, "set_state_full", "Animatable.set_state_full")
-    _try_wrap(Animatable, "set_state_to_time_t", "Animatable.set_state_to_time_t")
+    from algan.animation.timeline import AnimationTimeline
+    _try_wrap(AnimationTimeline, "set_state_to_times",
+              "AnimationTimeline.set_state_to_times")
     _try_wrap(Surface, "get_render_primitives", "Surface.get_render_primitives")
     _try_wrap(BezierCircuitCubic, "get_render_primitives",
               "BezierCircuitCubic.get_render_primitives")

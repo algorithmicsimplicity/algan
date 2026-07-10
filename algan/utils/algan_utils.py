@@ -12,20 +12,15 @@ import sys
 import subprocess
 
 import torch
-import cv2
-from moviepy import VideoFileClip, concatenate_videoclips
 from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter
 
-import algan
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
-from algan import compiled
-from algan.animation.animation_contexts import AnimationManager, Off
+from algan.animation.animation_contexts import Off
 from algan.rendering.camera import Camera
 from algan import SceneManager
 from algan.sound.audio_effect import AudioManager
 from algan.utils.memory_utils import empty_cache
-from functools import partial
 
 
 def get_file_writer(temp_file_path, render_settings_resolution, codec, fps, with_mask, ffmpeg_params, audiofile, audio_codec):
@@ -41,12 +36,13 @@ def get_file_writer(temp_file_path, render_settings_resolution, codec, fps, with
             audio_codec=audio_codec,
         )
     except TypeError:
+        # Older moviepy releases spell the mask parameter "withmask".
         file_writer = FFMPEG_VideoWriter(
             filename=temp_file_path,
-            size=render_settings.resolution,
+            size=render_settings_resolution,
             codec=codec,
-            fps=render_settings.frames_per_second,
-            withmask=scene.background_is_transparent(),
+            fps=fps,
+            withmask=with_mask,
             ffmpeg_params=ffmpeg_params,
             audiofile=audiofile,
             audio_codec=audio_codec,
@@ -420,33 +416,4 @@ def combine_scenes(dir):
         f.write(transcript)
 
     concatenate_videos(dir, output_file=f"video.{ext}")
-    return
-
-    ##[_.close() for _ in video_clips]
-    def close_video_reader(self):
-        if self.reader:
-            self.reader.close()
-        return self
-    prev_clip = close_video_reader(VideoFileClip(video_files[0]))
-    clips = [prev_clip]
-    for i in range(1, len(video_files)):#video_files[1:]:
-        vf = video_files[i]
-        temp = prev_clip
-        new = close_video_reader(VideoFileClip(vf))
-        clips.append(new)
-        continue
-        prev_clip = concatenate_videoclips([prev_clip, new])
-        prev_clip.write_videofile(output_video_file)
-        temp.close()
-        new.close()
-        prev_clip.close()
-        if i < len(video_files)-1:
-            prev_clip = VideoFileClip(output_video_file)
-
-    #video_clips = [VideoFileClip(f) for f in video_files]
-    combined_clip = concatenate_videoclips(clips, method='compose')
-
-    combined_clip.write_videofile(output_video_file)
-
-    #prev_clip.close()#[_.close() for _ in video_clips]
 

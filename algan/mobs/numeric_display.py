@@ -1,10 +1,8 @@
-from collections import defaultdict
-
 import torch
 import torch.nn.functional as F
 
 from algan.animation.animatable import animated_function
-from algan.animation.animation_contexts import Off, Sync, Seq, NoExtra
+from algan.animation.animation_contexts import Off, Sync, NoExtra
 from algan.mobs.mob import Mob
 from algan.mobs.text import Tex
 from algan.utils.tensor_utils import cast_to_tensor
@@ -84,15 +82,9 @@ class NumericDisplay(Mob):
 
         all_opacities = torch.stack([get_opacities(_) for _ in value], -3)
 
-        def prep(mob):
-            mob.set_time_inds_to(self)
-            return mob
-
         with Sync():
-            self.negative_sign.set_time_inds_to(self)
             self.negative_sign.set(opacity=neg_opacity, max_opacity=neg_opacity)
             for i in range(len(self.digit_mobs)):
-                self.digit_mobs[i].set_time_inds_to(self)
-                prep(self.digit_mobs[i].character_mobs).set(
+                self.digit_mobs[i].character_mobs.set(
                     opacity=all_opacities[i], max_opacity=all_opacities[i]
                 )

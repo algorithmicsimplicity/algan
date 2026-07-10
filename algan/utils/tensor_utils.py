@@ -1,5 +1,4 @@
 import functools
-import inspect
 from collections import defaultdict
 from math import sqrt
 from string import ascii_lowercase
@@ -8,35 +7,21 @@ import re
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-import torch.nn as nn
 
 from algan import not_compiled
 from algan.settings.defaults import *
 
 
 def packed_reorder(x, counts, ids):
-    # packed_counts = scatter_add(counts, ids, 0)
     cc = counts.cumsum(0)
     cc = torch.cat((torch.zeros_like(cc[:1]), cc))
     id_to_chunks = defaultdict(list)
     for i in range(len(cc) - 1):
-        j = ids[i].item()
         if cc[i] == cc[i + 1]:
             continue
-            raise NotImplementedError("packing 0 size chunks")
-        id_to_chunks[j].append(x[cc[i] : cc[i + 1]])
-        # outs[cc[i]:cc[i+1]] = x[]
+        id_to_chunks[ids[i].item()].append(x[cc[i] : cc[i + 1]])
     chunks = [torch.cat(id_to_chunks[k]) for k in sorted(id_to_chunks.keys())]
     return torch.cat(chunks), torch.tensor([len(_) for _ in chunks])
-    ids_rep = torch.repeat_interleave(ids, counts, 0)
-    s = ids.argsort(0)
-    cum_counts = counts[s]
-    cum_counts = (cum_counts.cumsum(0) - cum_counts[0])[ids]
-    cc_rep = torch.repeat_interleave(cum_counts, counts, 0)
-    s = ids_rep.argsort(0)
-    scatter_inds = cc_rep + (torch.arange(len(s)) - cc_rep[s])[ids_rep]
-    return ids
 
 
 def _cast_to_tensor_recursive(x):
@@ -139,12 +124,10 @@ def unsqueeze_dims(x, y, insert_dim=0):
 
 
 def expand_as_left(x, y, offset: int = 0):
-    n = y.dim() - x.dim()
     x = unsqueeze_left(x, y)
     return x.expand(
         torch.Size([-1 if x.shape[i] != 1 else y.shape[i] for i in range(x.dim())])
     )
-    return x.expand(list(y.shape[:n]) + ([-1] * (x.dim() - n)))
 
 
 def expand_as_right(x, y, offset: int = 0):
@@ -458,6 +441,5 @@ HANDLED_FUNCTIONS = {}
 
 
 def wait_for_cuda():
-    return
     if torch.cuda.is_available():
         torch.cuda.synchronize()

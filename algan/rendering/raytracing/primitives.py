@@ -1,3 +1,5 @@
+import torch.nn.functional as F
+
 from algan import Color
 from algan.utils.memory_utils import empty_cache
 from algan.settings.defaults import COMPUTING_DEFAULTS

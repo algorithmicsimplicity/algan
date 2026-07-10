@@ -11,7 +11,6 @@ from scipy.optimize import linear_sum_assignment
 
 from algan.animation.animatable import (
     Animatable,
-    ModificationHistory,
     animated_function,
 )
 from algan.animation.animation_contexts import AnimationContext, NoExtra, Off, Seq, Sync
@@ -196,7 +195,8 @@ class Mob(Animatable):
         This method dynamically creates property getters and setters for the
         specified attributes if they don't already exist, allowing them to be
         controlled by the animation system. When an animatable attribute is
-        modified, the change is recorded in the mob's `ModificationHistory`.
+        modified, the change is recorded on the global timeline
+        (:class:`~algan.animation.timeline.AnimationTimeline`).
 
         Parameters
         ----------
@@ -226,10 +226,10 @@ class Mob(Animatable):
     ):
         """Dynamically adds a property with a getter and setter for a given attribute name.
 
-        The getter will retrieve the current (potentially animated) value of the attribute
-        from the :class:`~.AnimatableData` dict. The setter will set the value of the
-        attribute in the `AnimatableData` dict, recording the change in the
-        :class:`~.ModificationHistory` for animation.
+        The getter retrieves the current (potentially animated) value of the
+        attribute from the global attribute timeline; the setter writes the
+        value to the timeline, recording the modification so it can be
+        replayed at render time.
 
         Parameters
         ----------
@@ -291,28 +291,6 @@ class Mob(Animatable):
             )
         )
 
-    def set_time_inds_to(self, mob: Mob):
-        """Synchronizes the animation time indices of this Mob with another Mob.
-
-        This is used internally to ensure consistent animation states between
-        mobs at animation time.
-
-        parameters
-        -----------
-            mob (Mob): The Mob whose time indices will be copied.
-
-        """
-        return self
-        time_inds = mob.data
-        if (time_inds.time_inds_materialized is not None and
-            (self.data.time_inds_materialized is None or
-             (self.data.time_inds_materialized[0] != time_inds.time_inds_materialized[0]))):
-            self.data.animatable.set_state_pre_function_applications(
-                time_inds.time_inds_materialized.amin(),
-                time_inds.time_inds_materialized.amax() + 1,
-            )
-        self.data.time_inds_active = time_inds.time_inds_active
-
     def _expand_batch_if_necessary(self, value: torch.Tensor) -> torch.Tensor:
         """Internal helper to expand a tensor's batch dimension if it's a singleton
         and the parent has a larger batch size.
@@ -355,9 +333,7 @@ class Mob(Animatable):
             Mob: The Mob instance itself, allowing for method chaining.
 
         """
-        #self._prepare_buffers(key, value)
         current_value = self.get_animated_attribute(key, include_descendants=recursive, default=change1)
-        relation_func = self.attr_to_relations[key][0]
         interpolation = (
             cast_to_tensor(interpolation) * 2
         )  # Double interpolation for 2-stage animation
@@ -372,51 +348,6 @@ class Mob(Animatable):
         )
 
         self.setattr_and_record_modification(key, interpolated_value, include_descendants=recursive)
-        return self
-
-        self.setattr_and_record_modification(
-            key, relation_func(current_value, interpolated_value)
-        )
-
-        if recursive == "True":
-            # Batched path: descendants replace their value with the parent's
-            # interpolated value (the child recursion applies the default
-            # replacement relation), one tensor op over all their rows.
-            if (
-                isinstance(interpolated_value, torch.Tensor)
-                and interpolated_value.shape[-2] == 1
-                and self._batched_hierarchy_apply(
-                    key,
-                    lambda cur, iv=interpolated_value: iv.expand_as(cur),
-                    include_self=False,
-                )
-            ):
-                return self
-            for c in self.children:
-                c.set_time_inds_to(self)
-                interpolated_value_c = interpolated_value
-                if c.parent_batch_sizes is not None:
-
-                    def expand(x):
-                        if x.shape[-2] == 1:
-                            x = x.expand(
-                                torch.Size(
-                                    [
-                                        *([-1 for _ in range(x.dim() - 2)]),
-                                        len(c.parent_batch_sizes),
-                                        -1,
-                                    ]
-                                )
-                            ).contiguous()
-                        return x
-
-                    interpolated_value_c = torch.repeat_interleave(
-                        expand(interpolated_value_c), c.parent_batch_sizes, -2
-                    )
-
-                c.apply_relative_change(
-                    key, interpolated_value_c, interpolation=1, recursive=recursive
-                )
         return self
 
     def set_opacity_via_color(self, opacity):
@@ -540,7 +471,6 @@ class Mob(Animatable):
         new_value = value * interpolation
         return self.setattr_and_record_modification(attr, new_value, include_descendants=recursive)
 
-    #@animated_function(animated_args={"interpolation": 0.0})
     def set_animated_attribute(self, attr, value, recursive=True):
         if self._prevent_recursive_sets:
             recursive = False
@@ -550,42 +480,6 @@ class Mob(Animatable):
         change = value - current_value
         self._apply_change(attr, change, recursive=recursive)
         return self
-
-        #interpolated_value = torch.lerp(current_value, value, interpolation)
-        #relative_change = inverse_relation_func(current_value, interpolated_value)
-        change = inverse_relation_func(current_value, value)# * interpolation
-        initial_change = inverse_relation_func(current_value, current_value)
-        self._apply_relative_interpolation(attr, initial_change, change, recursive=recursive)
-        return self
-
-    #@animated_function(animated_args={"interpolation": 0.0})
-    def set_animated_attribute2(self, attr, value, recursive=True, relative=False, interpolation=1.0):
-        if self.animation_manager.context.trace_mode:
-            self.animation_manager.context.traced_mobs = (
-                self.animation_manager.context.traced_mobs.union(
-                    set(self.get_descendants())
-                )
-            )
-            return self
-
-        if self._prevent_recursive_sets:
-            recursive = False
-        key = attr
-        value = cast_to_tensor(value)
-        relation_func, inverse_relation_func = self.attr_to_relations[key]
-
-        current_value = self.get_animated_attribute(key, include_descendants=False, default=value)
-
-        #interpolated_value = torch.lerp(current_value, value, interpolation)
-        #relative_change = inverse_relation_func(current_value, interpolated_value)
-        change = inverse_relation_func(current_value, value)# * interpolation
-        initial_change = inverse_relation_func(current_value, current_value)
-        self._apply_relative_interpolation(attr, initial_change, change, recursive=recursive)
-        return self
-
-        #child_value = self.get_animated_attribute(attr, include_descendants=recursive)
-        #new_child_value = relation_func(child_value, relative_change)
-        #self.setattr_and_record_modification(attr, new_child_value, include_descendants=recursive)
 
     @property
     def location(self) -> torch.Tensor:
@@ -698,21 +592,6 @@ class Mob(Animatable):
         )
         self.basis = new_basis
         return self
-
-    def clear_cache(self):
-        """Clears cached animation data.
-
-        This is typically used internally when animation states are reset or recalculated,
-        ensuring that subsequent rendering uses fresh data.
-
-        """
-        if self.free_cache:
-            self.attr_to_values_full = dict()
-            self.attr_to_values = dict()
-            self.time_stamps_full = None
-            self.time_stamps = None
-            self.time_inds_full = None
-            self.time_inds = None
 
     def get_normal(self) -> torch.Tensor:
         """Alias for :meth:`~.Mob.get_forward_direction()` .
@@ -889,14 +768,6 @@ class Mob(Animatable):
 
         """
         return self.get_boundary_edge_point_recursive(direction)
-        all_boundary_points = self.get_boundary_points_recursive()
-        # Project all boundary points onto the direction vector and find the one with max projection
-        #best_index = (all_boundary_points.unsqueeze(-2) @ direction.unsqueeze(-1)).squeeze(-1).argmax(-2, keepdim=True)
-        best_index = dot_product(
-            all_boundary_points, direction, dim=-1, keepdim=True
-        ).argmax(-2, keepdim=True)
-        # Use broadcast_gather to retrieve the actual point
-        return broadcast_gather(all_boundary_points, -2, best_index, keepdim=True)
 
     def get_center(self) -> torch.Tensor:
         """Gets the center (median mid-point) of the Mob and its descendants.
@@ -1763,8 +1634,7 @@ class Mob(Animatable):
         This effectively clears all animation data and makes them behave as if newly created.
         """
         for mob in self.get_descendants():
-            mob.data.history = ModificationHistory()
-            mob.data.lifespan.start = lambda: -1
+            mob.lifespan.start = lambda: -1
 
     def detach_history(self):
         """Detaches the Mob's current animation history into a new, independent clone of this Mob.
@@ -1812,9 +1682,8 @@ class Mob(Animatable):
             for orig, clone in descendant_map.items():
                 # The clone inherits the original's spawn time (this mob is
                 # re-spawned at the current time below).
-                clone.data.lifespan.start = orig.data.lifespan.start
-                if "opacity" in timeline.attr_to_timeline:
-                    timeline.register_spawn(clone, clone.data.lifespan)
+                clone.lifespan.start = orig.lifespan.start
+                timeline.register_spawn(clone, clone.lifespan)
             clone_mob.despawn(animate=False)
             self.refresh_history()
             self.spawn(animate=False)
@@ -1875,45 +1744,38 @@ class Mob(Animatable):
         self.children = new_submobs + [_ for _ in self.children if _ in self.components]
         return self
 
-    def expand_n_tensor(self, tnsor, n: int):
-        current_batch_size = tnsor.shape[-3]  # // self.num_points_per_object
+    def expand_n_tensor(self, value, n: int):
+        current_batch_size = value.shape[-3]
         target_batch_size = current_batch_size + n
+        if value.shape[-3] == 1:
+            # Already a singleton batch, no per-element expansion needed.
+            return value.expand(target_batch_size, -1, -1)
+
         # Determine how many times each existing batch element needs to be repeated
         repeat_indices = (
             torch.arange(target_batch_size) * current_batch_size
         ) // target_batch_size
         split_factors = [(repeat_indices == i).sum() for i in range(current_batch_size)]
 
-        # Iterate over animatable attributes and expand their batch dimensions
-        for attr in ["location"]:
-            value = tnsor
-            if (
-                value.shape[-3] == 1
-            ):  # If already a singleton batch, no expansion needed
-                return value.expand(target_batch_size, -1, -1)
-
-            # Unsquish to separate individual objects in the batch if needed
-            value_per_object = value  # unsquish(value, -2, self.num_points_per_object)
-            new_batched_values = []
-            for sub_object_data, factor in zip(value_per_object, split_factors):
+        new_batched_values = []
+        for sub_object_data, factor in zip(value, split_factors):
+            new_batched_values.append(
+                sub_object_data
+            )  # Add original sub-object data
+            for _ in range(1, factor):
+                # Clone the last point of the sub-object data to expand
                 new_batched_values.append(
-                    sub_object_data
-                )  # Add original sub-object data
-                for _ in range(1, factor):
-                    # Clone the last point of the sub-object data to expand
-                    new_batched_values.append(
-                        sub_object_data[..., -1:, :].expand(
-                            torch.Size(
-                                [
-                                    *([-1 for _ in range(sub_object_data.dim() - 2)]),
-                                    self.num_points_per_object,
-                                    -1,
-                                ]
-                            )
+                    sub_object_data[..., -1:, :].expand(
+                        torch.Size(
+                            [
+                                *([-1 for _ in range(sub_object_data.dim() - 2)]),
+                                self.num_points_per_object,
+                                -1,
+                            ]
                         )
                     )
-            # Stack the new batched values and squish back to original shape for storage
-            return torch.stack(new_batched_values, -3)
+                )
+        return torch.stack(new_batched_values, -3)
 
     def expand_n_batch(self, n: int):
         """Expands the batch size of the Mob's attributes by cloning existing batch elements.
@@ -2256,83 +2118,6 @@ class Mob(Animatable):
             # further animated / transformed by the caller.
             return new_self
 
-    def _become_recursive(self, other_mob: Mob, move_to: bool = False):
-        """Internal recursive helper for the `become` method.
-        Handles the transformation logic for children mobs.
-
-        """
-        other_children = list(other_mob.children)
-        my_children = list(self.children)
-
-        with Sync():
-            if len(other_children) > 0:
-                if len(my_children) < len(other_children):
-                    with Off():  # Avoid recording intermediate clones
-                        # Clone additional children from the target mob
-                        new_children = [
-                            c.clone(animate_creation=False, recursive=True)
-                            for c in other_children[len(my_children) :]
-                        ]
-                        my_children.extend(new_children)
-                        self.add_children(new_children)
-                        # Initialize new children's local coordinates to origin
-                        [c.set_recursive(local_coords=ORIGIN) for c in new_children]
-                elif len(other_children) < len(my_children):
-                    # Trim excess children if current mob has more than target
-                    my_children = my_children[: len(other_children)]
-
-                # Recursively call _become_recursive for matched children
-                for i in reversed(
-                    range(len(my_children))
-                ):  # Iterate in reverse for stable child list modification
-                    my_children[i]._become_recursive(other_children[i], move_to=True)
-
-            if not move_to:  # Only apply location change if explicitly requested
-                return self
-
-            # Handle location transformation for the current mob (parent in this recursive context)
-            other_location = other_mob.location
-            my_location = self.location
-            my_batch_size = my_location.shape[-2]
-            other_batch_size = other_location.shape[-2]
-
-            if other_batch_size > my_batch_size:
-                with Off(record_funcs=False, record_attr_modifications=False):
-                    # Expand current location to match target batch size if smaller
-                    expanded_location = torch.cat(
-                        [
-                            my_location,
-                            my_location[..., -1:, :].expand(
-                                torch.Size([-1, other_batch_size - my_batch_size, -1])
-                            ),
-                        ],
-                        -2,
-                    )
-                    self.setattr_regular(
-                        "_location", expanded_location
-                    )  # Direct set to avoid recursion issues here
-                    self.batch_size = max(self.batch_size, self.location.shape[-2])
-                    self.parent_batch_sizes = other_mob.parent_batch_sizes
-            elif other_batch_size < my_batch_size:
-                # Pad target location with zeros if it's smaller
-                other_location = torch.cat(
-                    (
-                        other_location,
-                        torch.zeros(
-                            (
-                                other_location.shape[0],
-                                my_batch_size - other_batch_size,
-                                other_location.shape[2],
-                            )
-                        ),
-                    ),
-                    -2,
-                )
-            self.location = (
-                other_location  # Set location, triggering animation if needed
-            )
-        return self
-
     def check_properties_are_valid(self, property_names):
         #TODO this: available_attrs = union(self.animatable_attrs, TimelineManager.attr_to_timeline.keys())
         for p in property_names:
@@ -2385,10 +2170,10 @@ class Mob(Animatable):
             If set_shader is used on an already spawned mob.
 
         """
-        if self.data.lifespan.start() >= 0:
+        if self.is_spawned():
             raise ModifiedProtectedAttributeError(
-                "You are attempting to change the shader"
-                "of a mob that is already spawned. This is not allowed."
+                "You are attempting to change the shader "
+                "of a mob that is already spawned. This is not allowed. "
                 "See docs for help."
             )
 
@@ -2457,7 +2242,7 @@ class Mob(Animatable):
         :class:`.ModifiedProtectedAttributeError`
             If called on an already spawned mob.
         """
-        if self.data.lifespan.start() >= 0:
+        if self.is_spawned():
             raise ModifiedProtectedAttributeError(
                 "You are attempting to change the fragment shader of a mob that "
                 "is already spawned. This is not allowed. See docs for help.")
@@ -2531,7 +2316,7 @@ class Mob(Animatable):
         """
         from algan.rendering.shaders.materials import _to_color5
 
-        if self.data.lifespan.start() >= 0:
+        if self.is_spawned():
             raise ModifiedProtectedAttributeError(
                 "You are attempting to set the material "
                 "of a mob that is already spawned. This is not allowed. "
@@ -2616,75 +2401,6 @@ class Mob(Animatable):
                 self.__setattr__(
                     key, value
                 )  # Calls the property setters, which handle animation and recursion
-        return self
-
-    def set_recursive_from_parent(self, parent: Mob, **kwargs):
-        """Sets attributes recursively for this Mob based on a parent Mob's attributes,
-        handling batching and time synchronization. This is used internally for
-        propagating changes down a hierarchy.
-
-        Parameters
-        ----------
-        parent
-            The parent Mob from which attribute values might be derived or synced.
-        **kwargs
-            Attributes to set, typically passed from the parent.
-
-        """
-        if self.parent_batch_sizes is not None:
-            # Helper to cast values to tensor and expand if necessary for child's batching
-            def cast_and_expand(value_to_cast: any) -> torch.Tensor:
-                if isinstance(value_to_cast, torch.Tensor):
-                    return value_to_cast
-                # Convert scalar to tensor and expand for batch dimensions
-                return (
-                    torch.tensor((value_to_cast,))
-                    .view(1, 1, 1)
-                    .expand(torch.Size([len(self.parent_batch_sizes), -1, -1]))
-                )
-
-            # Synchronize time indices with parent if parent has materialized times
-            if (
-                self.data.time_inds_materialized is None
-                and parent.data.time_inds_materialized is not None
-            ):
-                self.set_state_full(
-                    parent.data.time_inds_materialized.amin(),
-                    parent.data.time_inds_materialized.amax() + 1,
-                )
-            self.data.time_inds_active = parent.data.time_inds_active
-
-            # Expand kwargs values to match child's batch dimensions
-            kwargs = {
-                key: torch.repeat_interleave(
-                    cast_and_expand(value), self.parent_batch_sizes, 0
-                )
-                for key, value in kwargs.items()
-            }
-
-        with AnimationContext(
-            dont_record_funcs=True
-        ):  # Do not record function applications during this recursive set
-            return self.set_recursive(**kwargs)  # Recursively set attributes
-
-    def set_recursive(self, **kwargs) -> Mob:
-        """Sets multiple attributes for this Mob and then recursively propagates
-        the changes to all its children.
-
-        Parameters
-        ----------
-        **kwargs
-            Keyword arguments for attributes to set.
-
-        Returns
-        -------
-        :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
-
-        """
-        self.set(**kwargs)  # Set attributes for the current mob
-        for child in self.children:
-            child.set_recursive_from_parent(self, **kwargs)  # Propagate to children
         return self
 
     def get_forward_basis(self):
@@ -2820,7 +2536,7 @@ class Mob(Animatable):
         tiles = [
             mob.tiles
             for mob in traverse(self.get_descendants())
-            if hasattr(mob, "tiles") and not mob.tiles.time_inds.created
+            if hasattr(mob, "tiles") and not mob.tiles.is_spawned()
         ]
         with AnimationContext(run_time=3):
             # Animate each tile/primitive appearing from a random direction
@@ -2897,10 +2613,10 @@ class Mob(Animatable):
         return self
 
     def set_data_sub_inds(self, data_sub_inds: list[int] | slice):
-        """Sets the sub-indices that this Mob will use when reading and writing from
-        the shared data dictionaries (`data.data_dict_active`, `data.data_dict_materialized`).
-        This is used for implementing indexing of batched mobs to retrieve sub-mobs that share
-        the same underlying data.
+        """Sets the sub-indices that this Mob will use when reading and writing
+        its rows of the shared attribute timelines. This is used for implementing
+        indexing of batched mobs to retrieve sub-mobs that share the same
+        underlying data.
 
         Parameters:
         -----------
@@ -2927,9 +2643,6 @@ class Mob(Animatable):
             sub_pbs = self.parent_batch_sizes
         self.data_sub_inds = data_sub_inds
         self.parent_batch_sizes = sub_pbs
-        from algan.animation.global_state import GlobalAnimationState
-
-        GlobalAnimationState.instance().bump_topology()
         for c in self.children:
             c.set_data_sub_inds(data_sub_inds)
 

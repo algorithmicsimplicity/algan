@@ -23,17 +23,17 @@ This decorator transforms a regular function into an animated function.
 The way it works is, whenever an animated_function is called, the decorator will
 make a record of the fact that the function was called, what time the function was
 called at, and with what parameters the function was called, and write this information
-to the :class:`.Mob` s :attr:`.Mob.data` attribute. Note that this is why
-the first argument of animated_functions must be a Mob, we need somewhere
-to store the data. The :attr:`.Mob.data` attribute is an :class:`.AnimatableData` object.
-This object records, for a single Mob, it's complete animation timeline
-(in the :attr:`.AnimatableData.history` field), as well as the Mob's spawn
-and despawn times, and some additional data related to batching.
+to the global animation timeline (an :class:`.AnimationTimeline`, accessed through
+:class:`.TimelineManager`). The timeline stores, per animatable attribute, one shared
+buffer holding every Mob's current values (each Mob owns a set of rows, keyed by its
+id) together with the history of edits made to those rows, plus the record of all
+animated function applications and each Mob's spawn/despawn interval (its
+:class:`.Lifespan`, exposed as :attr:`.Animatable.lifespan`).
 
 Note that all of the attribute modification animations are implemented as animated_functions
 under the hood, by decorating the attribute setters for animatable attributes.
 
-When the animated_function decorator writes data to the Mob's history, it uses
+When the animated_function decorator records a function application, it uses
 the settings of the current animation context. Notably, the end of the animation
 is set as the context's current time + run_time_unit.
 
@@ -43,11 +43,11 @@ on the timeline where the next animation should take place. Note that the update
 depends on the type of context, for Seq it will be one run_time_unit in the future,
 for Sync it will be the same time.
 
-At animation time, Algan reads through the recorded functions and applies them again,
-but this time the function is not called with a single value of t=1, the function is
-evaluated for all 0<t<1, as determined by the frame_rate (RenderSettings.frames_per_second).
-This evaluation is actually done in batches of time steps, with size given by
-DEFAULT_BATCH_SIZE_ACTOR.
+At animation time (:meth:`.AnimationTimeline.set_state_to_times`), Algan first
+materializes every attribute buffer at the requested frame times from the recorded
+edits, in one batched pass per attribute, and then re-applies the recorded functions
+with their animated parameters interpolated per frame. This is done in batches of
+time steps, sized to fit in the animation memory budget.
 
 
 The Rendering System

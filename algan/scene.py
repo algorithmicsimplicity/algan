@@ -1,11 +1,8 @@
 import collections
-import gc
 import math
-import multiprocessing
 import os
 import threading
 import time
-import wave
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
@@ -16,25 +13,18 @@ import torchvision.utils
 from moviepy import CompositeAudioClip
 
 import algan
-from algan import not_compiled
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
-from algan import compiled
 
-# from algan.rendering.camera import Camera
 from algan.constants.color import *
 from algan.constants.spatial import *
 
-# from algan.rendering.lights import PointLight
 from algan.animation.animation_contexts import Seq, Sync, AnimationManager, Off
-import numpy as np
 
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
-from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.utils.memory_utils import get_num_available_bytes, ManualMemory, empty_cache
-from algan.utils.tensor_utils import unsquish
 from algan.utils.file_utils import get_image
 from algan import _sync_devices
 from algan.animation.timeline import TimelineManager
@@ -81,8 +71,6 @@ class Scene:
                     -1,
                 )
             )
-        else:
-            background_frame = background_frame
         self.background_frame = background_frame
         self.actors = [[]]
         self.effects = []
@@ -199,9 +187,6 @@ class Scene:
         self.current_time = self.max_time
         return self
 
-    def get_actors(self):
-        return [_ for _ in self.actors[-1] if not _.destroyed]
-
     def add_actor(self, actor):
         if self.allow_new_actors:
             self.actors[-1].append(actor)
@@ -210,11 +195,6 @@ class Scene:
     def add_effect(self, effect):
         self.effects.append(effect)
         return self
-
-    def get_num_batches(self, start, end, batch_size):
-        num_frames = int((end - start))
-        num_batches = (max(num_frames - 1, 0) // batch_size) + 1
-        return num_batches
 
     def initialize_frames(self):
         self.num_frames = int((self.max_time - self.min_time) * self.frames_per_second)
@@ -229,13 +209,15 @@ class Scene:
             for actor in list(
                 sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)
             ):
-                if actor.data.lifespan.start() >= 0:
+                if actor.is_spawned():
                     actor.despawn(**kwargs)
 
     def clear_scene(self, **kwargs):
         with Seq(run_time=0.5):
             self.despawn_scene(**kwargs)
-        self.actors[-1] = [_ for _ in self.actors[-1] if (_.data.lifespan.start() >= 0 and _.data.lifespan.end() >= 0)]
+        self.actors[-1] = [
+            _ for _ in self.actors[-1] if (_.is_spawned() and _.is_despawned())
+        ]
 
     def render_audio_to_file(self, file_path, frames_per_second=44100, codec='pcm_s32le', nbytes=4):
         if len(self.effects) == 0:
@@ -262,7 +244,7 @@ class Scene:
         start_ind,
         end_ind,
         save_image=False,
-        post_processes=[],
+        post_processes=(),
         transparent_background=False,
         background_color=None,
         render_state=None,
@@ -307,32 +289,8 @@ class Scene:
                 duration = int(self.memory.get_num_bytes_remaining() // mem_per_time_step) * 1
                 duration = min(duration, end_ind - current_ind)
                 duration = max(duration, 1)
-                #duration = end_ind - current_ind
-                while False:
-                    mem_used = max(
-                        [
-                            _.get_memory_used(
-                                current_ind - start_ind, current_ind + duration - start_ind
-                            ) - _.get_memory_used_for_blending(current_ind - start_ind, current_ind + duration - start_ind)
-                            for _ in primitive_batch
-                        ]
-                    ) + sum([_.get_memory_used_for_blending(
-                                current_ind - start_ind, current_ind + duration - start_ind
-                            )
-                            for _ in primitive_batch]) + (self.num_pixels_screen_width * self.num_pixels_screen_height * 5)
-                    if mem_used <= self.memory.get_num_bytes_remaining():
-                        break
-                    duration = duration // 2
-                    if duration <= 1:
-                        duration = 1
-                        break
                 new_ind = current_ind + duration
 
-                # time_inds = torch.arange(current_ind, new_ind)
-                # camera.set_state_to_time_t(time_inds)
-                # camera.screen.set_state_to_time_t(time_inds)
-                # for l in self.light_sources:
-                #    l.set_state_to_time_t(time_inds)
                 print(f'rendering batch with duration {duration}')
 
                 bgf = self.background_frame if background_color is None else background_color
@@ -397,142 +355,6 @@ class Scene:
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
 
-    def _time_compress_mode(self):
-        try:
-            from algan.rendering.raytracing import primitives as rtp
-            return getattr(rtp, "TIME_COMPRESS", 0)
-        except Exception:
-            return 0
-
-    def _try_timeline_direct(self, actor, time_inds):
-        """Mode-3 timeline-direct geometry. If the actor moves along a single
-        eased straight line over this batch (probed cheaply from its dense
-        ``location``), build its render geometry at only the two segment
-        endpoints and linearly expand to every frame with the per-frame eased
-        fraction ``z`` -- geometry is affine in location, so this is exact --
-        instead of running the (expensive) per-frame geometry build over all
-        frames. Returns a primitive list, or ``None`` to tell the caller to use
-        the dense path (not linear, or a nonlinear attribute -- e.g. normals
-        under non-uniform scale -- failed the midpoint check)."""
-        if self._time_compress_mode() != 3:
-            return None
-        T = len(time_inds)
-        if T <= 2:
-            return None
-        from algan.rendering.raytracing.time_compression import (
-            extract_global_linear_z)
-
-        actor.set_state_to_time_t(time_inds)
-        for component in actor.components:
-            component.set_state_to_time_t(time_inds)
-        loc = getattr(actor, "location", None)
-        if not torch.is_tensor(loc):
-            return None
-        loc3 = loc
-        while loc3.dim() < 3:
-            loc3 = loc3.unsqueeze(0)
-        if loc3.shape[0] != T:
-            return None
-        z = extract_global_linear_z(loc3)
-        if z is None:
-            return None
-
-        mid = T // 2
-        knot_inds = time_inds[torch.tensor([0, mid, T - 1])]
-        actor.set_state_to_time_t(knot_inds)
-        for component in actor.components:
-            component.set_state_to_time_t(knot_inds)
-        prims = actor.get_render_primitives()
-        if prims is None:
-            return None
-        if not isinstance(prims, list):
-            prims = [prims]
-        z_mid = float(z[mid])
-        for p in prims:
-            if not self._expand_primitive_linear(p, z, z_mid):
-                return None
-        return prims
-
-    def _expand_primitive_linear(self, p, z, z_mid, tol=1e-3):
-        """Expand a primitive whose per-frame geometry was built at exactly the
-        three probe frames [start, mid, end] to all ``len(z)`` frames, by
-        linearly blending the endpoint values with ``z``. Each varying tensor
-        attribute (3 frames on its time axis) is verified at the midpoint against
-        the linear blend; a mismatch (a nonlinear attribute) aborts to the dense
-        path. Static attributes (1 frame) are left untouched (the kernel already
-        broadcasts them)."""
-        from algan.rendering.raytracing.time_compression import expand_linear
-
-        def expand_attr(t):
-            n0 = t.shape[0]
-            if n0 == 1:
-                return t, True            # static: leave as-is
-            if n0 != 3:
-                return t, False           # unexpected layout -> dense fallback
-            lo, md, hi = t[0], t[1], t[2]
-            recon = lo + z_mid * (hi - lo)
-            if float((md - recon).abs().amax()) > tol:
-                return t, False           # nonlinear -> dense fallback
-            return expand_linear(lo, hi, z.to(t.device)), True
-
-        for name in ("corners", "normals", "colors", "uvs"):
-            t = getattr(p, name, None)
-            if not torch.is_tensor(t) or t.dim() < 1:
-                continue
-            new_t, ok = expand_attr(t)
-            if not ok:
-                return False
-            setattr(p, name, new_t)
-
-        sp = getattr(p, "shader_param_values", None)
-        if isinstance(sp, (list, tuple)):
-            new_sp = []
-            for t in sp:
-                if torch.is_tensor(t) and t.dim() >= 1:
-                    new_t, ok = expand_attr(t)
-                    if not ok:
-                        return False
-                    new_sp.append(new_t)
-                else:
-                    new_sp.append(t)
-            p.shader_param_values = list(new_sp)
-        return True
-
-    def _ensure_actor_state(self, actor, start_time_ind, end_time_ind):
-        """Materialize the actor's animated state for this batch. In
-        full-range mode (see get_frames) the state is materialized once over
-        the whole render window and reused by every later batch -- attribute
-        reads slice it through set_state_to_time_t -- which is valid because
-        animation history cannot change during rendering. Per-frame values are
-        identical either way (materialization is per-frame math), so output is
-        unchanged. Camera/screen/lights keep the per-batch protocol: their
-        state is reset every batch as part of the render-state snapshot
-        handover."""
-        full = getattr(self, "_full_state_range", None)
-        if full is None or (
-            actor is self.camera
-            or actor is self.camera.screen
-            or actor in self.light_sources
-        ):
-            actor.set_state_full(start_time_ind, end_time_ind)
-            return
-        d = actor.data
-        tm = d.time_inds_materialized
-        if (
-            getattr(actor, "_full_state_applied", False)
-            and d.set_pre_function_application
-            and tm is not None
-            and int(tm[0]) <= start_time_ind
-            and int(tm[-1]) >= end_time_ind - 1
-        ):
-            # Reused from an earlier batch. Mark as set so a duplicate
-            # occurrence later in this batch's actor loop is skipped, exactly
-            # as set_state_full would have caused.
-            actor.already_set_state = True
-            return
-        actor.set_state_full(*full)
-        actor._full_state_applied = True
-
     def _is_batchable_surface(self, actor):
         """True if this actor's geometry build can be stacked with same-shaped
         peers into one tensor pass (see surface.get_render_primitives_batched).
@@ -560,19 +382,10 @@ class Scene:
             return False
         return True
 
-    def _prepare_deferred_surface(self, actor, time_inds):
-        """Materialize the actor's state for the deferred geometry build --
-        at the three mode-3 knot frames when its motion is linear over this
-        batch (mirroring _try_timeline_direct), else densely at every frame --
-        and return the deferred entry consumed by _build_deferred_surfaces."""
-        entry = {"actor": actor, "z": None, "z_mid": None, "prims": None}
-        return entry
-
-    def _build_deferred_surfaces(self, deferred, time_inds):
+    def _build_deferred_surfaces(self, deferred):
         """Build geometry for all deferred surfaces, one stacked tensor pass
-        per (grid shape, materialized location shape) group, then apply the
-        mode-3 linear expansion per surface (dense per-surface rebuild on a
-        failed midpoint check) and release the actors' animated state."""
+        per (grid shape, materialized location shape) group (see
+        surface.get_render_primitives_batched)."""
         from algan.mobs.surfaces.surface import get_render_primitives_batched
 
         groups = collections.defaultdict(list)
@@ -588,52 +401,22 @@ class Scene:
         for entries in groups.values():
             prims = get_render_primitives_batched([e["actor"] for e in entries])
             for entry, p in zip(entries, prims):
-                if entry["z"] is not None:
-                    if not self._expand_primitive_linear(p, entry["z"], entry["z_mid"]):
-                        # A nonlinear attribute failed the midpoint check:
-                        # rebuild this surface densely, as the per-surface
-                        # path would have.
-                        actor = entry["actor"]
-                        actor.set_state_to_time_t(time_inds)
-                        for component in actor.components:
-                            component.set_state_to_time_t(time_inds)
-                        p = actor.get_render_primitives()
                 if isinstance(p, list):
                     entry["prims"] = p
                 else:
                     entry["prims"] = [p] if p is not None else []
 
-        for entry in deferred:
-            actor = entry["actor"]
-            if getattr(self, "_full_state_range", None) is not None:
-                actor.already_set_state = False
-                for component in actor.components:
-                    component.already_set_state = False
-            else:
-                actor.reset_state()
-                for component in actor.components:
-                    component.reset_state()
-
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
-        # Camera, screen and light animation state is owned by batch prep: it
-        # is reset here (this used to happen at the end of
-        # render_primitive_batch), re-materialized by the actor loop below for
-        # this batch's range, and the plain tensors the renderer consumes are
-        # snapshot just before returning (_materialize_render_state). The
-        # render path then never touches animated state, which lets the next
-        # batch be prepped on a worker thread while the current one renders.
-        for _ in (self.camera, self.camera.screen, *self.light_sources):
-            _.reset_state()
         max_end_time = max_end_time_ind / self.frames_per_second
         start_time = start_time_ind / self.frames_per_second
         primitive_actors = [
-            _
-            for _ in actors
-            if (_.data.lifespan.start() <= max_end_time)
-            and ((_.data.lifespan.end() >= start_time) or _.data.lifespan.end() < 0)
-            and hasattr(_, "get_render_primitives")
+            actor
+            for actor in actors
+            if (actor.lifespan.start() <= max_end_time)
+            and ((actor.lifespan.end() >= start_time) or actor.lifespan.end() < 0)
+            and hasattr(actor, "get_render_primitives")
         ]
 
         # Precompute memory per timestep once to avoid redundant calls inside binary search loop
@@ -646,17 +429,17 @@ class Scene:
             duration = min(duration, COMPUTING_DEFAULTS.max_animate_batch_size)
             while True:
                 selected_actors = [
-                    _
-                    for _ in primitive_actors
+                    actor
+                    for actor in primitive_actors
                     if (
-                        _.data.lifespan.start()
+                        actor.lifespan.start()
                         <= (start_time_ind + duration) / self.frames_per_second
                     )
                 ]
                 mem_used = sum(
                     [
-                        actor_mem[_] * duration
-                        for _ in selected_actors
+                        actor_mem[actor] * duration
+                        for actor in selected_actors
                     ]
                 )
                 if mem_used <= max_mem_used:
@@ -669,13 +452,14 @@ class Scene:
 
         duration = get_duration()
         actors = [
-            _
-            for _ in actors
+            actor
+            for actor in actors
             if (
-                _.data.lifespan.start()
+                actor.lifespan.start()
                 <= (start_time_ind + duration) / self.frames_per_second
             )
-            and ((_.data.lifespan.end() >= start_time_ind / self.frames_per_second) or (_.data.lifespan.end() < 0))
+            and ((actor.lifespan.end() >= start_time_ind / self.frames_per_second)
+                 or (actor.lifespan.end() < 0))
         ]
         time_inds = torch.arange(start_time_ind, start_time_ind + duration)
 
@@ -695,11 +479,9 @@ class Scene:
             if not hasattr(actor, "get_render_primitives"):
                 continue
             if self._is_batchable_surface(actor):
-                entry = self._prepare_deferred_surface(actor, time_inds)
+                entry = {"actor": actor, "prims": None}
                 deferred_surfaces.append(entry)
                 ordered_items.append(entry)
-                # State must stay materialized for the batched build; the
-                # reset happens in _build_deferred_surfaces.
                 continue
             primitive = actor.get_render_primitives()
             if primitive is not None:
@@ -708,7 +490,7 @@ class Scene:
                 ordered_items.append(primitive)
 
         if deferred_surfaces:
-            self._build_deferred_surfaces(deferred_surfaces, time_inds)
+            self._build_deferred_surfaces(deferred_surfaces)
 
         for item in ordered_items:
             primitives = item["prims"] if isinstance(item, dict) else item
@@ -782,15 +564,7 @@ class Scene:
         instead of writing camera attributes means the render thread never
         reads animated state -- by the time a batch renders, prep for the
         *next* batch may be mutating that state on a worker thread.
-
-        The camera uses the base ``Animatable.set_state_to_time_t``: the
-        Camera override additionally writes ray_origin/screen_point/
-        screen_basis onto the camera object, which would race with the render
-        thread reading those attributes for the batch currently on screen.
         """
-        from algan.animation.animatable import Animatable
-
-        time_inds = torch.arange(start_ind, end_ind)
         camera = self.camera
         device = COMPUTING_DEFAULTS.render_device
         lights = []
@@ -870,7 +644,7 @@ class Scene:
         return [self.save_frame(f'{".".join(filename.split(".")[:-1])}_{t}.{filename.split(".")[-1]}',
                                 t) for t in time_stamps]
 
-    def get_frames(self, start_time_ind, end_time_ind, background_color=None, post_processes=[bloom_filter], manual_memory=True):
+    def get_frames(self, start_time_ind, end_time_ind, background_color=None, post_processes=(bloom_filter,), manual_memory=True):
         if end_time_ind <= start_time_ind:
             yield []
             return
@@ -1003,15 +777,6 @@ class Scene:
                         pass
                 if executor is not None:
                     executor.shutdown(wait=True)
-                # Full-range mode keeps actor state materialized across
-                # batches; release it now so the scene is left exactly as the
-                # per-batch protocol leaves it (all actors reset).
-                if getattr(self, "_full_state_range", None) is not None:
-                    self._full_state_range = None
-                    for a in self.actors[-1]:
-                        a.reset_state()
-                        for component in getattr(a, "components", []):
-                            component.reset_state()
 
         self.background_frame = self.original_background_frame
 
@@ -1036,7 +801,7 @@ class Scene:
         file_writer,
         file_path,
         file_path_out,
-        post_processes=[bloom_filter],
+        post_processes=(bloom_filter,),
         background_color=None,
     ):
         self.scene_times.append(
@@ -1059,13 +824,6 @@ class Scene:
         self.file_path = file_path
         self.file_writer = file_writer
 
-        '''
-                frame_queue = multiprocessing.Queue(maxsize=40)
-                writer_process = multiprocessing.Process(
-                    target=write_frames_from_queue,
-                    args=(frame_queue, file_writer)
-                )
-                '''
         frame_queue = Queue(maxsize=8)
         writer_process = threading.Thread(target=write_frames_from_queue, args=(frame_queue, file_writer))
         writer_process.daemon = True
