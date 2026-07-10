@@ -58,10 +58,11 @@ class Tex(Mob):
         ]
         with Off():
             self.character_mobs = []
-            if len(p) > 0:
-                self.character_mobs = TriangulatedBezierCircuit(
-                    p, invert=False, hash_keys=p, reverse_points=False, *args, **kwargs
-                )
+            for p_ in p:
+                #if len(p) > 0:
+                self.character_mobs.append(TriangulatedBezierCircuit(
+                    p_, invert=False, hash_keys=p_, reverse_points=False, *args, **kwargs
+                ))
             self.image_mobs = [
                 ImageMob(_) for _ in chars if isinstance(_, mn.ImageMobject)
             ]
@@ -81,28 +82,13 @@ class Tex(Mob):
     def default_color(self):
         return BLUE
 
-    """def highlight(self):
-        self.orig_color = self.color
-        with Sync():
-            for _ in self.get_descendants():
-                _.color = RED_A
-        return self
-
-    def highlight_off(self):
-        with Sync():
-            for _ in self.get_descendants():
-                _.color = WHITE
-        return self"""
-
     def on_create(self):
-        with Off():  # Ensure initial state setting is not recorded as an animation
-            self.opacity = 0
-        self._create_recursive(
-            animate=False
-        )  # Mark as created without immediate animation
-        self.wave_color(
-            None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=1
-        )
+        with Seq():
+            with Off():  # Ensure initial state setting is not recorded as an animation
+                self.opacity = 0
+            self._create_recursive(animate=False)  # Mark as created without immediate animation
+            self.wave_color( None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=1)
+            #self.opacity = 1
         return self
         tiles = list(traverse([c.children for c in self.children]))
         with AnimationContext(run_time_unit=2):

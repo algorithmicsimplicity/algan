@@ -175,14 +175,13 @@ proportional cost.
    :class: seealso
 
    Shadow-casting lights are collected into a fixed-size per-pixel list whose
-   length is a compile-time constant (default 8). Lights beyond that are still
-   *lit*, just not shadowed. This is also how many samples of a
-   :class:`~.RectAreaLight` cast shadows: the light is *lit* from all its
-   samples, but only the first 8 are shadow-tested — which is plenty for a clean
-   penumbra. If you have a rig of more than 8 distinct shadow-casters, raise
+   length is a compile-time constant (default 16 — enough for a key/fill/rim
+   rig plus a 4×4-sample area light). Lights beyond that are still *lit*, just
+   not shadowed, and each sample of a :class:`~.RectAreaLight` counts toward
+   the limit — an under-capped area light simply gets a shallower shadow. If
+   you need denser area-light penumbras or a larger rig, raise
    ``ALGAN_MAX_SHADOW_LIGHTS`` before the first render (more GPU registers,
-   slightly lower shadow-kernel occupancy) and check the result — pushing it
-   high can over-brighten the core of a large area light's shadow.
+   slightly lower shadow-kernel occupancy).
 
 Environment Maps
 ================

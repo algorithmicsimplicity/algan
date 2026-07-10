@@ -69,18 +69,16 @@ AMBIENT_STRENGTH = 0.1
 # compile-time, so this is a compile-time cap, not a runtime one. Lights past
 # the cap are still *lit*, just never shadowed. The visibility vector is
 # dead-code-eliminated when shadows are off (the default), so a larger cap
-# only costs registers on opt-in shadow renders.
-#
-# Default 8. This is also how many samples of a soft area light actually cast
-# shadows: a RectAreaLight with more samples still *lights* from all of them,
-# but only the first 8 are shadow-tested. That is deliberate -- 8 gives a clean
-# penumbra, and pushing this higher can (with the non-physical default diffuse
-# shader, whose per-light contributions are summed unnormalised) over-brighten
-# the umbra of a large area light. Raise ALGAN_MAX_SHADOW_LIGHTS if you have a
-# rig of more than 8 distinct shadow-casters and have verified the look; a truly
-# unbounded (runtime) count would need the per-fragment visibilities in a global
-# scratch buffer instead of a stack vector (see the docs on soft shadows).
-MAX_SHADOW_LIGHTS = max(1, int(os.environ.get("ALGAN_MAX_SHADOW_LIGHTS", "8")))
+# only costs registers on opt-in shadow renders. 16 covers a key/fill/rim rig
+# plus a 4x4-sample area light out of the box; raise ALGAN_MAX_SHADOW_LIGHTS
+# for denser area-light penumbras or larger rigs (more registers, lower
+# occupancy on the shadow kernels). Each area-light emitter sample counts as
+# one slot; samples past the cap light without shadowing, so an under-capped
+# area light just gets a shallower umbra, never a wrong one (the default
+# shader's base fade-out is power-fraction weighted -- see _stage_default). A
+# truly unbounded (runtime) count would need the per-fragment visibilities in
+# a global scratch buffer instead of a stack vector.
+MAX_SHADOW_LIGHTS = max(1, int(os.environ.get("ALGAN_MAX_SHADOW_LIGHTS", "16")))
 
 
 @ti.func
@@ -161,9 +159,15 @@ _LT_ENV_SH = 6
 def _light_eval(light_pos: ti.template(), light_col: ti.template(),
                 f, li, pos, n):
     """Evaluate light ``li`` for a surface point ``pos`` with shading normal
-    ``n``: returns ``(ld, lc, spec_w)`` -- the unit direction toward the light,
-    its effective RGB radiance (falloff / cone / hemisphere blending applied)
-    and the specular gate (0 for the direction-less ambient-like types).
+    ``n``: returns ``(ld, lc, spec_w, frac)`` -- the unit direction toward the
+    light, its effective RGB radiance (falloff / cone / hemisphere blending
+    applied), the specular gate (0 for the direction-less ambient-like types)
+    and the light's *power fraction* (packed column 15): the share of a whole
+    light this row represents -- ``1/K`` for one of an area light's K emitter
+    samples, 1 for every stand-alone light. Physical stages ignore it (their
+    per-sample radiance already carries the 1/K); the legacy lerp-based default
+    stage weights its blend total by it so an area light lerps like *one*
+    light of its full colour rather than K dim ones.
 
     Compact rows (``light_col`` width 3, the legacy packing used whenever the
     scene has only plain point lights) take the original point-light path with
@@ -182,8 +186,14 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
                       light_col[tl, li, 2])
     ld = (lp - pos).normalized()
     spec_w = 1.0
+    frac = 1.0
     if light_col.shape[2] > 3:
         ltype = ti.cast(light_col[tl, li, 3] + 0.5, ti.i32)
+        # Power fraction; <= 0 means "unset" (e.g. rows packed before this
+        # column existed, or the env-SH row) and defaults to a whole light.
+        frac = light_col[tl, li, 15]
+        if frac <= 0.0:
+            frac = 1.0
         if ltype == _LT_DIRECTIONAL:
             ld = -ti.math.vec3(light_col[tl, li, 6], light_col[tl, li, 7],
                                light_col[tl, li, 8])
@@ -239,7 +249,7 @@ def _light_eval(light_pos: ti.template(), light_col: ti.template(),
             an = ti.math.vec3(light_col[tl, li, 6], light_col[tl, li, 7],
                               light_col[tl, li, 8])
             lc = lc * ti.max((-ld).dot(an), 0.0)
-    return ld, lc, spec_w
+    return ld, lc, spec_w, frac
 
 
 @ti.func
@@ -295,22 +305,22 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     acc = ti.math.vec3(0.0, 0.0, 0.0)
     wsum = 0.0
     for li in range(num_lights):
-        ld, lc, _spec_w = _light_eval(light_pos, light_col, f, li, pos, n)
+        ld, lc, _spec_w, frac = _light_eval(light_pos, light_col, f, li, pos, n)
         v = _light_vis(shadows, vis, li)
         d = ti.max(ld.dot(n), 0.0)
         w = d * d * d * d * d * 0.5 * v
         acc += lc * w
-        wsum += w
-    # Blend the base toward the lights' weighted-average colour (``acc/wsum``)
-    # with total weight ``min(wsum, 1)``. Normalising ``acc`` by the weight sum
-    # keeps many lights (an area light's sample fan, a large shadow-caster rig)
-    # from summing past a single light's brightness -- the over-bright shadow
-    # core we saw when raising the shadow-light cap. Dividing by ``max(wsum, 1)``
-    # makes the single-/low-light case (``wsum <= 1``, which is *every* single
-    # point light, since ``w <= 0.5``) bit-identical to the un-normalised form
-    # (``x / 1.0 == x``); normalisation only engages once the summed weight
-    # would otherwise blow out.
-    out = out * (1.0 - ti.min(wsum, 1.0)) + acc / ti.max(wsum, 1.0)
+        # The base fade-out counts each row by its *power fraction* (1/K for an
+        # area light's K emitter samples, 1 otherwise), so one area light
+        # displaces at most as much base colour as one point light would --
+        # while ``acc`` (whose per-sample radiance already carries the 1/K)
+        # sums back to the full light colour. Without this, a fully-occluded
+        # umbra under a many-sample area light would revert toward the raw
+        # albedo (which can be *brighter* than the dimly-lit surroundings, a
+        # "bright shadow"), because the K dim samples each faded the base as a
+        # whole light while only delivering 1/K of the colour.
+        wsum += w * frac
+    out = out * (1.0 - ti.min(wsum, 1.0)) + acc
     return ti.math.vec4(out[0], out[1], out[2], in_glow)
 
 
@@ -335,7 +345,8 @@ def _stage_lambert(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     acc = (in_rgb * (AMBIENT_STRENGTH * env)
            + emissive * emissive_intensity)
     for li in range(num_lights):
-        ld, lc, _spec_w = _light_eval(light_pos, light_col, f, li, pos, n)
+        ld, lc, _spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                             pos, n)
         v = _light_vis(shadows, vis, li)
         n_dot_l = ti.max(n.dot(ld), 0.0)
         acc += in_rgb * lc * (n_dot_l * v)
@@ -363,7 +374,8 @@ def _stage_phong(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     acc = (in_rgb * (AMBIENT_STRENGTH * env)
            + emissive * emissive_intensity)
     for li in range(num_lights):
-        ld, lc, spec_w = _light_eval(light_pos, light_col, f, li, pos, n)
+        ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                            pos, n)
         v = _light_vis(shadows, vis, li)
         half = (ld + view_dir).normalized()
         n_dot_l = ti.max(n.dot(ld), 0.0)
@@ -398,7 +410,8 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     acc = ((rgb * (1.0 - metalness) + f0 * metalness) * (AMBIENT_STRENGTH * env)
            + emissive * emissive_intensity)
     for li in range(num_lights):
-        ld, lc, spec_w = _light_eval(light_pos, light_col, f, li, pos, n)
+        ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                            pos, n)
         v = _light_vis(shadows, vis, li)
         half = (ld + view_dir).normalized()
         n_dot_l = ti.max(n.dot(ld), 0.0)

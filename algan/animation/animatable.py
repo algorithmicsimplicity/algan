@@ -865,8 +865,8 @@ class Animatable:
             ti = copy.deepcopy(self.data)
             ti.animatable = clone
             ti.history = ModificationHistory() if reset_history else oh
-            ti.spawn_time = lambda: -1
-            ti.despawn_time = lambda: -1
+            ti.lifespan.start = lambda: -1
+            ti.lifespan.end = lambda: -1
             self.data.animatable = oa
             self.data.history = oh
             if not reset_history:
@@ -881,7 +881,10 @@ class Animatable:
         if add_to_scene:
             self.scene.add_actor(clone)
             self.animation_manager.context.add_mob(clone)
-        clone.id = self.scene.get_new_id()
+        if clone_data:
+            clone.id = self.scene.get_new_id()
+        else:
+            clone.id = self.id
         children = (
             list(object.__getattribute__(self, "children"))
             if (hasattr(self, "children") and copy_recursive)
@@ -927,7 +930,10 @@ class Animatable:
             object.__setattr__(clone, k, copy.deepcopy(v, memo))
 
         clone.generate_animatable_attr_set_get_methods()
-        if self.data.spawn_time() >= 0 and spawn:
+        if clone_data:
+            for attr in self.animatable_attrs:
+                setattr(clone, attr, getattr(self, attr, None))
+        if self.data.lifespan.start() >= 0 and spawn:
             clone.spawn(animate_creation)
         if copy_recursive:
             clone.add_children(*children_clones)
@@ -956,7 +962,7 @@ class Animatable:
             for d in c.get_descendants():
                 for attr in ["location", "opacity", "basis", "color"]:
                     dloc = d.__getattribute__(attr)
-                    d.data.data_dict_active[f"{attr}"] = dloc
+                    #d.data.data_dict_active[f"{attr}"] = dloc
                     if dloc is None:
                         continue
                     d.batch_size = max(c.batch_size, dloc.shape[-2])

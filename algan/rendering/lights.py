@@ -98,6 +98,11 @@ class Light(Renderable):
         aux = torch.zeros((location.shape[0], self.num_samples(),
                            LIGHT_AUX_COLS), dtype=torch.float32)
         aux[..., 0] = self.light_type
+        # Power fraction: the share of a whole light each packed row carries
+        # (1/K for one of an area light's K emitter samples). Consumed by the
+        # legacy lerp-based default shader so a many-sample light displaces at
+        # most one whole light's worth of base colour.
+        aux[..., 12] = 1.0 / self.num_samples()
         return aux
 
     def build_aux(self, location):
@@ -113,7 +118,7 @@ class Light(Renderable):
         7   cos(inner cone angle) (spot)
         8   shadow softness (world radius; directional: tan(angle))
         9-11 ground color RGB (hemisphere) / SH linear coeffs (env)
-        12  spare
+        12  power fraction of this row (1/K for area samples, else 1)
         ==  =========================================================
         """
         return self._blank_aux(location)

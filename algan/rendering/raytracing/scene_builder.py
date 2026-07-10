@@ -788,7 +788,7 @@ def _pack_lights(light_sources, num_frames, device):
         3    light type id                            10 cos inner (spot)
         4    decay exponent                           11 shadow softness
         5    range (0 = infinite)                     12:15 ground RGB / SH
-        6:9  direction                                15 spare
+        6:9  direction                                15 power fraction (1/K)
 
     Area lights arrive pre-expanded into K emitter sample rows (see
     ``Scene._materialize_render_state``), each occupying its own light slot.
@@ -821,7 +821,11 @@ def _pack_lights(light_sources, num_frames, device):
             positions.append(_expand_frames(pos[:, k], num_frames))
             c = _expand_frames(col[:, min(k, col.shape[1] - 1)], num_frames)
             if aux is None:
+                # Plain point light sharing a pack with extended lights:
+                # type 0 with a whole-light power fraction (col 12 -> packed
+                # col 15).
                 a = torch.zeros((c.shape[0], 13), dtype=torch.float32)
+                a[:, 12] = 1.0
             else:
                 a = _expand_frames(aux[:, k].float(), num_frames)
             rows.append(torch.cat((c, a), -1))
