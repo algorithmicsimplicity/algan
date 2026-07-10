@@ -519,11 +519,9 @@ class Mob(Animatable):
             return self
         current_inds = tl.mob_id_to_inds[self.id]
         value = cast_to_tensor(value)
-        if current_inds.shape[0] == value.shape[-2]:
+        if (current_inds.shape[0] == value.shape[-2]) or (value.shape[-2] == 1):
             return self
-        current_value = self.get_animated_attribute(key, value, include_descendants=False)
-        if value.shape[-2] == 1:
-            return self
+        current_value = self.get_animated_attribute(key, default=None, include_descendants=False)
         if current_value.shape[-2] != 1:
             raise ValueError(f"Attempting to set {key} which currently has value of shape {current_value.shape}"
                              f"to new value with shape {value.shape}, which is not broadcastable.")
@@ -635,17 +633,25 @@ class Mob(Animatable):
         )
 
     @basis.setter
-    @animated_function(animated_args={'interpolation': 0.0})
-    def basis(self, basis: torch.Tensor, interpolation=1.0):
+    def basis(self, basis: torch.Tensor):
         value = cast_to_tensor(basis)
+        inverse_relation = self.attr_to_relations["basis"][1]
+        # Convert the absolute target into a relative change against the
+        # current basis, so that concurrent basis writers (e.g. a rotate and a
+        # scale in the same Sync) compose instead of overriding each other.
+        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=value)
+        change = inverse_relation(my_basis, value)
+        self._apply_basis_change(change, default_basis=value)
+
+    @animated_function(animated_args={'interpolation': 0.0})
+    def _apply_basis_change(self, change, default_basis=None, interpolation=1.0):
         attr = "basis"
         relation, inverse_relation = self.attr_to_relations[attr]
         recursive = not self._prevent_recursive_sets
 
-        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=basis)
+        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=default_basis)
         my_loc = self.get_animated_attribute('location', include_descendants=False)
 
-        change = inverse_relation(my_basis, basis)
         identity = inverse_relation(my_basis, my_basis)
         interpolated_change = torch.lerp(identity, change, interpolation)
         new_basis = relation(my_basis, interpolated_change)
@@ -728,30 +734,8 @@ class Mob(Animatable):
         if recursive:
             self.location = location
         else:
-            self.setattr_non_recursive("location", location)
+            self.set_non_recursive(location=location)
         return self
-
-    def setattr_non_recursive(self, key: str, value: any):
-        """Sets an attribute's value without applying the change to child Mobs.
-
-        This temporarily disables the recursive behavior of attribute setting
-        for the duration of this specific attribute modification.
-
-        Parameters
-        ----------
-            key (str): The name of the attribute to set.
-            value (Any): The new value for the attribute.
-
-        """
-        if self.animation_manager.context.trace_mode:
-            self.animation_manager.context.traced_mobs.add(self)
-            return self
-        original_recursing_state = self.recursing
-        self.recursing = False
-        self.__setattr__(
-            key, value
-        )  # Calls the property setter, which then calls apply_absolute_change/set_relative
-        self.recursing = original_recursing_state  # Restore original state
 
     def move_between(self, loc1, loc2):
         loc1, loc2 = [_.get_center() if hasattr(_, 'get_center') else _ for _ in [loc1, loc2]]
@@ -1447,7 +1431,7 @@ class Mob(Animatable):
             If True, applies scaling recursively to all descendant Mobs.
 
         Returns
-        =======
+        -------
         :class:`~.Mob`
             The Mob instance itself, allowing for method chaining.
 
@@ -1634,8 +1618,7 @@ class Mob(Animatable):
             displacement_from_point, num_degrees, axis, dim=-1
         )
         new_location = rotated_displacement + point
-        # Use setattr_non_recursive to ensure only this Mob's location is changed
-        self.setattr_non_recursive("location", new_location)
+        self.set_non_recursive(location=new_location)
         return self
 
     def move_to_point_along_arc(
@@ -1774,7 +1757,7 @@ class Mob(Animatable):
         """
         for mob in self.get_descendants():
             mob.data.history = ModificationHistory()
-            mob.data.spawn_time = lambda: -1
+            mob.data.lifespan.start = lambda: -1
             # Re-allocate the mob's buffer rows (keeping current values): the
             # old rows' recorded modifications stay with the old rows, so this
             # mob's attribute history starts fresh.
@@ -1803,7 +1786,7 @@ class Mob(Animatable):
                             func_data[0] = (func_callable, descendant_map[caller])
 
             for orig, clone in zip(self.get_descendants(), clone_mob.get_descendants()):
-                clone.data.spawn_time = orig.data.spawn_time
+                clone.data.lifespan.start = orig.data.lifespan.start
             clone_mob.despawn(animate=False)
             self.refresh_history()
             self.spawn(animate=False)
@@ -2226,8 +2209,8 @@ class Mob(Animatable):
                     if not hasattr(new_self, attr_name):
                         continue
                     # Use getattr to safely access attributes, as not all mobs may have all listed attributes
-                    new_self.setattr_non_recursive(
-                        attr_name, getattr(other_mob, attr_name)
+                    new_self.set_non_recursive(
+                        **{attr_name: getattr(other_mob, attr_name)}
                     )
 
             # Like Manim's Transform, the (single) transforming mob is left in the
@@ -2437,7 +2420,7 @@ class Mob(Animatable):
         :class:`.ModifiedProtectedAttributeError`
             If called on an already spawned mob.
         """
-        if self.data.spawn_time() >= 0:
+        if self.data.lifespan.start() >= 0:
             raise ModifiedProtectedAttributeError(
                 "You are attempting to change the fragment shader of a mob that "
                 "is already spawned. This is not allowed. See docs for help.")

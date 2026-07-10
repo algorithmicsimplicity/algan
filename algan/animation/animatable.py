@@ -752,12 +752,12 @@ class Animatable:
             inds = torch.cat([timeline.get_inds(key, m, value) for m in self.get_descendants(include_self=True)])
         return inds
 
-    def get_animated_attribute(self, key, value=None, include_descendants=False, default=None):
+    def get_animated_attribute(self, key, include_descendants=False, default=None):
         if self.animation_manager.context.trace_mode:
             self.animation_manager.context.traced_mobs.add(self)
         if default is not None:
             self._prepare_buffers(key, default)
-        inds = self.get_attr_inds(key, include_descendants=include_descendants, value=value)
+        inds = self.get_attr_inds(key, include_descendants=include_descendants, value=default)
         timeline = TimelineManager.instance()
         return timeline.get_attr(key, inds)
         d = self.data
@@ -1007,7 +1007,7 @@ class Animatable:
                 if animate:
                     self.on_destroy()
                 self.data.lifespan.end = self.animation_manager.context.get_end_time()
-                TimelineManager.instance().register_spawn(self, self.data.lifespan)
+                TimelineManager.instance().register_despawn(self, self.data.lifespan)
                 # self.remove_all_passive_animations()
             for c in self.children:
                 c._destroy_recursive(animate)
