@@ -1,67 +1,41 @@
-import sys
-import traceback
+"""Algan's library logger, backed by Python's standard :mod:`logging`.
 
-from algan.settings.logging_defaults import LOGGING_DEFAULTS
+All of Algan's diagnostic and progress output goes through the ``"algan"``
+logger. By default it prints bare messages to stderr at ``INFO`` level (so
+render-progress messages stay visible, as they always were). To quiet or
+raise verbosity, either:
 
+* set the ``ALGAN_LOG_LEVEL`` environment variable before importing algan
+  (e.g. ``ALGAN_LOG_LEVEL=WARNING`` silences progress output), or
+* call :func:`set_log_level` at any time, or
+* attach your own handlers to ``logging.getLogger("algan")`` after calling
+  ``logger.handlers.clear()``.
+"""
+import logging
+import os
 
-class LoggerError(Exception):
-    pass
-
-
-class Logger:
-    def __init__(self, output_file_path, verbosity=None):
-        self.verbosity = verbosity
-        self.file_path = output_file_path
-        self.verbosity_levels = {
-            "batching": 0,
-            "memory": 10,
-            "rendering": 20,
-            "max": 100,
-        }
-        self.current_log_class = None
-        with open(output_file_path, "w") as f:
-            f.write(" ")
-
-    def set_class(self, log_class):
-        self.current_log_class = log_class
-        return self
-
-    def get_verbosity(self):
-        return LOGGING_DEFAULTS.verbosity if self.verbosity is None else self.verbosity
-
-    def log_message(self, message):
-        v = self.get_verbosity()
-        if (
-            v is None
-            or self.verbosity_levels[self.current_log_class] > self.verbosity_levels[v]
-        ):
-            return
-        self._write_message(message)
-
-    def _write_message(self, message):
-        with open(self.file_path, "a") as f:
-            traceback.print_stack(file=f)
-            f.write("\n")
-            f.write("*" * 20)
-            f.write("\n")
-            f.write(message)
-            f.write("\n\n")
-            f.write("-" * 20)
-            f.write("\n\n")
+logger = logging.getLogger("algan")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(os.environ.get("ALGAN_LOG_LEVEL", "INFO").upper())
+    # Don't double-print through the root logger if the application configured it.
+    logger.propagate = False
 
 
-class LoggerManager:
-    _instance = None
+def get_logger(name=None):
+    """Return Algan's logger, or a child of it when ``name`` is given."""
+    return logger if name is None else logger.getChild(name)
 
-    def __init__(self):
-        raise RuntimeError("Call LoggerManager.instance() instead of LoggerManager().")
 
-    @classmethod
-    def reset(cls):
-        cls._instance = None
+def set_log_level(level):
+    """Set the verbosity of Algan's console output.
 
-    @classmethod
-    def instance(cls):
-        if cls._instance is None:
-            cls._instance = Logger(LOGGING_DEFAULTS.log_file_path)
-        return cls._instance
+    Parameters
+    ----------
+    level
+        A standard :mod:`logging` level name or value, e.g. ``"WARNING"`` to
+        silence progress messages or ``"DEBUG"`` for extra detail.
+    """
+    logger.setLevel(level.upper() if isinstance(level, str) else level)

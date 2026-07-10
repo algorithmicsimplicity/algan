@@ -16,7 +16,7 @@ from algan.animation.animation_contexts import (
 )
 from algan.constants.color import BLACK
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
-from algan import SceneManager
+from algan.scene_manager import SceneManager
 from algan.utils.python_utils import traverse
 
 
@@ -81,8 +81,19 @@ def animated_function(
                     kwargs = prepare_kwargs(
                         self, func, args, kwargs, animated_args, unique_args
                     )
-                    with AnimationContext(record_funcs=False):
-                        out = func(self, **kwargs)
+                    # Attribute edits made while func runs are attributed to
+                    # the function application recorded by prepare_kwargs, so
+                    # overlapping edits' replay windows can be resolved (see
+                    # AnimationTimeline._resolve_replay_windows).
+                    timeline = TimelineManager.instance()
+                    previous_event = timeline.set_active_edit_event(
+                        timeline.last_recorded_event
+                    )
+                    try:
+                        with AnimationContext(record_funcs=False):
+                            out = func(self, **kwargs)
+                    finally:
+                        timeline.set_active_edit_event(previous_event)
                     self.animation_manager.context.increment_times()
             return out
 

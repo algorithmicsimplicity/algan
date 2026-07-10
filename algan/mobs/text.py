@@ -23,8 +23,21 @@ from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import unsquish
 
 
+def make_manim_dir():
+    """Create manim's tex/text output directories if they don't exist yet.
+
+    Called lazily on first :class:`Tex` construction (manim errors if they are
+    missing) rather than at ``import algan`` time, so importing the package
+    doesn't write to disk.
+    """
+    for tex_dir in [mn.config.get_dir("tex_dir"), mn.config.get_dir("text_dir")]:
+        if not tex_dir.exists():
+            tex_dir.mkdir(parents=True)
+
+
 class Tex(Mob):
     def __init__(self, text, font_size=24, latex=True, *args, **kwargs):
+        make_manim_dir()
         if "preamble" in kwargs:
             kwargs["tex_template"] = mn.TexTemplate(
                 preamble=_DEFAULT_PREAMBLE + "\n" + kwargs["preamble"]
@@ -229,6 +242,7 @@ class OldTex(Mob):
         return self
 
     def create_character_mobs(self, text, **kwargs):
+        make_manim_dir()
         pathlib.Path("media/tex").mkdir(exist_ok=True, parents=True)
         # s = 0.105 * self.size / 100
         s = 0.04 * 45 / 100

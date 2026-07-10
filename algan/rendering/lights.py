@@ -28,7 +28,7 @@ import math
 import torch
 import torch.nn.functional as F
 
-from algan import Renderable
+from algan.mobs.renderable import Renderable
 from algan.constants.spatial import ORIGIN, UP
 
 __all__ = [

@@ -1,8 +1,9 @@
 import torch
 import torch.nn.functional as F
 
-from algan.constants.spatial import OUT
-from algan import RIGHT, PREVIEW, rotate_vector_around_axis
+from algan.constants.spatial import OUT, RIGHT
+from algan.settings.render_settings import PREVIEW
+from algan.geometry.geometry import rotate_vector_around_axis
 from algan.animation.animation_contexts import Off
 from algan.mobs.renderable import Renderable
 from algan.constants.color import *

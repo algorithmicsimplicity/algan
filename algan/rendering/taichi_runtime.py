@@ -24,8 +24,16 @@ cannot silently regress, plus two empirically-tuned register knobs):
 import os
 
 import taichi as ti
+import torch
 
 from algan.settings.defaults import COMPUTING_DEFAULTS
+
+
+def sync_devices():
+    """Block until all pending torch-CUDA and Taichi device work has finished."""
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    ti.sync()
 
 
 def _already_initialized():

@@ -1,7 +1,6 @@
 import torch
 from torch.export.dynamic_shapes import Dim
 
-from algan import compiled, exported
 from algan.constants.color import BLUE
 from algan.settings.defaults import *
 from algan.rendering.primitives.primitive import RenderPrimitive

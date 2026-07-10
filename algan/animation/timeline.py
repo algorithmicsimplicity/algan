@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from algan import cast_to_tensor
+from algan.utils.tensor_utils import cast_to_tensor
 from algan.animation.utils_taichi import _query_state_from_edits
 
 
@@ -39,6 +39,46 @@ class Lifespan:
         self.end = _never
 
 
+class EditRecord:
+    """One recorded modification of an attribute's buffer rows.
+
+    Stores the rows' *pre-modification* values together with the end time of
+    the animation that made the modification: materialization reconstructs a
+    row's base state at time ``t`` as the pre-value of the earliest-executed
+    edit still unfinished at ``t``, then re-applies the functions active at
+    ``t`` on top of it, in execution order.
+
+    ``seq`` is the global execution (recording) order across all attributes,
+    and ``event`` is the :class:`FunctionApplicationEvent` whose function made
+    the modification (None for edits recorded outside animated functions).
+    ``replay_end`` is the edit's *effective* end used for base selection: its
+    own end time, extended over the replay windows of every earlier-executed
+    edit that overlaps it in time on shared rows (see
+    :meth:`AnimationTimeline._resolve_replay_windows`). It is resolved to a
+    float at render time, once context rescaling is final.
+    """
+
+    __slots__ = ("indexes", "values", "time", "seq", "event", "replay_end")
+
+    def __init__(self, indexes, values, time, seq=0, event=None):
+        self.indexes = indexes
+        self.values = values
+        self.time = time
+        self.seq = seq
+        self.event = event
+        self.replay_end = None
+
+
+def _replay_window_end(f):
+    """End of a function application's replay window: its context end time,
+    extended to its edits' resolved ``replay_end`` when they overlap
+    earlier-executed edits (never shrunk below the context end)."""
+    end = f.time.end
+    if f.replay_end is None:
+        return end
+    return max(f.replay_end, end)
+
+
 def generate_array_states_taichi(times, N, edits):
     """
     Generates the state of an array given its history of edits.
@@ -50,6 +90,11 @@ def generate_array_states_taichi(times, N, edits):
             - 'indexes': Tensor of shape [M_i] (values in [0, N-1])
             - 'values': Tensor of shape [M_i, D]
             - 'timestamp': float scalar
+            Timestamps must be non-decreasing along every row (i.e. among the
+            edits containing any given index) — the per-row binary search in
+            _query_state_from_edits relies on it. prepare_for_queries
+            guarantees this by passing edits in execution order with their
+            replay-extended end times.
     """
     device = times.device
     T = times.shape[0]
@@ -60,34 +105,31 @@ def generate_array_states_taichi(times, N, edits):
     D = edits[0]['values'].shape[1]
     dtype = edits[0]['values'].dtype
 
-    # 1. Sort the edits chronologically in Python first.
-    # Sorting a python list of size E (where E is the number of edits) takes negligible time.
-
-    # 2. Extract timestamps and sizes of each edit
+    # 1. Extract timestamps and sizes of each edit
     edit_timestamps = torch.tensor([edit['timestamp'] for edit in edits], dtype=times.dtype, device=device)
     edit_sizes = torch.tensor([edit['indexes'].shape[0] for edit in edits], dtype=torch.int64, device=device)
 
-    # 3. Flatten only the indices and values (no floating-point timestamp arrays are repeated)
+    # 2. Flatten only the indices and values (no floating-point timestamp arrays are repeated)
     flat_indices = torch.cat([edit['indexes'].to(device) for edit in edits])
     flat_values = torch.cat([edit['values'].to(device) for edit in edits])
 
-    # 4. Generate the edit IDs via PyTorch's native C++ repeat_interleave
+    # 3. Generate the edit IDs via PyTorch's native C++ repeat_interleave
     # We cast to int32 to optimize memory usage (halving the index footprint compared to int64)
     flat_edit_ids = torch.repeat_interleave(edit_sizes).to(torch.int32)
 
-    # 5. Perform a single stable sort on flat_indices.
-    # Because flat_edit_ids is already ascending, the stable sort preserves chronological order.
+    # 4. Perform a single stable sort on flat_indices.
+    # Because flat_edit_ids is already ascending, the stable sort preserves each row's edit order.
     perm = torch.argsort(flat_indices, stable=True)
 
     sorted_indices = flat_indices[perm]
     sorted_edit_ids = flat_edit_ids[perm]
     sorted_values = flat_values[perm]
 
-    # 6. Build the CSR index boundaries
+    # 5. Build the CSR index boundaries
     grid = torch.arange(N + 1, dtype=torch.int64, device=device)
     head = torch.searchsorted(sorted_indices, grid)
 
-    # 7. Execute the Taichi parallel kernel
+    # 6. Execute the Taichi parallel kernel
     out = torch.zeros((T, N, D), dtype=dtype, device=device)
     _query_state_from_edits(times, head, sorted_edit_ids, edit_timestamps, sorted_values, out)
 
@@ -97,6 +139,15 @@ def generate_array_states_taichi(times, N, edits):
 class AttributeTimeline:
     """
     A global timeline recording state and edit history of all Mobs for a particular attribute.
+
+    Edits (:class:`EditRecord` s) are kept in execution order; materialization
+    sets each row's base state at time ``t`` to the pre-modification value of
+    the row's earliest-executed edit whose (replay-extended) end is after
+    ``t``, over which :meth:`AnimationTimeline.set_state_to_times` re-applies
+    the functions whose replay windows cover ``t``, in execution order. This
+    makes edits that overlap in time (including edits ending at the same
+    time) rematerialize to the same chain of states they produced when
+    recorded.
     """
 
     def __init__(self, channels, buffer_size=256, attr_name=None, record_end_points=False):
@@ -130,9 +181,9 @@ class AttributeTimeline:
         self._is_ready_for_queries = False
         return self
 
-    def record(self, key, value, time):
+    def record(self, key, value, time, seq=0, event=None):
         old_value = self.get(key)
-        self.edits.append([key, old_value, time])
+        self.edits.append(EditRecord(key, old_value, time, seq, event))
         self.modify(key, value)
         return self
 
@@ -163,11 +214,20 @@ class AttributeTimeline:
             return self
         self._is_ready_for_queries = True
 
-        self._edits_sorted = [*(sorted([[k, v, time.end] for k, v, time in self.edits],
-                                         key=lambda x: x[-1])),
-                              (torch.arange(self.pointer), self.current_state[:,:self.pointer], math.inf)]
-        self._edits_sorted = [{'indexes': k.view(-1), 'values': v.squeeze(0),
-                               'timestamp': t} for k, v, t, in self._edits_sorted]
+        # Edits are kept in execution order, timestamped with their
+        # replay-extended end times (AnimationTimeline._resolve_replay_windows
+        # guarantees these are non-decreasing along every buffer row), so the
+        # per-row binary search in _query_state_from_edits stays valid even
+        # when edits overlap in time. When several edits on a row end at the
+        # same (extended) time, the search returns the earliest-executed one,
+        # whose pre-modification value is the correct base for re-applying
+        # all of them in execution order.
+        self._edits_sorted = [{'indexes': e.indexes.view(-1), 'values': e.values.squeeze(0),
+                               'timestamp': e.replay_end if e.replay_end is not None else e.time.end}
+                              for e in self.edits]
+        self._edits_sorted.append({'indexes': torch.arange(self.pointer),
+                                   'values': self.current_state[:, :self.pointer].squeeze(0),
+                                   'timestamp': math.inf})
 
         if not self.record_end_points:
             return self
@@ -270,6 +330,10 @@ class FunctionApplicationEvent:
         self.kwargs = kwargs
         self.rate_func = rate_func
         self.time = time
+        # Resolved replay-window end (see
+        # AnimationTimeline._resolve_replay_windows); None until resolved or
+        # when the function recorded no attribute edits.
+        self.replay_end = None
 
 
 class UpdaterSpan:
@@ -321,7 +385,7 @@ class FunctionTimeline:
 
     def get_functions_for_times(self, times):
         return [f for f in self.function_applications if ((f.time.start <= times) &
-                (times < f.time.end)).any()]
+                (times < _replay_window_end(f))).any()]
 
     def get_updaters_for_times(self, times):
         return [f for f in self.updaters if ((f.time.start <= times) &
@@ -333,6 +397,23 @@ class AnimationTimeline:
         self.attr_to_timeline = dict()
         self.function_timeline = FunctionTimeline()
         self.mob_id_to_lifespan = dict()
+        # Edit attribution state: a global execution counter for edits, the
+        # function application the currently-executing animated function was
+        # recorded as (edits made while it runs attach to it), and the most
+        # recently recorded function application (consumed by the
+        # animated_function wrapper to scope the former).
+        self._edit_seq = 0
+        self._active_edit_event = None
+        self.last_recorded_event = None
+        self._replay_windows_resolved = True
+
+    def set_active_edit_event(self, event):
+        """Set the function application that subsequently recorded attribute
+        edits are attributed to, returning the previous one (so callers can
+        restore it)."""
+        previous = self._active_edit_event
+        self._active_edit_event = event
+        return previous
 
     def get_lifespan(self, mob_id):
         """The :class:`Lifespan` of the mob with the given id, created on
@@ -386,6 +467,7 @@ class AnimationTimeline:
 
     def record_function(self, function, caller, animated_args, kwargs, animation_context):
         c = animation_context
+        self.last_recorded_event = None
         if c.run_time_unit <= 0 or not c.record_funcs:
             return kwargs
         rate_func = c.rate_func
@@ -393,8 +475,10 @@ class AnimationTimeline:
         rf = rate_func
         if rate_func_compose is not None:
             rf = lambda x, rf=rate_func, rfc=rate_func_compose: rf(rfc(x))
-        self.function_timeline.add(FunctionApplicationEvent(
-            function, caller, animated_args, kwargs, rf, c.timespan))
+        event = FunctionApplicationEvent(
+            function, caller, animated_args, kwargs, rf, c.timespan)
+        self.function_timeline.add(event)
+        self.last_recorded_event = event
         return kwargs
 
     def record_updater(self, function, caller, args, kwargs, animation_context):
@@ -419,7 +503,9 @@ class AnimationTimeline:
 
     def modify_attribute_and_record(self, attr_name, mob_inds, new_value, time):
         timeline = self.attr_to_timeline[attr_name]
-        timeline.record(mob_inds, new_value, time)
+        self._edit_seq += 1
+        timeline.record(mob_inds, new_value, time, self._edit_seq, self._active_edit_event)
+        self._replay_windows_resolved = False
         return self
 
     def modify_attribute(self, attr_name, mob_inds, new_value):
@@ -427,21 +513,92 @@ class AnimationTimeline:
         timeline.modify(mob_inds, new_value)
         return self
 
+    def _resolve_replay_windows(self):
+        """Resolve the effective replay window of every edit and function
+        application, making materialization robust to multiple edits of the
+        same attribute overlapping in time.
+
+        An edit's recorded pre-modification snapshot is only a valid base
+        state once every *earlier-executed* edit of the same rows has fully
+        finished (until then the base must stay at the earliest-executed
+        unfinished edit's pre-values, and the later edits' functions must be
+        re-applied on top, at their final parameters once past their own end,
+        to rebuild the recorded chain of states). To that effect each edit's
+        ``replay_end`` is its own end time extended over the replay windows of
+        all earlier-executed edits that overlap it on any row, propagated
+        transitively; all edits recorded by one function application share one
+        window (the function is re-executed as a whole), which is also stored
+        on the event to extend its replay interval in
+        :meth:`set_state_to_times`.
+
+        By construction ``replay_end`` is non-decreasing along every buffer
+        row in execution order, which is what lets
+        :meth:`AttributeTimeline.prepare_for_queries` keep edits in execution
+        order for the per-row binary search. For edits that do not overlap,
+        ``replay_end`` equals the edit's own end time and behavior is
+        unchanged.
+        """
+        if self._replay_windows_resolved:
+            return
+        self._replay_windows_resolved = True
+
+        all_edits = []
+        for attr, timeline in self.attr_to_timeline.items():
+            all_edits.extend((e.seq, attr, e) for e in timeline.edits)
+        all_edits.sort(key=lambda x: x[0])
+
+        # Latest replay-window end per buffer row, per attribute (float64 so
+        # timestamps round-trip exactly).
+        row_ends = {attr: torch.full((timeline.pointer,), -math.inf, dtype=torch.float64)
+                    for attr, timeline in self.attr_to_timeline.items()}
+
+        i = 0
+        while i < len(all_edits):
+            # Edits recorded by one function application are consecutive in
+            # execution order; group them so they share one window.
+            event = all_edits[i][2].event
+            j = i + 1
+            while event is not None and j < len(all_edits) and all_edits[j][2].event is event:
+                j += 1
+            group = all_edits[i:j]
+
+            end = max(e.time.end for _, _, e in group)
+            for _, attr, e in group:
+                rows = e.indexes.view(-1)
+                if rows.numel():
+                    end = max(end, row_ends[attr][rows].max().item())
+            for _, attr, e in group:
+                e.replay_end = end
+                row_ends[attr][e.indexes.view(-1)] = end
+            if event is not None:
+                event.replay_end = end
+            i = j
+
     def set_state_to_times(self, times):
+        self._resolve_replay_windows()
         for attr, timeline in self.attr_to_timeline.items():
             timeline.rematerialize_state_at_times(times)
 
         for f in self.function_timeline.get_functions_for_times(times):
-            active_time_inds = ((f.time.start <= times) & (times < f.time.end)).nonzero()
+            s = f.time.start
+            e = f.time.end
+            replay_end = _replay_window_end(f)
+            active_time_inds = ((s <= times) & (times < replay_end)).nonzero()
             if active_time_inds.numel() == 0:
                 continue
             for timeline in self.attr_to_timeline.values():
                 timeline.set_active_time_inds(active_time_inds)
 
-            s = f.time.start
-            e = f.time.end
             elapsed = times[active_time_inds.squeeze(-1)] - s
             a = (elapsed / (e - s + 1e-6)).view(-1, 1, 1)
+            if replay_end > e:
+                # Frames past the function's own end (reachable only while an
+                # earlier-executed animation overlapping this one's rows is
+                # still running) replay it at its final parameters, keeping
+                # its finished contribution in the rebuilt state.
+                duration = e - s
+                a = torch.where(elapsed.view(-1, 1, 1) >= duration, torch.ones_like(a), a)
+                elapsed = elapsed.clamp(max=duration)
             a = f.rate_func(a)
 
             kwargs = {k: v for k, v in f.kwargs.items()}

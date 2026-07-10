@@ -1,7 +1,6 @@
 import gc
 import torch
 
-from algan import not_compiled
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.constants.math import GIGABYTES
 
@@ -118,7 +117,6 @@ class ManualMemory:
         new_x[:] = x
         return new_x
 
-    @not_compiled
     def get_tensor(self, shape, dtype=torch.float, persist=False):
         if not self.managed:
             return torch.empty(shape, dtype=dtype, device=self.data.device)

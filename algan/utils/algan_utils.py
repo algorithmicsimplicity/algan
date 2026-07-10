@@ -18,7 +18,7 @@ from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.animation.animation_contexts import Off
 from algan.rendering.camera import Camera
-from algan import SceneManager
+from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioManager
 from algan.utils.memory_utils import empty_cache
 

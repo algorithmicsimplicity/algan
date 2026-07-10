@@ -1,6 +1,6 @@
 import torch.nn.functional as F
 
-from algan import Color
+from algan.constants.color import Color
 from algan.utils.memory_utils import empty_cache
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.rendering.primitives.bezier_circuit_primitive import batch_arange, BezierCircuitPrimitive

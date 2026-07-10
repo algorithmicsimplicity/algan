@@ -8,7 +8,6 @@ import re
 import numpy as np
 import torch
 
-from algan import not_compiled
 from algan.settings.defaults import *
 
 
@@ -31,7 +30,6 @@ def _cast_to_tensor_recursive(x):
         return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
 
 
-@not_compiled
 def cast_to_tensor(x):
     """
     Converts scalars or lists of scalars into tensors, and combines lists of tensors into a single tensor.
@@ -166,8 +164,7 @@ def unsqueeze_until_dim(x, dim, insert_dim=0):
     return x
 
 
-@not_compiled#@torch.compiler.disable(recursive=True)
-def broadcast_all(xs, ignored_dims=[]):
+def broadcast_all(xs, ignored_dims=()):
     max_dim = max([_.dim() if hasattr(_, "dim") else 0 for _ in xs])
     ignored_dims = [_ if _ >= 0 else _ + max_dim for _ in ignored_dims]
     xs = [
@@ -186,8 +183,6 @@ def broadcast_all(xs, ignored_dims=[]):
     ]
 
 
-#@cuda_compiled
-@not_compiled#@torch.compiler.disable(recursive=True)
 def broadcast_gather(src, dim: int, ind, keepdim=True, out=None, **kwargs):
     src_shape = src.shape
     ind_shape = ind.shape

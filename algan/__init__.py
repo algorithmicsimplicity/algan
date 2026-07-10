@@ -1,4 +1,3 @@
-from functools import wraps
 from importlib.metadata import version
 
 __version__ = version(__name__)
@@ -8,113 +7,23 @@ import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import shutil
 import torch
+
+# Algan never needs gradients: all animation math is pure tensor arithmetic.
+# Inference mode is entered process-wide (and never exited) because it must
+# cover every tensor the library ever creates, including module-level
+# constants. NOTE for library consumers: this means importing algan disables
+# autograd in the importing process; do not import algan into a process that
+# also trains torch models.
 torch.set_grad_enabled(False)
 c = torch.inference_mode()
 c.__enter__()
-
-
-def exported(function=None, *, example_inputs=None, dynamic_shapes=None):
-    def _decorate(func):
-        class ModuleWrapper(torch.nn.Module):
-            def __init__(self, func):
-                super().__init__()
-                self.forward = func
-
-            #def forward(self, *args, **kwargs):
-            #    return self.func(*args, **kwargs)
-
-        mod = ModuleWrapper(func)
-        ep = torch.export.export_for_inference(mod, example_inputs, dynamic_shapes=dynamic_shapes, strict=False,)
-        return ep.module()
-    if function:
-        return _decorate(function)
-    return _decorate
-
-'''default_compile_operation = lambda x: torch.compile(x, dynamic=False, fullgraph=False, backend="tensorrt",
-                                                    options={"min_block_size": 1,
-                                                             "use_python_runtime": True, }
-                                                    )#"onnxrt")# mode="reduce-overhead")#backend='cudagraphs')
-default_compile_operation = lambda x: torch.compile(x, dynamic=True, fullgraph=False)'''
-default_compile_operation = lambda x: x
-
-
-def compile_wrapper(function):
-    compiled_function = default_compile_operation(function)
-
-    def _decorate(func, compiled_func):
-        @wraps(func)
-        def wrapper_func(*args, **kwargs):
-            if COMPUTING_DEFAULTS.compiled:
-                return compiled_func(*args, **kwargs)
-            return func(*args, **kwargs)
-
-        return wrapper_func
-
-    return _decorate(function, compiled_function)
-
-
-try:
-    @default_compile_operation
-    def _dummy_func(x):
-        with torch.no_grad():
-            return x + 1
-
-    with torch.no_grad():
-        _dummy_func(torch.tensor(1.0))
-
-    # compiled = torch.compile
-    # print('using torch.compile')
-    compiled = lambda x: x
-except Exception:
-    compiled = lambda x: x
-
-#not_compiled = torch.compiler.disable(recursive=True)
-not_compiled = lambda x: x
-
-import taichi as ti
-
-def _sync_devices():
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-    ti.sync()
 
 from algan.settings.defaults import *
 from algan.settings.style_defaults import *
 from algan.settings.logging_defaults import *
 
 from algan.utils.memory_utils import ManualMemory
-
-
-class SceneManager:
-    _instance = None
-    _memory = None
-    _scene_class = None
-    _scene_initializer = None
-
-    def __init__(self):
-        raise RuntimeError("Call SceneManager.instance() instead of SceneManager().")
-
-    @classmethod
-    def set_scene_class(cls, scene_class, scene_initializer):
-        cls._scene_class = scene_class
-        cls._scene_initializer = scene_initializer
-
-    @classmethod
-    def reset(cls):
-        AnimationManager.reset()
-        TimelineManager.reset()
-        cls._instance = None
-        return cls.instance()
-
-    @classmethod
-    def instance(cls):
-        if cls._instance is None:
-            if cls._memory is None:
-                cls._memory = None  # ManualMemory(algan.defaults.batch_defaults.DEFAULT_PORTION_MEMORY_USED_FOR_RENDERING)
-            cls._instance = cls._scene_class(memory=cls._memory)
-            cls._instance.scene_initializer = cls._scene_initializer
-            cls._instance.reset_scene()
-        return cls._instance
+from algan.scene_manager import SceneManager
 
 from algan.settings.render_settings import *
 
@@ -201,16 +110,9 @@ def default_scene_initializer(scene):
     ]
 
 
+# The scene itself is created lazily, on the first SceneManager.instance()
+# call (e.g. the first Mob construction or render_to_file()).
 SceneManager.set_scene_class(Scene, default_scene_initializer)
-SceneManager.instance()
 
-
-def make_manim_dir():
-    from manim import config
-
-    for tex_dir in [config.get_dir("tex_dir"), config.get_dir("text_dir")]:
-        if not tex_dir.exists():
-            tex_dir.mkdir(parents=True)
-
-
-make_manim_dir()
+# Re-exported for backwards compatibility; it now runs lazily on first Tex use.
+from algan.mobs.text import make_manim_dir

@@ -22,7 +22,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from algan import RENDERER_SETTINGS
+from algan.settings.renderer_settings import RENDERER_SETTINGS
 from algan.constants.color import Color, WHITE
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.renderable import Renderable

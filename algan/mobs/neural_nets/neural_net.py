@@ -1,6 +1,6 @@
 import torch
 
-from algan import default_shader
+from algan.rendering.shaders.pbr_shaders import default_shader
 from algan.animation.animation_contexts import Off, Sync, Seq, Lag
 from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
 from algan.mobs.mob import Mob

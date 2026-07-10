@@ -3,9 +3,8 @@ import math
 import torch
 import torch.nn.functional as F
 
-from algan import ORIGIN
 from algan.animation.animation_contexts import Off, Sync
-from algan.constants.spatial import UP, RIGHT, IN
+from algan.constants.spatial import ORIGIN, UP, RIGHT, IN
 from algan.constants.color import *
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic

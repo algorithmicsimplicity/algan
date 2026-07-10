@@ -26,7 +26,7 @@ from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.utils.memory_utils import get_num_available_bytes, ManualMemory, empty_cache
 from algan.utils.file_utils import get_image
-from algan import _sync_devices
+from algan.rendering.taichi_runtime import sync_devices as _sync_devices
 from algan.animation.timeline import TimelineManager
 
 

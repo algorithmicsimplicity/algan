@@ -1,7 +1,11 @@
 import torch
+import torch.nn.functional as F
 
-from algan import *
-from algan import PI
+from algan.animation.animatable import animated_function
+from algan.animation.animation_contexts import Sync
+from algan.constants.math import PI
+from algan.constants.spatial import DOWN, UP
+from algan.mobs.mob import Mob
 from algan.geometry.geometry import project_onto_basis, get_orthonormal_vector
 from algan.mobs.surfaces.surface import Surface
 from algan.mobs.shapes_2d import Circle
