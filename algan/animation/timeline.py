@@ -85,27 +85,18 @@ class AttributeTimeline:
 
     def set_start_point(self, mob, starts):
         self.mob_id_to_starts[mob.id] = starts
-        #self.end_points[:,inds,0] = starts
 
     def set_end_point(self, mob, ends):
         self.mob_id_to_ends[mob.id] = ends
-        #inds = self.mob_id_to_inds[mob]
-        #self.end_points[:,inds,1] = ends
 
     def get_current_values(self):
         return self.current_state[:, :self.pointer]
 
     def get(self, key):
-        try:
-            return self.active_state[self.active_time_inds, key]
-        except:
-            print('debug')
+        return self.active_state[self.active_time_inds, key]
 
     def modify(self, key, value):
-        try:
-            self.active_state[self.active_time_inds, key] = value
-        except:
-            print('debug')
+        self.active_state[self.active_time_inds, key] = value
         self._is_ready_for_queries = False
         return self
 
@@ -131,10 +122,6 @@ class AttributeTimeline:
             new_buffer[:, :self.pointer] = self.get_current_values()
             self.current_state = new_buffer
             self.active_state = self.current_state
-            if self.record_end_points:
-                new_buffer = torch.empty((1, buffer_size, 2))
-                new_buffer[:, :self.pointer] = self.end_points[:,:self.pointer]
-                self.end_points = new_buffer
         self.current_state[:, self.pointer:new_pointer] = values
         inds = torch.arange(self.pointer, new_pointer)
         self.mob_id_to_inds[mob_id] = inds
@@ -154,13 +141,13 @@ class AttributeTimeline:
 
         if not self.record_end_points:
             return self
-        self.end_points = torch.full((1, self.pointer + 1, 2), 1e12)
+        self._end_points = torch.full((1, self.pointer + 1, 2), 1e12)
         for mob_id in self.mob_id_to_starts:
             inds = self.mob_id_to_inds[mob_id]
-            self.end_points[:,inds,0] = self.mob_id_to_starts[mob_id].start()
+            self._end_points[:,inds,0] = self.mob_id_to_starts[mob_id].start()
         for mob_id in self.mob_id_to_ends:
             inds = self.mob_id_to_inds[mob_id]
-            self.end_points[:,inds,1] = self.mob_id_to_ends[mob_id].end()
+            self._end_points[:,inds,1] = self.mob_id_to_ends[mob_id].end()
         return self
 
     def rematerialize_state_at_times(self, times):
@@ -168,7 +155,7 @@ class AttributeTimeline:
         self.active_state = generate_array_states_taichi(times, self.pointer+1, self._edits_sorted)
         if self.record_end_points:
             t = times.view(-1,1)
-            self.active_state *= ((self.end_points[...,0] <= t) & (t < self.end_points[...,1])).unsqueeze(-1)
+            self.active_state *= ((self._end_points[...,0] <= t) & (t < self._end_points[...,1])).unsqueeze(-1)
         self.rematerialized_times = times
         self.active_time_inds = slice(None, None, None)
         return self
@@ -324,10 +311,7 @@ class AnimationTimeline:
         return kwargs
 
     def get_timeline_inds(self, mob, new_value, attr_name):
-        try:
-            timeline = self.attr_to_timeline[attr_name]
-        except:
-            print('debug')
+        timeline = self.attr_to_timeline[attr_name]
         inds = None
         if mob.id not in timeline.mob_id_to_inds:
             inds = timeline.add(mob, new_value)
@@ -345,8 +329,6 @@ class AnimationTimeline:
 
     def set_state_to_times(self, times):
         for attr, timeline in self.attr_to_timeline.items():
-            if attr == 'location':
-                print('debug')
             timeline.rematerialize_state_at_times(times)
 
         for f in self.function_timeline.get_functions_for_times(times):
@@ -360,10 +342,7 @@ class AnimationTimeline:
             e = f.time.end
             a = (times[active_time_inds.squeeze(-1)] - s) / (e - s + 1e-6)
             a = a.view(-1,1,1)
-            try:
-                a = f.rate_func(a)
-            except:
-                print('debug')
+            a = f.rate_func(a)
 
             kwargs = {k: v for k, v in f.kwargs.items()}
             for k in f.animated_args:

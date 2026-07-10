@@ -451,11 +451,8 @@ class Mob(Animatable):
                 if v1 is None:
                     continue
                 n = self.location.shape[-2]
-                try:
-                    self.apply_absolute_change_two(attr, *[cast_to_tensor(_).expand(-1,n,-1)
-                        for _ in [v1, v2]], recursive=recursive)
-                except:
-                    print('debug')
+                self.apply_absolute_change_two(attr, *[cast_to_tensor(_).expand(-1,n,-1)
+                    for _ in [v1, v2]], recursive=recursive)
             #if color is not None:
             #    self.apply_absolute_change_two("color", color, new_color, recursive=recursive)
             #if opacity is not None:
@@ -638,25 +635,30 @@ class Mob(Animatable):
         )
 
     @basis.setter
-    def basis(self, basis: torch.Tensor):
-        recursive = not self._prevent_recursive_sets
-        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=basis)
-        my_loc = self.get_animated_attribute('location', include_descendants=False)
-        child_loc = self.get_animated_attribute('location', include_descendants=recursive)
-        local_coords = map_global_to_local_coords(my_loc, my_basis, child_loc)
-        new_child_location = map_local_to_global_coords(my_loc, basis, local_coords)
-
+    @animated_function(animated_args={'interpolation': 0.0})
+    def basis(self, basis: torch.Tensor, interpolation=1.0):
         value = cast_to_tensor(basis)
         attr = "basis"
-
         relation, inverse_relation = self.attr_to_relations[attr]
-        change = inverse_relation(my_basis, basis)
-        child_basis = self.get_animated_attribute('basis', include_descendants=recursive)
-        new_child_basis = relation(child_basis, change)
+        recursive = not self._prevent_recursive_sets
 
-        with Sync():
-            self._apply_set("location", new_child_location, recursive=recursive)
-            self._apply_set("basis", new_child_basis, recursive=recursive)
+        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=basis)
+        my_loc = self.get_animated_attribute('location', include_descendants=False)
+
+        change = inverse_relation(my_basis, basis)
+        identity = inverse_relation(my_basis, my_basis)
+        interpolated_change = torch.lerp(identity, change, interpolation)
+        new_basis = relation(my_basis, interpolated_change)
+
+        child_loc = self.get_animated_attribute('location', include_descendants=recursive)
+        local_coords = map_global_to_local_coords(my_loc, my_basis, child_loc)
+        new_child_location = map_local_to_global_coords(my_loc, new_basis, local_coords)
+
+        child_basis = self.get_animated_attribute('basis', include_descendants=recursive)
+        new_child_basis = relation(child_basis, interpolated_change)
+
+        self._apply_set("location", new_child_location, recursive=recursive)
+        self._apply_set("basis", new_child_basis, recursive=recursive)
 
     @property
     def scale_coefficient(self) -> torch.Tensor:
@@ -2312,6 +2314,7 @@ class Mob(Animatable):
         return self
 
     def check_properties_are_valid(self, property_names):
+        #TODO this: available_attrs = union(self.animatable_attrs, TimelineManager.attr_to_timeline.keys())
         for p in property_names:
             if not hasattr(self, p) and (p not in self.animatable_attrs):
                 raise AttributeError(f'"{p}" is not recognized as an animatable Mob property. '

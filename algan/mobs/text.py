@@ -83,7 +83,7 @@ class Tex(Mob):
         return BLUE
 
     def on_create(self):
-        with Seq():
+        with Seq(run_time=1):
             with Off():  # Ensure initial state setting is not recorded as an animation
                 self.opacity = 0
             self._create_recursive(animate=False)  # Mark as created without immediate animation

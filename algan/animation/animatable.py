@@ -869,11 +869,6 @@ class Animatable:
             ti.lifespan.end = lambda: -1
             self.data.animatable = oa
             self.data.history = oh
-            if not reset_history:
-                # The clone shares its source's (function) history; replay the
-                # source rows' recorded value modifications onto the clone's
-                # rows so its attribute history matches too.
-                ti.copy_history_from(self.data)
         else:
             ti = self.data
 
