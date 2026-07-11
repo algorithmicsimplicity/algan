@@ -8,6 +8,10 @@ from algan.utils.tensor_utils import unsquish
 from algan.utils.mob_utils import batch_mobs
 from manim import ImageMobject, VectorizedPoint, ThreeDVMobject
 
+# Installs the persistent (cross-process) disk cache for Manim SVG/Tex geometry
+# by monkeypatching SVGMobject.init_svg_mobject. Importing has the side effect.
+import algan.utils.manim_svg_cache  # noqa: F401
+
 
 class ManimMob(BezierCircuitCubic):
     """Constructs an equivalent Algan Mob from a given Manim Mobject.
