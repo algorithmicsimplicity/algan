@@ -7,6 +7,7 @@ import torch
 
 # Re-exported for backwards compatibility (it used to be defined here).
 from algan.animation.timeline import TIME_PARAMETER_NAME, TimelineManager  # noqa: F401
+from algan.animation.timeline import STRUCTURE_VERSION, bump_structure_version
 from algan.scene import Scene
 from algan.animation.animation_contexts import (
     Sync,
@@ -263,9 +264,11 @@ class Animatable:
 
         Returns
         -------
-            An integer ID identifying the updater that was added. This ID can be used to remove
-            the updater at a later time, using :meth:`~.Animatable.remove_updater` .
-            If it is never removed, the updater will continue forever.
+        int
+            An ID identifying the updater that was added. This ID can be
+            used to remove the updater at a later time, using
+            :meth:`~.Animatable.remove_updater` . If it is never removed,
+            the updater will continue forever.
 
         """
         timeline = TimelineManager.instance()
@@ -407,11 +410,25 @@ class Animatable:
 
     def get_attr_inds(self, key, include_descendants=False, value=None):
         timeline = TimelineManager.instance()
+        if not include_descendants:
+            return timeline.get_inds(key, self, value)
+        # The concatenated descendant rows are re-read for every recorded
+        # function replay of every frame batch; cache them against the global
+        # structure version (bumped on any hierarchy / row-allocation change).
+        cache = getattr(self, "_attr_inds_cache", None)
+        if cache is None:
+            cache = {}
+            object.__setattr__(self, "_attr_inds_cache", cache)
+        hit = cache.get(key)
+        if hit is not None and hit[0] == STRUCTURE_VERSION[0]:
+            return hit[1]
         inds = timeline.get_inds(key, self, value)
         if inds is None:
             return inds
-        if include_descendants:
-            inds = torch.cat([timeline.get_inds(key, m, value) for m in self.get_descendants(include_self=True)])
+        inds = torch.cat([timeline.get_inds(key, m, value) for m in self.get_descendants(include_self=True)])
+        # Read the version after computing: get_inds may have allocated rows
+        # (bumping it) when ``value`` is provided.
+        cache[key] = (STRUCTURE_VERSION[0], inds)
         return inds
 
     def get_animated_attribute(self, key, include_descendants=False, default=None):
@@ -499,6 +516,9 @@ class Animatable:
                 "id",
                 "animation_manager",
                 "_animation_manager",
+                # Version-checked caches; clones rebuild their own lazily.
+                "_attr_inds_cache",
+                "_descendants_cache",
             ]:
                 continue
             if k in ["parents"]:
@@ -650,8 +670,10 @@ class Animatable:
             self.children.append(mob)
             mob.set_parent_to(self)
             self.anchor_priority = max(self.anchor_priority, 1 + mob.anchor_priority)
+        bump_structure_version()
         return self
 
     def remove_child(self, mob):
         self.children.remove(mob)
+        bump_structure_version()
         return self

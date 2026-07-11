@@ -19,6 +19,9 @@ from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.animation.animation_contexts import Off
 from algan.rendering.camera import Camera
 from algan.scene_manager import SceneManager
+from algan.logging.logger import get_logger
+
+logger = get_logger()
 from algan.sound.audio_effect import AudioManager
 from algan.utils.memory_utils import empty_cache
 
@@ -149,13 +152,13 @@ def render_to_file(
                 else []
             )
 
-        print(f"Began rendering {file_name}{file_ext}")
+        logger.info(f"Began rendering {file_name}{file_ext}")
         audiofile = scene.render_audio_to_file(audio_file_path, audio_fps,
                                                nbytes=4, codec='pcm_s32le', )
         if audiofile is not None:
             with open(script_file_path, "w") as f:
-                f.write(AudioManager._video_transcript)
-            print("Audio rendered, now rendering video")
+                f.write(AudioManager.instance().video_transcript)
+            logger.info("Audio rendered, now rendering video")
 
         file_writer = get_file_writer(temp_file_path,
                     render_settings.resolution,
@@ -168,7 +171,7 @@ def render_to_file(
 
         try:
             scene.render_to_video(file_writer, temp_file_path, file_path, **kwargs)
-            print(f"Finished rendering {file_name}{file_ext}")
+            logger.info(f"Finished rendering {file_name}{file_ext}")
         finally:
             # file_writer.release()
             file_writer.close()
@@ -262,7 +265,7 @@ def render_all_funcs(
             ps.print_stats()
         ps = pstats.Stats(pr).sort_stats(pstats.SortKey.CUMULATIVE)
         ps.print_stats()
-        print(f'took {end-start} seconds.')
+        logger.info(f'took {end-start} seconds.')
         return out
     else:
         return run(output_dir, render_settings, output_path)
@@ -281,7 +284,7 @@ def profile_func(func):
         ps.print_stats()
     ps = pstats.Stats(pr).sort_stats(pstats.SortKey.CUMULATIVE)
     ps.print_stats()
-    print(f'took {end - start} seconds.')
+    logger.info(f'took {end - start} seconds.')
     return out
 
 
@@ -312,7 +315,7 @@ def concatenate_videos(directory: str, threads: int = None, reencode: bool = Fal
     mp4_files = [f for f in dir_path.glob("*.mp4") if f.name != output_file]
 
     if not mp4_files:
-        print(f"No .mp4 files found in {directory}")
+        logger.warning(f"No .mp4 files found in {directory}")
         return None
 
     # Sort by numeric prefix
@@ -355,18 +358,18 @@ def concatenate_videos(directory: str, threads: int = None, reencode: bool = Fal
                 '-c:a', 'aac',
                 '-b:a', '192k'
             ])
-            print(f"Re-encoding with {threads} threads...")
+            logger.info(f"Re-encoding with {threads} threads...")
         else:
             # Stream copy (fast, no re-encoding, but limited multithreading benefit)
             cmd.extend(['-c', 'copy'])
-            print("Using stream copy (no re-encoding)...")
+            logger.info("Using stream copy (no re-encoding)...")
 
         cmd.extend(['-y', str(output_path)])  # -y to overwrite without asking
 
-        print(f"\nConcatenating {len(sorted_files)} videos:")
+        logger.info(f"\nConcatenating {len(sorted_files)} videos:")
         for i, f in enumerate(sorted_files, 1):
-            print(f"  {i}. {f.name}")
-        print(f"\nOutput: {output_path}\n")
+            logger.info(f"  {i}. {f.name}")
+        logger.info(f"\nOutput: {output_path}\n")
 
         # Run ffmpeg
         result = subprocess.run(
@@ -378,12 +381,12 @@ def concatenate_videos(directory: str, threads: int = None, reencode: bool = Fal
         )
 
         if result.returncode == 0:
-            print(f"✓ Successfully created {output_path.name}")
-            print(f"  Size: {output_path.stat().st_size / (1024*1024):.2f} MB")
+            logger.info(f"✓ Successfully created {output_path.name}")
+            logger.info(f"  Size: {output_path.stat().st_size / (1024*1024):.2f} MB")
             return output_path
         else:
-            print(f"✗ Error running ffmpeg:")
-            print(result.stderr)
+            logger.error("✗ Error running ffmpeg:")
+            logger.error(result.stderr)
             return None
 
     finally:
@@ -401,7 +404,7 @@ def combine_scenes(dir):
         try:
             int(s.split('_')[0])
             return True
-        except:
+        except ValueError:
             return False
     for f in sorted([_ for _ in os.listdir(dir) if starts_with_int(_)], key=lambda x: int(x.split('_')[0])):
         if f.endswith('.mp4'):

@@ -16,6 +16,9 @@ import os
 import torch
 
 import re, string
+from algan.logging.logger import get_logger
+
+logger = get_logger("audio")
 pattern = re.compile('[\W_]+', re.UNICODE)
 
 # --- Configuration ---
@@ -66,16 +69,16 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
             " pip install algan[audio]"
         ) from e
 
-    print("Loading model and processor...")
+    logger.info("Loading model and processor...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    logger.info(f"Using device: {device}")
 
     processor = Wav2Vec2Processor.from_pretrained(model_id)
     processor.tokenizer.encoder['*'] = len(processor.tokenizer.encoder)
     processor.tokenizer.decoder[processor.tokenizer.encoder['*']] = '*'
     model = Wav2Vec2ForCTC.from_pretrained(model_id).to(device)
 
-    print("Loading audio file info...")
+    logger.info("Loading audio file info...")
     audio_info = torchaudio.info(audio_path)
     audio_duration_s = audio_info.num_frames / audio_info.sample_rate
 
@@ -89,7 +92,7 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
 
     estimated_words_per_minute = 120
     estimated_words_per_chunk = estimated_words_per_minute * chunk_duration_s / 60
-    print(f"Audio duration: {audio_duration_s:.2f}s. Will be processed in {total_chunks} chunks.")
+    logger.info(f"Audio duration: {audio_duration_s:.2f}s. Will be processed in {total_chunks} chunks.")
 
     all_word_segments = []
     transcript_cursor = 0
@@ -101,9 +104,9 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
         if chunk_start_s + chunk_duration_s >= audio_duration_s-10:
             final_chunk = True
 
-        print(f"\n--- Processing Chunk {chunk_start_s}/{audio_duration_s} ({chunk_start_s:.2f}s to {chunk_end_s:.2f}s) ---")
+        logger.info(f"\n--- Processing Chunk {chunk_start_s}/{audio_duration_s} ({chunk_start_s:.2f}s to {chunk_end_s:.2f}s) ---")
 
-        print("Loading audio chunk...")
+        logger.info("Loading audio chunk...")
         frame_offset = int(chunk_start_s * audio_info.sample_rate)
         num_frames = int((chunk_end_s - chunk_start_s) * audio_info.sample_rate)
         waveform, sr = torchaudio.load(audio_path, frame_offset=frame_offset, num_frames=num_frames)
@@ -114,7 +117,7 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
         input_values = processor(waveform, return_tensors="pt",
                                  sampling_rate=processor.feature_extractor.sampling_rate).input_values.squeeze(0)
 
-        print("Running model encoder...")
+        logger.info("Running model encoder...")
         with torch.no_grad():
             logits = model(input_values.to(device)).logits[0]
             emissions = torch.log_softmax(logits, dim=-1)
@@ -164,7 +167,7 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
                 transcript_was_too_long = True
                 retry_count += 1
                 estimated_words_per_chunk *= 0.75
-                print("Transcript chunk was too long for audio chunk, retrying with shorter transcript chunk.")
+                logger.info("Transcript chunk was too long for audio chunk, retrying with shorter transcript chunk.")
                 continue
             transcript_was_too_long = False
 
@@ -187,7 +190,7 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
     #df.to_csv(output_filename, index=False)
     return all_word_segments
 
-    print("\nAlignment process complete.")
+    logger.info("\nAlignment process complete.")
     #print(f"Output saved to {output_filename}")
 
 def subfinder(mylist, pattern):
@@ -228,7 +231,7 @@ def get_speech_generator_from_file(audio_file, transcript_file):
         if script_start_ind < 0:#script_words != [_[0] for _ in word_time_stamps[word_counter.count:word_counter.count+len(script_words)]]:
             #raise TranscriptAudioMismatchError(f'Error, the following text was not found in the recorded '
             #                                   f'transcript of the speech audio file:\n\n{script_words}')
-            print(f'Warning: the following text was not found in the recorded transcript of the speech'
+            logger.warning(f'Warning: the following text was not found in the recorded transcript of the speech'
                   f' audio file, and so this speech will be machine generated:\n\n{script_words}')
             return get_pyttsx_speech_generator(script)
 

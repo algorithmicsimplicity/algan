@@ -1,3 +1,6 @@
+import os
+
+import torch
 import torch.nn.functional as F
 
 from algan.constants.color import Color
@@ -8,12 +11,16 @@ from algan.rendering.raytracing import pn_control_points, pn_patch_coefficients
 from algan.rendering.raytracing.pn_patch import pn_obb
 from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_ALPHA, KBUF
 from algan.rendering.raytracing.settings import _shader_is_core, _shader_material_id, _MAT_SLOTS, _MAT_DEFAULTS
-from algan.rendering.raytracing.shading_taichi import MAT_W, _USER_PIPELINE_BASE
+from algan.rendering.raytracing.shading_taichi import MAT_W
 from algan.rendering.raytracing.stbvh import EMPTY_LO, EMPTY_HI
 from algan.rendering.raytracing.utils import _expand_frames, _unify_time, _flat_frames
-from algan.utils.tensor_utils import *
+from algan.utils.tensor_utils import broadcast_all, cast_to_tensor, unsquish
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
-from algan.rendering.raytracing.settings import *
+# rt_settings values are mutable module globals (set_samples_per_pixel etc.);
+# read them live as rt_settings.X -- importing them by value freezes them at
+# import time, before user code runs.
+from algan.rendering.raytracing import settings as rt_settings
+from algan.rendering.raytracing.settings import *  # noqa: F403 -- re-export for callers of this module
 from algan.settings.kernel_settings import KERNEL_SETTINGS
 
 
@@ -175,8 +182,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         if getattr(shader, "_frag_pipeline_id", None) is not None:
             # A custom pipeline always shades in-kernel on the deterministic
             # renderer (fragment shading is forced on for such a scene).
-            return SAMPLES_PER_PIXEL <= 1
-        return (FRAGMENT_SHADING and SAMPLES_PER_PIXEL <= 1
+            return rt_settings.SAMPLES_PER_PIXEL <= 1
+        return (rt_settings.FRAGMENT_SHADING and rt_settings.SAMPLES_PER_PIXEL <= 1
                 and _shader_is_core(shader))
 
     def _shade_vertex_colors(self, camera, light_sources):
@@ -354,7 +361,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         accumulator in Monte Carlo mode, plus the wavefront's per-ray global
         state.
         """
-        mc = SAMPLES_PER_PIXEL > 1
+        mc = rt_settings.SAMPLES_PER_PIXEL > 1
         self._rt_frame_bytes = int(
             camera.screen_width * camera.screen_height * 5 * 4
             * (2 if mc else 1))
@@ -364,6 +371,44 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_frame_bytes += int(
             camera.screen_width * camera.screen_height
             * (18 + 6 * KBUF) * 4)
+
+    def _stash_texture_maps(self):
+        """Stash the raw texture maps (color / material / normal) for merge
+        time and return the packed ``[T, N, 6]`` per-triangle uv tensor, or
+        None when the batch is untextured."""
+        if self.uvs is None:
+            self._rt_texture_map = None
+            self._rt_material_texture = None
+            self._rt_material_flags = 0
+            self._rt_normal_texture = None
+            return None
+        uvs = self.uvs.float().reshape(
+            self.uvs.shape[0], self.uvs.shape[1], 6).contiguous()
+        self._rt_texture_map = (self.texture_map.float().contiguous()
+                                if self.texture_map is not None else None)
+        mtex = getattr(self, "material_texture_map", None)
+        self._rt_material_texture = (mtex.float().contiguous()
+                                     if mtex is not None else None)
+        self._rt_material_flags = int(
+            getattr(self, "material_texture_flags", 0) or 0)
+        ntex = getattr(self, "normal_texture_map", None)
+        self._rt_normal_texture = (ntex.float().contiguous()
+                                   if ntex is not None else None)
+        return uvs
+
+    def _release_unpacked_geometry(self, camera):
+        """Everything the renderer needs now lives in the packed arrays;
+        release the unpacked geometry to halve resident GPU memory."""
+        self.corners = self.normals = None
+        self.reflectivity = self.roughness = self.refractive_index = None
+        self.colors = self.shader_param_values = None
+        self.uvs = self.texture_map = None
+        self.material_texture_map = self.normal_texture_map = None
+
+        self._set_frame_buffer_bytes(camera)
+
+        # Ensure released geometry is actually freed before rendering.
+        empty_cache(force_gc=False)
 
     def project_to_screen(self, camera, light_sources):
         self._shade_vertex_colors(camera, light_sources)
@@ -384,40 +429,15 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
         self._rt_num_frames = camera.ray_origin.shape[0]
 
-        if self.uvs is not None:
-            self._rt_tri_uvs = self.uvs.float().reshape(self.uvs.shape[0], self.uvs.shape[1], 6).contiguous().to(COMPUTING_DEFAULTS.render_device)
-            self._rt_texture_map = self.texture_map.float().contiguous() if self.texture_map is not None else None
-            mtex = getattr(self, "material_texture_map", None)
-            self._rt_material_texture = (mtex.float().contiguous()
-                                         if mtex is not None else None)
-            self._rt_material_flags = int(
-                getattr(self, "material_texture_flags", 0) or 0)
-            ntex = getattr(self, "normal_texture_map", None)
-            self._rt_normal_texture = (ntex.float().contiguous()
-                                       if ntex is not None else None)
-        else:
-            self._rt_tri_uvs = None
-            self._rt_texture_map = None
-            self._rt_material_texture = None
-            self._rt_material_flags = 0
-            self._rt_normal_texture = None
+        uvs = self._stash_texture_maps()
+        self._rt_tri_uvs = (uvs.to(COMPUTING_DEFAULTS.render_device)
+                            if uvs is not None else None)
 
         self._pack_frame_visibility(corners.amin(-2), corners.amax(-2),
                                     self._rt_tri_colors,
                                     "triangle bounds/colors")
 
-        # Everything the renderer needs now lives in the packed arrays;
-        # release the unpacked geometry to halve resident GPU memory.
-        self.corners = self.normals = None
-        self.reflectivity = self.roughness = self.refractive_index = None
-        self.colors = self.shader_param_values = None
-        self.uvs = self.texture_map = None
-        self.material_texture_map = self.normal_texture_map = None
-
-        self._set_frame_buffer_bytes(camera)
-
-        # Ensure released geometry is actually freed before rendering.
-        empty_cache(force_gc=False)
+        self._release_unpacked_geometry(camera)
         return self
 
     def get_memory_used_per_timestep(self):
@@ -478,25 +498,7 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # Taichi's 64-arg ceiling), so unlike flat triangles the UVs and the
         # per-patch texture metadata are folded into the cold pn_extra array at
         # merge time (see _merge_scene); here we just stash the raw maps + UVs.
-        if self.uvs is not None:
-            self._rt_pn_uvs = self.uvs.float().reshape(
-                self.uvs.shape[0], self.uvs.shape[1], 6).contiguous()
-            self._rt_texture_map = (self.texture_map.float().contiguous()
-                                    if self.texture_map is not None else None)
-            mtex = getattr(self, "material_texture_map", None)
-            self._rt_material_texture = (mtex.float().contiguous()
-                                         if mtex is not None else None)
-            self._rt_material_flags = int(
-                getattr(self, "material_texture_flags", 0) or 0)
-            ntex = getattr(self, "normal_texture_map", None)
-            self._rt_normal_texture = (ntex.float().contiguous()
-                                       if ntex is not None else None)
-        else:
-            self._rt_pn_uvs = None
-            self._rt_texture_map = None
-            self._rt_material_texture = None
-            self._rt_material_flags = 0
-            self._rt_normal_texture = None
+        self._rt_pn_uvs = self._stash_texture_maps()
 
         # The patch lies in the convex hull of its control points, so
         # the control net bounds it.
@@ -505,16 +507,7 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
                                     self._rt_pn_colors,
                                     "pn bounds/colors")
 
-        self.corners = self.normals = None
-        self.reflectivity = self.roughness = self.refractive_index = None
-        self.colors = self.shader_param_values = None
-        self.uvs = self.texture_map = None
-        self.material_texture_map = self.normal_texture_map = None
-
-        self._set_frame_buffer_bytes(camera)
-
-        # Ensure released geometry is actually freed before rendering.
-        empty_cache(force_gc=False)
+        self._release_unpacked_geometry(camera)
         return self
 
 
@@ -566,7 +559,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
         # Per-frame buffer bytes: the u8 output, plus the f32 sample
         # accumulator in Monte Carlo mode.
-        mc = SAMPLES_PER_PIXEL > 1
+        mc = rt_settings.SAMPLES_PER_PIXEL > 1
         self._rt_frame_bytes = int(
             camera.screen_width * camera.screen_height * 5 * 4
             * (2 if mc else 1))

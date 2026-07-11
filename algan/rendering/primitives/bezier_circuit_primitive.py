@@ -1,24 +1,9 @@
-import math
-
 import torch
-import torch.nn.functional as F
 
-from algan.constants.color import BLUE, BLACK
+from algan.constants.color import BLUE
 from algan.settings.defaults import COMPUTING_DEFAULTS
-from algan.geometry.geometry import (
-    project_point_onto_line_segment,
-)
-from algan.rendering.primitives.primitive import (
-    RenderPrimitive2D,
-)
-from algan.utils.tensor_utils import broadcast_all
-from algan.utils.tensor_utils import (
-    dot_product,
-    squish,
-    broadcast_gather,
-    unsquish,
-    cast_to_tensor,
-)
+from algan.rendering.primitives.primitive import RenderPrimitive
+from algan.utils.tensor_utils import broadcast_all, cast_to_tensor
 
 
 def batch_arange(lengths, memory=None):
@@ -43,7 +28,7 @@ def batch_arange(lengths, memory=None):
     return inds
 
 
-class BezierCircuitPrimitive(RenderPrimitive2D):
+class BezierCircuitPrimitive(RenderPrimitive):
     def __init__(
         self,
         corners=None,
@@ -137,13 +122,8 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
                     )
                 )
             )
-            # self.border_width = self.border_width[...,0,:1]
-            # self.border_color = self.border_color[...,0,:]
-            if self.num_texture_points <= 0:
-                self.colors = self.colors  # [..., 0, :]
-            else:
+            if self.num_texture_points > 0:
                 self.colors = self.colors[..., (-self.num_texture_points):, :]
-            self.padding = max(self.border_width.amax().ceil().long()+1, 2)
             return
         self.corners = corners
         self.next_segment_inds = next_segment_inds
@@ -171,6 +151,3 @@ class BezierCircuitPrimitive(RenderPrimitive2D):
 
     def get_batch_identifier(self):
         return f"{__class__}_{self.num_texture_points}_{self.filled}"
-
-    def get_memory_used_per_timestep(self):
-        return self.num_fragments_fill * (128 + 64)

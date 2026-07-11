@@ -49,7 +49,9 @@ def cast_to_tensor(x):
         x = 0
     try:
         return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1, 1, 1)
-    except:
+    except (TypeError, ValueError, RuntimeError):
+        # Non-numeric values (strings, arbitrary objects) pass through
+        # unchanged by design; anything else should surface.
         return x
 
 
@@ -224,12 +226,24 @@ def shuffle(x):
 
 
 def squish(x, start: int = 0, end: int = 1):
+    """Flatten dimensions ``start`` through ``end`` (inclusive) of ``x`` into one.
+
+    E.g. ``squish(x, 1, 2)`` reshapes ``[A, B, C, D]`` to ``[A, B*C, D]``.
+    The inverse of :func:`unsquish`.
+    """
     if end < 0:
         end = end + len(x.shape)
     return x.reshape(list(x.shape[:start]) + [-1] + list(x.shape[end + 1 :]))
 
 
 def unsquish(x, dim: int = 0, factor: Optional[int] = None):
+    """Split dimension ``dim`` of ``x`` into two dimensions.
+
+    ``factor`` sets the size of the *second* new dimension (``dim`` becomes
+    ``[size/factor, factor]``); a negative ``factor`` sets the size of the
+    *first* instead (``[-factor, size/-factor]``); ``None`` splits into a
+    square (``[sqrt(size), sqrt(size)]``). The inverse of :func:`squish`.
+    """
     if dim < 0:
         dim = len(x.shape) + dim
     if factor is None:

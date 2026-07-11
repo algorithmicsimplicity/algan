@@ -2,6 +2,7 @@ import math
 
 import torch
 
+from algan.utils.singleton import Singleton
 from algan.utils.tensor_utils import cast_to_tensor
 from algan.animation.utils_taichi import _query_state_from_edits
 
@@ -17,6 +18,18 @@ def _never():
 
 #: Timestamp used as the end of an updater that was never removed.
 UPDATER_FOREVER = 1e12
+
+#: Global structure version, bumped whenever the mob hierarchy or any
+#: attribute timeline's row allocation changes. Version-checked caches of
+#: descendant lists and concatenated row indexes (see
+#: :meth:`~algan.animation.animatable.Animatable.get_attr_inds` and
+#: :meth:`~algan.mobs.mob.Mob.get_descendants`) are invalidated by comparing
+#: against it, so they never have to be cleared explicitly.
+STRUCTURE_VERSION = [0]
+
+
+def bump_structure_version():
+    STRUCTURE_VERSION[0] += 1
 
 
 class Lifespan:
@@ -83,18 +96,20 @@ def generate_array_states_taichi(times, N, edits):
     """
     Generates the state of an array given its history of edits.
 
-    Args:
-        times (Tensor): Shape [T], the inquiry times.
-        N (int): Length of the output vector.
-        edits (list of dicts): Each dict contains:
-            - 'indexes': Tensor of shape [M_i] (values in [0, N-1])
-            - 'values': Tensor of shape [M_i, D]
-            - 'timestamp': float scalar
-            Timestamps must be non-decreasing along every row (i.e. among the
-            edits containing any given index) — the per-row binary search in
-            _query_state_from_edits relies on it. prepare_for_queries
-            guarantees this by passing edits in execution order with their
-            replay-extended end times.
+    Parameters
+    ----------
+    times : torch.Tensor
+        Shape [T], the inquiry times.
+    N : int
+        Length of the output vector.
+    edits : list of dict
+        Each dict contains 'indexes' (tensor of shape [M_i], values in
+        [0, N-1]), 'values' (tensor of shape [M_i, D]) and 'timestamp'
+        (float scalar). Timestamps must be non-decreasing along every row
+        (i.e. among the edits containing any given index) — the per-row
+        binary search in _query_state_from_edits relies on it.
+        prepare_for_queries guarantees this by passing edits in execution
+        order with their replay-extended end times.
     """
     device = times.device
     T = times.shape[0]
@@ -192,6 +207,9 @@ class AttributeTimeline:
         if (not overwrite) and (mob_id in self.mob_id_to_inds):
             return
 
+        # New (or re-allocated) rows invalidate cached concatenated row
+        # indexes.
+        bump_structure_version()
         values = cast_to_tensor(values)
         n = values.shape[-2]
         new_pointer = self.pointer + n
@@ -630,18 +648,7 @@ class AnimationTimeline:
 
 
 
-class TimelineManager:
-    _instance = None
-
-    def __init__(self):
-        raise RuntimeError("Call TimelineManager.instance() instead of TimelineManager().")
-
+class TimelineManager(Singleton):
     @classmethod
-    def reset(cls):
-        cls._instance = None
-
-    @classmethod
-    def instance(cls):
-        if cls._instance is None:
-            cls._instance = AnimationTimeline()
-        return cls._instance
+    def _create(cls):
+        return AnimationTimeline()

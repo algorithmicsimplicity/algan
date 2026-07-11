@@ -83,7 +83,6 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 
 import algan.rendering.raytracing.primitives as rtp
 import algan.rendering.raytracing.stbvh as stbvh_mod
-from algan.rendering.primitives.primitive import RenderPrimitive
 from algan.scene import Scene
 
 
@@ -409,7 +408,16 @@ def install_pipeline_hooks():
     """Wrap the (non-kernel) pipeline entry points with stage timers."""
     # Scene-side preparation (mob state evaluation + geometry generation).
     _try_wrap(Scene, "get_batch_of_primitives", "Scene.get_batch_of_primitives")
-    from algan.animation.timeline import AnimationTimeline
+    _try_wrap(Animatable, "get_attr_inds", "get_attr_inds")
+    from algan.animation.timeline import AnimationTimeline, AttributeTimeline
+    _try_wrap(AttributeTimeline, "modify",
+              "AttributeTimeline.modify")
+    _try_wrap(AttributeTimeline, "get",
+              "AttributeTimeline.get")
+    _try_wrap(AttributeTimeline, "add",
+              "AttributeTimeline.add")
+    _try_wrap(AttributeTimeline, "rematerialize_state_at_times",
+              "AttributeTimeline.rematerialize_state_at_times")
     _try_wrap(AnimationTimeline, "set_state_to_times",
               "AnimationTimeline.set_state_to_times")
     _try_wrap(Surface, "get_render_primitives", "Surface.get_render_primitives")
@@ -455,7 +463,6 @@ def install_pipeline_hooks():
 
     # Render-chunk internals.
     _try_wrap(rtp, "_prefill_background", "background prefill")
-    _try_wrap(RenderPrimitive, "post_process_frames", "post-process frames")
     _try_wrap(rtp, "render_batch_ray_traced", "ray traced render total")
 
 

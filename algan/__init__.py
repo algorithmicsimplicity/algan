@@ -20,7 +20,7 @@ c.__enter__()
 
 from algan.settings.defaults import *
 from algan.settings.style_defaults import *
-from algan.settings.logging_defaults import *
+from algan.logging.logger import get_logger, set_log_level
 
 from algan.utils.memory_utils import ManualMemory
 from algan.scene_manager import SceneManager

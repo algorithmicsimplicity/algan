@@ -3,7 +3,7 @@ import torch
 from algan.rendering.post_processing.anti_aliasing.fxaa import fxaa
 
 
-def post_process_frames(self, frames, anti_alias_level, post_processes=[], apply_fxaa=False):
+def post_process_frames(self, frames, anti_alias_level, post_processes=(), apply_fxaa=False):
     self.pre_post_pointers = self.get_pointers()
     frame_out = frames
     if anti_alias_level > 1:
@@ -37,8 +37,15 @@ def post_process_frames(self, frames, anti_alias_level, post_processes=[], apply
             frame_out = frame_out[..., :-1]
 
     # Check if the post process tonemap flag is set.
-    from algan.rendering.raytracing.primitives import is_post_process_tonemap_enabled, TONEMAP_EXPOSURE, TONEMAP_METHOD, \
-        TONEMAPPING
+    # The tonemap settings are mutable module globals (set_tonemap_* setters);
+    # read them live from the settings module -- importing them by value
+    # (especially through primitives, which star-imports settings) freezes
+    # them at import time.
+    from algan.rendering.raytracing.settings import is_post_process_tonemap_enabled
+    from algan.rendering.raytracing import settings as rt_settings
+    TONEMAP_EXPOSURE = rt_settings.TONEMAP_EXPOSURE
+    TONEMAP_METHOD = rt_settings.TONEMAP_METHOD
+    TONEMAPPING = rt_settings.TONEMAPPING
     if is_post_process_tonemap_enabled():
         rgb = frame_out[..., :3]
         if frame_out.dtype == torch.uint8:

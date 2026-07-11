@@ -763,7 +763,7 @@ class Surface(Renderable):
             material_texture_flags=material_texture_flags,
             normal_texture_map=normal_texture_map,
             **{
-                k: get_cached_expanded_param(k, lambda k=k, v=v: expand_grid_to_verts(v))
+                k: expand_grid_to_verts(v)
                 for k, v in self.grid.get_shader_params().items()
             },
         )

@@ -1,14 +1,34 @@
 from algan import *
 import manim as mn
 
+from algan.mobs.neural_nets.neural_net import NeuralNetMLP
+from algan.utils.profiling_utils import profile_scene
 
-def render_static_beziers():
+Boxed = lambda mob, color=BLUE, buffer=0.1, *args, **kwargs: Group(mob,
+                                                                          SurroundingRectangle(mob,
+                                                                                               color=color.lerp(BLACK, 0.8).lerp(PURE_BLUE, 0.1).set_opacity(
+                                                                                                   0.95),
+                                                                                               border_color=torch.lerp(
+                                                                                                   color, BLACK, 0.2),
+                                                                                               buffer=buffer,
+                                                                                               border_width=1, *args,
+                                                                                               **kwargs))
+def GlowTex(c, *args, **kwargs):
+    m = ManimMob(mn.MathTex(*args, **kwargs)).set(color=c + GLOW * 0.01,
+                                border_color=torch.lerp(c, WHITE, 0.9),
+                                            border_width=0.8).scale(0.75)
+    return m
+text_string = ('a' * 50 + '\n') * 50
+
+def text_scene():
+    #with Sync(run_time=0.25):
     with Off():
-        mobs = ManimMob(mn.Text("abcdefir\nsbmbbkl\nmbnmcllc\nqwereqtqet", stroke_color=mn.RED, stroke_width=6)).scale(2).spawn()
-    mobs.wait(100)
+        nn = NeuralNetMLP([3, 3, 3]).spawn()
+        mob = Boxed(GlowTex(GREEN, text_string)).spawn()
+    with Sync(run_time=0.25):
+        mob.move(LEFT)
+        nn.move(LEFT)
 
-
-LOGGING_DEFAULTS.verbosity = 'max'
-q = PREVIEW
-q.anti_alias_level = 1
-render_all_funcs(__name__, q)
+set_log_level('DEBUG')
+#render_all_funcs(__name__, HD)
+profile_scene(text_scene, HD)

@@ -10,37 +10,26 @@ from algan.constants import rate_funcs
 from dataclasses import dataclass
 
 from algan.utils.python_utils import traverse
+from algan.utils.singleton import Singleton
 
 DEFAULT_RUN_TIME = 2
 DEFAULT_RATE_FUNC = rate_funcs.smooth
 
 
-class AnimationManager:
-    _instance = None
-
-    def __init__(self):
-        raise RuntimeError(
-            "Call AnimationManager.instance() instead of AnimationManager()."
+class AnimationManager(Singleton):
+    @classmethod
+    def _create(cls):
+        instance = cls.__new__(cls)
+        instance.context = Seq(
+            run_time_unit=1.0,
+            priority_level=0,
+            rate_func=rate_funcs.smooth,
+            record_funcs=True,
+            record_attr_modifications=True,
+            spawn_at_end=False,
         )
-
-    @classmethod
-    def reset(cls):
-        cls._instance = None
-
-    @classmethod
-    def instance(cls):
-        if cls._instance is None:
-            cls._instance = cls.__new__(cls)
-            cls._instance.context = Seq(
-                run_time_unit=1.0,
-                priority_level=0,
-                rate_func=rate_funcs.smooth,
-                record_funcs=True,
-                record_attr_modifications=True,
-                spawn_at_end=False,
-            )
-            cls._instance.execution_count = 0
-        return cls._instance
+        instance.execution_count = 0
+        return instance
 
     @classmethod
     def get_execution_count(cls):

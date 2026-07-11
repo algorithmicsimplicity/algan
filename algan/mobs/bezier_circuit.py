@@ -161,6 +161,15 @@ class BezierCircuitCubic(Renderable):
         return PURPLE
 
     def get_memory_used_per_timestep(self):
+        # Called for every circuit every render batch just to size batches;
+        # the shape reads below go through the animated-attribute machinery,
+        # so cache the result against the global structure version (row
+        # re-allocation bumps it).
+        from algan.animation.timeline import STRUCTURE_VERSION
+
+        cache = getattr(self, "_memory_per_timestep_cache", None)
+        if cache is not None and cache[0] == STRUCTURE_VERSION[0]:
+            return cache[1]
         n_ctrl = self.control_points.location.shape[-2]
         n_tex = self.texture_points.location.shape[-2]
         n_loc = self.location.shape[-2]
@@ -174,7 +183,9 @@ class BezierCircuitCubic(Renderable):
         # Per-circuit RT metadata (20 floats), frame bounds (6 floats), BVH (~64 bytes).
         n_circuits = max(n_loc, 1)
         rt_meta_bytes = n_circuits * (80 + 24 + 64)
-        return int(animation_bytes + primitive_bytes + rt_edge_bytes + rt_meta_bytes)
+        result = int(animation_bytes + primitive_bytes + rt_edge_bytes + rt_meta_bytes)
+        self._memory_per_timestep_cache = (STRUCTURE_VERSION[0], result)
+        return result
 
     def get_render_primitives(self):
         if self.empty:

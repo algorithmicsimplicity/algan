@@ -27,10 +27,6 @@ mobs render through this pipeline.
 """
 from __future__ import annotations
 
-import gc
-import os
-
-
 import torch
 
 from algan.rendering.post_processing.post_process import post_process_frames
@@ -42,13 +38,15 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.scene_builder import _merge_scene, _downsample_background, _pack_lights, \
     _prefill_background
+# NOTE: only immutable settings values may be imported by value here; the
+# mutable module globals (SAMPLES_PER_PIXEL, TONEMAP_*, SHADOWS, ...) must be
+# read live as ``rt_settings.X`` or their setters silently stop working.
 from algan.rendering.raytracing.settings import _get_tonemap_t_val, REFRACT_SPLIT_SLOTS, WAVEFRONT_TILE_RAYS, \
-    TONEMAP_EXPOSURE, SAMPLES_PER_PIXEL, GATE_EMPTY_TRAVERSALS, SHADOWS, FRAGMENT_SHADING, \
-    is_post_process_tonemap_enabled, MAX_BOUNCES, INDIRECT_BOUNCE_STRENGTH
+    GATE_EMPTY_TRAVERSALS, is_post_process_tonemap_enabled
 
 from algan.rendering.raytracing import settings as rt_settings
 from algan.settings.defaults import COMPUTING_DEFAULTS
-from algan.rendering.raytracing.shading_taichi import MAT_W, _USER_PIPELINE_BASE
+from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
 # path (used by benchmarks/_wf_mem_trim_ab.py to confirm the trim actually fired).
@@ -58,17 +56,17 @@ from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixe
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
 # package __init__ -> primitives).
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
-    wf_composite,
-    wf_composite_aa,
     wf_composite_accum,
     wf_composite_accum_aa,
     wf_finalize_aa,
     wavefront_generate_rays,
     wavefront_shade,
     wavefront_traverse,
-    wavefront_shadow
 )
 from algan.utils.memory_utils import InsufficientMemoryException
+from algan.logging.logger import get_logger
+
+logger = get_logger("raytracing")
 
 
 def _alloc_wavefront_state(memory, tn, sca_width):
@@ -110,7 +108,7 @@ def _show_kernel_compile_notice():
     if _kernel_compile_notice_shown:
         return
     _kernel_compile_notice_shown = True
-    print(
+    logger.info(
         "Preparing render kernels. If this is the first render on this machine"
         " (or after an update), compiling the GPU kernels can take several"
         " minutes. Compiled kernels are cached, so subsequent renders start"
@@ -397,7 +395,7 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
         # only the Monte Carlo path multiplies the thread count by the samples.)
         if (samples > 1 and
                 (end - start) * width * height * samples_eff >= 1 << 31):
-            print(f'Render OOM, splitting {start}:{end}')
+            logger.warning(f'Render OOM, splitting {start}:{end}')
             if end - start <= 1:
                 raise OutOfRenderMemory(
                     "samples_per_pixel * resolution exceeds the ray tracer's "
@@ -472,7 +470,7 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
             memory.set_pointers(entry_pointers)
             return [frames]
         except (InsufficientMemoryException, torch.OutOfMemoryError):
-            print(f'Render OOM, splitting {start}:{end}')
+            logger.warning(f'Render OOM, splitting {start}:{end}')
             memory.set_pointers(entry_pointers)
             # Release the failed allocation (e.g. the wavefront's large per-ray
             # state) so it doesn't fragment/block the smaller retry.
@@ -489,6 +487,92 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     if len(chunks) == 1:
         return chunks[0]
     return torch.cat(chunks, 0)
+
+
+def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
+                         transparent, aa_level, split_k, primary_per_tile,
+                         cam_origin, screen_point, pixel_basis_x,
+                         pixel_basis_y, half_screen_w, half_screen_h,
+                         max_bounces, near_clip, run_tile):
+    """Shared skeleton of the wavefront orchestrators: the AA sub-pixel loop,
+    ray-offset screen tiling (bounded per-tile state regardless of frame
+    size), per-tile state allocation from the render pool + primary-ray
+    generation, per-pixel-accumulator compositing (with optional AA
+    accumulation/finalize) and deterministic state release after every tile.
+
+    ``run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum,
+    rs_used)`` supplies the variant-specific traverse/shade iteration; any
+    extra per-tile tensors it allocates from ``memory`` are freed with the
+    tile. ``state`` is the ``_alloc_wavefront_state`` tuple. The pool holds
+    ``tn_primary`` one-per-pixel rays plus ``(split_k - 1)`` spare slots per
+    pixel for split (glass) branches; each ray commits into ``pix_accum`` on
+    termination, so a pixel's branches sum.
+    """
+    t_val = _get_tonemap_t_val()
+    i32 = torch.int32
+    f32 = torch.float32
+    aa = max(1, int(aa_level))
+    do_aa = aa > 1
+    inv_aa = 1.0 / aa
+
+    aa_accum = None
+    if do_aa:
+        aa_accum = memory.get_tensor((n, 5 if transparent else 4), f32)
+        aa_accum.zero_()
+
+    for si in range(aa):
+        for sj in range(aa):
+            jx = (si + 0.5) * inv_aa if do_aa else 0.5
+            jy = (sj + 0.5) * inv_aa if do_aa else 0.5
+
+            for tile_start in range(0, n, primary_per_tile):
+                tn_primary = min(primary_per_tile, n - tile_start)
+                pool = tn_primary * split_k
+                state_ptrs = memory.get_pointers()
+                state = _alloc_wavefront_state(memory, pool, 5)
+                (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                 rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
+                rs_pix = memory.get_tensor((pool,), i32)
+                pix_accum = memory.get_tensor((tn_primary, 5), f32)
+                # Per-pixel spare-slot counter (zeroed by wf_gen_general): a
+                # split ray bumps rs_used[its pixel], so distinct pixels touch
+                # distinct addresses -- no single global atomic to serialise
+                # on.
+                rs_used = memory.get_tensor((tn_primary,), i32)
+
+                wavefront_generate_rays(
+                    cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+                    int(time_start), int(width), int(height),
+                    float(half_screen_w), float(half_screen_h),
+                    int(max_bounces),
+                    int(tile_start), int(tn_primary), float(jx), float(jy),
+                    float(near_clip),
+                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                    rs_pix, pix_accum, rs_used)
+
+                run_tile(tile_start, tn_primary, pool, state, rs_pix,
+                         pix_accum, rs_used)
+
+                if do_aa:
+                    wf_composite_accum_aa(
+                        int(time_start), int(width), int(height),
+                        1 if transparent else 0, int(tile_start),
+                        pix_accum, out, aa_accum)
+                else:
+                    wf_composite_accum(
+                        int(time_start), int(width), int(height),
+                        1 if transparent else 0, int(tile_start),
+                        pix_accum, t_val,
+                        float(rt_settings.TONEMAP_EXPOSURE), out)
+                # Release this tile's state back to the pool before the next
+                # tile.
+                memory.set_pointers(state_ptrs)
+
+    if do_aa:
+        wf_finalize_aa(int(width), int(height),
+                       1 if transparent else 0,
+                       float(inv_aa * inv_aa), t_val,
+                       float(rt_settings.TONEMAP_EXPOSURE), aa_accum, out)
 
 
 def raytrace_render_wavefront(
@@ -572,14 +656,10 @@ def raytrace_render_wavefront(
             light_pos, light_col, num_lights, frag_pipelines, shadow_flag,
             refraction_flag, transparent, memory, out, aa_level)
     device = out.device
-    t_val = _get_tonemap_t_val()
     i32 = torch.int32
     f32 = torch.float32
     max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
     n = (time_end - time_start) * width * height
-    aa = max(1, int(aa_level))
-    do_aa = aa > 1
-    inv_aa = 1.0 / aa
 
     # Pool over-allocation for ray splitting. Only glass (reflective+refractive)
     # surfaces split, so spare slots are reserved only when refraction is on; the
@@ -623,135 +703,90 @@ def raytrace_render_wavefront(
             [float(layer_offset_triangles), float(layer_offset_pn)],
             dtype=f32, device=device)
 
-    aa_accum = None
-    if do_aa:
-        aa_accum = memory.get_tensor((n, 5 if transparent else 4), f32)
-        aa_accum.zero_()
+    def run_tile(tile_start, tn_primary, pool, state, rs_pix,
+                 pix_accum, rs_used):
+        (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
+        # Packed per-ray shadow visibility bits (deferred shadows
+        # only); a 1-element placeholder otherwise (the reader
+        # compiles out).
+        rs_vis = memory.get_tensor((1,), i32)
+        active = torch.arange(tn_primary, dtype=i32, device=device)
+        it = 0
+        while active.numel() > 0 and it < max_iters:
+            na = int(active.numel())
+            wavefront_traverse(
+                active, na,
+                t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
+                t_bvh.leaf_tspan, int(t_bvh.first_leaf),
+                a_pos,
+                pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
+                pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
+                merged["pn_ctrl"],
+                merged["pn_obb"],
+                bez_bvh.blocks, bez_bvh.node_miss, bez_bvh.leaf_prim,
+                bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
+                merged["circuit_meta"],
+                merged["edges_2d"], merged["edge_offsets"],
+                pixel_world_scale,
+                float(layer_offset_triangles), float(layer_offset_pn),
+                int(has_tri), int(has_pn), int(has_bez),
+                int(time_start), int(width), int(height),
+                int(tile_start),
+                rs_ro, rs_rd, rs_sca, rs_int,
+                rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
+            wavefront_shade(
+                active, na,
+                t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
+                t_bvh.leaf_tspan, int(t_bvh.first_leaf),
+                a_pos, a_norm,
+                merged["tri_extra"],
+                merged["tri_colors"], a_uvs,
+                a_meta,
+                merged["textures"],
+                int(merged["num_colored_triangles"]),
+                col_row_arr,
+                pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
+                pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
+                merged["pn_ctrl"], merged["pn_norm"],
+                merged["pn_extra"],
+                merged["pn_colors"], merged["pn_obb"],
+                bez_bvh.blocks, bez_bvh.node_miss, bez_bvh.leaf_prim,
+                bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
+                merged["circuit_meta"], merged["circuit_colors"],
+                merged["circuit_border_colors"],
+                merged["edges_2d"], merged["edge_offsets"],
+                pixel_world_scale,
+                layer_offsets_t,
+                int(frag_flag), frag_pipelines, frag_scatters,
+                int(shadow_flag),
+                int(refraction_flag),
+                int(has_tri), int(has_pn), int(has_bez),
+                0,
+                int(rt_settings.WF_SKIP_UNLIT_NORMAL),
+                int(mem_trim),
+                a_matid, a_mat,
+                merged["pn_mat_id"], merged["pn_mat"],
+                light_pos, light_col, int(num_lights),
+                int(time_start), int(width), int(height),
+                int(tile_start),
+                rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
+                rs_pix, pix_accum, rs_used, rs_vis)
+            active = (rs_int[:, 2] == 0).nonzero(
+                as_tuple=True)[0].to(i32)
+            it += 1
 
-    for si in range(aa):
-        for sj in range(aa):
-            jx = (si + 0.5) * inv_aa if do_aa else 0.5
-            jy = (sj + 0.5) * inv_aa if do_aa else 0.5
-
-            # Ray-offset screen tiling (like render_triangles_wavefront):
-            # process the chunk's pixels in bounded tiles, so per-tile state
-            # stays bounded *regardless of frame size* -- a single UHD frame
-            # just splits into several tiles. ``tile_start`` is the first
-            # pixel's global ray index; the pool slot r (< primary count)
-            # renders pixel ``tile_start + r``. rs_sca has a 5th column
-            # (base_dist). State is pool-allocated and freed after every tile.
-            for tile_start in range(0, n, primary_per_tile):
-                tn_primary = min(primary_per_tile, n - tile_start)
-                pool = tn_primary * split_k
-                state_ptrs = memory.get_pointers()
-                (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                 rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = \
-                    _alloc_wavefront_state(memory, pool, 5)
-                rs_pix = memory.get_tensor((pool,), i32)
-                pix_accum = memory.get_tensor((tn_primary, 5), f32)
-                # Per-pixel spare-slot counter (zeroed by wf_gen_general): a
-                # split ray bumps rs_used[its pixel], so distinct pixels touch
-                # distinct addresses -- no single global atomic to serialise on.
-                rs_used = memory.get_tensor((tn_primary,), i32)
-                # Packed per-ray shadow visibility bits (deferred shadows only);
-                # a 1-element placeholder otherwise (the reader compiles out).
-                rs_vis = memory.get_tensor(
-                    (1,), i32)
-
-                wavefront_generate_rays(
-                    cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                    int(time_start), int(width), int(height),
-                    float(half_screen_w), float(half_screen_h),
-                    int(max_bounces),
-                    int(tile_start), int(tn_primary), float(jx), float(jy),
-                    float(near_clip),
-                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                    rs_pix, pix_accum, rs_used)
-
-                active = torch.arange(tn_primary, dtype=i32, device=device)
-                it = 0
-                while active.numel() > 0 and it < max_iters:
-                    na = int(active.numel())
-                    wavefront_traverse(
-                        active, na,
-                        t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
-                        t_bvh.leaf_tspan, int(t_bvh.first_leaf),
-                        a_pos,
-                        pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
-                        pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
-                        merged["pn_ctrl"],
-                        merged["pn_obb"],
-                        bez_bvh.blocks, bez_bvh.node_miss, bez_bvh.leaf_prim,
-                        bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
-                        merged["circuit_meta"],
-                        merged["edges_2d"], merged["edge_offsets"],
-                        pixel_world_scale,
-                        float(layer_offset_triangles), float(layer_offset_pn),
-                        int(has_tri), int(has_pn), int(has_bez),
-                        int(time_start), int(width), int(height),
-                        int(tile_start),
-                        rs_ro, rs_rd, rs_sca, rs_int,
-                        rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
-                    wavefront_shade(
-                        active, na,
-                        t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
-                        t_bvh.leaf_tspan, int(t_bvh.first_leaf),
-                        a_pos, a_norm,
-                        merged["tri_extra"],
-                        merged["tri_colors"], a_uvs,
-                        a_meta,
-                        merged["textures"],
-                        int(merged["num_colored_triangles"]),
-                        col_row_arr,
-                        pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
-                        pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
-                        merged["pn_ctrl"], merged["pn_norm"],
-                        merged["pn_extra"],
-                        merged["pn_colors"], merged["pn_obb"],
-                        bez_bvh.blocks, bez_bvh.node_miss, bez_bvh.leaf_prim,
-                        bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
-                        merged["circuit_meta"], merged["circuit_colors"],
-                        merged["circuit_border_colors"],
-                        merged["edges_2d"], merged["edge_offsets"],
-                        pixel_world_scale,
-                        layer_offsets_t,
-                        int(frag_flag), frag_pipelines, frag_scatters,
-                        int(shadow_flag),
-                        int(refraction_flag),
-                        int(has_tri), int(has_pn), int(has_bez),
-                        0,
-                        int(rt_settings.WF_SKIP_UNLIT_NORMAL),
-                        int(mem_trim),
-                        a_matid, a_mat,
-                        merged["pn_mat_id"], merged["pn_mat"],
-                        light_pos, light_col, int(num_lights),
-                        int(time_start), int(width), int(height),
-                        int(tile_start),
-                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                        rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
-                        rs_pix, pix_accum, rs_used, rs_vis)
-                    active = (rs_int[:, 2] == 0).nonzero(
-                        as_tuple=True)[0].to(i32)
-                    it += 1
-
-                if do_aa:
-                    wf_composite_accum_aa(
-                        int(time_start), int(width), int(height),
-                        1 if transparent else 0, int(tile_start),
-                        pix_accum, out, aa_accum)
-                else:
-                    wf_composite_accum(
-                        int(time_start), int(width), int(height),
-                        1 if transparent else 0, int(tile_start),
-                        pix_accum, t_val, float(TONEMAP_EXPOSURE), out)
-                # Release this tile's state back to the pool before the next
-                # tile.
-                memory.set_pointers(state_ptrs)
-
-    if do_aa:
-        wf_finalize_aa(int(width), int(height),
-                       1 if transparent else 0,
-                       float(inv_aa * inv_aa), t_val, float(TONEMAP_EXPOSURE), aa_accum, out)
+    _run_wavefront_tiles(
+        memory, out, n=n, width=width, height=height,
+        time_start=time_start, transparent=transparent,
+        aa_level=aa_level, split_k=split_k,
+        primary_per_tile=primary_per_tile,
+        cam_origin=cam_origin, screen_point=screen_point,
+        pixel_basis_x=pixel_basis_x, pixel_basis_y=pixel_basis_y,
+        half_screen_w=half_screen_w, half_screen_h=half_screen_h,
+        max_bounces=max_bounces, near_clip=near_clip,
+        run_tile=run_tile)
 
 
 def _raytrace_render_wavefront_textured(
@@ -773,14 +808,10 @@ def _raytrace_render_wavefront_textured(
     from algan.rendering.raytracing import settings as rt_settings
 
     device = out.device
-    t_val = _get_tonemap_t_val()
     i32 = torch.int32
     f32 = torch.float32
     max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
     n = (time_end - time_start) * width * height
-    aa = max(1, int(aa_level))
-    do_aa = aa > 1
-    inv_aa = 1.0 / aa
 
     # Feature templates (compiled into the shade kernel one at a time to measure
     # each feature's cost -- see settings.WF_TEXTURED_FEATURES).
@@ -796,116 +827,83 @@ def _raytrace_render_wavefront_textured(
     split_k = REFRACT_SPLIT_SLOTS if refraction_flag else 1
     primary_per_tile = max(1, WAVEFRONT_TILE_RAYS // split_k)
 
-    aa_accum = None
-    if do_aa:
-        aa_accum = memory.get_tensor((n, 5 if transparent else 4), f32)
-        aa_accum.zero_()
+    def run_tile(tile_start, tn_primary, pool, state, rs_pix,
+                 pix_accum, rs_used):
+        (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
+        active = torch.arange(tn_primary, dtype=i32, device=device)
+        it = 0
+        while active.numel() > 0 and it < max_iters:
+            na = int(active.numel())
+            wavefront_traverse(
+                active, na,
+                tri_bvh.blocks, tri_bvh.node_miss, tri_bvh.leaf_prim,
+                tri_bvh.leaf_tspan, int(tri_bvh.first_leaf),
+                merged["tri_pos"],
+                pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
+                pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
+                merged["pn_ctrl"], merged["pn_obb"],
+                bez_bvh.blocks, bez_bvh.node_miss, bez_bvh.leaf_prim,
+                bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
+                merged["circuit_meta"],
+                merged["edges_2d"], merged["edge_offsets"],
+                pixel_world_scale,
+                float(layer_offset_triangles), float(layer_offset_pn),
+                int(has_tri), int(has_pn), int(has_bez_eff),
+                int(time_start), int(width), int(height),
+                int(tile_start),
+                rs_ro, rs_rd, rs_sca, rs_int,
+                rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
+            wf_shade_textured(
+                active, na,
+                merged["tri_pos"], merged["tri_norm"],
+                merged["tx_uv"],
+                merged["tx_color_idx"], merged["tx_mat_idx"],
+                merged["tx_surf_idx"],
+                merged["tx_color_bank"], merged["tx_color_meta"],
+                merged["tx_mat_bank"], merged["tx_mat_meta"],
+                merged["tx_surf_bank"], merged["tx_surf_meta"],
+                merged["tx_nmap_idx"], merged["tx_nmap_bank"],
+                merged["tx_nmap_meta"],
+                merged["circuit_meta"], merged["circuit_colors"],
+                merged["circuit_border_colors"],
+                tri_bvh.blocks, tri_bvh.node_miss, tri_bvh.leaf_prim,
+                tri_bvh.leaf_tspan, int(tri_bvh.first_leaf),
+                pixel_world_scale,
+                float(layer_offset_triangles),
+                light_pos, light_col, int(num_lights),
+                int(refraction_flag),
+                int(feat_bez), int(feat_scatter), int(feat_shadows),
+                int(feat_normalmap),
+                int(time_start), int(width), int(height),
+                int(tile_start),
+                rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
+                rs_pix, pix_accum, rs_used)
+            active = (rs_int[:, 2] == 0).nonzero(
+                as_tuple=True)[0].to(i32)
+            it += 1
 
-    for si in range(aa):
-        for sj in range(aa):
-            jx = (si + 0.5) * inv_aa if do_aa else 0.5
-            jy = (sj + 0.5) * inv_aa if do_aa else 0.5
-
-            for tile_start in range(0, n, primary_per_tile):
-                tn_primary = min(primary_per_tile, n - tile_start)
-                pool = tn_primary * split_k
-                state_ptrs = memory.get_pointers()
-                (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                 rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = \
-                    _alloc_wavefront_state(memory, pool, 5)
-                rs_pix = memory.get_tensor((pool,), i32)
-                pix_accum = memory.get_tensor((tn_primary, 5), f32)
-                rs_used = memory.get_tensor((tn_primary,), i32)
-
-                wavefront_generate_rays(
-                    cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                    int(time_start), int(width), int(height),
-                    float(half_screen_w), float(half_screen_h),
-                    int(max_bounces),
-                    int(tile_start), int(tn_primary), float(jx), float(jy),
-                    0.0,
-                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                    rs_pix, pix_accum, rs_used)
-
-                active = torch.arange(tn_primary, dtype=i32, device=device)
-                it = 0
-                while active.numel() > 0 and it < max_iters:
-                    na = int(active.numel())
-                    wavefront_traverse(
-                        active, na,
-                        tri_bvh.blocks, tri_bvh.node_miss, tri_bvh.leaf_prim,
-                        tri_bvh.leaf_tspan, int(tri_bvh.first_leaf),
-                        merged["tri_pos"],
-                        pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
-                        pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
-                        merged["pn_ctrl"], merged["pn_obb"],
-                        bez_bvh.blocks, bez_bvh.node_miss, bez_bvh.leaf_prim,
-                        bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
-                        merged["circuit_meta"],
-                        merged["edges_2d"], merged["edge_offsets"],
-                        pixel_world_scale,
-                        float(layer_offset_triangles), float(layer_offset_pn),
-                        int(has_tri), int(has_pn), int(has_bez_eff),
-                        int(time_start), int(width), int(height),
-                        int(tile_start),
-                        rs_ro, rs_rd, rs_sca, rs_int,
-                        rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
-                    wf_shade_textured(
-                        active, na,
-                        merged["tri_pos"], merged["tri_norm"],
-                        merged["tx_uv"],
-                        merged["tx_color_idx"], merged["tx_mat_idx"],
-                        merged["tx_surf_idx"],
-                        merged["tx_color_bank"], merged["tx_color_meta"],
-                        merged["tx_mat_bank"], merged["tx_mat_meta"],
-                        merged["tx_surf_bank"], merged["tx_surf_meta"],
-                        merged["tx_nmap_idx"], merged["tx_nmap_bank"],
-                        merged["tx_nmap_meta"],
-                        merged["circuit_meta"], merged["circuit_colors"],
-                        merged["circuit_border_colors"],
-                        tri_bvh.blocks, tri_bvh.node_miss, tri_bvh.leaf_prim,
-                        tri_bvh.leaf_tspan, int(tri_bvh.first_leaf),
-                        pixel_world_scale,
-                        float(layer_offset_triangles),
-                        light_pos, light_col, int(num_lights),
-                        int(refraction_flag),
-                        int(feat_bez), int(feat_scatter), int(feat_shadows),
-                        int(feat_normalmap),
-                        int(time_start), int(width), int(height),
-                        int(tile_start),
-                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                        rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
-                        rs_pix, pix_accum, rs_used)
-                    active = (rs_int[:, 2] == 0).nonzero(
-                        as_tuple=True)[0].to(i32)
-                    it += 1
-
-                if do_aa:
-                    wf_composite_accum_aa(
-                        int(time_start), int(width), int(height),
-                        1 if transparent else 0, int(tile_start),
-                        pix_accum, out, aa_accum)
-                else:
-                    wf_composite_accum(
-                        int(time_start), int(width), int(height),
-                        1 if transparent else 0, int(tile_start),
-                        pix_accum, t_val, float(TONEMAP_EXPOSURE), out)
-                memory.set_pointers(state_ptrs)
-
-    if do_aa:
-        wf_finalize_aa(int(width), int(height),
-                       1 if transparent else 0,
-                       float(inv_aa * inv_aa), t_val,
-                       float(TONEMAP_EXPOSURE), aa_accum, out)
+    _run_wavefront_tiles(
+        memory, out, n=n, width=width, height=height,
+        time_start=time_start, transparent=transparent,
+        aa_level=aa_level, split_k=split_k,
+        primary_per_tile=primary_per_tile,
+        cam_origin=cam_origin, screen_point=screen_point,
+        pixel_basis_x=pixel_basis_x, pixel_basis_y=pixel_basis_y,
+        half_screen_w=half_screen_w, half_screen_h=half_screen_h,
+        max_bounces=max_bounces, near_clip=0.0,
+        run_tile=run_tile)
 
 
 def _scene_has_custom_scatter(merged):
     """True if any merged primitive's material pipeline carries a custom
-    scatter func (user-controlled ray bouncing). Such a scene must render
-    through the sorted-material pipeline -- the monolithic shade kernel has no
-    way to run a per-pipeline scatter. Cheap: exits on the tensor-max
-    user-pipeline pre-check for the (overwhelmingly common) all-built-in
-    scene."""
+    scatter func (user-controlled ray bouncing). The monolithic wavefront
+    shade kernel dispatches these directly; this check only decides whether
+    the scatter templates get compiled in (scatter-free scenes stay on the
+    scatter-free, byte-identical default path). Cheap: exits on the
+    tensor-max user-pipeline pre-check for the (overwhelmingly common)
+    all-built-in scene."""
     if not _scene_has_user_pipeline(merged):
         return False
     from algan.rendering.shaders.fragment_shaders import build_frag_scatters
@@ -947,17 +945,13 @@ def _raytrace_render_wavefront_sorted(
     from algan.rendering.raytracing.shading_taichi import (
         _USER_PIPELINE_BASE, builtin_pipeline_fn)
     from algan.rendering.raytracing.wavefront_sorted_kernels_taichi import (
-        ST_DONE, ST_PEEL, ST_SHADE, ST_TRAVERSE,
+        ST_PEEL, ST_SHADE, ST_TRAVERSE,
         default_scatter, wf_peel, wf_shade_event, wf_shadow_event)
 
     device = out.device
-    t_val = _get_tonemap_t_val()
     i32 = torch.int32
     f32 = torch.float32
     n = (time_end - time_start) * width * height
-    aa = max(1, int(aa_level))
-    do_aa = aa > 1
-    inv_aa = 1.0 / aa
 
     # Material bucket table: one entry per (geometry type, pipeline id) pair
     # present in the merged scene. Each bucket carries the composed pipeline
@@ -999,191 +993,158 @@ def _raytrace_render_wavefront_sorted(
     # record + keys), so tiles hold fewer rays for the same memory envelope.
     primary_per_tile = max(1, (WAVEFRONT_TILE_RAYS * 2) // (3 * split_k))
 
-    aa_accum = None
-    if do_aa:
-        aa_accum = memory.get_tensor((n, 5 if transparent else 4), f32)
-        aa_accum.zero_()
+    def run_tile(tile_start, tn_primary, pool, state, rs_pix,
+                 pix_accum, rs_used):
+        (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
+        # Event state: hit record, sort key, event primitive index and
+        # per-event shadow visibility bits (placeholder when unused).
+        rs_hit = memory.get_tensor((pool, 15), f32)
+        rs_key = memory.get_tensor((pool,), i32)
+        rs_eprim = memory.get_tensor((pool,), i32)
+        rs_vis = memory.get_tensor((pool,) if shadow_flag else (1,),
+                                   i32)
+        # The drained counter (rs_int col 4, pool garbage after
+        # allocation) must be 0 for every ray entering ST_TRAVERSE;
+        # the kernels maintain that invariant from here on.
+        rs_int[:, 4].zero_()
 
-    for si in range(aa):
-        for sj in range(aa):
-            jx = (si + 0.5) * inv_aa if do_aa else 0.5
-            jy = (sj + 0.5) * inv_aa if do_aa else 0.5
-
-            for tile_start in range(0, n, primary_per_tile):
-                tn_primary = min(primary_per_tile, n - tile_start)
-                pool = tn_primary * split_k
-                state_ptrs = memory.get_pointers()
-                (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                 rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = \
-                    _alloc_wavefront_state(memory, pool, 5)
-                rs_pix = memory.get_tensor((pool,), i32)
-                pix_accum = memory.get_tensor((tn_primary, 5), f32)
-                rs_used = memory.get_tensor((tn_primary,), i32)
-                # Event state: hit record, sort key, event primitive index and
-                # per-event shadow visibility bits (placeholder when unused).
-                rs_hit = memory.get_tensor((pool, 15), f32)
-                rs_key = memory.get_tensor((pool,), i32)
-                rs_eprim = memory.get_tensor((pool,), i32)
-                rs_vis = memory.get_tensor((pool,) if shadow_flag else (1,),
-                                           i32)
-
-                wavefront_generate_rays(
-                    cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        it = 0
+        while it < max_iters:
+            # At the top of an iteration every ray is DONE, TRAVERSE
+            # or PEEL (pending SHADE events never survive their
+            # discovery iteration), so two index builds decide both
+            # what to launch and when to stop.
+            status = rs_int[:, 2]
+            trav = (status == ST_TRAVERSE).nonzero(
+                as_tuple=True)[0].to(i32)
+            peel_extra = (status == ST_PEEL).nonzero(
+                as_tuple=True)[0].to(i32)
+            if trav.numel() == 0 and peel_extra.numel() == 0:
+                break
+            if trav.numel():
+                wavefront_traverse(
+                    trav, int(trav.numel()),
+                    tri_bvh.blocks, tri_bvh.node_miss,
+                    tri_bvh.leaf_prim, tri_bvh.leaf_tspan,
+                    int(tri_bvh.first_leaf),
+                    merged["tri_pos"],
+                    pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
+                    pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
+                    merged["pn_ctrl"],
+                    merged["pn_obb"],
+                    bez_bvh.blocks, bez_bvh.node_miss,
+                    bez_bvh.leaf_prim, bez_bvh.leaf_tspan,
+                    int(bez_bvh.first_leaf),
+                    merged["circuit_meta"],
+                    merged["edges_2d"], merged["edge_offsets"],
+                    pixel_world_scale,
+                    float(layer_offset_triangles),
+                    float(layer_offset_pn),
+                    int(has_tri), int(has_pn), int(has_bez),
                     int(time_start), int(width), int(height),
-                    float(half_screen_w), float(half_screen_h),
-                    int(max_bounces),
-                    int(tile_start), int(tn_primary), float(jx), float(jy),
-                    0.0,
-                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                    rs_pix, pix_accum, rs_used)
-                # The drained counter (rs_int col 4, pool garbage after
-                # allocation) must be 0 for every ray entering ST_TRAVERSE;
-                # the kernels maintain that invariant from here on.
-                rs_int[:, 4].zero_()
-
-                it = 0
-                while it < max_iters:
-                    # At the top of an iteration every ray is DONE, TRAVERSE
-                    # or PEEL (pending SHADE events never survive their
-                    # discovery iteration), so two index builds decide both
-                    # what to launch and when to stop.
-                    status = rs_int[:, 2]
-                    trav = (status == ST_TRAVERSE).nonzero(
-                        as_tuple=True)[0].to(i32)
-                    peel_extra = (status == ST_PEEL).nonzero(
-                        as_tuple=True)[0].to(i32)
-                    if trav.numel() == 0 and peel_extra.numel() == 0:
-                        break
-                    if trav.numel():
-                        wavefront_traverse(
-                            trav, int(trav.numel()),
-                            tri_bvh.blocks, tri_bvh.node_miss,
-                            tri_bvh.leaf_prim, tri_bvh.leaf_tspan,
-                            int(tri_bvh.first_leaf),
-                            merged["tri_pos"],
-                            pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
-                            pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
-                            merged["pn_ctrl"],
-                            merged["pn_obb"],
-                            bez_bvh.blocks, bez_bvh.node_miss,
-                            bez_bvh.leaf_prim, bez_bvh.leaf_tspan,
-                            int(bez_bvh.first_leaf),
-                            merged["circuit_meta"],
-                            merged["edges_2d"], merged["edge_offsets"],
-                            pixel_world_scale,
-                            float(layer_offset_triangles),
-                            float(layer_offset_pn),
-                            int(has_tri), int(has_pn), int(has_bez),
-                            int(time_start), int(width), int(height),
-                            int(tile_start),
-                            rs_ro, rs_rd, rs_sca, rs_int,
-                            rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
-                    if peel_extra.numel():
-                        peel_idx = (torch.cat((trav, peel_extra))
-                                    if trav.numel() else peel_extra)
-                    else:
-                        peel_idx = trav
-                    if peel_idx.numel():
-                        wf_peel(
-                            peel_idx, int(peel_idx.numel()),
-                            merged["tri_pos"], merged["tri_norm"],
-                            merged["tri_extra"], merged["tri_colors"],
-                            merged["tri_uvs"], merged["tri_tex_meta"],
-                            merged["textures"],
-                            int(merged["num_colored_triangles"]),
-                            merged["pn_ctrl"], merged["pn_norm"],
-                            merged["pn_extra"], merged["pn_colors"],
-                            merged["circuit_meta"], merged["circuit_colors"],
-                            merged["circuit_border_colors"],
-                            merged["tri_mat_id"], merged["pn_mat_id"],
-                            int(refraction_flag),
-                            int(has_tri), int(has_pn), int(has_bez),
-                            int(time_start), int(width), int(height),
-                            int(tile_start),
-                            rs_acc, rs_sca, rs_int,
-                            rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
-                            rs_pix, rs_hit, rs_key, rs_eprim, pix_accum)
-                    # Sort the pending events by material key once: the
-                    # buckets become contiguous slices of one index array
-                    # (coalesced kernel reads) and the whole dispatch costs a
-                    # single host sync instead of one nonzero per bucket.
-                    shade_idx = (rs_int[:, 2] == ST_SHADE).nonzero(
-                        as_tuple=True)[0]
-                    if shade_idx.numel():
-                        keys_shade = rs_key[shade_idx]
-                        sorted_keys, order = torch.sort(keys_shade)
-                        shade_sorted = shade_idx[order].to(i32)
-                        uniq, counts = torch.unique_consecutive(
-                            sorted_keys, return_counts=True)
-                        bucket_sizes = torch.stack(
-                            (uniq.long(), counts)).tolist()
-                        if shadow_flag:
-                            shade_all = shade_sorted
-                            wf_shadow_event(
-                                shade_all, int(shade_all.numel()),
-                                tri_bvh.blocks, tri_bvh.node_miss,
-                                tri_bvh.leaf_prim, tri_bvh.leaf_tspan,
-                                int(tri_bvh.first_leaf),
-                                merged["tri_pos"], merged["tri_colors"],
-                                merged["tri_uvs"], merged["tri_tex_meta"],
-                                merged["textures"],
-                                int(merged["num_colored_triangles"]),
-                                pn_bvh.blocks, pn_bvh.node_miss,
-                                pn_bvh.leaf_prim, pn_bvh.leaf_tspan,
-                                int(pn_bvh.first_leaf),
-                                merged["pn_ctrl"], merged["pn_obb"],
-                                merged["pn_colors"],
-                                bez_bvh.blocks, bez_bvh.node_miss,
-                                bez_bvh.leaf_prim, bez_bvh.leaf_tspan,
-                                int(bez_bvh.first_leaf),
-                                merged["circuit_meta"],
-                                merged["circuit_colors"],
-                                merged["circuit_border_colors"],
-                                merged["edges_2d"], merged["edge_offsets"],
-                                pixel_world_scale,
-                                float(layer_offset_triangles),
-                                float(layer_offset_pn),
-                                int(has_tri), int(has_pn), int(has_bez),
-                                light_pos, int(num_lights),
-                                int(time_start), int(width), int(height),
-                                int(tile_start),
-                                rs_ro, rs_rd, rs_sca, rs_hit, rs_pix, rs_vis)
-                        off = 0
-                        for key_val, cnt in zip(*bucket_sizes):
-                            fn, sc, mat = bucket_map[int(key_val)]
-                            cnt = int(cnt)
-                            bidx = shade_sorted[off:off + cnt]
-                            wf_shade_event(
-                                bidx, cnt,
-                                mat, light_pos, light_col,
-                                int(num_lights),
-                                fn, sc, int(shadow_flag),
-                                int(refraction_flag),
-                                int(time_start), int(width), int(height),
-                                int(tile_start),
-                                rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                                rs_hit, rs_eprim, rs_pix, pix_accum,
-                                rs_used, rs_vis)
-                            off += cnt
-                    it += 1
-
-                if do_aa:
-                    wf_composite_accum_aa(
+                    int(tile_start),
+                    rs_ro, rs_rd, rs_sca, rs_int,
+                    rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
+            if peel_extra.numel():
+                peel_idx = (torch.cat((trav, peel_extra))
+                            if trav.numel() else peel_extra)
+            else:
+                peel_idx = trav
+            if peel_idx.numel():
+                wf_peel(
+                    peel_idx, int(peel_idx.numel()),
+                    merged["tri_pos"], merged["tri_norm"],
+                    merged["tri_extra"], merged["tri_colors"],
+                    merged["tri_uvs"], merged["tri_tex_meta"],
+                    merged["textures"],
+                    int(merged["num_colored_triangles"]),
+                    merged["pn_ctrl"], merged["pn_norm"],
+                    merged["pn_extra"], merged["pn_colors"],
+                    merged["circuit_meta"], merged["circuit_colors"],
+                    merged["circuit_border_colors"],
+                    merged["tri_mat_id"], merged["pn_mat_id"],
+                    int(refraction_flag),
+                    int(has_tri), int(has_pn), int(has_bez),
+                    int(time_start), int(width), int(height),
+                    int(tile_start),
+                    rs_acc, rs_sca, rs_int,
+                    rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
+                    rs_pix, rs_hit, rs_key, rs_eprim, pix_accum)
+            # Sort the pending events by material key once: the
+            # buckets become contiguous slices of one index array
+            # (coalesced kernel reads) and the whole dispatch costs a
+            # single host sync instead of one nonzero per bucket.
+            shade_idx = (rs_int[:, 2] == ST_SHADE).nonzero(
+                as_tuple=True)[0]
+            if shade_idx.numel():
+                keys_shade = rs_key[shade_idx]
+                sorted_keys, order = torch.sort(keys_shade)
+                shade_sorted = shade_idx[order].to(i32)
+                uniq, counts = torch.unique_consecutive(
+                    sorted_keys, return_counts=True)
+                bucket_sizes = torch.stack(
+                    (uniq.long(), counts)).tolist()
+                if shadow_flag:
+                    shade_all = shade_sorted
+                    wf_shadow_event(
+                        shade_all, int(shade_all.numel()),
+                        tri_bvh.blocks, tri_bvh.node_miss,
+                        tri_bvh.leaf_prim, tri_bvh.leaf_tspan,
+                        int(tri_bvh.first_leaf),
+                        merged["tri_pos"], merged["tri_colors"],
+                        merged["tri_uvs"], merged["tri_tex_meta"],
+                        merged["textures"],
+                        int(merged["num_colored_triangles"]),
+                        pn_bvh.blocks, pn_bvh.node_miss,
+                        pn_bvh.leaf_prim, pn_bvh.leaf_tspan,
+                        int(pn_bvh.first_leaf),
+                        merged["pn_ctrl"], merged["pn_obb"],
+                        merged["pn_colors"],
+                        bez_bvh.blocks, bez_bvh.node_miss,
+                        bez_bvh.leaf_prim, bez_bvh.leaf_tspan,
+                        int(bez_bvh.first_leaf),
+                        merged["circuit_meta"],
+                        merged["circuit_colors"],
+                        merged["circuit_border_colors"],
+                        merged["edges_2d"], merged["edge_offsets"],
+                        pixel_world_scale,
+                        float(layer_offset_triangles),
+                        float(layer_offset_pn),
+                        int(has_tri), int(has_pn), int(has_bez),
+                        light_pos, int(num_lights),
                         int(time_start), int(width), int(height),
-                        1 if transparent else 0, int(tile_start),
-                        pix_accum, out, aa_accum)
-                else:
-                    wf_composite_accum(
+                        int(tile_start),
+                        rs_ro, rs_rd, rs_sca, rs_hit, rs_pix, rs_vis)
+                off = 0
+                for key_val, cnt in zip(*bucket_sizes):
+                    fn, sc, mat = bucket_map[int(key_val)]
+                    cnt = int(cnt)
+                    bidx = shade_sorted[off:off + cnt]
+                    wf_shade_event(
+                        bidx, cnt,
+                        mat, light_pos, light_col,
+                        int(num_lights),
+                        fn, sc, int(shadow_flag),
+                        int(refraction_flag),
                         int(time_start), int(width), int(height),
-                        1 if transparent else 0, int(tile_start),
-                        pix_accum, t_val, float(TONEMAP_EXPOSURE), out)
-                memory.set_pointers(state_ptrs)
+                        int(tile_start),
+                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                        rs_hit, rs_eprim, rs_pix, pix_accum,
+                        rs_used, rs_vis)
+                    off += cnt
+            it += 1
 
-    if do_aa:
-        wf_finalize_aa(int(width), int(height),
-                       1 if transparent else 0,
-                       float(inv_aa * inv_aa), t_val,
-                       float(TONEMAP_EXPOSURE), aa_accum, out)
+    _run_wavefront_tiles(
+        memory, out, n=n, width=width, height=height,
+        time_start=time_start, transparent=transparent,
+        aa_level=aa_level, split_k=split_k,
+        primary_per_tile=primary_per_tile,
+        cam_origin=cam_origin, screen_point=screen_point,
+        pixel_basis_x=pixel_basis_x, pixel_basis_y=pixel_basis_y,
+        half_screen_w=half_screen_w, half_screen_h=half_screen_h,
+        max_bounces=max_bounces, near_clip=0.0,
+        run_tile=run_tile)
 
 
 _originals = {}

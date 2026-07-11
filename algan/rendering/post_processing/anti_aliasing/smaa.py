@@ -7,6 +7,10 @@ import os
 from typing import Tuple, Optional
 import math
 
+from algan.logging.logger import get_logger
+
+logger = get_logger("smaa")
+
 
 class SMAA(nn.Module):
     """
@@ -75,7 +79,7 @@ class SMAA(nn.Module):
 
         # Convert to torch tensor (H, W, C) -> (C, H, W)
         area_tex = torch.from_numpy(area_np).permute(2, 0, 1)
-        print(f"Loaded area texture from {path}: shape {area_tex.shape}")
+        logger.debug(f"Loaded area texture from {path}: shape {area_tex.shape}")
         return area_tex
 
     def _load_search_texture(self, path: str) -> torch.Tensor:
@@ -93,7 +97,7 @@ class SMAA(nn.Module):
             search_np = search_np[:, :, 0]
 
         search_tex = torch.from_numpy(search_np).unsqueeze(0)
-        print(f"Loaded search texture from {path}: shape {search_tex.shape}")
+        logger.debug(f"Loaded search texture from {path}: shape {search_tex.shape}")
         return search_tex
 
     def _rgb_to_luma(self, rgb: torch.Tensor) -> torch.Tensor:
