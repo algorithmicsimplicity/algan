@@ -13,9 +13,11 @@ from algan.animation.animatable import (
 )
 from algan.animation.animation_contexts import AnimationContext, NoExtra, Off, Sync
 from algan.animation.timeline import (
+    HIERARCHY_VERSION,
     STRUCTURE_VERSION,
     TimelineManager,
     _opt_disabled,
+    bump_hierarchy_version,
     bump_structure_version,
 )
 from algan.mobs.mob_layout import MobLayoutMixin, DEFAULT_BUFFER  # noqa: F401 -- DEFAULT_BUFFER re-exported
@@ -163,18 +165,42 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
                 ),
             }
         )
-        self.location = cast_to_tensor(location)
-        self.basis = cast_to_tensor(basis)
-
         if color is None:
             color = self.get_default_color()
-        self.color = color
-        self.max_opacity = cast_to_tensor(opacity)
-        self.opacity = cast_to_tensor(opacity)#cast_to_tensor(1)  # Current opacity, can be animated
-        self.glow = cast_to_tensor(glow)
-        self.glow_radius = cast_to_tensor(glow_radius)
+        # A freshly constructed mob has no children and is not spawned, so
+        # every one of these attribute sets is conceptually a no-op that just
+        # establishes the initial value. The property setters route through the
+        # get/change/apply machinery (~10 timeline operations each), and the
+        # basis setter additionally round-trips location and basis through a
+        # ``basis @ rotation_between(basis, basis)`` matrix identity that
+        # perturbs both by ~1 ULP. Allocating the buffers directly to the given
+        # values is faster *and* more correct (no spurious perturbation), so we
+        # do that for every attribute here. Order is preserved so per-attribute
+        # buffer row indices are unchanged.
+        self._init_default_attr("location", cast_to_tensor(location))
+        self._init_default_attr("basis", cast_to_tensor(basis))
+        self._init_default_attr("color", color)
+        self._init_default_attr("max_opacity", cast_to_tensor(opacity))
+        self._init_default_attr("opacity", cast_to_tensor(opacity))
+        self._init_default_attr("glow", cast_to_tensor(glow))
+        self._init_default_attr("glow_radius", cast_to_tensor(glow_radius))
         self.num_points_per_object = 1
         self.shader = None
+
+    def _init_default_attr(self, attr, value):
+        """Allocate ``attr``'s attribute-timeline buffer directly to ``value``
+        during construction, bypassing the get/change/apply machinery of the
+        normal property setter. Valid for a fresh mob (no children yet, not
+        spawned, buffer not yet allocated) whose setter would only establish
+        the initial value -- the state inside :meth:`__init__`. Falls back to
+        the full setter if any precondition does not hold."""
+        tm = TimelineManager.instance()
+        tl = tm.attr_to_timeline.get(attr)
+        if self.children or (tl is not None and self.id in tl.mob_id_to_inds):
+            setattr(self, attr, value)
+            return self
+        tm.add_mob_attr(self, attr, cast_to_tensor(value))
+        return self
 
     def get_points_evenly_along_direction(self, direction, num_points=3):
         e, s = (
@@ -289,7 +315,7 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
 
         """
         cache = getattr(self, "_descendants_cache", None)
-        if (cache is not None and cache[0] == STRUCTURE_VERSION[0]
+        if (cache is not None and cache[0] == HIERARCHY_VERSION[0]
                 and not _opt_disabled("desccache")):
             descendants = cache[1]
         else:
@@ -304,7 +330,7 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
                 )
             )
             object.__setattr__(
-                self, "_descendants_cache", (STRUCTURE_VERSION[0], descendants)
+                self, "_descendants_cache", (HIERARCHY_VERSION[0], descendants)
             )
         return list(descendants) if include_self else descendants[1:]
 
@@ -497,7 +523,7 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
     @animated_function(animated_args={"interpolation": 0.0})
     def _apply_change(self, attr, change, recursive=True, interpolation=1.0):
         change = change * interpolation
-        current_value = self.get_animated_attribute(attr, include_descendants=recursive)
+        current_value = self.get_animated_attribute(attr, include_descendants=recursive, copy=False)
         new_value = current_value + change
         return self.setattr_and_record_modification(attr, new_value, include_descendants=recursive)
 
@@ -511,7 +537,7 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
             recursive = False
         value = cast_to_tensor(value)
 
-        current_value = self.get_animated_attribute(attr, include_descendants=recursive, default=value)
+        current_value = self.get_animated_attribute(attr, include_descendants=recursive, default=value, copy=False)
         change = value - current_value
         self._apply_change(attr, change, recursive=recursive)
         return self
@@ -532,7 +558,7 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         value = cast_to_tensor(location)
         attr = "location"
 
-        current_value = self.get_animated_attribute(attr, include_descendants=False, default=value)
+        current_value = self.get_animated_attribute(attr, include_descendants=False, default=value, copy=False)
         change = value - current_value
         self._apply_change(attr, change, recursive=recursive)
         return self
@@ -568,7 +594,7 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         # Convert the absolute target into a relative change against the
         # current basis, so that concurrent basis writers (e.g. a rotate and a
         # scale in the same Sync) compose instead of overriding each other.
-        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=value)
+        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=value, copy=False)
         change = inverse_relation(my_basis, value)
         # recursive must be passed as an explicit kwarg (not read from
         # self._prevent_recursive_sets inside _apply_basis_change) so that it
@@ -585,18 +611,18 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         attr = "basis"
         relation, inverse_relation = self.attr_to_relations[attr]
 
-        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=default_basis)
-        my_loc = self.get_animated_attribute('location', include_descendants=False)
+        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=default_basis, copy=False)
+        my_loc = self.get_animated_attribute('location', include_descendants=False, copy=False)
 
         identity = inverse_relation(my_basis, my_basis)
         interpolated_change = torch.lerp(identity, change, interpolation)
         new_basis = relation(my_basis, interpolated_change)
 
-        child_loc = self.get_animated_attribute('location', include_descendants=recursive)
+        child_loc = self.get_animated_attribute('location', include_descendants=recursive, copy=False)
         local_coords = map_global_to_local_coords(my_loc, my_basis, child_loc)
         new_child_location = map_local_to_global_coords(my_loc, new_basis, local_coords)
 
-        child_basis = self.get_animated_attribute('basis', include_descendants=recursive)
+        child_basis = self.get_animated_attribute('basis', include_descendants=recursive, copy=False)
         new_child_basis = relation(child_basis, interpolated_change)
 
         self._apply_set("location", new_child_location, recursive=recursive)

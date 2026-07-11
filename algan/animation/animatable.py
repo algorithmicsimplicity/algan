@@ -448,10 +448,25 @@ class Animatable:
             return hit[1]
         if inds is None:
             return inds
-        inds_list = [timeline.get_inds(key, m, value)
-                     for m in self.get_descendants(include_self=True)]
-        ranges = RowRanges.from_contiguous_blocks(inds_list)
-        if ranges is None:  # non-contiguous block (defensive)
+        attr_timeline = timeline.attr_to_timeline[key]
+        descendants = self.get_descendants(include_self=True)
+        # Each mob's own rows are a cached single-run RowRanges; merge those
+        # integer runs directly (RowRanges.from_runs) instead of re-deriving
+        # each run from its index tensor. Fall back to concatenation only if a
+        # mob's rows are non-contiguous (defensive; add() never does this).
+        runs = []
+        contiguous = True
+        for m in descendants:
+            timeline.get_inds(key, m, value)  # ensure rows are allocated
+            r = attr_timeline.ranges_for(m.id)
+            if r.pairs is None:
+                contiguous = False
+                break
+            runs.extend(r.pairs)
+        if contiguous:
+            ranges = RowRanges.from_runs(runs) if runs else RowRanges([])
+        else:
+            inds_list = [attr_timeline.mob_id_to_inds[m.id] for m in descendants]
             ranges = RowRanges(None, tensor=torch.cat(inds_list))
         # Read the version after computing: get_inds may have allocated rows
         # (bumping it) when ``value`` is provided.
@@ -463,12 +478,13 @@ class Animatable:
             key, include_descendants=include_descendants, value=value)
         return None if ranges is None else ranges.tensor()
 
-    def get_animated_attribute(self, key, include_descendants=False, default=None):
+    def get_animated_attribute(self, key, include_descendants=False, default=None,
+                               copy=True):
         if default is not None:
             self._prepare_buffers(key, default)
         inds = self._get_attr_ranges(key, include_descendants=include_descendants, value=default)
         timeline = TimelineManager.instance()
-        return timeline.get_attr(key, inds)
+        return timeline.get_attr(key, inds, copy=copy)
 
     def wait(self, *args, **kwargs):
         """An animated function that does nothing for one second!"""
@@ -702,10 +718,10 @@ class Animatable:
             self.children.append(mob)
             mob.set_parent_to(self)
             self.anchor_priority = max(self.anchor_priority, 1 + mob.anchor_priority)
-        bump_structure_version()
+        bump_hierarchy_version()
         return self
 
     def remove_child(self, mob):
         self.children.remove(mob)
-        bump_structure_version()
+        bump_hierarchy_version()
         return self

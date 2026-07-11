@@ -30,5 +30,5 @@ def text_scene():
         nn.move(LEFT)
 
 set_log_level('DEBUG')
-#render_all_funcs(__name__, HD, profile=True)
-profile_scene(text_scene, HD)
+render_all_funcs(__name__, HD, profile=True)
+#profile_scene(text_scene, HD)

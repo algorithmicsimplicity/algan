@@ -53,7 +53,7 @@ _installed = False
 # Total on-disk cap for the cache directory. Once a save pushes the directory
 # past this, least-recently-used files are evicted until it fits. Override with
 # ALGAN_MANIM_SVG_CACHE_MB (0 or negative disables the cap).
-_DEFAULT_CACHE_MB = 512
+_DEFAULT_CACHE_MB = 1024
 
 
 def _max_cache_bytes() -> int:

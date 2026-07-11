@@ -11,7 +11,7 @@ import torch
 from scipy.optimize import linear_sum_assignment
 
 from algan.animation.animation_contexts import Off, Seq, Sync
-from algan.animation.timeline import bump_structure_version
+from algan.animation.timeline import bump_hierarchy_version
 from algan.utils.tensor_utils import cast_to_tensor, mid_point, squish, unsquish
 
 if TYPE_CHECKING:
@@ -77,7 +77,7 @@ class MobMorphMixin:
             for _ in range(1, factor):
                 new_submobs.append(submob.clone())  # Add clones
         self.children = new_submobs + [_ for _ in self.children if _ in self.components]
-        bump_structure_version()
+        bump_hierarchy_version()
         return self
 
     def expand_n_tensor(self, value, n: int):

@@ -170,7 +170,7 @@ def render_to_file(
                     audio_codec)
 
         try:
-            scene.render_to_video(file_writer, temp_file_path, file_path, **kwargs)
+            scene.render_to_video(file_writer, temp_file_path, file_path, background_color=background_color, **kwargs)
             logger.info(f"Finished rendering {file_name}{file_ext}")
         finally:
             # file_writer.release()

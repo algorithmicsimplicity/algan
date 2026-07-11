@@ -21,14 +21,33 @@ UPDATER_FOREVER = 1e12
 
 #: Global structure version, bumped whenever the mob hierarchy or any
 #: attribute timeline's row allocation changes. Version-checked caches of
-#: descendant lists and concatenated row indexes (see
-#: :meth:`~algan.animation.animatable.Animatable.get_attr_inds` and
-#: :meth:`~algan.mobs.mob.Mob.get_descendants`) are invalidated by comparing
-#: against it, so they never have to be cleared explicitly.
+#: concatenated descendant row indexes (see
+#: :meth:`~algan.animation.animatable.Animatable.get_attr_inds`) are
+#: invalidated by comparing against it, so they never have to be cleared
+#: explicitly.
 STRUCTURE_VERSION = [0]
+
+#: Global hierarchy version, bumped only when the mob hierarchy (any mob's
+#: ``children``) changes -- NOT on attribute-buffer row allocation. The
+#: descendant-*list* cache (:meth:`~algan.mobs.mob.Mob.get_descendants`)
+#: depends only on the hierarchy, so keying it on this version lets it survive
+#: the row allocations that happen constantly during construction (every mob's
+#: first attribute write allocates rows and bumps STRUCTURE_VERSION). Every
+#: hierarchy mutation bumps both versions (via :func:`bump_hierarchy_version`),
+#: so the row-index caches stay correct too.
+HIERARCHY_VERSION = [0]
 
 
 def bump_structure_version():
+    STRUCTURE_VERSION[0] += 1
+
+
+def bump_hierarchy_version():
+    """Bump both the hierarchy and structure versions. Call this (instead of
+    :func:`bump_structure_version`) for any change to a mob's ``children``: it
+    invalidates both the descendant-list cache and the descendant-row-index
+    caches, since a hierarchy change alters both."""
+    HIERARCHY_VERSION[0] += 1
     STRUCTURE_VERSION[0] += 1
 
 
@@ -86,6 +105,16 @@ class RowRanges:
         """Build from per-mob index tensors, each of which is a contiguous
         arange (how ``AttributeTimeline.add`` allocates). Returns None when a
         block is not contiguous (caller falls back to plain concatenation)."""
+        if len(inds_list) == 1:
+            inds = inds_list[0]
+            n = inds.numel()
+            if n == 0:
+                return RowRanges([])
+            b = int(inds[0])
+            e = int(inds[-1]) + 1
+            if e - b != n:
+                return None
+            return RowRanges([(b, e)])
         pairs = []
         inds_list = sorted(inds_list, key=lambda x: x[0])
         for inds in inds_list:
@@ -100,8 +129,22 @@ class RowRanges:
                 pairs[-1] = (pairs[-1][0], e)
             else:
                 pairs.append((b, e))
-        if len(pairs) > 1000:
-            print('debug')
+        return RowRanges(pairs)
+
+    @staticmethod
+    def from_runs(runs):
+        """Build from a list of already-known ``(begin, end)`` integer runs
+        (e.g. each mob's cached single-run range). Coalesces adjacent runs,
+        equivalent to :meth:`from_contiguous_blocks` but without any per-row
+        tensor indexing/conversion. ``runs`` must contain no empty runs."""
+        if len(runs) == 1:
+            return RowRanges([runs[0]])
+        pairs = []
+        for b, e in sorted(runs):
+            if pairs and pairs[-1][1] == b:
+                pairs[-1] = (pairs[-1][0], e)
+            else:
+                pairs.append((b, e))
         return RowRanges(pairs)
 
 
@@ -262,18 +305,20 @@ class AttributeTimeline:
     def get_current_values(self):
         return self.current_state[:, :self.pointer]
 
-    def get(self, key):
+    def get(self, key, copy=True):
         if isinstance(key, RowRanges):
             if (not _opt_disabled("ranges")
                     and key.pairs is not None and len(key.pairs) == 1):
                 # Contiguous rows: slice instead of index-gather. The clone
                 # keeps the copy semantics of advanced indexing (callers may
-                # mutate the result in place).
+                # mutate the result in place); read-only callers that only feed
+                # the value into out-of-place arithmetic pass copy=False to skip
+                # it (the dominant cost during mob construction).
                 b, e = key.pairs[0]
                 block = self.active_state[:, b:e]
                 t = self.active_time_inds
                 if isinstance(t, slice):
-                    return block[t].clone()
+                    return block[t].clone() if copy else block[t]
                 return block[t.view(-1)]
             key = key.tensor()
         return self.active_state[self.active_time_inds, key]
@@ -341,7 +386,6 @@ class AttributeTimeline:
         # New (or re-allocated) rows invalidate cached concatenated row
         # indexes.
         bump_structure_version()
-        self.mob_id_to_ranges.pop(mob_id, None)
         values = cast_to_tensor(values)
         n = values.shape[-2]
         new_pointer = self.pointer + n
@@ -356,6 +400,10 @@ class AttributeTimeline:
         self.current_state[:, self.pointer:new_pointer] = values
         inds = torch.arange(self.pointer, new_pointer)
         self.mob_id_to_inds[mob_id] = inds
+        # The block is contiguous by construction, so cache its single-run
+        # RowRanges directly instead of re-deriving it (with tensor->int
+        # conversions) on the first ranges_for() query.
+        self.mob_id_to_ranges[mob_id] = RowRanges([(self.pointer, new_pointer)])
         self.pointer = new_pointer
         return inds
 
@@ -645,9 +693,9 @@ class AnimationTimeline:
                 timeline.add(mob, value)
         return self.attr_to_timeline[attr].mob_id_to_inds[mob.id]
 
-    def get_attr(self, attr, inds):
+    def get_attr(self, attr, inds, copy=True):
         timeline = self.attr_to_timeline[attr]
-        return timeline.get(inds)
+        return timeline.get(inds, copy=copy)
 
     def record_function(self, function, caller, animated_args, kwargs, animation_context):
         c = animation_context

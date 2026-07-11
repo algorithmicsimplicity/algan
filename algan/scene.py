@@ -312,7 +312,8 @@ class Scene(RenderLoopMixin):
         if self.background_is_set and not overwrite:
             return self
         if isinstance(background_color, str):
-            background_color = F.interpolate(get_image(background_color).transpose(0,-1).unsqueeze(0), tuple(self.frame_size),
+            a = self.render_settings.anti_alias_level
+            background_color = F.interpolate(get_image(background_color).transpose(0,-1).unsqueeze(0), [_*a for _ in tuple(self.frame_size)],
                                              mode='bilinear', antialias='bilinear').squeeze(0).permute(1,2,0).unsqueeze(0)
         self.background_frame = self.background_color = background_color
         self.background_is_set = True
