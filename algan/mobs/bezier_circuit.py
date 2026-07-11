@@ -460,3 +460,161 @@ class BezierCircuitCubic(Renderable):
 class BezierCurveCubic(BezierCircuitCubic):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, filled=False, **kwargs)
+
+
+def build_render_primitives_batched(actors, scene):
+    """Build the merged (collection-level) bezier render primitive for
+    ``actors`` in one vectorized pass.
+
+    Byte-identical replacement for calling ``get_render_primitives()`` on
+    every actor and concatenating the per-actor primitives through
+    ``BezierCircuitPrimitive(triangle_collection=...)``: each attribute is
+    read from its timeline once for the whole group (contiguous rows read as
+    a single slice), and the per-segment circuit topology (subpath start/end
+    masks, next-segment indices) is computed with per-actor index maps that
+    reproduce each actor's local ``roll``/``cummax`` wrap-around semantics.
+
+    Callers must guarantee (see ``RenderLoopMixin._is_batchable_bezier`` and
+    ``_build_deferred_beziers``): stock ``BezierCircuitCubic`` build methods,
+    not ``empty``, un-batched control points, singleton rows for the scalar
+    attributes, and uniform ``num_texture_points`` / ``filled`` /
+    texture-color row count / primitive class across the group.
+    """
+    from algan.animation.timeline import RowRanges, TimelineManager
+    from algan.settings.defaults import COMPUTING_DEFAULTS
+
+    timeline = TimelineManager.instance()
+    first = actors[0]
+    ntp = first.num_texture_points
+    M = len(actors)
+
+    def read(attr, mobs):
+        tl = timeline.attr_to_timeline[attr]
+        # Merge the per-mob cached [begin, end) runs (ranges_for) instead of
+        # rebuilding them from the index tensors: this is called every frame
+        # batch, and tensor->int conversion per mob dominates otherwise.
+        pairs = []
+        for m in mobs:
+            r = tl.ranges_for(m.id)
+            if r.pairs is None:  # non-contiguous rows (defensive)
+                return tl.get(RowRanges(None, tensor=torch.cat(
+                    [tl.mob_id_to_inds[mm.id] for mm in mobs])))
+            for b, e in r.pairs:
+                if pairs and pairs[-1][1] == b:
+                    pairs[-1] = (pairs[-1][0], e)
+                else:
+                    pairs.append((b, e))
+        return tl.get(RowRanges(pairs))
+
+    # --- batched attribute reads (mirrors the per-actor property reads and
+    # the ``vars`` broadcast in get_render_primitives) ---
+    o = read("opacity", actors)
+    basis = read("basis", actors)
+    g = read("glow", actors)
+    bw = read("border_width", actors) * (
+        scene.render_settings.resolution[1] * scene.render_settings.anti_alias_level
+        / (PREVIEW.resolution[1] * 2))
+    bc = read("border_color", actors)
+    gr = read("glow_radius", actors)
+    loc = read("location", actors)
+    o, basis, g, bw, bc, gr = broadcast_all([o, basis, g, bw, bc, gr],
+                                            ignored_dims=[-1])
+    cp = read("location", [a.control_points for a in actors])
+    tpc = read("color", [a.texture_points for a in actors])
+
+    # --- circuit topology (mirrors _get_render_primitives) ---
+    loc_inds = timeline.attr_to_timeline["location"].mob_id_to_inds
+    seg_counts = torch.tensor(
+        [loc_inds[a.control_points.id].numel() // 4 for a in actors],
+        dtype=torch.long)
+    x = unsquish(cp, -2, 4)  # [T, S_total, 4, 3]
+    S_tot = x.shape[-3]
+    seg_offsets = seg_counts.cumsum(0) - seg_counts
+    mob_of_seg = torch.repeat_interleave(torch.arange(M), seg_counts)
+    off_of_seg = seg_offsets[mob_of_seg]
+    gidx = torch.arange(S_tot)
+    local = gidx - off_of_seg
+    last_local = seg_counts[mob_of_seg] - 1
+
+    start_points = x[..., :1, :]
+    end_points = x[..., -1:, :]
+    # Per-actor wrap-around neighbours: each actor's own roll(+-1, -3).
+    prev_idx = torch.where(local == 0, off_of_seg + last_local, gidx - 1)
+    next_idx = torch.where(local == last_local, off_of_seg, gidx + 1)
+    circuit_start_mask = (
+        start_points - end_points.index_select(-3, prev_idx)
+    ).norm(p=2, dim=-1, keepdim=True) > 1e-5
+    circuit_end_mask = (
+        end_points - start_points.index_select(-3, next_idx)
+    ).norm(p=2, dim=-1, keepdim=True) > 1e-5
+
+    local_col = local.view(-1, 1, 1)
+    off_col = off_of_seg.view(-1, 1, 1)
+    # The per-actor where(mask, local_ind, 0) + cummax scan, run in global
+    # index space: candidate values are per-actor monotone blocks (every
+    # actor's candidates are >= its offset and below the next actor's), so
+    # one global cummax restarts cleanly at every actor boundary.
+    circuit_start_inds = torch.where(circuit_start_mask, local_col + off_col,
+                                     off_col)
+    circuit_start_inds = torch.cummax(circuit_start_inds, -3)[0] - off_col
+    next_segment_inds = torch.where(
+        local == last_local, torch.zeros_like(local), local + 1).view(-1, 1, 1)
+    next_segment_inds = torch.where(circuit_end_mask, circuit_start_inds,
+                                    next_segment_inds)
+    next_segment_inds_offset = next_segment_inds - local_col  # [T, S, 1, 1]
+
+    # --- texture colors (mirrors the ``c`` construction) ---
+    c = unsquish(tpc, -2, tpc.shape[-2] // M)  # [T, M, P, 5]
+    if ntp > c.shape[-2]:
+        c = c.expand([-1, -1, ntp, -1])
+
+    # --- per-primitive color/border math (mirrors
+    # BezierCircuitPrimitive.__init__'s scalar path) ---
+    normals = basis[..., -3:]
+    bc, o, g = broadcast_all([bc, o, g], ignored_dims=[-1])
+    colors = c.clone()
+    colors[..., -2:-1] += g.unsqueeze(-2)
+    colors[..., -1:] *= o.unsqueeze(-2)
+    bc[..., -2:-1] += g
+    bc[..., -1:] *= o
+
+    # --- collection-level assembly (mirrors the triangle_collection branch
+    # of BezierCircuitPrimitive.__init__) ---
+    device = COMPUTING_DEFAULTS.render_device
+    cls = first.render_primitive
+    mega = cls.__new__(cls)
+    mega.num_pixels_per_sample = 2
+    mega.num_bezier_parameters = 4
+    mega.num_texture_points = ntp
+    mega.filled = first.filled
+    mega.num_segments_per_object = seg_counts.to(device)
+    mega.corners = x.to(device)
+    cols = colors.to(device)
+    if ntp == 0:
+        cols = cols.squeeze(-2)
+    mega.next_segment_inds = (
+        next_segment_inds_offset.to(device)
+        + torch.arange(S_tot, device=device).view(-1, 1, 1))
+    mega.normals = normals.to(device)
+    mega.border_width = bw.to(device)
+    mega.border_color = bc.to(device)
+    mega.glow_radius = gr.to(device)
+
+    T = loc.shape[0]
+
+    def per_actor_int(vals):
+        return (torch.tensor([float(v) for v in vals]).view(1, M, 1).int()
+                .expand(T, -1, -1))
+
+    mega.mob_center = loc.to(device)
+    # NB: the triangle_collection constructor assigns each primitive's
+    # grid_height into the collection's .grid_width and vice versa;
+    # reproduced as-is for byte-identity.
+    mega.grid_width = per_actor_int([a.grid_height for a in actors]).to(device)
+    mega.grid_height = per_actor_int([a.grid_width for a in actors]).to(device)
+    mega.basis1 = basis[..., :3].to(device)
+    mega.basis2 = basis[..., 3:6].to(device)
+    if ntp > 0:
+        cols = cols[..., -ntp:, :]
+    mega.colors = cols
+    return mega

@@ -76,7 +76,7 @@ class AnimationContext:
         is defined by the component animations that take place in this context.
     run_time_unit
         The duration that each component animation within this context will run for.
-        Uf `run_time` is not None, then `run_time` overrides `run_time_unit`.
+        If `run_time` is not None, then `run_time` overrides `run_time_unit`.
     same_run_time
         If True, rescale all component animations to have the same run_time
         (equal to the longest component run time).

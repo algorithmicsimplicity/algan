@@ -32,6 +32,79 @@ def bump_structure_version():
     STRUCTURE_VERSION[0] += 1
 
 
+_OPT_DISABLED = None
+
+
+def _opt_disabled(name):
+    """Bisect aid: ALGAN_OPT_DISABLE=fastpath,ranges,desccache,windows disables
+    individual animation-prep optimizations (read once, first use)."""
+    global _OPT_DISABLED
+    if _OPT_DISABLED is None:
+        import os
+        _OPT_DISABLED = frozenset(
+            os.environ.get("ALGAN_OPT_DISABLE", "").split(","))
+    return name in _OPT_DISABLED
+
+
+class RowRanges:
+    """A set of attribute-buffer rows stored as ordered [begin, end) runs.
+
+    Every mob's rows are allocated as one contiguous block
+    (:meth:`AttributeTimeline.add`), so the union of a subtree's rows is
+    usually a handful of runs. Storing runs instead of one index per row keeps
+    the per-mob descendant caches O(runs) rather than O(rows), and a
+    single-run set lets the attribute buffers be read and written through
+    plain slices instead of index gathers/scatters (see
+    :meth:`AttributeTimeline.get` / :meth:`AttributeTimeline.modify`).
+
+    ``pairs`` may be None for an uncompressible index set, in which case the
+    materialized ``tensor()`` is the only representation. Adjacent runs are
+    merged by the builders; duplicate or out-of-order runs are kept verbatim
+    so the materialized tensor always equals the uncompressed concatenation.
+    """
+
+    __slots__ = ("pairs", "numel", "_tensor")
+
+    def __init__(self, pairs, tensor=None):
+        self.pairs = pairs
+        self.numel = (sum(e - b for b, e in pairs) if pairs is not None
+                      else tensor.numel())
+        self._tensor = tensor
+
+    def tensor(self):
+        if self._tensor is None:
+            if len(self.pairs) == 1:
+                b, e = self.pairs[0]
+                self._tensor = torch.arange(b, e)
+            else:
+                self._tensor = torch.cat(
+                    [torch.arange(b, e) for b, e in self.pairs])
+        return self._tensor
+
+    @staticmethod
+    def from_contiguous_blocks(inds_list):
+        """Build from per-mob index tensors, each of which is a contiguous
+        arange (how ``AttributeTimeline.add`` allocates). Returns None when a
+        block is not contiguous (caller falls back to plain concatenation)."""
+        pairs = []
+        inds_list = sorted(inds_list, key=lambda x: x[0])
+        for inds in inds_list:
+            n = inds.numel()
+            if n == 0:
+                continue
+            b = int(inds[0])
+            e = int(inds[-1]) + 1
+            if e - b != n:
+                return None
+            if pairs and pairs[-1][1] == b:
+                pairs[-1] = (pairs[-1][0], e)
+            else:
+                pairs.append((b, e))
+        if len(pairs) > 1000:
+            print('debug')
+        return RowRanges(pairs)
+
+
 class Lifespan:
     """The [spawn, despawn) interval of one mob on the global timeline.
 
@@ -176,6 +249,7 @@ class AttributeTimeline:
         self.edits = []
         self._is_ready_for_queries = False
         self.mob_id_to_inds = dict()
+        self.mob_id_to_ranges = dict()
         self.mob_id_to_starts = dict()
         self.mob_id_to_ends = dict()
 
@@ -189,16 +263,56 @@ class AttributeTimeline:
         return self.current_state[:, :self.pointer]
 
     def get(self, key):
+        if isinstance(key, RowRanges):
+            if (not _opt_disabled("ranges")
+                    and key.pairs is not None and len(key.pairs) == 1):
+                # Contiguous rows: slice instead of index-gather. The clone
+                # keeps the copy semantics of advanced indexing (callers may
+                # mutate the result in place).
+                b, e = key.pairs[0]
+                block = self.active_state[:, b:e]
+                t = self.active_time_inds
+                if isinstance(t, slice):
+                    return block[t].clone()
+                return block[t.view(-1)]
+            key = key.tensor()
         return self.active_state[self.active_time_inds, key]
 
     def modify(self, key, value):
-        self.active_state[self.active_time_inds, key] = value
         self._is_ready_for_queries = False
+        if isinstance(key, RowRanges):
+            if (not _opt_disabled("ranges")
+                    and key.pairs is not None and len(key.pairs) == 1):
+                # Contiguous rows: slice-assign instead of index-scatter.
+                b, e = key.pairs[0]
+                t = self.active_time_inds
+                if isinstance(t, slice):
+                    self.active_state[t, b:e] = value
+                else:
+                    self.active_state[t.view(-1), b:e] = value
+                return self
+            key = key.tensor()
+        self.active_state[self.active_time_inds, key] = value
         return self
+
+    def ranges_for(self, mob_id):
+        """The mob's own rows as a (cached) single-run :class:`RowRanges`."""
+        ranges = self.mob_id_to_ranges.get(mob_id)
+        if ranges is None:
+            inds = self.mob_id_to_inds[mob_id]
+            ranges = RowRanges.from_contiguous_blocks([inds])
+            if ranges is None:  # non-contiguous (defensive; add() never does this)
+                ranges = RowRanges(None, tensor=inds)
+            self.mob_id_to_ranges[mob_id] = ranges
+        return ranges
 
     def record(self, key, value, time, seq=0, event=None):
         old_value = self.get(key)
-        self.edits.append(EditRecord(key, old_value, time, seq, event))
+        # Edits store materialized index tensors: the replay machinery
+        # (prepare_for_queries, _resolve_replay_windows) consumes them
+        # directly, and recording happens once per edit, not once per batch.
+        indexes = key.tensor() if isinstance(key, RowRanges) else key
+        self.edits.append(EditRecord(indexes, old_value, time, seq, event))
         self.modify(key, value)
         return self
 
@@ -210,6 +324,7 @@ class AttributeTimeline:
         # New (or re-allocated) rows invalidate cached concatenated row
         # indexes.
         bump_structure_version()
+        self.mob_id_to_ranges.pop(mob_id, None)
         values = cast_to_tensor(values)
         n = values.shape[-2]
         new_pointer = self.pointer + n
@@ -394,6 +509,13 @@ class FunctionTimeline:
     def __init__(self):
         self.function_applications = []
         self.updaters = []
+        # (num_events, starts [E], replay ends [E]): the resolved window of
+        # every recorded event, rebuilt when events are added or replay
+        # windows re-resolved (see AnimationTimeline._resolve_replay_windows).
+        # Event windows are lazy (contexts rescale timestamps retroactively),
+        # so evaluating them for every event on every frame batch is a
+        # per-batch O(events) property-call cost otherwise.
+        self._window_cache = None
 
     def add(self, function_application):
         self.function_applications.append(function_application)
@@ -401,9 +523,36 @@ class FunctionTimeline:
     def add_updater(self, updater):
         self.updaters.append(updater)
 
+    def invalidate_window_cache(self):
+        self._window_cache = None
+
+    def _windows(self):
+        cache = self._window_cache
+        if cache is None or cache[0] != len(self.function_applications):
+            # float32 to match the dtype the per-event scalar comparisons
+            # used (python-float scalars compare in the tensor's dtype).
+            starts = torch.tensor(
+                [f.time.start for f in self.function_applications],
+                dtype=torch.float32)
+            ends = torch.tensor(
+                [_replay_window_end(f) for f in self.function_applications],
+                dtype=torch.float32)
+            cache = self._window_cache = (
+                len(self.function_applications), starts, ends)
+        return cache[1], cache[2]
+
     def get_functions_for_times(self, times):
-        return [f for f in self.function_applications if ((f.time.start <= times) &
-                (times < _replay_window_end(f))).any()]
+        if not self.function_applications:
+            return []
+        if _opt_disabled("windows"):
+            return [f for f in self.function_applications
+                    if ((f.time.start <= times)
+                        & (times < _replay_window_end(f))).any()]
+        starts, ends = self._windows()
+        t = times.view(1, -1)
+        active = ((starts.view(-1, 1) <= t) & (t < ends.view(-1, 1))).any(1)
+        return [self.function_applications[i]
+                for i in active.nonzero().view(-1).tolist()]
 
     def get_updaters_for_times(self, times):
         return [f for f in self.updaters if ((f.time.start <= times) &
@@ -559,6 +708,8 @@ class AnimationTimeline:
         if self._replay_windows_resolved:
             return
         self._replay_windows_resolved = True
+        # Replay-window ends feed the cached event-window tensors.
+        self.function_timeline.invalidate_window_cache()
 
         all_edits = []
         for attr, timeline in self.attr_to_timeline.items():

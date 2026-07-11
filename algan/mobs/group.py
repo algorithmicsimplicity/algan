@@ -61,6 +61,7 @@ class Group(Mob):
                 return None
             return torch.stack([_.mean(-2, keepdim=True) for _ in x], -1).mean(-1)
 
+        self.traversable = False
         super().__init__(
             self.get_mob_midpoint(),
             color=mean(list(traverse([mob.color for mob in mobs if hasattr(mob, 'color')]))),

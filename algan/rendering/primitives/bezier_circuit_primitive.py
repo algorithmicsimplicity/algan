@@ -149,5 +149,10 @@ class BezierCircuitPrimitive(RenderPrimitive):
         self.basis1 = first_basis
         self.basis2 = second_basis
 
+    @staticmethod
+    def batch_identifier_for(num_texture_points, filled):
+        return f"{BezierCircuitPrimitive}_{num_texture_points}_{filled}"
+
     def get_batch_identifier(self):
-        return f"{__class__}_{self.num_texture_points}_{self.filled}"
+        return BezierCircuitPrimitive.batch_identifier_for(
+            self.num_texture_points, self.filled)

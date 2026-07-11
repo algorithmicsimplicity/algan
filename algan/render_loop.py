@@ -37,6 +37,11 @@ from algan.utils.memory_utils import (
 
 logger = get_logger("scene")
 
+#: Sentinel "class" marking an entry of grouped_primitives that already holds
+#: finished collections (merged bezier groups) rather than per-actor
+#: primitives awaiting concatenation.
+_PREBUILT_COLLECTION = object()
+
 
 class EmptySceneWarning(Warning):
     pass
@@ -180,6 +185,78 @@ class RenderLoopMixin:
             return False
         return True
 
+    def _is_batchable_bezier(self, actor):
+        """True if this bezier circuit's primitive build can be merged with
+        same-shaped peers into one vectorized pass (see
+        bezier_circuit.build_render_primitives_batched). Requires the stock
+        BezierCircuitCubic build methods, a non-empty circuit, un-batched
+        control points, and singleton rows for the per-circuit attributes.
+        Set ALGAN_BATCH_BEZIER_PREP=0 to disable (A/B against the per-actor
+        path)."""
+        if os.environ.get("ALGAN_BATCH_BEZIER_PREP", "1") == "0":
+            return False
+        from algan.mobs.bezier_circuit import BezierCircuitCubic
+
+        if not isinstance(actor, BezierCircuitCubic):
+            return False
+        t = type(actor)
+        if t.get_render_primitives is not BezierCircuitCubic.get_render_primitives:
+            return False
+        if t._get_render_primitives is not BezierCircuitCubic._get_render_primitives:
+            return False
+        if actor.empty:
+            return False
+        if actor.control_points.parent_batch_sizes is not None:
+            return False
+        timeline = TimelineManager.instance()
+        try:
+            for attr in ("opacity", "basis", "glow", "border_width",
+                         "border_color", "glow_radius", "location"):
+                if timeline.attr_to_timeline[attr].mob_id_to_inds[
+                        actor.id].numel() != 1:
+                    return False
+            loc_inds = timeline.attr_to_timeline["location"].mob_id_to_inds
+            if loc_inds[actor.control_points.id].numel() % 4 != 0:
+                return False
+            timeline.attr_to_timeline["color"].mob_id_to_inds[
+                actor.texture_points.id]
+        except (KeyError, AttributeError):
+            return False
+        return True
+
+    def _bezier_group_key(self, actor):
+        from algan.rendering.primitives.bezier_circuit_primitive import (
+            BezierCircuitPrimitive,
+        )
+
+        timeline = TimelineManager.instance()
+        tex_rows = timeline.attr_to_timeline["color"].mob_id_to_inds[
+            actor.texture_points.id].numel()
+        return (
+            BezierCircuitPrimitive.batch_identifier_for(
+                actor.num_texture_points, actor.filled),
+            tex_rows,
+            actor.render_primitive,
+        )
+
+    def _build_deferred_beziers(self, deferred):
+        """Build one merged bezier primitive per group of deferred circuits
+        in a single vectorized pass (see
+        bezier_circuit.build_render_primitives_batched). The merged primitive
+        is attached to the group's first entry (matching the position the
+        group's collection had in the per-actor path); later entries stay
+        empty."""
+        from algan.mobs.bezier_circuit import build_render_primitives_batched
+
+        groups = {}
+        for entry in deferred:
+            groups.setdefault(self._bezier_group_key(entry["actor"]),
+                              []).append(entry)
+        for entries in groups.values():
+            mega = build_render_primitives_batched(
+                [e["actor"] for e in entries], self)
+            entries[0]["prebuilt"] = [mega]
+
     def _build_deferred_surfaces(self, deferred):
         """Build geometry for all deferred surfaces, one stacked tensor pass
         per (grid shape, materialized location shape) group (see
@@ -272,12 +349,18 @@ class RenderLoopMixin:
         # grouping (and thus the merged collection layout) is unchanged.
         ordered_items = []
         deferred_surfaces = []
+        deferred_beziers = []
         for actor in sorted(actors, key=lambda x: x.anchor_priority, reverse=True):
             if not hasattr(actor, "get_render_primitives"):
                 continue
             if self._is_batchable_surface(actor):
                 entry = {"actor": actor, "prims": None}
                 deferred_surfaces.append(entry)
+                ordered_items.append(entry)
+                continue
+            if self._is_batchable_bezier(actor):
+                entry = {"actor": actor, "prims": None, "prebuilt": None}
+                deferred_beziers.append(entry)
                 ordered_items.append(entry)
                 continue
             primitive = actor.get_render_primitives()
@@ -289,7 +372,39 @@ class RenderLoopMixin:
         if deferred_surfaces:
             self._build_deferred_surfaces(deferred_surfaces)
 
+        if deferred_beziers:
+            # A non-batchable primitive sharing a group's batch identifier
+            # would have been concatenated into the same collection,
+            # interleaved by actor order; fall back to the per-actor build
+            # for such (rare) groups so the collection layout is unchanged.
+            raw_identifiers = set()
+            for item in ordered_items:
+                if isinstance(item, dict):
+                    continue
+                for p in item:
+                    raw_identifiers.add(p.get_batch_identifier())
+            clean = []
+            for entry in deferred_beziers:
+                if self._bezier_group_key(entry["actor"])[0] in raw_identifiers:
+                    primitive = entry["actor"].get_render_primitives()
+                    if primitive is not None:
+                        entry["prims"] = (primitive if isinstance(primitive, list)
+                                          else [primitive])
+                else:
+                    clean.append(entry)
+            if clean:
+                self._build_deferred_beziers(clean)
+
         for item in ordered_items:
+            if isinstance(item, dict) and item.get("prebuilt"):
+                # Pre-merged bezier collection: registered under its batch
+                # identifier at the position of the group's first actor, so
+                # the final collection order matches the per-actor path.
+                for collection in item["prebuilt"]:
+                    key = collection.get_batch_identifier()
+                    grouped_primitives[key][0] = _PREBUILT_COLLECTION
+                    grouped_primitives[key][1].append(collection)
+                continue
             primitives = item["prims"] if isinstance(item, dict) else item
             if not primitives:
                 continue
@@ -300,6 +415,12 @@ class RenderLoopMixin:
         primitive_collections = []
         max_bezier_batch_size = 50000
         for _, (primitive_class, primitives) in grouped_primitives.items():
+            if primitive_class is _PREBUILT_COLLECTION:
+                for collection in primitives:
+                    collection.memory = self.memory
+                    collection.scene = self
+                    primitive_collections.append(collection)
+                continue
             if primitive_class is BezierCircuitPrimitive:
                 counts = torch.tensor([_.corners.shape[1] for _ in primitives]).cumsum(
                     0

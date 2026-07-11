@@ -7,7 +7,12 @@ import torch
 
 # Re-exported for backwards compatibility (it used to be defined here).
 from algan.animation.timeline import TIME_PARAMETER_NAME, TimelineManager  # noqa: F401
-from algan.animation.timeline import STRUCTURE_VERSION, bump_structure_version
+from algan.animation.timeline import (
+    STRUCTURE_VERSION,
+    RowRanges,
+    _opt_disabled,
+    bump_structure_version,
+)
 from algan.scene import Scene
 from algan.animation.animation_contexts import (
     Sync,
@@ -75,6 +80,18 @@ def animated_function(
         @wraps(func)
         def wrapper_func(self, *args, **kwargs):
             if not self.is_animating():
+                # Unspawned mobs record nothing: no function events (this
+                # branch), and attribute writes go through the un-recorded
+                # path of setattr_and_record_modification, which never touches
+                # the context. The throwaway context below is then pure
+                # overhead -- and mob construction performs thousands of
+                # these calls.
+                if not _opt_disabled("fastpath") and not (
+                        hasattr(self, "id") and self.is_spawned()):
+                    return func(self, *args, **kwargs)
+                # Spawned but non-recording (e.g. inside Off(record_funcs=
+                # False)): attribute edits still record timestamps against
+                # the current context, so keep the context wrap.
                 with AnimationContext(record_funcs=False):
                     return func(self, *args, **kwargs)
             else:
@@ -181,7 +198,7 @@ class Animatable:
         self.children = []
         self.components = []
         self.parents = []
-        self.traversable = True
+        self.traversable = False
         self.parent_batch_sizes = parent_batch_sizes
 
         self.data_sub_inds = data_sub_inds
@@ -364,7 +381,7 @@ class Animatable:
 
     def setattr_without_record(self, key, value, include_descendants=False):
         self._try_add_to_timeline(key, value)
-        inds = self.get_attr_inds(key, include_descendants=include_descendants)
+        inds = self._get_attr_ranges(key, include_descendants=include_descendants)
         timeline = TimelineManager.instance()
         timeline.modify_attribute(key, inds, value)
         return self
@@ -395,7 +412,7 @@ class Animatable:
         return self.lifespan.end() >= 0
 
     def setattr_and_record_modification(self, key, value, include_descendants=False):
-        inds = self.get_attr_inds(key, include_descendants=include_descendants)
+        inds = self._get_attr_ranges(key, include_descendants=include_descendants)
         timeline = TimelineManager.instance()
 
         context = self.animation_manager.context
@@ -408,33 +425,48 @@ class Animatable:
         timeline.modify_attribute_and_record(key, inds, value, ts.get_time(nt))
         return self
 
-    def get_attr_inds(self, key, include_descendants=False, value=None):
+    def _get_attr_ranges(self, key, include_descendants=False, value=None):
+        """This mob's rows of ``key``'s attribute buffer as a
+        :class:`~algan.animation.timeline.RowRanges` (compressed [begin, end)
+        runs; usually a single run, which the buffer reads/writes as a slice).
+
+        The descendant union is re-read for every recorded function replay of
+        every frame batch, so it is cached against the global structure
+        version (bumped on any hierarchy / row-allocation change).
+        """
         timeline = TimelineManager.instance()
+        inds = timeline.get_inds(key, self, value)
         if not include_descendants:
-            return timeline.get_inds(key, self, value)
-        # The concatenated descendant rows are re-read for every recorded
-        # function replay of every frame batch; cache them against the global
-        # structure version (bumped on any hierarchy / row-allocation change).
+            return timeline.attr_to_timeline[key].ranges_for(self.id)
         cache = getattr(self, "_attr_inds_cache", None)
         if cache is None:
             cache = {}
             object.__setattr__(self, "_attr_inds_cache", cache)
         hit = cache.get(key)
-        if hit is not None and hit[0] == STRUCTURE_VERSION[0]:
+        if (hit is not None and hit[0] == STRUCTURE_VERSION[0]
+                and not _opt_disabled("desccache")):
             return hit[1]
-        inds = timeline.get_inds(key, self, value)
         if inds is None:
             return inds
-        inds = torch.cat([timeline.get_inds(key, m, value) for m in self.get_descendants(include_self=True)])
+        inds_list = [timeline.get_inds(key, m, value)
+                     for m in self.get_descendants(include_self=True)]
+        ranges = RowRanges.from_contiguous_blocks(inds_list)
+        if ranges is None:  # non-contiguous block (defensive)
+            ranges = RowRanges(None, tensor=torch.cat(inds_list))
         # Read the version after computing: get_inds may have allocated rows
         # (bumping it) when ``value`` is provided.
-        cache[key] = (STRUCTURE_VERSION[0], inds)
-        return inds
+        cache[key] = (STRUCTURE_VERSION[0], ranges)
+        return ranges
+
+    def get_attr_inds(self, key, include_descendants=False, value=None):
+        ranges = self._get_attr_ranges(
+            key, include_descendants=include_descendants, value=value)
+        return None if ranges is None else ranges.tensor()
 
     def get_animated_attribute(self, key, include_descendants=False, default=None):
         if default is not None:
             self._prepare_buffers(key, default)
-        inds = self.get_attr_inds(key, include_descendants=include_descendants, value=default)
+        inds = self._get_attr_ranges(key, include_descendants=include_descendants, value=default)
         timeline = TimelineManager.instance()
         return timeline.get_attr(key, inds)
 

@@ -12,7 +12,12 @@ from algan.animation.animatable import (
     animated_function,
 )
 from algan.animation.animation_contexts import AnimationContext, NoExtra, Off, Sync
-from algan.animation.timeline import STRUCTURE_VERSION, TimelineManager, bump_structure_version
+from algan.animation.timeline import (
+    STRUCTURE_VERSION,
+    TimelineManager,
+    _opt_disabled,
+    bump_structure_version,
+)
 from algan.mobs.mob_layout import MobLayoutMixin, DEFAULT_BUFFER  # noqa: F401 -- DEFAULT_BUFFER re-exported
 from algan.mobs.mob_morph import MobMorphMixin
 from algan.mobs.mob_materials import (  # noqa: F401 -- exception re-exported
@@ -284,7 +289,8 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
 
         """
         cache = getattr(self, "_descendants_cache", None)
-        if cache is not None and cache[0] == STRUCTURE_VERSION[0]:
+        if (cache is not None and cache[0] == STRUCTURE_VERSION[0]
+                and not _opt_disabled("desccache")):
             descendants = cache[1]
         else:
             descendants = list(
