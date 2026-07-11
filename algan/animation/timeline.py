@@ -295,6 +295,23 @@ class AttributeTimeline:
         self.active_state[self.active_time_inds, key] = value
         return self
 
+    def reassign_inds(self, mob_id, inds):
+        """Point ``mob_id`` at ``inds``, invalidating the cached
+        :class:`RowRanges` (:meth:`ranges_for`) so callers don't read stale
+        rows. Use this for any direct row hand-over that bypasses :meth:`add`
+        (e.g. :meth:`Mob.detach_history`'s history swap). Bumps the structure
+        version so per-mob descendant-row caches (``Mob._attr_inds_cache``) that
+        may reference the old ownership are rebuilt."""
+        self.mob_id_to_inds[mob_id] = inds
+        self.mob_id_to_ranges.pop(mob_id, None)
+        bump_structure_version()
+
+    def drop_mob(self, mob_id):
+        """Forget ``mob_id``'s rows and cached ranges."""
+        self.mob_id_to_inds.pop(mob_id, None)
+        self.mob_id_to_ranges.pop(mob_id, None)
+        bump_structure_version()
+
     def ranges_for(self, mob_id):
         """The mob's own rows as a (cached) single-run :class:`RowRanges`."""
         ranges = self.mob_id_to_ranges.get(mob_id)

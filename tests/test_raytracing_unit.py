@@ -23,18 +23,25 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import pytest
 import torch
 
 from algan.rendering.raytracing.pn_patch import (
     pn_control_points,
     pn_patch_coefficients,
 )
-from algan.rendering.raytracing.ray_trace_taichi import (
+# The deterministic megakernel ``render_scene_stbvh`` was removed in the
+# raytracing "MAJOR CLEAN UP" (commit ceaf3c4): deterministic (samples-per-pixel
+# == 1) rendering is now the multi-stage wavefront tracer, and only the Monte
+# Carlo (``path_trace_scene_stbvh``) and physical (``path_trace_physical_stbvh``)
+# path-tracer megakernels remain here. The tests that drove the deterministic
+# megakernel directly are skipped below (see ``_run_kernel``); the Monte Carlo /
+# physical / Morton / STBVH-structure tests still exercise live code.
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
     MIN_ALPHA,
     finalize_samples,
     path_trace_physical_stbvh,
     path_trace_scene_stbvh,
-    render_scene_stbvh,
 )
 from algan.rendering.raytracing.stbvh import (
     EMPTY_HI,
@@ -186,16 +193,20 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
     dummy_textures = torch.zeros((1, 1, 5), device=DEVICE)
     dummy_tri_tex_meta = torch.zeros((1, 3), dtype=torch.int32, device=DEVICE)
     num_colored_triangles = int(tri_verts.shape[1])
+    # The path-tracer kernels traverse the packed sibling-block arrays
+    # (``BVH.blocks``, the ``NODE_ARG`` vector ndarray built by
+    # ``stbvh._build_blocks``), not the raw per-node ``BVH.nodes`` -- mirror the
+    # real caller in ``tracer.py`` which passes ``*_bvh.blocks``.
     shared = (
-        tri_bvh.nodes, tri_bvh.node_miss, tri_bvh.leaf_prim,
+        tri_bvh.blocks, tri_bvh.node_miss, tri_bvh.leaf_prim,
         tri_bvh.leaf_tspan, tri_bvh.first_leaf,
         tri_pos, tri_norm, tri_extra, tri_colors.contiguous(),
         dummy_tri_uvs, dummy_tri_tex_meta, dummy_textures, num_colored_triangles,
-        pn_bvh.nodes, pn_bvh.node_miss, pn_bvh.leaf_prim,
+        pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
         pn_bvh.leaf_tspan, pn_bvh.first_leaf,
         pn_ctrl.contiguous(), pn_norm.contiguous(), pn_extra.contiguous(),
         pn_colors.contiguous(),
-        bez_bvh.nodes, bez_bvh.node_miss, bez_bvh.leaf_prim,
+        bez_bvh.blocks, bez_bvh.node_miss, bez_bvh.leaf_prim,
         bez_bvh.leaf_tspan, bez_bvh.first_leaf,
         meta, ccolors, bcolors, edges, offsets,
         cam.contiguous(), sp.contiguous(), pbx.contiguous(), pby.contiguous(),
@@ -214,25 +225,27 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
             *shared, samples_per_pixel, light_pos.contiguous(),
             light_col.contiguous(), num_lights, light_intensity, ambient,
             dummy_pn_obb, out, accum)
-        finalize_samples(samples_per_pixel, 0, accum, out)
+        finalize_samples(samples_per_pixel, 0, 0, 1.0, accum, out)
     elif samples_per_pixel > 0:
         accum = torch.zeros((T, W * H, 5), device=DEVICE)
         path_trace_scene_stbvh(*shared, samples_per_pixel, indirect, dummy_pn_obb, out,
                                accum)
-        finalize_samples(samples_per_pixel, 0, accum, out)
+        finalize_samples(samples_per_pixel, 0, 0, 1.0, accum, out)
     else:
-        # has_tri/has_pn/has_bez = 1, 1, 1: traverse every geometry type, as
-        # the kernel did before the empty-type gating was added (the dummy
-        # PN/bezier BVHs here are empty, so traversing them is a no-op). The
-        # trailing 1 is aa_level (one ray per pixel: no sub-pixel averaging).
-        dummy_mat_id = torch.zeros((1, 1), dtype=torch.int32, device=DEVICE)
-        dummy_mat = torch.zeros((1, 1, 32), device=DEVICE)
-        dummy_light_pos = torch.zeros((1, 1, 3), device=DEVICE)
-        dummy_light_col = torch.zeros((1, 1, 3), device=DEVICE)
-        render_scene_stbvh(
-            *shared, 1, 1, 1, 0,
-            dummy_mat_id, dummy_mat, dummy_mat_id, dummy_mat,
-            dummy_light_pos, dummy_light_col, 0, 0, 1, dummy_pn_obb, out)
+        # Deterministic (samples-per-pixel == 1) rendering used the standalone
+        # ``render_scene_stbvh`` megakernel, which was removed in the raytracing
+        # "MAJOR CLEAN UP" (commit ceaf3c4) in favour of the multi-stage
+        # wavefront tracer (pool-allocated per-ray state + ray-offset tiling +
+        # generate/traverse/shade). Driving that pipeline from these raw-tensor
+        # unit tests would duplicate ~150 lines of ``tracer.py`` orchestration,
+        # so the deterministic-path tests are skipped rather than ported; the
+        # wavefront path is covered end-to-end by ``benchmarks/_wf_parity_check``
+        # and the pixel-comparison suite in ``tests/run_test.py``.
+        pytest.skip(
+            "deterministic render_scene_stbvh megakernel was removed "
+            "(commit ceaf3c4); deterministic rendering is now the wavefront "
+            "tracer, which these raw-tensor unit tests do not drive"
+        )
     torch.cuda.synchronize()
     return out
 

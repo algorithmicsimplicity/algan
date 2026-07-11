@@ -1118,14 +1118,21 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
                         # The clone allocated no rows for this attr; give it
                         # the old rows and allocate fresh rows (holding the
                         # current values) for the original.
-                        del attr_timeline.mob_id_to_inds[orig.id]
-                        attr_timeline.mob_id_to_inds[clone.id] = orig_inds
+                        attr_timeline.drop_mob(orig.id)
+                        attr_timeline.reassign_inds(clone.id, orig_inds)
                         attr_timeline.add(
                             orig, attr_timeline.get(orig_inds), overwrite=True
                         )
                     else:
-                        attr_timeline.mob_id_to_inds[orig.id] = clone_inds
-                        attr_timeline.mob_id_to_inds[clone.id] = orig_inds
+                        # Swap the row ownership. These reassignments must go
+                        # through reassign_inds so the cached RowRanges
+                        # (AttributeTimeline.ranges_for / mob_id_to_ranges) is
+                        # invalidated -- otherwise later function replays resolve
+                        # these ids to their pre-swap rows and write to the wrong
+                        # place (e.g. a second become() morphing onto the wrong
+                        # rows).
+                        attr_timeline.reassign_inds(orig.id, clone_inds)
+                        attr_timeline.reassign_inds(clone.id, orig_inds)
             for f in timeline.function_timeline.function_applications:
                 if f.caller in descendant_map:
                     f.caller = descendant_map[f.caller]
