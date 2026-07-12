@@ -309,7 +309,7 @@ class Scene(RenderLoopMixin):
                                 t) for t in time_stamps]
 
     def set_background_color(self, background_color, overwrite=False):
-        if self.background_is_set and not overwrite:
+        if (background_color is None) or (self.background_is_set and not overwrite):
             return self
         if isinstance(background_color, str):
             a = self.render_settings.anti_alias_level

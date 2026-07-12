@@ -11,6 +11,7 @@ from algan.animation.timeline import (
     STRUCTURE_VERSION,
     RowRanges,
     _opt_disabled,
+    bump_hierarchy_version,
     bump_structure_version,
 )
 from algan.scene import Scene
