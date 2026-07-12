@@ -42,6 +42,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _flat_triangle_color,
     _triangle_extra,
     _triangle_normal,
+    _nearest_surface_g,
     finalize_pixel_color,
 )
 from algan.rendering.raytracing.shading_taichi import (
@@ -990,9 +991,23 @@ def wavefront_traverse(
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int, circuit_meta: ti.types.ndarray(),
         edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
+        # Opaque-only STBVHs used by the optional mixed-scene prepass. They
+        # retain the normal primitive index space and are ignored when the
+        # compile-time feature is disabled.
+        ot_nodes: NODE_ARG, ot_node_miss: ti.types.ndarray(),
+        ot_leaf_prim: ti.types.ndarray(), ot_leaf_tspan: ti.types.ndarray(),
+        ot_first_leaf: int,
+        op_nodes: NODE_ARG, op_node_miss: ti.types.ndarray(),
+        op_leaf_prim: ti.types.ndarray(), op_leaf_tspan: ti.types.ndarray(),
+        op_first_leaf: int,
+        ob_nodes: NODE_ARG, ob_node_miss: ti.types.ndarray(),
+        ob_leaf_prim: ti.types.ndarray(), ob_leaf_tspan: ti.types.ndarray(),
+        ob_first_leaf: int,
         pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: float, layer_offset_pn: float,
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
+        opaque_closest: ti.template(),
+        opaque_prepass: ti.template(),
         time_start: int, width: int, height: int, ray_offset: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
@@ -1025,17 +1040,61 @@ def wavefront_traverse(
         kb_flags = ti.Vector([0] * KBUF)
         kb_a = ti.Vector([0.0] * KBUF)
         kb_b = ti.Vector([0.0] * KBUF)
-        num_hits = _collect_hits(
-            ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-            pixel_size_per_t, base_dist, layer_offset_triangles,
-            layer_offset_pn,
-            kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
-            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
-            tri_pos,
-            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
-            pn_ctrl, pn_obb,
-            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-            circuit_meta, edges_2d, edge_offsets, has_tri, has_pn, has_bez)
+        num_hits = 0
+        if ti.static(opaque_closest):
+            (found, t_hit, hit_layer, hit_prim, hit_type, hit_a, hit_b,
+             hit_border, edge_hit) = _nearest_surface_g(
+                has_tri, has_pn, has_bez,
+                ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
+                pixel_size_per_t, base_dist, layer_offset_triangles,
+                layer_offset_pn,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                t_first_leaf, tri_pos,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
+                p_first_leaf, pn_ctrl, pn_obb,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+                b_first_leaf, circuit_meta, edges_2d, edge_offsets)
+            num_hits = found
+            if found != 0:
+                kb_t[0] = t_hit
+                kb_layer[0] = hit_layer
+                kb_prim[0] = hit_prim
+                kb_flags[0] = hit_type | (edge_hit << 2) | (hit_border << 3)
+                kb_a[0] = hit_a
+                kb_b[0] = hit_b
+        else:
+            initial_opq_t = 1e30
+            initial_opq_layer = -1e30
+            if ti.static(opaque_prepass):
+                (opq_found, initial_opq_t, initial_opq_layer, opq_prim,
+                 opq_type, opq_a, opq_b, opq_border, opq_edge) = \
+                    _nearest_surface_g(
+                        has_tri, has_pn, has_bez,
+                        ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
+                        pixel_size_per_t, base_dist, layer_offset_triangles,
+                        layer_offset_pn,
+                        ot_nodes, ot_node_miss, ot_leaf_prim,
+                        ot_leaf_tspan, ot_first_leaf, tri_pos,
+                        op_nodes, op_node_miss, op_leaf_prim,
+                        op_leaf_tspan, op_first_leaf, pn_ctrl, pn_obb,
+                        ob_nodes, ob_node_miss, ob_leaf_prim,
+                        ob_leaf_tspan, ob_first_leaf, circuit_meta,
+                        edges_2d, edge_offsets)
+                if opq_found == 0:
+                    initial_opq_t = 1e30
+                    initial_opq_layer = -1e30
+            num_hits = _collect_hits(
+                ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+                pixel_size_per_t, base_dist, layer_offset_triangles,
+                layer_offset_pn,
+                kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                tri_pos,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+                pn_ctrl, pn_obb,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                circuit_meta, edges_2d, edge_offsets, has_tri, has_pn, has_bez,
+                initial_opq_t, initial_opq_layer)
         rs_int[r, 3] = num_hits
         # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wf_shade_general
         # commits its accumulated colour + leftover (background) throughput to
@@ -1250,6 +1309,7 @@ def wavefront_shade(
         deferred_shadows: ti.template(),
         skip_unlit_normal: ti.template(),
         mem_trim: ti.template(),
+        opaque_closest: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
         pn_mat_id: ti.types.ndarray(), pn_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
@@ -1908,8 +1968,12 @@ def wavefront_shade(
                     done = True
                     break
 
-            if (not done) and (not bounced) and (num_hits < KBUF):
-                done = True
+            if ti.static(opaque_closest):
+                if (not done) and (not bounced):
+                    done = True
+            else:
+                if (not done) and (not bounced) and (num_hits < KBUF):
+                    done = True
             if processed >= MAX_SURFACES_PER_RAY:
                 done = True
 

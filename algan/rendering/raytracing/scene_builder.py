@@ -110,6 +110,27 @@ def _empty_scene_part(device):
     return build_stbvh(lo, hi, num_frames=1)
 
 
+def _build_opaque_bvh(lo, hi, opaque, num_frames, tightness, builder="morton"):
+    """Build a BVH containing only primitives proven opaque when visible.
+
+    The primitive index space is intentionally unchanged; transparent and
+    invisible slots become empty bounds so the prepass hit records can be used
+    with the normal geometry arrays.
+    """
+    visible = (hi >= lo).all(-1)
+    visible_opaque = visible & opaque
+    opaque_lo = torch.where(
+        visible_opaque.unsqueeze(-1), lo,
+        torch.full_like(lo, EMPTY_LO))
+    opaque_hi = torch.where(
+        visible_opaque.unsqueeze(-1), hi,
+        torch.full_like(hi, EMPTY_HI))
+    return build_stbvh(
+        opaque_lo.contiguous(), opaque_hi.contiguous(),
+        num_frames=num_frames, tightness=tightness,
+        opaque=visible_opaque.contiguous(), builder=builder)
+
+
 def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     """Build the 'Family A+B' memory-trim triangle arrays (see
     settings.WF_MEM_TRIM). Reorders prims into material-class bands -- band 0
@@ -397,6 +418,27 @@ def _merge_scene(primitives):
 
     scene = {}
     scene["has_pn_textures"] = has_pn_textures
+
+    def _texture_alpha_is_opaque(tex):
+        """Conservatively prove that a color texture cannot cut a surface."""
+        if tex is None or tex.shape[-1] < 4:
+            return tex is None
+        return bool((tex[..., 3] >= 1.0 - 1e-6).all())
+
+    def _record_visibility(prefix, lo, hi, opaque, uncertain_alpha=False):
+        visible = (hi >= lo).all(-1)
+        has_visible = bool(visible.any())
+        has_opaque = bool((visible & opaque).any())
+        has_translucent = bool((visible & ~opaque).any())
+        if uncertain_alpha and has_visible:
+            has_translucent = True
+        scene[f"{prefix}_has_visible"] = has_visible
+        scene[f"{prefix}_has_opaque"] = has_opaque
+        scene[f"{prefix}_has_translucent"] = has_translucent
+        scene["has_uncertain_texture_alpha"] = (
+            scene.get("has_uncertain_texture_alpha", False)
+            or (uncertain_alpha and has_visible))
+        return has_visible, has_opaque, has_translucent
     # Shared flat texel buffer for *all* texture maps, flat-triangle and
     # PN-patch alike (color / material / normal). Each map is appended once,
     # padded to 5 channels and flattened to [T, W*H, 5]; its placement is a
@@ -494,6 +536,11 @@ def _merge_scene(primitives):
         lo = _cat_collections(_geom("_rt_frame_lo"), 1, "triangle merge")
         hi = _cat_collections(_geom("_rt_frame_hi"), 1, "triangle merge")
         opaque = _cat_collections(_geom("_rt_frame_opaque"), 1, "triangle merge")
+        tri_uncertain_alpha = any(
+            (getattr(p, "_rt_texture_map", None) is not None
+             and not _texture_alpha_is_opaque(p._rt_texture_map))
+            for p in textured_triangles)
+        _record_visibility("tri", lo, hi, opaque, tri_uncertain_alpha)
 
         # tri_colors / tri_extra span only the kept per-vertex triangles + the
         # textured primitives (a textured primitive may carry only material /
@@ -565,6 +612,14 @@ def _merge_scene(primitives):
             lo, hi, num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
             opaque=opaque, builder="split")
+        if not scene["tri_has_opaque"]:
+            scene["tri_opaque_bvh"] = _empty_scene_part(device)
+        elif not scene["tri_has_translucent"]:
+            scene["tri_opaque_bvh"] = scene["tri_bvh"]
+        else:
+            scene["tri_opaque_bvh"] = _build_opaque_bvh(
+                lo, hi, opaque, num_frames,
+                RayTracedTrianglePrimitive.stbvh_tightness, builder="split")
         if _rts.WF_MEM_TRIM:
             _build_mem_trim(scene, lo, hi, opaque, num_frames, device)
     else:
@@ -580,6 +635,11 @@ def _merge_scene(primitives):
                                           device=device)
         scene["tri_mat"] = torch.zeros((1, 1, MAT_W), device=device)
         scene["tri_bvh"] = _empty_scene_part(device)
+        scene["tri_opaque_bvh"] = scene["tri_bvh"]
+        _record_visibility(
+            "tri", torch.empty((0, 0, 3), device=device),
+            torch.empty((0, 0, 3), device=device),
+            torch.empty((0, 0), dtype=torch.bool, device=device))
     scene["num_triangles"] = scene["tri_pos"].shape[1] if triangles else 0
 
     # Temporal compression of triangle positions (knot representation). The BVH
@@ -652,10 +712,23 @@ def _merge_scene(primitives):
                               "pn merge")
         opaque = _cat_collections([p._rt_frame_opaque for p in pn_patches],
                                   1, "pn merge")
+        pn_uncertain_alpha = any(
+            (getattr(p, "_rt_texture_map", None) is not None
+             and not _texture_alpha_is_opaque(p._rt_texture_map))
+            for p in pn_patches)
+        _record_visibility("pn", lo, hi, opaque, pn_uncertain_alpha)
         scene["pn_bvh"] = build_stbvh(
             lo, hi, num_frames=num_frames,
             tightness=RayTracedPNTrianglePrimitive.stbvh_tightness,
             opaque=opaque)
+        if not scene["pn_has_opaque"]:
+            scene["pn_opaque_bvh"] = _empty_scene_part(device)
+        elif not scene["pn_has_translucent"]:
+            scene["pn_opaque_bvh"] = scene["pn_bvh"]
+        else:
+            scene["pn_opaque_bvh"] = _build_opaque_bvh(
+                lo, hi, opaque, num_frames,
+                RayTracedPNTrianglePrimitive.stbvh_tightness)
     else:
         scene["pn_ctrl"] = torch.zeros((1, 1, 18), device=device)
         scene["pn_obb"] = torch.zeros((1, 1, 12), device=device)
@@ -668,6 +741,11 @@ def _merge_scene(primitives):
                                          device=device)
         scene["pn_mat"] = torch.zeros((1, 1, MAT_W), device=device)
         scene["pn_bvh"] = _empty_scene_part(device)
+        scene["pn_opaque_bvh"] = scene["pn_bvh"]
+        _record_visibility(
+            "pn", torch.empty((0, 0, 3), device=device),
+            torch.empty((0, 0, 3), device=device),
+            torch.empty((0, 0), dtype=torch.bool, device=device))
     scene["num_pn"] = scene["pn_ctrl"].shape[1] if pn_patches else 0
 
     # Assemble the shared texel buffer now that both the flat-triangle and PN
@@ -720,10 +798,19 @@ def _merge_scene(primitives):
                               "bezier merge")
         opaque = _cat_collections([p._rt_frame_opaque for p in beziers], 1,
                                   "bezier merge")
+        _record_visibility("bez", lo, hi, opaque)
         scene["bez_bvh"] = build_stbvh(
             lo, hi, num_frames=num_frames,
             tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
             opaque=opaque)
+        if not scene["bez_has_opaque"]:
+            scene["bez_opaque_bvh"] = _empty_scene_part(device)
+        elif not scene["bez_has_translucent"]:
+            scene["bez_opaque_bvh"] = scene["bez_bvh"]
+        else:
+            scene["bez_opaque_bvh"] = _build_opaque_bvh(
+                lo, hi, opaque, num_frames,
+                RayTracedBezierCircuitPrimitive.stbvh_tightness)
         scene["num_circuits"] = scene["circuit_meta"].shape[1]
     else:
         scene["circuit_meta"] = torch.zeros((1, 1, 21), device=device)
@@ -733,9 +820,22 @@ def _merge_scene(primitives):
         scene["edge_offsets"] = torch.zeros((2,), dtype=torch.int32,
                                             device=device)
         scene["bez_bvh"] = _empty_scene_part(device)
+        scene["bez_opaque_bvh"] = scene["bez_bvh"]
         scene["num_circuits"] = 0
+        _record_visibility(
+            "bez", torch.empty((0, 0, 3), device=device),
+            torch.empty((0, 0, 3), device=device),
+            torch.empty((0, 0), dtype=torch.bool, device=device))
 
     scene["num_frames"] = num_frames
+    scene["has_any_visible"] = any(
+        scene[f"{prefix}_has_visible"] for prefix in ("tri", "pn", "bez"))
+    scene["has_any_opaque"] = any(
+        scene[f"{prefix}_has_opaque"] for prefix in ("tri", "pn", "bez"))
+    scene["has_any_translucent"] = any(
+        scene[f"{prefix}_has_translucent"] for prefix in ("tri", "pn", "bez"))
+    scene["all_visible_opaque"] = (
+        scene["has_any_visible"] and not scene["has_any_translucent"])
 
     # Experimental texture-lookup shading (Surface / flat-triangle scenes only:
     # no PN patches, no bezier circuits). Builds the three per-triangle texture

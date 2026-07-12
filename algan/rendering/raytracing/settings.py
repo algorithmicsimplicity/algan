@@ -31,6 +31,14 @@ AMBIENT_LIGHT = 0.0
 # the gain in isolation.
 GATE_EMPTY_TRAVERSALS = True
 
+# Wavefront traversal rollouts. Changes to sibling revalidation and child
+# ordering are enabled by default after parity validation; the opaque paths
+# remain opt-in until their scene classification and shading gates are proven.
+WF_REVALIDATE_PENDING = os.environ.get("ALGAN_WF_REVALIDATE_PENDING", "1") == "1"
+WF_NEAR_FIRST = os.environ.get("ALGAN_WF_NEAR_FIRST", "1") == "1"
+WF_OPAQUE_CLOSEST = os.environ.get("ALGAN_WF_OPAQUE_CLOSEST", "0") == "1"
+WF_OPAQUE_PREPASS = os.environ.get("ALGAN_WF_OPAQUE_PREPASS", "0") == "1"
+
 INPLACE_AA = os.environ.get("ALGAN_INPLACE_AA", "0") == "1"
 # Rays per wavefront screen tile. The wavefront holds per-ray state for every
 # ray it processes at once (~(18 + 6*KBUF) floats/ray); processing the chunk in

@@ -702,6 +702,22 @@ def raytrace_render_wavefront(
         a_mat, a_matid = merged["tri_mat"], merged["tri_mat_id"]
         a_uvs, a_meta = merged["tri_uvs"], merged["tri_tex_meta"]
         col_row_arr = torch.zeros(1, dtype=i32, device=device)
+    opaque_closest = int(
+        rt_settings.WF_OPAQUE_CLOSEST
+        and merged.get("all_visible_opaque", False)
+        and not refraction_flag
+        and len(frag_scatters) == 0
+        and not mem_trim
+        and not merged.get("textured_active", False))
+    opaque_prepass = int(
+        rt_settings.WF_OPAQUE_PREPASS
+        and merged.get("has_any_opaque", False)
+        and merged.get("has_any_translucent", False)
+        and not merged.get("has_uncertain_texture_alpha", False)
+        and not refraction_flag
+        and len(frag_scatters) == 0
+        and not mem_trim
+        and not merged.get("textured_active", False))
     if env_meta is not None or far_clip > 0.0:
         # Extras packed behind the two layer offsets (the shade kernel is at
         # the 64-arg ceiling): env map placement in the shared texel buffer +
@@ -741,9 +757,26 @@ def raytrace_render_wavefront(
                 bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
                 merged["circuit_meta"],
                 merged["edges_2d"], merged["edge_offsets"],
+                merged["tri_opaque_bvh"].blocks,
+                merged["tri_opaque_bvh"].node_miss,
+                merged["tri_opaque_bvh"].leaf_prim,
+                merged["tri_opaque_bvh"].leaf_tspan,
+                int(merged["tri_opaque_bvh"].first_leaf),
+                merged["pn_opaque_bvh"].blocks,
+                merged["pn_opaque_bvh"].node_miss,
+                merged["pn_opaque_bvh"].leaf_prim,
+                merged["pn_opaque_bvh"].leaf_tspan,
+                int(merged["pn_opaque_bvh"].first_leaf),
+                merged["bez_opaque_bvh"].blocks,
+                merged["bez_opaque_bvh"].node_miss,
+                merged["bez_opaque_bvh"].leaf_prim,
+                merged["bez_opaque_bvh"].leaf_tspan,
+                int(merged["bez_opaque_bvh"].first_leaf),
                 pixel_world_scale,
                 float(layer_offset_triangles), float(layer_offset_pn),
                 int(has_tri), int(has_pn), int(has_bez),
+                opaque_closest,
+                opaque_prepass,
                 int(time_start), int(width), int(height),
                 int(tile_start),
                 rs_ro, rs_rd, rs_sca, rs_int,
@@ -778,6 +811,7 @@ def raytrace_render_wavefront(
                 0,
                 int(rt_settings.WF_SKIP_UNLIT_NORMAL),
                 int(mem_trim),
+                opaque_closest,
                 a_matid, a_mat,
                 merged["pn_mat_id"], merged["pn_mat"],
                 light_pos, light_col, int(num_lights),
@@ -859,9 +893,26 @@ def _raytrace_render_wavefront_textured(
                 bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
                 merged["circuit_meta"],
                 merged["edges_2d"], merged["edge_offsets"],
+                merged["tri_opaque_bvh"].blocks,
+                merged["tri_opaque_bvh"].node_miss,
+                merged["tri_opaque_bvh"].leaf_prim,
+                merged["tri_opaque_bvh"].leaf_tspan,
+                int(merged["tri_opaque_bvh"].first_leaf),
+                merged["pn_opaque_bvh"].blocks,
+                merged["pn_opaque_bvh"].node_miss,
+                merged["pn_opaque_bvh"].leaf_prim,
+                merged["pn_opaque_bvh"].leaf_tspan,
+                int(merged["pn_opaque_bvh"].first_leaf),
+                merged["bez_opaque_bvh"].blocks,
+                merged["bez_opaque_bvh"].node_miss,
+                merged["bez_opaque_bvh"].leaf_prim,
+                merged["bez_opaque_bvh"].leaf_tspan,
+                int(merged["bez_opaque_bvh"].first_leaf),
                 pixel_world_scale,
                 float(layer_offset_triangles), float(layer_offset_pn),
                 int(has_tri), int(has_pn), int(has_bez_eff),
+                0,
+                0,
                 int(time_start), int(width), int(height),
                 int(tile_start),
                 rs_ro, rs_rd, rs_sca, rs_int,
@@ -1049,10 +1100,27 @@ def _raytrace_render_wavefront_sorted(
                     int(bez_bvh.first_leaf),
                     merged["circuit_meta"],
                     merged["edges_2d"], merged["edge_offsets"],
+                    merged["tri_opaque_bvh"].blocks,
+                    merged["tri_opaque_bvh"].node_miss,
+                    merged["tri_opaque_bvh"].leaf_prim,
+                    merged["tri_opaque_bvh"].leaf_tspan,
+                    int(merged["tri_opaque_bvh"].first_leaf),
+                    merged["pn_opaque_bvh"].blocks,
+                    merged["pn_opaque_bvh"].node_miss,
+                    merged["pn_opaque_bvh"].leaf_prim,
+                    merged["pn_opaque_bvh"].leaf_tspan,
+                    int(merged["pn_opaque_bvh"].first_leaf),
+                    merged["bez_opaque_bvh"].blocks,
+                    merged["bez_opaque_bvh"].node_miss,
+                    merged["bez_opaque_bvh"].leaf_prim,
+                    merged["bez_opaque_bvh"].leaf_tspan,
+                    int(merged["bez_opaque_bvh"].first_leaf),
                     pixel_world_scale,
                     float(layer_offset_triangles),
                     float(layer_offset_pn),
                     int(has_tri), int(has_pn), int(has_bez),
+                    0,
+                    0,
                     int(time_start), int(width), int(height),
                     int(tile_start),
                     rs_ro, rs_rd, rs_sca, rs_int,
