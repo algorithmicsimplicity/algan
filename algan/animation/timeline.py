@@ -2,9 +2,12 @@ import math
 
 import torch
 
+from algan.animation.utils_taichi import (
+    _query_selected_state_from_edits,
+    _query_state_from_edits,
+)
 from algan.utils.singleton import Singleton
 from algan.utils.tensor_utils import cast_to_tensor
-from algan.animation.utils_taichi import _query_state_from_edits
 
 
 #: Name of the special kwarg that animated functions receive the per-frame
@@ -208,7 +211,34 @@ def _replay_window_end(f):
     return max(f.replay_end, end)
 
 
-def generate_array_states_taichi(times, N, edits):
+def _prepare_array_state_queries(times, N, edits):
+    """Build the device-side CSR representation of an attribute's edits.
+
+    The edit log is immutable while frames are rendered.  Keeping this work
+    separate from the actual time query lets :class:`AttributeTimeline` cache
+    the concatenation, stable sort and row-boundary construction across frame
+    batches.
+    """
+    device = times.device
+    edit_timestamps = torch.tensor(
+        [edit['timestamp'] for edit in edits], dtype=times.dtype, device=device)
+    edit_sizes = torch.tensor(
+        [edit['indexes'].shape[0] for edit in edits],
+        dtype=torch.int64, device=device)
+    flat_indices = torch.cat([edit['indexes'].to(device) for edit in edits])
+    flat_values = torch.cat([edit['values'].to(device) for edit in edits])
+    flat_edit_ids = torch.repeat_interleave(edit_sizes).to(torch.int32)
+    perm = torch.argsort(flat_indices, stable=True)
+    sorted_indices = flat_indices[perm]
+    sorted_edit_ids = flat_edit_ids[perm]
+    sorted_values = flat_values[perm]
+    grid = torch.arange(N + 1, dtype=torch.int64, device=device)
+    head = torch.searchsorted(sorted_indices, grid)
+    return head, sorted_edit_ids, edit_timestamps, sorted_values
+
+
+def generate_array_states_taichi(times, N, edits, *, active_rows=None,
+                                 prepared=None):
     """
     Generates the state of an array given its history of edits.
 
@@ -233,36 +263,26 @@ def generate_array_states_taichi(times, N, edits):
     if len(edits) == 0:
         return torch.zeros((T, N, 1), dtype=torch.float32, device=device)
 
-    D = edits[0]['values'].shape[1]
-    dtype = edits[0]['values'].dtype
+    if prepared is None:
+        prepared = _prepare_array_state_queries(times, N, edits)
+    head, sorted_edit_ids, edit_timestamps, sorted_values = prepared
+    D = sorted_values.shape[1]
+    dtype = sorted_values.dtype
 
-    # 1. Extract timestamps and sizes of each edit
-    edit_timestamps = torch.tensor([edit['timestamp'] for edit in edits], dtype=times.dtype, device=device)
-    edit_sizes = torch.tensor([edit['indexes'].shape[0] for edit in edits], dtype=torch.int64, device=device)
-
-    # 2. Flatten only the indices and values (no floating-point timestamp arrays are repeated)
-    flat_indices = torch.cat([edit['indexes'].to(device) for edit in edits])
-    flat_values = torch.cat([edit['values'].to(device) for edit in edits])
-
-    # 3. Generate the edit IDs via PyTorch's native C++ repeat_interleave
-    # We cast to int32 to optimize memory usage (halving the index footprint compared to int64)
-    flat_edit_ids = torch.repeat_interleave(edit_sizes).to(torch.int32)
-
-    # 4. Perform a single stable sort on flat_indices.
-    # Because flat_edit_ids is already ascending, the stable sort preserves each row's edit order.
-    perm = torch.argsort(flat_indices, stable=True)
-
-    sorted_indices = flat_indices[perm]
-    sorted_edit_ids = flat_edit_ids[perm]
-    sorted_values = flat_values[perm]
-
-    # 5. Build the CSR index boundaries
-    grid = torch.arange(N + 1, dtype=torch.int64, device=device)
-    head = torch.searchsorted(sorted_indices, grid)
-
-    # 6. Execute the Taichi parallel kernel
-    out = torch.zeros((T, N, D), dtype=dtype, device=device)
-    _query_state_from_edits(times, head, sorted_edit_ids, edit_timestamps, sorted_values, out)
+    if active_rows is None:
+        out = torch.empty((T, N, D), dtype=dtype, device=device)
+        _query_state_from_edits(
+            times, head, sorted_edit_ids, edit_timestamps, sorted_values, out)
+    else:
+        # Keep the full global row layout for animated-function replay. Rows
+        # outside this window's working set stay zero and are never consumed by
+        # primitive preparation for this batch.
+        out = torch.zeros((T, N, D), dtype=dtype, device=device)
+        active_rows = active_rows.to(device=device, dtype=torch.int64)
+        if active_rows.numel():
+            _query_selected_state_from_edits(
+                times, active_rows, head, sorted_edit_ids, edit_timestamps,
+                sorted_values, out)
 
     return out
 
@@ -291,6 +311,7 @@ class AttributeTimeline:
         self.pointer = 0
         self.edits = []
         self._is_ready_for_queries = False
+        self._query_cache = {}
         self.mob_id_to_inds = dict()
         self.mob_id_to_ranges = dict()
         self.mob_id_to_starts = dict()
@@ -324,7 +345,13 @@ class AttributeTimeline:
         return self.active_state[self.active_time_inds, key]
 
     def modify(self, key, value):
-        self._is_ready_for_queries = False
+        # Replaying an animation modifies the temporary materialized buffer,
+        # not the recorded edit log/current state.  Invalidating the prepared
+        # CSR query data here made every frame batch rebuild and re-sort the
+        # identical edit history. Recording-time writes still invalidate it.
+        if self.active_state is self.current_state:
+            self._is_ready_for_queries = False
+            self._query_cache.clear()
         if isinstance(key, RowRanges):
             if (not _opt_disabled("ranges")
                     and key.pairs is not None and len(key.pairs) == 1):
@@ -383,6 +410,9 @@ class AttributeTimeline:
         if (not overwrite) and (mob_id in self.mob_id_to_inds):
             return
 
+        self._is_ready_for_queries = False
+        self._query_cache.clear()
+
         # New (or re-allocated) rows invalidate cached concatenated row
         # indexes.
         bump_structure_version()
@@ -426,6 +456,7 @@ class AttributeTimeline:
         self._edits_sorted.append({'indexes': torch.arange(self.pointer),
                                    'values': self.current_state[:, :self.pointer].squeeze(0),
                                    'timestamp': math.inf})
+        self._query_cache.clear()
 
         if not self.record_end_points:
             return self
@@ -438,12 +469,61 @@ class AttributeTimeline:
             self._end_points[:,inds,1] = self.mob_id_to_ends[mob_id].end()
         return self
 
-    def rematerialize_state_at_times(self, times):
+    def rows_for_mob_ids(self, mob_ids):
+        """Return the global rows owned by ``mob_ids`` as coalesced runs."""
+        runs = []
+        loose = []
+        for mob_id in mob_ids:
+            ranges = self.mob_id_to_ranges.get(mob_id)
+            if ranges is None and mob_id in self.mob_id_to_inds:
+                ranges = self.ranges_for(mob_id)
+            if ranges is None:
+                continue
+            if ranges.pairs is None:
+                # Structural rebatching can defensively produce an
+                # uncompressible set. Preserve it verbatim.
+                loose.append(ranges.tensor())
+            else:
+                runs.extend(ranges.pairs)
+        if not runs and not loose:
+            return torch.empty((0,), dtype=torch.long)
+        compressed = (RowRanges.from_runs(runs).tensor() if runs
+                      else torch.empty((0,), dtype=torch.long))
+        if loose:
+            return torch.unique(torch.cat([compressed, *loose]), sorted=True)
+        return compressed
+
+    def _prepared_queries(self, times):
+        key = (str(times.device), times.dtype)
+        prepared = self._query_cache.get(key)
+        if prepared is None:
+            prepared = _prepare_array_state_queries(
+                times, self.pointer + 1, self._edits_sorted)
+            self._query_cache[key] = prepared
+        return prepared
+
+    def rematerialize_state_at_times(self, times, active_mob_ids=None):
         self.prepare_for_queries()
-        self.active_state = generate_array_states_taichi(times, self.pointer+1, self._edits_sorted)
+        active_rows = (None if active_mob_ids is None
+                       else self.rows_for_mob_ids(active_mob_ids))
+        self.active_state = generate_array_states_taichi(
+            times, self.pointer + 1, self._edits_sorted,
+            active_rows=active_rows,
+            prepared=self._prepared_queries(times))
         if self.record_end_points:
             t = times.view(-1,1)
-            self.active_state *= ((self._end_points[...,0] <= t) & (t < self._end_points[...,1])).unsqueeze(-1)
+            if active_rows is None:
+                self.active_state *= (
+                    (self._end_points[..., 0] <= t)
+                    & (t < self._end_points[..., 1])
+                ).unsqueeze(-1)
+            elif active_rows.numel():
+                rows = active_rows.to(self.active_state.device)
+                endpoint = self._end_points[:, rows].to(
+                    self.active_state.device)
+                mask = ((endpoint[..., 0] <= t)
+                        & (t < endpoint[..., 1])).unsqueeze(-1)
+                self.active_state[:, rows] *= mask
         self.rematerialized_times = times
         self.active_time_inds = slice(None, None, None)
         return self
@@ -456,6 +536,7 @@ class AttributeTimeline:
         self.active_time_inds = slice(None, None, None)
         self.rematerialized_times = None
         self._is_ready_for_queries = False
+        self._query_cache.clear()
         return self
 
 class TimelineEvent:
@@ -808,12 +889,78 @@ class AnimationTimeline:
                 event.replay_end = end
             i = j
 
-    def set_state_to_times(self, times):
-        self._resolve_replay_windows()
-        for attr, timeline in self.attr_to_timeline.items():
-            timeline.rematerialize_state_at_times(times)
+    @staticmethod
+    def _collect_mob_ids(values):
+        """Collect mob ids reachable from roots/event arguments.
 
-        for f in self.function_timeline.get_functions_for_times(times):
+        Only ordinary Python containers are traversed; tensors and arbitrary
+        iterables are deliberately treated as leaves. This keeps dependency
+        discovery cheap even when an animated argument contains large data.
+        """
+        mob_ids = set()
+        seen = set()
+        stack = list(values)
+        while stack:
+            value = stack.pop()
+            oid = id(value)
+            if oid in seen:
+                continue
+            seen.add(oid)
+            if hasattr(value, "lifespan") and hasattr(value, "id"):
+                mob_ids.add(value.id)
+                get_descendants = getattr(value, "get_descendants", None)
+                if get_descendants is not None:
+                    try:
+                        stack.extend(get_descendants(include_self=False))
+                    except (AttributeError, TypeError):
+                        pass
+                continue
+            if isinstance(value, dict):
+                stack.extend(value.values())
+            elif isinstance(value, (list, tuple, set, frozenset)):
+                stack.extend(value)
+        return mob_ids
+
+    def _active_mob_ids(self, active_mobs, functions, updaters):
+        """Resolve a conservative working set for one frame window.
+
+        User callbacks and updaters may close over arbitrary mobs that are not
+        visible in their argument lists, so those cases retain the full-state
+        path. Built-in Algan animations declare their dependencies through the
+        caller and arguments and can safely use selected-row materialization.
+        """
+        if active_mobs is None:
+            return None
+        if updaters:
+            return None
+        custom_entry_points = {"animate_function", "animate_function_of_time"}
+        for event in functions:
+            fn = event.function
+            if (getattr(fn, "__name__", "") in custom_entry_points
+                    or not getattr(fn, "__module__", "").startswith("algan.")):
+                return None
+        roots = list(active_mobs)
+        for event in functions:
+            roots.extend((event.caller, event.kwargs, event.animated_args))
+        return self._collect_mob_ids(roots)
+
+    def set_state_to_times(self, times, active_mobs=None):
+        """Materialize animated state at ``times``.
+
+        ``active_mobs`` is the render window's conservative actor working set.
+        When supplied, built-in animations query only rows reachable from that
+        set while keeping the full global-row buffer layout used by replay.
+        Omitting it preserves the original all-row behavior for public callers.
+        """
+        self._resolve_replay_windows()
+        functions = self.function_timeline.get_functions_for_times(times)
+        updaters = self.function_timeline.get_updaters_for_times(times)
+        active_mob_ids = self._active_mob_ids(
+            active_mobs, functions, updaters)
+        for timeline in self.attr_to_timeline.values():
+            timeline.rematerialize_state_at_times(times, active_mob_ids)
+
+        for f in functions:
             s = f.time.start
             e = f.time.end
             replay_end = _replay_window_end(f)
@@ -845,7 +992,7 @@ class AnimationTimeline:
 
             f.function(f.caller, **kwargs)
 
-        for f in self.function_timeline.get_updaters_for_times(times):
+        for f in updaters:
             active_time_inds = ((f.time.start <= times) & (times < f.time.end)).nonzero()
             if active_time_inds.numel() == 0:
                 continue

@@ -96,7 +96,7 @@ dev = [
     "types-pygments>=2.19.0.20250107",
     "psutil>=6.1.1",
     "requests>=2.32.3",
-    "algan",
+    "algan[audio,fbx]",
 ]
 
 [build-system]
@@ -230,3 +230,6 @@ convention = "numpy"
 
 [tool.ruff.format]
 docstring-code-format = true
+
+[tool.uv.sources]
+algan = { workspace = true }

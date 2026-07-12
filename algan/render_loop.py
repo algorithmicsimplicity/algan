@@ -55,6 +55,29 @@ def write_frames_from_queue(queue, file_writer):
         file_writer.write_frame(frame.numpy())
 
 
+def _max_render_duration(bytes_remaining, requested_frames, bytes_per_frame,
+                         fixed_bytes_for_frames):
+    """Largest frame count fitting ``fixed(n) + n * per_frame`` bytes.
+
+    ``fixed_bytes_for_frames`` models bounded wavefront tile state. It grows
+    only until a tile is full, unlike the output/post-process buffers that grow
+    for every frame. Returning one on an undersized arena preserves the
+    renderer's existing single-frame OOM diagnostic/retry path.
+    """
+    requested_frames = max(1, int(requested_frames))
+    bytes_per_frame = max(1, int(bytes_per_frame))
+    lo, hi, best = 1, requested_frames, 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        needed = bytes_per_frame * mid + int(fixed_bytes_for_frames(mid))
+        if needed <= bytes_remaining:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
 class RenderLoopMixin:
     """Frame batching, batch preparation, and the render/video-output loop
     (mixed into :class:`~algan.scene.Scene`)."""
@@ -103,12 +126,23 @@ class RenderLoopMixin:
             current_ind = start_ind
             num_bytes_for_post_processing_per_frame = self.num_pixels_screen_width * self.num_pixels_screen_height * 5 * 4 * 4
             while True:
-                mem_per_time_step = max(max([_.get_memory_used(0, 1) - _.get_memory_used_for_blending(0, 1)
-                     for _ in primitive_batch]) + max([_.get_memory_used_for_blending(0, 1) for _ in primitive_batch]),
-                                        num_bytes_for_post_processing_per_frame)
-                duration = int(self.memory.get_num_bytes_remaining() // mem_per_time_step) * 1
-                duration = min(duration, end_ind - current_ind)
-                duration = max(duration, 1)
+                mem_per_time_step = max(
+                    max([_.get_memory_used(0, 1)
+                         - _.get_memory_used_for_blending(0, 1)
+                         for _ in primitive_batch])
+                    + max([_.get_memory_used_for_blending(0, 1)
+                           for _ in primitive_batch]),
+                    num_bytes_for_post_processing_per_frame)
+
+                def fixed_bytes(num_frames):
+                    return max(_.get_fixed_memory_used(num_frames)
+                               for _ in primitive_batch)
+
+                duration = _max_render_duration(
+                    self.memory.get_num_bytes_remaining(),
+                    end_ind - current_ind,
+                    mem_per_time_step,
+                    fixed_bytes)
                 new_ind = current_ind + duration
 
                 logger.debug(f'rendering batch with duration {duration}')
@@ -289,7 +323,8 @@ class RenderLoopMixin:
         primitive_actors = [
             actor
             for actor in actors
-            if (actor.lifespan.start() <= max_end_time)
+            if (actor.lifespan.start() >= 0)
+            and (actor.lifespan.start() <= max_end_time)
             and ((actor.lifespan.end() >= start_time) or actor.lifespan.end() < 0)
             and hasattr(actor, "get_render_primitives")
         ]
@@ -328,7 +363,8 @@ class RenderLoopMixin:
         actors = [
             actor
             for actor in actors
-            if (
+            if (actor.lifespan.start() >= 0)
+            and (
                 actor.lifespan.start()
                 <= (start_time_ind + duration) / self.frames_per_second
             )
@@ -338,7 +374,12 @@ class RenderLoopMixin:
         time_inds = torch.arange(start_time_ind, start_time_ind + duration)
 
         timeline = TimelineManager.instance()
-        timeline.set_state_to_times(time_inds / self.frames_per_second)
+        # Restrict base-state queries to actors that can contribute to this
+        # frame window. Animation replay retains global row ids, and the
+        # timeline conservatively falls back to all rows for user callbacks or
+        # updaters whose dependencies cannot be discovered safely.
+        timeline.set_state_to_times(
+            time_inds / self.frames_per_second, active_mobs=actors)
 
         grouped_primitives = collections.defaultdict(lambda: [None, []])
         # Surfaces sharing a grid shape are not built one-by-one: their state

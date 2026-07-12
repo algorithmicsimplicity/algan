@@ -103,6 +103,51 @@ def set_refractive_index(mob, ior):
     return _set_surface_param(mob, "refractive_index", ior)
 
 
+def _set_raytrace_memory_estimates(primitive, camera):
+    """Split ray-trace memory into fixed tile and per-frame components.
+
+    Wavefront state is reused for every bounded ray tile; charging it once per
+    frame forced HD renders into one-frame chunks even though adding a frame
+    only grows the output/post-process buffers. Monte Carlo uses the megakernel
+    and has no wavefront tile state.
+    """
+    pixels = int(camera.screen_width * camera.screen_height)
+    mc = rt_settings.SAMPLES_PER_PIXEL > 1
+    # Conservative five-channel float-sized accounting. The deterministic
+    # output is uint8, but post processing may need a float-sized peer buffer.
+    primitive._rt_frame_bytes = pixels * 5 * 4 * (2 if mc else 1)
+    if mc:
+        primitive._rt_fixed_bytes = 0
+        return
+
+    primitive._rt_pixels_per_frame = pixels
+    primitive._rt_max_tile_rays = max(
+        1, int(rt_settings.WAVEFRONT_TILE_RAYS))
+    # _alloc_wavefront_state: ro(3), rd(3), acc(4), sca(5), int(5),
+    # six KBUF arrays; plus rs_pix(1). Per-primary arrays are pix_accum(5)
+    # and rs_used(1). All entries are four bytes.
+    primitive._rt_pool_bytes_per_ray = (21 + 6 * KBUF) * 4
+    primitive._rt_primary_bytes_per_ray = 6 * 4
+
+
+def _fixed_wavefront_bytes(primitive, num_frames):
+    total_primary = (getattr(primitive, "_rt_pixels_per_frame", 0)
+                     * num_frames)
+    tile = getattr(primitive, "_rt_max_tile_rays", 0)
+    pool_b = getattr(primitive, "_rt_pool_bytes_per_ray", 0)
+    primary_b = getattr(primitive, "_rt_primary_bytes_per_ray", 0)
+    # Non-splitting scenes use every tile slot as a primary ray. Refractive
+    # and custom-scatter scenes reserve REFRACT_SPLIT_SLOTS pool entries per
+    # primary. Take the larger estimate because that feature is known only
+    # after scene merge, later than chunk-size selection.
+    plain_primary = min(tile, total_primary)
+    plain = plain_primary * (pool_b + primary_b)
+    split_k = max(2, int(rt_settings.REFRACT_SPLIT_SLOTS))
+    split_primary = min(max(1, tile // split_k), total_primary)
+    split = split_primary * (split_k * pool_b + primary_b)
+    return max(plain, split) + 4
+
+
 class RayTracedTrianglePrimitive(TrianglePrimitive):
     """Triangle batch rendered by ray tracing a spatio-temporal BVH."""
 
@@ -361,16 +406,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         accumulator in Monte Carlo mode, plus the wavefront's per-ray global
         state.
         """
-        mc = rt_settings.SAMPLES_PER_PIXEL > 1
-        self._rt_frame_bytes = int(
-            camera.screen_width * camera.screen_height * 5 * 4
-            * (2 if mc else 1))
-
-        # Per ray: rs_ro/rd/acc/sca/int (~18 floats) + 6 KBUF-wide hit
-        # buffers, all float/int32 (4 bytes), held for the whole chunk.
-        self._rt_frame_bytes += int(
-            camera.screen_width * camera.screen_height
-            * (18 + 6 * KBUF) * 4)
+        _set_raytrace_memory_estimates(self, camera)
 
     def _stash_texture_maps(self):
         """Stash the raw texture maps (color / material / normal) for merge
@@ -445,6 +481,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
     def get_memory_used_for_blending(self, start_ind, end_ind):
         return 0  # Blending happens in-register inside the trace kernel.
+
+    def get_fixed_memory_used(self, num_frames=1):
+        if rt_settings.SAMPLES_PER_PIXEL > 1:
+            return 0
+        return _fixed_wavefront_bytes(self, num_frames)
 
     def render(self, primitives, scene, save_image, screen_width,
                screen_height, time_start, time_end, background_color,
@@ -557,12 +598,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # release the control points to reduce resident GPU memory.
         self.corners = None
 
-        # Per-frame buffer bytes: the u8 output, plus the f32 sample
-        # accumulator in Monte Carlo mode.
-        mc = rt_settings.SAMPLES_PER_PIXEL > 1
-        self._rt_frame_bytes = int(
-            camera.screen_width * camera.screen_height * 5 * 4
-            * (2 if mc else 1))
+        _set_raytrace_memory_estimates(self, camera)
 
         # Ensure released geometry is actually freed before rendering.
         empty_cache(force_gc=False)
@@ -780,6 +816,11 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
     def get_memory_used_for_blending(self, start_ind, end_ind):
         return 0  # Blending happens in-register inside the trace kernel.
+
+    def get_fixed_memory_used(self, num_frames=1):
+        if rt_settings.SAMPLES_PER_PIXEL > 1:
+            return 0
+        return _fixed_wavefront_bytes(self, num_frames)
 
     def render(self, primitives, scene, save_image, screen_width,
                screen_height, time_start, time_end, background_color,
