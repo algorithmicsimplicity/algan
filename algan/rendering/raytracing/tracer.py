@@ -100,6 +100,19 @@ def _alloc_wavefront_state(memory, tn, sca_width):
     )
 
 
+def _compact_active_rays(active, rs_int, split_k, i32):
+    """Return active ray slots for the next wavefront iteration.
+
+    Without ray splitting, only a previously-active slot can remain active, so
+    filtering ``active`` avoids a full scan of the tile-sized state pool after
+    every pass.  Refraction/custom-scatter paths may activate spare slots and
+    therefore keep the original full-pool scan.
+    """
+    if split_k == 1 and rt_settings.WF_COMPACT_ACTIVE_ONLY:
+        return active[rs_int[active, 2] == 0]
+    return (rs_int[:, 2] == 0).nonzero(as_tuple=True)[0].to(i32)
+
+
 _kernel_compile_notice_shown = False
 
 
@@ -773,8 +786,7 @@ def raytrace_render_wavefront(
                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                 rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
                 rs_pix, pix_accum, rs_used, rs_vis)
-            active = (rs_int[:, 2] == 0).nonzero(
-                as_tuple=True)[0].to(i32)
+            active = _compact_active_rays(active, rs_int, split_k, i32)
             it += 1
 
     _run_wavefront_tiles(
@@ -880,8 +892,7 @@ def _raytrace_render_wavefront_textured(
                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                 rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
                 rs_pix, pix_accum, rs_used)
-            active = (rs_int[:, 2] == 0).nonzero(
-                as_tuple=True)[0].to(i32)
+            active = _compact_active_rays(active, rs_int, split_k, i32)
             it += 1
 
     _run_wavefront_tiles(

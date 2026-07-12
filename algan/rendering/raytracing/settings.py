@@ -37,6 +37,16 @@ INPLACE_AA = os.environ.get("ALGAN_INPLACE_AA", "0") == "1"
 # tiles of this many rays bounds that state so it fits at any resolution / chunk
 # length (a single HD frame is ~2M rays). ~2M rays * ~168 B ~= 350 MB of state.
 WAVEFRONT_TILE_RAYS = int(os.environ.get("ALGAN_WAVEFRONT_TILE", str(1 << 21)))
+# On the common non-splitting wavefront path (no refraction/custom scatter), a
+# ray that leaves the active set can never become active again.  Compact the
+# next iteration from the previous active indexes rather than scanning the
+# entire tile-sized ray pool after every traverse/shade pass.  Deep transparent
+# scenes benefit most as the active population shrinks over successive passes.
+# Splitting paths retain the full-pool scan because a shade pass may activate a
+# spare slot that was not in the previous active set.  Runtime-mutable for
+# in-process A/B checks; the env var selects the startup default.
+WF_COMPACT_ACTIVE_ONLY = os.environ.get(
+    "ALGAN_WF_COMPACT_ACTIVE_ONLY", "1") == "1"
 # Pool over-allocation factor for the general wavefront when refraction is on:
 # a glass (reflective+refractive) ray splits into a reflected + refracted pair,
 # so the pool reserves this many slots per primary pixel for spawned split rays.
