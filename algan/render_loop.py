@@ -124,7 +124,7 @@ class RenderLoopMixin:
 
             render_pointers = self.memory.get_pointers()
             current_ind = start_ind
-            num_bytes_for_post_processing_per_frame = self.num_pixels_screen_width * self.num_pixels_screen_height * 5 * 4 * 4
+            num_bytes_for_post_processing_per_frame = self.num_pixels_screen_width * self.num_pixels_screen_height * 5 * 4 * 4 * 4
             while True:
                 mem_per_time_step = max(
                     max([_.get_memory_used(0, 1)

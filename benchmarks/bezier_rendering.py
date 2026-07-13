@@ -25,10 +25,13 @@ def text_scene():
     with Off():
         nn = NeuralNetMLP([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(run_time=0.25):
+    with Sync(run_time=1):
         mob.move(LEFT)
         nn.move(LEFT)
 
 set_log_level('DEBUG')
-render_all_funcs(__name__, HD, profile=True)
-#profile_scene(text_scene, HD)
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
+#os.environ['ALGAN_UNDER_NVPROF'] = "1"
+#render_all_funcs(__name__, HD, profile=False)
+profile_scene(text_scene, HD, runs=2)

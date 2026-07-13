@@ -7,6 +7,7 @@ from algan.mobs.mob import Mob
 from algan.mobs.shapes_3d import Sphere, Cylinder
 from algan.constants.rate_funcs import identity, ease_in_expo, ease_out_expo
 from algan.rendering.shaders.pbr_shaders import null_shader
+from algan.rendering.shaders.materials import MeshStandardMaterial
 from algan.utils.tensor_utils import dot_product, unsquish, squish
 from algan.mobs.text import Tex
 from algan.constants.rate_funcs import smooth, pulse_fade, delay_fade
@@ -48,26 +49,35 @@ class Synapse(Cylinder):
 
 
 class Neuron(Mob):
+    synapse_cls = Synapse
+
     def __init__(self, input_locs, direction, neuron_color, **kwargs):
         super().__init__(**kwargs)
         grid_height = 12
-        self.core = (
-            Sphere(grid_height=grid_height, grid_width=grid_height, color=neuron_color)
-            .scale(0.17)
-            .move_to(self.location)
-        )
+        self.core = self._make_core(grid_height, neuron_color).move_to(self.location)
         self.shell = (
-            Sphere(opacity=0.5, grid_width=grid_height, grid_height=grid_height, color=neuron_color, glow_radius=gr)
-            .scale(0.2)
+            self._make_shell(grid_height, neuron_color)
             .move_to(self.location)
             .look(direction, axis=1)
-            .set_shader(None)
         )
         self.synapses = [
-            Synapse(grid_height, color=neuron_color).move_between_points(l, self.location)
+            self.synapse_cls(grid_height, color=neuron_color).move_between_points(l, self.location)
             for l in input_locs
         ]
         self.add_children(self.core, self.shell, self.synapses)
+
+    def _make_core(self, grid_height, neuron_color):
+        return Sphere(
+            grid_height=grid_height, grid_width=grid_height, color=neuron_color
+        ).scale(0.17)
+
+    def _make_shell(self, grid_height, neuron_color):
+        return (
+            Sphere(opacity=0.5, grid_width=grid_height, grid_height=grid_height,
+                   color=neuron_color, glow_radius=gr)
+            .set_shader(None)
+            .scale(0.2)
+        )
 
 
 # class Layer(Mob):
@@ -75,6 +85,75 @@ class Neuron(Mob):
 #        super().__init__(**kwargs)
 #        self.neurons = [Neuron(input_locs, location=l) for l in neuron_locs]
 #        self.add_children(self.neurons)
+
+
+# NOTE: only the material shaders with in-kernel fragment ports render
+# correctly on the deterministic renderer (basic / lambert / phong / standard;
+# see _build_core_shader_ids). MeshPhysicalMaterial (clearcoat/sheen) falls back
+# to the per-vertex path, which currently produces flat unlit grey -- so the V2
+# looks below are built from MeshStandardMaterial only. Metalness is kept at 0:
+# metalness > 0 routes mirror reflectivity into the ray tracer.
+
+
+class SynapseV2(Cylinder):
+    """Improved synapse: a thin filament lit from within (emissive) with a
+    glossy dielectric surface, so pulses read as light travelling down a wire."""
+
+    def __init__(self, grid_height=5, *args, **kwargs):
+        grid_height = 20
+        grid_width = 12
+        c = kwargs.get('color', None)
+        if c is not None:
+            c = tweak_color(c, strength=0.25, min_strength=0.25)
+            kwargs['color'] = c
+        else:
+            c = WHITE
+        super().__init__(grid_height=grid_height, grid_width=grid_width, glow_radius=gr, **kwargs)
+        # Fill light comes from env_map_intensity (ambient = albedo * 0.1 * env)
+        # rather than emissive, so it tracks the albedo during colour-wave
+        # pulses instead of tinting them with the resting colour.
+        self.set_material(MeshStandardMaterial(
+            color=c.set_glow(0.04),
+            roughness=0.3,
+            metalness=0.0,
+            envMapIntensity=4.5,
+        ))
+        self.scale(0.02)
+
+
+class NeuronV2(Neuron):
+    """Improved neuron: a glossy self-lit core (crisp specular highlight over
+    an emissive base) inside a soft translucent halo shell, replacing the
+    flat-shaded spheres of :class:`Neuron`."""
+
+    synapse_cls = SynapseV2
+
+    def _make_core(self, grid_height, neuron_color):
+        material = MeshStandardMaterial(
+            color=neuron_color.set_glow(0.08),
+            roughness=0.2,
+            metalness=0.0,
+            envMapIntensity=4.0,
+        )
+        return (
+            Sphere(grid_height=grid_height, grid_width=grid_height, color=neuron_color)
+            .set_material(material)
+            .scale(0.17)
+        )
+
+    def _make_shell(self, grid_height, neuron_color):
+        material = MeshStandardMaterial(
+            color=neuron_color.set_opacity(0.3),
+            roughness=0.4,
+            metalness=0.0,
+            envMapIntensity=2.5,
+        )
+        return (
+            Sphere(opacity=0.3, grid_width=grid_height, grid_height=grid_height,
+                   color=neuron_color, glow_radius=gr)
+            .set_material(material)
+            .scale(0.21)
+        )
 
 k = 1
 
@@ -104,6 +183,8 @@ def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
 
 
 class NeuralNetMLP(Mob):
+    neuron_cls = Neuron
+
     def __init__(
         self,
         dims,
@@ -144,7 +225,7 @@ class NeuralNetMLP(Mob):
         with Off():
             self.layers = [
                 [
-                    Neuron(
+                    self.neuron_cls(
                         [l + direction * self.input_synapse_offset],
                         direction,
                         location=l,
@@ -154,7 +235,7 @@ class NeuralNetMLP(Mob):
                 ]
             ] + [
                 [
-                    Neuron(neuron_locs[i], direction, location=l, neuron_color=neuron_color)
+                    self.neuron_cls(neuron_locs[i], direction, location=l, neuron_color=neuron_color)
                     for l in neuron_locs[i + 1]
                 ]
                 for i in range(len(neuron_locs) - 1)
@@ -313,3 +394,11 @@ class NeuralNetMLP(Mob):
                     color + GLOW, direction=self.get_forward_direction(), opacity=1, wave_length=1.5
                 )
             return output
+
+
+class NeuralNetMLPV2(NeuralNetMLP):
+    """Drop-in replacement for :class:`NeuralNetMLP` with upgraded visuals:
+    lacquered self-lit neuron cores inside glass shells (clearcoat + sheen rim)
+    and emissive filament synapses. Same constructor and animation API."""
+
+    neuron_cls = NeuronV2

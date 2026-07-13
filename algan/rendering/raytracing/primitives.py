@@ -231,6 +231,43 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         return (rt_settings.FRAGMENT_SHADING and rt_settings.SAMPLES_PER_PIXEL <= 1
                 and _shader_is_core(shader))
 
+    def _ordered_shader_param_values(self):
+        """The shader's extra (material) parameters as a positional list in the
+        shader's own signature order.
+
+        ``shader_param_values`` is *not* reliable for this: the ray tracer pops
+        the surface params (``roughness`` in particular) out of the shader kwargs
+        into per-primitive attributes (see ``_surface_params``), so they are
+        missing from ``shader_param_values`` and every following value would be
+        passed to the wrong positional parameter. Rebuild the argument list from
+        the shader's signature, addressing each extra parameter by name and
+        falling back to the popped surface attribute (then the signature
+        default) when it is absent from ``shader_param_values``.
+        """
+        import inspect
+
+        from algan.rendering.shaders.pbr_shaders import default_shader
+
+        sig = inspect.signature(self.shader).parameters
+        num_fixed = len(inspect.signature(default_shader).parameters)
+        extra_names = list(sig.keys())[num_fixed:]
+
+        names = list(getattr(self, "shader_param_names", None) or [])
+        values = list(getattr(self, "shader_param_values", None) or [])
+        by_name = {n: v for n, v in zip(names, values)}
+
+        args = []
+        for name in extra_names:
+            if name in by_name:
+                args.append(by_name[name])
+                continue
+            v = getattr(self, name, None)  # popped surface param (e.g. roughness)
+            if v is None:
+                default = sig[name].default
+                v = default if default is not inspect._empty else 0
+            args.append(v)
+        return args
+
     def _shade_vertex_colors(self, camera, light_sources):
         """Vertex shading, identical to the rasterized pipeline. Skipped in
         physical mode (raw albedo, the pathtracer lights the scene) and when
@@ -241,6 +278,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             return
         d = -1
         if getattr(self, "shader", None) is not None:
+            param_values = self._ordered_shader_param_values()
             for light_source in light_sources:
                 if getattr(light_source, "_render_aux", None) is not None:
                     # Extended light types (directional / ambient / spot /
@@ -259,7 +297,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                         light_source.light_color,
                         1,
                         1,
-                        *self.shader_param_values,
+                        *param_values,
                     )
 
     def _pack_material(self):

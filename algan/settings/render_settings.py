@@ -42,22 +42,16 @@ THUMBNAIL = RenderSettings((1280, 720), 1, save_image=True)
 
 SMOKE_TEST = RenderSettings((100, 100), 2, anti_alias_level=1, fxaa=False)
 
-# Render at (640, 400) resolution, 10 fps.
 PREVIEW = RenderSettings((640, 400), 10)
 
-# Render at (854, 480) resolution, 30 fps.
-LD = RenderSettings((854, 480), 15)
+LD = RenderSettings((864, 486), 15)
 
-# Render at (1280, 720) resolution, 30 fps.
 MD = RenderSettings((1280, 720), 30)
 
-# Render at (1920, 1080) resolution, 30 fps.
 HD = RenderSettings((1920, 1080), 30)
 
-# Render at (2560, 1440) resolution, 60 fps.
 PRODUCTION = RenderSettings((2560, 1440), 60)
 
-# Render at (3840, 2160) resolution, 60 fps.
 UHD = RenderSettings((3840, 2160), 60)
 
 QUALITIES: dict[str, dict[str, str | int | None]] = {

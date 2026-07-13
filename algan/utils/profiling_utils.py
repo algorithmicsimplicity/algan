@@ -84,10 +84,10 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 import algan.rendering.raytracing.primitives as rtp
 import algan.rendering.raytracing.stbvh as stbvh_mod
 from algan.scene import Scene
+import algan.mobs.bezier_circuit as bzc
 
-
-OUT_DIR = os.path.join("algan_outputs", "raytracing_profiling")
-REPORT_PATH = "raytracing_profile_report.txt"
+OUT_DIR = os.path.join("algan_outputs", "profiling")
+REPORT_PATH = "algan_profile_report.txt"
 
 # Set True once the Taichi kernel profiler has been successfully enabled.
 KERNEL_PROFILER = False
@@ -400,13 +400,15 @@ def _capture_scene_stats(scene):
 # Pipeline stage hooks (guarded: a missing target degrades, never breaks)
 # ---------------------------------------------------------------------------
 def _try_wrap(obj, attr, label):
-    if obj is not None and hasattr(obj, attr):
-        TIMERS.wrap_function(obj, attr, label)
+    #if obj is not None and hasattr(obj, attr):
+    TIMERS.wrap_function(obj, attr, label)
 
 
 def install_pipeline_hooks():
     """Wrap the (non-kernel) pipeline entry points with stage timers."""
     # Scene-side preparation (mob state evaluation + geometry generation).
+    import algan.render_loop as rl
+    _try_wrap(bzc, 'build_render_primitives_batched', 'build_render_primitives_batched')
     _try_wrap(Scene, "get_batch_of_primitives", "Scene.get_batch_of_primitives")
     _try_wrap(Animatable, "get_attr_inds", "get_attr_inds")
     from algan.animation.timeline import AnimationTimeline, AttributeTimeline
@@ -455,15 +457,14 @@ def install_pipeline_hooks():
             merge_wrapper._profiling_original = orig_merge
             rtp._merge_scene = merge_wrapper
 
-    _try_wrap(rtp, "build_stbvh", "  - STBVH build (in merge)")
+    _try_wrap(stbvh_mod, "build_stbvh", "  - STBVH build (in merge)")
     _try_wrap(stbvh_mod, "segment_primitives_in_time",
               "  - STBVH temporal segmentation")
-    for fn in ("compress_time", "expand_time"):
-        _try_wrap(rtp, fn, f"  - time compression ({fn})")
 
     # Render-chunk internals.
-    _try_wrap(rtp, "_prefill_background", "background prefill")
-    _try_wrap(rtp, "render_batch_ray_traced", "ray traced render total")
+    #_try_wrap(rl, "_prefill_background", "background prefill")
+    import algan.rendering.raytracing.tracer as rtr
+    _try_wrap(rtr, "render_batch_raytraced", "ray traced render total")
 
 
 def install_instrumentation():
@@ -1023,7 +1024,7 @@ def profile_scene(scene_func, render_settings, tag="", runs=None,
         return
 
     if runs is None:
-        runs = int(os.environ.get("ALGAN_PROFILE_RUNS", "1"))
+        runs = int(os.environ.get("ALGAN_PROFILE_RUNS", "2"))
     if kernel_profiler is None:
         kernel_profiler = os.environ.get("ALGAN_TI_KERNEL_PROFILER", "1") == "1"
     if telemetry is None:
@@ -1064,7 +1065,7 @@ def profile_scene(scene_func, render_settings, tag="", runs=None,
         except Exception as e:
             print(f"(taichi kernel profiler info unavailable: {e})")
 
-    report_path = REPORT_PATH.replace(".txt", f"{tag}.txt")
+    report_path = REPORT_PATH.replace(".txt", f"_{tag}.txt")
     try:
         with open(report_path, "w") as f:
             f.write(report)
