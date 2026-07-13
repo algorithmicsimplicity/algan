@@ -1013,8 +1013,20 @@ def wavefront_traverse(
         rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
         rs_kt: ti.types.ndarray(), rs_kl: ti.types.ndarray(),
         rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
-        rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray(),
-        rs_pix: ti.types.ndarray()):
+        rs_kp: ti.types.ndarray(),
+        rs_kf: ti.types.ndarray(),
+        rs_pix: ti.types.ndarray(),
+        # Fused primary-ray generation (compile-time; see WF_GEN_FUSED). When
+        # ``gen_first`` is on this launch IS the tile's first iteration on a
+        # split-free, near-clip-free render: every ray is primary and owns
+        # pixel ``r``, so the ray is generated here (writing only ro/rd back)
+        # and the standalone wavefront_generate_rays pass is skipped. The
+        # remaining initial state is implicit in the matching ``first_iter``
+        # shade. ``gen_meta`` packs [jitter_x, jitter_y, half_w, half_h].
+        gen_first: ti.template(),
+        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
+        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
+        gen_meta: ti.types.ndarray()):
     """Gather KBUF nearest hits across all three BVHs for each active ray
     (reuses the unchanged general ``_collect_hits``, Matrix Pencil solver
     included). The frame is taken from the ray's *pixel* (``rs_pix``), not its
@@ -1023,14 +1035,38 @@ def wavefront_traverse(
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
-        ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
-        rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
+        ro = ti.math.vec3(0.0, 0.0, 0.0)
+        rd = ti.math.vec3(0.0, 0.0, 0.0)
+        t_prev = 0.0
+        layer_prev = 1e30
+        base_dist = 0.0
+        f = 0
+        if ti.static(gen_first != 0):
+            g = ray_offset + r
+            f_rel = g // pixels_per_frame
+            p = g - f_rel * pixels_per_frame
+            f = time_start + f_rel
+            py = p // width
+            px = p - py * width
+            ro, rd = _generate_ray(f, px, py, gen_meta[0], gen_meta[1],
+                                   gen_meta[2], gen_meta[3],
+                                   cam_origin, screen_point,
+                                   pixel_basis_x, pixel_basis_y)
+            # Persist for the shade stage + later K-buffer refills; the other
+            # initial state (t_prev = 0, layer_prev = 1e30, base_dist = 0,
+            # pix = r) stays implicit.
+            for k in ti.static(range(3)):
+                rs_ro[r, k] = ro[k]
+                rs_rd[r, k] = rd[k]
+        else:
+            ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
+            rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
+            t_prev = rs_sca[r, 1]
+            layer_prev = rs_sca[r, 2]
+            base_dist = rs_sca[r, 4]
+            f = time_start + (ray_offset + rs_pix[r]) // pixels_per_frame
         inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                               _safe_inverse(rd[2]))
-        t_prev = rs_sca[r, 1]
-        layer_prev = rs_sca[r, 2]
-        base_dist = rs_sca[r, 4]
-        f = time_start + (ray_offset + rs_pix[r]) // pixels_per_frame
         ff = ti.cast(f, ti.f32)
         pixel_size_per_t = pixel_world_scale[f]
 
@@ -1310,6 +1346,15 @@ def wavefront_shade(
         skip_unlit_normal: ti.template(),
         mem_trim: ti.template(),
         opaque_closest: ti.template(),
+        # Fused generation's first host iteration (see wavefront_traverse's
+        # ``gen_first``): the initial per-ray state was never materialised, so
+        # it is used as compile-time constants here (acc = 0, weight = 1,
+        # t_prev = 0, layer_prev = 1e30, seam_t = -1e30, base_dist = 0,
+        # processed = 0, pix = r) instead of read from global state;
+        # max_bounces rides in layer_offsets[7] (this kernel is at the CUDA
+        # 64-arg ceiling). Survivors write their state back below exactly as
+        # before (plus rs_pix), so iterations >= 1 run the classic kernel.
+        first_iter: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
         pn_mat_id: ti.types.ndarray(), pn_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
@@ -1369,21 +1414,34 @@ def wavefront_shade(
         far_clip = layer_offsets[6]
     for i in range(num_active):
         r = active[i]
-        pix = rs_pix[r]
+        pix = r
+        if ti.static(first_iter == 0):
+            pix = rs_pix[r]
         num_hits = rs_int[r, 3]
         if num_hits > 0:
             f = time_start + (ray_offset + pix) // pixels_per_frame
             ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
             rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
-            acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
-                               rs_acc[r, 3])
-            weight = rs_sca[r, 0]
-            t_prev = rs_sca[r, 1]
-            layer_prev = rs_sca[r, 2]
-            seam_t = rs_sca[r, 3]
-            base_dist = rs_sca[r, 4]
-            bounces_left = rs_int[r, 0]
-            processed = rs_int[r, 1]
+            acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+            weight = 1.0
+            t_prev = 0.0
+            layer_prev = 1e30
+            seam_t = -1e30
+            base_dist = 0.0
+            bounces_left = 0
+            processed = 0
+            if ti.static(first_iter != 0):
+                bounces_left = ti.cast(layer_offsets[7] + 0.5, ti.i32)
+            else:
+                acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
+                                   rs_acc[r, 3])
+                weight = rs_sca[r, 0]
+                t_prev = rs_sca[r, 1]
+                layer_prev = rs_sca[r, 2]
+                seam_t = rs_sca[r, 3]
+                base_dist = rs_sca[r, 4]
+                bounces_left = rs_int[r, 0]
+                processed = rs_int[r, 1]
 
             kb_t = ti.Vector([0.0] * KBUF)
             kb_layer = ti.Vector([0.0] * KBUF)
@@ -1990,6 +2048,10 @@ def wavefront_shade(
             rs_int[r, 0] = bounces_left
             rs_int[r, 1] = processed
             rs_int[r, 2] = _DONE if done else _ACTIVE
+            if ti.static(first_iter != 0):
+                # Fused generation never materialised rs_pix; surviving rays'
+                # later iterations (and only they) read it.
+                rs_pix[r] = r
             if done:
                 # Terminated: commit this branch's premultiplied colour and its
                 # leftover throughput (what the background shows through) into
@@ -2016,14 +2078,19 @@ def wavefront_shade(
                                   _safe_inverse(rd[1]),
                                   _safe_inverse(rd[2]))
 
-            w_bg = rs_sca[r, 0]
+            w_bg = 1.0
+            if ti.static(first_iter == 0):
+                w_bg = rs_sca[r, 0]
             if (env_w > 0) and (w_bg > 0.0):
                 ec = _sample_env_map(f, rd, env_off, env_w, env_h,
                                      env_intensity, textures)
                 for k in ti.static(range(3)):
                     ti.atomic_add(pix_accum[pix, k], w_bg * ec[k])
                 w_bg = 0.0
-            for k in ti.static(range(4)):
-                ti.atomic_add(pix_accum[pix, k], rs_acc[r, k])
+            if ti.static(first_iter == 0):
+                # First iteration's accumulator is implicitly zero; adding it
+                # would be a no-op, so the read is skipped entirely.
+                for k in ti.static(range(4)):
+                    ti.atomic_add(pix_accum[pix, k], rs_acc[r, k])
             ti.atomic_add(pix_accum[pix, 4], w_bg)
             rs_int[r, 2] = _DONE

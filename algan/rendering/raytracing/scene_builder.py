@@ -874,6 +874,26 @@ def _merge_scene(primitives):
     return scene
 
 
+def prewarm_merge_cache(primitives):
+    """Build (and cache) a batch's merged scene + STBVHs ahead of the render.
+
+    Idempotent -- ``_merge_scene`` caches on ``primitives[0]`` -- and a no-op
+    for non-ray-traced primitives. Called from the batch-prep *worker* thread
+    (see ``RenderLoopMixin.get_frames``): the merge + STBVH builds are
+    torch-only (no Taichi) and read only the ``_rt_*`` arrays packed by the
+    same prep task, so running them on the worker while the previous batch
+    renders hides seconds of otherwise-serial main-thread time per render
+    (~6.5s of STBVH builds alone on the UHD bezier benchmark). The render
+    thread's own ``_merge_scene`` then returns the cache instantly.
+    """
+    if not primitives:
+        return
+    if not isinstance(primitives[0], (RayTracedTrianglePrimitive,
+                                      RayTracedBezierCircuitPrimitive)):
+        return
+    _merge_scene(primitives)
+
+
 def _pack_lights(light_sources, num_frames, device):
     """Per-frame packed light rows for the deterministic tracer's fragment
     lighting: positions ``[T, L, 3]`` and color rows ``[T, L, C]``.

@@ -62,6 +62,8 @@ import subprocess
 import sys
 import threading
 import time
+
+from algan import KERNEL_SETTINGS
 from collections import defaultdict
 from contextlib import contextmanager
 
@@ -85,6 +87,7 @@ import algan.rendering.raytracing.primitives as rtp
 import algan.rendering.raytracing.stbvh as stbvh_mod
 from algan.scene import Scene
 import algan.mobs.bezier_circuit as bzc
+import algan.rendering.raytracing.tracer as rtr
 
 OUT_DIR = os.path.join("algan_outputs", "profiling")
 REPORT_PATH = "algan_profile_report.txt"
@@ -131,6 +134,8 @@ class StageTimers:
         self.times = defaultdict(float)
         self.exclusive_times = defaultdict(float)
         self.counts = defaultdict(int)
+        self.cuda_sync_times = defaultdict(float)
+        self.launch_times = defaultdict(float)
         # Stage nesting (stack level / re-entrancy) is tracked per thread:
         # with scene batch prefetch, prep stages run on a worker thread
         # concurrently with render stages on the main thread.
@@ -159,14 +164,21 @@ class StageTimers:
         try:
             yield
         finally:
-            _sync_devices()
-            t = time.perf_counter() - t0
+            #t1 = time.perf_counter()# - t0
+            #_sync_devices()
+            torch.cuda.synchronize()
+            #t2 = time.perf_counter()
+            ti.sync()
+            t3 = time.perf_counter()
             tls.stack_level -= 1
+            t = t3 - t0
             tls.level_times[tls.stack_level] += t
             self.times[name] += t
             self.exclusive_times[name] += t - tls.level_times[tls.stack_level + 1]
             tls.level_times[tls.stack_level + 1] = 0
             self.counts[name] += 1
+            #self.launch_times[name] += t1 - t0
+            #self.cuda_sync_times[name] += t2 - t0
             tls.active.discard(name)
 
     def wrap_function(self, obj, attr, name):
@@ -305,10 +317,17 @@ def _make_kernel_wrapper(orig, name):
         _sync_devices()
         t0 = time.perf_counter()
         result = orig(*args, **kwargs)
-        _sync_devices()
-        dt = time.perf_counter() - t0
+        #_sync_devices()
+        t1 = time.perf_counter()
+        torch.cuda.synchronize()
+        t2 = time.perf_counter()
+        ti.sync()
+        t3 = time.perf_counter()
+        dt = t3 - t0
         TIMERS.times[label] += dt
         TIMERS.counts[label] += 1
+        TIMERS.launch_times[label] += t1-t0
+        TIMERS.cuda_sync_times[label] += t2 - t1
         if extractor is not None:
             try:
                 got = extractor(args, kwargs)
@@ -439,32 +458,45 @@ def install_pipeline_hooks():
                   "PN triangles: shade + pack (project_to_screen)")
 
     # Scene merge + BVH builds. ``_merge_scene`` is timed by hand so the merged
-    # scene can be captured on the batch's first (uncached) merge.
-    if hasattr(rtp, "_merge_scene"):
-        orig_merge = rtp._merge_scene
-        if getattr(orig_merge, "_profiling_original", None) is None:
-            def merge_wrapper(primitives):
-                had_cache = getattr(primitives[0], "_rt_merged_scene", None) is not None
-                with TIMERS.stage("merge collections + build BVHs"):
-                    scene = orig_merge(primitives)
-                if not had_cache:
-                    try:
-                        _capture_scene_stats(scene)
-                    except Exception as e:
-                        print(f"[profiling] scene-stats capture failed: {e}")
-                return scene
+    # scene can be captured on the batch's first (uncached) merge. NOTE:
+    # by-value imports mean the reference that is actually *called* lives in
+    # the importing module -- ``tracer`` calls its own ``_merge_scene`` /
+    # ``_prefill_background`` / ``post_process_frames`` names and
+    # ``scene_builder`` calls its own ``build_stbvh`` -- so each name is
+    # wrapped in every module that holds a reference (the same strategy the
+    # kernel hooks use). Wrapping only the defining module silently times
+    # nothing and the cost hides in "ray traced render total excl".
+    import algan.rendering.raytracing.scene_builder as scb
+    orig_merge = getattr(scb._merge_scene, "_profiling_original", None) \
+        or scb._merge_scene
+    if getattr(scb._merge_scene, "_profiling_original", None) is None:
+        def merge_wrapper(primitives):
+            had_cache = getattr(primitives[0], "_rt_merged_scene", None) is not None
+            with TIMERS.stage("merge collections + build BVHs"):
+                scene = orig_merge(primitives)
+            if not had_cache:
+                try:
+                    _capture_scene_stats(scene)
+                except Exception as e:
+                    print(f"[profiling] scene-stats capture failed: {e}")
+            return scene
 
-            merge_wrapper._profiling_original = orig_merge
-            rtp._merge_scene = merge_wrapper
+        merge_wrapper._profiling_original = orig_merge
+        for mod in (scb, rtr, rtp):
+            if getattr(mod, "_merge_scene", None) is orig_merge:
+                mod._merge_scene = merge_wrapper
 
     _try_wrap(stbvh_mod, "build_stbvh", "  - STBVH build (in merge)")
+    _try_wrap(scb, "build_stbvh", "  - STBVH build (in merge)")
     _try_wrap(stbvh_mod, "segment_primitives_in_time",
               "  - STBVH temporal segmentation")
 
-    # Render-chunk internals.
-    #_try_wrap(rl, "_prefill_background", "background prefill")
-    import algan.rendering.raytracing.tracer as rtr
-    _try_wrap(rtr, "render_batch_raytraced", "ray traced render total")
+    # Render-chunk internals (again: wrap the refs tracer actually calls).
+    _try_wrap(rtr, "_prefill_background", "background prefill")
+    _try_wrap(rtr, "post_process_frames",
+              "post-process (downsample/FXAA/glow)")
+    _try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
+    _try_wrap(KERNEL_SETTINGS, "render_kernel", "ray traced render total")
 
 
 def install_instrumentation():
@@ -803,27 +835,34 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
     scene_func()
 
     sampler = GpuTelemetrySampler().start() if telemetry else None
-    profiler = cProfile.Profile()
+    # cProfile is opt-in (ALGAN_PROFILE_CPROFILE=1): its per-call overhead
+    # inflates the python-side numbers, so the default report is wall-clean.
+    use_cprofile = os.environ.get("ALGAN_PROFILE_CPROFILE", "0") == "1"
+    profiler = cProfile.Profile() if use_cprofile else None
     _sync_devices()
     t0 = time.perf_counter()
-    profiler.enable()
+    if profiler is not None:
+        profiler.enable()
     render_to_file(file_name=f"profiling{tag}_run{run_index}", output_dir=OUT_DIR,
                    output_path="", render_settings=settings,
                    file_extension="mp4")
-    profiler.disable()
+    if profiler is not None:
+        profiler.disable()
     _sync_devices()
     total = time.perf_counter() - t0
     if sampler is not None:
         sampler.stop()
 
-    dump_path = os.path.join(OUT_DIR,
-                             f"raytracing_cprofile{tag}_run{run_index}.txt")
-    try:
-        with open(dump_path, "w") as f:
-            pstats.Stats(profiler, stream=f).sort_stats(
-                pstats.SortKey.CUMULATIVE).print_stats()
-    except Exception as e:
-        print(f"[profiling] could not write cProfile dump: {e}")
+    dump_path = "disabled (set ALGAN_PROFILE_CPROFILE=1)"
+    if profiler is not None:
+        dump_path = os.path.join(OUT_DIR,
+                                 f"raytracing_cprofile{tag}_run{run_index}.txt")
+        try:
+            with open(dump_path, "w") as f:
+                pstats.Stats(profiler, stream=f).sort_stats(
+                    pstats.SortKey.CUMULATIVE).print_stats()
+        except Exception as e:
+            print(f"[profiling] could not write cProfile dump: {e}")
 
     peak_alloc = (torch.cuda.max_memory_allocated() / 2**20
                   if torch.cuda.is_available() else 0.0)
@@ -837,7 +876,10 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
                 scene_stats=[dict(b) for b in SCENE_STATS.get("batches", [])],
                 kernel_gpu=_collect_taichi_kernel_gpu(),
                 telemetry=sampler.summary() if sampler is not None else None,
-                cprofile_path=dump_path)
+                cprofile_path=dump_path,
+                launch_times=dict(TIMERS.launch_times),
+                cuda_sync_times=dict(TIMERS.cuda_sync_times),
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -877,18 +919,30 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
         w(f"RUN {i} ({label}): end-to-end {res['total']:.2f}s")
         w("-" * 78)
         w(f"incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage")
-        w(f"{'stage':<52}{'calls':>6}{'incl (s)':>10}{'incl (%)':>9}{'excl (s)':>10}{'excl (%)':>10}")
+        w(f"{'stage':<52}{'calls':>6}{'incl (s)':>10}{'incl (%)':>9}{'excl (s)':>10}{'excl (%)':>10}"
+          f"{'launch':10}{'sync':10}")
+        for k in res["times"]:
+            if k not in res["exclusive_times"]:
+                res["exclusive_times"][k] = res["times"][k]
+
+        kp = 'kernel: '
+        res["exclusive_times"]["ray traced render total"] -= sum([v for k, v in res["exclusive_times"].items()
+                                                                  if k[:len(kp)] == kp])
+
         for name, secs in sorted(res["times"].items(), key=lambda kv: -kv[1]):
+            lt = res['launch_times'][name] if name in res['launch_times'] else 0
+            ct = res['cuda_sync_times'][name] if name in res['cuda_sync_times'] else 0
             excl = res["exclusive_times"].get(name, secs)
             w(f"{name:<52}{res['counts'][name]:>6}{secs:>10.3f}"
               f"{100 * secs / res['total']:>8.1f}%{excl:>10.3f}"
-              f"{100 * excl / res['total']:>8.1f}%")
+              f"{100 * excl / res['total']:>8.1f}%"
+              f"{lt:>10.3f}{ct:>10.3f}")
         # Sum *exclusive* times so nested stages aren't double-counted (e.g.
         # Surface.get_render_primitives runs inside Scene.get_batch_of_primitives;
         # kernels run inside "ray traced render total"). Kernels bypass the stack
         # machinery, so their time is already inside the render stage's exclusive
         # time -- give them 0 here (``.get(k, 0.0)``) to avoid double-counting.
-        kp = 'kernel: '
+
         accounted = sum(res["exclusive_times"].get(k, 0.0) for k in res["times"] if k[:len(kp)] != kp)
         unaccounted = res["total"] - accounted
         w(f"{'(unaccounted: video encode, scene mgmt, ...)':<52}{'':>6}"

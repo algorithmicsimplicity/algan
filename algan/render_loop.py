@@ -117,6 +117,13 @@ class RenderLoopMixin:
             original_pointers = self.memory.get_pointers()
             for primitive in primitive_batch:
                 primitive.memory = self.memory
+                if getattr(primitive, "_rt_projected", False):
+                    # Already projected on the batch-prep worker against this
+                    # batch's snapshot (see _prewarm_render_batch); its source
+                    # geometry has been released, so re-projection is both
+                    # redundant and impossible.
+                    primitive._rt_projected = False
+                    continue
                 primitive.project_to_screen(camera, self.light_sources)
 
             # Reclaim animation-phase residuals before render batching.
@@ -516,6 +523,73 @@ class RenderLoopMixin:
         )
         return primitive_collections, start_time_ind + duration, render_state
 
+    def _prewarm_render_batch(self, primitives, render_state):
+        """Run a batch's ``project_to_screen`` + merged-scene/STBVH build
+        ahead of the render (called from ``fetch_batch``, i.e. on the
+        batch-prep worker when prefetch is on).
+
+        Both steps are torch-only, but they normally run on the render thread
+        against shared mutable state, so this uses isolated stand-ins:
+
+        * a shim camera / shim lights carrying the batch's *snapshot* tensors
+          (the exact objects ``render_primitive_batch`` would assign to the
+          live camera/lights) -- the live objects still hold the in-flight
+          batch's values and must not be touched from this thread;
+        * a scratch unmanaged memory for shading temporaries -- the shared
+          render pool's bump pointer is owned by the render thread (a
+          concurrent ``temp()`` save/restore would free live render tensors).
+
+        Identical inputs, identical math, so the packed arrays and merged
+        scene are byte-identical to main-thread projection. Each successfully
+        projected primitive is marked ``_rt_projected`` and skipped by
+        ``render_primitive_batch``; on any failure the un-projected remainder
+        (and the merge) simply run on the render thread as before.
+        """
+        try:
+            from algan.rendering.raytracing.primitives import (
+                RayTracedBezierCircuitPrimitive, RayTracedTrianglePrimitive)
+            from algan.rendering.raytracing.scene_builder import (
+                prewarm_merge_cache)
+        except Exception:
+            return
+        if not primitives or not isinstance(
+                primitives[0], (RayTracedTrianglePrimitive,
+                                RayTracedBezierCircuitPrimitive)):
+            return
+        aa = self.render_settings.anti_alias_level
+
+        class _ShimCamera:
+            pass
+
+        camera = _ShimCamera()
+        camera.ray_origin = render_state["ray_origin"]
+        camera.screen_point = render_state["screen_point"]
+        camera.screen_basis = render_state["screen_basis"]
+        camera.screen_width = self.num_pixels_screen_width * aa
+        camera.screen_height = self.num_pixels_screen_height * aa
+
+        class _ShimLight:
+            pass
+
+        lights = []
+        for origin, light_color, aux in render_state["lights"]:
+            light = _ShimLight()
+            light.origin = origin
+            light.light_color = light_color
+            light._render_aux = aux
+            lights.append(light)
+
+        scratch = ManualMemory(0, managed=False)
+        for primitive in primitives:
+            original_memory = primitive.memory
+            try:
+                primitive.memory = scratch
+                primitive.project_to_screen(camera, lights)
+                primitive._rt_projected = True
+            finally:
+                primitive.memory = original_memory
+        prewarm_merge_cache(primitives)
+
     def _materialize_render_state(self, start_ind, end_ind):
         """Materialize camera/screen/light state over ``[start_ind, end_ind)``
         and extract the plain tensors the renderer consumes (this used to be
@@ -614,9 +688,26 @@ class RenderLoopMixin:
 
             def fetch_batch(time_ind):
                 with torch.inference_mode(inference_mode_enabled):
-                    return self.get_batch_of_primitives(
+                    batch = self.get_batch_of_primitives(
                         time_ind, end_time_ind, actors, max_animate_mem
                     )
+                    # Pre-run the ray tracer's vertex shade + packing
+                    # (project_to_screen) and merged-scene / STBVH build here
+                    # (all torch-only) so they ride the prefetch: batch b+1's
+                    # prep runs on the worker while batch b renders, turning
+                    # seconds of otherwise-serial render-thread CPU work into
+                    # hidden time. ALGAN_PREFETCH_MERGE=0 falls back to
+                    # projecting + merging on the render thread.
+                    if (batch[0]
+                            and os.environ.get("ALGAN_PREFETCH_MERGE", "1")
+                            != "0"):
+                        try:
+                            self._prewarm_render_batch(batch[0], batch[2])
+                        except Exception as e:
+                            logger.warning(
+                                f"render-batch prewarm failed (deferring to "
+                                f"the render thread): {e}")
+                    return batch
 
             executor = (
                 ThreadPoolExecutor(

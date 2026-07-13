@@ -45,6 +45,47 @@ INPLACE_AA = os.environ.get("ALGAN_INPLACE_AA", "0") == "1"
 # tiles of this many rays bounds that state so it fits at any resolution / chunk
 # length (a single HD frame is ~2M rays). ~2M rays * ~168 B ~= 350 MB of state.
 WAVEFRONT_TILE_RAYS = int(os.environ.get("ALGAN_WAVEFRONT_TILE", str(1 << 21)))
+# Adaptive tile sizing: size wavefront tiles from the render pool's *actual*
+# free bytes instead of the fixed WAVEFRONT_TILE_RAYS. The static ~2M-ray
+# default keeps tiles small enough for any GPU, but every tile pays a fixed
+# host-side cost per kernel launch (the traverse/shade kernels marshal 60+
+# ndarray args per launch -- ~7-9 ms each on this project's hardware), so a
+# UHD frame split into 16 tiles wastes seconds per render on launch overhead
+# alone. Auto mode computes rays-per-tile = free_pool_bytes * SAFETY /
+# bytes_per_ray at render time: bigger tiles on cards with headroom (fewer
+# launches, same per-ray state), smaller tiles instead of an OOM-retry when
+# the pool is nearly full. Byte-identical by construction -- tiling is
+# per-pixel independent (validated by benchmarks/_wf_tile_auto_ab.py).
+# Setting ALGAN_WAVEFRONT_TILE explicitly disables auto and honors the fixed
+# value (for A/B runs and reproduction).
+# Default OFF: measured 1.008x (noise-level) on HD frames -- in *unprofiled*
+# runs the per-launch host cost overlaps device execution, so fewer launches
+# buy nothing (the profiler's per-kernel syncs made launches look expensive).
+# Opt in for memory-constrained renders, where shrinking tiles beats the
+# window-halving OOM retry.
+WAVEFRONT_TILE_AUTO = (
+    os.environ.get("ALGAN_WAVEFRONT_TILE_AUTO", "1") == "1"
+    and "ALGAN_WAVEFRONT_TILE" not in os.environ)
+# Fraction of the pool's free bytes the per-tile ray state may claim. The
+# remainder covers per-tile extras (rs_vis, the sorted path's event arrays are
+# accounted separately) and alignment slop.
+WAVEFRONT_TILE_SAFETY = float(
+    os.environ.get("ALGAN_WAVEFRONT_TILE_SAFETY", "0.85"))
+# Hard bounds for the auto tile size (rays). The floor keeps degenerate
+# nearly-full pools from collapsing into thousands of tiny launches; the cap
+# bounds the host-side index tensors on very large pools.
+WAVEFRONT_TILE_MIN = int(
+    os.environ.get("ALGAN_WAVEFRONT_TILE_MIN", str(1 << 18)))
+WAVEFRONT_TILE_MAX = int(
+    os.environ.get("ALGAN_WAVEFRONT_TILE_MAX", str(1 << 25)))
+
+
+def set_wavefront_tile_auto(enabled):
+    """Toggle adaptive (pool-sized) wavefront tile sizing (see
+    ``WAVEFRONT_TILE_AUTO``). Off falls back to the fixed
+    ``WAVEFRONT_TILE_RAYS``."""
+    global WAVEFRONT_TILE_AUTO
+    WAVEFRONT_TILE_AUTO = bool(enabled)
 # On the common non-splitting wavefront path (no refraction/custom scatter), a
 # ray that leaves the active set can never become active again.  Compact the
 # next iteration from the previous active indexes rather than scanning the
@@ -94,6 +135,22 @@ PROMOTE_CONSTANTS = os.environ.get("ALGAN_PROMOTE_CONSTANTS", "1") == "1"
 # normal work), decoupled from the memory-side array trimming.
 # ALGAN_WF_SKIP_UNLIT_NORMAL=0 disables it (for A/B and validation).
 WF_SKIP_UNLIT_NORMAL = os.environ.get("ALGAN_WF_SKIP_UNLIT_NORMAL", "1") == "1"
+
+# Fused primary-ray generation on the general wavefront. The classic pipeline
+# opens every tile with a standalone ``wavefront_generate_rays`` pass that
+# writes ~104 B of initial per-ray state (ro/rd/acc/sca/int/pix/accum) only
+# for the first traverse/shade to read it straight back -- a pure memory
+# round-trip costing ~10 ms per 2M-ray tile on a GTX 1050 (~4.5 s of the UHD
+# bezier benchmark). When on, a split-free (no refraction / custom scatter),
+# near-clip-free, AA-in-super-sample render skips that pass: the tile's first
+# traverse generates the rays in-kernel (compile-time ``gen_first`` template,
+# persisting only ro/rd) and the first shade treats the initial state as
+# constants (``first_iter`` template), with survivors writing their state
+# back exactly as before. Byte-identical (same _generate_ray math, same
+# order; validated by benchmarks/_wf_gen_fused_ab.py); iterations >= 1 and
+# every non-qualifying render use the unchanged classic kernels.
+# ALGAN_WF_GEN_FUSED=0 disables (for A/B and validation).
+WF_GEN_FUSED = os.environ.get("ALGAN_WF_GEN_FUSED", "1") == "1"
 
 # "Family A+B" full material-field memory trim for the fragment-shading
 # wavefront. When on, triangles are reordered into material-class bands so

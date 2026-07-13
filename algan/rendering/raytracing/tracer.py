@@ -41,7 +41,7 @@ from algan.rendering.raytracing.scene_builder import _merge_scene, _downsample_b
 # NOTE: only immutable settings values may be imported by value here; the
 # mutable module globals (SAMPLES_PER_PIXEL, TONEMAP_*, SHADOWS, ...) must be
 # read live as ``rt_settings.X`` or their setters silently stop working.
-from algan.rendering.raytracing.settings import _get_tonemap_t_val, REFRACT_SPLIT_SLOTS, WAVEFRONT_TILE_RAYS, \
+from algan.rendering.raytracing.settings import _get_tonemap_t_val, REFRACT_SPLIT_SLOTS, \
     GATE_EMPTY_TRAVERSALS, is_post_process_tonemap_enabled
 
 from algan.rendering.raytracing import settings as rt_settings
@@ -98,6 +98,45 @@ def _alloc_wavefront_state(memory, tn, sca_width):
         memory.get_tensor((tn, KBUF), i32),       # rs_kp
         memory.get_tensor((tn, KBUF), i32),       # rs_kf
     )
+
+
+def _wavefront_state_bytes_per_primary(split_k, extra_bytes_per_slot=0,
+                                       extra_bytes_per_primary=0):
+    """Bytes of per-tile wavefront state one *primary* ray (pixel) costs.
+
+    Mirrors ``_alloc_wavefront_state`` plus the per-tile companions allocated
+    by ``_run_wavefront_tiles`` (``rs_pix`` per pool slot; ``pix_accum`` +
+    ``rs_used`` per primary). Orchestrator-specific extras (e.g. the sorted
+    path's event record/key arrays) are passed in so adaptive tile sizing can
+    account for them."""
+    # rs_ro(3) + rs_rd(3) + rs_acc(4) + rs_sca(5) f32, rs_int(5) i32,
+    # 6 K-buffer arrays of KBUF lanes, rs_pix i32 -- all per pool slot.
+    per_slot = (3 + 3 + 4 + 5 + 5) * 4 + 6 * KBUF * 4 + 4 + extra_bytes_per_slot
+    # pix_accum(5) f32 + rs_used i32 -- per primary.
+    return split_k * per_slot + 5 * 4 + 4 + extra_bytes_per_primary
+
+
+def _auto_primary_per_tile(memory, split_k, static_primary,
+                           extra_bytes_per_slot=0, extra_bytes_per_primary=0):
+    """Primary rays per wavefront tile, sized from the render pool's free
+    bytes when ``settings.WAVEFRONT_TILE_AUTO`` is on (see settings.py for the
+    rationale: fewer, bigger tiles amortize the fixed host-side kernel-launch
+    cost). Falls back to ``static_primary`` (the WAVEFRONT_TILE_RAYS-derived
+    value) for unmanaged pools or when auto is disabled. Byte-identical to any
+    other tile size: tiles partition pixels, and every per-pixel computation
+    is independent of its tile."""
+    if not rt_settings.WAVEFRONT_TILE_AUTO or not getattr(memory, "managed", False):
+        return static_primary
+    bytes_per_primary = _wavefront_state_bytes_per_primary(
+        split_k, extra_bytes_per_slot, extra_bytes_per_primary)
+    free = memory.get_num_bytes_remaining()
+    budget = int(free * rt_settings.WAVEFRONT_TILE_SAFETY) // bytes_per_primary
+    lo = max(1, rt_settings.WAVEFRONT_TILE_MIN // split_k)
+    hi = max(lo, rt_settings.WAVEFRONT_TILE_MAX // split_k)
+    # Below the floor the pool is genuinely too full for a sane tile; keep the
+    # floor and let the allocator's OOM -> window-halving retry handle it
+    # (same behavior as the static default, which would also not fit).
+    return min(max(budget, lo), hi)
 
 
 def _compact_active_rays(active, rs_int, split_k, i32):
@@ -506,7 +545,9 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                          transparent, aa_level, split_k, primary_per_tile,
                          cam_origin, screen_point, pixel_basis_x,
                          pixel_basis_y, half_screen_w, half_screen_h,
-                         max_bounces, near_clip, run_tile):
+                         max_bounces, near_clip, run_tile,
+                         auto_extra_slot_bytes=0, auto_extra_primary_bytes=0,
+                         gen_fused=False):
     """Shared skeleton of the wavefront orchestrators: the AA sub-pixel loop,
     ray-offset screen tiling (bounded per-tile state regardless of frame
     size), per-tile state allocation from the render pool + primary-ray
@@ -533,6 +574,12 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
         aa_accum = memory.get_tensor((n, 5 if transparent else 4), f32)
         aa_accum.zero_()
 
+    # Adaptive tile sizing (after aa_accum so free-bytes accounting sees it):
+    # fewer, bigger tiles on pools with headroom -- see settings.py.
+    primary_per_tile = _auto_primary_per_tile(
+        memory, split_k, primary_per_tile,
+        auto_extra_slot_bytes, auto_extra_primary_bytes)
+
     for si in range(aa):
         for sj in range(aa):
             jx = (si + 0.5) * inv_aa if do_aa else 0.5
@@ -553,15 +600,25 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                 # on.
                 rs_used = memory.get_tensor((tn_primary,), i32)
 
-                wavefront_generate_rays(
-                    cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-                    int(time_start), int(width), int(height),
-                    float(half_screen_w), float(half_screen_h),
-                    int(max_bounces),
-                    int(tile_start), int(tn_primary), float(jx), float(jy),
-                    float(near_clip),
-                    rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                    rs_pix, pix_accum, rs_used)
+                if gen_fused:
+                    # Fused generation (WF_GEN_FUSED): the first traverse /
+                    # shade iteration generates rays + initial state
+                    # in-kernel; only the per-pixel accumulator genuinely
+                    # needs pre-zeroing (rays atomically add into it as they
+                    # terminate). rs_used/rs_pix stay unwritten: the fused
+                    # path is split-free, so nothing reads them before the
+                    # first shade writes rs_pix.
+                    pix_accum.zero_()
+                else:
+                    wavefront_generate_rays(
+                        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+                        int(time_start), int(width), int(height),
+                        float(half_screen_w), float(half_screen_h),
+                        int(max_bounces),
+                        int(tile_start), int(tn_primary), float(jx), float(jy),
+                        float(near_clip),
+                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                        rs_pix, pix_accum, rs_used)
 
                 run_tile(tile_start, tn_primary, pool, state, rs_pix,
                          pix_accum, rs_used)
@@ -678,7 +735,8 @@ def raytrace_render_wavefront(
     # surfaces split, so spare slots are reserved only when refraction is on; the
     # non-refractive path keeps split_k == 1 (one slot per pixel, as before).
     split_k = REFRACT_SPLIT_SLOTS if refraction_flag else 1
-    primary_per_tile = max(1, WAVEFRONT_TILE_RAYS // split_k)
+    # Read live (settings convention): runtime-mutable for tile-size A/B.
+    primary_per_tile = max(1, rt_settings.WAVEFRONT_TILE_RAYS // split_k)
 
     # Family A+B memory-trim: engage only for the no-shadow, non-refractive,
     # scatter-free triangle path (the trim arrays are built by scene_builder
@@ -718,14 +776,30 @@ def raytrace_render_wavefront(
         and len(frag_scatters) == 0
         and not mem_trim
         and not merged.get("textured_active", False))
-    if env_meta is not None or far_clip > 0.0:
+    # Fused primary-ray generation (settings.WF_GEN_FUSED): the tile's first
+    # traverse generates its rays in-kernel and the first shade uses the
+    # implicit initial state, skipping the standalone generate pass. Only for
+    # split-free (one slot per pixel, so pix == r), near-clip-free (implicit
+    # base_dist == 0) renders on the one-sample-per-pixel AA path (fixed
+    # 0.5/0.5 jitter). Everything else keeps the classic generate kernel.
+    gen_fused = (rt_settings.WF_GEN_FUSED and split_k == 1
+                 and near_clip <= 0.0 and max(1, int(aa_level)) <= 1)
+    if gen_fused:
+        gen_meta = torch.tensor(
+            [0.5, 0.5, float(half_screen_w), float(half_screen_h)],
+            dtype=f32, device=device)
+    else:
+        gen_meta = torch.zeros(1, dtype=f32, device=device)
+    if gen_fused or env_meta is not None or far_clip > 0.0:
         # Extras packed behind the two layer offsets (the shade kernel is at
         # the 64-arg ceiling): env map placement in the shared texel buffer +
-        # the camera's far clip distance. The kernel detects them by length.
+        # the camera's far clip distance, and -- read only by the fused first
+        # shade iteration -- max_bounces. The kernel detects them by length.
         eo, ew, eh, ei = env_meta if env_meta is not None else (0, 0, 0, 0.0)
         layer_offsets_t = torch.tensor(
             [float(layer_offset_triangles), float(layer_offset_pn),
-             float(eo), float(ew), float(eh), float(ei), float(far_clip)],
+             float(eo), float(ew), float(eh), float(ei), float(far_clip),
+             float(max_bounces)],
             dtype=f32, device=device)
     else:
         layer_offsets_t = torch.tensor(
@@ -744,6 +818,11 @@ def raytrace_render_wavefront(
         it = 0
         while active.numel() > 0 and it < max_iters:
             na = int(active.numel())
+            # Fused generation: the tile's first iteration generates rays in
+            # traverse and shades with the implicit initial state (separate
+            # compile-time instantiations); later iterations (and unfused
+            # renders) are the classic kernels, bit for bit.
+            first = 1 if (gen_fused and it == 0) else 0
             wavefront_traverse(
                 active, na,
                 t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
@@ -780,7 +859,9 @@ def raytrace_render_wavefront(
                 int(time_start), int(width), int(height),
                 int(tile_start),
                 rs_ro, rs_rd, rs_sca, rs_int,
-                rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
+                rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix,
+                first, cam_origin, screen_point,
+                pixel_basis_x, pixel_basis_y, gen_meta)
             wavefront_shade(
                 active, na,
                 t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
@@ -812,6 +893,7 @@ def raytrace_render_wavefront(
                 int(rt_settings.WF_SKIP_UNLIT_NORMAL),
                 int(mem_trim),
                 opaque_closest,
+                first,
                 a_matid, a_mat,
                 merged["pn_mat_id"], merged["pn_mat"],
                 light_pos, light_col, int(num_lights),
@@ -832,7 +914,7 @@ def raytrace_render_wavefront(
         pixel_basis_x=pixel_basis_x, pixel_basis_y=pixel_basis_y,
         half_screen_w=half_screen_w, half_screen_h=half_screen_h,
         max_bounces=max_bounces, near_clip=near_clip,
-        run_tile=run_tile)
+        run_tile=run_tile, gen_fused=gen_fused)
 
 
 def _raytrace_render_wavefront_textured(
@@ -871,7 +953,10 @@ def _raytrace_render_wavefront_textured(
     has_bez_eff = 1 if (feat_bez or has_bez) else 0
 
     split_k = REFRACT_SPLIT_SLOTS if refraction_flag else 1
-    primary_per_tile = max(1, WAVEFRONT_TILE_RAYS // split_k)
+    primary_per_tile = max(1, rt_settings.WAVEFRONT_TILE_RAYS // split_k)
+    # Placeholder for the fused-generation traverse args (classic generate
+    # kernel is kept on this path; the gen block compiles out).
+    gen_meta = torch.zeros(1, dtype=f32, device=device)
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix,
                  pix_accum, rs_used):
@@ -916,7 +1001,9 @@ def _raytrace_render_wavefront_textured(
                 int(time_start), int(width), int(height),
                 int(tile_start),
                 rs_ro, rs_rd, rs_sca, rs_int,
-                rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
+                rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix,
+                0, cam_origin, screen_point,
+                pixel_basis_x, pixel_basis_y, gen_meta)
             wf_shade_textured(
                 active, na,
                 merged["tri_pos"], merged["tri_norm"],
@@ -1053,7 +1140,11 @@ def _raytrace_render_wavefront_sorted(
     split_k = REFRACT_SPLIT_SLOTS if refraction_flag else 1
     # The sorted path carries ~1.5x the classic per-ray state (the event
     # record + keys), so tiles hold fewer rays for the same memory envelope.
-    primary_per_tile = max(1, (WAVEFRONT_TILE_RAYS * 2) // (3 * split_k))
+    primary_per_tile = max(1, (rt_settings.WAVEFRONT_TILE_RAYS * 2)
+                           // (3 * split_k))
+    # Placeholder for the fused-generation traverse args (classic generate
+    # kernel is kept on this path; the gen block compiles out).
+    gen_meta = torch.zeros(1, dtype=f32, device=device)
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix,
                  pix_accum, rs_used):
@@ -1124,7 +1215,9 @@ def _raytrace_render_wavefront_sorted(
                     int(time_start), int(width), int(height),
                     int(tile_start),
                     rs_ro, rs_rd, rs_sca, rs_int,
-                    rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix)
+                    rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix,
+                    0, cam_origin, screen_point,
+                    pixel_basis_x, pixel_basis_y, gen_meta)
             if peel_extra.numel():
                 peel_idx = (torch.cat((trav, peel_extra))
                             if trav.numel() else peel_extra)
@@ -1223,7 +1316,9 @@ def _raytrace_render_wavefront_sorted(
         pixel_basis_x=pixel_basis_x, pixel_basis_y=pixel_basis_y,
         half_screen_w=half_screen_w, half_screen_h=half_screen_h,
         max_bounces=max_bounces, near_clip=0.0,
-        run_tile=run_tile)
+        run_tile=run_tile,
+        # rs_hit(15 f32) + rs_key + rs_eprim (+ rs_vis with shadows) per slot.
+        auto_extra_slot_bytes=15 * 4 + 4 + 4 + (4 if shadow_flag else 0))
 
 
 _originals = {}
