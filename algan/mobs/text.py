@@ -13,6 +13,7 @@ from algan.mobs.triangulated_bezier_circuit import (
     TriangulatedBezierCircuit,
     point_to_tensor2,
 )
+from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.constants.spatial import DOWN, RIGHT
 from algan.constants.color import *
 from algan.mobs.group import Group
@@ -21,6 +22,7 @@ from algan.mobs.image_mob import ImageMob
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import unsquish
+from algan.utils.mob_utils import BatchedMobViewSequence
 
 
 def make_manim_dir():
@@ -36,6 +38,13 @@ def make_manim_dir():
 
 
 class Tex(Mob):
+    """LaTeX text rendered as one packed batch of cubic bezier glyphs.
+
+    ``character_mobs`` provides lazy indexed views into the batch.
+    """
+
+    triangulated = False
+
     def __init__(self, text, font_size=24, latex=True, *args, **kwargs):
         make_manim_dir()
         if "preamble" in kwargs:
@@ -65,22 +74,59 @@ class Tex(Mob):
             chars = [x for l in sub_mobs for x in l]
         else:
             chars = t.submobjects
-        p = [
+        triangulated_paths = [
             unsquish(maybe_flip(_), -2, 4).transpose(-3, -2)
             for _ in [_ for _ in chars if not isinstance(_, mn.ImageMobject)]
         ]
+        bezier_paths = [
+            unsquish(
+                torch.from_numpy(_.points).to(
+                    COMPUTING_DEFAULTS.animation_device
+                ).float(),
+                -2,
+                4,
+            )
+            for _ in chars
+            if not isinstance(_, mn.ImageMobject)
+        ]
         with Off():
-            self.character_mobs = []
-            for p_ in p:
-                #if len(p) > 0:
-                self.character_mobs.append(TriangulatedBezierCircuit(
-                    p_, invert=False, hash_keys=p_, reverse_points=False, *args, **kwargs
-                ))
+            paths = triangulated_paths if self.triangulated else bezier_paths
+            # Both geometry types retain path boundaries in parent_batch_sizes.
+            # Building once avoids a Mob hierarchy (and timeline rows) per glyph.
+            if self.triangulated:
+                character_batch = (
+                    TriangulatedBezierCircuit(
+                        paths,
+                        *args,
+                        invert=False,
+                        hash_keys=paths,
+                        reverse_points=False,
+                        **kwargs,
+                    )
+                    if paths
+                    else None
+                )
+            else:
+                bezier_kwargs = dict(kwargs)
+                bezier_kwargs.setdefault("color", WHITE)
+                bezier_kwargs.setdefault("border_color", bezier_kwargs["color"])
+                bezier_kwargs.setdefault("border_width", 0)
+                character_batch = (
+                    BezierCircuitCubic.from_batches(paths, *args, **bezier_kwargs)
+                    if paths
+                    else None
+                )
+            self._character_batch = character_batch
+            self.character_mobs = BatchedMobViewSequence(
+                self._character_batch, len(paths)
+            )
             self.image_mobs = [
                 ImageMob(_) for _ in chars if isinstance(_, mn.ImageMobject)
             ]
             super().__init__(*args, **kwargs)
-            self.add_children(self.character_mobs, self.image_mobs)
+            if self._character_batch is not None:
+                self.add_children(self._character_batch)
+            self.add_children(self.image_mobs)
             self.scale(font_size / base_font_size)
 
     def get_segment(self, i):
@@ -366,16 +412,29 @@ from algan.external_libraries.manim.utils.tex import _DEFAULT_PREAMBLE
 
 
 class Text(Tex):
-    """Mob for displaying LaTeX.
+    """Plain text rendered as one packed batch of cubic bezier glyphs.
 
     Parameters
     ----------
     text
-        The LaTeX source that will be compiled.
+        The text to display.
     **kwargs
-        Passed to :class:`~.Text`
+        Passed to :class:`~.Tex`.
 
     """
+
+    def __init__(self, text, **kwargs):
+        super().__init__(text, latex=False, **kwargs)
+
+
+class TexTriangulated(Tex):
+    """LaTeX text rendered as one packed batch of triangulated glyphs."""
+
+    triangulated = True
+
+
+class TextTriangulated(TexTriangulated):
+    """Plain text rendered as one packed batch of triangulated glyphs."""
 
     def __init__(self, text, **kwargs):
         super().__init__(text, latex=False, **kwargs)

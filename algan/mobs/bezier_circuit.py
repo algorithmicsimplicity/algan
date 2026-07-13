@@ -14,6 +14,45 @@ from algan.utils.tensor_utils import *
 from algan.settings.renderer_settings import RENDERER_SETTINGS
 
 
+def _circuit_location_and_basis(control_points):
+    """Return the same local frame used by a standalone bezier circuit."""
+    control_points = control_points.reshape(-1, 3)
+    mn = control_points.amin(-2)
+    mx = control_points.amax(-2)
+    location = (mn + mx) * 0.5
+    if (mx - mn).norm(p=2, dim=-1) <= 1e-6:
+        basis = squish(torch.eye(3, device=control_points.device,
+                                  dtype=control_points.dtype))
+        return location, basis.reshape(-1)
+
+    disps = control_points - location
+    dists = disps.norm(p=2, dim=-1, keepdim=True)
+    first_basis = disps[
+        ..., dists.argmax(-2, keepdim=True).squeeze(), :
+    ].unsqueeze(-2)
+    if first_basis.norm(p=2, dim=-1) <= 1e-4:
+        first_basis = RIGHT.to(control_points) * 1e-4
+    first_basis_n = F.normalize(first_basis, p=2, dim=-1)
+
+    planar_disps = disps - dot_product(disps, first_basis_n) * first_basis_n
+    dists = planar_disps.norm(p=2, dim=-1, keepdim=True)
+    second_basis = planar_disps[
+        ..., dists.argmax(-2, keepdim=True).squeeze(), :
+    ].unsqueeze(-2)
+    if second_basis.norm(p=2, dim=-1) <= 1e-4:
+        second_basis = rotate_vector_around_axis(first_basis, 90, OUT, -1)
+    second_basis = (
+        second_basis
+        * first_basis.norm(p=2, dim=-1, keepdim=True)
+        / second_basis.norm(p=2, dim=-1, keepdim=True)
+    )
+    third_basis_n = F.normalize(
+        broadcast_cross_product(first_basis_n, second_basis), p=2, dim=-1
+    )
+    basis = torch.cat((first_basis, second_basis, third_basis_n), -1)
+    return location, basis.reshape(-1)
+
+
 
 class BezierCircuitCubic(Renderable):
     def __init__(
@@ -61,45 +100,16 @@ class BezierCircuitCubic(Renderable):
             )
         if normals is not None:
             normals = normals.reshape(-1, 3)
-        mn = control_points.reshape(-1, 3).amin(-2)
-        mx = control_points.reshape(-1, 3).amax(-2)
-        kwargs2["location"] = (mn + mx) * 0.5
+        kwargs2["location"], kwargs2["basis"] = _circuit_location_and_basis(
+            control_points
+        )
 
         self.grid_width = self.grid_height = 1
         self.num_texture_points = 0
-        if (mx - mn).norm(p=2, dim=-1) <= 1e-6:
-            kwargs2["basis"] = squish(torch.eye(3))
-            first_basis = kwargs2["basis"][..., :3]
-            second_basis = kwargs2["basis"][..., 3:6]
-        else:
-            disps = control_points - kwargs2["location"]
-            dists = (disps).norm(p=2, dim=-1, keepdim=True)
-            first_basis = disps[
-                ..., dists.argmax(-2, keepdim=True).squeeze(), :
-            ].unsqueeze(-2)
-            if first_basis.norm(p=2, dim=-1) <= 1e-4:
-                first_basis = RIGHT * 1e-4
-            self.first_basis = first_basis
-            first_basis_n = F.normalize(first_basis, p=2, dim=-1)
-
-            disps = disps - dot_product(disps, first_basis_n) * first_basis_n
-
-            dists = (disps).norm(p=2, dim=-1, keepdim=True)
-            second_basis = disps[
-                ..., dists.argmax(-2, keepdim=True).squeeze(), :
-            ].unsqueeze(-2)
-            if second_basis.norm(p=2, dim=-1) <= 1e-4:
-                second_basis = rotate_vector_around_axis(first_basis, 90, OUT, -1)
-            second_basis = (
-                second_basis
-                * first_basis.norm(p=2, dim=-1, keepdim=True)
-                / second_basis.norm(p=2, dim=-1, keepdim=True)
-            )
-            self.second_basis = second_basis
-            third_basis_n = F.normalize(
-                broadcast_cross_product(first_basis_n, second_basis), p=2, dim=-1
-            )
-            kwargs2["basis"] = torch.cat((first_basis, second_basis, third_basis_n), -1)
+        first_basis = kwargs2["basis"][..., :3]
+        second_basis = kwargs2["basis"][..., 3:6]
+        self.first_basis = first_basis
+        self.second_basis = second_basis
 
         super().__init__(**kwargs2)
         self.register_attrs_as_animatable(
@@ -151,6 +161,74 @@ class BezierCircuitCubic(Renderable):
         self.normals = normals
         self.is_primitive = True
         self.render_primitive = RENDERER_SETTINGS.bezier_circuit_primitive
+
+    @classmethod
+    def from_batches(cls, control_point_batches, *args, **kwargs):
+        """Build many independently indexable circuits without per-circuit mobs.
+
+        ``control_point_batches`` contains one cubic-bezier tensor per logical
+        object.  Geometry is concatenated once while ``parent_batch_sizes``
+        retains the control-point boundaries used by rendering and indexed
+        views.
+        """
+        batches = [
+            cast_to_tensor(points).reshape(-1, 3)
+            for points in control_point_batches
+        ]
+        if not batches:
+            raise ValueError("from_batches requires at least one bezier circuit")
+        point_counts = torch.tensor(
+            [len(points) for points in batches], dtype=torch.long
+        )
+        if bool((point_counts % 4 != 0).any()):
+            raise ValueError(
+                "every cubic bezier circuit must contain a multiple of 4 points"
+            )
+
+        mob = cls(torch.cat(batches, -2), *args, **kwargs)
+        locations, bases = zip(
+            *[_circuit_location_and_basis(points) for points in batches]
+        )
+        locations = torch.stack(locations, -2).unsqueeze(0)
+        bases = torch.stack(bases, -2).unsqueeze(0)
+        count = len(batches)
+
+        with Off(record_funcs=False, record_attr_modifications=False):
+            for attr in mob.animatable_attrs:
+                try:
+                    value = getattr(mob, attr)
+                except AttributeError:
+                    continue
+                if attr == "location":
+                    value = locations
+                elif attr == "basis":
+                    value = bases
+                elif value.shape[-2] == 1:
+                    value = value.expand(
+                        *value.shape[:-2], count, value.shape[-1]
+                    ).contiguous()
+                mob.setattr_and_rebatch_without_record(attr, value)
+
+            mob.texture_points.parent_batch_sizes = torch.ones(
+                count, dtype=torch.long
+            )
+            for attr in mob.texture_points.animatable_attrs:
+                try:
+                    value = getattr(mob.texture_points, attr)
+                except AttributeError:
+                    continue
+                if attr == "location":
+                    value = locations
+                elif value.shape[-2] == 1:
+                    value = value.expand(
+                        *value.shape[:-2], count, value.shape[-1]
+                    ).contiguous()
+                mob.texture_points.setattr_and_rebatch_without_record(attr, value)
+
+            mob.control_points.parent_batch_sizes = point_counts
+            mob.parent_batch_sizes = torch.tensor((count,), dtype=torch.long)
+            mob.singleton_batch_indexing = True
+        return mob
 
     def get_animatable_attrs(self):
         return {"border_width", "border_color"}.union(

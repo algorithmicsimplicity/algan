@@ -842,7 +842,8 @@ class TriangulatedBezierCircuit(Mob):
             mx = x.amax((0, 1), keepdim=True)
             return (mx + mn) / 2
 
-        if not (isinstance(paths, list) or isinstance(paths, tuple)):
+        is_batched_input = isinstance(paths, (list, tuple))
+        if not is_batched_input:
             paths = [paths]
             hash_keys = [hash_keys]
         all_triangles = []
@@ -976,6 +977,29 @@ class TriangulatedBezierCircuit(Mob):
         triangles = TriangleTriangulated(
             triangles.squeeze(1), color=color, parent_batch_sizes=packing, **kwargs
         )
+        # ``paths`` is a logical batch.  Match batch_mobs' attribute layout so
+        # indexed glyph views can independently transform/style every level of
+        # the packed hierarchy without constructing per-glyph Mob graphs.
+        logical_count = len(all_tiles)
+        if is_batched_input:
+            self.parent_batch_sizes = torch.tensor(
+                (logical_count,), dtype=torch.long
+            )
+            self.singleton_batch_indexing = True
+        for mob in (self, self.tiles, *triangles.get_descendants()):
+            row_count = mob.location.shape[-2]
+            for attr in mob.animatable_attrs:
+                try:
+                    value = getattr(mob, attr)
+                except AttributeError:
+                    continue
+                if value.shape[-2] == 1 and row_count > 1:
+                    mob.setattr_and_rebatch_without_record(
+                        attr,
+                        value.expand(
+                            *value.shape[:-2], row_count, value.shape[-1]
+                        ).contiguous(),
+                    )
         self.tiles.add_children(triangles)
         self.add_children(self.tiles)
         # if create and not self.animation_manager.context.delay_creation:

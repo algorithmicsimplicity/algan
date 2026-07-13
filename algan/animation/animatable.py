@@ -437,8 +437,26 @@ class Animatable:
         """
         timeline = TimelineManager.instance()
         inds = timeline.get_inds(key, self, value)
+        attr_timeline = timeline.attr_to_timeline[key]
+
+        def ranges_for_mob(mob):
+            mob_inds = attr_timeline.mob_id_to_inds[mob.id]
+            sub_inds = getattr(mob, "data_sub_inds", None)
+            if sub_inds is None:
+                return attr_timeline.ranges_for(mob.id)
+            # Packed geometry components commonly store only one row for
+            # attributes they do not consume (for example control-point
+            # colors/bases).  Their location rows are still independently
+            # indexed, but a singleton attribute remains a shared broadcast
+            # row instead of being duplicated for every geometry point.
+            if mob_inds.numel() == 1:
+                return attr_timeline.ranges_for(mob.id)
+            selected = mob_inds[sub_inds]
+            ranges = RowRanges.from_contiguous_blocks([selected])
+            return ranges if ranges is not None else RowRanges(None, tensor=selected)
+
         if not include_descendants:
-            return timeline.attr_to_timeline[key].ranges_for(self.id)
+            return ranges_for_mob(self)
         cache = getattr(self, "_attr_inds_cache", None)
         if cache is None:
             cache = {}
@@ -449,7 +467,6 @@ class Animatable:
             return hit[1]
         if inds is None:
             return inds
-        attr_timeline = timeline.attr_to_timeline[key]
         descendants = self.get_descendants(include_self=True)
         # Each mob's own rows are a cached single-run RowRanges; merge those
         # integer runs directly (RowRanges.from_runs) instead of re-deriving
@@ -459,7 +476,7 @@ class Animatable:
         contiguous = True
         for m in descendants:
             timeline.get_inds(key, m, value)  # ensure rows are allocated
-            r = attr_timeline.ranges_for(m.id)
+            r = ranges_for_mob(m)
             if r.pairs is None:
                 contiguous = False
                 break
@@ -467,7 +484,7 @@ class Animatable:
         if contiguous:
             ranges = RowRanges.from_runs(runs) if runs else RowRanges([])
         else:
-            inds_list = [attr_timeline.mob_id_to_inds[m.id] for m in descendants]
+            inds_list = [ranges_for_mob(m).tensor() for m in descendants]
             ranges = RowRanges(None, tensor=torch.cat(inds_list))
         # Read the version after computing: get_inds may have allocated rows
         # (bumping it) when ``value`` is provided.

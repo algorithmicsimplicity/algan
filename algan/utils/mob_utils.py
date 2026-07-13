@@ -1,7 +1,44 @@
+from collections.abc import Sequence
+
 import torch
 
 from algan.utils.python_utils import traverse
 from algan.animation.animation_contexts import *
+
+
+class BatchedMobViewSequence(Sequence):
+    """Sequence of lazy views into a mob's batch dimension.
+
+    Creating the views eagerly would recreate the Python object graph that
+    batching is intended to avoid.  A view is therefore cloned only when a
+    caller indexes or iterates over that element, and is cached so repeated
+    indexing has the same object identity as an ordinary list of mobs.  The
+    clone shares the packed mob's timeline rows; only ``data_sub_inds`` differs.
+    """
+
+    def __init__(self, mob, size):
+        self.mob = mob
+        self.size = int(size)
+        self._views = {}
+
+    def __len__(self):
+        return self.size
+
+    def __getitem__(self, item):
+        if isinstance(item, slice):
+            return [self[i] for i in range(*item.indices(self.size))]
+        if not isinstance(item, int):
+            raise TypeError(
+                "batch indices must be integers or slices, "
+                f"not {type(item).__name__}"
+            )
+        if item < 0:
+            item += self.size
+        if item < 0 or item >= self.size:
+            raise IndexError("batched mob view index out of range")
+        if item not in self._views:
+            self._views[item] = self.mob[item]
+        return self._views[item]
 
 
 def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):

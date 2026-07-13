@@ -1175,8 +1175,9 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
 
     def check_properties_are_valid(self, property_names):
         #TODO this: available_attrs = union(self.animatable_attrs, TimelineManager.attr_to_timeline.keys())
+        available_attrs = set([*self.animatable_attrs, *TimelineManager.instance().attr_to_timeline.keys()])
         for p in property_names:
-            if not hasattr(self, p) and (p not in self.animatable_attrs):
+            if not hasattr(self, p) and (p not in available_attrs):
                 raise AttributeError(f'"{p}" is not recognized as an animatable Mob property. '
                                      f'Available properties are: {self.animatable_attrs}.')
 

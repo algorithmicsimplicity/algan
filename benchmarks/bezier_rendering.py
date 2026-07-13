@@ -14,9 +14,9 @@ Boxed = lambda mob, color=BLUE, buffer=0.1, *args, **kwargs: Group(mob,
                                                                                                border_width=1, *args,
                                                                                                **kwargs))
 def GlowTex(c, *args, **kwargs):
-    m = ManimMob(mn.MathTex(*args, **kwargs)).set(color=c + GLOW * 0.01,
-                                border_color=torch.lerp(c, WHITE, 0.9),
-                                            border_width=0.8).scale(0.75)
+    m = Tex(*args, **kwargs)#.set(color=c + GLOW * 0.01,
+                                #border_color=torch.lerp(c, WHITE, 0.9),
+                                #            border_width=0.8).scale(0.75)
     return m
 text_string = ('a' * 50 + '\n') * 50
 
@@ -30,8 +30,8 @@ def text_scene():
         nn.move(LEFT)
 
 set_log_level('DEBUG')
-os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
+#os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+#os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
 #os.environ['ALGAN_UNDER_NVPROF'] = "1"
-#render_all_funcs(__name__, HD, profile=False)
-profile_scene(text_scene, HD, runs=2)
+render_all_funcs(__name__, HD, profile=False)
+#profile_scene(text_scene, HD, runs=2)
