@@ -129,6 +129,19 @@ class Tex(Mob):
             self.add_children(self.image_mobs)
             self.scale(font_size / base_font_size)
 
+    def become(self, other_mob, *args, **kwargs):
+        result = super().become(other_mob, *args, **kwargs)
+        # ``detach_history`` returns a clone, and cubic morphing may expand the
+        # packed glyph batch to match the target. Cached lightweight views from
+        # the pre-morph object still carry the old size/data_sub_inds, so rebuild
+        # the sequence against the returned batch owner.
+        if isinstance(result, Tex) and result._character_batch is not None:
+            result.character_mobs = BatchedMobViewSequence(
+                result._character_batch,
+                result._character_batch.location.shape[-2],
+            )
+        return result
+
     def get_segment(self, i):
         return self[self.segment_starts[i]:self.segment_ends[i]]
 

@@ -132,6 +132,10 @@ class MobMorphMixin:
         ) // target_batch_size
         split_factors = [(repeat_indices == i).sum() for i in range(current_batch_size)]
 
+        # Keep the repeat mapping so non-animatable batch-boundary metadata can
+        # be expanded alongside the timeline-backed attributes below.
+        repeat_indices = repeat_indices.to(torch.long)
+
         # Iterate over animatable attributes and expand their batch dimensions
         for attr in self.animatable_attrs:
             if not hasattr(self, attr):
@@ -170,6 +174,62 @@ class MobMorphMixin:
             self.setattr_and_rebatch_without_record(
                 attr, squish(torch.stack(new_batched_values, -3), -3, -2).unsqueeze(0)
             )
+
+        # ``parent_batch_sizes`` is structural metadata rather than an
+        # animatable attribute, so setattr/rebatch cannot update it for us.
+        # Leaving it at the old size makes indexed views and render primitives
+        # disagree with the newly-expanded tensors.
+        if self.parent_batch_sizes is not None:
+            parent_batch_sizes = self.parent_batch_sizes
+            points_per_object = self.num_points_per_object
+            if self.singleton_batch_indexing and len(parent_batch_sizes) == 1:
+                # A singleton wrapper stores the total number of child objects
+                # in its sole entry (BezierCircuitCubic.from_batches uses this
+                # for the packed character batch).
+                self.parent_batch_sizes = torch.tensor(
+                    (target_batch_size * points_per_object,),
+                    dtype=parent_batch_sizes.dtype,
+                    device=parent_batch_sizes.device,
+                )
+            else:
+                objects_per_parent = parent_batch_sizes // points_per_object
+                if bool((parent_batch_sizes % points_per_object != 0).any()) or int(
+                    objects_per_parent.sum()
+                ) != current_batch_size:
+                    raise RuntimeError(
+                        "parent_batch_sizes does not describe the Mob's current batch"
+                    )
+
+                repeat_indices_on_device = repeat_indices.to(
+                    parent_batch_sizes.device
+                )
+                if bool((objects_per_parent == 1).all()):
+                    # Every batch object is independently indexable. Repeating
+                    # an object therefore repeats its parent entry as well.
+                    self.parent_batch_sizes = parent_batch_sizes.index_select(
+                        0, repeat_indices_on_device
+                    )
+                else:
+                    # Multiple batch objects belong to each parent. Preserve
+                    # those parent groups while counting repeated objects into
+                    # the group they came from.
+                    parent_of_object = torch.repeat_interleave(
+                        torch.arange(
+                            len(parent_batch_sizes),
+                            device=parent_batch_sizes.device,
+                        ),
+                        objects_per_parent,
+                    )
+                    expanded_parent_of_object = parent_of_object.index_select(
+                        0, repeat_indices_on_device
+                    )
+                    self.parent_batch_sizes = (
+                        torch.bincount(
+                            expanded_parent_of_object,
+                            minlength=len(parent_batch_sizes),
+                        )
+                        * points_per_object
+                    ).to(parent_batch_sizes.dtype)
         return self
 
     def reorder_batch_to_minimize_movement(self, target: Mob):
@@ -367,66 +427,159 @@ class MobMorphMixin:
                 if new_self.num_points_per_object == 4:
 
                     def get_sub_circuits(x):
-                        x = unsquish(x, -2, 4)
-                        x = x.squeeze(0)
+                        """Split a [segments, 4, xyz] tensor at path breaks."""
                         start_inds = (
                             (
-                                (x[..., 0, :] - x.roll(1, -3)[..., -1, :]).abs().sum(-1)
+                                (x[..., 0, :] - x.roll(1, -3)[..., -1, :])
+                                .abs()
+                                .sum(-1)
                                 > 1e-6
                             )
-                            .squeeze()
-                            .nonzero()
+                            .nonzero(as_tuple=False)
+                            .flatten()
                         )
                         if start_inds.numel() == 0:
                             return [x]
-                        else:
-                            out = []
-                            for i in range(len(start_inds)):
-                                out.append(
-                                    x[
-                                        start_inds[i] : start_inds[i + 1]
-                                        if (i + 1) < len(start_inds)
-                                        else x.shape[-3]
-                                    ]
-                                )
-                            return out
+                        return [
+                            x[
+                                start_inds[i] : start_inds[i + 1]
+                                if (i + 1) < len(start_inds)
+                                else x.shape[-3]
+                            ]
+                            for i in range(len(start_inds))
+                        ]
 
-                    my_control_points, other_control_points = [
-                        get_sub_circuits(_)
-                        for _ in [new_self.location, other_mob.location]
-                    ]
-
-                    child_difference = len(other_control_points) - len(
-                        my_control_points
-                    )
-                    if child_difference > 0:
-                        my_control_points = new_self.expand_n_list(
-                            my_control_points, child_difference
-                        )
-                    elif child_difference < 0:
-                        other_control_points = other_mob.expand_n_list(
-                            other_control_points, -child_difference
-                        )
-
-                    my_cs = []
-                    other_cs = []
-                    for my_c, other_c in zip(my_control_points, other_control_points):
-                        child_difference = other_c.shape[-3] - my_c.shape[-3]
-                        if child_difference > 0:
-                            my_c = new_self.expand_n_tensor(my_c, child_difference)
-                        elif child_difference < 0:
-                            other_c = new_self.expand_n_tensor(
-                                other_c, -child_difference
+                    def get_parent_circuits(mob):
+                        """Split cubic segments using packed-object boundaries."""
+                        segments = unsquish(mob.location, -2, 4).squeeze(0)
+                        parent_batch_sizes = mob.parent_batch_sizes
+                        if parent_batch_sizes is None:
+                            return [segments]
+                        if bool((parent_batch_sizes % 4 != 0).any()) or int(
+                            parent_batch_sizes.sum()
+                        ) != mob.location.shape[-2]:
+                            raise RuntimeError(
+                                "parent_batch_sizes does not match cubic control points"
                             )
-                        my_cs.append(my_c)
-                        other_cs.append(other_c)
+                        return list(
+                            segments.split(
+                                (parent_batch_sizes // 4).tolist(), dim=-3
+                            )
+                        )
+
+                    had_parent_batches = (
+                        new_self.parent_batch_sizes is not None
+                        or other_mob.parent_batch_sizes is not None
+                    )
+                    my_parent_circuits = get_parent_circuits(new_self)
+                    other_parent_circuits = get_parent_circuits(other_mob)
+
+                    # Packed text stores one parent batch per glyph. Equalize
+                    # those parent batches first, then equalize the disconnected
+                    # paths and cubic segments *within each glyph*. Flattening
+                    # all paths globally loses the glyph boundaries required to
+                    # pair control points with per-glyph transforms at render time.
+                    parent_difference = len(other_parent_circuits) - len(
+                        my_parent_circuits
+                    )
+                    if parent_difference > 0:
+                        my_parent_circuits = new_self.expand_n_list(
+                            my_parent_circuits, parent_difference
+                        )
+                    elif parent_difference < 0:
+                        other_parent_circuits = other_mob.expand_n_list(
+                            other_parent_circuits, -parent_difference
+                        )
+
+                    my_parent_batches = []
+                    other_parent_batches = []
+                    parent_batch_sizes = []
+                    for my_parent, other_parent in zip(
+                        my_parent_circuits, other_parent_circuits
+                    ):
+                        my_control_points = get_sub_circuits(my_parent)
+                        other_control_points = get_sub_circuits(other_parent)
+
+                        circuit_difference = len(other_control_points) - len(
+                            my_control_points
+                        )
+                        if circuit_difference > 0:
+                            my_control_points = new_self.expand_n_list(
+                                my_control_points, circuit_difference
+                            )
+                        elif circuit_difference < 0:
+                            other_control_points = other_mob.expand_n_list(
+                                other_control_points, -circuit_difference
+                            )
+
+                        my_cs = []
+                        other_cs = []
+                        for my_c, other_c in zip(
+                            my_control_points, other_control_points
+                        ):
+                            segment_difference = other_c.shape[-3] - my_c.shape[-3]
+                            if segment_difference > 0:
+                                my_c = new_self.expand_n_tensor(
+                                    my_c, segment_difference
+                                )
+                            elif segment_difference < 0:
+                                other_c = other_mob.expand_n_tensor(
+                                    other_c, -segment_difference
+                                )
+                            my_cs.append(my_c)
+                            other_cs.append(other_c)
+
+                        my_parent_batch = torch.cat(my_cs, -3)
+                        other_parent_batch = torch.cat(other_cs, -3)
+                        my_parent_batches.append(my_parent_batch)
+                        other_parent_batches.append(other_parent_batch)
+                        parent_batch_sizes.append(my_parent_batch.shape[-3] * 4)
+
+                    # The cubic alignment above can insert degenerate segments.  Any
+                    # non-singleton point-wise attributes (for example opacity after
+                    # ``wave_color``) must be structurally expanded at the same time.
+                    # Otherwise location owns the new number of timeline rows while
+                    # color/opacity retain rows for the pre-morph geometry.
+                    aligned_segment_count = sum(parent_batch_sizes) // 4
+                    my_segment_count = new_self.location.shape[-2] // 4
+                    other_segment_count = other_mob.location.shape[-2] // 4
+                    if aligned_segment_count > my_segment_count:
+                        new_self.expand_n_batch(
+                            aligned_segment_count - my_segment_count
+                        )
+                    if aligned_segment_count > other_segment_count:
+                        other_mob.expand_n_batch(
+                            aligned_segment_count - other_segment_count
+                        )
 
                     new_self.setattr_and_rebatch_without_record(
-                        "location", squish(torch.cat(my_cs, -3), -3, -2).unsqueeze(0)
+                        "location",
+                        squish(torch.cat(my_parent_batches, -3), -3, -2).unsqueeze(0),
                     )
                     other_mob.setattr_and_rebatch_without_record(
-                        "location", squish(torch.cat(other_cs, -3), -3, -2).unsqueeze(0)
+                        "location",
+                        squish(torch.cat(other_parent_batches, -3), -3, -2).unsqueeze(0),
                     )
+                    if had_parent_batches:
+                        metadata_device = (
+                            new_self.parent_batch_sizes.device
+                            if new_self.parent_batch_sizes is not None
+                            else other_mob.parent_batch_sizes.device
+                        )
+                        metadata_dtype = (
+                            new_self.parent_batch_sizes.dtype
+                            if new_self.parent_batch_sizes is not None
+                            else other_mob.parent_batch_sizes.dtype
+                        )
+                        expanded_parent_batch_sizes = torch.tensor(
+                            parent_batch_sizes,
+                            dtype=metadata_dtype,
+                            device=metadata_device,
+                        )
+                        new_self.parent_batch_sizes = expanded_parent_batch_sizes
+                        other_mob.parent_batch_sizes = (
+                            expanded_parent_batch_sizes.clone()
+                        )
                 else:
                     batch_difference = (
                         other_mob.location.shape[-2] - new_self.location.shape[-2]

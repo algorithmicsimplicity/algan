@@ -437,8 +437,7 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
                 if v1 is None:
                     continue
                 n = self.location.shape[-2]
-                self.apply_absolute_change_two(attr, *[cast_to_tensor(_).expand(-1,n,-1)
-                    for _ in [v1, v2]], recursive=recursive)
+                self.apply_absolute_change_two(attr, *[cast_to_tensor(_).expand(-1,n,-1) for _ in [v1, v2]], recursive=recursive)
             #if color is not None:
             #    self.apply_absolute_change_two("color", color, new_color, recursive=recursive)
             #if opacity is not None:
