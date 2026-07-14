@@ -188,6 +188,112 @@ def set_textured_wavefront(enabled):
     WF_TEXTURED = bool(enabled)
 
 
+# --- Scene merge + STBVH build device --------------------------------------
+# The per-batch scene prep -- merging every primitive's packed ``_rt_*``
+# geometry into one contiguous array per geometry type and building one STBVH
+# per type -- is pure vectorised torch. ``project_to_screen`` (the heavy
+# per-mob vertex work) always runs on the CPU animation device, hidden on the
+# prefetch worker thread; this toggle controls only where the *merge + STBVH
+# build* run afterwards.
+#
+# When on (default), they run on the render device: measured ~10-17x faster
+# than the CPU build the previous commit introduced (the STBVH build alone was
+# ~6.5s of the UHD bezier benchmark on the CPU). To keep the exact arena
+# accounting that CPU build was introduced for, the GPU merge runs on the
+# *render thread* (never the prefetch worker, so its transient out-of-place
+# peak can be measured/bounded without a concurrent render polluting the
+# stats), the finished scene is still uploaded into the render arena through
+# ``copy_merged_scene_to_arena`` (so the arena footprint is unchanged and
+# subtracted exactly), and the transient build scratch -- which lives in the
+# render pool's non-arena headroom -- is (a) proactively bounded against that
+# headroom before the merge is attempted and (b) caught by the existing
+# OOM -> window-shrink retry if the estimate was low. Off falls back to the
+# byte-exact CPU build. ALGAN_MERGE_ON_GPU=0 disables.
+MERGE_ON_GPU = os.environ.get("ALGAN_MERGE_ON_GPU", "1") == "1"
+
+# Multiplier turning a batch's packed ``_rt_*`` input bytes into a conservative
+# estimate of the GPU merge's transient peak (the out-of-place cat / argsort /
+# unique / dyadic-time-pyramid scratch plus the merged output). Measured peaks
+# run ~3-6x the packed inputs; the default leaves margin so the proactive
+# headroom check rarely lets a batch through that the OOM retry then has to
+# shrink. Read live.
+MERGE_GPU_PEAK_FACTOR = float(
+    os.environ.get("ALGAN_MERGE_GPU_PEAK_FACTOR", "6.0"))
+
+# Opt-in exact measurement of the GPU merge's transient peak, for calibrating
+# ``MERGE_GPU_PEAK_FACTOR``. It calls ``torch.cuda.reset_peak_memory_stats``
+# around the build, which clobbers the process-wide peak counter that
+# ``profiling_utils`` reads for its whole-render peak, so it is OFF by default
+# -- the always-on ``MERGE_GPU_PEAK_FACTOR`` estimate is what actually bounds
+# the build against the pool headroom. Enable during a calibration run (not a
+# profiling run) to log the measured peak alongside the estimate.
+MERGE_TRACK_PEAK = os.environ.get("ALGAN_MERGE_TRACK_PEAK", "0") == "1"
+
+
+def set_merge_on_gpu(enabled):
+    """Toggle GPU-side scene merge + STBVH build (see ``MERGE_ON_GPU``)."""
+    global MERGE_ON_GPU
+    MERGE_ON_GPU = bool(enabled)
+
+
+def merge_on_gpu_active():
+    """True when the scene merge + STBVH build should run on the render device.
+
+    Requires ``MERGE_ON_GPU`` and a CUDA render device -- the offload only pays
+    off on a real accelerator, and the transient-peak accounting uses the
+    ``torch.cuda`` memory-stats API. A CPU (or MPS) render device keeps the
+    merge on the CPU, byte-identically to the pre-toggle path.
+    """
+    if not MERGE_ON_GPU:
+        return False
+    from algan.settings.defaults import COMPUTING_DEFAULTS
+
+    return COMPUTING_DEFAULTS.render_device.type == "cuda"
+
+
+# --- project_to_screen device ----------------------------------------------
+# ``project_to_screen`` (per-primitive vertex shading + screen projection +
+# geometry packing into the ``_rt_*`` arrays) is the next-largest vectorised
+# prep phase after the merge -- measured ~2.6s/batch on the bezier text
+# benchmark, larger than the merge. Like the merge it is pure vectorised torch,
+# so it runs far faster on the render device. When on (default) it runs there,
+# on the *render thread* (deferred off the prefetch worker, same as the merge,
+# so its transient peak is measured/bounded without a concurrent render), which
+# also leaves the packed ``_rt_*`` already on the device for the GPU merge to
+# consume with no upload. The heavy Python-bound timeline materialization
+# (``set_state_to_times``) is what still rides the hidden worker. Off keeps
+# projection on the CPU source device. ALGAN_PROJECT_ON_GPU=0 disables.
+PROJECT_ON_GPU = os.environ.get("ALGAN_PROJECT_ON_GPU", "1") == "1"
+
+# Conservative multiplier from a batch's pre-projection source-geometry bytes
+# to the projection's transient device peak (source + shading scratch + packed
+# ``_rt_*`` output; the polyline sampling can expand bezier geometry well past
+# its control points, hence a larger default than the merge factor). Bounds the
+# projection against the pool headroom before it is attempted; the OOM retry is
+# the exact fallback. Read live.
+PROJECT_GPU_PEAK_FACTOR = float(
+    os.environ.get("ALGAN_PROJECT_GPU_PEAK_FACTOR", "8.0"))
+
+
+def set_project_on_gpu(enabled):
+    """Toggle GPU-side ``project_to_screen`` (see ``PROJECT_ON_GPU``)."""
+    global PROJECT_ON_GPU
+    PROJECT_ON_GPU = bool(enabled)
+
+
+def project_on_gpu_active():
+    """True when ``project_to_screen`` should run on the render device.
+
+    Requires ``PROJECT_ON_GPU`` and a CUDA render device (see
+    ``merge_on_gpu_active`` for why CUDA specifically).
+    """
+    if not PROJECT_ON_GPU:
+        return False
+    from algan.settings.defaults import COMPUTING_DEFAULTS
+
+    return COMPUTING_DEFAULTS.render_device.type == "cuda"
+
+
 # Feature bitmask for the textured wavefront: each bit compiles one of the
 # monolith's features back into the (otherwise lean) textured shade kernel, so
 # the marginal occupancy / performance cost of each can be measured one at a

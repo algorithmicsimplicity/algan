@@ -4,6 +4,7 @@ into contiguous tensor data-structures, ready to be shipped to ray tracing kerne
 import torch
 import torch.nn.functional as F
 
+from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.rendering.raytracing.primitives import RayTracedPNTrianglePrimitive, RayTracedTrianglePrimitive, \
     RayTracedBezierCircuitPrimitive
@@ -36,6 +37,80 @@ def _projected_scene_device(primitives):
             if name.startswith("_rt_") and torch.is_tensor(value):
                 return value.device
     raise ValueError("projected primitive batch contains no ray-tracing tensors")
+
+
+# Non-geometry ``_rt_*`` attributes that must never be relocated with the
+# packed inputs (the merged-scene cache, the arena-backed scene, and the
+# host/env prep handles).
+_MERGE_SKIP_ATTRS = frozenset({
+    "_rt_merged_scene", "_rt_device_scene", "_rt_prepared_host_scene",
+    "_rt_env_meta"})
+
+
+def _iter_primitive_input_tensors(primitive):
+    """Yield ``(name, tensor)`` for each packed ``_rt_*`` geometry tensor of a
+    projected primitive (skipping the merged-scene cache / handle attrs)."""
+    for name, value in list(vars(primitive).items()):
+        if (name.startswith("_rt_") and name not in _MERGE_SKIP_ATTRS
+                and torch.is_tensor(value)):
+            yield name, value
+
+
+def _upload_primitive_inputs(primitives, device):
+    """Move every primitive's packed ``_rt_*`` geometry onto ``device`` in
+    place, so the subsequent merge + STBVH build run there. Each CPU source
+    tensor is dropped as it is replaced; the merge nulls the device copies once
+    the contiguous per-type arrays are built."""
+    for primitive in primitives:
+        for name, value in _iter_primitive_input_tensors(primitive):
+            if value.device != device:
+                setattr(primitive, name, value.to(device))
+
+
+def gpu_merge_input_bytes(primitives):
+    """Total bytes of a batch's packed ``_rt_*`` inputs (before the merge).
+
+    Feeds the GPU merge's transient-peak estimate used by the render-arena
+    preflight to keep the build inside the pool's headroom (see
+    ``settings.MERGE_GPU_PEAK_FACTOR`` and ``RenderLoopMixin``)."""
+    total = 0
+    for primitive in primitives:
+        for _name, value in _iter_primitive_input_tensors(primitive):
+            total += value.numel() * value.element_size()
+    return total
+
+
+def _iter_primitive_source_tensors(primitive):
+    """Yield ``(name, tensor)`` for each pre-projection source-geometry tensor
+    of a primitive (corners/normals/colors/material/texture rows, ...). These
+    are every torch tensor that is not a packed ``_rt_*`` output or a
+    cache/handle attribute; project_to_screen releases them once packed."""
+    for name, value in list(vars(primitive).items()):
+        if (torch.is_tensor(value) and not name.startswith("_rt_")
+                and name not in _MERGE_SKIP_ATTRS):
+            yield name, value
+
+
+def upload_primitive_source(primitive, device):
+    """Move a primitive's pre-projection source geometry onto ``device`` so
+    ``project_to_screen`` (and its vertex shader) run there (project-on-gpu)."""
+    for name, value in _iter_primitive_source_tensors(primitive):
+        if value.device != device:
+            setattr(primitive, name, value.to(device))
+
+
+def gpu_project_input_bytes(primitives):
+    """Total bytes of a batch's pre-projection source geometry.
+
+    Feeds the projection's transient-peak estimate used by the render-arena
+    preflight (see ``settings.PROJECT_GPU_PEAK_FACTOR`` and
+    ``RenderLoopMixin``). Already-projected primitives (source released) count
+    zero."""
+    total = 0
+    for primitive in primitives:
+        for _name, value in _iter_primitive_source_tensors(primitive):
+            total += value.numel() * value.element_size()
+    return total
 
 
 def _collect_scene_tensors(scene):
@@ -678,9 +753,31 @@ def _merge_scene(primitives):
     if cached is not None:
         return cached
 
-    device = _projected_scene_device(primitives)
-    if device.type != "cpu":
+    from algan.rendering.raytracing import settings as _rts
+
+    # By default the merge + STBVH build run on the render device (much faster
+    # than the CPU build) rather than on the projected primitives' source
+    # (CPU) device. The transient out-of-place peak of this build -- inputs
+    # relocated to the device plus all cat / sort / BVH-pyramid scratch plus
+    # the merged output -- lives in the render pool's non-arena headroom and is
+    # bounded by the render-arena preflight's ``MERGE_GPU_PEAK_FACTOR``
+    # estimate. ``MERGE_TRACK_PEAK`` optionally measures the exact peak here to
+    # calibrate that factor (it resets the process peak counter, so it stays
+    # opt-in and off during profiling runs).
+    gpu_merge = _rts.merge_on_gpu_active()
+    track_peak = gpu_merge and _rts.MERGE_TRACK_PEAK
+    peak_base = None
+    if gpu_merge:
+        device = COMPUTING_DEFAULTS.render_device
+        if track_peak:
+            torch.cuda.reset_peak_memory_stats(device)
+            peak_base = torch.cuda.memory_allocated(device)
+        _upload_primitive_inputs(primitives, device)
         empty_cache(force_gc=False)
+    else:
+        device = _projected_scene_device(primitives)
+        if device.type != "cpu":
+            empty_cache(force_gc=False)
     pn_patches = [p for p in primitives
                   if isinstance(p, RayTracedPNTrianglePrimitive)]
     triangles = [p for p in primitives
@@ -1173,6 +1270,15 @@ def _merge_scene(primitives):
 
     if device.type != "cpu":
         empty_cache(force_gc=False)
+    # Measured transient device bytes the build allocated above the pre-merge
+    # baseline, when opt-in peak tracking is on (see settings.MERGE_TRACK_PEAK);
+    # -1 marks "not measured". Purely diagnostic -- the arena preflight bounds
+    # the build with the MERGE_GPU_PEAK_FACTOR estimate, not this value.
+    if track_peak:
+        scene["_gpu_merge_peak_bytes"] = int(
+            torch.cuda.max_memory_allocated(device) - peak_base)
+    else:
+        scene["_gpu_merge_peak_bytes"] = -1
     first._rt_merged_scene = scene
     return scene
 

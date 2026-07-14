@@ -11,6 +11,7 @@ output (:meth:`~RenderLoopMixin.render_to_video`).
 """
 
 import collections
+import logging
 import math
 import os
 import threading
@@ -324,6 +325,20 @@ class RenderLoopMixin:
         first._rt_prepared_host_scene = cached
         return cached
 
+    def _gpu_merge_headroom_bytes(self):
+        """Device bytes available outside the render arena for the GPU merge's
+        transient out-of-place build scratch (see settings.MERGE_ON_GPU).
+
+        The arena block was reserved from a fraction of the pool at
+        ``get_frames`` start, so the pool's *current* free bytes are exactly the
+        headroom the merge draws from. A margin is left for Taichi's own
+        allocation growth during the render that follows.
+        """
+        device = self.memory.data.device
+        if device.type != "cuda":
+            return float("inf")
+        return int(get_num_available_bytes(device) * 0.9)
+
     def _prepared_batch_fits_render_arena(
         self,
         primitive_batch,
@@ -344,6 +359,8 @@ class RenderLoopMixin:
         from algan.rendering.raytracing import settings as rt_settings
         from algan.rendering.raytracing.scene_builder import (
             get_merged_scene_arena_nbytes,
+            gpu_merge_input_bytes,
+            gpu_project_input_bytes,
         )
         from algan.rendering.raytracing.settings import (
             is_post_process_tonemap_enabled,
@@ -352,10 +369,33 @@ class RenderLoopMixin:
             get_wavefront_memory_required,
         )
 
-        # Prefetch can be disabled or may have failed after projecting only a
-        # prefix. Finish source-device projection on this render thread before
-        # asking the merged-scene cache for exact upload bytes.
-        self._prewarm_render_batch(primitive_batch, render_state)
+        # Prefetch defers projection to this render thread when it runs on the
+        # device (project-on-gpu); otherwise it merely finishes any CPU
+        # projection the worker didn't complete. Its transient device scratch
+        # (source geometry + shading workspace + packed _rt_* output) lives in
+        # the pool's non-arena headroom, so -- like the merge below -- estimate
+        # its peak from the source-geometry bytes and shrink the window before
+        # attempting it, with the OOM handler as the exact fallback.
+        if rt_settings.project_on_gpu_active():
+            estimated_project_peak = int(
+                rt_settings.PROJECT_GPU_PEAK_FACTOR
+                * gpu_project_input_bytes(primitive_batch))
+            if estimated_project_peak > self._gpu_merge_headroom_bytes():
+                logger.debug(
+                    "GPU projection peak estimate %.1f MB exceeds pool "
+                    "headroom %.1f MB; shrinking frame window.",
+                    estimated_project_peak / 1e6,
+                    self._gpu_merge_headroom_bytes() / 1e6)
+                return False
+        try:
+            self._prewarm_render_batch(primitive_batch, render_state)
+        except (InsufficientMemoryException, torch.OutOfMemoryError):
+            # Device projection overran the pool headroom. Drop partial state
+            # and report not-fitting so the caller shrinks the frame window.
+            primitive_batch[0]._rt_merged_scene = None
+            primitive_batch[0]._rt_prepared_host_scene = None
+            empty_cache(force_gc=False)
+            return False
         if not all(
             getattr(primitive, "_rt_projected", False)
             for primitive in primitive_batch
@@ -364,9 +404,49 @@ class RenderLoopMixin:
             # path; there is no ray-scene layout to preflight here.
             return True
 
-        merged_host, env_map = self._prepare_merged_host_scene(primitive_batch)
+        # The GPU merge's transient out-of-place scratch (inputs relocated to
+        # the device + cat/sort/BVH-pyramid workspace + merged output) lives in
+        # the render pool's non-arena headroom, separate from the arena bytes
+        # sized below. Estimate its peak from the packed inputs and reject a
+        # batch that would clearly overflow that headroom before paying for the
+        # merge; a low estimate is still caught by the OOM handling just below,
+        # which routes to the outer window-shrink retry.
+        gpu_merge = rt_settings.merge_on_gpu_active()
+        if gpu_merge:
+            estimated_merge_peak = int(
+                rt_settings.MERGE_GPU_PEAK_FACTOR
+                * gpu_merge_input_bytes(primitive_batch))
+            if estimated_merge_peak > self._gpu_merge_headroom_bytes():
+                logger.debug(
+                    "GPU merge peak estimate %.1f MB exceeds pool headroom "
+                    "%.1f MB; shrinking frame window.",
+                    estimated_merge_peak / 1e6,
+                    self._gpu_merge_headroom_bytes() / 1e6)
+                return False
+        try:
+            merged_host, env_map = self._prepare_merged_host_scene(
+                primitive_batch)
+        except (InsufficientMemoryException, torch.OutOfMemoryError):
+            # The device build overran the pool headroom. Drop any partial
+            # merge state and report the batch as not fitting so the caller
+            # shrinks the frame window and retries.
+            primitive_batch[0]._rt_merged_scene = None
+            primitive_batch[0]._rt_prepared_host_scene = None
+            empty_cache(force_gc=False)
+            return False
         scene_bytes = get_merged_scene_arena_nbytes(
             merged_host, self.memory, persist=True)
+        if gpu_merge and logger.isEnabledFor(logging.DEBUG):
+            measured = int(merged_host.get("_gpu_merge_peak_bytes", -1))
+            measured_str = (f"{measured / 1e6:.1f}" if measured >= 0
+                            else "n/a")
+            logger.debug(
+                "GPU merge: est peak %.1f MB (measured %s MB), headroom "
+                "%.1f MB, arena scene %.1f MB.",
+                estimated_merge_peak / 1e6,
+                measured_str,
+                self._gpu_merge_headroom_bytes() / 1e6,
+                scene_bytes / 1e6)
         bytes_remaining = self.memory.get_num_bytes_remaining()
         if scene_bytes > bytes_remaining:
             return False
@@ -497,11 +577,14 @@ class RenderLoopMixin:
             # Reclaim animation-phase residuals before render batching.
             empty_cache(force_gc=False)
 
-            # Scene projection/merge ran on the source (normally CPU) device.
-            # Upload each unique finished storage directly into the persistent
-            # end of ManualMemory before sizing frame chunks.  The exact scene
-            # footprint is therefore subtracted from the arena automatically;
-            # no CUDA-side cat/BVH scratch can sit beside an almost-full pool.
+            # Projection ran on the source (CPU) device; the merge + STBVH
+            # build ran on the CPU or (default) the render device. Upload each
+            # unique finished storage directly into the persistent end of
+            # ManualMemory before sizing frame chunks, so the exact scene
+            # footprint is subtracted from the arena automatically. On the CPU
+            # merge no CUDA-side cat/BVH scratch ever sat beside the pool; on
+            # the GPU merge that scratch has already been freed (its transient
+            # peak was bounded against the pool headroom in the preflight).
             from algan.rendering.raytracing import settings as rt_settings
             from algan.rendering.raytracing.scene_builder import (
                 copy_merged_scene_to_arena,
@@ -509,12 +592,23 @@ class RenderLoopMixin:
 
             merged_host, env_map = self._prepare_merged_host_scene(
                 primitive_batch)
-            primitive_batch[0]._rt_device_scene = copy_merged_scene_to_arena(
+            device_scene = copy_merged_scene_to_arena(
                 merged_host, self.memory, persist=True)
+            primitive_batch[0]._rt_device_scene = device_scene
             # The uploaded scene now owns every render-facing tensor.  Drop the
             # extra environment-widened host dict (the base merge remains in its
             # normal primitive cache until the batch is released).
             primitive_batch[0]._rt_prepared_host_scene = None
+            if rt_settings.merge_on_gpu_active():
+                # The base merge is a second copy of every scene tensor on the
+                # render device. The arena copy now owns them, so release the
+                # base merge and read the remaining scalar scene metadata below
+                # from the arena scene -- keeping steady-state device memory at
+                # one scene (parity with the CPU merge, whose base copy is cheap
+                # host memory kept until the batch is released).
+                primitive_batch[0]._rt_merged_scene = None
+                merged_host = device_scene
+                empty_cache(force_gc=False)
 
             render_pointers = self.memory.get_pointers()
             from algan.rendering.raytracing.settings import (
@@ -982,49 +1076,64 @@ class RenderLoopMixin:
         return primitive_collections, start_time_ind + duration, render_state
 
     def _prewarm_render_batch(self, primitives, render_state):
-        """Run a batch's ``project_to_screen`` + source-device merged-scene/
-        STBVH build ahead of the render (called from ``fetch_batch``, i.e. on
-        the batch-prep worker when prefetch is on).
+        """Run a batch's ``project_to_screen`` (+ the CPU merge when merge and
+        project both stay on the CPU) ahead of the render.
 
-        Both steps are torch-only, but they normally run on the render thread
-        against shared mutable state, so this uses isolated stand-ins:
+        Called on the prefetch worker (from ``fetch_batch``) when projection is
+        on the CPU, so the work stays hidden behind the previous batch's
+        render; when projection is on the render device (default; see
+        settings.PROJECT_ON_GPU) it is deferred to the render thread instead
+        (called from the arena preflight), so its transient device peak is
+        measured/bounded without a concurrent render polluting the pool.
+
+        Runs against isolated stand-ins so it never touches live render state:
 
         * a shim camera / shim lights carrying the batch's *snapshot* tensors
-          (the exact objects ``render_primitive_batch`` would assign to the
-          live camera/lights) -- the live objects still hold the in-flight
-          batch's values and must not be touched from this thread;
+          (moved to the render device when projecting there);
         * a scratch unmanaged memory for shading temporaries -- the shared
-          render pool's bump pointer is owned by the render thread (a
-          concurrent ``temp()`` save/restore would free live render tensors).
+          render pool's bump pointer is owned by the render thread.
 
-        Identical inputs, identical math, so the packed arrays and merged scene
-        are byte-identical to main-thread preparation. The merge follows the
-        primitive tensors' source device; upload into managed render memory is
-        a later render-thread boundary. Each successfully
-        projected primitive is marked ``_rt_projected`` and skipped by
-        ``render_primitive_batch``; on any failure the un-projected remainder
+        Identical inputs, identical math, so the packed arrays are byte-exact
+        (within device float tolerance) to main-thread preparation. Each
+        successfully projected primitive is marked ``_rt_projected`` and skipped
+        by ``render_primitive_batch``; on any failure the un-projected remainder
         (and the merge) simply runs on the render thread as before.
         """
         try:
             from algan.rendering.raytracing.primitives import (
                 RayTracedBezierCircuitPrimitive, RayTracedTrianglePrimitive)
             from algan.rendering.raytracing.scene_builder import (
-                prewarm_merge_cache)
+                prewarm_merge_cache, upload_primitive_source)
         except Exception:
             return
         if not primitives or not isinstance(
                 primitives[0], (RayTracedTrianglePrimitive,
                                 RayTracedBezierCircuitPrimitive)):
             return
+        from algan.rendering.raytracing import settings as rt_settings
+
         aa = self.render_settings.anti_alias_level
+        # Projection runs on the render device by default (see
+        # settings.PROJECT_ON_GPU); the primitive source geometry and the
+        # camera/light snapshot are moved there so the packed _rt_* outputs are
+        # built on it (ready for the GPU merge, no upload). Off keeps
+        # projection on the snapshot's source (CPU) device.
+        gpu_project = rt_settings.project_on_gpu_active()
+        project_device = (COMPUTING_DEFAULTS.render_device
+                          if gpu_project else None)
+
+        def _to_device(value):
+            if gpu_project and torch.is_tensor(value):
+                return value.to(project_device)
+            return value
 
         class _ShimCamera:
             pass
 
         camera = _ShimCamera()
-        camera.ray_origin = render_state["ray_origin"]
-        camera.screen_point = render_state["screen_point"]
-        camera.screen_basis = render_state["screen_basis"]
+        camera.ray_origin = _to_device(render_state["ray_origin"])
+        camera.screen_point = _to_device(render_state["screen_point"])
+        camera.screen_basis = _to_device(render_state["screen_basis"])
         camera.screen_width = self.num_pixels_screen_width * aa
         camera.screen_height = self.num_pixels_screen_height * aa
 
@@ -1034,9 +1143,9 @@ class RenderLoopMixin:
         lights = []
         for origin, light_color, aux in render_state["lights"]:
             light = _ShimLight()
-            light.origin = origin
-            light.light_color = light_color
-            light._render_aux = aux
+            light.origin = _to_device(origin)
+            light.light_color = _to_device(light_color)
+            light._render_aux = _to_device(aux)
             lights.append(light)
 
         scratch_by_device = {}
@@ -1045,8 +1154,12 @@ class RenderLoopMixin:
                 continue
             original_memory = primitive.memory
             try:
-                source_device = _primitive_source_device(
-                    primitive, fallback=render_state["ray_origin"].device)
+                if gpu_project:
+                    upload_primitive_source(primitive, project_device)
+                    source_device = project_device
+                else:
+                    source_device = _primitive_source_device(
+                        primitive, fallback=render_state["ray_origin"].device)
                 scratch = scratch_by_device.get(source_device)
                 if scratch is None:
                     scratch = ManualMemory(
@@ -1057,7 +1170,13 @@ class RenderLoopMixin:
                 primitive._rt_projected = True
             finally:
                 primitive.memory = original_memory
-        prewarm_merge_cache(primitives)
+        # The merge + STBVH build ride the prefetch worker only when they run
+        # on the CPU. When they run on the render device (the default; see
+        # settings.MERGE_ON_GPU) they are deferred to the render thread so
+        # their transient device peak is measured/bounded without a concurrent
+        # render polluting the pool.
+        if not rt_settings.merge_on_gpu_active():
+            prewarm_merge_cache(primitives)
 
     def _materialize_render_state(self, start_ind, end_ind):
         """Materialize camera/screen/light state over ``[start_ind, end_ind)``
@@ -1200,10 +1319,19 @@ class RenderLoopMixin:
                     # prep runs on the worker while batch b renders, turning
                     # seconds of otherwise-serial render-thread CPU work into
                     # hidden time. ALGAN_PREFETCH_MERGE=0 falls back to
-                    # projecting + merging on the render thread.
+                    # projecting + merging on the render thread. When projection
+                    # runs on the render device (settings.PROJECT_ON_GPU) it is
+                    # deferred to the render thread entirely -- GPU work on this
+                    # worker would contend with the in-flight render and pollute
+                    # the transient-peak stats -- so only the CPU-projection
+                    # path prewarms here.
+                    from algan.rendering.raytracing import (
+                        settings as rt_settings)
+
                     if (batch[0]
                             and os.environ.get("ALGAN_PREFETCH_MERGE", "1")
-                            != "0"):
+                            != "0"
+                            and not rt_settings.project_on_gpu_active()):
                         try:
                             self._prewarm_render_batch(batch[0], batch[2])
                         except Exception as e:
@@ -1283,6 +1411,7 @@ class RenderLoopMixin:
                         if primitives:
                             primitives[0]._rt_device_scene = None
                             primitives[0]._rt_prepared_host_scene = None
+                            primitives[0]._rt_merged_scene = None
                         del primitives
                         self.memory.reset()
                         empty_cache(force_gc=False)
@@ -1306,6 +1435,7 @@ class RenderLoopMixin:
                             if primitives:
                                 primitives[0]._rt_device_scene = None
                                 primitives[0]._rt_prepared_host_scene = None
+                                primitives[0]._rt_merged_scene = None
                             del primitives
                             self.memory.reset()
                             empty_cache(force_gc=False)
@@ -1364,6 +1494,7 @@ class RenderLoopMixin:
                             if primitives:
                                 primitives[0]._rt_device_scene = None
                                 primitives[0]._rt_prepared_host_scene = None
+                                primitives[0]._rt_merged_scene = None
                             del primitives
                             self.memory.reset()
                             empty_cache(force_gc=False)
