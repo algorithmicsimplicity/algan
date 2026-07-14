@@ -5,7 +5,6 @@ import torch.nn.functional as F
 
 from algan.constants.color import Color
 from algan.utils.memory_utils import empty_cache
-from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.rendering.primitives.bezier_circuit_primitive import batch_arange, BezierCircuitPrimitive
 from algan.rendering.raytracing import pn_control_points, pn_patch_coefficients
 from algan.rendering.raytracing.pn_patch import pn_obb
@@ -113,9 +112,23 @@ def _set_raytrace_memory_estimates(primitive, camera):
     """
     pixels = int(camera.screen_width * camera.screen_height)
     mc = rt_settings.SAMPLES_PER_PIXEL > 1
-    # Conservative five-channel float-sized accounting. The deterministic
-    # output is uint8, but post processing may need a float-sized peer buffer.
-    primitive._rt_frame_bytes = pixels * 5 * 4 * (2 if mc else 1)
+    scene = getattr(primitive, "scene", None)
+    transparent = bool(
+        scene is not None
+        and callable(getattr(scene, "background_is_transparent", None))
+        and scene.background_is_transparent()
+    )
+    channels = 5 if transparent else 4
+    output_itemsize = (
+        torch.float32.itemsize
+        if rt_settings.is_post_process_tonemap_enabled()
+        else torch.uint8.itemsize
+    )
+    # Exact renderer-owned per-frame buffers. Post-processing has its own peak
+    # estimator and shares the temporary arena after the wavefront releases.
+    primitive._rt_frame_bytes = pixels * channels * output_itemsize
+    if mc:
+        primitive._rt_frame_bytes += pixels * 5 * torch.float32.itemsize
     if mc:
         primitive._rt_fixed_bytes = 0
         return
@@ -124,9 +137,10 @@ def _set_raytrace_memory_estimates(primitive, camera):
     primitive._rt_max_tile_rays = max(
         1, int(rt_settings.WAVEFRONT_TILE_RAYS))
     # _alloc_wavefront_state: ro(3), rd(3), acc(4), sca(5), int(5),
-    # six KBUF arrays; plus rs_pix(1). Per-primary arrays are pix_accum(5)
-    # and rs_used(1). All entries are four bytes.
-    primitive._rt_pool_bytes_per_ray = (21 + 6 * KBUF) * 4
+    # six KBUF arrays; rs_pix(1); and two arena-backed active-index buffers.
+    # Per-primary arrays are pix_accum(5) and rs_used(1). All entries are four
+    # bytes.
+    primitive._rt_pool_bytes_per_ray = (23 + 6 * KBUF) * 4
     primitive._rt_primary_bytes_per_ray = 6 * 4
 
 
@@ -136,16 +150,31 @@ def _fixed_wavefront_bytes(primitive, num_frames):
     tile = getattr(primitive, "_rt_max_tile_rays", 0)
     pool_b = getattr(primitive, "_rt_pool_bytes_per_ray", 0)
     primary_b = getattr(primitive, "_rt_primary_bytes_per_ray", 0)
-    # Non-splitting scenes use every tile slot as a primary ray. Refractive
-    # and custom-scatter scenes reserve REFRACT_SPLIT_SLOTS pool entries per
-    # primary. Take the larger estimate because that feature is known only
-    # after scene merge, later than chunk-size selection.
+    # Compatibility fallback for callers without the merged-scene-aware
+    # estimator in tracer.get_wavefront_memory_required. Take the maximum of
+    # the general and sorted route layouts, with and without split slots.
     plain_primary = min(tile, total_primary)
     plain = plain_primary * (pool_b + primary_b)
     split_k = max(2, int(rt_settings.REFRACT_SPLIT_SLOTS))
     split_primary = min(max(1, tile // split_k), total_primary)
     split = split_primary * (split_k * pool_b + primary_b)
-    return max(plain, split) + 4
+    # Sorted event state: rs_hit(15 f32), key, primitive id and worst-case
+    # per-slot shadow bits. Runtime holds about 2/3 as many pool slots.
+    sorted_extra = (15 + 1 + 1 + 1) * 4
+    sorted_plain_primary = min(max(1, (tile * 2) // 3), total_primary)
+    sorted_plain = sorted_plain_primary * (
+        pool_b + sorted_extra + primary_b
+    )
+    sorted_split_primary = min(
+        max(1, (tile * 2) // (3 * split_k)), total_primary
+    )
+    sorted_split = sorted_split_primary * (
+        split_k * (pool_b + sorted_extra) + primary_b
+    )
+    # Worst general metadata (col_row, fused gen metadata, extended layer
+    # metadata, visibility/count words) plus initial alignment, rounded to a
+    # whole word. The route-aware estimator removes this tiny worst-case pad.
+    return max(plain, split, sorted_plain, sorted_split) + 64
 
 
 class RayTracedTrianglePrimitive(TrianglePrimitive):
@@ -195,8 +224,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 # mobs' params stay single-frame; unify the time dims before
                 # the cat (the kernels index time as ``f % T`` either way).
                 values, _ = _unify_time(values, "surface param merge")
-                setattr(self, name, unsquish(torch.cat(values, 1), -2, 3
-                                             ).to(COMPUTING_DEFAULTS.render_device))
+                setattr(self, name, unsquish(
+                    torch.cat(values, 1), -2, 3
+                ).to(self.corners.device))
         else:
             params = {name: shader_kwargs.pop(name, None)
                       for name in self._surface_params}
@@ -504,7 +534,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_num_frames = camera.ray_origin.shape[0]
 
         uvs = self._stash_texture_maps()
-        self._rt_tri_uvs = (uvs.to(COMPUTING_DEFAULTS.render_device)
+        self._rt_tri_uvs = (uvs.to(corners.device)
                             if uvs is not None else None)
 
         self._pack_frame_visibility(corners.amin(-2), corners.amax(-2),

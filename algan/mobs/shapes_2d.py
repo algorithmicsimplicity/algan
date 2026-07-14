@@ -123,14 +123,14 @@ class TriangleVertices(Renderable):
 
     def get_memory_used_per_timestep(self):
         n = self.location.shape[-2]
-        # Per vertex: location(3) + color(5) + normal(3) = 11 floats for animation.
-        # Plus cloned color in the render primitive: 5 floats.
-        # Plus RT frame bounds and BVH overhead: ~24 bytes/vertex.
+        # Source/animation-device state only: location(3) + color(5) +
+        # normal(3), plus the primitive's cloned color(5). Ray-tracing bounds,
+        # packed geometry and BVHs are built on the source device and their
+        # finished storages are charged exactly when uploaded to ManualMemory.
         num_vars = 16
         for _ in self.get_shader_params().values():
             num_vars += _.shape[-1]
-        # 4 bytes per float, plus 24 bytes overhead per vertex for RT.
-        return n * (num_vars * 4 + 24)
+        return n * num_vars * 4
 
     def get_default_color(self):
         return PURE_RED

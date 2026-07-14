@@ -1,7 +1,6 @@
 import torch
 
 from algan.constants.color import BLUE
-from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.rendering.primitives.primitive import RenderPrimitive
 from algan.utils.tensor_utils import broadcast_all, cast_to_tensor
 
@@ -56,7 +55,10 @@ class BezierCircuitPrimitive(RenderPrimitive):
         self.num_texture_points = num_texture_points
         self.filled = filled
         if triangle_collection is not None:
-            device = COMPUTING_DEFAULTS.render_device
+            # Group on the already-materialized source device.  Uploading the
+            # packed collection belongs to the render-memory boundary, not to
+            # the CPU prefetch worker.
+            device = triangle_collection[0].corners.device
             self.num_segments_per_object = torch.cat(
                 [_.num_segments_per_circuit.view(-1) for _ in triangle_collection]
             ).to(device)

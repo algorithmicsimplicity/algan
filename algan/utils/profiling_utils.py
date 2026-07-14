@@ -495,7 +495,7 @@ def install_pipeline_hooks():
     _try_wrap(rtr, "_prefill_background", "background prefill")
     _try_wrap(rtr, "post_process_frames",
               "post-process (downsample/FXAA/glow)")
-    _try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
+    #_try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
     _try_wrap(KERNEL_SETTINGS, "render_kernel", "ray traced render total")
 
 

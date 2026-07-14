@@ -55,6 +55,42 @@ from algan.rendering.raytracing.settings import SOFT_SHADOW_SAMPLES
 _ACTIVE = 0
 _DONE = 1
 
+
+@ti.kernel
+def compact_ray_slots(
+        source: ti.types.ndarray(), num_source: int,
+        scan_pool: ti.template(), desired_status: int,
+        rs_int: ti.types.ndarray(), rs_key: ti.types.ndarray(),
+        use_key: ti.template(), desired_key: int,
+        output: ti.types.ndarray(), output_count: ti.types.ndarray()):
+    """Compact matching ray slots into a caller-owned arena buffer.
+
+    This replaces the host-side ``comparison -> nonzero -> index`` PyTorch
+    chain.  Those three ordinary CUDA operations each allocated a new tensor
+    outside :class:`ManualMemory` on every wavefront iteration, so a nearly
+    full render arena could still OOM the device.  The output and its one-word
+    counter are supplied by the render arena; the kernel needs no temporary
+    device storage.
+
+    ``scan_pool`` selects either every pool slot (needed when ray splitting may
+    activate a spare slot) or the previously-active ``source`` list.  The
+    optional key predicate is used by the material-sorted path to form one
+    bucket at a time without a host sort.
+    """
+    for i in range(num_source):
+        # Define ``r`` in the enclosing Taichi scope. A name first assigned in
+        # separate ti.static branches is not visible after the branch during
+        # kernel AST transformation.
+        r = i
+        if ti.static(not scan_pool):
+            r = source[i]
+        keep = rs_int[r, 2] == desired_status
+        if ti.static(use_key):
+            keep = keep and rs_key[r] == desired_key
+        if keep:
+            out_i = ti.atomic_add(output_count[0], 1)
+            output[out_i] = r
+
 # Light type ids of the extended packed light rows (see
 # algan.rendering.lights and scene_builder._pack_lights). Only the ids the
 # shadow code branches on are needed here.

@@ -686,17 +686,17 @@ class Surface(Renderable):
         # Normal computation intermediates (grid rolls, stack, cross products):
         # ~150 bytes per grid point peak.
         animation_and_intermediates = n_grid * 182
-        # Primitive output that persists through rendering:
+        # Source-device primitive output retained through scene preparation:
         # corners(3*3*4=36) + colors(3*5*4=60, cloned) + normals(3*3*4=36) = 132 bytes
         # per triangle, plus RT frame bounds ~8 bytes/vertex.
         primitive_bytes = n_v * 52
-        # BVH: ~64 bytes per triangle per timestep.
-        bvh_bytes = n_tri * 64
+        # BVH and packed render geometry are no longer estimated here: the
+        # finished unique storages are copied into and charged to ManualMemory.
         # Shader params broadcast to vertices.
         shader_bytes = 0
         for _ in self.get_shader_params().values():
             shader_bytes += n_v * _.shape[-1] * 4
-        result = int(animation_and_intermediates + primitive_bytes + bvh_bytes + shader_bytes)
+        result = int(animation_and_intermediates + primitive_bytes + shader_bytes)
         self._memory_per_timestep_cache = ((n_grid, names), result)
         return result
 

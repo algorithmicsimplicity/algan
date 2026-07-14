@@ -256,12 +256,10 @@ class BezierCircuitCubic(Renderable):
         animation_bytes = (n_ctrl * 3 + n_tex * 5 + n_loc * 6) * 4
         # Primitive output: control point corners, colors, normals, border data.
         primitive_bytes = n_segments * 4 * 3 * 4 + n_tex * 5 * 4 + n_loc * 12
-        # RT polyline edges: ~100 samples per segment, 4 floats (16 bytes) each.
-        rt_edge_bytes = n_segments * 100 * 16
-        # Per-circuit RT metadata (20 floats), frame bounds (6 floats), BVH (~64 bytes).
-        n_circuits = max(n_loc, 1)
-        rt_meta_bytes = n_circuits * (80 + 24 + 64)
-        result = int(animation_bytes + primitive_bytes + rt_edge_bytes + rt_meta_bytes)
+        # Sampled edges, metadata and the content-dependent STBVH are charged
+        # exactly by the final scene upload instead of guessed here (the old
+        # fixed 100-sample estimate was wrong for the actual 1..512 range).
+        result = int(animation_bytes + primitive_bytes)
         self._memory_per_timestep_cache = (STRUCTURE_VERSION[0], result)
         return result
 
@@ -559,7 +557,6 @@ def build_render_primitives_batched(actors, scene):
     texture-color row count / primitive class across the group.
     """
     from algan.animation.timeline import RowRanges, TimelineManager
-    from algan.settings.defaults import COMPUTING_DEFAULTS
 
     timeline = TimelineManager.instance()
     first = actors[0]
@@ -658,7 +655,11 @@ def build_render_primitives_batched(actors, scene):
 
     # --- collection-level assembly (mirrors the triangle_collection branch
     # of BezierCircuitPrimitive.__init__) ---
-    device = COMPUTING_DEFAULTS.render_device
+    # Keep the deferred mega-primitive on the materialized animation/source
+    # device.  The prefetch worker must not upload the next batch while the
+    # current one occupies the render device; upload happens at the managed
+    # render-memory boundary.
+    device = x.device
     cls = first.render_primitive
     mega = cls.__new__(cls)
     mega.num_pixels_per_sample = 2

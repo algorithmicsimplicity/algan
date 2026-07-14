@@ -10,11 +10,16 @@ class InsufficientMemoryException(Exception):
 
 
 def get_num_available_bytes(device=torch.device("cuda")):
-    if device == torch.device("cuda"):
-        torch.cuda.empty_cache()
-        free_bytes, total_bytes = torch.cuda.mem_get_info()
+    device = torch.device(device)
+    if device.type == "cuda":
+        # ``empty_cache`` acts on PyTorch's current CUDA device.  The render
+        # arena may target a different indexed device, so make that device
+        # current while reclaiming its cached blocks before measuring it.
+        with torch.cuda.device(device):
+            torch.cuda.empty_cache()
+            free_bytes, _ = torch.cuda.mem_get_info(device)
         return free_bytes
-    elif device == torch.device("mps"):
+    elif device.type == "mps":
         allocated_bytes = torch.mps.driver_allocated_memory()
         total_bytes = torch.mps.recommended_max_memory()
         free_bytes = total_bytes - allocated_bytes
@@ -64,18 +69,27 @@ class TempMemoryContext:
     def __enter__(self):
         self.initial_pointer = self.memory.current_pointer
         self.initial_reverse_pointer = self.memory.current_reverse_pointer
+        return self.memory
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None:
-            return False
         self.memory.current_pointer = self.initial_pointer
         if self.clear_persist:
             self.memory.current_reverse_pointer = self.initial_reverse_pointer
-        return True
+        # Never suppress an exception.  Pointer restoration is especially
+        # important on the error path: callers use a temp scope around an
+        # arena-backed operation and then retry a smaller frame window.
+        return False
 
 
 class ManualMemory:
-    def __init__(self, portion_of_available_memory_used, device=None, managed=True):
+    def __init__(
+        self,
+        portion_of_available_memory_used,
+        device=None,
+        managed=True,
+        *,
+        num_bytes=None,
+    ):
         if device is None:
             device = COMPUTING_DEFAULTS.render_device
         self.current_pointer = 0
@@ -83,9 +97,13 @@ class ManualMemory:
         self.stack = []
         self.managed = managed
 
-        num_bytes = int(
-            get_num_available_bytes(device) * portion_of_available_memory_used
-        ) if managed else 1
+        if num_bytes is None:
+            num_bytes = (
+                int(get_num_available_bytes(device)
+                    * portion_of_available_memory_used)
+                if managed else 1
+            )
+        num_bytes = max(0, int(num_bytes))
         self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
         self.length = len(self.data)
         self.current_reverse_pointer = self.length
@@ -102,7 +120,9 @@ class ManualMemory:
         self.current_reverse_pointer = pointers[1]
 
     def get_percent_used(self):
-        return self.get_num_bytes_remaining() / len(self)
+        if not len(self):
+            return 0.0
+        return 1.0 - self.get_num_bytes_remaining() / len(self)
 
     def get_num_bytes_remaining(self):
         return self.current_reverse_pointer - self.current_pointer
@@ -121,17 +141,21 @@ class ManualMemory:
         if not self.managed:
             return torch.empty(shape, dtype=dtype, device=self.data.device)
         reverse = persist
-        def get_shape(shape):
-            shape = [_.item() if hasattr(_, 'item') else _ for _ in shape]
-            num_bytes = 1
-            if dtype in [torch.int, torch.float, torch.complex32]:
-                num_bytes = 4
-            elif dtype in [torch.long, torch.double, torch.complex64]:
-                num_bytes = 8
-            shape[-1] = shape[-1] * num_bytes
-            return shape, num_bytes
 
-        shape, num_bytes = get_shape(shape)
+        def get_shape(shape):
+            shape = [int(_.item()) if hasattr(_, "item") else int(_)
+                     for _ in shape]
+            # Scalars have no last dimension to widen into bytes. Represent
+            # them as one element; callers still receive a scalar view below.
+            scalar = not shape
+            if scalar:
+                shape = [1]
+            element_size = dtype.itemsize
+            byte_shape = list(shape)
+            byte_shape[-1] *= element_size
+            return shape, byte_shape, element_size, scalar
+
+        logical_shape, byte_shape, num_bytes, scalar = get_shape(shape)
 
         pointer = self.current_pointer if not reverse else self.current_reverse_pointer
 
@@ -147,8 +171,8 @@ class ManualMemory:
 
         def get_numel():
             # return np.prod(shape) +  byte_align_offset
-            nu = shape[0]
-            for x in shape[1:]:
+            nu = byte_shape[0]
+            for x in byte_shape[1:]:
                 nu = nu * x
             if reverse:
                 nu = nu * -1
@@ -181,7 +205,9 @@ class ManualMemory:
             self.max_pointer = max(self.max_pointer, self.current_pointer + (self.length - self.current_reverse_pointer))
             #if self.max_pointer > old_max:
             #    LoggerManager.instance().log_message(f'Reached {self.max_pointer} bytes, {self.max_pointer / len(self)}%')
-            x = x.view(shape).view(dtype)
+            x = x.view(byte_shape).view(dtype).view(logical_shape)
+            if scalar:
+                x = x.view(())
             return x
 
         return get_data()

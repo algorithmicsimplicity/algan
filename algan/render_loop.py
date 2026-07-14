@@ -30,6 +30,7 @@ from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.taichi_runtime import sync_devices as _sync_devices
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.utils.memory_utils import (
+    InsufficientMemoryException,
     ManualMemory,
     empty_cache,
     get_num_available_bytes,
@@ -78,9 +79,364 @@ def _max_render_duration(bytes_remaining, requested_frames, bytes_per_frame,
     return best
 
 
+def _max_duration_that_fits(requested_frames, fits):
+    """Largest positive duration for which the monotone ``fits`` predicate is
+    true.
+
+    Returning one when even a single frame does not fit preserves the existing
+    downstream single-frame OOM diagnostic.  Unlike the old repeated-halving
+    loop, this does not discard as much as half of an otherwise usable
+    animation-device budget.
+    """
+    requested_frames = max(1, int(requested_frames))
+    lo, hi, best = 1, requested_frames, 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if fits(mid):
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _primitive_source_device(primitive, fallback=None):
+    """Device holding a not-yet-projected primitive's source geometry."""
+    for name in (
+        "corners", "colors", "normals", "mob_center", "next_segment_inds",
+    ):
+        value = getattr(primitive, name, None)
+        if torch.is_tensor(value):
+            return value.device
+    if fallback is not None:
+        return torch.device(fallback)
+    return COMPUTING_DEFAULTS.animation_device
+
+
+def _arena_allocation_end(pointer, numel, dtype):
+    """Pointer after one :class:`ManualMemory` forward allocation."""
+    alignment = int(dtype.itemsize)
+    pointer = int(pointer) + (-int(pointer)) % alignment
+    return pointer + int(numel) * alignment
+
+
+def _raytrace_persistent_input_end(
+    initial_pointer,
+    num_frames,
+    light_sources,
+    merged_scene,
+    environment_map,
+    environment_ambient,
+):
+    """Arena pointer after the tracer's camera and light input copies.
+
+    This mirrors the allocations before ``render_chunk`` in
+    ``render_batch_raytraced``.  Camera and packed-light inputs cover the whole
+    prepared primitive batch, so they are paid once and do not shrink with an
+    individual render chunk.
+    """
+    from algan.rendering.raytracing import settings as rt_settings
+    from algan.rendering.raytracing.settings import _scene_has_user_pipeline
+
+    pointer = int(initial_pointer)
+    num_frames = int(num_frames)
+
+    # cam_origin, screen_point, pixel_basis_x and pixel_basis_y are [T, 3];
+    # pixel_world_scale is [T].  _flat_frames casts every input to float32.
+    pointer = _arena_allocation_end(
+        pointer, num_frames * (3 + 3 + 3 + 3 + 1), torch.float32)
+
+    samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
+    if samples > 1:
+        return pointer
+
+    lights_extended = any(
+        getattr(light, "_render_aux", None) is not None
+        for light in (light_sources or ())
+    )
+    det_frag = (
+        bool(rt_settings.FRAGMENT_SHADING)
+        or bool(rt_settings.SHADOWS)
+        or _scene_has_user_pipeline(merged_scene)
+        or lights_extended
+        or environment_map is not None
+    )
+    if not det_frag:
+        # Two [1, 1, 3] float32 placeholders.
+        return _arena_allocation_end(pointer, 6, torch.float32)
+
+    if lights_extended:
+        num_light_rows = sum(
+            int(light.origin.shape[-2]) for light in (light_sources or ())
+        )
+        color_width = 16
+    else:
+        num_light_rows = len(light_sources or ())
+        color_width = 3
+
+    append_environment = (
+        environment_map is not None and bool(environment_ambient)
+    )
+    if append_environment:
+        # The SH environment row widens compact point-light colors to 16.
+        color_width = 16
+        if num_light_rows:
+            num_light_rows += 1
+            light_frames = num_frames
+        else:
+            # _pack_lights returns one placeholder frame when there are no
+            # explicit lights; _append_env_sh_light preserves that shape.
+            num_light_rows = 1
+            light_frames = 1
+    elif num_light_rows:
+        light_frames = num_frames
+    else:
+        # _pack_lights' empty-scene placeholders are copied even when fragment
+        # shading is enabled.
+        return _arena_allocation_end(pointer, 6, torch.float32)
+
+    pointer = _arena_allocation_end(
+        pointer, light_frames * num_light_rows * 3, torch.float32)
+    return _arena_allocation_end(
+        pointer, light_frames * num_light_rows * color_width, torch.float32)
+
+
+def _raytrace_frame_buffers_end(
+    initial_pointer, num_frames, width, height, channels, frame_dtype, samples
+):
+    """Arena pointer after the output and optional Monte Carlo accumulator."""
+    pixels = int(width) * int(height)
+    pointer = _arena_allocation_end(
+        initial_pointer, int(num_frames) * pixels * int(channels), frame_dtype)
+    if int(samples) > 1:
+        pointer = _arena_allocation_end(
+            pointer, int(num_frames) * pixels * 5, torch.float32)
+    return pointer
+
+
+def _postprocess_memory_used(
+    *, frame_shape, frame_dtype, anti_alias_level, post_processes, apply_fxaa,
+    initial_pointer, device,
+):
+    """Exact additional arena peak of the built-in post-processing pipeline."""
+    from algan.rendering.post_processing import post_process as post_process_module
+
+    return int(post_process_module.get_post_process_memory_required(
+        frame_shape=frame_shape,
+        frame_dtype=frame_dtype,
+        anti_alias_level=anti_alias_level,
+        post_processes=post_processes,
+        apply_fxaa=apply_fxaa,
+        initial_pointer=initial_pointer,
+        device=device,
+    ))
+
+
+def _prepare_background_for_chunk(
+    background,
+    *,
+    screen_width,
+    screen_height,
+    anti_alias_level,
+    current_ind,
+    new_ind,
+    frames_per_second,
+):
+    """Materialize one chunk's background entirely on the host.
+
+    Background callbacks and image expansion used to inherit the camera's
+    device.  When that was the rendering device, their aranges, callback
+    arithmetic, contiguous copy, concatenation and quantization all allocated
+    beside an already-reserved render arena.  The ray tracer only copies the
+    finished rows into its arena output, so preparing the same values on the
+    CPU avoids those untracked render-device allocations.
+    """
+    aa = int(anti_alias_level)
+    width = int(screen_width) * aa
+    height = int(screen_height) * aa
+    if callable(background):
+        x = torch.arange(width, device="cpu").view(1, -1, 1)
+        y = torch.arange(height, device="cpu").view(-1, 1, 1)
+        times = torch.arange(current_ind, new_ind, device="cpu").view(
+            -1, 1, 1, 1
+        )
+        background = background(
+            x / width,
+            y / height,
+            times / frames_per_second,
+        )
+
+    if torch.is_tensor(background):
+        background = background.detach().cpu()
+    else:
+        background = torch.as_tensor(background, device="cpu")
+
+    if background.dim() > 1:
+        if background.shape[0] == 1:
+            background = background.expand(
+                new_ind - current_ind,
+                *[-1 for _ in range(background.dim() - 1)],
+            ).contiguous()
+        background = background.view(-1, background.shape[-1])
+        background = torch.cat((background[:1], background))
+        background = (
+            (background + (0.5 / 255)) * 255
+        ).to(torch.uint8).clamp_max_(255)
+    return background
+
+
 class RenderLoopMixin:
     """Frame batching, batch preparation, and the render/video-output loop
     (mixed into :class:`~algan.scene.Scene`)."""
+
+    def _prepare_merged_host_scene(self, primitive_batch):
+        """Return the cached source-device scene used for upload/preflight."""
+        first = primitive_batch[0]
+        cached = getattr(first, "_rt_prepared_host_scene", None)
+        if cached is not None:
+            return cached
+
+        from algan.rendering.raytracing import settings as rt_settings
+        from algan.rendering.raytracing.scene_builder import _merge_scene
+
+        merged_host = _merge_scene(primitive_batch)
+        env_map = getattr(self, "environment_map", None)
+        if env_map is not None and int(rt_settings.SAMPLES_PER_PIXEL) > 1:
+            env_map = None
+        first._rt_env_meta = None
+        if env_map is not None:
+            # Environment resampling/packing is source-device scene prep too;
+            # cache it so arena preflight and the subsequent upload see the
+            # same widened texture storage without doing the work twice.
+            from algan.rendering.raytracing.tracer import _append_env_texture
+
+            merged_host = dict(merged_host)
+            texture_device = merged_host["textures"].device
+            merged_host["textures"], env_meta = _append_env_texture(
+                merged_host["textures"],
+                env_map,
+                float(getattr(self, "environment_intensity", 1.0)),
+                texture_device,
+            )
+            first._rt_env_meta = env_meta
+
+        cached = (merged_host, env_map)
+        first._rt_prepared_host_scene = cached
+        return cached
+
+    def _prepared_batch_fits_render_arena(
+        self,
+        primitive_batch,
+        render_state,
+        post_processes,
+        transparent_background,
+    ):
+        """Whether the prepared scene and at least one frame fit exactly.
+
+        The scene upload grows the arena's reverse pointer; camera/lights,
+        output, wavefront state and post-processing grow the forward pointer.
+        Preflighting both sides lets the outer batching loop binary-search a
+        maximum fitting prepared duration without rendering speculative frames.
+        """
+        if not getattr(self.memory, "managed", False):
+            return True
+
+        from algan.rendering.raytracing import settings as rt_settings
+        from algan.rendering.raytracing.scene_builder import (
+            get_merged_scene_arena_nbytes,
+        )
+        from algan.rendering.raytracing.settings import (
+            is_post_process_tonemap_enabled,
+        )
+        from algan.rendering.raytracing.tracer import (
+            get_wavefront_memory_required,
+        )
+
+        # Prefetch can be disabled or may have failed after projecting only a
+        # prefix. Finish source-device projection on this render thread before
+        # asking the merged-scene cache for exact upload bytes.
+        self._prewarm_render_batch(primitive_batch, render_state)
+        if not all(
+            getattr(primitive, "_rt_projected", False)
+            for primitive in primitive_batch
+        ):
+            # Non-ray-traced/custom primitives retain their existing render
+            # path; there is no ray-scene layout to preflight here.
+            return True
+
+        merged_host, env_map = self._prepare_merged_host_scene(primitive_batch)
+        scene_bytes = get_merged_scene_arena_nbytes(
+            merged_host, self.memory, persist=True)
+        bytes_remaining = self.memory.get_num_bytes_remaining()
+        if scene_bytes > bytes_remaining:
+            return False
+
+        class _LightSnapshot:
+            pass
+
+        lights = []
+        for origin, light_color, aux in render_state["lights"]:
+            light = _LightSnapshot()
+            light.origin = origin
+            light.light_color = light_color
+            light._render_aux = aux
+            lights.append(light)
+
+        aa = int(self.render_settings.anti_alias_level)
+        render_height = self.num_pixels_screen_height * aa
+        render_width = self.num_pixels_screen_width * aa
+        render_channels = 5 if transparent_background else 4
+        frame_dtype = (
+            torch.float32
+            if is_post_process_tonemap_enabled()
+            else torch.uint8
+        )
+        samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
+        initial_pointer = self.memory.current_pointer
+        persistent_input_end = _raytrace_persistent_input_end(
+            initial_pointer,
+            merged_host["num_frames"],
+            lights,
+            merged_host,
+            env_map,
+            getattr(self, "environment_ambient", True),
+        )
+        frame_buffers_end = _raytrace_frame_buffers_end(
+            persistent_input_end,
+            1,
+            render_width,
+            render_height,
+            render_channels,
+            frame_dtype,
+            samples,
+        )
+        postprocess_bytes = _postprocess_memory_used(
+            frame_shape=(1, render_height, render_width, render_channels),
+            frame_dtype=frame_dtype,
+            anti_alias_level=aa,
+            post_processes=post_processes,
+            apply_fxaa=self.render_settings.fxaa,
+            initial_pointer=frame_buffers_end,
+            device=self.memory.data.device,
+        )
+        wavefront_bytes = get_wavefront_memory_required(
+            merged_host,
+            1,
+            render_width,
+            render_height,
+            light_sources=lights,
+            environment_map=env_map,
+            near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
+            far_clip=float(getattr(self.camera, "far", 0.0) or 0.0),
+        )
+        if wavefront_bytes:
+            wavefront_bytes += (-frame_buffers_end) % 4
+        forward_bytes = (
+            frame_buffers_end
+            - initial_pointer
+            + max(wavefront_bytes, postprocess_bytes)
+        )
+        return scene_bytes + forward_bytes <= bytes_remaining
 
     def render_primitive_batch(
         self,
@@ -116,7 +472,6 @@ class RenderLoopMixin:
             self.memory.scene = self
             original_pointers = self.memory.get_pointers()
             for primitive in primitive_batch:
-                primitive.memory = self.memory
                 if getattr(primitive, "_rt_projected", False):
                     # Already projected on the batch-prep worker against this
                     # batch's snapshot (see _prewarm_render_batch); its source
@@ -124,50 +479,154 @@ class RenderLoopMixin:
                     # redundant and impossible.
                     primitive._rt_projected = False
                     continue
-                primitive.project_to_screen(camera, self.light_sources)
+                # Projection belongs to batch preparation, not to the render
+                # arena.  Keep every temporary beside the primitive's source
+                # tensors (normally the CPU animation device); the scene upload
+                # step later moves the packed result into managed render memory.
+                original_memory = primitive.memory
+                source_device = _primitive_source_device(
+                    primitive, fallback=camera.ray_origin.device)
+                scratch = ManualMemory(
+                    0, device=source_device, managed=False)
+                try:
+                    primitive.memory = scratch
+                    primitive.project_to_screen(camera, self.light_sources)
+                finally:
+                    primitive.memory = original_memory
 
             # Reclaim animation-phase residuals before render batching.
             empty_cache(force_gc=False)
 
+            # Scene projection/merge ran on the source (normally CPU) device.
+            # Upload each unique finished storage directly into the persistent
+            # end of ManualMemory before sizing frame chunks.  The exact scene
+            # footprint is therefore subtracted from the arena automatically;
+            # no CUDA-side cat/BVH scratch can sit beside an almost-full pool.
+            from algan.rendering.raytracing import settings as rt_settings
+            from algan.rendering.raytracing.scene_builder import (
+                copy_merged_scene_to_arena,
+            )
+
+            merged_host, env_map = self._prepare_merged_host_scene(
+                primitive_batch)
+            primitive_batch[0]._rt_device_scene = copy_merged_scene_to_arena(
+                merged_host, self.memory, persist=True)
+            # The uploaded scene now owns every render-facing tensor.  Drop the
+            # extra environment-widened host dict (the base merge remains in its
+            # normal primitive cache until the batch is released).
+            primitive_batch[0]._rt_prepared_host_scene = None
+
             render_pointers = self.memory.get_pointers()
+            from algan.rendering.raytracing.settings import (
+                is_post_process_tonemap_enabled,
+            )
+            from algan.rendering.raytracing.tracer import (
+                get_wavefront_memory_required,
+            )
+
+            aa = int(self.render_settings.anti_alias_level)
+            render_height = self.num_pixels_screen_height * aa
+            render_width = self.num_pixels_screen_width * aa
+            render_channels = 5 if transparent_background else 4
+            frame_dtype = (
+                torch.float32
+                if is_post_process_tonemap_enabled()
+                else torch.uint8
+            )
+            samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
+            persistent_input_end = _raytrace_persistent_input_end(
+                render_pointers[0],
+                merged_host["num_frames"],
+                self.light_sources,
+                merged_host,
+                env_map,
+                getattr(self, "environment_ambient", True),
+            )
+
+            def chunk_memory_required(num_frames):
+                """Exact forward-arena peak for one candidate render chunk."""
+                frame_buffers_end = _raytrace_frame_buffers_end(
+                    persistent_input_end,
+                    num_frames,
+                    render_width,
+                    render_height,
+                    render_channels,
+                    frame_dtype,
+                    samples,
+                )
+                postprocess_bytes = _postprocess_memory_used(
+                    frame_shape=(
+                        num_frames,
+                        render_height,
+                        render_width,
+                        render_channels,
+                    ),
+                    frame_dtype=frame_dtype,
+                    anti_alias_level=aa,
+                    post_processes=post_processes,
+                    apply_fxaa=self.render_settings.fxaa,
+                    initial_pointer=frame_buffers_end,
+                    device=self.memory.data.device,
+                )
+                wavefront_bytes = get_wavefront_memory_required(
+                    merged_host,
+                    num_frames,
+                    render_width,
+                    render_height,
+                    light_sources=self.light_sources,
+                    environment_map=env_map,
+                    near_clip=float(getattr(camera, "near", 0.0) or 0.0),
+                    far_clip=float(getattr(camera, "far", 0.0) or 0.0),
+                )
+                if wavefront_bytes:
+                    # Every wavefront state allocation is float32/int32.  The
+                    # output can end unaligned for a transparent uint8 frame.
+                    wavefront_bytes += (-frame_buffers_end) % 4
+                temporary_bytes = max(wavefront_bytes, postprocess_bytes)
+                return (
+                    frame_buffers_end
+                    - render_pointers[0]
+                    + temporary_bytes
+                )
+
+            bytes_remaining = self.memory.get_num_bytes_remaining()
+
+            def chunk_fits(num_frames):
+                return chunk_memory_required(num_frames) <= bytes_remaining
+
             current_ind = start_ind
-            num_bytes_for_post_processing_per_frame = self.num_pixels_screen_width * self.num_pixels_screen_height * 5 * 4 * 4 * 4
             while True:
-                mem_per_time_step = max(
-                    max([_.get_memory_used(0, 1)
-                         - _.get_memory_used_for_blending(0, 1)
-                         for _ in primitive_batch])
-                    + max([_.get_memory_used_for_blending(0, 1)
-                           for _ in primitive_batch]),
-                    num_bytes_for_post_processing_per_frame)
-
-                def fixed_bytes(num_frames):
-                    return max(_.get_fixed_memory_used(num_frames)
-                               for _ in primitive_batch)
-
-                duration = _max_render_duration(
-                    self.memory.get_num_bytes_remaining(),
-                    end_ind - current_ind,
-                    mem_per_time_step,
-                    fixed_bytes)
+                if getattr(self.memory, "managed", False):
+                    duration = _max_duration_that_fits(
+                        end_ind - current_ind,
+                        chunk_fits,
+                    )
+                else:
+                    # Unmanaged mode deliberately uses PyTorch's ordinary
+                    # allocator.  There is no finite arena to size against,
+                    # and arbitrary custom post-process callables remain valid
+                    # because their allocations do not need an arena planner.
+                    duration = end_ind - current_ind
                 new_ind = current_ind + duration
 
                 logger.debug(f'rendering batch with duration {duration}')
 
-                bgf = self.background_frame if background_color is None else background_color
-                if hasattr(bgf, '__call__'):
-                    device = camera.ray_origin.device
-                    aa = self.render_settings.anti_alias_level
-                    x = torch.arange(self.num_pixels_screen_width * aa, device=device).view(1,-1,1)
-                    y = torch.arange(self.num_pixels_screen_height * aa, device=device).view(-1,1,1)
-                    bgf = bgf(x / (self.num_pixels_screen_width * aa), y / (self.num_pixels_screen_height * aa),
-                              torch.arange(current_ind, new_ind, device=device).view(-1,1,1,1) / self.frames_per_second)
-                if bgf.dim() > 1:
-                    if bgf.shape[0] == 1:
-                        bgf = bgf.expand(new_ind - current_ind, *[-1 for _ in range(bgf.dim()-1)]).contiguous()
-                    bgf = bgf.view(-1,bgf.shape[-1])
-                    bgf = torch.cat((bgf[:1], bgf))
-                    bgf = ((bgf + (0.5/255)) * 255).to(torch.uint8).clamp_max_(255)
+                background_source = (
+                    self.background_frame
+                    if background_color is None else background_color
+                )
+                bgf = _prepare_background_for_chunk(
+                    background_source,
+                    screen_width=self.num_pixels_screen_width,
+                    screen_height=self.num_pixels_screen_height,
+                    anti_alias_level=self.render_settings.anti_alias_level,
+                    current_ind=current_ind,
+                    new_ind=new_ind,
+                    frames_per_second=(
+                        self.frames_per_second
+                        if callable(background_source) else 1
+                    ),
+                )
                 yield primitive_batch[0].render(
                     primitive_batch,
                     self,
@@ -339,11 +798,16 @@ class RenderLoopMixin:
         # Precompute memory per timestep once to avoid redundant calls inside binary search loop
         actor_mem = {actor: actor.get_memory_used_per_timestep() for actor in primitive_actors}
 
-        # Binary search to find a batch size that will fit in memory.
+        # Binary search for the largest batch that fits the animation-device
+        # budget.  The selected actor set grows monotonically with duration, so
+        # the memory predicate is monotone too.
         def get_duration():
-            duration = max_end_time_ind - start_time_ind
-            duration = min(duration, COMPUTING_DEFAULTS.max_animate_batch_size)
-            while True:
+            requested_duration = min(
+                max_end_time_ind - start_time_ind,
+                COMPUTING_DEFAULTS.max_animate_batch_size,
+            )
+
+            def fits(duration):
                 selected_actors = [
                     actor
                     for actor in primitive_actors
@@ -353,18 +817,12 @@ class RenderLoopMixin:
                     )
                 ]
                 mem_used = sum(
-                    [
-                        actor_mem[actor] * duration
-                        for actor in selected_actors
-                    ]
+                    actor_mem[actor] * duration
+                    for actor in selected_actors
                 )
-                if mem_used <= max_mem_used:
-                    break
-                duration = duration // 2
-                if duration <= 1:
-                    duration = 1
-                    break
-            return duration
+                return mem_used <= max_mem_used
+
+            return _max_duration_that_fits(requested_duration, fits)
 
         duration = get_duration()
         actors = [
@@ -524,9 +982,9 @@ class RenderLoopMixin:
         return primitive_collections, start_time_ind + duration, render_state
 
     def _prewarm_render_batch(self, primitives, render_state):
-        """Run a batch's ``project_to_screen`` + merged-scene/STBVH build
-        ahead of the render (called from ``fetch_batch``, i.e. on the
-        batch-prep worker when prefetch is on).
+        """Run a batch's ``project_to_screen`` + source-device merged-scene/
+        STBVH build ahead of the render (called from ``fetch_batch``, i.e. on
+        the batch-prep worker when prefetch is on).
 
         Both steps are torch-only, but they normally run on the render thread
         against shared mutable state, so this uses isolated stand-ins:
@@ -539,11 +997,13 @@ class RenderLoopMixin:
           render pool's bump pointer is owned by the render thread (a
           concurrent ``temp()`` save/restore would free live render tensors).
 
-        Identical inputs, identical math, so the packed arrays and merged
-        scene are byte-identical to main-thread projection. Each successfully
+        Identical inputs, identical math, so the packed arrays and merged scene
+        are byte-identical to main-thread preparation. The merge follows the
+        primitive tensors' source device; upload into managed render memory is
+        a later render-thread boundary. Each successfully
         projected primitive is marked ``_rt_projected`` and skipped by
         ``render_primitive_batch``; on any failure the un-projected remainder
-        (and the merge) simply run on the render thread as before.
+        (and the merge) simply runs on the render thread as before.
         """
         try:
             from algan.rendering.raytracing.primitives import (
@@ -579,10 +1039,19 @@ class RenderLoopMixin:
             light._render_aux = aux
             lights.append(light)
 
-        scratch = ManualMemory(0, managed=False)
+        scratch_by_device = {}
         for primitive in primitives:
+            if getattr(primitive, "_rt_projected", False):
+                continue
             original_memory = primitive.memory
             try:
+                source_device = _primitive_source_device(
+                    primitive, fallback=render_state["ray_origin"].device)
+                scratch = scratch_by_device.get(source_device)
+                if scratch is None:
+                    scratch = ManualMemory(
+                        0, device=source_device, managed=False)
+                    scratch_by_device[source_device] = scratch
                 primitive.memory = scratch
                 primitive.project_to_screen(camera, lights)
                 primitive._rt_projected = True
@@ -599,7 +1068,12 @@ class RenderLoopMixin:
         *next* batch may be mutating that state on a worker thread.
         """
         camera = self.camera
-        device = COMPUTING_DEFAULTS.render_device
+        # Batch preparation is CPU/source-device work.  Keeping this snapshot
+        # beside the materialized animation tensors prevents the prefetch worker
+        # from allocating the next batch on the render device while the current
+        # batch is still resident there.
+        camera_location = camera.location
+        device = camera_location.device
         lights = []
         for l in self.light_sources:
             loc = l.location
@@ -629,13 +1103,40 @@ class RenderLoopMixin:
                     None,
                 ))
         return dict(
-            ray_origin=camera.location.unsqueeze(-2).to(device),
+            ray_origin=camera_location.unsqueeze(-2).to(device),
             screen_point=camera.screen.location.unsqueeze(-2).to(device),
             screen_basis=camera.get_render_screen_basis().to(device),
             lights=lights,
         )
 
-    def get_frames(self, start_time_ind, end_time_ind, background_color=None, post_processes=(bloom_filter,), manual_memory=True):
+    def get_frames(self, start_time_ind, end_time_ind, background_color=None,
+                   post_processes=(bloom_filter,), manual_memory=True):
+        """Yield frames and always release per-render state on exit.
+
+        The wrapper is deliberately outside the implementation generator so
+        its ``finally`` also runs for OOMs, worker failures, and callers that
+        close the generator before consuming every frame.
+        """
+        original_background = self.background_frame
+        original_memory = self.memory
+        try:
+            yield from self._get_frames_impl(
+                start_time_ind,
+                end_time_ind,
+                background_color=background_color,
+                post_processes=post_processes,
+                manual_memory=manual_memory,
+            )
+        finally:
+            self.background_frame = original_background
+            render_memory = self.memory
+            if render_memory is not None and render_memory is not original_memory:
+                render_memory.data = None
+            self.memory = original_memory
+
+    def _get_frames_impl(self, start_time_ind, end_time_ind,
+                         background_color=None,
+                         post_processes=(bloom_filter,), manual_memory=True):
         if end_time_ind <= start_time_ind:
             yield []
             return
@@ -665,11 +1166,11 @@ class RenderLoopMixin:
 
             max_animate_mem = int(
                     COMPUTING_DEFAULTS.portion_of_memory_used_for_animating
-                    * get_num_available_bytes(COMPUTING_DEFAULTS.render_device)
+                    * get_num_available_bytes(COMPUTING_DEFAULTS.animation_device)
                 )
 
             # Prefetch pipeline: while batch b renders on this thread, batch
-            # b+1 is prepped (CPU geometry generation + host-to-GPU upload) on
+            # b+1 is prepped (animation/source-device geometry generation) on
             # a single worker thread. Batch prep touches only animated mob
             # state (owned by prep; preps run strictly sequentially on the one
             # worker) while rendering consumes only the primitive tensors and
@@ -686,10 +1187,12 @@ class RenderLoopMixin:
             # inference mode is on).
             inference_mode_enabled = torch.is_inference_mode_enabled()
 
-            def fetch_batch(time_ind):
+            def fetch_batch(time_ind, batch_end_ind=None):
+                if batch_end_ind is None:
+                    batch_end_ind = end_time_ind
                 with torch.inference_mode(inference_mode_enabled):
                     batch = self.get_batch_of_primitives(
-                        time_ind, end_time_ind, actors, max_animate_mem
+                        time_ind, batch_end_ind, actors, max_animate_mem
                     )
                     # Pre-run the ray tracer's vertex shade + packing
                     # (project_to_screen) and merged-scene / STBVH build here
@@ -717,6 +1220,9 @@ class RenderLoopMixin:
                 else None
             )
             pending = None
+            retry_end_ind = None
+            retry_lower_duration = 0
+            retry_upper_duration = None
             try:
                 while True:
                     _sync_devices()
@@ -724,7 +1230,11 @@ class RenderLoopMixin:
                     logger.info(
                         f"Fetching batch {current_time_ind}:{end_time_ind}."
                     )
-                    if pending is not None:
+                    if retry_end_ind is not None:
+                        primitives, new_time_ind, render_state = fetch_batch(
+                            current_time_ind, retry_end_ind)
+                        retry_end_ind = None
+                    elif pending is not None:
                         primitives, new_time_ind, render_state = pending.result()
                         pending = None
                     else:
@@ -741,6 +1251,75 @@ class RenderLoopMixin:
                             "Insufficient memory to render this scene,"
                             "please reduce the number of Mobs used."
                         )
+
+                    duration = new_time_ind - current_time_ind
+                    batch_fits = (
+                        not primitives
+                        or self._prepared_batch_fits_render_arena(
+                            primitives,
+                            render_state,
+                            post_processes,
+                            transparent_background,
+                        )
+                    )
+                    if not batch_fits:
+                        retry_upper_duration = min(
+                            duration,
+                            retry_upper_duration
+                            if retry_upper_duration is not None
+                            else duration,
+                        )
+                        if duration <= 1 and retry_lower_duration == 0:
+                            raise OutOfRenderMemory(
+                                "The prepared scene plus one rendered frame "
+                                "does not fit in the allocated render memory. "
+                                "Please lower the resolution, anti-alias "
+                                "level, or scene complexity."
+                            )
+                        logger.warning(
+                            "Prepared batch does not fit the render arena; "
+                            "binary-searching the largest fitting duration."
+                        )
+                        if primitives:
+                            primitives[0]._rt_device_scene = None
+                            primitives[0]._rt_prepared_host_scene = None
+                        del primitives
+                        self.memory.reset()
+                        empty_cache(force_gc=False)
+                        target_duration = max(
+                            1,
+                            (
+                                retry_lower_duration
+                                + retry_upper_duration
+                            ) // 2,
+                        )
+                        retry_end_ind = current_time_ind + target_duration
+                        continue
+
+                    if retry_upper_duration is not None:
+                        retry_lower_duration = max(
+                            retry_lower_duration, duration)
+                        if retry_upper_duration - retry_lower_duration > 1:
+                            # This candidate fits, but a failed upper bound
+                            # leaves room to probe a larger prepared batch
+                            # without emitting speculative frames.
+                            if primitives:
+                                primitives[0]._rt_device_scene = None
+                                primitives[0]._rt_prepared_host_scene = None
+                            del primitives
+                            self.memory.reset()
+                            empty_cache(force_gc=False)
+                            target_duration = (
+                                retry_lower_duration
+                                + retry_upper_duration
+                            ) // 2
+                            retry_end_ind = (
+                                current_time_ind + target_duration)
+                            continue
+
+                    # Only prefetch the successor once the current duration is
+                    # final. A speculative successor would start at the wrong
+                    # boundary while the binary preflight search is active.
                     if executor is not None and new_time_ind < end_time_ind:
                         pending = executor.submit(fetch_batch, new_time_ind)
                     if len(primitives) > 0:
@@ -750,16 +1329,49 @@ class RenderLoopMixin:
                         logger.info(
                             f"Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video."
                         )
-                        yield from self.render_primitive_batch(
-                            primitives,
-                            current_time_ind,
-                            new_time_ind,
-                            save_image,
-                            post_processes,
-                            transparent_background,
-                            background_color,
-                            render_state=render_state,
-                        )
+                        produced_output = False
+                        try:
+                            for frame_batch in self.render_primitive_batch(
+                                primitives,
+                                current_time_ind,
+                                new_time_ind,
+                                save_image,
+                                post_processes,
+                                transparent_background,
+                                background_color,
+                                render_state=render_state,
+                            ):
+                                produced_output = True
+                                yield frame_batch
+                        except (InsufficientMemoryException,
+                                OutOfRenderMemory,
+                                torch.OutOfMemoryError):
+                            if produced_output or duration <= 1:
+                                raise
+                            logger.warning(
+                                "Render failed despite arena preflight; "
+                                f"retrying {current_time_ind}:{new_time_ind} "
+                                "with binary duration bounds.")
+                            # A prefetched successor starts at the old end and
+                            # is invalid after this split. Drain and discard it
+                            # before rematerializing the smaller current batch.
+                            if pending is not None:
+                                try:
+                                    pending.result()
+                                except Exception:
+                                    pass
+                                pending = None
+                            if primitives:
+                                primitives[0]._rt_device_scene = None
+                                primitives[0]._rt_prepared_host_scene = None
+                            del primitives
+                            self.memory.reset()
+                            empty_cache(force_gc=False)
+                            retry_lower_duration = 0
+                            retry_upper_duration = duration
+                            retry_end_ind = (
+                                current_time_ind + max(1, duration // 2))
+                            continue
                         del primitives
                         # Free previous batch data before allocating next batch.
                         empty_cache(force_gc=False)
@@ -769,6 +1381,8 @@ class RenderLoopMixin:
                             f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
                         )
 
+                    retry_lower_duration = 0
+                    retry_upper_duration = None
                     current_time_ind = new_time_ind
                     if new_time_ind >= end_time_ind:
                         break
@@ -784,11 +1398,6 @@ class RenderLoopMixin:
                         pass
                 if executor is not None:
                     executor.shutdown(wait=True)
-
-        self.background_frame = self.original_background_frame
-
-        self.memory.data = None
-        self.memory = None
 
     def render_to_video(
         self,

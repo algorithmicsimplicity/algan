@@ -66,14 +66,16 @@ WAVEFRONT_TILE_RAYS = int(os.environ.get("ALGAN_WAVEFRONT_TILE", str(1 << 21)))
 WAVEFRONT_TILE_AUTO = (
     os.environ.get("ALGAN_WAVEFRONT_TILE_AUTO", "1") == "1"
     and "ALGAN_WAVEFRONT_TILE" not in os.environ)
-# Fraction of the pool's free bytes the per-tile ray state may claim. The
-# remainder covers per-tile extras (rs_vis, the sorted path's event arrays are
-# accounted separately) and alignment slop.
+# Fraction of the pool's free bytes the per-tile ray state may claim.  Every
+# built-in per-slot/fixed allocation and ManualMemory's initial alignment are
+# now accounted exactly, so the default can use the whole allowance.  Keep the
+# override as an opt-in diagnostic/performance headroom control.
 WAVEFRONT_TILE_SAFETY = float(
-    os.environ.get("ALGAN_WAVEFRONT_TILE_SAFETY", "0.85"))
-# Hard bounds for the auto tile size (rays). The floor keeps degenerate
-# nearly-full pools from collapsing into thousands of tiny launches; the cap
-# bounds the host-side index tensors on very large pools.
+    os.environ.get("ALGAN_WAVEFRONT_TILE_SAFETY", "1.0"))
+# Preferred lower bound and hard upper bound for auto tile size (rays). The
+# runtime honors the floor when it fits, but deliberately goes below it when
+# exact arena headroom requires a smaller tile; the cap bounds active-index
+# buffers and launch size on very large pools.
 WAVEFRONT_TILE_MIN = int(
     os.environ.get("ALGAN_WAVEFRONT_TILE_MIN", str(1 << 18)))
 WAVEFRONT_TILE_MAX = int(
@@ -440,8 +442,16 @@ def _constant_promotion_active():
 def _scene_has_user_pipeline(merged):
     """True if any merged primitive carries a custom fragment-pipeline id
     (``>= _USER_PIPELINE_BASE``), so the render must enable fragment shading."""
+    cached = merged.get("has_user_pipeline")
+    if cached is not None:
+        return bool(cached)
     for key in ("tri_mat_id", "pn_mat_id"):
         arr = merged.get(key)
-        if arr is not None and arr.numel() and int(arr.max()) >= _USER_PIPELINE_BASE:
+        # Compatibility for externally assembled scenes that predate the
+        # cached flag.  Move tiny ids to the host before reducing so this
+        # fallback cannot create a scalar/reduction workspace beside the
+        # render arena.
+        if (arr is not None and arr.numel()
+                and int(arr.detach().cpu().max()) >= _USER_PIPELINE_BASE):
             return True
     return False

@@ -36,8 +36,13 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     KBUF,
     MAX_SURFACES_PER_RAY, path_trace_scene_stbvh, finalize_samples,
 )
-from algan.rendering.raytracing.scene_builder import _merge_scene, _downsample_background, _pack_lights, \
-    _prefill_background
+from algan.rendering.raytracing.scene_builder import (
+    _downsample_background,
+    _merge_scene,
+    _pack_lights,
+    _prefill_background,
+    copy_merged_scene_to_arena,
+)
 # NOTE: only immutable settings values may be imported by value here; the
 # mutable module globals (SAMPLES_PER_PIXEL, TONEMAP_*, SHADOWS, ...) must be
 # read live as ``rt_settings.X`` or their setters silently stop working.
@@ -45,7 +50,6 @@ from algan.rendering.raytracing.settings import _get_tonemap_t_val, REFRACT_SPLI
     GATE_EMPTY_TRAVERSALS, is_post_process_tonemap_enabled
 
 from algan.rendering.raytracing import settings as rt_settings
-from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
@@ -56,6 +60,7 @@ from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixe
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
 # package __init__ -> primitives).
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
+    compact_ray_slots,
     wf_composite_accum,
     wf_composite_accum_aa,
     wf_finalize_aa,
@@ -67,6 +72,36 @@ from algan.utils.memory_utils import InsufficientMemoryException
 from algan.logging.logger import get_logger
 
 logger = get_logger("raytracing")
+
+
+def _host_tensor(value):
+    """Return a detached CPU tensor for render-input preparation.
+
+    Camera/environment/light arithmetic is preparation work.  Keeping it on
+    the host prevents a caller-provided render-device tensor from turning a
+    subtraction, norm, stack, or cast into an allocation beside the arena.
+    """
+    if torch.is_tensor(value):
+        return value.detach().cpu()
+    return torch.as_tensor(value, device="cpu")
+
+
+def _arena_copy(memory, tensor, dtype=None):
+    """Copy ``tensor`` into the render arena, optionally casting on copy.
+
+    The source may live on the animation device (normally CPU); ``copy_``
+    performs the transfer directly into the reserved byte buffer instead of
+    creating a transient ``tensor.to(render_device)`` allocation.
+    """
+    dtype = tensor.dtype if dtype is None else dtype
+    out = memory.get_tensor(tensor.shape, dtype)
+    out.copy_(tensor)
+    return out
+
+
+def _arena_values(memory, values, dtype=torch.float32):
+    source = torch.tensor(values, dtype=dtype, device="cpu")
+    return _arena_copy(memory, source)
 
 
 def _alloc_wavefront_state(memory, tn, sca_width):
@@ -111,13 +146,132 @@ def _wavefront_state_bytes_per_primary(split_k, extra_bytes_per_slot=0,
     account for them."""
     # rs_ro(3) + rs_rd(3) + rs_acc(4) + rs_sca(5) f32, rs_int(5) i32,
     # 6 K-buffer arrays of KBUF lanes, rs_pix i32 -- all per pool slot.
-    per_slot = (3 + 3 + 4 + 5 + 5) * 4 + 6 * KBUF * 4 + 4 + extra_bytes_per_slot
+    # Core state + rs_pix + two arena-backed active-index ping-pong buffers.
+    per_slot = ((3 + 3 + 4 + 5 + 5) * 4 + 6 * KBUF * 4
+                + 4 + 2 * 4 + extra_bytes_per_slot)
     # pix_accum(5) f32 + rs_used i32 -- per primary.
     return split_k * per_slot + 5 * 4 + 4 + extra_bytes_per_primary
 
 
+def get_wavefront_memory_required(
+    merged,
+    num_frames,
+    width,
+    height,
+    *,
+    light_sources=(),
+    environment_map=None,
+    near_clip=0.0,
+    far_clip=0.0,
+):
+    """Exact deterministic-wavefront temporary bytes for batch sizing.
+
+    This mirrors the selected general, textured, or material-sorted route,
+    including route metadata, event records, shadow visibility, active-index
+    ping-pong buffers, and fixed counter words.  It excludes the possible
+    initial four-byte alignment; the caller knows the output buffer's actual
+    end pointer and adds that padding exactly.
+
+    With adaptive tiling enabled this returns the exact minimum viable
+    one-primary allocation; the runtime grows that tile into whatever remaining
+    arena space is available.  With adaptive tiling disabled this returns the
+    exact configured static-target allocation peak.
+    """
+    if int(rt_settings.SAMPLES_PER_PIXEL) > 1:
+        return 0
+
+    total_primary = max(
+        1, int(num_frames) * int(width) * int(height)
+    )
+    shadow = bool(rt_settings.SHADOWS)
+    lights_extended = any(
+        getattr(light, "_render_aux", None) is not None
+        for light in (light_sources or ())
+    )
+    has_environment = environment_map is not None
+    frag = (
+        bool(rt_settings.FRAGMENT_SHADING)
+        or shadow
+        or _scene_has_user_pipeline(merged)
+        or lights_extended
+        or has_environment
+    )
+    has_custom_scatter = bool(frag and _scene_has_custom_scatter(merged))
+    refraction = bool(merged.get("has_refractive") or has_custom_scatter)
+    split_k = int(REFRACT_SPLIT_SLOTS) if refraction else 1
+    target_slots = max(1, int(rt_settings.WAVEFRONT_TILE_RAYS))
+
+    def _route_primary(static_target):
+        if rt_settings.WAVEFRONT_TILE_AUTO:
+            return 1
+        return min(max(1, int(static_target)), total_primary)
+
+    # Remove the per-primary pix_accum + rs_used tail to recover one pool
+    # slot's core state (including rs_pix and both compaction index arrays).
+    per_primary_tail = 5 * torch.float32.itemsize + torch.int32.itemsize
+    base_slot = _wavefront_state_bytes_per_primary(1) - per_primary_tail
+
+    uses_extended_features = (
+        lights_extended
+        or has_environment
+        or float(near_clip) > 0.0
+        or float(far_clip) > 0.0
+    )
+    if merged.get("textured_active") and not uses_extended_features:
+        primary = _route_primary(target_slots // split_k)
+        pool = primary * split_k
+        # gen_meta + compactor output count.
+        fixed = 2 * torch.int32.itemsize
+        return pool * base_slot + primary * per_primary_tail + fixed
+
+    if (frag and rt_settings.WAVEFRONT_SORT_MATERIALS is True
+            and not uses_extended_features):
+        primary = _route_primary((target_slots * 2) // (3 * split_k))
+        pool = primary * split_k
+        # rs_hit(15 f32), rs_key and rs_eprim, plus per-slot rs_vis when
+        # shadows are enabled.
+        event_slot = (
+            15 * torch.float32.itemsize
+            + 2 * torch.int32.itemsize
+            + (torch.int32.itemsize if shadow else 0)
+        )
+        # gen_meta + compactor count, and the rs_vis placeholder when shadows
+        # compile out.
+        fixed = torch.int32.itemsize * (2 if shadow else 3)
+        return (
+            pool * (base_slot + event_slot)
+            + primary * per_primary_tail
+            + fixed
+        )
+
+    primary = _route_primary(target_slots // split_k)
+    pool = primary * split_k
+    mem_trim = bool(
+        rt_settings.WF_MEM_TRIM
+        and merged.get("mem_trim_active")
+        and not shadow
+        and not has_custom_scatter
+        and not refraction
+    )
+    gen_fused = bool(
+        rt_settings.WF_GEN_FUSED
+        and split_k == 1
+        and float(near_clip) <= 0.0
+    )
+    # col_row placeholder (unless the scene-owned remap is used), gen_meta,
+    # layer_offsets, rs_vis placeholder, and the compactor count.
+    metadata = 0 if mem_trim else torch.int32.itemsize
+    metadata += (4 if gen_fused else 1) * torch.float32.itemsize
+    metadata += (
+        8 if (gen_fused or has_environment or float(far_clip) > 0.0) else 2
+    ) * torch.float32.itemsize
+    metadata += 2 * torch.int32.itemsize
+    return pool * base_slot + primary * per_primary_tail + metadata
+
+
 def _auto_primary_per_tile(memory, split_k, static_primary,
-                           extra_bytes_per_slot=0, extra_bytes_per_primary=0):
+                           extra_bytes_per_slot=0, extra_bytes_per_primary=0,
+                           fixed_bytes=0):
     """Primary rays per wavefront tile, sized from the render pool's free
     bytes when ``settings.WAVEFRONT_TILE_AUTO`` is on (see settings.py for the
     rationale: fewer, bigger tiles amortize the fixed host-side kernel-launch
@@ -130,26 +284,67 @@ def _auto_primary_per_tile(memory, split_k, static_primary,
     bytes_per_primary = _wavefront_state_bytes_per_primary(
         split_k, extra_bytes_per_slot, extra_bytes_per_primary)
     free = memory.get_num_bytes_remaining()
-    budget = int(free * rt_settings.WAVEFRONT_TILE_SAFETY) // bytes_per_primary
-    lo = max(1, rt_settings.WAVEFRONT_TILE_MIN // split_k)
-    hi = max(lo, rt_settings.WAVEFRONT_TILE_MAX // split_k)
-    # Below the floor the pool is genuinely too full for a sane tile; keep the
-    # floor and let the allocator's OOM -> window-halving retry handle it
-    # (same behavior as the static default, which would also not fit).
-    return min(max(budget, lo), hi)
+    # Every per-tile allocation is f32/i32.  The output immediately before it
+    # can be uint8 (including an odd-sized five-channel transparent frame), so
+    # mirror ManualMemory's one initial four-byte alignment exactly.  All
+    # subsequent allocations remain aligned because their sizes are multiples
+    # of four.
+    alignment_bytes = (-memory.current_pointer) % torch.float32.itemsize
+    safety = min(1.0, max(0.0, float(rt_settings.WAVEFRONT_TILE_SAFETY)))
+    usable = (int(free * safety)
+              - alignment_bytes - int(fixed_bytes))
+    budget = max(0, usable) // bytes_per_primary
+    hi = max(1, rt_settings.WAVEFRONT_TILE_MAX // split_k)
+    lo = min(hi, max(1, rt_settings.WAVEFRONT_TILE_MIN // split_k))
+    # The minimum is a launch-amortisation preference, not permission to
+    # overrun the arena.  When less than the preferred floor fits, use the
+    # exact smaller value; a one-primary allocation is attempted only when no
+    # primary can fit, preserving the normal single-frame OOM diagnostic.
+    if budget < lo:
+        return max(1, budget)
+    return min(budget, hi)
 
 
-def _compact_active_rays(active, rs_int, split_k, i32):
-    """Return active ray slots for the next wavefront iteration.
+class _ArenaRayCompactor:
+    """Stable-lifetime ray-index buffers owned by ``ManualMemory``.
 
-    Without ray splitting, only a previously-active slot can remain active, so
-    filtering ``active`` avoids a full scan of the tile-sized state pool after
-    every pass.  Refraction/custom-scatter paths may activate spare slots and
-    therefore keep the original full-pool scan.
+    PyTorch's comparison/advanced-index/nonzero chain created several fresh
+    CUDA tensors after the render arena had already been reserved.  A Taichi
+    filter kernel now writes directly into these two ping-pong buffers and a
+    one-word counter, so compaction cannot exceed the arena allowance.
     """
-    if split_k == 1 and rt_settings.WF_COMPACT_ACTIVE_ONLY:
-        return active[rs_int[active, 2] == 0]
-    return (rs_int[:, 2] == 0).nonzero(as_tuple=True)[0].to(i32)
+
+    def __init__(self, memory, capacity, dtype=torch.int32):
+        self.capacity = int(capacity)
+        self.a = memory.get_tensor((self.capacity,), dtype)
+        self.b = memory.get_tensor((self.capacity,), dtype)
+        self.count = memory.get_tensor((1,), dtype)
+        self.current = self.a
+        self.spare = self.b
+        self.size = 0
+
+    def initial(self, size):
+        self.size = int(size)
+        torch.arange(self.size, out=self.current[:self.size])
+        return self.current[:self.size]
+
+    def select(self, rs_int, desired_status, *, source=None, scan_pool=False,
+               rs_key=None, desired_key=0):
+        if source is None:
+            source = self.current[:self.size]
+        source_size = self.capacity if scan_pool else int(source.numel())
+        self.count.zero_()
+        compact_ray_slots(
+            source, source_size, bool(scan_pool), int(desired_status),
+            # ``rs_key`` is a compile-time-unused argument without a key
+            # predicate. Reuse the current index array instead of reserving an
+            # otherwise dead placeholder word.
+            rs_int, self.current if rs_key is None else rs_key,
+            rs_key is not None, int(desired_key), self.spare, self.count)
+        size = int(self.count.item())
+        self.current, self.spare = self.spare, self.current
+        self.size = size
+        return self.current[:size]
 
 
 _kernel_compile_notice_shown = False
@@ -177,7 +372,13 @@ def _append_env_texture(textures, env, intensity, device):
     Texels are stored column-major (``offset + x * height + y``) to match
     ``_sample_tex_vec5``.
     """
-    env = env.to(device).float()
+    # Environment resampling and concatenation are scene preparation, not
+    # rendering.  Always perform them on the host even when a direct caller
+    # supplied render-device textures; the completed storage is uploaded once
+    # through ``copy_merged_scene_to_arena``.
+    device = torch.device("cpu")
+    textures = textures.detach().cpu()
+    env = _host_tensor(env).float()
     max_w = 2048
     if env.shape[1] > max_w:
         scale = max_w / env.shape[1]
@@ -192,7 +393,7 @@ def _append_env_texture(textures, env, intensity, device):
         texels = texels.to(textures.dtype)
     offset = int(textures.shape[1])
     texels = texels.unsqueeze(0).expand(textures.shape[0], -1, -1)
-    textures = torch.cat((textures.to(device), texels), 1).contiguous()
+    textures = torch.cat((textures, texels), 1).contiguous()
     return textures, (offset, w, h, float(intensity))
 
 
@@ -204,7 +405,7 @@ def _env_sh_coeffs(env, intensity):
     """
     import math
 
-    e = env.float()
+    e = _host_tensor(env).float()
     if e.shape[0] > 32 or e.shape[1] > 64:
         e = torch.nn.functional.adaptive_avg_pool2d(
             e.permute(2, 0, 1).unsqueeze(0), (16, 32))[0].permute(1, 2, 0)
@@ -286,7 +487,23 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     MAX_BOUNCES = rt_settings.MAX_BOUNCES
     TONEMAP_EXPOSURE = rt_settings.TONEMAP_EXPOSURE
     INDIRECT_BOUNCE_STRENGTH = rt_settings.INDIRECT_BOUNCE_STRENGTH
-    merged = _merge_scene(primitives)
+    env_map = (getattr(scene, "environment_map", None)
+               if int(SAMPLES_PER_PIXEL) <= 1 else None)
+    env_source = (env_map.detach().cpu()
+                  if torch.is_tensor(env_map) else env_map)
+    env_meta = getattr(primitives[0], "_rt_env_meta", None)
+    merged = getattr(primitives[0], "_rt_device_scene", None)
+    if merged is None:
+        merged_host = _merge_scene(primitives)
+        if env_map is not None:
+            merged_host = dict(merged_host)
+            texture_device = merged_host["textures"].device
+            merged_host["textures"], env_meta = _append_env_texture(
+                merged_host["textures"], env_source,
+                float(getattr(scene, "environment_intensity", 1.0)),
+                texture_device)
+        merged = copy_merged_scene_to_arena(
+            merged_host, memory, persist=True)
     aa = max(1, int(anti_alias_level))
     # Refraction is only implemented by the general wavefront tracer, so a
     # deterministic batch that contains a refractive surface is routed there
@@ -305,8 +522,6 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     lights_extended = (int(SAMPLES_PER_PIXEL) <= 1 and any(
         getattr(l, "_render_aux", None) is not None
         for l in (light_sources or ())))
-    env_map = (getattr(scene, "environment_map", None)
-               if int(SAMPLES_PER_PIXEL) <= 1 else None)
     cam = getattr(scene, "camera", None)
     near_clip = float(getattr(cam, "near", 0.0) or 0.0)
     far_clip = float(getattr(cam, "far", 0.0) or 0.0)
@@ -331,24 +546,35 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
         post_aa = aa
 
     C_out = 5 if transparent_background else 4
-    device = COMPUTING_DEFAULTS.render_device
+    device = memory.data.device
     num_frames = merged["num_frames"]
 
-    cam_origin = _expand_frames(_flat_frames(ray_origin, (3,)),
-                                num_frames).contiguous()
-    sp = _expand_frames(_flat_frames(screen_point, (3,)),
-                        num_frames).contiguous()
-    sb = _expand_frames(_flat_frames(screen_basis, (3, 3)), num_frames)
-    pbx, pby = _pixel_bases(sb)
+    # Camera snapshots stay on the animation/source device during prefetch.
+    # Complete their small vector math there, then copy only the kernel-facing
+    # results into arena-backed render tensors.
+    cam_origin_host = _expand_frames(
+        _flat_frames(_host_tensor(ray_origin), (3,)),
+        num_frames).contiguous()
+    sp_host = _expand_frames(
+        _flat_frames(_host_tensor(screen_point), (3,)),
+        num_frames).contiguous()
+    sb_host = _expand_frames(
+        _flat_frames(_host_tensor(screen_basis), (3, 3)), num_frames)
+    pbx_host, pby_host = _pixel_bases(sb_host)
     # World units per screen pixel per unit distance (for border widths). Border
     # widths are authored in *anti-aliased* pixels (see BezierCircuit), so this
     # always uses the super-sampled height (screen_height * aa), whether or not
     # the frame buffer itself is super-sampled.
-    b1_norm = sb[:, 1].norm(p=2, dim=-1)
-    screen_dist = (sp - cam_origin).norm(p=2, dim=-1)
-    pixel_world_scale = (
+    b1_norm = sb_host[:, 1].norm(p=2, dim=-1)
+    screen_dist = (sp_host - cam_origin_host).norm(p=2, dim=-1)
+    pixel_world_scale_host = (
         2.0 / (screen_height * aa * b1_norm * screen_dist).clamp_min(1e-12)
     ).contiguous()
+    cam_origin = _arena_copy(memory, cam_origin_host)
+    sp = _arena_copy(memory, sp_host)
+    pbx = _arena_copy(memory, pbx_host)
+    pby = _arena_copy(memory, pby_host)
+    pixel_world_scale = _arena_copy(memory, pixel_world_scale_host)
 
     # In-place AA samples the background once per output pixel, so an
     # animated/image background that arrived super-sampled must be averaged
@@ -417,27 +643,27 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # Environment map: append its texels to the shared texture buffer (the
     # merged dict is shallow-copied -- it is cached across batches) and, when
     # its ambient lighting is enabled, its SH irradiance as an extra light row.
-    env_meta = None
-    if env_map is not None:
-        merged = dict(merged)
-        merged["textures"], env_meta = _append_env_texture(
-            merged["textures"], env_map,
-            float(getattr(scene, "environment_intensity", 1.0)), device)
     if det_frag:
-        light_pos, light_col, num_lights = _pack_lights(
-            light_sources, num_frames, device)
+        light_device = torch.device("cpu")
+        light_pos_host, light_col_host, num_lights = _pack_lights(
+            light_sources, num_frames, light_device)
         if env_map is not None and getattr(scene, "environment_ambient", True):
-            light_pos, light_col, num_lights = _append_env_sh_light(
-                light_pos, light_col, num_lights, env_map,
-                float(getattr(scene, "environment_intensity", 1.0)), device)
+            light_pos_host, light_col_host, num_lights = _append_env_sh_light(
+                light_pos_host, light_col_host, num_lights, env_source,
+                float(getattr(scene, "environment_intensity", 1.0)),
+                light_device)
+        light_pos = _arena_copy(memory, light_pos_host)
+        light_col = _arena_copy(memory, light_col_host)
     elif samples > 1:
         light_pos = light_col = None
         num_lights = 0
     else:
         # Deterministic, fragment shading off: tiny placeholders for the
         # (compiled-out) material/light kernel args.
-        light_pos = torch.zeros((1, 1, 3), device=device)
-        light_col = torch.zeros((1, 1, 3), device=device)
+        light_pos = memory.get_tensor((1, 1, 3), torch.float32)
+        light_col = memory.get_tensor((1, 1, 3), torch.float32)
+        light_pos.zero_()
+        light_col.zero_()
         num_lights = 0
 
     def render_chunk(start, end):
@@ -501,20 +727,26 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                                  t_val, float(TONEMAP_EXPOSURE),
                                  accum, out)
             else:
-                raytrace_render_wavefront(
-                    tri_bvh, pn_bvh, bez_bvh, merged,
-                    cam_origin, sp, pbx, pby, pixel_world_scale,
-                    int(start), int(end), int(width), int(height),
-                    float(width // 2), float(height // 2),
-                    layer_offset_triangles, layer_offset_pn,
-                    has_tri, has_pn, has_bez, int(MAX_BOUNCES),
-                    light_pos, light_col, int(num_lights),
-                    frag_flag, frag_pipelines, frag_scatters, shadow_flag,
-                    refraction_flag,
-                    1 if transparent_background else 0, memory, out,
-                    kernel_aa, lights_extended=lights_extended,
-                    env_meta=env_meta, near_clip=near_clip,
-                    far_clip=far_clip)
+                # col_row/gen/layer metadata, AA accumulation and every tile
+                # buffer are wavefront-only. Release them before post
+                # processing so the two phases share the same temporary arena
+                # range (the batch estimator models max(wavefront, post), not
+                # their sum).
+                with memory.temp():
+                    raytrace_render_wavefront(
+                        tri_bvh, pn_bvh, bez_bvh, merged,
+                        cam_origin, sp, pbx, pby, pixel_world_scale,
+                        int(start), int(end), int(width), int(height),
+                        float(width // 2), float(height // 2),
+                        layer_offset_triangles, layer_offset_pn,
+                        has_tri, has_pn, has_bez, int(MAX_BOUNCES),
+                        light_pos, light_col, int(num_lights),
+                        frag_flag, frag_pipelines, frag_scatters, shadow_flag,
+                        refraction_flag,
+                        1 if transparent_background else 0, memory, out,
+                        kernel_aa, lights_extended=lights_extended,
+                        env_meta=env_meta, near_clip=near_clip,
+                        far_clip=far_clip)
             frames = out.view(end - start, height, width, C_out)
             frames = post_process_frames(memory,
                 frames, anti_alias_level=post_aa,
@@ -547,7 +779,7 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                          pixel_basis_y, half_screen_w, half_screen_h,
                          max_bounces, near_clip, run_tile,
                          auto_extra_slot_bytes=0, auto_extra_primary_bytes=0,
-                         gen_fused=False):
+                         auto_fixed_bytes=0, gen_fused=False):
     """Shared skeleton of the wavefront orchestrators: the AA sub-pixel loop,
     ray-offset screen tiling (bounded per-tile state regardless of frame
     size), per-tile state allocation from the render pool + primary-ray
@@ -578,7 +810,8 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
     # fewer, bigger tiles on pools with headroom -- see settings.py.
     primary_per_tile = _auto_primary_per_tile(
         memory, split_k, primary_per_tile,
-        auto_extra_slot_bytes, auto_extra_primary_bytes)
+        auto_extra_slot_bytes, auto_extra_primary_bytes,
+        auto_fixed_bytes)
 
     for si in range(aa):
         for sj in range(aa):
@@ -759,7 +992,8 @@ def raytrace_render_wavefront(
         a_pos, a_norm = merged["tri_pos"], merged["tri_norm"]
         a_mat, a_matid = merged["tri_mat"], merged["tri_mat_id"]
         a_uvs, a_meta = merged["tri_uvs"], merged["tri_tex_meta"]
-        col_row_arr = torch.zeros(1, dtype=i32, device=device)
+        col_row_arr = memory.get_tensor((1,), i32)
+        col_row_arr.zero_()
     opaque_closest = int(
         rt_settings.WF_OPAQUE_CLOSEST
         and merged.get("all_visible_opaque", False)
@@ -785,26 +1019,27 @@ def raytrace_render_wavefront(
     gen_fused = (rt_settings.WF_GEN_FUSED and split_k == 1
                  and near_clip <= 0.0 and max(1, int(aa_level)) <= 1)
     if gen_fused:
-        gen_meta = torch.tensor(
-            [0.5, 0.5, float(half_screen_w), float(half_screen_h)],
-            dtype=f32, device=device)
+        gen_meta = _arena_values(
+            memory, [0.5, 0.5, float(half_screen_w),
+                     float(half_screen_h)], f32)
     else:
-        gen_meta = torch.zeros(1, dtype=f32, device=device)
+        gen_meta = memory.get_tensor((1,), f32)
+        gen_meta.zero_()
     if gen_fused or env_meta is not None or far_clip > 0.0:
         # Extras packed behind the two layer offsets (the shade kernel is at
         # the 64-arg ceiling): env map placement in the shared texel buffer +
         # the camera's far clip distance, and -- read only by the fused first
         # shade iteration -- max_bounces. The kernel detects them by length.
         eo, ew, eh, ei = env_meta if env_meta is not None else (0, 0, 0, 0.0)
-        layer_offsets_t = torch.tensor(
+        layer_offsets_t = _arena_values(
+            memory,
             [float(layer_offset_triangles), float(layer_offset_pn),
              float(eo), float(ew), float(eh), float(ei), float(far_clip),
-             float(max_bounces)],
-            dtype=f32, device=device)
+             float(max_bounces)], f32)
     else:
-        layer_offsets_t = torch.tensor(
-            [float(layer_offset_triangles), float(layer_offset_pn)],
-            dtype=f32, device=device)
+        layer_offsets_t = _arena_values(
+            memory,
+            [float(layer_offset_triangles), float(layer_offset_pn)], f32)
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix,
                  pix_accum, rs_used):
@@ -814,7 +1049,8 @@ def raytrace_render_wavefront(
         # only); a 1-element placeholder otherwise (the reader
         # compiles out).
         rs_vis = memory.get_tensor((1,), i32)
-        active = torch.arange(tn_primary, dtype=i32, device=device)
+        compactor = _ArenaRayCompactor(memory, pool, i32)
+        active = compactor.initial(tn_primary)
         it = 0
         while active.numel() > 0 and it < max_iters:
             na = int(active.numel())
@@ -902,7 +1138,10 @@ def raytrace_render_wavefront(
                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                 rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
                 rs_pix, pix_accum, rs_used, rs_vis)
-            active = _compact_active_rays(active, rs_int, split_k, i32)
+            active = compactor.select(
+                rs_int, 0, source=active,
+                scan_pool=(split_k != 1
+                           or not rt_settings.WF_COMPACT_ACTIVE_ONLY))
             it += 1
 
     _run_wavefront_tiles(
@@ -914,7 +1153,10 @@ def raytrace_render_wavefront(
         pixel_basis_x=pixel_basis_x, pixel_basis_y=pixel_basis_y,
         half_screen_w=half_screen_w, half_screen_h=half_screen_h,
         max_bounces=max_bounces, near_clip=near_clip,
-        run_tile=run_tile, gen_fused=gen_fused)
+        run_tile=run_tile,
+        # rs_vis placeholder + the compactor's output-count word.
+        auto_fixed_bytes=2 * torch.int32.itemsize,
+        gen_fused=gen_fused)
 
 
 def _raytrace_render_wavefront_textured(
@@ -956,13 +1198,15 @@ def _raytrace_render_wavefront_textured(
     primary_per_tile = max(1, rt_settings.WAVEFRONT_TILE_RAYS // split_k)
     # Placeholder for the fused-generation traverse args (classic generate
     # kernel is kept on this path; the gen block compiles out).
-    gen_meta = torch.zeros(1, dtype=f32, device=device)
+    gen_meta = memory.get_tensor((1,), f32)
+    gen_meta.zero_()
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix,
                  pix_accum, rs_used):
         (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
          rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
-        active = torch.arange(tn_primary, dtype=i32, device=device)
+        compactor = _ArenaRayCompactor(memory, pool, i32)
+        active = compactor.initial(tn_primary)
         it = 0
         while active.numel() > 0 and it < max_iters:
             na = int(active.numel())
@@ -1030,7 +1274,10 @@ def _raytrace_render_wavefront_textured(
                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                 rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
                 rs_pix, pix_accum, rs_used)
-            active = _compact_active_rays(active, rs_int, split_k, i32)
+            active = compactor.select(
+                rs_int, 0, source=active,
+                scan_pool=(split_k != 1
+                           or not rt_settings.WF_COMPACT_ACTIVE_ONLY))
             it += 1
 
     _run_wavefront_tiles(
@@ -1042,7 +1289,9 @@ def _raytrace_render_wavefront_textured(
         pixel_basis_x=pixel_basis_x, pixel_basis_y=pixel_basis_y,
         half_screen_w=half_screen_w, half_screen_h=half_screen_h,
         max_bounces=max_bounces, near_clip=0.0,
-        run_tile=run_tile)
+        run_tile=run_tile,
+        # Compactor output-count word.
+        auto_fixed_bytes=torch.int32.itemsize)
 
 
 def _scene_has_custom_scatter(merged):
@@ -1053,18 +1302,26 @@ def _scene_has_custom_scatter(merged):
     scatter-free, byte-identical default path). Cheap: exits on the
     tensor-max user-pipeline pre-check for the (overwhelmingly common)
     all-built-in scene."""
+    cached = merged.get("has_custom_scatter")
+    if cached is not None:
+        return bool(cached)
     if not _scene_has_user_pipeline(merged):
+        merged["has_custom_scatter"] = False
         return False
     from algan.rendering.shaders.fragment_shaders import build_frag_scatters
     scatters = build_frag_scatters()
-    for key in ("tri_mat_id", "pn_mat_id"):
-        arr = merged.get(key)
-        if arr is None or not arr.numel():
-            continue
-        for pid in torch.unique(arr).tolist():
+    for prefix in ("tri", "pn"):
+        material_ids = merged.get(f"{prefix}_material_ids")
+        if material_ids is None:
+            arr = merged.get(f"{prefix}_mat_id")
+            material_ids = (() if arr is None or not arr.numel() else
+                            torch.unique(arr.detach().cpu()).tolist())
+        for pid in material_ids:
             i = int(pid) - _USER_PIPELINE_BASE
             if 0 <= i < len(scatters) and scatters[i] is not None:
+                merged["has_custom_scatter"] = True
                 return True
+    merged["has_custom_scatter"] = False
     return False
 
 
@@ -1117,12 +1374,20 @@ def _raytrace_render_wavefront_sorted(
     buckets = []
     has_custom_scatter = False
     if merged["num_triangles"] > 0:
-        for pid in torch.unique(merged["tri_mat_id"]).tolist():
+        tri_material_ids = merged.get("tri_material_ids")
+        if tri_material_ids is None:
+            tri_material_ids = torch.unique(
+                merged["tri_mat_id"].detach().cpu()).tolist()
+        for pid in tri_material_ids:
             fn, sc = _resolve(int(pid))
             has_custom_scatter |= sc is not default_scatter
             buckets.append(((1 << 8) | int(pid), fn, sc, merged["tri_mat"]))
     if merged["num_pn"] > 0:
-        for pid in torch.unique(merged["pn_mat_id"]).tolist():
+        pn_material_ids = merged.get("pn_material_ids")
+        if pn_material_ids is None:
+            pn_material_ids = torch.unique(
+                merged["pn_mat_id"].detach().cpu()).tolist()
+        for pid in pn_material_ids:
             fn, sc = _resolve(int(pid))
             has_custom_scatter |= sc is not default_scatter
             buckets.append(((2 << 8) | int(pid), fn, sc, merged["pn_mat"]))
@@ -1130,7 +1395,6 @@ def _raytrace_render_wavefront_sorted(
     # split pool (and the peel's IOR sampling) even in a scene with no
     # refractive surface.
     refraction_flag = 1 if (refraction_flag or has_custom_scatter) else 0
-    bucket_map = {key: (fn, sc, mat) for key, fn, sc, mat in buckets}
 
     # Worst case: every one of MAX_SURFACES_PER_RAY hits is a material event
     # (one peel+shade pass each) plus a traverse per K-buffer refill / bounce.
@@ -1144,7 +1408,8 @@ def _raytrace_render_wavefront_sorted(
                            // (3 * split_k))
     # Placeholder for the fused-generation traverse args (classic generate
     # kernel is kept on this path; the gen block compiles out).
-    gen_meta = torch.zeros(1, dtype=f32, device=device)
+    gen_meta = memory.get_tensor((1,), f32)
+    gen_meta.zero_()
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix,
                  pix_accum, rs_used):
@@ -1157,6 +1422,7 @@ def _raytrace_render_wavefront_sorted(
         rs_eprim = memory.get_tensor((pool,), i32)
         rs_vis = memory.get_tensor((pool,) if shadow_flag else (1,),
                                    i32)
+        compactor = _ArenaRayCompactor(memory, pool, i32)
         # The drained counter (rs_int col 4, pool garbage after
         # allocation) must be 0 for every ray entering ST_TRAVERSE;
         # the kernels maintain that invariant from here on.
@@ -1164,17 +1430,11 @@ def _raytrace_render_wavefront_sorted(
 
         it = 0
         while it < max_iters:
-            # At the top of an iteration every ray is DONE, TRAVERSE
-            # or PEEL (pending SHADE events never survive their
-            # discovery iteration), so two index builds decide both
-            # what to launch and when to stop.
-            status = rs_int[:, 2]
-            trav = (status == ST_TRAVERSE).nonzero(
-                as_tuple=True)[0].to(i32)
-            peel_extra = (status == ST_PEEL).nonzero(
-                as_tuple=True)[0].to(i32)
-            if trav.numel() == 0 and peel_extra.numel() == 0:
-                break
+            # Build every work list directly in the arena. Pending SHADE
+            # events never survive an iteration, so TRAVERSE then PEEL scans
+            # are sufficient to decide termination.
+            trav = compactor.select(
+                rs_int, ST_TRAVERSE, scan_pool=True)
             if trav.numel():
                 wavefront_traverse(
                     trav, int(trav.numel()),
@@ -1218,11 +1478,12 @@ def _raytrace_render_wavefront_sorted(
                     rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf, rs_pix,
                     0, cam_origin, screen_point,
                     pixel_basis_x, pixel_basis_y, gen_meta)
-            if peel_extra.numel():
-                peel_idx = (torch.cat((trav, peel_extra))
-                            if trav.numel() else peel_extra)
-            else:
-                peel_idx = trav
+            # Traversal transitions its rays to PEEL, so one post-traverse
+            # scan naturally includes both those rays and previously-peeling
+            # rays without a temporary torch.cat.
+            peel_idx = compactor.select(rs_int, ST_PEEL, scan_pool=True)
+            if trav.numel() == 0 and peel_idx.numel() == 0:
+                break
             if peel_idx.numel():
                 wf_peel(
                     peel_idx, int(peel_idx.numel()),
@@ -1243,22 +1504,10 @@ def _raytrace_render_wavefront_sorted(
                     rs_acc, rs_sca, rs_int,
                     rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf,
                     rs_pix, rs_hit, rs_key, rs_eprim, pix_accum)
-            # Sort the pending events by material key once: the
-            # buckets become contiguous slices of one index array
-            # (coalesced kernel reads) and the whole dispatch costs a
-            # single host sync instead of one nonzero per bucket.
-            shade_idx = (rs_int[:, 2] == ST_SHADE).nonzero(
-                as_tuple=True)[0]
-            if shade_idx.numel():
-                keys_shade = rs_key[shade_idx]
-                sorted_keys, order = torch.sort(keys_shade)
-                shade_sorted = shade_idx[order].to(i32)
-                uniq, counts = torch.unique_consecutive(
-                    sorted_keys, return_counts=True)
-                bucket_sizes = torch.stack(
-                    (uniq.long(), counts)).tolist()
+            shade_all = compactor.select(
+                rs_int, ST_SHADE, scan_pool=True)
+            if shade_all.numel():
                 if shadow_flag:
-                    shade_all = shade_sorted
                     wf_shadow_event(
                         shade_all, int(shade_all.numel()),
                         tri_bvh.blocks, tri_bvh.node_miss,
@@ -1288,11 +1537,13 @@ def _raytrace_render_wavefront_sorted(
                         int(time_start), int(width), int(height),
                         int(tile_start),
                         rs_ro, rs_rd, rs_sca, rs_hit, rs_pix, rs_vis)
-                off = 0
-                for key_val, cnt in zip(*bucket_sizes):
-                    fn, sc, mat = bucket_map[int(key_val)]
-                    cnt = int(cnt)
-                    bidx = shade_sorted[off:off + cnt]
+                for key_val, fn, sc, mat in buckets:
+                    bidx = compactor.select(
+                        rs_int, ST_SHADE, scan_pool=True,
+                        rs_key=rs_key, desired_key=key_val)
+                    cnt = int(bidx.numel())
+                    if cnt == 0:
+                        continue
                     wf_shade_event(
                         bidx, cnt,
                         mat, light_pos, light_col,
@@ -1304,7 +1555,6 @@ def _raytrace_render_wavefront_sorted(
                         rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                         rs_hit, rs_eprim, rs_pix, pix_accum,
                         rs_used, rs_vis)
-                    off += cnt
             it += 1
 
     _run_wavefront_tiles(
@@ -1318,7 +1568,11 @@ def _raytrace_render_wavefront_sorted(
         max_bounces=max_bounces, near_clip=0.0,
         run_tile=run_tile,
         # rs_hit(15 f32) + rs_key + rs_eprim (+ rs_vis with shadows) per slot.
-        auto_extra_slot_bytes=15 * 4 + 4 + 4 + (4 if shadow_flag else 0))
+        auto_extra_slot_bytes=15 * 4 + 4 + 4 + (4 if shadow_flag else 0),
+        # Compactor output-count word, plus the one-word rs_vis placeholder
+        # when shadow visibility is not a per-slot array.
+        auto_fixed_bytes=(torch.int32.itemsize
+                          * (1 if shadow_flag else 2)))
 
 
 _originals = {}

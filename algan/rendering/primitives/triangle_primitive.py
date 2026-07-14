@@ -61,7 +61,7 @@ class TrianglePrimitive(RenderPrimitive):
             self.shader_param_names = getattr(
                 triangle_collection[0], "shader_param_names", [])
             self.corners, self.colors, self.normals, self.glow_radius, *self.shader_param_values = (
-                unsquish(torch.cat(_, 1), -2, 3).to(COMPUTING_DEFAULTS.render_device)
+                unsquish(torch.cat(_, 1), -2, 3)
                 for _ in zip(
                     *(
                         broadcast_all(

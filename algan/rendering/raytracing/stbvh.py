@@ -215,6 +215,28 @@ class STBVH:
         self.first_leaf = num_nodes - self.num_leaves
         self.blocks = _build_blocks(nodes, self.first_leaf)
 
+    @classmethod
+    def from_prebuilt(cls, nodes, node_miss, leaf_prim, leaf_tspan, blocks):
+        """Construct an STBVH whose kernel-facing blocks are already built.
+
+        Scene preparation can build a BVH on the CPU and later upload its
+        finished tensors into the render arena.  Calling :class:`STBVH`
+        normally at that boundary would run :func:`_build_blocks` again on the
+        rendering device, creating both redundant work and destination-side
+        temporary allocations.  This constructor only attaches the supplied
+        tensors and derives the two scalar layout fields from their shapes.
+        """
+        self = cls.__new__(cls)
+        self.nodes = nodes
+        self.node_miss = node_miss
+        self.leaf_prim = leaf_prim
+        self.leaf_tspan = leaf_tspan
+        num_nodes = nodes.shape[0]
+        self.num_leaves = (num_nodes * (BVH_ARITY - 1) + 1) // BVH_ARITY
+        self.first_leaf = num_nodes - self.num_leaves
+        self.blocks = blocks
+        return self
+
     @property
     def num_nodes(self):
         return self.nodes.shape[0]

@@ -318,12 +318,12 @@ class TriangleMesh(Renderable):
 
     def get_memory_used_per_timestep(self):
         n_v = self.num_triangles * 3
-        # location(3) + color(5) animation state, plus primitive corners/colors/
-        # normals and ~24 bytes/vertex of RT frame-bound + BVH overhead.
+        # Source-device location/color plus primitive corners/colors/normals.
+        # Final ray-tracing arrays and BVHs are charged by the arena upload.
         num_vars = 16
         for _ in self.grid.get_shader_params().values():
             num_vars += _.shape[-1]
-        return n_v * (num_vars * 4 + 24)
+        return n_v * num_vars * 4
 
     def get_default_color(self):
         return WHITE

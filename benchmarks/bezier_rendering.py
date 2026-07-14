@@ -14,9 +14,9 @@ Boxed = lambda mob, color=BLUE, buffer=0.1, *args, **kwargs: Group(mob,
                                                                                                border_width=1, *args,
                                                                                                **kwargs))
 def GlowTex(c, *args, **kwargs):
-    m = Tex(*args, **kwargs)#.set(color=c + GLOW * 0.01,
-                                #border_color=torch.lerp(c, WHITE, 0.9),
-                                #            border_width=0.8).scale(0.75)
+    m = Tex(*args, **kwargs).set(color=c + GLOW * 0.01,
+                                border_color=torch.lerp(c, WHITE, 0.9),
+                                            border_width=0.8).scale(0.75)
     return m
 text_string = ('a' * 50 + '\n') * 50
 
@@ -25,7 +25,7 @@ def text_scene():
     with Off():
         nn = NeuralNetMLP([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(run_time=0.5):
+    with Sync(run_time=2):
         mob.move(LEFT)
         nn.move(LEFT)
     return

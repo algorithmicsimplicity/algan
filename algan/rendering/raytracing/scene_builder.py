@@ -4,14 +4,302 @@ into contiguous tensor data-structures, ready to be shipped to ray tracing kerne
 import torch
 import torch.nn.functional as F
 
-from algan.utils.memory_utils import empty_cache
-from algan.settings.defaults import COMPUTING_DEFAULTS
+from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.rendering.raytracing.primitives import RayTracedPNTrianglePrimitive, RayTracedTrianglePrimitive, \
     RayTracedBezierCircuitPrimitive
-from algan.rendering.raytracing.settings import _constant_promotion_active
+from algan.rendering.raytracing.settings import (
+    _USER_PIPELINE_BASE,
+    _constant_promotion_active,
+)
 from algan.rendering.raytracing.shading_taichi import MAT_W, _MID_UNLIT
-from algan.rendering.raytracing.stbvh import EMPTY_LO, EMPTY_HI, build_stbvh
+from algan.rendering.raytracing.stbvh import EMPTY_LO, EMPTY_HI, STBVH, build_stbvh
 from algan.rendering.raytracing.utils import _expand_frames, _cat_collections, _cat_mat_blocks, _flat_frames
+
+
+_STBVH_TENSOR_FIELDS = (
+    "nodes", "blocks", "node_miss", "leaf_prim", "leaf_tspan")
+
+
+def _projected_scene_device(primitives):
+    """Device carrying a projected primitive batch's ray-tracing tensors."""
+    preferred = (
+        "_rt_tri_pos", "_rt_pn_ctrl", "_rt_edges", "_rt_circuit_meta",
+        "_rt_frame_lo")
+    for primitive in primitives:
+        for name in preferred:
+            value = getattr(primitive, name, None)
+            if torch.is_tensor(value):
+                return value.device
+        # Keep this tolerant of new ray-traced primitive types: any projected
+        # ``_rt_*`` tensor is a better source of truth than a global device.
+        for name, value in vars(primitive).items():
+            if name.startswith("_rt_") and torch.is_tensor(value):
+                return value.device
+    raise ValueError("projected primitive batch contains no ray-tracing tensors")
+
+
+def _collect_scene_tensors(scene):
+    """Return each tensor object reachable from a merged scene exactly once."""
+    tensors = []
+    seen_tensors = set()
+    seen_containers = set()
+
+    def visit(value):
+        if torch.is_tensor(value):
+            key = id(value)
+            if key not in seen_tensors:
+                seen_tensors.add(key)
+                tensors.append(value)
+            return
+        if isinstance(value, STBVH):
+            key = id(value)
+            if key in seen_containers:
+                return
+            seen_containers.add(key)
+            for field in _STBVH_TENSOR_FIELDS:
+                visit(getattr(value, field))
+            return
+        if isinstance(value, dict):
+            key = id(value)
+            if key in seen_containers:
+                return
+            seen_containers.add(key)
+            for item in value.values():
+                visit(item)
+            return
+        if isinstance(value, (list, tuple)):
+            key = id(value)
+            if key in seen_containers:
+                return
+            seen_containers.add(key)
+            for item in value:
+                visit(item)
+
+    visit(scene)
+    return tensors
+
+
+def _scene_storage_groups(scene):
+    """Group scene tensor views by their underlying untyped storage."""
+    groups = {}
+    for tensor in _collect_scene_tensors(scene):
+        storage = tensor.untyped_storage()
+        # ``untyped_storage()`` may return a fresh Python wrapper; ``_cdata``
+        # identifies the actual TensorImpl storage and also distinguishes
+        # separate zero-byte storages (whose data_ptr values are all zero).
+        key = storage._cdata
+        if key not in groups:
+            groups[key] = {"storage": storage, "tensors": []}
+        groups[key]["tensors"].append(tensor)
+    return list(groups.values())
+
+
+def get_merged_scene_tensor_nbytes(scene):
+    """Bytes owned by the unique tensor storages reachable from ``scene``.
+
+    Aliased tensors and aliased :class:`STBVH` fields are charged once.  This
+    is the physical source-storage size, rather than a sum of tensor ``numel``
+    values, so sliced/strided views are accounted and copied without breaking
+    their alias relationship.
+    """
+    return sum(group["storage"].nbytes()
+               for group in _scene_storage_groups(scene))
+
+
+def _storage_is_arena(storage, memory):
+    return storage._cdata == memory.data.untyped_storage()._cdata
+
+
+def _storage_alignment(group):
+    return max((tensor.element_size() for tensor in group["tensors"]),
+               default=1)
+
+
+def _group_needs_arena_copy(group, memory):
+    tensors = group["tensors"]
+    target = memory.data.device
+    if any(tensor.device != target for tensor in tensors):
+        return True
+    if group["storage"].nbytes() == 0:
+        return False
+    return not _storage_is_arena(group["storage"], memory)
+
+
+def get_merged_scene_arena_nbytes(scene, memory, *, persist=True):
+    """Exact arena pointer delta for :func:`copy_merged_scene_to_arena`.
+
+    The result includes byte-alignment padding at the arena's *current*
+    forward or reverse pointer and skips tensors already backed by that arena.
+    Consequently it can be compared directly with the corresponding pointer
+    delta after an upload.  An unmanaged ``ManualMemory`` has no arena-backed
+    allocation path and therefore consumes zero pointer bytes.
+    """
+    if not getattr(memory, "managed", False):
+        return 0
+    pointer = (memory.current_reverse_pointer if persist
+               else memory.current_pointer)
+    initial = pointer
+    for group in _scene_storage_groups(scene):
+        if not _group_needs_arena_copy(group, memory):
+            continue
+        nbytes = group["storage"].nbytes()
+        if nbytes == 0:
+            continue
+        alignment = _storage_alignment(group)
+        if persist:
+            pointer -= pointer % alignment
+            pointer -= nbytes
+        else:
+            pointer += (-pointer) % alignment
+            pointer += nbytes
+    return initial - pointer if persist else pointer - initial
+
+
+def _arena_storage_copy(group, memory, persist):
+    """Copy one source storage into aligned raw bytes owned by ``memory``."""
+    storage = group["storage"]
+    nbytes = storage.nbytes()
+    target = memory.data.device
+    if nbytes == 0:
+        # Empty tensors own no bytes; use a zero-length view of the destination
+        # arena solely to give reconstructed empty tensors the target device.
+        return memory.data[:0]
+
+    alignment = _storage_alignment(group)
+    pointer = (memory.current_reverse_pointer if persist
+               else memory.current_pointer)
+    padding = pointer % alignment if persist else (-pointer) % alignment
+    if padding:
+        memory.get_tensor((padding,), dtype=torch.uint8, persist=persist)
+    destination = memory.get_tensor(
+        (nbytes,), dtype=torch.uint8, persist=persist)
+
+    # Wrapping an UntypedStorage produces a byte view without allocating a
+    # second source tensor. ``copy_`` performs any host/device transfer directly
+    # into the already-reserved destination bytes.
+    source = torch.as_tensor(storage, dtype=torch.uint8,
+                             device=group["tensors"][0].device)
+    destination.copy_(source)
+    if destination.device != target:  # defensive: ManualMemory owns the target
+        raise RuntimeError("ManualMemory returned a tensor on the wrong device")
+    return destination
+
+
+def _view_in_arena(source, destination_bytes):
+    """Recreate ``source``'s shape/stride/offset over copied arena bytes."""
+    itemsize = source.element_size()
+    byte_offset = destination_bytes.storage_offset()
+    if byte_offset % itemsize:
+        raise RuntimeError("arena tensor storage is not dtype-aligned")
+    # A zero-length typed view plus as_strided changes metadata only; it never
+    # allocates destination storage. Storage offsets are absolute within the
+    # ManualMemory uint8 backing tensor.
+    typed = destination_bytes[:0].view(source.dtype)
+    view = torch.as_strided(
+        typed, source.size(), source.stride(),
+        storage_offset=byte_offset // itemsize + source.storage_offset())
+    if type(source) is not torch.Tensor:
+        view = view.as_subclass(type(source))
+    return view
+
+
+def _rebuild_scene_with_tensors(value, tensor_map, memo):
+    if torch.is_tensor(value):
+        return tensor_map[id(value)]
+    key = id(value)
+    if key in memo:
+        return memo[key]
+    if isinstance(value, STBVH):
+        rebuilt = STBVH.from_prebuilt(
+            tensor_map[id(value.nodes)], tensor_map[id(value.node_miss)],
+            tensor_map[id(value.leaf_prim)], tensor_map[id(value.leaf_tspan)],
+            tensor_map[id(value.blocks)])
+        memo[key] = rebuilt
+        return rebuilt
+    if isinstance(value, dict):
+        rebuilt = {}
+        memo[key] = rebuilt
+        for item_key, item in value.items():
+            rebuilt[item_key] = _rebuild_scene_with_tensors(
+                item, tensor_map, memo)
+        return rebuilt
+    if isinstance(value, list):
+        rebuilt = []
+        memo[key] = rebuilt
+        rebuilt.extend(_rebuild_scene_with_tensors(item, tensor_map, memo)
+                       for item in value)
+        return rebuilt
+    if isinstance(value, tuple):
+        rebuilt = tuple(_rebuild_scene_with_tensors(item, tensor_map, memo)
+                        for item in value)
+        memo[key] = rebuilt
+        return rebuilt
+    return value
+
+
+def copy_merged_scene_to_arena(scene, memory, *, persist=True):
+    """Copy every merged-scene tensor into ``memory`` without target allocs.
+
+    One aligned arena range is reserved per unique source storage, then every
+    tensor view is recreated with its original shape, stride and relative
+    storage offset. Exact tensor aliases, view aliases and repeated STBVH
+    objects are therefore preserved. STBVHs are cloned with their already-built
+    ``blocks``; no BVH operation runs on the destination device.
+
+    A scene already backed by the supplied arena is returned by identity. An
+    unmanaged memory object explicitly disables automatic arena ownership, so
+    it falls back to one ordinary destination allocation per unique source
+    storage while preserving tensor/STBVH aliases.
+    """
+    groups = _scene_storage_groups(scene)
+    if not getattr(memory, "managed", False):
+        target = memory.data.device
+        if all(tensor.device == target
+               for group in groups for tensor in group["tensors"]):
+            return scene
+        tensor_map = {}
+        for group in groups:
+            tensors = group["tensors"]
+            if all(tensor.device == target for tensor in tensors):
+                for tensor in tensors:
+                    tensor_map[id(tensor)] = tensor
+                continue
+            storage = group["storage"]
+            destination = torch.empty(
+                (storage.nbytes(),), dtype=torch.uint8, device=target)
+            source = torch.as_tensor(
+                storage, dtype=torch.uint8, device=tensors[0].device)
+            destination.copy_(source)
+            for tensor in tensors:
+                tensor_map[id(tensor)] = _view_in_arena(
+                    tensor, destination)
+        return _rebuild_scene_with_tensors(scene, tensor_map, {})
+
+    if not any(_group_needs_arena_copy(group, memory) for group in groups):
+        return scene
+
+    required = get_merged_scene_arena_nbytes(
+        scene, memory, persist=persist)
+    if required > memory.get_num_bytes_remaining():
+        raise InsufficientMemoryException
+
+    initial_pointers = memory.get_pointers()
+    tensor_map = {}
+    try:
+        for group in groups:
+            if not _group_needs_arena_copy(group, memory):
+                for tensor in group["tensors"]:
+                    tensor_map[id(tensor)] = tensor
+                continue
+            destination = _arena_storage_copy(group, memory, persist)
+            for tensor in group["tensors"]:
+                tensor_map[id(tensor)] = _view_in_arena(tensor, destination)
+        return _rebuild_scene_with_tensors(scene, tensor_map, {})
+    except Exception:
+        # Keep uploads transactional: callers can retry with a smaller frame
+        # window without retaining a partially consumed scene allocation.
+        memory.set_pointers(initial_pointers)
+        raise
 
 
 def _dedup_time(x):
@@ -390,8 +678,9 @@ def _merge_scene(primitives):
     if cached is not None:
         return cached
 
-    empty_cache(force_gc=False)
-    device = COMPUTING_DEFAULTS.render_device
+    device = _projected_scene_device(primitives)
+    if device.type != "cpu":
+        empty_cache(force_gc=False)
     pn_patches = [p for p in primitives
                   if isinstance(p, RayTracedPNTrianglePrimitive)]
     triangles = [p for p in primitives
@@ -828,6 +1117,19 @@ def _merge_scene(primitives):
             torch.empty((0, 0), dtype=torch.bool, device=device))
 
     scene["num_frames"] = num_frames
+    # Host-side render classification.  The uploaded material-id tensors are
+    # kernel data; renderer dispatch/bucketing must not run CUDA reductions or
+    # uniqueness passes after the arena has consumed the device allowance.
+    for prefix in ("tri", "pn"):
+        ids = scene[f"{prefix}_mat_id"].detach().cpu()
+        scene[f"{prefix}_material_ids"] = tuple(
+            int(value) for value in torch.unique(ids).tolist()
+        )
+    scene["has_user_pipeline"] = any(
+        material_id >= _USER_PIPELINE_BASE
+        for prefix in ("tri", "pn")
+        for material_id in scene[f"{prefix}_material_ids"]
+    )
     scene["has_any_visible"] = any(
         scene[f"{prefix}_has_visible"] for prefix in ("tri", "pn", "bez"))
     scene["has_any_opaque"] = any(
@@ -869,7 +1171,8 @@ def _merge_scene(primitives):
         p._rt_circuit_border_colors = p._rt_edges = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
 
-    empty_cache(force_gc=False)
+    if device.type != "cpu":
+        empty_cache(force_gc=False)
     first._rt_merged_scene = scene
     return scene
 
@@ -918,9 +1221,11 @@ def _pack_lights(light_sources, num_frames, device):
     if not any_ext:
         positions, colors = [], []
         for light in light_sources or ():
+            origin = light.origin.detach().to(device)
+            color = light.light_color.detach().to(device)
             positions.append(_expand_frames(
-                _flat_frames(light.origin, (3,)), num_frames))
-            col = light.light_color.reshape(light.light_color.shape[0], -1)
+                _flat_frames(origin, (3,)), num_frames))
+            col = color.reshape(color.shape[0], -1)
             colors.append(_expand_frames(col[:, :3].float(), num_frames))
         if not positions:
             return (torch.zeros((1, 1, 3), device=device),
@@ -931,9 +1236,11 @@ def _pack_lights(light_sources, num_frames, device):
 
     positions, rows = [], []
     for light in light_sources or ():
-        pos = light.origin                         # [T, K, 3]
-        col = light.light_color                    # [T, K, >=3]
+        pos = light.origin.detach().to(device)     # [T, K, 3]
+        col = light.light_color.detach().to(device)  # [T, K, >=3]
         aux = getattr(light, "_render_aux", None)  # [T, K, 13] or None
+        if aux is not None:
+            aux = aux.detach().to(device)
         num_samples = pos.shape[-2]
         pos = pos.reshape(pos.shape[0], num_samples, -1)[..., :3].float()
         col = col.reshape(col.shape[0], col.shape[-2], -1)[..., :3].float()
@@ -944,7 +1251,8 @@ def _pack_lights(light_sources, num_frames, device):
                 # Plain point light sharing a pack with extended lights:
                 # type 0 with a whole-light power fraction (col 12 -> packed
                 # col 15).
-                a = torch.zeros((c.shape[0], 13), dtype=torch.float32)
+                a = torch.zeros(
+                    (c.shape[0], 13), dtype=torch.float32, device=device)
                 a[:, 12] = 1.0
             else:
                 a = _expand_frames(aux[:, k].float(), num_frames)
@@ -960,24 +1268,30 @@ def _prefill_background(out, background_color, frame_offset, device):
     uint8 row tensor [1 + frames * pixels, channels] (leading padding row).
     """
     num_frames, num_pixels, C_out = out.shape
-    bg = background_color.to(device)
+    # Keep the background on its source device. ``Tensor.to(device)`` used to
+    # materialize a full, untracked peer tensor on the rendering device before
+    # writing the arena-backed output. ``copy_`` below performs device and dtype
+    # conversion directly into the reserved destination instead.
+    bg = (background_color.detach().cpu()
+          if torch.is_tensor(background_color)
+          else torch.as_tensor(background_color, device="cpu"))
     if bg.dim() <= 1 or bg.shape[0] == 1:  # solid color (in [0, 1] floats)
         vals = (bg.float().flatten()[:5] * 255).round_().clamp_(0, 255)
         k = min(vals.shape[0], C_out)
-        out[..., :k] = vals[:k].to(out.dtype)
+        out[..., :k].copy_(vals[:k])
         if C_out > k:
             # Alpha (and any missing channel) defaults to the background's
             # last channel, matching opaque-by-default behavior.
-            out[..., k:] = vals[-1].to(out.dtype)
+            out[..., k:].copy_(vals[-1])
     else:
         rows = bg.reshape(-1, bg.shape[-1])[1:]
         rows = rows[frame_offset * num_pixels:
                     (frame_offset + num_frames) * num_pixels]
         rows = rows.view(num_frames, num_pixels, -1)
         k = min(rows.shape[-1], C_out)
-        out[..., :k] = rows[..., :k].to(out.dtype)
+        out[..., :k].copy_(rows[..., :k])
         if C_out > k:
-            out[..., k:] = rows[..., -1:].to(out.dtype)
+            out[..., k:].copy_(rows[..., -1:])
 
 
 def _downsample_background(background_color, aa, num_frames, screen_height,
@@ -994,6 +1308,9 @@ def _downsample_background(background_color, aa, num_frames, screen_height,
     bg = background_color
     if not torch.is_tensor(bg) or bg.dim() <= 1 or bg.shape[0] == 1:
         return bg  # solid color
+    # This is preparation for an arena-backed copy; do the resampling on the
+    # host even if a direct caller supplied a render-device background.
+    bg = bg.detach().cpu()
     C = bg.shape[-1]
     body = bg.reshape(-1, C)[1:]  # drop the leading padding row
     h_aa, w_aa = screen_height * aa, screen_width * aa
