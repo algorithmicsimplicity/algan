@@ -641,7 +641,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     """
 
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
-    max_samples_per_segment = 512
+    max_samples_per_segment = 256
 
     def project_to_screen(self, camera, light_sources):
         corners = self.corners.float().contiguous()  # [Tc, S, 4, 3]

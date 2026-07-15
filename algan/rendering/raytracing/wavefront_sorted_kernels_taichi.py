@@ -343,7 +343,7 @@ def wf_shadow_event(
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
+        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: float, layer_offset_pn: float,
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
@@ -413,7 +413,7 @@ def wf_shadow_event(
                             p_first_leaf, pn_ctrl, pn_obb, pn_colors,
                             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                             b_first_leaf, circuit_meta, circuit_colors,
-                            circuit_border_colors, edges_2d, edge_offsets)
+                            circuit_border_colors, edges_2d, edge_accel)
                         if occ > 0.5:
                             bits |= 1 << li
         rs_vis[r] = bits

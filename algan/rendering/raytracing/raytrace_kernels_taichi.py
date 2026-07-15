@@ -48,7 +48,7 @@ separate from cold data (what only confirmed hits touch):
   times; ``_pn_intersect`` returns every hit so depth peeling stays exact;
 * planar bezier circuits: ``circuit_meta [Tm, C, 20]`` (plane frame, border
   width, fill flag, texture grid transform), 2D polyline ``edges_2d`` with
-  per-circuit ranges ``edge_offsets``, fill/texture colors
+  packed scanline/spatial tables ``edge_accel``, fill/texture colors
   ``circuit_colors [Tf, C, P, 5]`` (bilinearly sampled; P = 1 for plain
   fills) and ``circuit_border_colors [Tb, C, 5]``.
 
@@ -60,6 +60,20 @@ import os
 import taichi as ti
 
 from algan.rendering.raytracing.stbvh import BLOCK_F16, BVH_ARITY, LEAF_SIZE
+from algan.rendering.raytracing.bezier_acceleration import (
+    BEZIER_ACCEL_HEADER_SIZE,
+    BEZIER_GRID_INV_U,
+    BEZIER_GRID_INV_V,
+    BEZIER_MAX_U,
+    BEZIER_MAX_V,
+    BEZIER_MIN_U,
+    BEZIER_MIN_V,
+    BEZIER_SCAN_BINS,
+    BEZIER_SCAN_INV_V,
+    BEZIER_SCAN_OFFSET_BASE,
+    BEZIER_SPATIAL_GRID,
+    BEZIER_SPATIAL_OFFSET_BASE,
+)
 from algan.rendering.raytracing.shading_taichi import (
     MAX_SHADOW_LIGHTS, _run_frag_pipeline)
 
@@ -193,6 +207,90 @@ def _safe_inverse(x: ti.f32) -> ti.f32:
     if ti.abs(x) > 1e-12:
         r = 1.0 / x
     return r
+
+
+@ti.func
+def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
+                          edges_2d: ti.template(),
+                          edge_accel: ti.template()):
+    """Return even/odd crossings and nearest visible-edge distance.
+
+    Crossing candidates come from the circuit's local-y scanline bin. Border
+    candidates come from every 2D cell touched by the radius query square.
+    Both candidate sets are conservative; the original exact predicates are
+    still evaluated here, so the acceleration changes only the number of edges
+    inspected.
+    """
+    header = ((te * num_circuits + circuit)
+              * BEZIER_ACCEL_HEADER_SIZE)
+    min_u = ti.bit_cast(edge_accel[header + BEZIER_MIN_U], ti.f32)
+    min_v = ti.bit_cast(edge_accel[header + BEZIER_MIN_V], ti.f32)
+    max_u = ti.bit_cast(edge_accel[header + BEZIER_MAX_U], ti.f32)
+    max_v = ti.bit_cast(edge_accel[header + BEZIER_MAX_V], ti.f32)
+
+    crossings = 0
+    if (v >= min_v) and (v <= max_v):
+        scan_inv_v = ti.bit_cast(
+            edge_accel[header + BEZIER_SCAN_INV_V], ti.f32)
+        scan_bin = ti.cast(ti.floor((v - min_v) * scan_inv_v), ti.i32)
+        scan_bin = ti.math.clamp(scan_bin, 0, BEZIER_SCAN_BINS - 1)
+        begin = edge_accel[header + BEZIER_SCAN_OFFSET_BASE + scan_bin]
+        end = edge_accel[header + BEZIER_SCAN_OFFSET_BASE + scan_bin + 1]
+        for ptr in range(begin, end):
+            e = edge_accel[ptr]
+            x0 = edges_2d[te, e, 0]
+            y0 = edges_2d[te, e, 1]
+            x1 = edges_2d[te, e, 2]
+            y1 = edges_2d[te, e, 3]
+            if (y0 > v) != (y1 > v):
+                x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
+                if x_cross > u:
+                    crossings += 1
+
+    min_dist_sq = 1e30
+    if ((query_radius > 0.0) and (u + query_radius >= min_u)
+            and (u - query_radius <= max_u)
+            and (v + query_radius >= min_v)
+            and (v - query_radius <= max_v)):
+        grid_inv_u = ti.bit_cast(
+            edge_accel[header + BEZIER_GRID_INV_U], ti.f32)
+        grid_inv_v = ti.bit_cast(
+            edge_accel[header + BEZIER_GRID_INV_V], ti.f32)
+        cell_x0 = ti.cast(ti.floor(
+            (u - query_radius - min_u) * grid_inv_u), ti.i32)
+        cell_y0 = ti.cast(ti.floor(
+            (v - query_radius - min_v) * grid_inv_v), ti.i32)
+        cell_x1 = ti.cast(ti.floor(
+            (u + query_radius - min_u) * grid_inv_u), ti.i32)
+        cell_y1 = ti.cast(ti.floor(
+            (v + query_radius - min_v) * grid_inv_v), ti.i32)
+        cell_x0 = ti.math.clamp(cell_x0, 0, BEZIER_SPATIAL_GRID - 1)
+        cell_y0 = ti.math.clamp(cell_y0, 0, BEZIER_SPATIAL_GRID - 1)
+        cell_x1 = ti.math.clamp(cell_x1, 0, BEZIER_SPATIAL_GRID - 1)
+        cell_y1 = ti.math.clamp(cell_y1, 0, BEZIER_SPATIAL_GRID - 1)
+        for cell_y in range(cell_y0, cell_y1 + 1):
+            for cell_x in range(cell_x0, cell_x1 + 1):
+                cell = cell_y * BEZIER_SPATIAL_GRID + cell_x
+                begin = edge_accel[
+                    header + BEZIER_SPATIAL_OFFSET_BASE + cell]
+                end = edge_accel[
+                    header + BEZIER_SPATIAL_OFFSET_BASE + cell + 1]
+                for ptr in range(begin, end):
+                    e = edge_accel[ptr]
+                    x0 = edges_2d[te, e, 0]
+                    y0 = edges_2d[te, e, 1]
+                    x1 = edges_2d[te, e, 2]
+                    y1 = edges_2d[te, e, 3]
+                    dx = x1 - x0
+                    dy = y1 - y0
+                    seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
+                        dx * dx + dy * dy, 1e-12)
+                    seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
+                    cx = x0 + seg_t * dx - u
+                    cy = y0 + seg_t * dy - v
+                    min_dist_sq = ti.min(min_dist_sq, cx * cx + cy * cy)
+
+    return crossings, min_dist_sq
 
 
 @ti.func
@@ -1094,7 +1192,7 @@ def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
                         nodes: ti.template(), node_miss: ti.template(),
                         leaf_prim: ti.template(), leaf_tspan: ti.template(),
                         first_leaf, circuit_meta: ti.template(),
-                        edges_2d: ti.template(), edge_offsets: ti.template()):
+                        edges_2d: ti.template(), edge_accel: ti.template()):
     """Nearest bezier-circuit intersection strictly after (t_prev, layer_prev).
 
     A circuit hit is the ray/plane intersection classified against the
@@ -1170,39 +1268,23 @@ def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
                                 u = hit.dot(bu)
                                 v = hit.dot(bv)
 
-                                te = f % num_edge_frames
-                                crossings = 0
-                                min_dist_sq = 1e30
-                                for e in range(edge_offsets[circuit],
-                                               edge_offsets[circuit + 1]):
-                                    x0 = edges_2d[te, e, 0]
-                                    y0 = edges_2d[te, e, 1]
-                                    x1 = edges_2d[te, e, 2]
-                                    y1 = edges_2d[te, e, 3]
-                                    if (y0 > v) != (y1 > v):
-                                        x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
-                                        if x_cross > u:
-                                            crossings += 1
-                                    if edges_2d[te, e, 4] > 0.5:
-                                        dx = x1 - x0
-                                        dy = y1 - y0
-                                        seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
-                                            dx * dx + dy * dy, 1e-12)
-                                        seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
-                                        cx = x0 + seg_t * dx - u
-                                        cy = y0 + seg_t * dy - v
-                                        min_dist_sq = ti.min(min_dist_sq,
-                                                             cx * cx + cy * cy)
-
                                 # World size of one screen pixel at this hit,
                                 # for screen-constant border/outline widths.
                                 pixel_size = pixel_size_per_t * (base_dist + t)
                                 border_w = (circuit_meta[tm, circuit, _M_BORDER_W]
                                             * pixel_size)
-                                in_border = min_dist_sq < border_w * border_w
                                 outline_w = 0.6 * pixel_size
+                                filled = circuit_meta[tm, circuit, _M_FILLED] > 0.5
+                                query_radius = ti.abs(border_w)
+                                if filled:
+                                    query_radius = ti.max(query_radius, outline_w)
+                                te = f % num_edge_frames
+                                crossings, min_dist_sq = _bezier_point_metrics(
+                                    circuit, te, u, v, query_radius,
+                                    circuit_meta.shape[1], edges_2d, edge_accel)
+                                in_border = min_dist_sq < border_w * border_w
                                 inside = False
-                                if circuit_meta[tm, circuit, _M_FILLED] > 0.5:
+                                if filled:
                                     inside = ((crossings % 2) == 1) or (
                                         min_dist_sq < outline_w * outline_w)
                                 if inside or in_border:
@@ -1649,7 +1731,7 @@ def _nearest_surface_g(has_tri: ti.template(), has_pn: ti.template(),
                      b_nodes: ti.template(), b_node_miss: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                      b_first_leaf, circuit_meta: ti.template(),
-                     edges_2d: ti.template(), edge_offsets: ti.template()):
+                     edges_2d: ti.template(), edge_accel: ti.template()):
     """Nearest surface of any geometry type strictly after
     (t_prev, layer_prev) along the ray. Geometry only -- shading data is
     fetched by the caller for the hits it actually uses.
@@ -1713,7 +1795,7 @@ def _nearest_surface_g(has_tri: ti.template(), has_pn: ti.template(),
         bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
             ro, rd, inv_rd, f, ff, t_prev, layer_prev, bez_cap,
             pixel_size_per_t, base_dist, b_nodes, b_node_miss, b_leaf_prim,
-            b_leaf_tspan, b_first_leaf, circuit_meta, edges_2d, edge_offsets)
+            b_leaf_tspan, b_first_leaf, circuit_meta, edges_2d, edge_accel)
 
     if t_prim >= 0:
         found = 1
@@ -1922,7 +2004,7 @@ def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      b_nodes: ti.template(), b_node_miss: ti.template(),
                      b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                      b_first_leaf, circuit_meta: ti.template(),
-                     edges_2d: ti.template(), edge_offsets: ti.template()):
+                     edges_2d: ti.template(), edge_accel: ti.template()):
     """All-geometry-present wrapper of :func:`_nearest_surface_g` for callers
     (Monte-Carlo path tracers + gbuffer) that don't specialize on which geometry
     types are present. Byte-identical to the pre-gating ``_nearest_surface``."""
@@ -1935,7 +2017,7 @@ def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
         p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
         pn_ctrl, pn_obb,
         b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-        circuit_meta, edges_2d, edge_offsets)
+        circuit_meta, edges_2d, edge_accel)
 
 
 @ti.func
@@ -1955,7 +2037,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                   b_nodes: ti.template(), b_node_miss: ti.template(),
                   b_leaf_prim: ti.template(), b_leaf_tspan: ti.template(),
                   b_first_leaf, circuit_meta: ti.template(),
-                  edges_2d: ti.template(), edge_offsets: ti.template(),
+                  edges_2d: ti.template(), edge_accel: ti.template(),
                   has_tri: ti.template(), has_pn: ti.template(),
                   has_bez: ti.template(), initial_opq_t: ti.f32,
                   initial_opq_layer: ti.f32) -> ti.i32:
@@ -2279,37 +2361,21 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                     u = hit.dot(bu)
                                     v = hit.dot(bv)
 
-                                    te = f % num_edge_frames
-                                    crossings = 0
-                                    min_dist_sq = 1e30
-                                    for e in range(edge_offsets[circuit],
-                                                   edge_offsets[circuit + 1]):
-                                        x0 = edges_2d[te, e, 0]
-                                        y0 = edges_2d[te, e, 1]
-                                        x1 = edges_2d[te, e, 2]
-                                        y1 = edges_2d[te, e, 3]
-                                        if (y0 > v) != (y1 > v):
-                                            x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
-                                            if x_cross > u:
-                                                crossings += 1
-                                        if edges_2d[te, e, 4] > 0.5:
-                                            dx = x1 - x0
-                                            dy = y1 - y0
-                                            seg_t = ((u - x0) * dx + (v - y0) * dy) / ti.max(
-                                                dx * dx + dy * dy, 1e-12)
-                                            seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
-                                            cx = x0 + seg_t * dx - u
-                                            cy = y0 + seg_t * dy - v
-                                            min_dist_sq = ti.min(min_dist_sq,
-                                                                 cx * cx + cy * cy)
-
                                     pixel_size = pixel_size_per_t * (base_dist + t)
                                     border_w = (circuit_meta[tm, circuit, _M_BORDER_W]
                                                 * pixel_size)
-                                    in_border = min_dist_sq < border_w * border_w
                                     outline_w = 0.6 * pixel_size
+                                    filled = circuit_meta[tm, circuit, _M_FILLED] > 0.5
+                                    query_radius = ti.abs(border_w)
+                                    if filled:
+                                        query_radius = ti.max(query_radius, outline_w)
+                                    te = f % num_edge_frames
+                                    crossings, min_dist_sq = _bezier_point_metrics(
+                                        circuit, te, u, v, query_radius,
+                                        circuit_meta.shape[1], edges_2d, edge_accel)
+                                    in_border = min_dist_sq < border_w * border_w
                                     inside = False
-                                    if circuit_meta[tm, circuit, _M_FILLED] > 0.5:
+                                    if filled:
                                         inside = ((crossings % 2) == 1) or (
                                             min_dist_sq < outline_w * outline_w)
                                     if inside or in_border:
@@ -2376,7 +2442,7 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
                      b_first_leaf, circuit_meta: ti.template(),
                      circuit_colors: ti.template(),
                      circuit_border_colors: ti.template(),
-                     edges_2d: ti.template(), edge_offsets: ti.template()):
+                     edges_2d: ti.template(), edge_accel: ti.template()):
     """Binary hard-shadow test for the deterministic renderer: returns 1.0 if
     a sufficiently opaque surface lies between the shaded point and the light
     (within ``max_t`` along ``rd``), else 0.0.
@@ -2409,7 +2475,7 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
             p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
             pn_ctrl, pn_obb,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-            circuit_meta, edges_2d, edge_offsets)
+            circuit_meta, edges_2d, edge_accel)
         if (found == 0) or (t_hit >= max_t):
             break
         seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2             else DEPTH_TIE_EPSILON
@@ -2457,7 +2523,7 @@ def path_trace_scene_stbvh(
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
+        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         # Per-frame camera and pixel scale.
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
@@ -2552,7 +2618,7 @@ def path_trace_scene_stbvh(
                 p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
                 p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                b_first_leaf, circuit_meta, edges_2d, edge_offsets)
+                b_first_leaf, circuit_meta, edges_2d, edge_accel)
             
             t_seg_end = 1e30
             if found != 0:
@@ -2712,7 +2778,7 @@ def _transmittance(ro, rd, f, ff, max_t,
                    b_first_leaf, circuit_meta: ti.template(),
                    circuit_colors: ti.template(),
                    circuit_border_colors: ti.template(),
-                   edges_2d: ti.template(), edge_offsets: ti.template()):
+                   edges_2d: ti.template(), edge_accel: ti.template()):
     """Fraction of light transmitted along a shadow ray of length ``max_t``:
     every surface crossed attenuates by its transparency ``1 - alpha``
     (only the alpha channel of the surfaces is ever fetched).
@@ -2736,7 +2802,7 @@ def _transmittance(ro, rd, f, ff, max_t,
             p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
             pn_ctrl, pn_obb,
             b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-            circuit_meta, edges_2d, edge_offsets)
+            circuit_meta, edges_2d, edge_accel)
         if (found == 0) or (t_hit >= max_t):
             break
         # Skip the duplicate edge hit of mesh seams (attenuate once); PN
@@ -2787,7 +2853,7 @@ def path_trace_physical_stbvh(
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
+        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         # Per-frame camera and pixel scale.
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
@@ -2888,7 +2954,7 @@ def path_trace_physical_stbvh(
                 p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
                 p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                b_first_leaf, circuit_meta, edges_2d, edge_offsets)
+                b_first_leaf, circuit_meta, edges_2d, edge_accel)
             
             t_seg_end = 1e30
             if found != 0:
@@ -3003,7 +3069,7 @@ def path_trace_physical_stbvh(
                             b_nodes, b_node_miss, b_leaf_prim,
                             b_leaf_tspan, b_first_leaf, circuit_meta,
                             circuit_colors, circuit_border_colors,
-                            edges_2d, edge_offsets)
+                            edges_2d, edge_accel)
                         if visible > 1e-4:
                             half_v = (wi - rd).normalized()
                             cos_h = ti.max(normal.dot(half_v), 0.0)

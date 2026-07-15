@@ -1026,7 +1026,7 @@ def wavefront_traverse(
         b_nodes: NODE_ARG, b_node_miss: ti.types.ndarray(),
         b_leaf_prim: ti.types.ndarray(), b_leaf_tspan: ti.types.ndarray(),
         b_first_leaf: int, circuit_meta: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
+        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         # Opaque-only STBVHs used by the optional mixed-scene prepass. They
         # retain the normal primitive index space and are ignored when the
         # compile-time feature is disabled.
@@ -1125,7 +1125,7 @@ def wavefront_traverse(
                 p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
                 p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                b_first_leaf, circuit_meta, edges_2d, edge_offsets)
+                b_first_leaf, circuit_meta, edges_2d, edge_accel)
             num_hits = found
             if found != 0:
                 kb_t[0] = t_hit
@@ -1151,7 +1151,7 @@ def wavefront_traverse(
                         op_leaf_tspan, op_first_leaf, pn_ctrl, pn_obb,
                         ob_nodes, ob_node_miss, ob_leaf_prim,
                         ob_leaf_tspan, ob_first_leaf, circuit_meta,
-                        edges_2d, edge_offsets)
+                        edges_2d, edge_accel)
                 if opq_found == 0:
                     initial_opq_t = 1e30
                     initial_opq_layer = -1e30
@@ -1165,7 +1165,7 @@ def wavefront_traverse(
                 p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
                 pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
-                circuit_meta, edges_2d, edge_offsets, has_tri, has_pn, has_bez,
+                circuit_meta, edges_2d, edge_accel, has_tri, has_pn, has_bez,
                 initial_opq_t, initial_opq_layer)
         rs_int[r, 3] = num_hits
         # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wf_shade_general
@@ -1203,7 +1203,7 @@ def wavefront_shadow(
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
+        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: float, layer_offset_pn: float,
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
@@ -1326,7 +1326,7 @@ def wavefront_shadow(
                                                 b_first_leaf, circuit_meta,
                                                 circuit_colors,
                                                 circuit_border_colors,
-                                                edges_2d, edge_offsets)
+                                                edges_2d, edge_accel)
                                             if occ > 0.5:
                                                 bits |= (
                                                     1 << (q
@@ -1363,7 +1363,7 @@ def wavefront_shade(
         b_first_leaf: int,
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
-        edges_2d: ti.types.ndarray(), edge_offsets: ti.types.ndarray(),
+        edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         pixel_world_scale: ti.types.ndarray(),
         # Two floats packed into one ndarray to free an arg slot for ``col_row``
         # (this kernel is at Taichi's 64 runtime-arg ceiling): [tri, pn].
@@ -1756,7 +1756,7 @@ def wavefront_shade(
                                                     b_first_leaf, circuit_meta,
                                                     circuit_colors,
                                                     circuit_border_colors,
-                                                    edges_2d, edge_offsets)
+                                                    edges_2d, edge_accel)
                                         if n_valid > 0.0:
                                             vis[li] = 1.0 - occ_sum / n_valid
                     if htype == 1:

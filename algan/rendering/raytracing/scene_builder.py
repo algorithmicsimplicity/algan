@@ -8,6 +8,9 @@ from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.rendering.raytracing.primitives import RayTracedPNTrianglePrimitive, RayTracedTrianglePrimitive, \
     RayTracedBezierCircuitPrimitive
+from algan.rendering.raytracing.bezier_acceleration import (
+    build_bezier_edge_acceleration,
+)
 from algan.rendering.raytracing.settings import (
     _USER_PIPELINE_BASE,
     _constant_promotion_active,
@@ -791,8 +794,7 @@ def _merge_scene(primitives):
     if unknown:
         raise TypeError(
             "The ray traced renderer can only draw ray traced primitives; "
-            f"got {[type(p).__name__ for p in unknown]}. Was "
-            "enable_ray_tracing() called before the mobs were created?")
+            f"got {[type(p).__name__ for p in unknown]}.")
     num_frames = max(p._rt_num_frames for p in primitives)
 
     # Any PN patch carrying a texture map forces the whole batch onto the
@@ -1176,8 +1178,10 @@ def _merge_scene(primitives):
         for p in beziers:
             offsets.append(p._rt_edge_offsets[1:].long() + shift)
             shift = shift + p._rt_edges.shape[1]
-        scene["edge_offsets"] = torch.cat(
+        edge_offsets = torch.cat(
             [o.to(torch.int32) for o in offsets]).contiguous()
+        scene["edge_accel"] = build_bezier_edge_acceleration(
+            scene["edges_2d"], edge_offsets)
         lo = _cat_collections([p._rt_frame_lo for p in beziers], 1,
                               "bezier merge")
         hi = _cat_collections([p._rt_frame_hi for p in beziers], 1,
@@ -1203,8 +1207,8 @@ def _merge_scene(primitives):
         scene["circuit_colors"] = torch.zeros((1, 1, 1, 5), device=device)
         scene["circuit_border_colors"] = torch.zeros((1, 1, 5), device=device)
         scene["edges_2d"] = torch.zeros((1, 1, 5), device=device)
-        scene["edge_offsets"] = torch.zeros((2,), dtype=torch.int32,
-                                            device=device)
+        scene["edge_accel"] = torch.zeros((1,), dtype=torch.int32,
+                                          device=device)
         scene["bez_bvh"] = _empty_scene_part(device)
         scene["bez_opaque_bvh"] = scene["bez_bvh"]
         scene["num_circuits"] = 0
@@ -1378,9 +1382,7 @@ def _prefill_background(out, background_color, frame_offset, device):
     # materialize a full, untracked peer tensor on the rendering device before
     # writing the arena-backed output. ``copy_`` below performs device and dtype
     # conversion directly into the reserved destination instead.
-    bg = (background_color.detach().cpu()
-          if torch.is_tensor(background_color)
-          else torch.as_tensor(background_color, device="cpu"))
+    bg = background_color
     if bg.dim() <= 1 or bg.shape[0] == 1:  # solid color (in [0, 1] floats)
         vals = (bg.float().flatten()[:5] * 255).round_().clamp_(0, 255)
         k = min(vals.shape[0], C_out)
@@ -1416,7 +1418,7 @@ def _downsample_background(background_color, aa, num_frames, screen_height,
         return bg  # solid color
     # This is preparation for an arena-backed copy; do the resampling on the
     # host even if a direct caller supplied a render-device background.
-    bg = bg.detach().cpu()
+    #bg = bg.detach().cpu()
     C = bg.shape[-1]
     body = bg.reshape(-1, C)[1:]  # drop the leading padding row
     h_aa, w_aa = screen_height * aa, screen_width * aa

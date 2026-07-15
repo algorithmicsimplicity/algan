@@ -18,69 +18,87 @@ def _should_bypass_bloom():
         return False
 
 
-def fft_conv1d(input_tensor, kernel, dim=-1, padding="same", num_iterations=1, memory=None):
-    """
-    Perform 2D convolution using FFT for better performance with large kernels.
+def fft_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
+               out=None, scratch=None):
+    """Perform 1D convolution using FFT.
 
     Args:
-        input_tensor: Input tensor of shape (C, H, W)
-        kernel: Convolution kernel of shape (C, Kh, Kw)
+        input_tensor: Input tensor of shape (..., L, ...)
+        kernel: Convolution kernel of shape (Kh,) or same ndim as input_tensor
+        dim: Dimension along which to convolve
         padding: Padding mode ('same' or 'valid')
+        memory: ManualMemory arena (required)
+        out: Pre-allocated output tensor (optional)
+        scratch: Unused parameter to match direct_conv1d signature (optional)
 
     Returns:
         Convolved tensor
     """
-
-    C = input_tensor.shape[-3]
-    L = input_tensor.shape[dim]
-    C_k = kernel.shape[-3]
-    L_k = kernel.shape[dim]
-
-    assert C == C_k, "Number of channels must match between input and kernel"
-
-    # Calculate output size and padding
-    if padding == "same":
-        pad = L_k // 2
-        out_l = L
-    else:  # 'valid'
-        pad_h = pad_w = 0
-        out_l = L - L_k + 1
-
-    # Calculate FFT size (next power of 2 for efficiency)
-    fft_l = L + L_k - 1#1 << (L + L_k - 1).bit_length()
-
-    fft_shape = [_ for _ in input_tensor.shape]
-    fft_shape[dim] = (fft_l // 2 + 1)
     if memory is None:
         raise ValueError("fft_conv1d requires a ManualMemory arena")
+    if padding != "same" and padding != "valid":
+        raise ValueError("fft_conv1d supports 'same' or 'valid' padding only")
 
-    # The real result must survive the temporary FFT spectra.  A caller may
-    # provide a reusable full-size result buffer (bloom does this to ping-pong
-    # across iterations); otherwise allocate one from the arena.
-    result_shape = [*input_tensor.shape]
+    dim = dim % input_tensor.ndim
+    L = input_tensor.shape[dim]
+
+    if kernel.ndim == 1:
+        L_k = kernel.shape[0]
+        # Reshape 1D kernel to be broadcastable along target dim
+        kernel_reshaped_shape = [1] * input_tensor.ndim
+        kernel_reshaped_shape[dim] = L_k
+        kernel_for_fft = kernel.view(kernel_reshaped_shape)
+    else:
+        L_k = kernel.shape[dim]
+        kernel_for_fft = kernel
+        if kernel.ndim >= 3:
+            C = input_tensor.shape[-3]
+            C_k = kernel.shape[-3]
+            assert C == C_k, "Number of channels must match between input and kernel"
+
+    # Calculate output size
+    if padding == "same":
+        out_l = L
+    else:  # 'valid'
+        out_l = L - L_k + 1
+
+    # Calculate FFT size
+    fft_l = L + L_k - 1
+
+    fft_shape = list(input_tensor.shape)
+    fft_shape[dim] = (fft_l // 2 + 1)
+
+    result_shape = list(input_tensor.shape)
     result_shape[dim] = fft_l
-    result = memory.get_tensor(result_shape, input_tensor.dtype)
+
+    if out is None:
+        out = memory.get_tensor(input_tensor.shape, input_tensor.dtype)
+
     with memory.temp():
+        result = memory.get_tensor(result_shape, input_tensor.dtype)
         input_fft = memory.get_tensor(fft_shape, dtype=torch.complex64)
-        kernel_fft_shape = [*kernel.shape]
+        kernel_fft_shape = list(kernel_for_fft.shape)
         kernel_fft_shape[dim] = fft_l // 2 + 1
         kernel_fft = memory.get_tensor(kernel_fft_shape, dtype=torch.complex64)
+
         torch.fft.rfft(input_tensor, n=fft_l, dim=dim, out=input_fft)
-        torch.fft.rfft(kernel, n=fft_l, dim=dim, out=kernel_fft)
+        torch.fft.rfft(kernel_for_fft, n=fft_l, dim=dim, out=kernel_fft)
 
         # Element-wise multiplication in frequency domain and inverse FFT.
         torch.mul(input_fft, kernel_fft, out=input_fft)
         torch.fft.irfft(input_fft, n=fft_l, dim=dim, out=result)
 
-    # Extract the valid convolution result
-    if padding == "same":
-        # Center crop to original size
-        pad_left = (L_k - 1) // 2
-        result = torch.torch.ops.aten.slice(result, dim, pad_left, pad_left + L, 1)
-    else:  # 'valid'
-        result = torch.torch.ops.aten.slice(result, dim, 0, out_l, 1)
+        # Extract the valid convolution result
+        if padding == "same":
+            # Center crop to original size
+            pad_left = (L_k - 1) // 2
+            valid_slice = torch.ops.aten.slice(result, dim, pad_left, pad_left + L, 1)
+        else:  # 'valid'
+            valid_slice = torch.ops.aten.slice(result, dim, 0, out_l, 1)
 
-    return result
+        out.copy_(valid_slice)
+
+    return out
 
 
 def direct_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
@@ -167,7 +185,7 @@ def _fill_gaussian_filter(filter_1d, radius, sigma):
     else:
         # The temporary is host-owned; only the destination storage lives on
         # the rendering device, and that destination belongs to ManualMemory.
-        host_filter = torch.tensor(values, dtype=filter_1d.dtype, device="cpu")
+        host_filter = torch.tensor(values, dtype=filter_1d.dtype, device=filter_1d.device)
         filter_1d.copy_(host_filter)
 
 
@@ -739,11 +757,11 @@ def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor
                     horizontal = memory.get_tensor(color.shape, work_dtype)
                     vertical = memory.get_tensor(color.shape, work_dtype)
                     for _ in range(num_iterations):
-                        direct_conv1d(
+                        fft_conv1d(
                             blurred, filter_1d, padding="same", dim=-1,
                             memory=memory, out=horizontal
                         )
-                        direct_conv1d(
+                        fft_conv1d(
                             horizontal, filter_1d, padding="same", dim=-2,
                             memory=memory, out=vertical
                         )

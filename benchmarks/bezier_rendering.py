@@ -1,5 +1,9 @@
+import os
+os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
+os.environ["ALGAN_KBUF"] =  "2"
+os.environ["ALGAN_BVH_BUILD"] = "split"
+
 from algan import *
-import manim as mn
 
 from algan.mobs.neural_nets.neural_net import NeuralNetMLP
 from algan.utils.profiling_utils import profile_scene
@@ -25,15 +29,11 @@ def text_scene():
     with Off():
         nn = NeuralNetMLP([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(run_time=0.5):
+    with Sync(run_time=1.0):
         mob.move(LEFT)
         nn.move(LEFT)
     return
 
 set_log_level('DEBUG')
-#os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
-os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
-os.environ['ALGAN_PROJECT_ON_GPU'] = "1"
-os.environ["ALGAN_KBUF"] =  "2"
 
-profile_scene(text_scene, UHD.set_frames_per_second(60), runs=2, kernel_profiler=False)
+profile_scene(text_scene, PREVIEW.set_frames_per_second(60), runs=2, kernel_profiler=False)

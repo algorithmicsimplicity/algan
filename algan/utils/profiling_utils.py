@@ -943,7 +943,7 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
         # machinery, so their time is already inside the render stage's exclusive
         # time -- give them 0 here (``.get(k, 0.0)``) to avoid double-counting.
 
-        accounted = sum(res["exclusive_times"].get(k, 0.0) for k in res["times"] if k[:len(kp)] != kp)
+        accounted = sum(res["exclusive_times"].get(k, 0.0) for k in res["times"])# if k[:len(kp)] != kp)
         unaccounted = res["total"] - accounted
         w(f"{'(unaccounted: video encode, scene mgmt, ...)':<52}{'':>6}"
           f"{unaccounted:>10.3f}{100 * unaccounted / res['total']:>8.1f}%")

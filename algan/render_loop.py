@@ -9,7 +9,6 @@ the prefetch pipeline (:meth:`~RenderLoopMixin.get_frames`), per-batch
 rendering (:meth:`~RenderLoopMixin.render_primitive_batch`), and video file
 output (:meth:`~RenderLoopMixin.render_to_video`).
 """
-
 import collections
 import logging
 import math
@@ -242,6 +241,7 @@ def _prepare_background_for_chunk(
     current_ind,
     new_ind,
     frames_per_second,
+        device
 ):
     """Materialize one chunk's background entirely on the host.
 
@@ -256,21 +256,18 @@ def _prepare_background_for_chunk(
     width = int(screen_width) * aa
     height = int(screen_height) * aa
     if callable(background):
-        x = torch.arange(width, device="cpu").view(1, -1, 1)
-        y = torch.arange(height, device="cpu").view(-1, 1, 1)
-        times = torch.arange(current_ind, new_ind, device="cpu").view(
+        x = torch.linspce(0, 1, width, device=device).view(1, -1, 1)
+        y = torch.linespace(0, 1, height, device=device).view(-1, 1, 1)
+        times = torch.arange(current_ind, new_ind, device=device).view(
             -1, 1, 1, 1
         )
-        background = background(
-            x / width,
-            y / height,
-            times / frames_per_second,
-        )
+        times /=  frames_per_second
+        background = background(x, y, times)
 
     if torch.is_tensor(background):
-        background = background.detach().cpu()
+        background = background.to(device)
     else:
-        background = torch.as_tensor(background, device="cpu")
+        background = torch.as_tensor(background, device=device)
 
     if background.dim() > 1:
         if background.shape[0] == 1:
@@ -280,9 +277,9 @@ def _prepare_background_for_chunk(
             ).contiguous()
         background = background.view(-1, background.shape[-1])
         background = torch.cat((background[:1], background))
-        background = (
-            (background + (0.5 / 255)) * 255
-        ).to(torch.uint8).clamp_max_(255)
+        background *= 255
+        torch.add(0.5, background, alpha=255, out=background)
+        background = background.to(torch.uint8).clamp_max_(255)
     return background
 
 
@@ -424,8 +421,7 @@ class RenderLoopMixin:
                     self._gpu_merge_headroom_bytes() / 1e6)
                 return False
         try:
-            merged_host, env_map = self._prepare_merged_host_scene(
-                primitive_batch)
+            merged_host, env_map = self._prepare_merged_host_scene(primitive_batch)
         except (InsufficientMemoryException, torch.OutOfMemoryError):
             # The device build overran the pool headroom. Drop any partial
             # merge state and report the batch as not fitting so the caller
@@ -720,7 +716,9 @@ class RenderLoopMixin:
                         self.frames_per_second
                         if callable(background_source) else 1
                     ),
+                    device=COMPUTING_DEFAULTS.render_device
                 )
+                empty_cache()
                 yield primitive_batch[0].render(
                     primitive_batch,
                     self,

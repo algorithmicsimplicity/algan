@@ -158,13 +158,27 @@ def _plan_bloom(sizer, shape, dtype, kwargs, device):
         for sigma in (sigma_rim, sigma_tail):
             with sizer.temp():
                 radius = max(1, int(math.ceil(3.0 * sigma)))
-                k = 2 * radius + 1
-                sizer.alloc((k,), work_dtype)
+                filter_size = 2 * radius + 1
+                sizer.alloc((filter_size,), work_dtype)
                 if iterations > 0:
-                    sizer.alloc(color_shape, work_dtype)  # horizontal result
-                    sizer.alloc(color_shape, work_dtype)  # vertical result
-                    if not use_taichi:
-                        sizer.alloc(color_shape, work_dtype)  # fallback scratch
+                    sizer.alloc(color_shape, work_dtype)  # horizontal
+                    sizer.alloc(color_shape, work_dtype)  # vertical
+
+                    # For dim=-1 (horizontal FFT convolution)
+                    with sizer.temp():
+                        fft_l_x = w + filter_size - 1
+                        sizer.alloc((b, channels, h, fft_l_x), work_dtype)  # result
+                        with sizer.temp():
+                            sizer.alloc((b, channels, h, fft_l_x // 2 + 1), torch.complex64)  # input_fft
+                            sizer.alloc((1, 1, 1, fft_l_x // 2 + 1), torch.complex64)  # kernel_fft
+
+                    # For dim=-2 (vertical FFT convolution)
+                    with sizer.temp():
+                        fft_l_y = h + filter_size - 1
+                        sizer.alloc((b, channels, fft_l_y, w), work_dtype)  # result
+                        with sizer.temp():
+                            sizer.alloc((b, channels, fft_l_y // 2 + 1, w), torch.complex64)  # input_fft
+                            sizer.alloc((1, 1, fft_l_y // 2 + 1, 1), torch.complex64)  # kernel_fft
 
         sizer.alloc((b, channels, h_full, w_full), work_dtype)
         if not use_taichi and (h, w) != (h_full, w_full):
