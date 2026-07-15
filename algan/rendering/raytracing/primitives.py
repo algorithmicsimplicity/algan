@@ -651,7 +651,35 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         "corners", "colors", "normals", "border_width",
         "border_color", "glow_radius", "mob_center", "grid_width",
         "grid_height", "basis1", "basis2", "next_segment_inds",
+        "reflectivity", "roughness",
     )
+
+    _surface_params = ("reflectivity", "roughness")
+
+    def __init__(self, *args, reflectivity=None, roughness=None, **kwargs):
+        collection = kwargs.get("triangle_collection")
+        super().__init__(*args, **kwargs)
+        if collection is not None:
+            for name in self._surface_params:
+                values = []
+                for primitive in collection:
+                    value = getattr(primitive, name, None)
+                    if value is None:
+                        value = torch.zeros_like(primitive.mob_center[..., :1])
+                    values.append(value)
+                values, _ = _unify_time(values, f"bezier {name} merge")
+                setattr(self, name, torch.cat(values, 1).to(self.mob_center.device))
+        else:
+            template = self.mob_center[..., :1]
+            for name, value in (("reflectivity", reflectivity),
+                                ("roughness", roughness)):
+                if value is None:
+                    value = torch.zeros_like(template)
+                else:
+                    value = cast_to_tensor(value).to(template.device)
+                    value = broadcast_all(
+                        [template, value], ignored_dims=[-1])[-1][..., :1]
+                setattr(self, name, value)
 
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
     max_samples_per_segment = 512
@@ -811,17 +839,22 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         grid_h = self.grid_height.float().reshape(self.grid_height.shape[0], C)
         glow_radius = self.glow_radius.float().reshape(
             self.glow_radius.shape[0], C)
-        (centers_m, normals_m, bu_m, bv_m, b1_m, b2_m, bw_m, gw_m, gh_m, glow_radius_m), Tm = _unify_time(
+        reflectivity = self.reflectivity.float()
+        roughness = self.roughness.float()
+        (centers_m, normals_m, bu_m, bv_m, b1_m, b2_m, bw_m, gw_m, gh_m,
+         glow_radius_m, reflectivity_m, roughness_m), Tm = _unify_time(
             [centers, normals, basis_u, basis_v, basis1, basis2,
              border_width.unsqueeze(-1), grid_w.unsqueeze(-1),
-             grid_h.unsqueeze(-1), glow_radius.unsqueeze(-1)], "bezier metadata")
+             grid_h.unsqueeze(-1), glow_radius.unsqueeze(-1),
+             reflectivity, roughness], "bezier metadata")
         filled = torch.full((Tm, C, 1), 1.0 if self.filled else 0.0,
                             device=device)
         tex = torch.stack((
             (b1_m * bu_m).sum(-1), (b1_m * bv_m).sum(-1),
             (b2_m * bu_m).sum(-1), (b2_m * bv_m).sum(-1)), -1).nan_to_num_()
         self._rt_circuit_meta = torch.cat(
-            (centers_m, normals_m, bu_m, bv_m, bw_m, filled, gw_m, gh_m, tex, glow_radius_m),
+            (centers_m, normals_m, bu_m, bv_m, bw_m, filled, gw_m, gh_m,
+             tex, glow_radius_m, reflectivity_m, roughness_m),
             -1).contiguous()
 
         colors = self.colors.float()

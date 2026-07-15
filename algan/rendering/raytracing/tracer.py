@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import torch
 
+import os
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.settings import _scene_has_user_pipeline
@@ -533,7 +534,7 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # super-sampling). The wavefront path runs the full gen→traverse→shade→
     # compact→composite pipeline once per sub-pixel sample, accumulating into
     # a float buffer and averaging at the end.
-    inplace_aa = False
+    inplace_aa = os.getenv("ALGAN_INPLACE_AA", "0") != "0"
     if inplace_aa:
         width = screen_width
         height = screen_height
@@ -948,7 +949,8 @@ def raytrace_render_wavefront(
     # default for every fragment-shaded scene; the sorted pipeline runs only
     # when explicitly forced (it is slower on built-in materials -- see docs).
     use_sorted = (bool(frag_flag) and (sort_mode is True)
-                  and not uses_extended_features)
+                  and not uses_extended_features
+                  and not merged.get("bez_has_reflective", False))
     if use_sorted:
         return _raytrace_render_wavefront_sorted(
             tri_bvh, pn_bvh, bez_bvh, merged,

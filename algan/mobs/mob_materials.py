@@ -75,10 +75,11 @@ class MobMaterialsMixin:
 
         for d in reversed(self.get_descendants()):
             d.register_attrs_as_animatable(shader_specific_param_names)
-            for n, v in zip(
-                shader_specific_param_names, shader_specific_param_defaults
-            ):
-                d.__setattr__(n, v)
+            d.set_non_recursive(**{k: v for k, v in zip(shader_specific_param_names, shader_specific_param_defaults)})
+            #for n, v in zip(
+            #
+            #):
+            #    d.__setattr__(n, v)
             d.shader = shader
             d.shader_specific_param_names = shader_specific_param_names
         return self
@@ -206,8 +207,9 @@ class MobMaterialsMixin:
         params = material.get_shader_param_values()
         color5 = _to_color5(material.color) if material.applies_color else None
         for d in reversed(self.get_descendants()):
-            for name, value in params.items():
-                d.__setattr__(name, value)
+            d.set_non_recursive(**params)
+            #for name, value in params.items():
+            #    d.__setattr__(name, value)
             if color5 is not None:
                 d.color = color5
             d.max_opacity = cast_to_tensor(material.opacity)

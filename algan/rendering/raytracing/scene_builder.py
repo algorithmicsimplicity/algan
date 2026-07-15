@@ -6,8 +6,12 @@ import torch.nn.functional as F
 
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
-from algan.rendering.raytracing.primitives import RayTracedPNTrianglePrimitive, RayTracedTrianglePrimitive, \
-    RayTracedBezierCircuitPrimitive
+from algan.rendering.raytracing.primitives import (
+    MIN_ALPHA,
+    RayTracedBezierCircuitPrimitive,
+    RayTracedPNTrianglePrimitive,
+    RayTracedTrianglePrimitive,
+)
 from algan.rendering.raytracing.bezier_acceleration import (
     build_bezier_edge_acceleration,
 )
@@ -1202,8 +1206,10 @@ def _merge_scene(primitives):
                 lo, hi, opaque, num_frames,
                 RayTracedBezierCircuitPrimitive.stbvh_tightness)
         scene["num_circuits"] = scene["circuit_meta"].shape[1]
+        scene["bez_has_reflective"] = bool(
+            (scene["circuit_meta"][..., 21] > MIN_ALPHA).any())
     else:
-        scene["circuit_meta"] = torch.zeros((1, 1, 21), device=device)
+        scene["circuit_meta"] = torch.zeros((1, 1, 23), device=device)
         scene["circuit_colors"] = torch.zeros((1, 1, 1, 5), device=device)
         scene["circuit_border_colors"] = torch.zeros((1, 1, 5), device=device)
         scene["edges_2d"] = torch.zeros((1, 1, 5), device=device)
@@ -1212,6 +1218,7 @@ def _merge_scene(primitives):
         scene["bez_bvh"] = _empty_scene_part(device)
         scene["bez_opaque_bvh"] = scene["bez_bvh"]
         scene["num_circuits"] = 0
+        scene["bez_has_reflective"] = False
         _record_visibility(
             "bez", torch.empty((0, 0, 3), device=device),
             torch.empty((0, 0, 3), device=device),

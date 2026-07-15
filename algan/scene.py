@@ -288,10 +288,13 @@ class Scene(RenderLoopMixin):
 
         return frames
 
-    def save_frame(self, filename, time_stamp=None):
+    def save_frame(self, filename, time_stamp=None, render_settings=None):
         if not COMPUTING_DEFAULTS.allow_save_frame:
             return
 
+        rs = self.render_settings
+        if render_settings is not None:
+            self.set_render_settings(render_settings)
         if time_stamp is None:
             time_stamp = AnimationManager.instance().context.timespan.current_time + 1.5/self.render_settings.frames_per_second
         time_ind = round(time_stamp * self.render_settings.frames_per_second)
@@ -300,6 +303,7 @@ class Scene(RenderLoopMixin):
             frame = frame.float() / 255
             frames.append(frame.squeeze(0).permute(-1,0,1))
         torchvision.utils.save_image(frames[-1], filename)
+        self.render_settings = rs
         return frames
 
     def save_frames(self, filename, time_stamps=None):

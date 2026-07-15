@@ -40,9 +40,9 @@ class RenderSettings(Settings):
 
 THUMBNAIL = RenderSettings((1280, 720), 1, save_image=True)
 
-SMOKE_TEST = RenderSettings((100, 100), 2, anti_alias_level=1, fxaa=False)
+SMOKE_TEST = RenderSettings((100, 100), 2, anti_alias_level=1)
 
-PREVIEW = RenderSettings((704, 396), 10)
+PREVIEW = RenderSettings((704, 396), 10, anti_alias_level=1)
 
 LD = RenderSettings((864, 486), 15)
 

@@ -2657,6 +2657,9 @@ def path_trace_scene_stbvh(
                 color, alpha = _sample_circuit_color(
                     prim, f, a, b, border,
                     circuit_meta, circuit_colors, circuit_border_colors)
+                cm = f % circuit_meta.shape[0]
+                reflectivity = circuit_meta[cm, prim, 21]
+                roughness = circuit_meta[cm, prim, 22]
 
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             if ti.random(ti.f32) >= alpha:
@@ -2994,6 +2997,9 @@ def path_trace_physical_stbvh(
                 color, alpha = _sample_circuit_color(
                     prim, f, a, b, border,
                     circuit_meta, circuit_colors, circuit_border_colors)
+                cm = f % circuit_meta.shape[0]
+                reflectivity = circuit_meta[cm, prim, 21]
+                roughness = circuit_meta[cm, prim, 22]
 
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             if ti.random(ti.f32) >= alpha:

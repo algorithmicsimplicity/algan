@@ -11,7 +11,7 @@ from algan.animation.animatable import (
     Animatable,
     animated_function,
 )
-from algan.animation.animation_contexts import AnimationContext, NoExtra, Off, Sync
+from algan.animation.animation_contexts import AnimationContext, NoExtra, Off, Sync, Seq
 from algan.animation.timeline import (
     HIERARCHY_VERSION,
     STRUCTURE_VERSION,
@@ -1386,6 +1386,19 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
                 F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
             )
         return self
+
+    def on_create(self):
+        opacity = self.opacity
+        with Seq():
+            prs = self._prevent_recursive_sets
+            self._prevent_recursive_sets = True
+            with Off():
+                self.opacity = 0
+            self.opacity = opacity
+            self._prevent_recursive_sets = prs
+
+    def on_destroy(self):
+        self.opacity = torch.tensor((0.0,)).view(1)
 
     def despawn_tilewise_recursive(self):
         """

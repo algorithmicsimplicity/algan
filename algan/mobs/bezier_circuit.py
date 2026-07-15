@@ -12,6 +12,7 @@ from algan.mobs.mob import Mob
 from algan.animation.animatable import animated_function
 from algan.utils.tensor_utils import *
 from algan.settings.renderer_settings import RENDERER_SETTINGS
+from algan.rendering.raytracing.utils import _unify_time
 
 
 def _circuit_location_and_basis(control_points):
@@ -266,6 +267,18 @@ class BezierCircuitCubic(Renderable):
     def get_render_primitives(self):
         if self.empty:
             return None
+        # Ray-transport surface parameters are registered lazily by
+        # set_reflectivity/set_roughness.  Bezier circuits historically omitted
+        # them from their primitive entirely, so every Bezier hit reached the
+        # ray tracer with reflectivity == 0.  Unregistered parameters retain
+        # the matte defaults without creating timeline rows for every circuit.
+        surface_template = self.opacity[..., :1]
+
+        def surface_param(name):
+            if name in self.animatable_attrs:
+                return getattr(self, name)
+            return torch.zeros_like(surface_template)
+
         vars = broadcast_all(
             [
                 self.opacity,# * self.max_opacity,
@@ -276,6 +289,8 @@ class BezierCircuitCubic(Renderable):
                 / (PREVIEW.resolution[1] * 2),
                 self.border_color,
                 self.glow_radius,
+                surface_param("reflectivity"),
+                surface_param("roughness"),
             ],
             ignored_dims=[-1],
         )
@@ -303,7 +318,8 @@ class BezierCircuitCubic(Renderable):
         )
 
     def _get_render_primitives(
-        self, x, tpc, loc, basis, o, n, g, bw, bc, gr, num_segments_per_circuit=None
+        self, x, tpc, loc, basis, o, n, g, bw, bc, gr, reflectivity,
+        roughness, num_segments_per_circuit=None
     ):
         num_control_points = 4  # cubic beziers
         # x = unsquish(x, -2, num_control_points)
@@ -384,6 +400,8 @@ class BezierCircuitCubic(Renderable):
             glow_radius=gr,
             num_texture_points=self.num_texture_points,
             filled=self.filled,
+            reflectivity=reflectivity,
+            roughness=roughness,
         )
         prim.num_texture_points = self.num_texture_points
         return prim
@@ -584,6 +602,20 @@ def build_render_primitives_batched(actors, scene):
     # --- batched attribute reads (mirrors the per-actor property reads and
     # the ``vars`` broadcast in get_render_primitives) ---
     o = read("opacity", actors)
+
+    def read_optional_surface(attr):
+        values = []
+        for actor in actors:
+            if attr in actor.animatable_attrs:
+                tl = timeline.attr_to_timeline[attr]
+                values.append(tl.get(tl.ranges_for(actor.id)))
+            else:
+                values.append(torch.zeros_like(o[:, :1, :1]))
+        values, _ = _unify_time(values, f"bezier {attr} merge")
+        return torch.cat(values, 1)
+
+    reflectivity = read_optional_surface("reflectivity")
+    roughness = read_optional_surface("roughness")
     basis = read("basis", actors)
     g = read("glow", actors)
     bw = read("border_width", actors) * (
@@ -693,6 +725,8 @@ def build_render_primitives_batched(actors, scene):
     mega.grid_height = per_actor_int([a.grid_width for a in actors]).to(device)
     mega.basis1 = basis[..., :3].to(device)
     mega.basis2 = basis[..., 3:6].to(device)
+    mega.reflectivity = reflectivity.to(device)
+    mega.roughness = roughness.to(device)
     if ntp > 0:
         cols = cols[..., -ntp:, :]
     mega.colors = cols

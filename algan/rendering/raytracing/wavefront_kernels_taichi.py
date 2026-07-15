@@ -1565,6 +1565,8 @@ def wavefront_shade(
                     color, alpha = _sample_circuit_color(
                         prim, f, a, b, border,
                         circuit_meta, circuit_colors, circuit_border_colors)
+                    cm = f % circuit_meta.shape[0]
+                    reflectivity = circuit_meta[cm, prim, 21]
 
                 # Fragment shading: ``color`` arrived as the interpolated raw
                 # albedo for triangle/PN hits; evaluate the lighting model per
