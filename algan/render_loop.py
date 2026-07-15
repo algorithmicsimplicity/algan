@@ -113,6 +113,29 @@ def _primitive_source_device(primitive, fallback=None):
     return COMPUTING_DEFAULTS.animation_device
 
 
+def _slice_render_state(render_state, start, end, total_frames):
+    """Return a frame-window view of an immutable render-state snapshot."""
+    start = int(start)
+    end = int(end)
+    total_frames = int(total_frames)
+
+    def sliced(value):
+        if (torch.is_tensor(value) and value.ndim > 0
+                and int(value.shape[0]) == total_frames):
+            return value[start:end]
+        return value
+
+    return dict(
+        ray_origin=sliced(render_state["ray_origin"]),
+        screen_point=sliced(render_state["screen_point"]),
+        screen_basis=sliced(render_state["screen_basis"]),
+        lights=[
+            (sliced(origin), sliced(color), sliced(aux))
+            for origin, color, aux in render_state["lights"]
+        ],
+    )
+
+
 def _arena_allocation_end(pointer, numel, dtype):
     """Pointer after one :class:`ManualMemory` forward allocation."""
     alignment = int(dtype.itemsize)
@@ -336,6 +359,199 @@ class RenderLoopMixin:
             return float("inf")
         return int(get_num_available_bytes(device) * 0.9)
 
+    def _fetched_window_has_stable_actor_set(
+        self, actors, start_ind, end_ind
+    ):
+        """Whether no renderable actor spawns inside a fetched frame window.
+
+        Prefix slicing is exactly equivalent to fetching that prefix only when
+        the actor set is unchanged.  Actors that despawn inside the window are
+        safe: their already-materialized opacity becomes zero.
+        """
+        start_time = start_ind / self.frames_per_second
+        end_time = end_ind / self.frames_per_second
+        for actor in actors:
+            if not hasattr(actor, "get_render_primitives"):
+                continue
+            try:
+                spawn_time = float(actor.lifespan.start())
+            except (AttributeError, TypeError, ValueError):
+                return False
+            if start_time < spawn_time <= end_time:
+                return False
+        return True
+
+    def _can_slice_fetched_batch(self, primitive_batch, total_frames):
+        """True when arena probes can use views of one pristine fetch.
+
+        Projection must upload source tensors to a different device.  That
+        keeps the candidate's shader/projection mutations isolated from the
+        original CPU batch, which is retained for later probes.
+        """
+        if os.environ.get("ALGAN_REUSE_FETCHED_BATCH", "1") == "0":
+            return False
+        if total_frames <= 1 or not primitive_batch:
+            return False
+
+        from algan.rendering.raytracing import settings as rt_settings
+
+        if not rt_settings.project_on_gpu_active():
+            return False
+        render_device = torch.device(COMPUTING_DEFAULTS.render_device)
+        for primitive in primitive_batch:
+            if getattr(primitive, "_rt_projected", False):
+                return False
+            if not callable(getattr(primitive, "slice_time_window", None)):
+                return False
+            if not getattr(primitive, "frame_dependent_source_attrs", ()):
+                # The base method is intentionally inert until a primitive
+                # declares its time-bearing source tensors.
+                return False
+            if _primitive_source_device(primitive) == render_device:
+                return False
+        return True
+
+    def _slice_fetched_batch(
+        self, primitive_batch, render_state, duration, total_frames
+    ):
+        primitives = [
+            primitive.slice_time_window(0, duration, total_frames)
+            for primitive in primitive_batch
+        ]
+        return primitives, _slice_render_state(
+            render_state, 0, duration, total_frames
+        )
+
+    def _release_preflight_candidate(self, primitive_batch):
+        """Drop projected/merged state belonging to a rejected arena probe."""
+        for primitive in primitive_batch:
+            for name in tuple(vars(primitive)):
+                if name.startswith("_rt_"):
+                    setattr(primitive, name, None)
+        self.memory.reset()
+        empty_cache(force_gc=False)
+
+    def _select_largest_fitting_fetched_prefix(
+        self,
+        primitive_batch,
+        render_state,
+        total_frames,
+        post_processes,
+        transparent_background,
+    ):
+        """Preflight slices of one fetched source batch and keep the largest.
+
+        The old outer retry loop rematerialized the timeline and rebuilt every
+        source primitive for each binary-search candidate.  Here the pristine
+        animation-device batch is fetched once.  Each probe is a shallow
+        frame-window view uploaded independently for projection, so rejected
+        probes cannot mutate it.
+
+        Returns ``(primitives, duration, render_state)`` or ``None`` when this
+        batch cannot safely use the reuse path.
+        """
+        total_frames = int(total_frames)
+        if not self._can_slice_fetched_batch(primitive_batch, total_frames):
+            return None
+
+        from algan.rendering.raytracing import settings as rt_settings
+        from algan.rendering.raytracing.scene_builder import (
+            gpu_project_input_bytes,
+        )
+
+        # Projection scratch lives outside the arena.  Find its exact source-
+        # byte upper bound using cheap views before launching any GPU work.
+        headroom = self._gpu_merge_headroom_bytes()
+
+        def project_fits(duration):
+            candidate, _ = self._slice_fetched_batch(
+                primitive_batch, render_state, duration, total_frames
+            )
+            estimated_peak = int(
+                rt_settings.PROJECT_GPU_PEAK_FACTOR
+                * gpu_project_input_bytes(candidate)
+            )
+            return estimated_peak <= headroom
+
+        upper = _max_duration_that_fits(total_frames, project_fits)
+
+        def probe(duration):
+            candidate, candidate_state = self._slice_fetched_batch(
+                primitive_batch, render_state, duration, total_frames
+            )
+            fits = self._prepared_batch_fits_render_arena(
+                candidate,
+                candidate_state,
+                post_processes,
+                transparent_background,
+            )
+            if fits:
+                return candidate, candidate_state
+            self._release_preflight_candidate(candidate)
+            return None
+
+        # Test the largest duration allowed by projection first.  It is often
+        # already the final answer, turning the previous retry cascade into one
+        # source fetch and one exact preflight.
+        result = probe(upper)
+        if result is not None:
+            logger.info(
+                "Arena planner selected %s/%s fetched frames on its first "
+                "exact preflight.", upper, total_frames
+            )
+            return result[0], upper, result[1]
+
+        if upper <= 1:
+            raise OutOfRenderMemory(
+                "The prepared scene plus one rendered frame does not fit in "
+                "the allocated render memory. Please lower the resolution, "
+                "anti-alias level, or scene complexity."
+            )
+
+        low = 1
+        high = upper - 1
+        best = 0
+        while low <= high:
+            duration = (low + high + 1) // 2
+            result = probe(duration)
+            if result is None:
+                high = duration - 1
+                continue
+
+            best = duration
+            if duration == high:
+                logger.info(
+                    "Arena planner selected %s/%s fetched frames without "
+                    "rematerializing the batch.", duration, total_frames
+                )
+                return result[0], duration, result[1]
+
+            # A larger prefix may fit.  Release this prepared candidate while
+            # retaining only its duration; keeping two merged scenes resident
+            # would invalidate the next headroom measurement.
+            self._release_preflight_candidate(result[0])
+            low = duration + 1
+
+        if best <= 0:
+            raise OutOfRenderMemory(
+                "The prepared scene plus one rendered frame does not fit in "
+                "the allocated render memory. Please lower the resolution, "
+                "anti-alias level, or scene complexity."
+            )
+
+        # The final binary-search step can be a failure immediately above the
+        # best fitting duration, so recreate that winning prefix once.
+        result = probe(best)
+        if result is None:
+            raise OutOfRenderMemory(
+                "Render-arena fit was not monotone while selecting a batch."
+            )
+        logger.info(
+            "Arena planner selected %s/%s fetched frames without "
+            "rematerializing the batch.", best, total_frames
+        )
+        return result[0], best, result[1]
+
     def _prepared_batch_fits_render_arena(
         self,
         primitive_batch,
@@ -421,7 +637,8 @@ class RenderLoopMixin:
                     self._gpu_merge_headroom_bytes() / 1e6)
                 return False
         try:
-            merged_host, env_map = self._prepare_merged_host_scene(primitive_batch)
+            merged_host, env_map = self._prepare_merged_host_scene(
+                primitive_batch)
         except (InsufficientMemoryException, torch.OutOfMemoryError):
             # The device build overran the pool headroom. Drop any partial
             # merge state and report the batch as not fitting so the caller
@@ -1353,8 +1570,12 @@ class RenderLoopMixin:
                 while True:
                     _sync_devices()
                     s = time.time()
+                    fetch_end_ind = (
+                        retry_end_ind
+                        if retry_end_ind is not None else end_time_ind
+                    )
                     logger.info(
-                        f"Fetching batch {current_time_ind}:{end_time_ind}."
+                        f"Fetching batch {current_time_ind}:{fetch_end_ind}."
                     )
                     if retry_end_ind is not None:
                         primitives, new_time_ind, render_state = fetch_batch(
@@ -1379,15 +1600,40 @@ class RenderLoopMixin:
                         )
 
                     duration = new_time_ind - current_time_ind
-                    batch_fits = (
-                        not primitives
-                        or self._prepared_batch_fits_render_arena(
-                            primitives,
-                            render_state,
-                            post_processes,
-                            transparent_background,
+                    planned_prefix = None
+                    if (
+                        retry_upper_duration is None
+                        and primitives
+                        and self._fetched_window_has_stable_actor_set(
+                            actors, current_time_ind, new_time_ind
                         )
-                    )
+                    ):
+                        planned_prefix = (
+                            self._select_largest_fitting_fetched_prefix(
+                                primitives,
+                                render_state,
+                                duration,
+                                post_processes,
+                                transparent_background,
+                            )
+                        )
+
+                    if planned_prefix is not None:
+                        fetched_primitives = primitives
+                        primitives, duration, render_state = planned_prefix
+                        new_time_ind = current_time_ind + duration
+                        del fetched_primitives
+                        batch_fits = True
+                    else:
+                        batch_fits = (
+                            not primitives
+                            or self._prepared_batch_fits_render_arena(
+                                primitives,
+                                render_state,
+                                post_processes,
+                                transparent_background,
+                            )
+                        )
                     if not batch_fits:
                         retry_upper_duration = min(
                             duration,

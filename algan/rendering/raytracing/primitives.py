@@ -180,6 +180,13 @@ def _fixed_wavefront_bytes(primitive, num_frames):
 class RayTracedTrianglePrimitive(TrianglePrimitive):
     """Triangle batch rendered by ray tracing a spatio-temporal BVH."""
 
+    frame_dependent_source_attrs = (
+        "corners", "colors", "normals", "glow_radius",
+        "uvs", "texture_map", "material_texture_map",
+        "normal_texture_map", "reflectivity", "roughness",
+        "refractive_index", "shader_param_values",
+    )
+
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
 
     # Per-vertex surface parameters consumed by the trace kernels rather
@@ -640,8 +647,14 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     sampled bilinearly in-kernel from their texture grid.
     """
 
+    frame_dependent_source_attrs = (
+        "corners", "colors", "normals", "border_width",
+        "border_color", "glow_radius", "mob_center", "grid_width",
+        "grid_height", "basis1", "basis2", "next_segment_inds",
+    )
+
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
-    max_samples_per_segment = 256
+    max_samples_per_segment = 512
 
     def project_to_screen(self, camera, light_sources):
         corners = self.corners.float().contiguous()  # [Tc, S, 4, 3]

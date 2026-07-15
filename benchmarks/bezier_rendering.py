@@ -1,7 +1,7 @@
 import os
 os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
-os.environ["ALGAN_KBUF"] =  "2"
-os.environ["ALGAN_BVH_BUILD"] = "split"
+os.environ["ALGAN_KBUF"] =  "4"
+#os.environ["ALGAN_BVH_BUILD"] = "split"
 
 from algan import *
 
@@ -36,4 +36,4 @@ def text_scene():
 
 set_log_level('DEBUG')
 
-profile_scene(text_scene, PREVIEW.set_frames_per_second(60), runs=2, kernel_profiler=False)
+profile_scene(text_scene, UHD.set_frames_per_second(60), runs=2, kernel_profiler=False)
