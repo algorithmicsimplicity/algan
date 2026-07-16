@@ -279,12 +279,16 @@ def _prepare_background_for_chunk(
     width = int(screen_width) * aa
     height = int(screen_height) * aa
     if callable(background):
-        x = torch.linspce(0, 1, width, device=device).view(1, -1, 1)
-        y = torch.linespace(0, 1, height, device=device).view(-1, 1, 1)
-        times = torch.arange(current_ind, new_ind, device=device).view(
-            -1, 1, 1, 1
-        )
-        times /=  frames_per_second
+        # Background contract: x (1,W,1) and y (H,1,1) in [0,1), t (F,1,1,1)
+        # in seconds.
+        x = (torch.arange(width, device=device, dtype=torch.float32)
+             / width).view(1, -1, 1)
+        y = (torch.arange(height, device=device, dtype=torch.float32)
+             / height).view(-1, 1, 1)
+        times = torch.arange(
+            current_ind, new_ind, device=device, dtype=torch.float32
+        ).view(-1, 1, 1, 1)
+        times /= frames_per_second
         background = background(x, y, times)
 
     if torch.is_tensor(background):
@@ -300,9 +304,10 @@ def _prepare_background_for_chunk(
             ).contiguous()
         background = background.view(-1, background.shape[-1])
         background = torch.cat((background[:1], background))
-        background *= 255
-        torch.add(0.5, background, alpha=255, out=background)
-        background = background.to(torch.uint8).clamp_max_(255)
+        # 0.5 + 255 * bg: scale [0,1] floats to bytes with round-to-nearest
+        # (clamp before the cast -- float -> uint8 wraps instead of saturating).
+        background = torch.add(0.5, background, alpha=255).clamp_(0, 255)
+        background = background.to(torch.uint8)
     return background
 
 

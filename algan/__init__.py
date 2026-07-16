@@ -79,6 +79,7 @@ from algan.rendering.shaders.fragment_shaders import (
     STAGE_LAMBERT,
     STAGE_PHONG,
     STAGE_STANDARD,
+    STAGE_PHYSICAL,
 )
 from algan.rendering.raytracing.shading_taichi import (
     _ggx_distribution as ggx_distribution,

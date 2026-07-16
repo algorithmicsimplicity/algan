@@ -27,6 +27,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _stage_default,
     _stage_lambert,
     _stage_phong,
+    _stage_physical,
     _stage_standard,
     _stage_unlit,
     make_pipeline_func,
@@ -74,13 +75,31 @@ _BUILTIN_MAT_SPECS = [
     ("env_map_intensity", 1, 1.0),
 ]
 
-# Built-in material stages (12-slot canonical params). ``default`` and ``unlit``
-# ignore most slots but share the layout so offsets stay uniform in a pipeline.
+# The physical stage extends the canonical layout to the full 26-slot block
+# (slots 12..25 -- see the slot map in shading_taichi); its first 12 slots are
+# identical to the shared layout.
+_PHYSICAL_MAT_SPECS = _BUILTIN_MAT_SPECS + [
+    ("ior", 1, 1.5),
+    ("specular_intensity", 1, 1.0),
+    ("specular_color", 3, (1.0, 1.0, 1.0)),
+    ("clearcoat", 1, 0.0),
+    ("clearcoat_roughness", 1, 0.0),
+    ("sheen", 1, 0.0),
+    ("sheen_roughness", 1, 1.0),
+    ("sheen_color", 3, (0.0, 0.0, 0.0)),
+    ("transmission", 1, 0.0),
+    ("iridescence", 1, 0.0),
+]
+
+# Built-in material stages (12-slot canonical params; physical 26). ``default``
+# and ``unlit`` ignore most slots but share the layout so offsets stay uniform
+# in a pipeline.
 STAGE_DEFAULT = FragmentStage(_stage_default, _BUILTIN_MAT_SPECS)
 STAGE_UNLIT = FragmentStage(_stage_unlit, _BUILTIN_MAT_SPECS)
 STAGE_LAMBERT = FragmentStage(_stage_lambert, _BUILTIN_MAT_SPECS)
 STAGE_PHONG = FragmentStage(_stage_phong, _BUILTIN_MAT_SPECS)
 STAGE_STANDARD = FragmentStage(_stage_standard, _BUILTIN_MAT_SPECS)
+STAGE_PHYSICAL = FragmentStage(_stage_physical, _PHYSICAL_MAT_SPECS)
 
 
 def _builtin_shader_to_stage():
@@ -90,6 +109,7 @@ def _builtin_shader_to_stage():
         basic_material_shader,
         lambert_shader,
         phong_shader,
+        physical_shader,
         standard_shader,
     )
     from algan.rendering.shaders.pbr_shaders import default_shader, null_shader
@@ -101,6 +121,7 @@ def _builtin_shader_to_stage():
         lambert_shader: STAGE_LAMBERT,
         phong_shader: STAGE_PHONG,
         standard_shader: STAGE_STANDARD,
+        physical_shader: STAGE_PHYSICAL,
     }
 
 

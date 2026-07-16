@@ -21,13 +21,13 @@ Custom user stages (also ``@ti.func``) are composed into per-pipeline funcs by
 :func:`make_pipeline_func` and injected into the shade kernel as a flat
 ``ti.template()`` tuple (see ``taichi-func-injection``).
 
-Per-primitive **pipeline id** (``pid_arr``); ids 0-4 are the built-in
+Per-primitive **pipeline id** (``pid_arr``); ids 0-5 are the built-in
 single-stage pipelines, ids >= ``_USER_PIPELINE_BASE`` index the injected user
 pipeline tuple::
 
     0  default diffuse      3  phong  (Blinn-Phong diffuse + specular)
     1  basic / unlit / passthrough     4  standard (Cook-Torrance GGX PBR)
-    2  lambert (diffuse)
+    2  lambert (diffuse)   5  physical (standard + clearcoat / sheen / ior)
 
 Built-in material parameter block ``params[.., off:off+MAT_W]`` (per primitive),
 canonical slot layout (``off`` is the stage's base offset, 0 for a built-in
@@ -35,6 +35,10 @@ single-stage pipeline)::
 
     0..2 emissive   3 emissive_intensity   4..6 specular   7 shininess
     8 roughness     9 metalness            10 flat_shading  11 env_map_intensity
+    12 ior          13 specular_intensity  14..16 specular_color
+    17 clearcoat    18 clearcoat_roughness 19 sheen         20 sheen_roughness
+    21..23 sheen_color   24 transmission   25 iridescence (accepted, unused --
+    matches the PyTorch shader)
 
 The lighting math mirrors ``material_shaders.py`` exactly (same GGX/Smith/Schlick
 terms, ``AMBIENT_STRENGTH``, ``light_intensity == ambient == 1``) and reproduces
@@ -47,7 +51,7 @@ import os
 import taichi as ti
 
 # Width of the built-in per-primitive material parameter block (see slot map).
-MAT_W = 12
+MAT_W = 26
 
 # Built-in single-stage pipeline ids.
 _MID_DEFAULT = 0
@@ -55,10 +59,11 @@ _MID_UNLIT = 1
 _MID_LAMBERT = 2
 _MID_PHONG = 3
 _MID_STANDARD = 4
+_MID_PHYSICAL = 5
 
 # Pipeline ids at or above this index address the injected user pipeline tuple
 # (``frag_pipelines``): user pipeline k has id ``_USER_PIPELINE_BASE + k``.
-_USER_PIPELINE_BASE = 5
+_USER_PIPELINE_BASE = 6
 
 # Base ambient coefficient (matches material_shaders.AMBIENT_STRENGTH).
 AMBIENT_STRENGTH = 0.1
@@ -428,6 +433,79 @@ def _stage_standard(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 
 
+@ti.func
+def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
+                    params: ti.template(), f, prim, off,
+                    light_pos: ti.template(), light_col: ti.template(),
+                    num_lights, shadows: ti.template(), vis):
+    """MeshPhysicalMaterial: MeshStandard plus ior-driven specular, a clearcoat
+    GGX lobe, a sheen rim and (crude) transmission -- the in-kernel port of
+    ``material_shaders.physical_shader`` (same terms; ``iridescence`` is
+    accepted but unused, as in the PyTorch shader)."""
+    tm = f % params.shape[0]
+    emissive = ti.math.vec3(params[tm, prim, off + 0], params[tm, prim, off + 1],
+                            params[tm, prim, off + 2])
+    emissive_intensity = params[tm, prim, off + 3]
+    roughness = params[tm, prim, off + 8]
+    metalness = params[tm, prim, off + 9]
+    flat = params[tm, prim, off + 10]
+    env = params[tm, prim, off + 11]
+    ior = params[tm, prim, off + 12]
+    specular_intensity = params[tm, prim, off + 13]
+    specular_color = ti.math.vec3(params[tm, prim, off + 14],
+                                  params[tm, prim, off + 15],
+                                  params[tm, prim, off + 16])
+    clearcoat = params[tm, prim, off + 17]
+    clearcoat_roughness = params[tm, prim, off + 18]
+    sheen = params[tm, prim, off + 19]
+    sheen_roughness = params[tm, prim, off + 20]
+    sheen_color = ti.math.vec3(params[tm, prim, off + 21],
+                               params[tm, prim, off + 22],
+                               params[tm, prim, off + 23])
+    transmission = params[tm, prim, off + 24]
+    n = _prep_normal(n_interp, face_n, flat, view_dir)
+    one = ti.math.vec3(1.0, 1.0, 1.0)
+    rgb = in_rgb
+    # ior drives the dielectric base reflectivity (KHR specular workflow).
+    ratio = (ior - 1.0) / ti.max(ior + 1.0, 1e-4)
+    f0 = (specular_color * (ratio * ratio * specular_intensity)
+          * (1.0 - metalness) + rgb * metalness)
+    # Additive over lights (see _stage_lambert): the metalness/F0 ambient +
+    # emissive base once, then each light's direct terms.
+    acc = ((rgb * (1.0 - metalness) + f0 * metalness) * (AMBIENT_STRENGTH * env)
+           + emissive * emissive_intensity)
+    for li in range(num_lights):
+        ld, lc, spec_w, _frac = _light_eval(light_pos, light_col, f, li,
+                                            pos, n)
+        v = _light_vis(shadows, vis, li)
+        half = (ld + view_dir).normalized()
+        n_dot_l = ti.max(n.dot(ld), 0.0)
+        n_dot_v = ti.max(n.dot(view_dir), 1e-4)
+        n_dot_h = ti.max(n.dot(half), 0.0)
+        v_dot_h = ti.max(view_dir.dot(half), 0.0)
+        fresnel = f0 + (one - f0) * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
+        ndf = _ggx_distribution(n_dot_h, roughness)
+        geom = _smith_geometry(n_dot_v, n_dot_l, roughness)
+        spec = (ndf * geom) * fresnel / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
+        k_d = (one - fresnel) * ((1.0 - metalness) * (1.0 - transmission))
+        direct = k_d * rgb * lc * n_dot_l + spec * lc * (n_dot_l * spec_w)
+        # Clearcoat: a thin dielectric GGX lobe (fixed F0 = 0.04) on top.
+        cc_ndf = _ggx_distribution(n_dot_h, clearcoat_roughness)
+        cc_geom = _smith_geometry(n_dot_v, n_dot_l, clearcoat_roughness)
+        cc_fresnel = 0.04 + 0.96 * ti.pow(ti.max(1.0 - v_dot_h, 0.0), 5.0)
+        cc_spec = clearcoat * (cc_ndf * cc_geom * cc_fresnel) \
+            / ti.max(4.0 * n_dot_v * n_dot_l, 1e-4)
+        direct += lc * (cc_spec * n_dot_l * spec_w)
+        # Sheen: soft retro-reflective rim (Charlie-like, inverted Fresnel).
+        sheen_term = sheen * ti.pow(ti.math.clamp(1.0 - n_dot_v, 0.0, 1.0),
+                                    1.0 + 8.0 * sheen_roughness)
+        direct += sheen_color * lc * sheen_term
+        # Crude transmission: let some base colour through regardless of N.L.
+        direct += rgb * lc * (transmission * 0.5)
+        acc += direct * v
+    return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
+
+
 def make_pipeline_func(stages, offsets):
     """Compose an ordered list of stage ``@ti.func``s into a single ``@ti.func``.
 
@@ -466,7 +544,7 @@ def make_pipeline_func(stages, offsets):
 # The sorted wavefront (see ``wavefront_sorted_kernels_taichi``) launches one
 # small shade kernel per material bucket with that material's *pipeline func*
 # injected as a ``ti.template()`` -- so the runtime pid switch of
-# ``_run_frag_pipeline`` disappears and a warp never mixes materials. The five
+# ``_run_frag_pipeline`` disappears and a warp never mixes materials. The six
 # built-in single-stage materials are wrapped into composed pipeline funcs here
 # (lazily, cached) so built-in and user pipelines share one injection contract.
 #
@@ -500,15 +578,16 @@ def make_pipeline_func(stages, offsets):
 # ---------------------------------------------------------------------------
 
 _BUILTIN_STAGE_FNS = (_stage_default, _stage_unlit, _stage_lambert,
-                      _stage_phong, _stage_standard)
+                      _stage_phong, _stage_standard, _stage_physical)
 _BUILTIN_PIPELINE_FNS = {}
 
 
 def builtin_pipeline_fn(pid):
     """Composed single-stage pipeline func for built-in material id ``pid``
-    (0 default, 1 unlit, 2 lambert, 3 phong, 4 standard), for injection into a
-    sorted per-material shade kernel. Lazily created and cached so every render
-    reuses the same func objects (stable Taichi template instantiations)."""
+    (0 default, 1 unlit, 2 lambert, 3 phong, 4 standard, 5 physical), for
+    injection into a sorted per-material shade kernel. Lazily created and
+    cached so every render reuses the same func objects (stable Taichi
+    template instantiations)."""
     pid = int(pid)
     if pid not in _BUILTIN_PIPELINE_FNS:
         _BUILTIN_PIPELINE_FNS[pid] = make_pipeline_func(
@@ -524,7 +603,7 @@ def _run_frag_pipeline(frag_pipelines: ti.template(),
                        params: ti.template(), shadows: ti.template(), vis):
     """Evaluate a surface hit's per-primitive shading pipeline.
 
-    ``pid_arr[f, prim]`` selects the pipeline: ids 0-4 are the built-in
+    ``pid_arr[f, prim]`` selects the pipeline: ids 0-5 are the built-in
     single-stage materials (dispatched directly for a transparently identical
     result to the pre-pipeline ``_shade_fragment``); ids >= ``_USER_PIPELINE_BASE``
     index the injected ``frag_pipelines`` tuple. ``albedo`` is the interpolated
@@ -554,6 +633,12 @@ def _run_frag_pipeline(frag_pipelines: ti.template(),
         g = r[3]
     elif pid == _MID_STANDARD:
         r = _stage_standard(pos, view_dir, n_interp, face_n, out, g,
+                            params, f, prim, 0,
+                            light_pos, light_col, num_lights, shadows, vis)
+        out = ti.math.vec3(r[0], r[1], r[2])
+        g = r[3]
+    elif pid == _MID_PHYSICAL:
+        r = _stage_physical(pos, view_dir, n_interp, face_n, out, g,
                             params, f, prim, 0,
                             light_pos, light_col, num_lights, shadows, vis)
         out = ti.math.vec3(r[0], r[1], r[2])

@@ -7,7 +7,10 @@ from algan.mobs.mob import Mob
 from algan.mobs.shapes_3d import Sphere, Cylinder
 from algan.constants.rate_funcs import identity, ease_in_expo, ease_out_expo
 from algan.rendering.shaders.pbr_shaders import null_shader
-from algan.rendering.shaders.materials import MeshStandardMaterial
+from algan.rendering.shaders.materials import (
+    MeshPhysicalMaterial,
+    MeshStandardMaterial,
+)
 from algan.utils.tensor_utils import dot_product, unsquish, squish
 from algan.mobs.text import Tex
 from algan.constants.rate_funcs import smooth, pulse_fade, delay_fade
@@ -87,12 +90,10 @@ class Neuron(Mob):
 #        self.add_children(self.neurons)
 
 
-# NOTE: only the material shaders with in-kernel fragment ports render
-# correctly on the deterministic renderer (basic / lambert / phong / standard;
-# see _build_core_shader_ids). MeshPhysicalMaterial (clearcoat/sheen) falls back
-# to the per-vertex path, which currently produces flat unlit grey -- so the V2
-# looks below are built from MeshStandardMaterial only. Metalness is kept at 0:
-# metalness > 0 routes mirror reflectivity into the ray tracer.
+# The V2/V3 fill light comes from envMapIntensity (ambient = albedo * 0.1 * env)
+# rather than emissive, so it tracks the albedo during wave_color pulses instead
+# of tinting them with the resting colour. Metalness stays 0 (dielectric): the
+# glossy look comes from low roughness, and -- in V3 -- clearcoat and sheen.
 
 
 class SynapseV2(Cylinder):
@@ -396,9 +397,89 @@ class NeuralNetMLP(Mob):
             return output
 
 
+class SynapseV3(Cylinder):
+    """V3 synapse: a thin filament with a lacquered (clearcoat) surface, so the
+    wires pick up crisp light streaks on top of their colour-tracking fill."""
+
+    def __init__(self, grid_height=5, *args, **kwargs):
+        grid_height = 20
+        grid_width = 12
+        c = kwargs.get('color', None)
+        if c is not None:
+            c = tweak_color(c, strength=0.25, min_strength=0.25)
+            kwargs['color'] = c
+        else:
+            c = WHITE
+        super().__init__(grid_height=grid_height, grid_width=grid_width, glow_radius=gr, **kwargs)
+        self.set_material(MeshPhysicalMaterial(
+            color=c.set_glow(0.04),
+            roughness=0.25,
+            metalness=0.0,
+            clearcoat=0.6,
+            clearcoatRoughness=0.15,
+            envMapIntensity=5.0,
+        ))
+        self.scale(0.02)
+
+
+class NeuronV3(Neuron):
+    """V3 neuron: the full physical-material design -- a lacquered clearcoat
+    core inside a translucent glass shell with a soft sheen rim, shaded per
+    fragment by the physical material's in-kernel port."""
+
+    synapse_cls = SynapseV3
+
+    def _make_core(self, grid_height, neuron_color):
+        material = MeshPhysicalMaterial(
+            color=neuron_color.set_glow(0.08),
+            roughness=0.18,
+            metalness=0.0,
+            clearcoat=1.0,
+            clearcoatRoughness=0.08,
+            envMapIntensity=4.0,
+        )
+        return (
+            Sphere(grid_height=grid_height, grid_width=grid_height, color=neuron_color)
+            .set_material(material)
+            .scale(0.17)
+        )
+
+    def _make_shell(self, grid_height, neuron_color):
+        rim_color = neuron_color * 0.6 + WHITE * 0.4
+        # The rim still needs a boosted sheen: at shell opacity 0.25 the alpha
+        # composite mutes it, and the shell's dark limb shading fights it.
+        material = MeshPhysicalMaterial(
+            color=neuron_color.set_opacity(0.25),
+            roughness=0.12,
+            metalness=0.0,
+            clearcoat=1.0,
+            clearcoatRoughness=0.05,
+            sheen=4.0,
+            sheenRoughness=0.3,
+            sheenColor=rim_color,
+            envMapIntensity=5.0,
+        )
+        return (
+            Sphere(opacity=0.25, grid_width=grid_height, grid_height=grid_height,
+                   color=neuron_color, glow_radius=gr)
+            .set_material(material)
+            .scale(0.21)
+        )
+
+
 class NeuralNetMLPV2(NeuralNetMLP):
     """Drop-in replacement for :class:`NeuralNetMLP` with upgraded visuals:
-    lacquered self-lit neuron cores inside glass shells (clearcoat + sheen rim)
-    and emissive filament synapses. Same constructor and animation API."""
+    glossy self-lit neuron cores inside translucent halo shells and filament
+    synapses, built from MeshStandardMaterial. Same constructor and animation
+    API."""
 
     neuron_cls = NeuronV2
+
+
+class NeuralNetMLPV3(NeuralNetMLP):
+    """Drop-in replacement for :class:`NeuralNetMLP` built from
+    MeshPhysicalMaterial: lacquered clearcoat neuron cores inside glass shells
+    with sheen rims, and clearcoat filament synapses. Same constructor and
+    animation API."""
+
+    neuron_cls = NeuronV3

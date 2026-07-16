@@ -711,7 +711,7 @@ def _build_textured_scene(scene, num_frames, device):
     T = num_frames
     tc = _expand_frames(scene["tri_colors"].to(device), T)     # [T,N,3,5]
     te = _expand_frames(scene["tri_extra"].to(device), T)      # [T,N,15]
-    tm = _expand_frames(scene["tri_mat"].to(device), T)[..., :MAT_W]  # [T,N,12]
+    tm = _expand_frames(scene["tri_mat"].to(device), T)[..., :MAT_W]  # [T,N,MAT_W]
     tmi = _expand_frames(scene["tri_mat_id"].to(device), T)    # [T,N]
     N = tc.shape[1]
 

@@ -102,9 +102,21 @@ WF_COMPACT_ACTIVE_ONLY = os.environ.get(
 # a glass (reflective+refractive) ray splits into a reflected + refracted pair,
 # so the pool reserves this many slots per primary pixel for spawned split rays.
 # Total per-tile state is unchanged (fewer pixels per tile, not bigger state);
-# splits beyond the pool simply drop the refracted branch (graceful). Only the
-# refraction path pays it (non-refractive renders use 1 slot per pixel).
-REFRACT_SPLIT_SLOTS = max(2, int(os.environ.get("ALGAN_WAVEFRONT_SPLIT", "4")))
+# splits beyond the pool simply drop the refracted branch. Only the refraction
+# path pays it (non-refractive renders use 1 slot per pixel).
+#
+# Sizing: a drop is NOT visually graceful when it loses a heavy branch. A
+# single semi-transparent transmissive mob (alpha < 1, transmission = 1)
+# spawns a split at *every* surface crossing of every branch -- for a glass
+# sphere that is 2 from the primary's walk (front + back face), 1 from the
+# refracted branch's exit, plus crossings from TIR continuations of the
+# coverage-miss branch -- 4+ requests, each carrying ~half the node's energy.
+# With only 3 spare slots the last slot goes to whichever ray wins the atomic
+# race, so adjacent pixels alternate between keeping and dropping the main
+# transmitted path: a black/green per-pixel checkerboard on the mob. 8 slots
+# fit the whole MAX_BOUNCES-bounded tree of the canonical glass-ball scene
+# (verified pixel-identical to 12).
+REFRACT_SPLIT_SLOTS = max(2, int(os.environ.get("ALGAN_WAVEFRONT_SPLIT", "8")))
 # When True, the *deterministic* raytracer (SAMPLES_PER_PIXEL == 1, non-physical)
 # shades the core lit materials per fragment inside the trace kernel instead of
 # baking per-vertex colours (Gouraud). Ignored by the Monte Carlo pathtracer.
@@ -361,10 +373,11 @@ def set_fragment_shading(enabled):
 
     When enabled, triangle/PN hits whose material is one of the core lit
     shaders (the legacy diffuse default, ``MeshBasicMaterial``,
-    ``MeshLambertMaterial``, ``MeshPhongMaterial``, ``MeshStandardMaterial``)
-    are shaded per fragment in-kernel from the raw albedo, a per-primitive
-    material block and the scene's point lights -- crisper specular highlights
-    and smooth shading on coarse meshes. Other materials keep vertex shading.
+    ``MeshLambertMaterial``, ``MeshPhongMaterial``, ``MeshStandardMaterial``,
+    ``MeshPhysicalMaterial``) are shaded per fragment in-kernel from the raw
+    albedo, a per-primitive material block and the scene's point lights --
+    crisper specular highlights and smooth shading on coarse meshes. Other
+    materials keep vertex shading.
     Only the deterministic renderer (``set_samples_per_pixel(1)``, non-physical)
     is affected. Set before rendering.
     """
@@ -477,12 +490,13 @@ def _get_tonemap_t_val():
 
 # --- Core lit material registry (shader function -> in-kernel material id) ----
 # Ids must match shading_taichi: 0 default diffuse, 1 basic/unlit/passthrough,
-# 2 lambert, 3 phong, 4 standard.
+# 2 lambert, 3 phong, 4 standard, 5 physical.
 def _build_core_shader_ids():
     from algan.rendering.shaders.material_shaders import (
         basic_material_shader,
         lambert_shader,
         phong_shader,
+        physical_shader,
         standard_shader,
     )
     from algan.rendering.shaders.pbr_shaders import default_shader, null_shader
@@ -494,13 +508,19 @@ def _build_core_shader_ids():
         lambert_shader: 2,
         phong_shader: 3,
         standard_shader: 4,
+        physical_shader: 5,
     }
 
 
 _CORE_SHADER_IDS = None
-# Per-material parameter defaults (canonical 12-slot block; see shading_taichi).
+# Per-material parameter defaults (canonical 26-slot block; see shading_taichi).
+# Slots 12+ are the MeshPhysicalMaterial extension, defaults matching the
+# physical_shader signature (ior 1.5, specular_intensity 1, specular_color
+# white, clearcoat/sheen off, sheen_roughness 1, transmission/iridescence 0).
 _MAT_DEFAULTS = [0.0, 0.0, 0.0, 1.0, 0.0666, 0.0666, 0.0666, 30.0, 1.0, 0.0,
-                 0.0, 1.0]
+                 0.0, 1.0,
+                 1.5, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                 0.0, 0.0]
 # Material-property name -> (start slot, width) in the canonical block.
 _MAT_SLOTS = {
     "emissive": (0, 3),
@@ -511,6 +531,16 @@ _MAT_SLOTS = {
     "metalness": (9, 1),
     "flat_shading": (10, 1),
     "env_map_intensity": (11, 1),
+    "ior": (12, 1),
+    "specular_intensity": (13, 1),
+    "specular_color": (14, 3),
+    "clearcoat": (17, 1),
+    "clearcoat_roughness": (18, 1),
+    "sheen": (19, 1),
+    "sheen_roughness": (20, 1),
+    "sheen_color": (21, 3),
+    "transmission": (24, 1),
+    "iridescence": (25, 1),
 }
 
 

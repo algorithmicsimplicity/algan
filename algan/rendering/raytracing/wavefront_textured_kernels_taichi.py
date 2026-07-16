@@ -57,10 +57,12 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_DEFAULT,
     _MID_LAMBERT,
     _MID_PHONG,
+    _MID_PHYSICAL,
     _MID_STANDARD,
     _stage_default,
     _stage_lambert,
     _stage_phong,
+    _stage_physical,
     _stage_standard,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
@@ -218,6 +220,12 @@ def _run_material(pid, mat_bank: ti.template(), texoff, f, pos, view_dir,
         g = r[3]
     elif pid == _MID_STANDARD:
         r = _stage_standard(pos, view_dir, n_interp, face_n, out, g,
+                            mat_bank, f, texoff, 1,
+                            light_pos, light_col, num_lights, shadows, vis)
+        out = ti.math.vec3(r[0], r[1], r[2])
+        g = r[3]
+    elif pid == _MID_PHYSICAL:
+        r = _stage_physical(pos, view_dir, n_interp, face_n, out, g,
                             mat_bank, f, texoff, 1,
                             light_pos, light_col, num_lights, shadows, vis)
         out = ti.math.vec3(r[0], r[1], r[2])

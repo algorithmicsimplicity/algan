@@ -105,7 +105,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         "corners", "colors", "normals", "glow_radius",
         "uvs", "texture_map", "material_texture_map",
         "normal_texture_map", "reflectivity", "roughness",
-        "refractive_index", "shader_param_values",
+        "refractive_index", "transmission", "shader_param_values",
     )
 
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
