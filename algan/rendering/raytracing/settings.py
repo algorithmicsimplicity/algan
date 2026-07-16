@@ -98,25 +98,23 @@ def set_wavefront_tile_auto(enabled):
 # in-process A/B checks; the env var selects the startup default.
 WF_COMPACT_ACTIVE_ONLY = os.environ.get(
     "ALGAN_WF_COMPACT_ACTIVE_ONLY", "1") == "1"
-# Pool over-allocation factor for the general wavefront when refraction is on:
-# a glass (reflective+refractive) ray splits into a reflected + refracted pair,
-# so the pool reserves this many slots per primary pixel for spawned split rays.
-# Total per-tile state is unchanged (fewer pixels per tile, not bigger state);
-# splits beyond the pool simply drop the refracted branch. Only the refraction
-# path pays it (non-refractive renders use 1 slot per pixel).
-#
-# Sizing: a drop is NOT visually graceful when it loses a heavy branch. A
-# single semi-transparent transmissive mob (alpha < 1, transmission = 1)
-# spawns a split at *every* surface crossing of every branch -- for a glass
-# sphere that is 2 from the primary's walk (front + back face), 1 from the
-# refracted branch's exit, plus crossings from TIR continuations of the
-# coverage-miss branch -- 4+ requests, each carrying ~half the node's energy.
-# With only 3 spare slots the last slot goes to whichever ray wins the atomic
-# race, so adjacent pixels alternate between keeping and dropping the main
-# transmitted path: a black/green per-pixel checkerboard on the mob. 8 slots
-# fit the whole MAX_BOUNCES-bounded tree of the canonical glass-ball scene
-# (verified pixel-identical to 12).
-REFRACT_SPLIT_SLOTS = max(2, int(os.environ.get("ALGAN_WAVEFRONT_SPLIT", "8")))
+# Initial ratio of total shared ray-pool slots to primary rays for a tile that
+# may split. This is only a launch-efficiency heuristic, not a per-pixel or
+# per-path split limit: all pixels append continuations into one shared pool.
+# If that pool overflows, the tile is discarded and retried with half as many
+# primary rays while keeping the same pool capacity, doubling the continuation
+# headroom until it succeeds. A ratio of two avoids an automatic failed first
+# attempt for ordinary glass while using far less memory per primary than the
+# old fixed eight-slots-per-pixel layout. The legacy environment variable is
+# accepted as an alias so existing tuning scripts remain valid; its value now
+# controls only the initial ratio, never a hard maximum number of splits.
+REFRACT_INITIAL_POOL_RATIO = max(2, int(os.environ.get(
+    "ALGAN_WAVEFRONT_INITIAL_POOL_RATIO",
+    os.environ.get("ALGAN_WAVEFRONT_SPLIT", "2"),
+)))
+# Backwards-compatible name for code that imported the old setting. It now
+# denotes the initial shared-pool ratio; it is no longer a per-pixel slot cap.
+REFRACT_SPLIT_SLOTS = REFRACT_INITIAL_POOL_RATIO
 # When True, the *deterministic* raytracer (SAMPLES_PER_PIXEL == 1, non-physical)
 # shades the core lit materials per fragment inside the trace kernel instead of
 # baking per-vertex colours (Gouraud). Ignored by the Monte Carlo pathtracer.

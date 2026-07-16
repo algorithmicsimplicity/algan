@@ -2,7 +2,10 @@
 
 These mirror the Three.js *mesh* materials -- the same material types, property
 names and default settings -- so a material can be configured the familiar way
-and applied to a mob with :meth:`Mob.set_material`::
+and applied to a mob with :meth:`Mob.set_material`. One deliberate deviation:
+``color`` defaults to ``None``, meaning "keep the mob's existing colour",
+whereas Three.js defaults it to white (which would silently repaint any mob
+the material is applied to)::
 
     from algan import Sphere, MeshStandardMaterial
 
@@ -28,7 +31,7 @@ normal and depth materials use documented approximations (see
 import math
 import warnings
 
-from algan.constants.color import Color, WHITE
+from algan.constants.color import Color
 from algan.utils.tensor_utils import cast_to_tensor
 from algan.rendering.shaders import material_shaders as ms
 
@@ -98,6 +101,9 @@ class Material:
     #: Lighting shader backing this material (a plain function).
     shader = staticmethod(ms.basic_material_shader)
     #: Whether the material's ``color`` should drive the mob's base colour.
+    #: Even then, the default ``color=None`` means "keep the mob's existing
+    #: colour" -- unlike Three.js, where an unset material colour is white --
+    #: so ``Sphere(color=RED).set_material(MeshPhysicalMaterial())`` stays red.
     applies_color = True
 
     def __init__(
@@ -114,7 +120,7 @@ class Material:
         toneMapped=True,
         **texture_kwargs,
     ):
-        self.color = WHITE if color is None else color
+        self.color = color
         self.opacity = opacity
         self.transparent = transparent
         self.visible = visible

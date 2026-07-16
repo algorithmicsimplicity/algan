@@ -82,6 +82,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _pn_hit_ior,
     _pn_hit_normal,
     _pn_hit_transmission,
+    _reserve_continuation_slot,
     default_scatter,
 )
 
@@ -445,7 +446,7 @@ def wf_shade_event(
         rs_int: ti.types.ndarray(),
         rs_hit: ti.types.ndarray(), rs_eprim: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(), pix_accum: ti.types.ndarray(),
-        rs_used: ti.types.ndarray(), rs_vis: ti.types.ndarray()):
+        rs_alloc: ti.types.ndarray(), rs_vis: ti.types.ndarray()):
     """Material stage of the sorted pipeline, launched once per material
     bucket: every ray in ``active`` is suspended at an event of the *same*
     material, whose composed pipeline func and scatter func are compile-time
@@ -453,13 +454,10 @@ def wf_shade_event(
     runtime material switch and no geometry access (the event record carries
     the surface attributes; ``params`` is the bucket's geometry-type material
     block). Shades the event, applies the scatter's continuation decision
-    (pass-through / mirror bounce in place / glass split into the pixel's
-    spare pool sub-block) and commits terminated rays to ``pix_accum``."""
+    (pass-through / mirror bounce in place / glass split into the shared
+    continuation pool) and commits terminated rays to ``pix_accum``. Pool
+    overflow raises ``rs_alloc[1]`` so the host can retry the tile exactly."""
     pixels_per_frame = width * height
-    # Derived from array shapes (see wavefront_shade): pix_accum has one row
-    # per pixel; the pool is num_primary * split_k slots.
-    num_primary = pix_accum.shape[0]
-    splits_per_pixel = rs_ro.shape[0] // num_primary - 1
     for i in range(num_active):
         r = active[i]
         pix = rs_pix[r]
@@ -508,14 +506,12 @@ def wf_shade_event(
         acc += weight * contrib
         done = False
         if ti.static(refraction != 0):
-            # Transmitted (glass split) branch: spawn into this pixel's spare
-            # sub-block; the counter is per pixel, so split threads on
-            # different pixels never contend on one global address.
+            # Transmitted branch: append to the tile-wide shared pool.
             wt = weight * trans_w
             if (trans_w > 0.0) and (wt > MIN_WEIGHT) and (bounces_left > 0):
-                c_local = ti.atomic_add(rs_used[pix], 1)
-                if c_local < splits_per_pixel:
-                    c = num_primary + pix * splits_per_pixel + c_local
+                c, have_slot = _reserve_continuation_slot(
+                    rs_alloc, rs_ro.shape[0])
+                if have_slot:
                     for k in ti.static(range(3)):
                         rs_ro[c, k] = trans_orig[k]
                         rs_rd[c, k] = trans_dir[k]

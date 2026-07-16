@@ -265,6 +265,7 @@ class Scene(RenderLoopMixin):
         self.frames_per_second = render_settings.frames_per_second
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
+        return self
 
     def background_is_transparent(self):
         if hasattr(self.background_frame, '__call__'):
@@ -302,6 +303,8 @@ class Scene(RenderLoopMixin):
         for frame in self.get_frames(time_ind-1, time_ind):
             frame = frame.float() / 255
             frames.append(frame.squeeze(0).permute(-1,0,1))
+        if '.' not in filename:
+            filename = filename + '.png'
         torchvision.utils.save_image(frames[-1], filename)
         self.render_settings = rs
         return frames

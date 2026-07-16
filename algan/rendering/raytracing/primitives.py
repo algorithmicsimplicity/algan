@@ -59,10 +59,11 @@ def _set_raytrace_memory_estimates(primitive, camera):
         1, int(rt_settings.WAVEFRONT_TILE_RAYS))
     # _alloc_wavefront_state: ro(3), rd(3), acc(4), sca(5), int(5),
     # six KBUF arrays; rs_pix(1); and two arena-backed active-index buffers.
-    # Per-primary arrays are pix_accum(5) and rs_used(1). All entries are four
-    # bytes.
+    # Per-primary storage is pix_accum(5). The continuation allocator is a
+    # fixed two-word counter per tile, not one counter per pixel. All entries
+    # are four bytes.
     primitive._rt_pool_bytes_per_ray = (23 + 6 * KBUF) * 4
-    primitive._rt_primary_bytes_per_ray = 6 * 4
+    primitive._rt_primary_bytes_per_ray = 5 * 4
 
 
 def _fixed_wavefront_bytes(primitive, num_frames):
@@ -73,12 +74,13 @@ def _fixed_wavefront_bytes(primitive, num_frames):
     primary_b = getattr(primitive, "_rt_primary_bytes_per_ray", 0)
     # Compatibility fallback for callers without the merged-scene-aware
     # estimator in tracer.get_wavefront_memory_required. Take the maximum of
-    # the general and sorted route layouts, with and without split slots.
+    # the general and sorted route layouts, with and without a shared
+    # continuation pool.
     plain_primary = min(tile, total_primary)
     plain = plain_primary * (pool_b + primary_b)
-    split_k = max(2, int(rt_settings.REFRACT_SPLIT_SLOTS))
-    split_primary = min(max(1, tile // split_k), total_primary)
-    split = split_primary * (split_k * pool_b + primary_b)
+    pool_ratio = max(2, int(rt_settings.REFRACT_INITIAL_POOL_RATIO))
+    split_primary = min(max(1, tile // pool_ratio), total_primary)
+    split = split_primary * (pool_ratio * pool_b + primary_b)
     # Sorted event state: rs_hit(15 f32), key, primitive id and worst-case
     # per-slot shadow bits. Runtime holds about 2/3 as many pool slots.
     sorted_extra = (15 + 1 + 1 + 1) * 4
@@ -87,14 +89,16 @@ def _fixed_wavefront_bytes(primitive, num_frames):
         pool_b + sorted_extra + primary_b
     )
     sorted_split_primary = min(
-        max(1, (tile * 2) // (3 * split_k)), total_primary
+        max(1, (tile * 2) // (3 * pool_ratio)), total_primary
     )
     sorted_split = sorted_split_primary * (
-        split_k * (pool_b + sorted_extra) + primary_b
+        pool_ratio * (pool_b + sorted_extra) + primary_b
     )
     # Worst general metadata (col_row, fused gen metadata, extended layer
     # metadata, visibility/count words) plus initial alignment, rounded to a
     # whole word. The route-aware estimator removes this tiny worst-case pad.
+    # Includes the shared allocator's two int32 words plus route metadata,
+    # initial alignment and conservative padding.
     return max(plain, split, sorted_plain, sorted_split) + 64
 
 

@@ -66,7 +66,8 @@ from algan.rendering.raytracing.shading_taichi import (
     _stage_standard,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
-    _material_reflectance, _refract_ray, default_scatter)
+    _material_reflectance, _offset_transmitted_origin, _refract_ray,
+    _reserve_continuation_slot, default_scatter)
 
 # Per-ray status codes (rs_int column 2), matching wavefront_generate_rays.
 _ACTIVE = 0
@@ -267,15 +268,13 @@ def wf_shade_textured(
         rs_ka: ti.types.ndarray(), rs_kb: ti.types.ndarray(),
         rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(), pix_accum: ti.types.ndarray(),
-        rs_used: ti.types.ndarray()):
+        rs_alloc: ti.types.ndarray()):
     """Drain each active ray's gathered hits front-to-back, shading every hit
     from its three texture lookups and continuing the ray per the surface
     texture (opacity pass-through / mirror reflection / Fresnel glass split).
     Features (beziers / scatter dispatch / shadows / normal maps) are compiled
     in per the ``feat_*`` templates."""
     pixels_per_frame = width * height
-    num_primary = pix_accum.shape[0]
-    splits_per_pixel = rs_ro.shape[0] // num_primary - 1
     for i in range(num_active):
         r = active[i]
         pix = rs_pix[r]
@@ -446,21 +445,20 @@ def wf_shade_textured(
                     R = _material_reflectance(
                         rd, normal, reflectivity, ior)
                     if bounces_left <= 0:
+                        # Out of bounces: the metal share (inside R) must not
+                        # slip through as transmission -- see ``_scatter_impl``.
                         R = 0.0
+                        T = T * (1.0 - ti.math.clamp(reflectivity, 0.0, 1.0))
 
                     # Transmission alone gates glass; this kernel is
-                    # triangle-only, so there is no thin-pane case here.
+                    # triangle-only, so there is no thin-pane case here. The
+                    # metal-blended Fresnel ``R`` stands (the metal share
+                    # reflects rather than transmits) -- see ``_scatter_impl``.
                     is_glass = False
                     if ti.static(refraction != 0):
                         if (T > 1e-4) and (bounces_left > 0) \
                                 and (ior > 1.0 + 1e-4) and is_tri:
                             is_glass = True
-                            cosi = ti.math.clamp(
-                                ti.abs(rd.dot(normal)), 0.0, 1.0)
-                            r0 = (1.0 - ior) / (1.0 + ior)
-                            r0 = r0 * r0
-                            R = r0 + (1.0 - r0) \
-                                * ti.pow(1.0 - cosi, 5.0)
 
                     acc += (weight * alpha * (1.0 - R) * (1.0 - T)) * color
                     refl_energy = alpha * R
@@ -480,15 +478,31 @@ def wf_shade_textured(
                     if is_glass:
                         wt = weight * trans_energy
                         if wt > MIN_WEIGHT:
-                            c_local = ti.atomic_add(rs_used[pix], 1)
-                            if c_local < splits_per_pixel:
-                                c = (num_primary + pix * splits_per_pixel
-                                     + c_local)
+                            c, have_slot = _reserve_continuation_slot(
+                                rs_alloc, rs_ro.shape[0])
+                            if have_slot:
                                 rdt = _refract_ray(rd, normal, ior)
                                 hp = ro + t_hit * rd
+                                face_normal = normal
+                                if is_tri:
+                                    tp = f % tri_pos.shape[0]
+                                    v0 = ti.math.vec3(
+                                        tri_pos[tp, prim, 0],
+                                        tri_pos[tp, prim, 1],
+                                        tri_pos[tp, prim, 2])
+                                    v1 = ti.math.vec3(
+                                        tri_pos[tp, prim, 3],
+                                        tri_pos[tp, prim, 4],
+                                        tri_pos[tp, prim, 5])
+                                    v2 = ti.math.vec3(
+                                        tri_pos[tp, prim, 6],
+                                        tri_pos[tp, prim, 7],
+                                        tri_pos[tp, prim, 8])
+                                    face_normal = (v1 - v0).cross(v2 - v0)
+                                rorig = _offset_transmitted_origin(
+                                    hp, rdt, face_normal, normal)
                                 for k in ti.static(range(3)):
-                                    rs_ro[c, k] = (hp[k] + rdt[k]
-                                                   * (10.0 * MIN_HIT_DISTANCE))
+                                    rs_ro[c, k] = rorig[k]
                                     rs_rd[c, k] = rdt[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
@@ -527,10 +541,9 @@ def wf_shade_textured(
                     elif split_refl:
                         wt = weight * refl_energy
                         if wt > MIN_WEIGHT:
-                            c_local = ti.atomic_add(rs_used[pix], 1)
-                            if c_local < splits_per_pixel:
-                                c = (num_primary + pix * splits_per_pixel
-                                     + c_local)
+                            c, have_slot = _reserve_continuation_slot(
+                                rs_alloc, rs_ro.shape[0])
+                            if have_slot:
                                 nref = normal
                                 if nref.dot(rd) > 0.0:
                                     nref = -nref
@@ -553,7 +566,7 @@ def wf_shade_textured(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        weight *= cover_pass
+                        weight *= cover_pass + trans_energy
                         t_prev = t_hit
                         layer_prev = hit_layer
                     # No split pool: reflect only while the reflection
@@ -575,7 +588,10 @@ def wf_shade_textured(
                         bounced = True
                         break
                     else:
-                        weight *= cover_pass
+                        # Orphaned transmitted share (index-matched ior <= 1,
+                        # pool absent, or bounces exhausted) continues unbent
+                        # in the pass-through -- see ``_scatter_impl``.
+                        weight *= cover_pass + trans_energy
                         t_prev = t_hit
                         layer_prev = hit_layer
                 else:
@@ -603,10 +619,9 @@ def wf_shade_textured(
                         wt = weight * trans_w
                         if (trans_w > 0.0) and (wt > MIN_WEIGHT) \
                                 and (bounces_left > 0):
-                            c_local = ti.atomic_add(rs_used[pix], 1)
-                            if c_local < splits_per_pixel:
-                                c = (num_primary + pix * splits_per_pixel
-                                     + c_local)
+                            c, have_slot = _reserve_continuation_slot(
+                                rs_alloc, rs_ro.shape[0])
+                            if have_slot:
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = trans_orig[k]
                                     rs_rd[c, k] = trans_dir[k]

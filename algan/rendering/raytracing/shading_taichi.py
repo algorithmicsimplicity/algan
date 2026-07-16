@@ -501,7 +501,9 @@ def _stage_physical(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                                     1.0 + 8.0 * sheen_roughness)
         direct += sheen_color * lc * sheen_term
         # Crude transmission: let some base colour through regardless of N.L.
-        direct += rgb * lc * (transmission * 0.5)
+        # Only the non-metallic share transmits (as in k_d above) -- a metal
+        # at any transmission must shade identically to an opaque one.
+        direct += rgb * lc * (transmission * (1.0 - metalness) * 0.5)
         acc += direct * v
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 

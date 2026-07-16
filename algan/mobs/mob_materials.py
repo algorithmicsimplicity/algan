@@ -190,7 +190,11 @@ class MobMaterialsMixin:
         # override the signature defaults with this material's values.
         self.set_shader(material.shader)
         params = material.get_shader_param_values()
-        color5 = _to_color5(material.color) if material.applies_color else None
+        # ``color=None`` (the default) means the material does not repaint the
+        # mob -- only an explicitly supplied material colour overrides it.
+        color5 = (_to_color5(material.color)
+                  if material.applies_color and material.color is not None
+                  else None)
         for d in reversed(self.get_descendants()):
             d.set_non_recursive(**params)
             #for name, value in params.items():

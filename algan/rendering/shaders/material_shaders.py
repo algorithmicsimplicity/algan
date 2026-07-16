@@ -318,7 +318,9 @@ def physical_shader(
         AMBIENT_STRENGTH * ambient_light_intensity * env_map_intensity
     )
     # Crude transmission: let some base colour through regardless of N.L.
-    transmitted = transmission * rgb * radiance * 0.5
+    # Only the non-metallic share transmits (as in k_d above) -- a metal
+    # at any transmission must shade identically to an opaque one.
+    transmitted = transmission * (1.0 - metalness) * rgb * radiance * 0.5
     out = ambient + direct + transmitted + emissive * emissive_intensity
     return _recombine(out, glow)
 
