@@ -267,21 +267,23 @@ class BezierCircuitCubic(Renderable):
     def get_render_primitives(self):
         if self.empty:
             return None
-        # Ray-transport surface parameters are registered lazily by
-        # set_reflectivity/set_roughness.  Bezier circuits historically omitted
-        # them from their primitive entirely, so every Bezier hit reached the
-        # ray tracer with reflectivity == 0.  Unregistered parameters retain
-        # the matte defaults without creating timeline rows for every circuit.
+        # Derive transport directly from the material shader parameters. A
+        # negative metalness sentinel marks non-PBR materials; Standard and
+        # Physical materials expose metalness/roughness as animatable attrs.
         surface_template = self.opacity[..., :1]
 
-        def surface_param(name):
+        def material_param(name, default):
             if name in self.animatable_attrs:
                 return getattr(self, name)
-            return torch.zeros_like(surface_template)
+            return torch.full_like(surface_template, default)
+
+        metalness = material_param("metalness", -1.0)
+        roughness = material_param("roughness", 0.0)
+        transmission = material_param("transmission", 0.0)
 
         vars = broadcast_all(
             [
-                self.opacity,# * self.max_opacity,
+                self.opacity * (1.0 - transmission.clamp(0.0, 1.0)),
                 self.basis,
                 self.glow,
                 self.border_width
@@ -289,8 +291,8 @@ class BezierCircuitCubic(Renderable):
                 / (PREVIEW.resolution[1] * 2),
                 self.border_color,
                 self.glow_radius,
-                surface_param("reflectivity"),
-                surface_param("roughness"),
+                metalness,
+                roughness,
             ],
             ignored_dims=[-1],
         )
@@ -603,19 +605,21 @@ def build_render_primitives_batched(actors, scene):
     # the ``vars`` broadcast in get_render_primitives) ---
     o = read("opacity", actors)
 
-    def read_optional_surface(attr):
+    def read_optional_material(attr, default):
         values = []
         for actor in actors:
             if attr in actor.animatable_attrs:
                 tl = timeline.attr_to_timeline[attr]
                 values.append(tl.get(tl.ranges_for(actor.id)))
             else:
-                values.append(torch.zeros_like(o[:, :1, :1]))
+                values.append(torch.full_like(o[:, :1, :1], default))
         values, _ = _unify_time(values, f"bezier {attr} merge")
         return torch.cat(values, 1)
 
-    reflectivity = read_optional_surface("reflectivity")
-    roughness = read_optional_surface("roughness")
+    reflectivity = read_optional_material("metalness", -1.0)
+    roughness = read_optional_material("roughness", 0.0)
+    transmission = read_optional_material("transmission", 0.0)
+    o = o * (1.0 - transmission.clamp(0.0, 1.0))
     basis = read("basis", actors)
     g = read("glow", actors)
     bw = read("border_width", actors) * (

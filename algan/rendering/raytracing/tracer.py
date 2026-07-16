@@ -18,8 +18,9 @@ quadratic Bezier triangle bent to match the vertex normals (enable with
   further to one thread per (frame, pixel, sample) path, accumulating into a
   float32 per-pixel buffer with atomic adds.
 
-Mirrors: give a mob a reflectivity with :func:`set_reflectivity` (before
-spawning); the value is per-vertex, animatable, and bounces up to
+Reflections are inferred from the mob's Three.js-style material properties.
+Use ``MeshStandardMaterial(metalness=..., roughness=...)`` or
+``MeshPhysicalMaterial`` before spawning; reflections bounce up to
 ``MAX_BOUNCES`` times.
 
 Call :func:`enable_ray_tracing` *before constructing any mobs* to make new
@@ -198,7 +199,10 @@ def get_wavefront_memory_required(
         or has_environment
     )
     has_custom_scatter = bool(frag and _scene_has_custom_scatter(merged))
-    refraction = bool(merged.get("has_refractive") or has_custom_scatter)
+    # Must stay in step with ``refraction_flag`` in render_batch_raytraced (it
+    # sizes the split pool the kernel then writes into).
+    refraction = bool(merged.get("has_refractive") or has_custom_scatter
+                      or merged.get("has_refl_transparent"))
     split_k = int(REFRACT_SPLIT_SLOTS) if refraction else 1
     target_slots = max(1, int(rt_settings.WAVEFRONT_TILE_RAYS))
 
@@ -513,6 +517,11 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # USE_WAVEFRONT, forces the super-sampled (non-in-place) AA path.
     refractive_det = (bool(merged.get("has_refractive"))
                       and int(SAMPLES_PER_PIXEL) <= 1)
+    # Semi-transparent PBR surfaces split off a reflection branch, so they need
+    # the same pool + split code the refraction path compiles in. No routing
+    # implication: the deterministic (samples <= 1) path is already wavefront.
+    refl_transparent_det = (bool(merged.get("has_refl_transparent"))
+                            and int(SAMPLES_PER_PIXEL) <= 1)
 
     # Extended lights (directional / ambient / hemisphere / spot / area /
     # falloff / soft shadows) and environment maps are features of the
@@ -640,7 +649,8 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # Refraction (general wavefront only; see refractive_det above). A custom
     # scatter may spawn a transmitted branch, so it needs the same split pool +
     # transmitted-branch code the refraction path compiles in.
-    refraction_flag = 1 if (refractive_det or frag_scatters) else 0
+    refraction_flag = 1 if (refractive_det or refl_transparent_det
+                            or frag_scatters) else 0
     # Environment map: append its texels to the shared texture buffer (the
     # merged dict is shallow-copied -- it is cached across batches) and, when
     # its ambient lighting is enabled, its SH irradiance as an extra light row.

@@ -43,6 +43,21 @@ def _already_initialized():
         return False
 
 
+def _taichi_arch():
+    """Return the explicit Taichi backend for Algan's render device.
+
+    ``ti.gpu`` is a backend preference list, not a CUDA-only alias.  On a
+    machine without CUDA it falls through to Vulkan, and some headless Vulkan
+    configurations crash inside Taichi instead of returning an error.  Torch
+    has already probed the usable render device, so select the matching Taichi
+    backend directly and never trigger that fallback chain.
+    """
+    render_device = COMPUTING_DEFAULTS.render_device
+    if COMPUTING_DEFAULTS.render_on_cpu or render_device.type == "cpu":
+        return ti.cpu
+    return ti.gpu
+
+
 def taichi_init_kwargs():
     """Algan's Taichi runtime config, as a kwargs dict.
 
@@ -52,7 +67,7 @@ def taichi_init_kwargs():
     measures a different (much faster) config than real renders. See
     [[algan-render-benchmarking]].
     """
-    kwargs = dict(arch=ti.cpu if COMPUTING_DEFAULTS.render_on_cpu else ti.gpu, fast_math=True,
+    kwargs = dict(arch=_taichi_arch(), fast_math=True,
                   # advanced_optimization defaults off (it raised register
                   # pressure on the big megakernels); env ALGAN_ADV_OPT=1 to A/B.
                   advanced_optimization=os.environ.get("ALGAN_ADV_OPT", "0") == "1",
@@ -81,7 +96,7 @@ def taichi_init_kwargs():
 
 
 def init_taichi():
-    """Initialize Taichi (CUDA/GPU) with Algan's perf config, once."""
+    """Initialize Taichi on Algan's selected backend, once."""
     if _already_initialized():
         return
     ti.init(**taichi_init_kwargs())

@@ -1,6 +1,10 @@
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
-__version__ = version(__name__)
+try:
+    __version__ = version("algan")
+except PackageNotFoundError:
+    # Source archives may be run directly without installed package metadata.
+    __version__ = "0+unknown"
 
 import os
 

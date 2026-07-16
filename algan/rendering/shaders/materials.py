@@ -141,25 +141,6 @@ class Material:
     def _flat(self):
         return 1.0 if self.flatShading else 0.0
 
-    # -- ray traced renderer (single source of truth for transport params) --
-    def physical_surface_params(self):
-        """``(reflectivity, roughness, refractive_index)`` -- the ray-transport
-        surface parameters this material routes onto the ray traced renderer
-        (see :meth:`Mob.set_material`), unifying the standalone
-        :func:`~algan.rendering.raytracing.primitives.set_reflectivity` /
-        :func:`~algan.rendering.raytracing.primitives.set_roughness` /
-        :func:`~algan.rendering.raytracing.primitives.set_refractive_index`
-        setters into the material.
-
-        ``reflectivity`` (= metalness) and ``roughness`` are shaded per ray hit
-        by the physical path tracer; ``refractive_index`` (> 0 only for a
-        transmissive material) makes the surface refract (glass) in the general
-        wavefront tracer. The base default is a non-metallic, fully rough,
-        non-refractive (diffuse) surface; PBR materials override it. Emissive
-        colour, clearcoat, sheen, etc. are not yet routed to the path tracer
-        (they remain a vertex-shading feature)."""
-        return 0.0, 1.0, 0.0
-
     # -- warnings ---------------------------------------------------------
     def emit_warnings(self):
         """Warn (once per call) about properties Algan's renderer cannot honour."""
@@ -252,13 +233,6 @@ class MeshPhongMaterial(Material):
             "env_map_intensity": self.envMapIntensity,
         }
 
-    def physical_surface_params(self):
-        # Map the Blinn-Phong exponent to a GGX-like roughness so the glossy
-        # highlight survives in the path tracer; dielectric (no metalness),
-        # opaque (no refraction).
-        return 0.0, float((2.0 / (float(self.shininess) + 2.0)) ** 0.5), 0.0
-
-
 class MeshStandardMaterial(Material):
     """Metalness/roughness physically-based (Cook-Torrance) material."""
 
@@ -292,14 +266,9 @@ class MeshStandardMaterial(Material):
             "flat_shading": self._flat(),
         }
 
-    def physical_surface_params(self):
-        # Metalness-driven mirror + GGX roughness; opaque (no refraction).
-        return float(self.metalness), float(self.roughness), 0.0
-
-
 class MeshPhysicalMaterial(MeshStandardMaterial):
     """Extends :class:`MeshStandardMaterial` with clearcoat, sheen, ior-driven
-    specular and (approximate) transmission / iridescence."""
+    specular, ray-traced transmission, and approximate iridescence."""
 
     shader = staticmethod(ms.physical_shader)
 
@@ -310,7 +279,7 @@ class MeshPhysicalMaterial(MeshStandardMaterial):
         clearcoat=0.0,
         clearcoatRoughness=0.0,
         ior=1.5,
-        reflectivity=0.5,
+        reflectivity=None,
         specularIntensity=1.0,
         specularColor=0xFFFFFF,
         sheen=0.0,
@@ -327,8 +296,18 @@ class MeshPhysicalMaterial(MeshStandardMaterial):
         super().__init__(color, **kwargs)
         self.clearcoat = clearcoat
         self.clearcoatRoughness = clearcoatRoughness
-        self.ior = ior
-        self.reflectivity = reflectivity
+        # Three.js exposes ``reflectivity`` as a backwards-compatible alias
+        # for dielectric IOR rather than as an independent mirror control.
+        # Preserve that API: an explicitly supplied reflectivity updates IOR;
+        # otherwise the effective reflectivity is derived from IOR.
+        if reflectivity is None:
+            self.ior = ior
+            self.reflectivity = 2.5 * (ior - 1.0) / (ior + 1.0)
+        else:
+            self.reflectivity = reflectivity
+            self.ior = (1.0 + 0.4 * reflectivity) / (
+                1.0 - 0.4 * reflectivity
+            )
         self.specularIntensity = specularIntensity
         self.specularColor = specularColor
         self.sheen = sheen
@@ -361,15 +340,6 @@ class MeshPhysicalMaterial(MeshStandardMaterial):
             "transmission": self.transmission,
             "iridescence": self.iridescence,
         }
-
-    def physical_surface_params(self):
-        # As MeshStandardMaterial, but a transmissive material also routes its
-        # index of refraction so it renders as glass in the general wavefront
-        # tracer. ior is only emitted when there is transmission to carry it
-        # (an opaque physical material stays non-refractive, ior 0).
-        refractive_index = float(self.ior) if float(self.transmission) > 0.0 else 0.0
-        return float(self.metalness), float(self.roughness), refractive_index
-
 
 class MeshToonMaterial(Material):
     """Cel-shaded (banded diffuse) material plus emissive.

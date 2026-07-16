@@ -15,7 +15,7 @@ if torch.cuda.is_available():
     try:
         # torch.cuda.is_available() can lie (driver/runtime mismatch), so
         # probe with a real allocation before committing to cuda.
-        torch.zeros((2,)).cuda() + 1
+        torch.zeros((1,)).cuda() + 1
         cuda_available = True
     except Exception:
         pass
@@ -38,7 +38,11 @@ class ComputingDefaults:
     max_cpu_memory_used = 2 * GIGABYTES
     animation_device = torch.device("cpu")
     render_device = accelerator
-    render_on_cpu = False
+    # Keep the legacy override in sync with the auto-detected render device.
+    # Taichi must not be initialized with ti.gpu on CPU-only systems: that
+    # makes Taichi probe CUDA and then Vulkan, whose failed initialization
+    # can segfault on headless machines.
+    render_on_cpu = accelerator.type == "cpu"
     use_torch_scatter = True
     allow_save_frame = True
 

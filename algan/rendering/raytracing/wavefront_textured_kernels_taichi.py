@@ -9,7 +9,7 @@ three integer indexes that look up three texture banks --
 * **colour**   -- RGBA + glow (5 channels),
 * **material** -- the shading parameter block prefixed with the pipeline id
   (13 channels, always a 1x1 constant texture per primitive),
-* **surface**  -- reflectivity / roughness / index-of-refraction (3 channels)
+* **surface**  -- metalness / roughness / signed IOR (3 channels)
   used to decide how the ray scatters (reflect / refract / pass through).
 
 The banks are built by ``scene_builder._build_textured_scene``: a property
@@ -64,7 +64,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _stage_standard,
 )
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
-    _refract_ray, default_scatter)
+    _material_reflectance, _refract_ray, default_scatter)
 
 # Per-ray status codes (rs_int column 2), matching wavefront_generate_rays.
 _ACTIVE = 0
@@ -337,8 +337,8 @@ def wf_shade_textured(
                 w0 = 1.0 - a - b
                 color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                 alpha = 0.0
-                reflectivity = 0.0
-                ior = 1.0
+                reflectivity = -1.0
+                ior = 0.0
                 is_tri = True
                 if ti.static(feat_bez != 0):
                     is_tri = htype == 1
@@ -424,27 +424,43 @@ def wf_shade_textured(
                 # per-material scatter dispatch (feat_scatter), which routes the
                 # same behaviour through ``default_scatter``.
                 alpha = ti.math.clamp(alpha, 0.0, 1.0)
-                reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
-                if bounces_left <= 0:
-                    reflectivity = 0.0
 
                 if ti.static(feat_scatter == 0):
+                    normal = ti.math.vec3(0.0, 0.0, 0.0)
+                    if is_tri:
+                        normal = _triangle_normal(
+                            f, prim, w0, a, b, tri_norm, tri_pos)
+                    elif ti.static(feat_bez != 0):
+                        normal = _bezier_normal(f, prim, circuit_meta)
+                    normal = normal.normalized()
+                    R = _material_reflectance(
+                        rd, normal, reflectivity, ior)
+                    if bounces_left <= 0:
+                        R = 0.0
+
                     is_glass = False
-                    gnrm = ti.math.vec3(0.0, 0.0, 0.0)
-                    R = reflectivity
                     if ti.static(refraction != 0):
                         if (alpha < 1.0 - MIN_ALPHA) and (bounces_left > 0) \
                                 and (ior > 1.0 + 1e-4) and is_tri:
                             is_glass = True
-                            gnrm = _triangle_normal(
-                                f, prim, w0, a, b, tri_norm, tri_pos).normalized()
-                            cosi = ti.abs(rd.dot(gnrm))
+                            cosi = ti.math.clamp(
+                                ti.abs(rd.dot(normal)), 0.0, 1.0)
                             r0 = (1.0 - ior) / (1.0 + ior)
                             r0 = r0 * r0
-                            fr = r0 + (1.0 - r0) * ti.pow(1.0 - cosi, 5.0)
-                            R = reflectivity + (1.0 - reflectivity) * fr
+                            R = r0 + (1.0 - r0) \
+                                * ti.pow(1.0 - cosi, 5.0)
 
                     acc += (weight * alpha * (1.0 - R)) * color
+
+                    # Semi-transparent reflective surface: reflection into a
+                    # split slot, pass-through stays primary (see
+                    # ``default_scatter`` for why this way round).
+                    split_refl = False
+                    if ti.static(refraction != 0):
+                        if (alpha * R > MIN_ALPHA) \
+                                and (alpha < 1.0 - MIN_ALPHA) \
+                                and (bounces_left > 0):
+                            split_refl = True
 
                     if is_glass:
                         wt = weight * (1.0 - R) * (1.0 - alpha)
@@ -453,7 +469,7 @@ def wf_shade_textured(
                             if c_local < splits_per_pixel:
                                 c = (num_primary + pix * splits_per_pixel
                                      + c_local)
-                                rdt = _refract_ray(rd, gnrm, ior)
+                                rdt = _refract_ray(rd, normal, ior)
                                 hp = ro + t_hit * rd
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = (hp[k] + rdt[k]
@@ -471,7 +487,7 @@ def wf_shade_textured(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        nref = gnrm
+                        nref = normal
                         if nref.dot(rd) > 0.0:
                             nref = -nref
                         hit_point = ro + t_hit * rd
@@ -485,20 +501,48 @@ def wf_shade_textured(
                         bounces_left -= 1
                         bounced = True
                         break
-                    elif (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
-                        normal = ti.math.vec3(0.0, 0.0, 0.0)
-                        if is_tri:
-                            normal = _triangle_normal(f, prim, w0, a, b,
-                                                      tri_norm, tri_pos)
-                        elif ti.static(feat_bez != 0):
-                            normal = _bezier_normal(f, prim, circuit_meta)
-                        normal = normal.normalized()
-                        if normal.dot(rd) > 0.0:
-                            normal = -normal
+                    elif split_refl:
+                        wt = weight * alpha * R
+                        if wt > MIN_WEIGHT:
+                            c_local = ti.atomic_add(rs_used[pix], 1)
+                            if c_local < splits_per_pixel:
+                                c = (num_primary + pix * splits_per_pixel
+                                     + c_local)
+                                nref = normal
+                                if nref.dot(rd) > 0.0:
+                                    nref = -nref
+                                rdr = (rd - 2.0 * rd.dot(nref)
+                                       * nref).normalized()
+                                hp = ro + t_hit * rd
+                                for k in ti.static(range(3)):
+                                    rs_ro[c, k] = (hp[k] + nref[k]
+                                                   * (10.0 * MIN_HIT_DISTANCE))
+                                    rs_rd[c, k] = rdr[k]
+                                for k in ti.static(range(4)):
+                                    rs_acc[c, k] = 0.0
+                                rs_sca[c, 0] = wt
+                                rs_sca[c, 1] = 0.0
+                                rs_sca[c, 2] = 1e30
+                                rs_sca[c, 3] = -1e30
+                                rs_sca[c, 4] = base_dist + t_hit
+                                rs_int[c, 0] = bounces_left - 1
+                                rs_int[c, 1] = processed
+                                rs_int[c, 2] = _ACTIVE
+                                rs_int[c, 3] = 0
+                                rs_pix[c] = pix
+                        weight *= 1.0 - alpha
+                        t_prev = t_hit
+                        layer_prev = hit_layer
+                    # No split pool: reflect only while the reflection
+                    # outweighs what shows through (see ``default_scatter``).
+                    elif (alpha * R > MIN_ALPHA) and (alpha * R >= 1.0 - alpha):
+                        nref = normal
+                        if nref.dot(rd) > 0.0:
+                            nref = -nref
                         hit_point = ro + t_hit * rd
-                        rd = (rd - 2.0 * rd.dot(normal) * normal).normalized()
-                        ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
-                        weight *= alpha * reflectivity
+                        rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                        ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+                        weight *= alpha * R
                         base_dist += t_hit
                         t_prev = 0.0
                         layer_prev = 1e30

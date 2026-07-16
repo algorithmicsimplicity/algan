@@ -486,8 +486,10 @@ def make_pipeline_func(stages, offsets):
 # multiplier for continuing *through* the surface to the next depth layer
 # (used only when ``refl_w == 0``). A positive ``refl_w`` bounces the ray from
 # ``refl_orig`` along ``refl_dir`` with throughput ``weight * refl_w``; a
-# positive ``trans_w`` additionally *splits* off a transmitted branch (glass)
-# from ``trans_orig`` along ``trans_dir``. The default scatter
+# positive ``trans_w`` additionally *splits* off a second branch from
+# ``trans_orig`` along ``trans_dir`` -- the refracted ray for glass, or the
+# reflection for a semi-transparent PBR surface (whose pass-through is then the
+# primary, via ``pass_w`` with ``refl_w == 0``). The default scatter
 # (``wavefront_sorted_kernels_taichi.default_scatter``) reproduces the classic
 # opacity/reflectivity/Fresnel-glass behaviour; attach a custom one to a
 # :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage` via its

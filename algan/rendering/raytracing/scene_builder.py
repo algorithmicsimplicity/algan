@@ -87,7 +87,7 @@ def gpu_merge_input_bytes(primitives):
     return total
 
 
-def _iter_primitive_source_tensors(primitive):
+def _iter_primitive_source_tensors(primitive, include_shader_params=True):
     """Yield ``(name, tensor)`` for each pre-projection source-geometry tensor
     of a primitive (corners/normals/colors/material/texture rows, ...). These
     are every torch tensor that is not a packed ``_rt_*`` output or a
@@ -96,14 +96,24 @@ def _iter_primitive_source_tensors(primitive):
         if (torch.is_tensor(value) and not name.startswith("_rt_")
                 and name not in _MERGE_SKIP_ATTRS):
             yield name, value
+    if not include_shader_params or not hasattr(primitive, "shader_param_values"):
+        return
+    for name, value in zip(primitive.shader_param_names, primitive.shader_param_values):
+        yield name, value
 
 
 def upload_primitive_source(primitive, device):
     """Move a primitive's pre-projection source geometry onto ``device`` so
     ``project_to_screen`` (and its vertex shader) run there (project-on-gpu)."""
-    for name, value in _iter_primitive_source_tensors(primitive):
+    for name, value in _iter_primitive_source_tensors(primitive, include_shader_params=False):
         if value.device != device:
             setattr(primitive, name, value.to(device))
+    if not hasattr(primitive, "shader_param_values"):
+        return
+    for i in range(len(primitive.shader_param_values)):
+        value = primitive.shader_param_values[i]
+        if value.device != device:
+            primitive.shader_param_values[i] = value.to(device)
 
 
 def gpu_project_input_bytes(primitives):
@@ -707,15 +717,14 @@ def _build_textured_scene(scene, num_frames, device):
     col_bank, col_meta, col_idx = _promote_property_group(
         tc, present, T, device)
 
-    # Surface (scatter): per-corner (reflectivity, roughness, index of
-    # refraction) gathered from tri_extra cols {0,2,4}/{1,3,5}/{6,7,8}.
+    # Surface (scatter): per-corner (metalness, roughness, signed IOR) gathered from tri_extra cols {0,2,4}/{1,3,5}/{6,7,8}.
     c0 = torch.stack([te[..., 0], te[..., 1], te[..., 6]], -1)  # [T,N,3]
     c1 = torch.stack([te[..., 2], te[..., 3], te[..., 7]], -1)
     c2 = torch.stack([te[..., 4], te[..., 5], te[..., 8]], -1)
     surf_corner = torch.stack([c0, c1, c2], 2)                 # [T,N,3,3]
     refl = surf_corner[..., 0]
     ior = surf_corner[..., 2]
-    surf_present = ((refl.abs() > 0).any(0).any(-1)
+    surf_present = ((refl >= 0.0).any(0).any(-1)
                     | (ior > 1.0 + 1e-4).any(0).any(-1))       # [N]
     surf_bank, surf_meta, surf_idx = _promote_property_group(
         surf_corner, surf_present, T, device)
@@ -1159,6 +1168,56 @@ def _merge_scene(primitives):
     scene["has_refractive"] = (_extra_has_refractive(scene["tri_extra"])
                                or _extra_has_refractive(scene["pn_extra"])
                                or bool(scene.get("tex_has_refractive")))
+
+    # A surface that is both PBR-reflective and semi-transparent must trace its
+    # reflection *and* its pass-through (see ``default_scatter``), which costs a
+    # split pool slot -- so such a batch turns the refraction template on too.
+    # Every PBR material has a non-zero Fresnel reflectance, so the test is
+    # simply "metalness is set" (>= 0; -1 is the non-PBR sentinel) on a visible
+    # non-opaque primitive. Deliberately conservative: a false positive only
+    # costs a split slot, while a false negative drops a continuation.
+    def _pbr_from_extra(attr):
+        def mask(p):
+            extra = getattr(p, attr, None)
+            if extra is None or extra.shape[1] == 0:
+                return None
+            # Interleaved per-corner (metalness, roughness) in cols 0-5, so
+            # metalness is 0/2/4 (matches ``_triangle_extra``).
+            return (extra[..., 0:6:2] >= 0.0).any(0).any(-1)
+        return mask
+
+    def _pbr_from_circuit_meta(p):
+        meta = getattr(p, "_rt_circuit_meta", None)
+        if meta is None or meta.shape[1] == 0:
+            return None
+        return (meta[..., 21] >= 0.0).any(0)
+
+    def _has_refl_transparent(prims, pbr_mask):
+        for p in prims:
+            lo = getattr(p, "_rt_frame_lo", None)
+            has_pbr = pbr_mask(p)
+            if lo is None or has_pbr is None:
+                continue
+            mtex = getattr(p, "_rt_material_texture", None)
+            # Material-map bit 0 drives metalness from channel 0 (see
+            # ``_pn_hit_material`` / ``_tri_hit_material``).
+            if (mtex is not None
+                    and (int(getattr(p, "_rt_material_flags", 0) or 0) & 1)
+                    and bool((mtex[..., 0] >= 0.0).any())):
+                has_pbr = torch.ones_like(has_pbr)
+            visible = (p._rt_frame_hi >= lo).all(-1)
+            translucent = (visible & ~p._rt_frame_opaque).any(0)
+            if not _texture_alpha_is_opaque(
+                    getattr(p, "_rt_texture_map", None)):
+                translucent = translucent | visible.any(0)
+            if bool((has_pbr.to(translucent.device) & translucent).any()):
+                return True
+        return False
+
+    scene["has_refl_transparent"] = (
+        _has_refl_transparent(triangles, _pbr_from_extra("_rt_tri_extra"))
+        or _has_refl_transparent(pn_patches, _pbr_from_extra("_rt_pn_extra"))
+        or _has_refl_transparent(beziers, _pbr_from_circuit_meta))
 
     if beziers:
         scene["circuit_meta"] = _cat_collections(

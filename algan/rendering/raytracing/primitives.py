@@ -23,85 +23,6 @@ from algan.rendering.raytracing.settings import *  # noqa: F403 -- re-export for
 from algan.settings.kernel_settings import KERNEL_SETTINGS
 
 
-def _set_surface_param(mob, name, value):
-    value = cast_to_tensor(float(value)).view(1, 1)
-    for descendant in reversed(mob.get_descendants()):
-        # Register the attr as animatable BEFORE setting it. A plain
-        # ``setattr`` here would store an instance attribute that is later
-        # shadowed if another mob's shader registers ``name`` as a class-level
-        # animatable property (e.g. standard_shader registering ``roughness``
-        # after a phong mob's set_material routed its roughness through this
-        # helper) -- the shadowed value then reads as AttributeError at batch
-        # prep. Registering first routes the value through the animated
-        # storage, which stays readable regardless of registration order.
-        descendant.register_attrs_as_animatable([name])
-        setattr(descendant, name, value)
-        names = list(getattr(descendant, "shader_specific_param_names", []))
-        if name not in names:
-            names.append(name)
-        descendant.shader_specific_param_names = names
-    return mob
-
-
-def set_reflectivity(mob, reflectivity):
-    """Make a mob a mirror under the ray traced renderer.
-
-    Attaches a (static) ``reflectivity`` value (0 = matte, 1 = perfect
-    mirror) to the mob and its descendants, exposed to the renderer as a
-    shader parameter. Call before the mob is spawned; only the ray traced
-    pipeline uses it (the rasterizer's shaders would reject the extra
-    parameter).
-
-    This is a convenience shortcut for the corresponding
-    :class:`~algan.rendering.shaders.materials.Material` property: applying a
-    material with :meth:`~algan.mobs.mob.Mob.set_material` routes the same
-    surface parameter (from :meth:`Material.physical_surface_params`). Use this
-    setter directly when you want mirror-ness without configuring a full
-    material (e.g. a mirror in the deterministic renderer, where ``set_material``
-    deliberately does not auto-route metalness).
-    """
-    return _set_surface_param(mob, "reflectivity", reflectivity)
-
-
-def set_roughness(mob, roughness):
-    """Set the glossiness of a mirror mob: 0 is a sharp mirror, larger
-    values blur its reflections. Only used by the Monte Carlo renderer
-    (``set_samples_per_pixel`` > 1); the deterministic renderer reflects
-    sharply. Call before the mob is spawned.
-
-    Convenience shortcut for the ``roughness`` surface parameter that
-    :meth:`~algan.mobs.mob.Mob.set_material` routes from a material's
-    :meth:`Material.physical_surface_params`.
-    """
-    return _set_surface_param(mob, "roughness", roughness)
-
-
-def set_refractive_index(mob, ior):
-    """Make a mob refract light (glass) under the ray traced renderer.
-
-    Convenience shortcut for the refractive-index surface parameter that
-    :meth:`~algan.mobs.mob.Mob.set_material` routes from a transmissive
-    :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`
-    (``transmission > 0``); use it directly to make a mob glass without
-    configuring a full material.
-
-    Attaches a (static) index of refraction to the mob and its descendants:
-    1.0 means no bending (the default for unset mobs is 0, treated as "not
-    refractive"), ~1.33 water, ~1.5 glass, ~2.4 diamond. The *transmitted*
-    fraction of each ray (the part not reflected or absorbed -- so give the mob
-    some transparency via its colour's opacity) is bent at the surface by
-    Snell's law and traced onward, with total internal reflection handled.
-
-    Only the **general wavefront** tracer implements refraction, so it is used
-    when that path renders the batch (``set_wavefront(True)`` /
-    ``ALGAN_WAVEFRONT=1``, or automatically for any batch that contains a
-    refractive mob). The megakernel and Monte Carlo paths ignore it. Reflection
-    takes priority over refraction if both are set on the same mob. Call before
-    the mob is spawned.
-    """
-    return _set_surface_param(mob, "refractive_index", ior)
-
-
 def _set_raytrace_memory_estimates(primitive, camera):
     """Split ray-trace memory into fixed tile and per-frame components.
 
@@ -189,9 +110,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
 
-    # Per-vertex surface parameters consumed by the trace kernels rather
-    # than by a shader; popped from the shader kwargs (see set_reflectivity
-    # and set_roughness).
+    # Renderer-internal transport channels. ``reflectivity`` stores material
+    # metalness for historical packed-layout compatibility; a negative value
+    # marks a non-PBR material. ``refractive_index`` is negative for opaque PBR
+    # surfaces and positive for transmissive MeshPhysicalMaterial surfaces.
     _surface_params = ("reflectivity", "roughness", "refractive_index")
 
     def __init__(self, corners=None, colors=None, opacity=1, normals=None,
@@ -220,7 +142,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 for triangle in triangle_collection:
                     v = getattr(triangle, name, None)
                     if v is None:
-                        v = torch.zeros_like(triangle.colors[:1, ..., :1])
+                        fill = -1.0 if name == "reflectivity" else 0.0
+                        v = torch.full_like(
+                            triangle.colors[:1, ..., :1], fill
+                        )
                     v = broadcast_all(
                         [triangle.corners[:1], triangle.colors[:1],
                          triangle.normals[:1], v], ignored_dims=[-1]
@@ -235,8 +160,6 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                     torch.cat(values, 1), -2, 3
                 ).to(self.corners.device))
         else:
-            params = {name: shader_kwargs.pop(name, None)
-                      for name in self._surface_params}
             super().__init__(corners, colors, opacity, normals,
                              perimeter_points, reverse_perimeter,
                              triangle_collection, glow, shader=shader,
@@ -245,15 +168,58 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                              material_texture_flags=material_texture_flags,
                              normal_texture_map=normal_texture_map,
                              **shader_kwargs)
-            for name, value in params.items():
-                if value is None:
-                    setattr(self, name,
-                            torch.zeros_like(self.colors[:1, ..., :1]))
-                else:
-                    value = cast_to_tensor(value).to(self.colors.device)
-                    setattr(self, name, broadcast_all(
-                        [self.corners[:1], self.colors[:1], value],
-                        ignored_dims=[-1])[-1][..., :1])
+            self._derive_material_surface_params()
+
+    def _derive_material_surface_params(self):
+        """Derive ray transport directly from material shader parameters.
+
+        This intentionally does not copy values onto separate mob attributes:
+        the tensors here are the materialised ``metalness``, ``roughness``,
+        ``ior`` and ``transmission`` shader parameters, so animating those
+        public material properties automatically updates ray transport.
+        """
+        names = list(getattr(self, "shader_param_names", None) or [])
+        values = list(getattr(self, "shader_param_values", None) or [])
+        by_name = {name: value for name, value in zip(names, values)}
+        template = self.colors[:1, ..., :1]
+
+        metalness = by_name.get("metalness")
+        if metalness is None:
+            self.reflectivity = torch.full_like(template, -1.0)
+            self.roughness = torch.zeros_like(template)
+            self.refractive_index = torch.zeros_like(template)
+            return
+
+        def surface_value(value, default):
+            if value is None:
+                value = torch.full_like(template, default)
+            else:
+                value = cast_to_tensor(value).to(self.colors.device)
+            return broadcast_all(
+                [self.corners[:1], self.colors[:1], value],
+                ignored_dims=[-1],
+            )[-1][..., :1]
+
+        self.reflectivity = surface_value(metalness, 0.0)
+        self.roughness = surface_value(by_name.get("roughness"), 1.0)
+
+        ior = by_name.get("ior")
+        if ior is None:
+            # MeshStandardMaterial uses Three.js's fixed dielectric F0=0.04,
+            # corresponding to IOR 1.5. The negative sign means reflective but
+            # not transmissive.
+            self.refractive_index = torch.full_like(self.reflectivity, -1.5)
+            return
+
+        ior = surface_value(ior, 1.5).abs()
+        transmission = surface_value(by_name.get("transmission"), 0.0)
+        colors, transmission = broadcast_all(
+            [self.colors, transmission], ignored_dims=[-1]
+        )
+        self.colors = colors * (1.0 - transmission.clamp(0.0, 1.0))
+        self.refractive_index = torch.where(
+            transmission > 1e-6, ior, -ior
+        )
 
     def _shaded_per_fragment(self):
         """True when this primitive's hits are shaded per fragment in-kernel
@@ -272,14 +238,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         """The shader's extra (material) parameters as a positional list in the
         shader's own signature order.
 
-        ``shader_param_values`` is *not* reliable for this: the ray tracer pops
-        the surface params (``roughness`` in particular) out of the shader kwargs
-        into per-primitive attributes (see ``_surface_params``), so they are
-        missing from ``shader_param_values`` and every following value would be
-        passed to the wrong positional parameter. Rebuild the argument list from
-        the shader's signature, addressing each extra parameter by name and
-        falling back to the popped surface attribute (then the signature
-        default) when it is absent from ``shader_param_values``.
+        Rebuild the argument list from the shader's signature so custom shaders
+        remain robust to missing optional parameters.
         """
         import inspect
 
@@ -298,10 +258,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             if name in by_name:
                 args.append(by_name[name])
                 continue
-            v = getattr(self, name, None)  # popped surface param (e.g. roughness)
-            if v is None:
-                default = sig[name].default
-                v = default if default is not inspect._empty else 0
+            default = sig[name].default
+            v = default if default is not inspect._empty else 0
             args.append(v)
         return args
 
@@ -367,19 +325,12 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                             dtype=torch.int32, device=device)
         pairs = []
         if _shader_is_core(shader):
-            # The material's shader params, addressed by their real names (the
-            # signature is not reliable: the ray tracer pops ``roughness`` out
-            # of the shader kwargs into a surface param, see _surface_params).
+            # The material's shader params, addressed by their real names.
             names = list(getattr(self, "shader_param_names", None) or [])
             values = list(getattr(self, "shader_param_values", None) or [])
             for name, value in zip(names, values):
                 if name in _MAT_SLOTS and value is not None:
                     pairs.append((name, per_triangle(value)))
-            # ``roughness`` (MeshStandardMaterial) was popped into self.roughness;
-            # feed it into the roughness slot (ignored by the non-PBR branches).
-            roughness = getattr(self, "roughness", None)
-            if roughness is not None:
-                pairs.append(("roughness", per_triangle(roughness)))
         Tm = max([1] + [v.shape[0] for _n, v in pairs])
         mat = torch.tensor(_MAT_DEFAULTS, device=device).view(
             1, 1, MAT_W).expand(Tm, N, MAT_W).contiguous()
@@ -397,9 +348,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         parameters occupy a contiguous slot range (the marker shader's
         ``_frag_param_layout`` maps attr name -> absolute slot); values are the
         materialised animated ``shader_param_values``, with defaults filling any
-        slot whose attr is absent. A param whose name collides with a popped
-        surface param (e.g. ``roughness``) is read back from that attribute, as
-        the built-in :meth:`_pack_material` path does."""
+        slot whose attr is absent."""
         pid = int(shader._frag_pipeline_id)
         W = int(shader._frag_total_width)
         layout = shader._frag_param_layout  # list of (name, slot, width, default)
@@ -421,8 +370,6 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         pairs = []
         for name, slot, width, default in layout:
             v = val_by_name.get(name, None)
-            if v is None and name in self._surface_params:
-                v = getattr(self, name, None)  # popped into a surface attribute
             if v is not None:
                 pairs.append((slot, width, per_triangle(v)))
         Tm = max([1] + [v.shape[0] for _s, _w, v in pairs])

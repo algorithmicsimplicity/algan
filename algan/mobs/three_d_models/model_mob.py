@@ -272,16 +272,21 @@ class ThreeDModelMob(Mob):
         if self.pbr_materials and material is not None:
             self._apply_pbr_material(mob, material, color, has_texture=texture is not None)
 
-        # Optional non-default material response, applied before spawn.
-        if material is not None:
-            if material.reflectivity and material.reflectivity > 0:
-                from algan.rendering.raytracing.primitives import set_reflectivity
-                set_reflectivity(mob, float(material.reflectivity))
-            if material.refractive_index and material.refractive_index > 1.0:
-                from algan.rendering.raytracing.primitives import (
-                    set_refractive_index,
-                )
-                set_refractive_index(mob, float(material.refractive_index))
+        # Legacy model formats may expose reflectivity / IOR without a full
+        # metallic-roughness material. Convert those values to the same public
+        # Three.js-style material workflow rather than mutating ray parameters.
+        if material is not None and not self.pbr_materials:
+            legacy_metalness = float(material.reflectivity or 0.0)
+            legacy_ior = float(material.refractive_index or 0.0)
+            if legacy_metalness > 0.0 or legacy_ior > 1.0:
+                from algan.rendering.shaders.materials import MeshPhysicalMaterial
+                mob.set_material(MeshPhysicalMaterial(
+                    color=color,
+                    metalness=legacy_metalness,
+                    roughness=float(material.roughness_factor),
+                    ior=legacy_ior if legacy_ior > 1.0 else 1.5,
+                    transmission=1.0 if legacy_ior > 1.0 else 0.0,
+                ))
         return mob
 
     def _apply_pbr_material(self, mob, material, color, has_texture):
@@ -290,7 +295,9 @@ class ThreeDModelMob(Mob):
         when a packed metallic-roughness map is present they are taken as its
         mean (modulated by the factors) since the deterministic fragment shader
         reads them per triangle, not per texel."""
-        from algan.rendering.shaders.materials import MeshStandardMaterial
+        from algan.rendering.shaders.materials import (
+            MeshPhysicalMaterial, MeshStandardMaterial,
+        )
 
         metalness = float(material.metallic_factor)
         roughness = float(material.roughness_factor)
@@ -307,12 +314,21 @@ class ThreeDModelMob(Mob):
             emissive[1] *= float(ei[..., 1].mean())
             emissive[2] *= float(ei[..., 2].mean())
         emissive = tuple(emissive)
-        mat = MeshStandardMaterial(
+        material_cls = (MeshPhysicalMaterial
+                        if float(material.refractive_index or 0.0) > 1.0
+                        else MeshStandardMaterial)
+        material_kwargs = dict(
             color=color,
             metalness=metalness,
             roughness=roughness,
             emissive=(emissive if any(e > 0 for e in emissive) else 0x000000),
         )
+        if material_cls is MeshPhysicalMaterial:
+            material_kwargs.update(
+                ior=float(material.refractive_index),
+                transmission=max(0.0, 1.0 - float(material.base_color[3])),
+            )
+        mat = material_cls(**material_kwargs)
         # Suppress the "textures not sampled" parity warning: this renderer does
         # sample maps (they are wired through TriangleMesh, not the Material).
         mat._textures = {}

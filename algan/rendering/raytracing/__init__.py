@@ -21,7 +21,7 @@ Usage::
 
     import algan
     from algan.rendering.raytracing import (
-        enable_ray_tracing, set_reflectivity, set_roughness)
+        enable_ray_tracing)
 
     # samples_per_pixel=1 (default) renders with the exact deterministic
     # kernel; > 1 enables Monte Carlo path tracing: jittered sub-pixel rays,
@@ -31,9 +31,9 @@ Usage::
     # patches (quadratic Bezier triangles bent to match vertex normals).
     enable_ray_tracing(samples_per_pixel=64)  # before creating mobs
 
-    mirror = algan.Sphere()
-    set_reflectivity(mirror, 0.9)  # before spawning
-    set_roughness(mirror, 0.2)     # glossy instead of sharp
+    mirror = algan.Sphere().set_material(
+        algan.MeshStandardMaterial(metalness=1.0, roughness=0.2)
+    )
     mirror.spawn()
     ...
     algan.render_to_file()
@@ -56,9 +56,6 @@ from algan.rendering.raytracing.primitives import (
     set_indirect_bounce_strength,
     set_light_intensity,
     set_ray_traced_shadows,
-    set_reflectivity,
-    set_refractive_index,
-    set_roughness,
     set_samples_per_pixel,
 )
 from algan.rendering.raytracing.stbvh import STBVH, build_stbvh
@@ -71,9 +68,6 @@ __all__ = [
     "RayTracedPNTrianglePrimitive",
     "RayTracedBezierCircuitPrimitive",
     "is_post_process_tonemap_enabled",
-    "set_reflectivity",
-    "set_refractive_index",
-    "set_roughness",
     "set_samples_per_pixel",
     "set_indirect_bounce_strength",
     "set_light_intensity",

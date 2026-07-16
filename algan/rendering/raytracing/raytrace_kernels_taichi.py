@@ -2670,9 +2670,7 @@ def path_trace_scene_stbvh(
                 continue
             interacted = True
 
-            reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
-            if bounces_left <= 0:
-                reflectivity = 0.0
+            metalness = reflectivity
 
             normal = ti.math.vec3(0.0, 0.0, 0.0)
             if hit_type == 1:
@@ -2687,6 +2685,17 @@ def path_trace_scene_stbvh(
             if normal.dot(rd) > 0.0:
                 normal = -normal
             hit_point = ro + t_hit * rd
+
+            # The packed surface value is material metalness, not an
+            # independent mirror probability.  Derive a Schlick reflectance
+            # (4% dielectric F0, rising to a conductor lobe at metalness=1).
+            reflectivity = 0.0
+            if (metalness >= 0.0) and (bounces_left > 0):
+                m = ti.math.clamp(metalness, 0.0, 1.0)
+                f0 = 0.04 * (1.0 - m) + m
+                cos_view = ti.math.clamp(normal.dot(-rd), 0.0, 1.0)
+                reflectivity = f0 + (1.0 - f0) \
+                    * ti.pow(1.0 - cos_view, 5.0)
 
             if ti.random(ti.f32) < reflectivity:
                 # Specular bounce, jittered into a glossy lobe.
@@ -2887,8 +2896,9 @@ def path_trace_physical_stbvh(
       through partially transparent occluders, and the surface responds with
       a Lambertian diffuse lobe plus a Fresnel-weighted glossy specular lobe
       (Schlick ``F0 = lerp(0.04, albedo, metallic)``, normalized
-      Blinn-Phong with exponent derived from ``roughness``). ``reflectivity``
-      doubles as the metallicness.
+      Blinn-Phong with exponent derived from ``roughness``). The
+      packed surface channel carries material ``metalness``; legacy materials
+      use a negative sentinel and therefore have no PBR specular lobe.
     * **Emissive surfaces**: the ``glow`` channel emits
       ``albedo * glow`` radiance, picked up by paths that hit the surface
       (point lights are never hit by chance, so nothing is double counted).
@@ -3010,7 +3020,11 @@ def path_trace_physical_stbvh(
 
             albedo = ti.math.vec3(color[0], color[1], color[2])
             glow = ti.max(color[3], 0.0)
+            has_pbr_material = reflectivity >= 0.0
             metallic = ti.math.clamp(reflectivity, 0.0, 1.0)
+            if not has_pbr_material:
+                metallic = 0.0
+                roughness = 1.0
             normal = ti.math.vec3(0.0, 0.0, 0.0)
             if hit_type == 1:
                 normal = _triangle_normal(f, prim, w0, a, b, tri_norm,
@@ -3026,11 +3040,15 @@ def path_trace_physical_stbvh(
             hit_point = ro + t_hit * rd
             shadow_origin = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
 
-            f0 = ti.math.vec3(0.04, 0.04, 0.04) * (1.0 - metallic) \
-                + albedo * metallic
+            f0 = ti.math.vec3(0.0, 0.0, 0.0)
+            if has_pbr_material:
+                f0 = ti.math.vec3(0.04, 0.04, 0.04) \
+                    * (1.0 - metallic) + albedo * metallic
             cos_view = ti.max(normal.dot(-rd), 0.0)
             fresnel = f0 + (ti.math.vec3(1.0, 1.0, 1.0) - f0) \
                 * ti.pow(1.0 - cos_view, 5.0)
+            if not has_pbr_material:
+                fresnel = ti.math.vec3(0.0, 0.0, 0.0)
 
             # Emission (glow) and constant ambient.
             acc += ti.math.vec4(
@@ -3098,8 +3116,8 @@ def path_trace_physical_stbvh(
                 break  # absorbed
             spec_prob = ti.math.clamp(
                 (fresnel[0] + fresnel[1] + fresnel[2]) / 3.0, 0.0, 0.95)
-            if metallic < 1e-3:
-                spec_prob = 0.0  # skip glints on plain dielectrics
+            if not has_pbr_material:
+                spec_prob = 0.0
             if ti.random(ti.f32) < spec_prob:
                 rd_new = (rd - 2.0 * rd.dot(normal) * normal).normalized()
                 if roughness > 1e-4:

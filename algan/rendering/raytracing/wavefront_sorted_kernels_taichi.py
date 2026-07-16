@@ -222,8 +222,8 @@ def wf_peel(
                     w0 = 1.0 - a - b
                     color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                     alpha = 0.0
-                    refl = 0.0
-                    ior = 1.0
+                    refl = -1.0
+                    ior = 0.0
                     ni = ti.math.vec3(0.0, 0.0, 0.0)
                     fn = ti.math.vec3(0.0, 0.0, 0.0)
                     pid = 0
@@ -235,11 +235,10 @@ def wf_peel(
                             refl, _rough = _flat_triangle_extra(
                                 f, prim, w0, a, b, tri_extra, tri_uvs,
                                 tri_tex_meta, textures, num_colored_triangles)
-                            if ti.static(refraction != 0):
-                                ior = _flat_corner_ior(
-                                    f, prim, w0, a, b, tri_extra, tri_uvs,
-                                    tri_tex_meta, textures,
-                                    num_colored_triangles)
+                            ior = _flat_corner_ior(
+                                f, prim, w0, a, b, tri_extra, tri_uvs,
+                                tri_tex_meta, textures,
+                                num_colored_triangles)
                             ni = _flat_triangle_normal(
                                 f, prim, w0, a, b, tri_norm, tri_pos,
                                 tri_uvs, tri_tex_meta, textures,
@@ -263,9 +262,8 @@ def wf_peel(
                                 textures)
                             refl, _rough = _pn_hit_extra(
                                 f, prim, w0, a, b, pn_extra, textures)
-                            if ti.static(refraction != 0):
-                                ior = _pn_hit_ior(f, prim, w0, a, b, pn_extra,
-                                                  textures)
+                            ior = _pn_hit_ior(f, prim, w0, a, b, pn_extra,
+                                              textures)
                             ni = _pn_hit_normal(f, prim, a, b, pn_norm,
                                                 pn_ctrl, pn_extra, textures)
                             tp = f % pn_ctrl.shape[0]

@@ -672,44 +672,86 @@ def _refract_ray(rd, n_out, ior):
 
 
 @ti.func
+def _material_reflectance(rd, normal, metalness, packed_ior):
+    """Scalar Schlick reflectance derived from a Three.js-style material.
+
+    ``metalness < 0`` is the internal sentinel for legacy/unlit materials that
+    have no PBR specular lobe.  Opaque PBR materials carry a negative IOR so
+    the same packed channel can provide dielectric F0 without enabling the
+    refraction branch; transmissive materials carry a positive IOR.  The
+    transport state is scalar, so conductor colour is applied by the material
+    shader while this helper uses its energy-equivalent scalar metal lobe.
+    """
+    result = 0.0
+    if metalness >= 0.0:
+        m = ti.math.clamp(metalness, 0.0, 1.0)
+        ior = ti.abs(packed_ior)
+        if ior <= 1.0 + 1e-4:
+            ior = 1.5
+        r0 = (1.0 - ior) / (1.0 + ior)
+        dielectric_f0 = r0 * r0
+        f0 = dielectric_f0 * (1.0 - m) + m
+        n = normal.normalized()
+        cosi = ti.math.clamp(ti.abs(rd.dot(n)), 0.0, 1.0)
+        result = f0 + (1.0 - f0) * ti.pow(1.0 - cosi, 5.0)
+    return ti.math.clamp(result, 0.0, 1.0)
+
+
+@ti.func
 def default_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
                     reflectivity, ior, params: ti.template(), f, prim,
                     bounces_left, refraction: ti.template()):
-    """Default ray-continuation behaviour of a shaded surface event: exactly
-    the classic kernel's opacity / reflectivity / Fresnel-glass logic.
+    """Built-in continuation derived from the material's PBR properties.
 
-    Returns ``(contrib, pass_w, refl_orig, refl_dir, refl_w, trans_orig,
-    trans_dir, trans_w)``: the premultiplied colour contribution (the caller
-    adds ``weight * contrib``), the pass-through weight multiplier, and the
-    origin/direction/weight of the reflected branch and of the transmitted
-    (glass split) branch (a weight of 0 disables that branch).
+    The historical ``reflectivity`` argument now carries packed ``metalness``
+    (negative means no PBR material), while the signed IOR distinguishes an
+    opaque PBR surface (negative) from a transmissive one (positive).
+
+    A partially transparent reflective surface has two continuations: the
+    mirror reflection (``alpha * R``) and whatever shows through behind it
+    (``1 - alpha``). Every PBR material has a non-zero Fresnel ``R`` (>= 4% at
+    normal incidence), so tracing only the reflection would discard everything
+    behind any semi-transparent PBR surface -- an opaque black silhouette.
+
+    Both are traced when the split pool is compiled in (``refraction != 0``,
+    which ``scene_builder``'s ``has_refl_transparent`` turns on for exactly
+    these scenes): the *reflection* goes to the split slot and the
+    pass-through continues as the primary ray. That is the mirror image of the
+    glass split below, and deliberate -- the pass-through is the depth-layer
+    walk, so keeping it primary preserves ``t_prev``/``layer_prev`` and spends
+    no bounce. Without the pool only the heavier continuation is traced, so
+    the dropped term is always the smaller one. Opaque surfaces have nothing
+    behind them (``1 - alpha == 0``) and always reflect: mirrors are unchanged.
     """
     alpha = ti.math.clamp(alpha, 0.0, 1.0)
-    reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
+    normal = n_interp.normalized()
+    R = _material_reflectance(rd, normal, reflectivity, ior)
     if bounces_left <= 0:
-        reflectivity = 0.0
+        R = 0.0
 
-    # Glass = a transparent refractive surface: Fresnel reflectance R (Schlick)
-    # from the IOR + incidence angle drives the energy split (diffuse
-    # alpha*(1-R) + reflected R + refracted (1-R)*(1-alpha)). Non-refractive
-    # surfaces keep R = reflectivity. Compiles out when refraction is off.
     is_glass = False
-    gnrm = ti.math.vec3(0.0, 0.0, 0.0)
-    R = reflectivity
+    glass_ior = ior
     if ti.static(refraction != 0):
         if (alpha < 1.0 - MIN_ALPHA) and (bounces_left > 0) \
-                and (ior > 1.0 + 1e-4):
+                and (glass_ior > 1.0 + 1e-4):
             is_glass = True
-            gnrm = n_interp.normalized()
-            cosi = ti.abs(rd.dot(gnrm))
-            r0 = (1.0 - ior) / (1.0 + ior)
+            # For transmissive dielectrics the same Schlick term controls the
+            # reflected/refracted split.  Metalness is intentionally ignored
+            # here, matching the dielectric transmission model.
+            cosi = ti.math.clamp(ti.abs(rd.dot(normal)), 0.0, 1.0)
+            r0 = (1.0 - glass_ior) / (1.0 + glass_ior)
             r0 = r0 * r0
-            fr = r0 + (1.0 - r0) * ti.pow(1.0 - cosi, 5.0)
-            # A manual ``reflectivity`` raises the reflectance floor like a
-            # mirror coating (0 = pure Fresnel glass).
-            R = reflectivity + (1.0 - reflectivity) * fr
+            R = r0 + (1.0 - r0) * ti.pow(1.0 - cosi, 5.0)
 
     contrib = (alpha * (1.0 - R)) * shaded
+    # A partially transparent reflective (non-glass) surface has two
+    # continuations: the mirror reflection and what shows through behind it.
+    # With the split pool compiled in both are traced -- see the branch below.
+    split_refl = False
+    if ti.static(refraction != 0):
+        if (alpha * R > MIN_ALPHA) and (alpha < 1.0 - MIN_ALPHA) \
+                and (bounces_left > 0):
+            split_refl = True
     pass_w = 0.0
     refl_w = 0.0
     trans_w = 0.0
@@ -719,26 +761,37 @@ def default_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
     trans_dir = zero3
     trans_orig = zero3
     if is_glass:
-        rdt = _refract_ray(rd, gnrm, ior)
+        rdt = _refract_ray(rd, normal, glass_ior)
         trans_dir = rdt
         trans_orig = hit_point + rdt * (10.0 * MIN_HIT_DISTANCE)
         trans_w = (1.0 - R) * (1.0 - alpha)
-        # Reflect the parent ray, Fresnel-weighted (decoupled from opacity --
-        # a clear glass still reflects per R).
-        nref = gnrm
+        nref = normal
         if nref.dot(rd) > 0.0:
             nref = -nref
         refl_dir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
         refl_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
         refl_w = R
-    elif (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
-        # Opaque / translucent mirror (no refractive index).
-        n = n_interp.normalized()
-        if n.dot(rd) > 0.0:
-            n = -n
-        refl_dir = (rd - 2.0 * rd.dot(n) * n).normalized()
-        refl_orig = hit_point + n * (10.0 * MIN_HIT_DISTANCE)
-        refl_w = alpha * reflectivity
+    elif split_refl or ((alpha * R > MIN_ALPHA)
+                        and (alpha * R >= 1.0 - alpha)):
+        nref = normal
+        if nref.dot(rd) > 0.0:
+            nref = -nref
+        rdir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+        rorig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+        if split_refl:
+            # Reflection into the split slot; the pass-through stays the
+            # primary ray. It continues the depth-layer walk (no bounce
+            # spent, ``t_prev``/``layer_prev`` preserved by the caller).
+            trans_dir = rdir
+            trans_orig = rorig
+            trans_w = alpha * R
+            pass_w = 1.0 - alpha
+        else:
+            # No split pool compiled in: trace only the heavier continuation,
+            # so the dropped term is always the smaller of the two.
+            refl_dir = rdir
+            refl_orig = rorig
+            refl_w = alpha * R
     else:
         pass_w = 1.0 - alpha
     return (contrib, pass_w, refl_orig, refl_dir, refl_w,
@@ -1804,78 +1857,70 @@ def wavefront_shade(
                                               color, shadows, vis)
 
                 if ti.static(len(frag_scatters) == 0):
-                    # No custom scatter present: the built-in opacity /
-                    # reflectivity / Fresnel-glass continuation, inline and
-                    # byte-identical to the pre-scatter kernel.
+                    # Built-in continuation.  The packed surface channels now
+                    # carry material metalness/roughness and a signed IOR; no
+                    # independent mirror/refraction controls remain.
                     alpha = ti.math.clamp(alpha, 0.0, 1.0)
-                    reflectivity = ti.math.clamp(reflectivity, 0.0, 1.0)
-                    if bounces_left <= 0:
-                        reflectivity = 0.0
+                    normal = ti.math.vec3(0.0, 0.0, 0.0)
+                    if htype == 1:
+                        normal = _tri_normal_g(
+                            mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
+                            tri_pos, tri_uvs, tri_tex_meta, textures,
+                            num_colored_triangles)
+                    elif htype == 2:
+                        normal = _pn_hit_normal(f, prim, a, b, pn_norm,
+                                                pn_ctrl, pn_extra, textures)
+                    else:
+                        normal = _bezier_normal(f, prim, circuit_meta)
+                    normal = normal.normalized()
 
-                    # Glass = a transparent refractive surface; it reflects AND
-                    # refracts at once (Fresnel). Detect it and compute the
-                    # Fresnel reflectance R(theta) (Schlick) from the IOR +
-                    # incidence angle; R then drives the whole energy split
-                    # (diffuse alpha*(1-R) + reflected R + refracted
-                    # (1-R)*(1-alpha) = 1). Non-refractive surfaces keep R =
-                    # reflectivity, so this is byte-identical (and compiles out)
-                    # when refraction is off.
+                    ior = 0.0
+                    if htype == 1:
+                        ior = _tri_ior_g(
+                            mem_trim, f, prim, 1.0 - a - b, a, b,
+                            tri_extra, col_row, tri_uvs, tri_tex_meta,
+                            textures, num_colored_triangles)
+                    elif htype == 2:
+                        ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
+                                          pn_extra, textures)
+
+                    R = _material_reflectance(rd, normal, reflectivity, ior)
+                    if bounces_left <= 0:
+                        R = 0.0
+
                     is_glass = False
-                    gnrm = ti.math.vec3(0.0, 0.0, 0.0)
-                    ior = 1.0
-                    R = reflectivity
                     if ti.static(refraction != 0):
                         if (alpha < 1.0 - MIN_ALPHA) and (bounces_left > 0) \
+                                and (ior > 1.0 + 1e-4) \
                                 and ((htype == 1) or (htype == 2)):
-                            if htype == 1:
-                                ior = _tri_ior_g(
-                                    mem_trim, f, prim, 1.0 - a - b, a, b,
-                                    tri_extra, col_row, tri_uvs, tri_tex_meta,
-                                    textures, num_colored_triangles)
-                            else:
-                                ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
-                                                  pn_extra, textures)
-                            if ior > 1.0 + 1e-4:
-                                is_glass = True
-                                if htype == 1:
-                                    gnrm = _tri_normal_g(
-                                        mem_trim, f, prim, 1.0 - a - b, a, b,
-                                        tri_norm, tri_pos, tri_uvs,
-                                        tri_tex_meta, textures,
-                                        num_colored_triangles)
-                                else:
-                                    gnrm = _pn_hit_normal(f, prim, a, b,
-                                                          pn_norm, pn_ctrl,
-                                                          pn_extra, textures)
-                                gnrm = gnrm.normalized()
-                                # Fresnel of the dielectric (Schlick): R0 =
-                                # ((1-ior)/(1+ior))^2, fr = R0+(1-R0)(1-cos)^5.
-                                cosi = ti.abs(rd.dot(gnrm))
-                                r0 = (1.0 - ior) / (1.0 + ior)
-                                r0 = r0 * r0
-                                fr = r0 + (1.0 - r0) * ti.pow(1.0 - cosi, 5.0)
-                                # A manual ``reflectivity`` raises the
-                                # reflectance floor like a mirror coating: 0 =
-                                # pure Fresnel glass; ~1 = a near-perfect mirror
-                                # that still refracts the tiny remainder.
-                                R = reflectivity + (1.0 - reflectivity) * fr
+                            is_glass = True
+                            cosi = ti.math.clamp(
+                                ti.abs(rd.dot(normal)), 0.0, 1.0)
+                            r0 = (1.0 - ior) / (1.0 + ior)
+                            r0 = r0 * r0
+                            R = r0 + (1.0 - r0) \
+                                * ti.pow(1.0 - cosi, 5.0)
 
                     acc += (weight * alpha * (1.0 - R)) * color
 
+                    # Semi-transparent reflective surface: reflection into a
+                    # split slot, pass-through stays primary (see
+                    # ``default_scatter`` for why this way round).
+                    split_refl = False
+                    if ti.static(refraction != 0):
+                        if (alpha * R > MIN_ALPHA) \
+                                and (alpha < 1.0 - MIN_ALPHA) \
+                                and (bounces_left > 0):
+                            split_refl = True
+
                     if is_glass:
-                        # Split: spawn the refracted (transmitted) branch into
-                        # this pixel's spare sub-block -- the allocation counter
-                        # is per pixel (rs_used[pix]), so different pixels bump
-                        # different addresses (no single global atomic). The
-                        # reflected branch continues in this slot; both commit
-                        # to the same pixel.
                         wt = weight * (1.0 - R) * (1.0 - alpha)
                         if wt > MIN_WEIGHT:
                             c_local = ti.atomic_add(rs_used[pix], 1)
                             if c_local < splits_per_pixel:
                                 c = (num_primary + pix * splits_per_pixel
                                      + c_local)
-                                rdt = _refract_ray(rd, gnrm, ior)
+                                rdt = _refract_ray(rd, normal, ior)
                                 hp = ro + t_hit * rd
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = (hp[k] + rdt[k]
@@ -1893,9 +1938,7 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        # Reflect the parent, Fresnel-weighted (decoupled from
-                        # the opacity -- a clear glass still reflects per R).
-                        nref = gnrm
+                        nref = normal
                         if nref.dot(rd) > 0.0:
                             nref = -nref
                         hit_point = ro + t_hit * rd
@@ -1909,27 +1952,48 @@ def wavefront_shade(
                         bounces_left -= 1
                         bounced = True
                         break
-                    elif (reflectivity > MIN_ALPHA) and (alpha > MIN_ALPHA):
-                        # Opaque / translucent mirror (no refractive index):
-                        # unchanged reflection, gated by opacity as before.
-                        normal = ti.math.vec3(0.0, 0.0, 0.0)
-                        if htype == 1:
-                            normal = _tri_normal_g(
-                                mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
-                                tri_pos, tri_uvs, tri_tex_meta, textures,
-                                num_colored_triangles)
-                        elif htype == 2:
-                            normal = _pn_hit_normal(f, prim, a, b, pn_norm,
-                                                    pn_ctrl, pn_extra, textures)
-                        else:
-                            normal = _bezier_normal(f, prim, circuit_meta)
-                        normal = normal.normalized()
-                        if normal.dot(rd) > 0.0:
-                            normal = -normal
+                    elif split_refl:
+                        wt = weight * alpha * R
+                        if wt > MIN_WEIGHT:
+                            c_local = ti.atomic_add(rs_used[pix], 1)
+                            if c_local < splits_per_pixel:
+                                c = (num_primary + pix * splits_per_pixel
+                                     + c_local)
+                                nref = normal
+                                if nref.dot(rd) > 0.0:
+                                    nref = -nref
+                                rdr = (rd - 2.0 * rd.dot(nref)
+                                       * nref).normalized()
+                                hp = ro + t_hit * rd
+                                for k in ti.static(range(3)):
+                                    rs_ro[c, k] = (hp[k] + nref[k]
+                                                   * (10.0 * MIN_HIT_DISTANCE))
+                                    rs_rd[c, k] = rdr[k]
+                                for k in ti.static(range(4)):
+                                    rs_acc[c, k] = 0.0
+                                rs_sca[c, 0] = wt
+                                rs_sca[c, 1] = 0.0
+                                rs_sca[c, 2] = 1e30
+                                rs_sca[c, 3] = -1e30
+                                rs_sca[c, 4] = base_dist + t_hit
+                                rs_int[c, 0] = bounces_left - 1
+                                rs_int[c, 1] = processed
+                                rs_int[c, 2] = _ACTIVE
+                                rs_int[c, 3] = 0
+                                rs_pix[c] = pix
+                        weight *= 1.0 - alpha
+                        t_prev = t_hit
+                        layer_prev = hit_layer
+                    # No split pool: reflect only while the reflection
+                    # outweighs what shows through (see ``default_scatter``).
+                    elif (alpha * R > MIN_ALPHA) and (alpha * R >= 1.0 - alpha):
+                        nref = normal
+                        if nref.dot(rd) > 0.0:
+                            nref = -nref
                         hit_point = ro + t_hit * rd
-                        rd = (rd - 2.0 * rd.dot(normal) * normal).normalized()
-                        ro = hit_point + normal * (10.0 * MIN_HIT_DISTANCE)
-                        weight *= alpha * reflectivity
+                        rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                        ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+                        weight *= alpha * R
                         base_dist += t_hit
                         t_prev = 0.0
                         layer_prev = 1e30
@@ -1984,16 +2048,15 @@ def wavefront_shade(
                     else:
                         sni = _bezier_normal(f, prim, circuit_meta)
                         sfn = sni
-                    s_ior = 1.0
-                    if ti.static(refraction != 0):
-                        if htype == 1:
-                            s_ior = _tri_ior_g(
-                                mem_trim, f, prim, 1.0 - a - b, a, b, tri_extra,
-                                col_row, tri_uvs, tri_tex_meta, textures,
-                                num_colored_triangles)
-                        elif htype == 2:
-                            s_ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
-                                                pn_extra, textures)
+                    s_ior = 0.0
+                    if htype == 1:
+                        s_ior = _tri_ior_g(
+                            mem_trim, f, prim, 1.0 - a - b, a, b, tri_extra,
+                            col_row, tri_uvs, tri_tex_meta, textures,
+                            num_colored_triangles)
+                    elif htype == 2:
+                        s_ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
+                                            pn_extra, textures)
                     hit_point = ro + t_hit * rd
                     contrib = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                     pass_w = 0.0
