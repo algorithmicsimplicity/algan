@@ -474,7 +474,7 @@ def make_pipeline_func(stages, offsets):
 # ``@ti.func`` deciding how a shaded surface event continues its ray::
 #
 #     scatter(rd, n_interp, face_n, hit_point, shaded, alpha, reflectivity,
-#             ior, params: ti.template(), f, prim, bounces_left,
+#             ior, transmission, params: ti.template(), f, prim, bounces_left,
 #             refraction: ti.template())
 #         -> (contrib, pass_w,
 #             refl_orig, refl_dir, refl_w,
@@ -482,16 +482,19 @@ def make_pipeline_func(stages, offsets):
 #
 # ``rd`` is the unit ray direction, ``shaded`` the pipeline's output colour
 # (vec4: RGB + glow), ``contrib`` the premultiplied colour committed to the ray
-# (the kernel adds ``weight * contrib``). ``pass_w`` is the throughput
-# multiplier for continuing *through* the surface to the next depth layer
-# (used only when ``refl_w == 0``). A positive ``refl_w`` bounces the ray from
-# ``refl_orig`` along ``refl_dir`` with throughput ``weight * refl_w``; a
-# positive ``trans_w`` additionally *splits* off a second branch from
-# ``trans_orig`` along ``trans_dir`` -- the refracted ray for glass, or the
-# reflection for a semi-transparent PBR surface (whose pass-through is then the
-# primary, via ``pass_w`` with ``refl_w == 0``). The default scatter
-# (``wavefront_sorted_kernels_taichi.default_scatter``) reproduces the classic
-# opacity/reflectivity/Fresnel-glass behaviour; attach a custom one to a
+# (the kernel adds ``weight * contrib``). The surface properties come straight
+# from the material: ``alpha`` is coverage, ``transmission`` how much light the
+# covered part passes, ``reflectivity`` packed metalness (negative = non-PBR)
+# and ``ior`` an unsigned magnitude. ``pass_w`` is the throughput multiplier
+# for continuing *through* the surface to the next depth layer (used only when
+# ``refl_w == 0``). A positive ``refl_w`` bounces the ray from ``refl_orig``
+# along ``refl_dir`` with throughput ``weight * refl_w``; a positive
+# ``trans_w`` additionally *splits* off a second branch from ``trans_orig``
+# along ``trans_dir`` -- the refracted ray for glass, or the reflection when
+# the pass-through is the primary (``refl_w == 0``). The built-in scatters
+# (``wavefront_kernels_taichi.default_scatter`` for solid geometry,
+# ``circuit_scatter`` for thin-pane circuits) derive all of this from the
+# material; attach a custom one to a
 # :class:`~algan.rendering.shaders.fragment_shaders.FragmentStage` via its
 # ``scatter=`` argument to override how rays bounce.
 # ---------------------------------------------------------------------------

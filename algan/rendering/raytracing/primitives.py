@@ -110,11 +110,16 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
 
-    # Renderer-internal transport channels. ``reflectivity`` stores material
+    # Renderer-internal transport channels, shared with
+    # ``RayTracedBezierCircuitPrimitive``. ``reflectivity`` stores material
     # metalness for historical packed-layout compatibility; a negative value
-    # marks a non-PBR material. ``refractive_index`` is negative for opaque PBR
-    # surfaces and positive for transmissive MeshPhysicalMaterial surfaces.
-    _surface_params = ("reflectivity", "roughness", "refractive_index")
+    # marks a non-PBR material. ``refractive_index`` is an unsigned magnitude
+    # (0 = non-PBR) feeding dielectric F0 and Snell; ``transmission`` alone says
+    # whether -- and how much -- the surface transmits. All are derived from the
+    # material alone (see ``_derive_material_surface_params``) -- there is no
+    # user-facing renderer control, matching the Three.js material interface.
+    _surface_params = ("reflectivity", "roughness", "refractive_index",
+                       "transmission")
 
     def __init__(self, corners=None, colors=None, opacity=1, normals=None,
                  perimeter_points=None, reverse_perimeter=False,
@@ -188,6 +193,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self.reflectivity = torch.full_like(template, -1.0)
             self.roughness = torch.zeros_like(template)
             self.refractive_index = torch.zeros_like(template)
+            self.transmission = torch.zeros_like(template)
             return
 
         def surface_value(value, default):
@@ -206,20 +212,21 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         ior = by_name.get("ior")
         if ior is None:
             # MeshStandardMaterial uses Three.js's fixed dielectric F0=0.04,
-            # corresponding to IOR 1.5. The negative sign means reflective but
-            # not transmissive.
-            self.refractive_index = torch.full_like(self.reflectivity, -1.5)
+            # corresponding to IOR 1.5, and does not transmit.
+            self.refractive_index = torch.full_like(self.reflectivity, 1.5)
+            self.transmission = torch.zeros_like(self.reflectivity)
             return
 
-        ior = surface_value(ior, 1.5).abs()
-        transmission = surface_value(by_name.get("transmission"), 0.0)
-        colors, transmission = broadcast_all(
-            [self.colors, transmission], ignored_dims=[-1]
-        )
-        self.colors = colors * (1.0 - transmission.clamp(0.0, 1.0))
-        self.refractive_index = torch.where(
-            transmission > 1e-6, ior, -ior
-        )
+        # ``transmission`` is a channel of its own, never folded into alpha:
+        # alpha stays pure coverage (is the surface there / how faded), and
+        # transmission is how much light passes through the part that IS there.
+        # The kernel splits a hit into alpha*R reflected, alpha*(1-R)*T
+        # transmitted, alpha*(1-R)*(1-T) shaded and (1-alpha) missed. Folding
+        # the two together made an object at transmission=1 indistinguishable
+        # from an absent one, and made a glass mob's spawn fade invisible.
+        self.refractive_index = surface_value(ior, 1.5).abs()
+        self.transmission = surface_value(
+            by_name.get("transmission"), 0.0).clamp(0.0, 1.0)
 
     def _shaded_per_fragment(self):
         """True when this primitive's hits are shaded per fragment in-kernel
@@ -381,21 +388,23 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         return mat_id.contiguous(), mat.contiguous()
 
     def _pack_surface_extra(self, error_context):
-        """Per-primitive surface params [Te, N, 15]: the interleaved per-corner
-        (reflectivity, roughness) pairs in columns 0-5 (unchanged; consumed by
+        """Per-primitive surface params [Te, N, 12]: the interleaved per-corner
+        (reflectivity, roughness) pairs in columns 0-5 (consumed by
         ``_triangle_extra`` in every kernel), followed by the per-corner
-        refractive index in columns 6-8 (0 = not refractive; read by the
-        wavefront's ``_corner_ior`` for the refraction path), followed by the
-        per-corner glow strength in columns 9-11, followed by the per-corner
-        glow radius in columns 12-14."""
-        (reflectivity_e, roughness_e, ior_e), _ = _unify_time(
+        refractive index in columns 6-8 (unsigned magnitude, 0 = non-PBR; read
+        by the wavefront's ``_corner_ior``), followed by the per-corner
+        transmission in columns 9-11 (0 = opaque to light passing through; read
+        by ``_corner_transmission``)."""
+        (reflectivity_e, roughness_e, ior_e, transmission_e), _ = _unify_time(
             [self.reflectivity.float(), self.roughness.float(),
-             self.refractive_index.float()], error_context)
+             self.refractive_index.float(), self.transmission.float()],
+            error_context)
         n_t, n_p = reflectivity_e.shape[0], reflectivity_e.shape[1]
         refl_rough = torch.cat((reflectivity_e, roughness_e), -1).reshape(
             n_t, n_p, 6)
         ior = ior_e.reshape(n_t, n_p, 3)
-        return torch.cat((refl_rough, ior), -1).contiguous()
+        transmission = transmission_e.reshape(n_t, n_p, 3)
+        return torch.cat((refl_rough, ior, transmission), -1).contiguous()
 
     def _pack_frame_visibility(self, lo, hi, colors, error_context):
         """Per-frame bounds; frames where a primitive is fully transparent
@@ -408,8 +417,16 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # per-vertex colors are plain tensors, not Color instances.
         alpha = colors[..., -1]
 
+        # Alpha is pure coverage, so it alone decides presence: a mob that is
+        # un-spawned or faded out is absent, while clear glass keeps its
+        # coverage and stays visible (see _derive_material_surface_params).
         visible = (alpha.amax(-1) > MIN_ALPHA)
+        # ...but full coverage is not enough to prune hits behind: a
+        # transmissive surface still lets light through at alpha 1.
         opaque = alpha.amin(-1) >= 1.0 - 1e-6
+        transmission = getattr(self, "transmission", None)
+        if transmission is not None:
+            opaque = opaque & (transmission[..., 0] <= 1e-6).all(-1)
 
         (lo, hi, visible, opaque), _ = _unify_time(
             [lo, hi, visible.unsqueeze(-1), opaque.unsqueeze(-1)],
@@ -598,12 +615,22 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         "corners", "colors", "normals", "border_width",
         "border_color", "glow_radius", "mob_center", "grid_width",
         "grid_height", "basis1", "basis2", "next_segment_inds",
-        "reflectivity", "roughness",
+        "reflectivity", "roughness", "refractive_index", "transmission",
     )
 
-    _surface_params = ("reflectivity", "roughness")
+    # Same renderer-internal transport channels as the triangle primitive, with
+    # the same conventions: ``reflectivity`` is material metalness (negative =
+    # non-PBR), ``refractive_index`` is an unsigned magnitude feeding dielectric
+    # F0, and ``transmission`` says how much light passes through. A circuit
+    # transmits as a thin pane rather than refracting (see ``circuit_scatter``).
+    _surface_params = ("reflectivity", "roughness", "refractive_index",
+                       "transmission")
 
-    def __init__(self, *args, reflectivity=None, roughness=None, **kwargs):
+    # Non-PBR sentinel for metalness; the other channels are inert at 0.
+    _surface_param_fill = {"reflectivity": -1.0}
+
+    def __init__(self, *args, reflectivity=None, roughness=None,
+                 refractive_index=None, transmission=None, **kwargs):
         collection = kwargs.get("triangle_collection")
         super().__init__(*args, **kwargs)
         if collection is not None:
@@ -612,16 +639,21 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 for primitive in collection:
                     value = getattr(primitive, name, None)
                     if value is None:
-                        value = torch.zeros_like(primitive.mob_center[..., :1])
+                        value = torch.full_like(
+                            primitive.mob_center[..., :1],
+                            self._surface_param_fill.get(name, 0.0))
                     values.append(value)
                 values, _ = _unify_time(values, f"bezier {name} merge")
                 setattr(self, name, torch.cat(values, 1).to(self.mob_center.device))
         else:
             template = self.mob_center[..., :1]
             for name, value in (("reflectivity", reflectivity),
-                                ("roughness", roughness)):
+                                ("roughness", roughness),
+                                ("refractive_index", refractive_index),
+                                ("transmission", transmission)):
                 if value is None:
-                    value = torch.zeros_like(template)
+                    value = torch.full_like(
+                        template, self._surface_param_fill.get(name, 0.0))
                 else:
                     value = cast_to_tensor(value).to(template.device)
                     value = broadcast_all(
@@ -788,12 +820,16 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             self.glow_radius.shape[0], C)
         reflectivity = self.reflectivity.float()
         roughness = self.roughness.float()
+        refractive_index = self.refractive_index.float()
+        transmission = self.transmission.float()
         (centers_m, normals_m, bu_m, bv_m, b1_m, b2_m, bw_m, gw_m, gh_m,
-         glow_radius_m, reflectivity_m, roughness_m), Tm = _unify_time(
+         glow_radius_m, reflectivity_m, roughness_m,
+         ior_m, transmission_m), Tm = _unify_time(
             [centers, normals, basis_u, basis_v, basis1, basis2,
              border_width.unsqueeze(-1), grid_w.unsqueeze(-1),
              grid_h.unsqueeze(-1), glow_radius.unsqueeze(-1),
-             reflectivity, roughness], "bezier metadata")
+             reflectivity, roughness, refractive_index, transmission],
+            "bezier metadata")
         filled = torch.full((Tm, C, 1), 1.0 if self.filled else 0.0,
                             device=device)
         tex = torch.stack((
@@ -801,8 +837,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             (b2_m * bu_m).sum(-1), (b2_m * bv_m).sum(-1)), -1).nan_to_num_()
         self._rt_circuit_meta = torch.cat(
             (centers_m, normals_m, bu_m, bv_m, bw_m, filled, gw_m, gh_m,
-             tex, glow_radius_m, reflectivity_m, roughness_m),
-            -1).contiguous()
+             tex, glow_radius_m, reflectivity_m, roughness_m, ior_m,
+             transmission_m), -1).contiguous()
 
         colors = self.colors.float()
         if colors.dim() == 3:  # plain fills: a 1x1 "texture" grid
@@ -837,9 +873,14 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         glow_alpha = self._rt_circuit_colors[..., 3].amax(-1)
         visible = (fill_alpha > MIN_ALPHA) | (
                 (border_alpha > MIN_ALPHA) & border_on) | (glow_alpha > 0.0)
-        (lo, hi, visible, fill_min, border_alpha, border_on), _ = _unify_time(
+        # Alpha is pure coverage, so it alone decides presence (see
+        # ``_pack_frame_visibility``); transmission only bears on opacity.
+        transmissive = self.transmission[..., 0] > 1e-6
+        (lo, hi, visible, fill_min, border_alpha, border_on,
+         transmissive), _ = _unify_time(
             [lo, hi, visible.unsqueeze(-1), fill_min.unsqueeze(-1),
-             border_alpha.unsqueeze(-1), border_on.unsqueeze(-1)],
+             border_alpha.unsqueeze(-1), border_on.unsqueeze(-1),
+             transmissive.unsqueeze(-1)],
             "bezier bounds/colors")
         visible = visible.squeeze(-1)
         # A circuit is opaque (prunes hits behind it while gathering) only if
@@ -848,6 +889,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         opaque = (fill_min.squeeze(-1) >= 1.0 - 1e-6) & (
                 (~border_on.squeeze(-1))
                 | (border_alpha.squeeze(-1) >= 1.0 - 1e-6))
+        # A transmissive circuit lets light through even at full coverage, so
+        # it can never prune hits behind it.
+        opaque = opaque & ~transmissive.squeeze(-1)
         if not self.filled:
             opaque = torch.zeros_like(opaque)
         self._rt_frame_opaque = opaque.contiguous()

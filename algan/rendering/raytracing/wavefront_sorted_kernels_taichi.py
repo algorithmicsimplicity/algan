@@ -40,10 +40,10 @@ colour + leftover throughput committed to ``pix_accum``). The vertex-shaded
 (fragment-shading off) path never enters this module -- it has no per-material
 work to sort and keeps the classic single shade kernel byte-identical.
 
-Extra per-ray state (allocated only on this path): ``rs_hit`` [pool, 15]
+Extra per-ray state (allocated only on this path): ``rs_hit`` [pool, 16]
 (0-2 interpolated shading normal, 3-5 geometric face normal, 6-9 albedo
 RGB+glow, 10 alpha, 11 reflectivity, 12 index of refraction, 13 t_hit,
-14 hit layer), ``rs_key`` / ``rs_eprim`` [pool] int32, and ``rs_int`` gains a
+14 hit layer, 15 transmission), ``rs_key`` / ``rs_eprim`` [pool] int32, and ``rs_int`` gains a
 5th column (4: hits drained from the current K-buffer, so the drain position
 survives the peel -> shade -> peel round trip).
 
@@ -73,6 +73,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     _DONE,
     _flat_corner_ior,
+    _flat_corner_transmission,
     _flat_triangle_color,
     _flat_triangle_extra,
     _flat_triangle_normal,
@@ -80,6 +81,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _pn_hit_extra,
     _pn_hit_ior,
     _pn_hit_normal,
+    _pn_hit_transmission,
     default_scatter,
 )
 
@@ -199,9 +201,11 @@ def wf_peel(
                 seam_t = t_hit if edge_hit == 1 else -1e30
 
                 if htype == 0:
-                    # Bezier circuit: composited inline (never material-shaded
-                    # and never reflective -- the monolith's R is always 0
-                    # here), so no event is emitted for it.
+                    # Bezier circuit: composited inline (never material-shaded),
+                    # so no event is emitted for it. There is no reflectance
+                    # term here, which is sound only because a scene with any
+                    # PBR circuit never reaches this pipeline -- see
+                    # ``bez_has_reflective``, which gates it on metalness >= 0.
                     color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                     alpha = 0.0
                     if ti.static(has_bez != 0):
@@ -224,6 +228,7 @@ def wf_peel(
                     alpha = 0.0
                     refl = -1.0
                     ior = 0.0
+                    transmission = 0.0
                     ni = ti.math.vec3(0.0, 0.0, 0.0)
                     fn = ti.math.vec3(0.0, 0.0, 0.0)
                     pid = 0
@@ -236,6 +241,10 @@ def wf_peel(
                                 f, prim, w0, a, b, tri_extra, tri_uvs,
                                 tri_tex_meta, textures, num_colored_triangles)
                             ior = _flat_corner_ior(
+                                f, prim, w0, a, b, tri_extra, tri_uvs,
+                                tri_tex_meta, textures,
+                                num_colored_triangles)
+                            transmission = _flat_corner_transmission(
                                 f, prim, w0, a, b, tri_extra, tri_uvs,
                                 tri_tex_meta, textures,
                                 num_colored_triangles)
@@ -264,6 +273,8 @@ def wf_peel(
                                 f, prim, w0, a, b, pn_extra, textures)
                             ior = _pn_hit_ior(f, prim, w0, a, b, pn_extra,
                                               textures)
+                            transmission = _pn_hit_transmission(
+                                f, prim, w0, a, b, pn_extra, textures)
                             ni = _pn_hit_normal(f, prim, a, b, pn_norm,
                                                 pn_ctrl, pn_extra, textures)
                             tp = f % pn_ctrl.shape[0]
@@ -287,6 +298,7 @@ def wf_peel(
                     rs_hit[r, 10] = alpha
                     rs_hit[r, 11] = refl
                     rs_hit[r, 12] = ior
+                    rs_hit[r, 15] = transmission
                     rs_hit[r, 13] = t_hit
                     rs_hit[r, 14] = hit_layer
                     rs_key[r] = (htype << 8) | pid
@@ -468,6 +480,7 @@ def wf_shade_event(
         alpha = rs_hit[r, 10]
         refl = rs_hit[r, 11]
         ior = rs_hit[r, 12]
+        transmission = rs_hit[r, 15]
         t_hit = rs_hit[r, 13]
         hit_layer = rs_hit[r, 14]
 
@@ -489,7 +502,7 @@ def wf_shade_event(
 
         (contrib, pass_w, refl_orig, refl_dir, refl_w,
          trans_orig, trans_dir, trans_w) = scatter_fn(
-            rd, ni, fn, pos, shaded, alpha, refl, ior,
+            rd, ni, fn, pos, shaded, alpha, refl, ior, transmission,
             params, f, prim, bounces_left, refraction)
 
         acc += weight * contrib

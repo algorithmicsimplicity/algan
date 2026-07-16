@@ -9,7 +9,7 @@ three integer indexes that look up three texture banks --
 * **colour**   -- RGBA + glow (5 channels),
 * **material** -- the shading parameter block prefixed with the pipeline id
   (13 channels, always a 1x1 constant texture per primitive),
-* **surface**  -- metalness / roughness / signed IOR (3 channels)
+* **surface**  -- metalness / roughness / IOR / transmission (4 channels)
   used to decide how the ray scatters (reflect / refract / pass through).
 
 The banks are built by ``scene_builder._build_textured_scene``: a property
@@ -339,6 +339,7 @@ def wf_shade_textured(
                 alpha = 0.0
                 reflectivity = -1.0
                 ior = 0.0
+                T = 0.0
                 is_tri = True
                 if ti.static(feat_bez != 0):
                     is_tri = htype == 1
@@ -358,9 +359,10 @@ def wf_shade_textured(
 
                     si = surf_idx[prim]
                     if si >= 0:
-                        ss = _sample_bank(f, uu, vv, si, surf_meta, surf_bank, 3)
+                        ss = _sample_bank(f, uu, vv, si, surf_meta, surf_bank, 4)
                         reflectivity = ss[0]
                         ior = ss[2]
+                        T = ti.math.clamp(ss[3], 0.0, 1.0)
 
                     mi = mat_idx[prim]
                     if mi >= 0:
@@ -438,9 +440,11 @@ def wf_shade_textured(
                     if bounces_left <= 0:
                         R = 0.0
 
+                    # Transmission alone gates glass; this kernel is
+                    # triangle-only, so there is no thin-pane case here.
                     is_glass = False
                     if ti.static(refraction != 0):
-                        if (alpha < 1.0 - MIN_ALPHA) and (bounces_left > 0) \
+                        if (T > 1e-4) and (bounces_left > 0) \
                                 and (ior > 1.0 + 1e-4) and is_tri:
                             is_glass = True
                             cosi = ti.math.clamp(
@@ -450,7 +454,10 @@ def wf_shade_textured(
                             R = r0 + (1.0 - r0) \
                                 * ti.pow(1.0 - cosi, 5.0)
 
-                    acc += (weight * alpha * (1.0 - R)) * color
+                    acc += (weight * alpha * (1.0 - R) * (1.0 - T)) * color
+                    refl_energy = alpha * R
+                    trans_energy = alpha * (1.0 - R) * T
+                    cover_pass = 1.0 - alpha
 
                     # Semi-transparent reflective surface: reflection into a
                     # split slot, pass-through stays primary (see
@@ -463,7 +470,7 @@ def wf_shade_textured(
                             split_refl = True
 
                     if is_glass:
-                        wt = weight * (1.0 - R) * (1.0 - alpha)
+                        wt = weight * trans_energy
                         if wt > MIN_WEIGHT:
                             c_local = ti.atomic_add(rs_used[pix], 1)
                             if c_local < splits_per_pixel:
@@ -487,22 +494,30 @@ def wf_shade_textured(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        nref = normal
-                        if nref.dot(rd) > 0.0:
-                            nref = -nref
-                        hit_point = ro + t_hit * rd
-                        rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
-                        ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
-                        weight *= R
-                        base_dist += t_hit
-                        t_prev = 0.0
-                        layer_prev = 1e30
-                        seam_t = -1e30
-                        bounces_left -= 1
-                        bounced = True
-                        break
+                        # Primary carries the heavier of reflection /
+                        # coverage-miss (see ``_scatter_impl``).
+                        if ((refl_energy > MIN_ALPHA)
+                                and (refl_energy >= cover_pass)):
+                            nref = normal
+                            if nref.dot(rd) > 0.0:
+                                nref = -nref
+                            hit_point = ro + t_hit * rd
+                            rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                            ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+                            weight *= refl_energy
+                            base_dist += t_hit
+                            t_prev = 0.0
+                            layer_prev = 1e30
+                            seam_t = -1e30
+                            bounces_left -= 1
+                            bounced = True
+                            break
+                        else:
+                            weight *= cover_pass
+                            t_prev = t_hit
+                            layer_prev = hit_layer
                     elif split_refl:
-                        wt = weight * alpha * R
+                        wt = weight * refl_energy
                         if wt > MIN_WEIGHT:
                             c_local = ti.atomic_add(rs_used[pix], 1)
                             if c_local < splits_per_pixel:
@@ -530,19 +545,20 @@ def wf_shade_textured(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        weight *= 1.0 - alpha
+                        weight *= cover_pass
                         t_prev = t_hit
                         layer_prev = hit_layer
                     # No split pool: reflect only while the reflection
                     # outweighs what shows through (see ``default_scatter``).
-                    elif (alpha * R > MIN_ALPHA) and (alpha * R >= 1.0 - alpha):
+                    elif ((refl_energy > MIN_ALPHA)
+                          and (refl_energy >= cover_pass)):
                         nref = normal
                         if nref.dot(rd) > 0.0:
                             nref = -nref
                         hit_point = ro + t_hit * rd
                         rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
                         ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
-                        weight *= alpha * R
+                        weight *= refl_energy
                         base_dist += t_hit
                         t_prev = 0.0
                         layer_prev = 1e30
@@ -551,7 +567,7 @@ def wf_shade_textured(
                         bounced = True
                         break
                     else:
-                        weight *= 1.0 - alpha
+                        weight *= cover_pass
                         t_prev = t_hit
                         layer_prev = hit_layer
                 else:
@@ -573,7 +589,7 @@ def wf_shade_textured(
                     (contrib, pass_w, refl_orig, refl_dir, refl_w,
                      trans_orig, trans_dir, trans_w) = default_scatter(
                         rd, sni, sfn, hit_point, color, alpha, reflectivity,
-                        ior, mat_bank, f, prim, bounces_left, refraction)
+                        ior, T, mat_bank, f, prim, bounces_left, refraction)
                     acc += weight * contrib
                     if ti.static(refraction != 0):
                         wt = weight * trans_w

@@ -15,6 +15,23 @@ from algan.settings.renderer_settings import RENDERER_SETTINGS
 from algan.rendering.raytracing.utils import _unify_time
 
 
+# Three.js's fixed dielectric F0 = 0.04 corresponds to IOR 1.5; MeshStandard
+# has no ``ior`` of its own, so that is the default a circuit falls back to.
+DIELECTRIC_IOR = 1.5
+
+
+def _circuit_ior(ior, metalness):
+    """Pack a material's IOR into a circuit's transport channel.
+
+    Mirrors the triangle primitive's ``_derive_material_surface_params``: an
+    unsigned magnitude feeding dielectric F0. Whether the circuit transmits is
+    carried by the separate ``transmission`` channel, not by this one's sign.
+    Non-PBR circuits (metalness < 0) get 0: inert, since their reflectance is 0
+    anyway.
+    """
+    return torch.where(metalness >= 0.0, ior.abs(), torch.zeros_like(ior))
+
+
 def _circuit_location_and_basis(control_points):
     """Return the same local frame used by a standalone bezier circuit."""
     control_points = control_points.reshape(-1, 3)
@@ -279,11 +296,14 @@ class BezierCircuitCubic(Renderable):
 
         metalness = material_param("metalness", -1.0)
         roughness = material_param("roughness", 0.0)
-        transmission = material_param("transmission", 0.0)
+        # Opacity is coverage and transmission is transparency: independent
+        # channels, never folded together (see _derive_material_surface_params).
+        transmission = material_param("transmission", 0.0).clamp(0.0, 1.0)
+        ior = _circuit_ior(material_param("ior", DIELECTRIC_IOR), metalness)
 
         vars = broadcast_all(
             [
-                self.opacity * (1.0 - transmission.clamp(0.0, 1.0)),
+                self.opacity,
                 self.basis,
                 self.glow,
                 self.border_width
@@ -293,6 +313,8 @@ class BezierCircuitCubic(Renderable):
                 self.glow_radius,
                 metalness,
                 roughness,
+                ior,
+                transmission,
             ],
             ignored_dims=[-1],
         )
@@ -321,7 +343,8 @@ class BezierCircuitCubic(Renderable):
 
     def _get_render_primitives(
         self, x, tpc, loc, basis, o, n, g, bw, bc, gr, reflectivity,
-        roughness, num_segments_per_circuit=None
+        roughness, refractive_index, transmission,
+        num_segments_per_circuit=None
     ):
         num_control_points = 4  # cubic beziers
         # x = unsquish(x, -2, num_control_points)
@@ -404,6 +427,8 @@ class BezierCircuitCubic(Renderable):
             filled=self.filled,
             reflectivity=reflectivity,
             roughness=roughness,
+            refractive_index=refractive_index,
+            transmission=transmission,
         )
         prim.num_texture_points = self.num_texture_points
         return prim
@@ -618,8 +643,11 @@ def build_render_primitives_batched(actors, scene):
 
     reflectivity = read_optional_material("metalness", -1.0)
     roughness = read_optional_material("roughness", 0.0)
-    transmission = read_optional_material("transmission", 0.0)
-    o = o * (1.0 - transmission.clamp(0.0, 1.0))
+    # Opacity is coverage, transmission is transparency: independent channels
+    # (see _derive_material_surface_params). ``o`` is left alone.
+    transmission = read_optional_material("transmission", 0.0).clamp(0.0, 1.0)
+    refractive_index = _circuit_ior(
+        read_optional_material("ior", DIELECTRIC_IOR), reflectivity)
     basis = read("basis", actors)
     g = read("glow", actors)
     bw = read("border_width", actors) * (
@@ -731,6 +759,8 @@ def build_render_primitives_batched(actors, scene):
     mega.basis2 = basis[..., 3:6].to(device)
     mega.reflectivity = reflectivity.to(device)
     mega.roughness = roughness.to(device)
+    mega.refractive_index = refractive_index.to(device)
+    mega.transmission = transmission.to(device)
     if ntp > 0:
         cols = cols[..., -ntp:, :]
     mega.colors = cols

@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.rendering.raytracing.primitives import (
-    MIN_ALPHA,
     RayTracedBezierCircuitPrimitive,
     RayTracedPNTrianglePrimitive,
     RayTracedTrianglePrimitive,
@@ -19,6 +18,8 @@ from algan.rendering.raytracing.settings import (
     _USER_PIPELINE_BASE,
     _constant_promotion_active,
 )
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    _M_REFLECTIVITY, _M_WIDTH)
 from algan.rendering.raytracing.shading_taichi import MAT_W, _MID_UNLIT
 from algan.rendering.raytracing.stbvh import EMPTY_LO, EMPTY_HI, STBVH, build_stbvh
 from algan.rendering.raytracing.utils import _expand_frames, _cat_collections, _cat_mat_blocks, _flat_frames
@@ -472,12 +473,14 @@ def _split_promotable(p, _append_texture, device, scene):
         e0 = extra[:, rep:rep + 1, :]
         z = torch.zeros_like(e0[..., 0])
         mmap = _dedup_time(torch.stack(
-            [e0[..., 0], e0[..., 1], e0[..., 6], z, z], -1).contiguous())
+            [e0[..., 0], e0[..., 1], e0[..., 6], e0[..., 9], z], -1
+        ).contiguous())
         material_meta = _append_texture(
             mmap.reshape(mmap.shape[0], 1, 1, 5).float().contiguous())
-        if bool((mmap[..., 2] > 1.0 + 1e-4).any()):
+        if bool((mmap[..., 3] > 1e-6).any()):
             scene["tex_has_refractive"] = True
-        group_meta.append([*color_meta, *material_meta, -1, 0, 0, 1 | 2 | 4])
+        group_meta.append([*color_meta, *material_meta, -1, 0, 0,
+                           1 | 2 | 4 | 8])
     group_meta = torch.tensor(group_meta, dtype=torch.int32, device=device)
     promo_meta = group_meta[inv_sorted]                                    # [P,10]
     return keep_idx, promo_idx, promo_meta
@@ -717,15 +720,16 @@ def _build_textured_scene(scene, num_frames, device):
     col_bank, col_meta, col_idx = _promote_property_group(
         tc, present, T, device)
 
-    # Surface (scatter): per-corner (metalness, roughness, signed IOR) gathered from tri_extra cols {0,2,4}/{1,3,5}/{6,7,8}.
-    c0 = torch.stack([te[..., 0], te[..., 1], te[..., 6]], -1)  # [T,N,3]
-    c1 = torch.stack([te[..., 2], te[..., 3], te[..., 7]], -1)
-    c2 = torch.stack([te[..., 4], te[..., 5], te[..., 8]], -1)
-    surf_corner = torch.stack([c0, c1, c2], 2)                 # [T,N,3,3]
+    # Surface (scatter): per-corner (metalness, roughness, IOR, transmission)
+    # gathered from tri_extra cols {0,2,4}/{1,3,5}/{6,7,8}/{9,10,11}.
+    c0 = torch.stack([te[..., 0], te[..., 1], te[..., 6], te[..., 9]], -1)
+    c1 = torch.stack([te[..., 2], te[..., 3], te[..., 7], te[..., 10]], -1)
+    c2 = torch.stack([te[..., 4], te[..., 5], te[..., 8], te[..., 11]], -1)
+    surf_corner = torch.stack([c0, c1, c2], 2)                 # [T,N,3,4]
     refl = surf_corner[..., 0]
-    ior = surf_corner[..., 2]
+    transmission = surf_corner[..., 3]
     surf_present = ((refl >= 0.0).any(0).any(-1)
-                    | (ior > 1.0 + 1e-4).any(0).any(-1))       # [N]
+                    | (transmission > 1e-6).any(0).any(-1))    # [N]
     surf_bank, surf_meta, surf_idx = _promote_property_group(
         surf_corner, surf_present, T, device)
 
@@ -982,8 +986,8 @@ def _merge_scene(primitives):
             material_meta = _append_texture(mtex)
             normal_meta = _append_texture(getattr(p, "_rt_normal_texture", None))
             flags = int(getattr(p, "_rt_material_flags", 0) or 0)
-            if (mtex is not None and (flags & 4)
-                    and bool((mtex[..., 2] > 1.0 + 1e-4).any())):
+            if (mtex is not None and (flags & 8)
+                    and bool((mtex[..., 3] > 1e-6).any())):
                 scene["tex_has_refractive"] = True
             meta_parts.append(torch.tensor(
                 [*color_meta, *material_meta, *normal_meta, flags],
@@ -1085,8 +1089,8 @@ def _merge_scene(primitives):
                 normal_meta = _append_texture(
                     getattr(p, "_rt_normal_texture", None))
                 flags = int(getattr(p, "_rt_material_flags", 0) or 0)
-                if (mtex is not None and (flags & 4)
-                        and bool((mtex[..., 2] > 1.0 + 1e-4).any())):
+                if (mtex is not None and (flags & 8)
+                        and bool((mtex[..., 3] > 1e-6).any())):
                     scene["tex_has_refractive"] = True
                 meta_vals = [*color_meta, *material_meta, *normal_meta, flags]
             else:
@@ -1159,12 +1163,12 @@ def _merge_scene(primitives):
         scene["textures"] = torch.zeros((1, 1, 5), device=device)
     scene["has_pn_textures"] = has_pn_textures
 
-    # Refraction is active iff some triangle/PN surface carries a meaningful
-    # index of refraction (extra columns 6-8, per-corner; 0/1 = no bending).
-    # Used to gate the wavefront's refraction template and to route refractive
-    # batches to the general wavefront (the only path that refracts).
+    # Refraction is active iff some triangle/PN surface transmits (extra
+    # columns 9-11, per-corner). Transmission -- not the IOR, which every PBR
+    # material carries -- is what says light passes through; it gates the
+    # wavefront's refraction template (and with it the split pool).
     def _extra_has_refractive(extra):
-        return bool((extra[..., 6:9] > 1.0 + 1e-4).any())
+        return bool((extra[..., 9:12] > 1e-6).any())
     scene["has_refractive"] = (_extra_has_refractive(scene["tri_extra"])
                                or _extra_has_refractive(scene["pn_extra"])
                                or bool(scene.get("tex_has_refractive")))
@@ -1190,7 +1194,7 @@ def _merge_scene(primitives):
         meta = getattr(p, "_rt_circuit_meta", None)
         if meta is None or meta.shape[1] == 0:
             return None
-        return (meta[..., 21] >= 0.0).any(0)
+        return (meta[..., _M_REFLECTIVITY] >= 0.0).any(0)
 
     def _has_refl_transparent(prims, pbr_mask):
         for p in prims:
@@ -1265,10 +1269,15 @@ def _merge_scene(primitives):
                 lo, hi, opaque, num_frames,
                 RayTracedBezierCircuitPrimitive.stbvh_tightness)
         scene["num_circuits"] = scene["circuit_meta"].shape[1]
+        # Any PBR circuit, not just a metallic one: metalness >= 0 is the whole
+        # test, because a dielectric (metalness 0) still reflects its Fresnel
+        # F0 (>= 4%). The sorted pipeline composites circuits with no
+        # reflectance term at all, so it may only be used when every circuit is
+        # non-PBR (metalness -1, reflectance exactly 0).
         scene["bez_has_reflective"] = bool(
-            (scene["circuit_meta"][..., 21] > MIN_ALPHA).any())
+            (scene["circuit_meta"][..., _M_REFLECTIVITY] >= 0.0).any())
     else:
-        scene["circuit_meta"] = torch.zeros((1, 1, 23), device=device)
+        scene["circuit_meta"] = torch.zeros((1, 1, _M_WIDTH), device=device)
         scene["circuit_colors"] = torch.zeros((1, 1, 1, 5), device=device)
         scene["circuit_border_colors"] = torch.zeros((1, 1, 5), device=device)
         scene["edges_2d"] = torch.zeros((1, 1, 5), device=device)

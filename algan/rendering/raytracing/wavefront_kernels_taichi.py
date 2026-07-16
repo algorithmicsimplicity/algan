@@ -28,6 +28,10 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     MIN_WEIGHT,
     NODE_ARG,
     PN_SEAM_DEPTH_EPSILON,
+    _M_IOR,
+    _M_TRANSMISSION,
+    _PN_META,
+    _PN_UV,
     _bezier_normal,
     _collect_hits,
     _comes_after,
@@ -133,10 +137,21 @@ def _sample_env_map(f, rd, env_off, env_w, env_h, env_intensity,
 def _corner_ior(f, prim, w0, w1, w2, extra: ti.template()):
     """Barycentric index of refraction of a confirmed triangle/PN hit.
     Columns 6-8 of the surface ``extra`` row hold the per-corner refractive
-    index (0/1 = not refractive); columns 0-5 are reflectivity/roughness."""
+    index (unsigned magnitude, 0 = non-PBR); columns 0-5 are
+    reflectivity/roughness and 9-11 transmission."""
     te = f % extra.shape[0]
     return (w0 * extra[te, prim, 6] + w1 * extra[te, prim, 7]
             + w2 * extra[te, prim, 8])
+
+
+@ti.func
+def _corner_transmission(f, prim, w0, w1, w2, extra: ti.template()):
+    """Barycentric transmission of a confirmed triangle/PN hit (columns 9-11 of
+    the surface ``extra`` row; 0 = lets no light through). Independent of alpha,
+    which carries coverage only -- see ``_derive_material_surface_params``."""
+    te = f % extra.shape[0]
+    return (w0 * extra[te, prim, 9] + w1 * extra[te, prim, 10]
+            + w2 * extra[te, prim, 11])
 
 
 @ti.func
@@ -250,6 +265,30 @@ def _flat_corner_ior(f, prim, w0, w1, w2, extra: ti.template(),
                                      tri_tex_meta[idx, 5], textures)
                 ior = m[2]
     return ior
+
+
+@ti.func
+def _flat_corner_transmission(f, prim, w0, w1, w2, extra: ti.template(),
+                              tri_uvs: ti.template(),
+                              tri_tex_meta: ti.template(),
+                              textures: ti.template(),
+                              num_colored_triangles: ti.i32):
+    """Transmission of a triangle hit: per-vertex (``_corner_transmission``)
+    unless the material map's bitmask marks it texture-driven (bit 3 /
+    channel 3). Mirrors ``_flat_corner_ior``."""
+    transmission = 0.0
+    if prim < extra.shape[1]:
+        transmission = _corner_transmission(f, prim, w0, w1, w2, extra)
+    if prim >= num_colored_triangles:
+        idx = prim - num_colored_triangles
+        if tri_tex_meta[idx, 3] >= 0:
+            if (tri_tex_meta[idx, 9] & 8) != 0:
+                u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
+                m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 3],
+                                     tri_tex_meta[idx, 4],
+                                     tri_tex_meta[idx, 5], textures)
+                transmission = m[3]
+    return transmission
 
 
 @ti.func
@@ -379,6 +418,26 @@ def _flat_corner_ior_trim(f, prim, w0, w1, w2, tri_extra: ti.template(),
 
 
 @ti.func
+def _flat_corner_transmission_trim(f, prim, w0, w1, w2,
+                                   tri_extra: ti.template(),
+                                   col_row: ti.template(),
+                                   tri_uvs: ti.template(),
+                                   tex_meta: ti.template(),
+                                   textures: ti.template()):
+    transmission = 0.0
+    cr = col_row[prim]
+    if cr >= 0:
+        transmission = _corner_transmission(f, cr, w0, w1, w2, tri_extra)
+    if tex_meta[prim, 3] >= 0:
+        if (tex_meta[prim, 9] & 8) != 0:
+            u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
+            m = _sample_tex_vec5(f, u, v, tex_meta[prim, 3], tex_meta[prim, 4],
+                                 tex_meta[prim, 5], textures)
+            transmission = m[3]
+    return transmission
+
+
+@ti.func
 def _flat_triangle_normal_trim(f, prim, w0, w1, w2, tri_norm: ti.template(),
                                tri_pos: ti.template(), tri_uvs: ti.template(),
                                tex_meta: ti.template(), textures: ti.template()):
@@ -484,6 +543,23 @@ def _tri_ior_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
 
 
 @ti.func
+def _tri_transmission_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
+                        tri_extra: ti.template(), col_row: ti.template(),
+                        tri_uvs: ti.template(), tex_meta: ti.template(),
+                        textures: ti.template(), num_colored: ti.template()):
+    transmission = 0.0
+    if ti.static(mem_trim != 0):
+        transmission = _flat_corner_transmission_trim(
+            f, prim, w0, w1, w2, tri_extra, col_row, tri_uvs, tex_meta,
+            textures)
+    else:
+        transmission = _flat_corner_transmission(
+            f, prim, w0, w1, w2, tri_extra, tri_uvs, tex_meta, textures,
+            num_colored)
+    return transmission
+
+
+@ti.func
 def _tri_normal_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
                   tri_norm: ti.template(), tri_pos: ti.template(),
                   tri_uvs: ti.template(), tex_meta: ti.template(),
@@ -515,10 +591,10 @@ def _tri_normal_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
 @ti.func
 def _pn_uv(te, prim, w0, w1, w2, pn_extra: ti.template()):
     """Barycentric UV of a PN hit (per-corner UVs live in pn_extra cols 15-20)."""
-    u = (w0 * pn_extra[te, prim, 15] + w1 * pn_extra[te, prim, 17]
-         + w2 * pn_extra[te, prim, 19])
-    v = (w0 * pn_extra[te, prim, 16] + w1 * pn_extra[te, prim, 18]
-         + w2 * pn_extra[te, prim, 20])
+    u = (w0 * pn_extra[te, prim, _PN_UV] + w1 * pn_extra[te, prim, _PN_UV + 2]
+         + w2 * pn_extra[te, prim, _PN_UV + 4])
+    v = (w0 * pn_extra[te, prim, _PN_UV + 1] + w1 * pn_extra[te, prim, _PN_UV + 3]
+         + w2 * pn_extra[te, prim, _PN_UV + 5])
     return u, v
 
 
@@ -530,14 +606,14 @@ def _pn_hit_color(f, prim, w0, w1, w2, pn_colors: ti.template(),
     te = f % pn_extra.shape[0]
     color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     alpha = 0.0
-    coff = ti.cast(pn_extra[te, prim, 21], ti.i32)
+    coff = ti.cast(pn_extra[te, prim, _PN_META], ti.i32)
     if coff < 0:
         color, alpha = _triangle_color(f, prim, w0, w1, w2, pn_colors)
     else:
         u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
         m = _sample_tex_vec5(f, u, v, coff,
-                             ti.cast(pn_extra[te, prim, 22], ti.i32),
-                             ti.cast(pn_extra[te, prim, 23], ti.i32), textures)
+                             ti.cast(pn_extra[te, prim, _PN_META + 1], ti.i32),
+                             ti.cast(pn_extra[te, prim, _PN_META + 2], ti.i32), textures)
         color = ti.math.vec4(m[0], m[1], m[2], m[3])
         alpha = m[4]
     return color, alpha
@@ -551,13 +627,13 @@ def _pn_hit_extra(f, prim, w0, w1, w2, pn_extra: ti.template(),
     channel marked in the bitmask (col 30)."""
     reflectivity, roughness = _triangle_extra(f, prim, w0, w1, w2, pn_extra)
     te = f % pn_extra.shape[0]
-    moff = ti.cast(pn_extra[te, prim, 24], ti.i32)
+    moff = ti.cast(pn_extra[te, prim, _PN_META + 3], ti.i32)
     if moff >= 0:
-        flags = ti.cast(pn_extra[te, prim, 30], ti.i32)
+        flags = ti.cast(pn_extra[te, prim, _PN_META + 9], ti.i32)
         u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
         m = _sample_tex_vec5(f, u, v, moff,
-                             ti.cast(pn_extra[te, prim, 25], ti.i32),
-                             ti.cast(pn_extra[te, prim, 26], ti.i32), textures)
+                             ti.cast(pn_extra[te, prim, _PN_META + 4], ti.i32),
+                             ti.cast(pn_extra[te, prim, _PN_META + 5], ti.i32), textures)
         if (flags & 1) != 0:
             reflectivity = m[0]
         if (flags & 2) != 0:
@@ -572,16 +648,35 @@ def _pn_hit_ior(f, prim, w0, w1, w2, pn_extra: ti.template(),
     material map's bitmask marks it texture-driven (bit 2 / channel 2)."""
     ior = _corner_ior(f, prim, w0, w1, w2, pn_extra)
     te = f % pn_extra.shape[0]
-    moff = ti.cast(pn_extra[te, prim, 24], ti.i32)
+    moff = ti.cast(pn_extra[te, prim, _PN_META + 3], ti.i32)
     if moff >= 0:
-        if (ti.cast(pn_extra[te, prim, 30], ti.i32) & 4) != 0:
+        if (ti.cast(pn_extra[te, prim, _PN_META + 9], ti.i32) & 4) != 0:
             u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
             m = _sample_tex_vec5(f, u, v, moff,
-                                 ti.cast(pn_extra[te, prim, 25], ti.i32),
-                                 ti.cast(pn_extra[te, prim, 26], ti.i32),
+                                 ti.cast(pn_extra[te, prim, _PN_META + 4], ti.i32),
+                                 ti.cast(pn_extra[te, prim, _PN_META + 5], ti.i32),
                                  textures)
             ior = m[2]
     return ior
+
+
+@ti.func
+def _pn_hit_transmission(f, prim, w0, w1, w2, pn_extra: ti.template(),
+                         textures: ti.template()):
+    """Transmission of a PN hit: per-vertex (``_corner_transmission``) unless
+    the material map's bitmask marks it texture-driven (bit 3 / channel 3)."""
+    transmission = _corner_transmission(f, prim, w0, w1, w2, pn_extra)
+    te = f % pn_extra.shape[0]
+    moff = ti.cast(pn_extra[te, prim, _PN_META + 3], ti.i32)
+    if moff >= 0:
+        if (ti.cast(pn_extra[te, prim, _PN_META + 9], ti.i32) & 8) != 0:
+            u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
+            m = _sample_tex_vec5(f, u, v, moff,
+                                 ti.cast(pn_extra[te, prim, _PN_META + 4], ti.i32),
+                                 ti.cast(pn_extra[te, prim, _PN_META + 5], ti.i32),
+                                 textures)
+            transmission = m[3]
+    return transmission
 
 
 @ti.func
@@ -594,13 +689,13 @@ def _pn_hit_normal(f, prim, a, b, pn_norm: ti.template(),
     the curved analogue of the flat triangle's edge/UV tangent frame."""
     normal = _pn_normal(f, prim, a, b, pn_norm, pn_ctrl)
     te = f % pn_extra.shape[0]
-    noff = ti.cast(pn_extra[te, prim, 27], ti.i32)
+    noff = ti.cast(pn_extra[te, prim, _PN_META + 6], ti.i32)
     if noff >= 0:
         w0 = 1.0 - a - b
         u, v = _pn_uv(te, prim, w0, a, b, pn_extra)
         m = _sample_tex_vec5(f, u, v, noff,
-                             ti.cast(pn_extra[te, prim, 28], ti.i32),
-                             ti.cast(pn_extra[te, prim, 29], ti.i32), textures)
+                             ti.cast(pn_extra[te, prim, _PN_META + 7], ti.i32),
+                             ti.cast(pn_extra[te, prim, _PN_META + 8], ti.i32), textures)
         tn = ti.math.vec3(m[0], m[1], m[2])
         if tn.norm() > 1e-6 and normal.norm() > 1e-9:
             nb = normal.normalized()
@@ -616,10 +711,10 @@ def _pn_hit_normal(f, prim, a, b, pn_norm: ti.template(),
                           + 2.0 * b * pn_ctrl[tp, prim, 12 + ci]
                           + a * pn_ctrl[tp, prim, 15 + ci])
             # UV gradients w.r.t. barycentric (a, b): linear in the corner UVs.
-            du1 = pn_extra[te, prim, 17] - pn_extra[te, prim, 15]
-            dv1 = pn_extra[te, prim, 18] - pn_extra[te, prim, 16]
-            du2 = pn_extra[te, prim, 19] - pn_extra[te, prim, 15]
-            dv2 = pn_extra[te, prim, 20] - pn_extra[te, prim, 16]
+            du1 = pn_extra[te, prim, _PN_UV + 2] - pn_extra[te, prim, _PN_UV]
+            dv1 = pn_extra[te, prim, _PN_UV + 3] - pn_extra[te, prim, _PN_UV + 1]
+            du2 = pn_extra[te, prim, _PN_UV + 4] - pn_extra[te, prim, _PN_UV]
+            dv2 = pn_extra[te, prim, _PN_UV + 5] - pn_extra[te, prim, _PN_UV + 1]
             det = du1 * dv2 - du2 * dv1
             if ti.abs(det) > 1e-12:
                 inv_det = 1.0 / det
@@ -698,17 +793,44 @@ def _material_reflectance(rd, normal, metalness, packed_ior):
 
 
 @ti.func
-def default_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
-                    reflectivity, ior, params: ti.template(), f, prim,
-                    bounces_left, refraction: ti.template()):
+def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
+                  reflectivity, ior, transmission, params: ti.template(),
+                  f, prim, bounces_left, refraction: ti.template(),
+                  pane: ti.template()):
     """Built-in continuation derived from the material's PBR properties.
 
-    The historical ``reflectivity`` argument now carries packed ``metalness``
-    (negative means no PBR material), while the signed IOR distinguishes an
-    opaque PBR surface (negative) from a transmissive one (positive).
+    Shared body of :func:`default_scatter` (``pane`` 0, solid geometry) and
+    :func:`circuit_scatter` (``pane`` 1, zero-thickness planar circuits). The
+    two exist as separate wrappers because the scatter contract is a fixed
+    injection signature shared with user scatters (see ``shading_taichi``), so
+    the geometry distinction cannot be an extra runtime argument.
 
-    A partially transparent reflective surface has two continuations: the
-    mirror reflection (``alpha * R``) and whatever shows through behind it
+    The historical ``reflectivity`` argument carries packed ``metalness``
+    (negative means no PBR material); ``ior`` is an unsigned magnitude feeding
+    dielectric F0 and Snell; ``transmission`` alone says how much light passes
+    through. All of them, like roughness, come from the material and nothing
+    else -- there is no renderer-side control (see
+    ``_derive_material_surface_params``).
+
+    ``alpha`` and ``transmission`` are independent: alpha is coverage (how much
+    of the surface is there -- a fade, a spawn), transmission is how much light
+    the part that IS there lets through. Folding them together (as this once
+    did) makes clear glass indistinguishable from an absent object.
+
+    Transmissive geometry refracts if it is solid (Snell, entering then exiting
+    the medium); a circuit is a thin pane, whose entry and exit interfaces
+    coincide, so its net bend is zero and its transmitted ray simply continues
+    as the pass-through. Both split off the same Fresnel energy; only the
+    transmitted direction differs.
+
+    ``roughness`` deliberately does not reach the bounce: the reflected ray is
+    always specular-perfect. Blurring it is a sampled effect and this tracer is
+    deterministic at one sample per pixel, so roughness drives only the direct
+    GGX lobe in the shading stage. The Monte Carlo megakernel does jitter the
+    bounce by roughness.
+
+    A partially covering reflective surface has two continuations: the mirror
+    reflection (``alpha * R``) and whatever shows through behind it
     (``1 - alpha``). Every PBR material has a non-zero Fresnel ``R`` (>= 4% at
     normal incidence), so tracing only the reflection would discard everything
     behind any semi-transparent PBR surface -- an opaque black silhouette.
@@ -724,32 +846,51 @@ def default_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
     behind them (``1 - alpha == 0``) and always reflect: mirrors are unchanged.
     """
     alpha = ti.math.clamp(alpha, 0.0, 1.0)
+    T = ti.math.clamp(transmission, 0.0, 1.0)
     normal = n_interp.normalized()
     R = _material_reflectance(rd, normal, reflectivity, ior)
     if bounces_left <= 0:
         R = 0.0
 
+    # Transmission alone says whether light passes through; solid geometry
+    # refracts (is_glass), a zero-thickness circuit does not bend (is_pane).
+    # Mutually exclusive, and they share the dielectric Fresnel split below.
     is_glass = False
+    is_pane = False
     glass_ior = ior
     if ti.static(refraction != 0):
-        if (alpha < 1.0 - MIN_ALPHA) and (bounces_left > 0) \
+        if (T > 1e-4) and (bounces_left > 0) \
                 and (glass_ior > 1.0 + 1e-4):
-            is_glass = True
+            if ti.static(pane != 0):
+                is_pane = True
+            else:
+                is_glass = True
             # For transmissive dielectrics the same Schlick term controls the
-            # reflected/refracted split.  Metalness is intentionally ignored
+            # reflected/transmitted split.  Metalness is intentionally ignored
             # here, matching the dielectric transmission model.
             cosi = ti.math.clamp(ti.abs(rd.dot(normal)), 0.0, 1.0)
             r0 = (1.0 - glass_ior) / (1.0 + glass_ior)
             r0 = r0 * r0
             R = r0 + (1.0 - r0) * ti.pow(1.0 - cosi, 5.0)
 
-    contrib = (alpha * (1.0 - R)) * shaded
-    # A partially transparent reflective (non-glass) surface has two
-    # continuations: the mirror reflection and what shows through behind it.
-    # With the split pool compiled in both are traced -- see the branch below.
+    # The four shares a hit splits into, summing to 1:
+    #   alpha * (1-R) * (1-T)  shaded here      (contrib)
+    #   alpha * R              reflected        (refl_energy)
+    #   alpha * (1-R) * T      transmitted      (trans_energy)
+    #   1 - alpha              missed entirely  (cover_pass)
+    # Coverage and transmission are independent: alpha says how much of the
+    # surface is there, T how much light the part that IS there passes.
+    contrib = (alpha * (1.0 - R) * (1.0 - T)) * shaded
+    refl_energy = alpha * R
+    trans_energy = alpha * (1.0 - R) * T
+    cover_pass = 1.0 - alpha
+
+    # A reflective surface with something behind it has two continuations (the
+    # reflection and the pass-through). With the split pool compiled in both
+    # are traced -- see the branch below.
     split_refl = False
     if ti.static(refraction != 0):
-        if (alpha * R > MIN_ALPHA) and (alpha < 1.0 - MIN_ALPHA) \
+        if (refl_energy > MIN_ALPHA) and (cover_pass > MIN_ALPHA) \
                 and (bounces_left > 0):
             split_refl = True
     pass_w = 0.0
@@ -761,18 +902,37 @@ def default_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
     trans_dir = zero3
     trans_orig = zero3
     if is_glass:
+        # Refracted branch takes the split slot; the primary carries whichever
+        # of the reflection / coverage-miss is heavier (three continuations, two
+        # rays -- so the dropped term is always the smaller one). At full
+        # coverage the miss is empty and the primary is always the reflection.
         rdt = _refract_ray(rd, normal, glass_ior)
         trans_dir = rdt
         trans_orig = hit_point + rdt * (10.0 * MIN_HIT_DISTANCE)
-        trans_w = (1.0 - R) * (1.0 - alpha)
+        trans_w = trans_energy
+        if (refl_energy > MIN_ALPHA) and (refl_energy >= cover_pass):
+            nref = normal
+            if nref.dot(rd) > 0.0:
+                nref = -nref
+            refl_dir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+            refl_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+            refl_w = refl_energy
+        else:
+            pass_w = cover_pass
+    elif is_pane:
+        # Thin pane: entry and exit interfaces coincide, so the transmitted ray
+        # is unbent and merges into the pass-through (the depth-layer walk,
+        # which spends no bounce) along with the coverage-miss. Only the
+        # reflection needs a ray of its own, so it takes the split slot.
         nref = normal
         if nref.dot(rd) > 0.0:
             nref = -nref
-        refl_dir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
-        refl_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
-        refl_w = R
-    elif split_refl or ((alpha * R > MIN_ALPHA)
-                        and (alpha * R >= 1.0 - alpha)):
+        trans_dir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+        trans_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+        trans_w = refl_energy
+        pass_w = cover_pass + trans_energy
+    elif split_refl or ((refl_energy > MIN_ALPHA)
+                        and (refl_energy >= cover_pass)):
         nref = normal
         if nref.dot(rd) > 0.0:
             nref = -nref
@@ -784,25 +944,50 @@ def default_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
             # spent, ``t_prev``/``layer_prev`` preserved by the caller).
             trans_dir = rdir
             trans_orig = rorig
-            trans_w = alpha * R
-            pass_w = 1.0 - alpha
+            trans_w = refl_energy
+            pass_w = cover_pass
         else:
             # No split pool compiled in: trace only the heavier continuation,
             # so the dropped term is always the smaller of the two.
             refl_dir = rdir
             refl_orig = rorig
-            refl_w = alpha * R
+            refl_w = refl_energy
     else:
-        pass_w = 1.0 - alpha
+        pass_w = cover_pass
     return (contrib, pass_w, refl_orig, refl_dir, refl_w,
             trans_orig, trans_dir, trans_w)
 
 
 @ti.func
+def default_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
+                    reflectivity, ior, transmission, params: ti.template(),
+                    f, prim, bounces_left, refraction: ti.template()):
+    """Built-in scatter for solid geometry (triangles / PN patches): a
+    transmissive surface refracts. This is the signature the scatter contract
+    fixes (see ``shading_taichi``), shared with user scatters and injected as
+    the sorted pipeline's ``scatter_fn``. See :func:`_scatter_impl`."""
+    return _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
+                         reflectivity, ior, transmission, params, f, prim,
+                         bounces_left, refraction, 0)
+
+
+@ti.func
+def circuit_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
+                    reflectivity, ior, transmission, params: ti.template(),
+                    f, prim, bounces_left, refraction: ti.template()):
+    """Built-in scatter for bezier circuits: a transmissive circuit is a thin
+    pane, so it transmits unbent rather than refracting. See
+    :func:`_scatter_impl`."""
+    return _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
+                         reflectivity, ior, transmission, params, f, prim,
+                         bounces_left, refraction, 1)
+
+
+@ti.func
 def _run_frag_scatter(frag_scatters: ti.template(), pid_arr: ti.template(),
                       f, prim, rd, n_interp, face_n, hit_point, shaded, alpha,
-                      reflectivity, ior, params: ti.template(), bounces_left,
-                      refraction: ti.template()):
+                      reflectivity, ior, transmission, params: ti.template(),
+                      bounces_left, refraction: ti.template()):
     """Per-primitive ray-continuation dispatch for the monolithic shade kernel:
     pick the material's scatter func by pipeline id (``pid_arr[f, prim]``) and
     return its 8-tuple. Built-in materials and user pipelines without a custom
@@ -813,7 +998,7 @@ def _run_frag_scatter(frag_scatters: ti.template(), pid_arr: ti.template(),
     (contrib, pass_w, refl_orig, refl_dir, refl_w,
      trans_orig, trans_dir, trans_w) = default_scatter(
         rd, n_interp, face_n, hit_point, shaded, alpha, reflectivity, ior,
-        params, f, prim, bounces_left, refraction)
+        transmission, params, f, prim, bounces_left, refraction)
     for pi in ti.static(range(len(frag_scatters))):
         # ``bool(func) is True`` / ``bool(None) is False`` -- avoids an ``is
         # not`` comparison node, which Taichi's AST transformer rejects even
@@ -824,8 +1009,8 @@ def _run_frag_scatter(frag_scatters: ti.template(), pid_arr: ti.template(),
                 (contrib, pass_w, refl_orig, refl_dir, refl_w,
                  trans_orig, trans_dir, trans_w) = frag_scatters[pi](
                     rd, n_interp, face_n, hit_point, shaded, alpha,
-                    reflectivity, ior, params, f, prim, bounces_left,
-                    refraction)
+                    reflectivity, ior, transmission, params, f, prim,
+                    bounces_left, refraction)
     return (contrib, pass_w, refl_orig, refl_dir, refl_w,
             trans_orig, trans_dir, trans_w)
 
@@ -1857,8 +2042,8 @@ def wavefront_shade(
                                               color, shadows, vis)
 
                 if ti.static(len(frag_scatters) == 0):
-                    # Built-in continuation.  The packed surface channels now
-                    # carry material metalness/roughness and a signed IOR; no
+                    # Built-in continuation.  The packed surface channels carry
+                    # material metalness / roughness / IOR / transmission; no
                     # independent mirror/refraction controls remain.
                     alpha = ti.math.clamp(alpha, 0.0, 1.0)
                     normal = ti.math.vec3(0.0, 0.0, 0.0)
@@ -1883,17 +2068,43 @@ def wavefront_shade(
                     elif htype == 2:
                         ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
                                           pn_extra, textures)
+                    else:
+                        if ti.static(has_bez != 0):
+                            ior = circuit_meta[f % circuit_meta.shape[0],
+                                               prim, _M_IOR]
+
+                    T = 0.0
+                    if htype == 1:
+                        T = _tri_transmission_g(
+                            mem_trim, f, prim, 1.0 - a - b, a, b,
+                            tri_extra, col_row, tri_uvs, tri_tex_meta,
+                            textures, num_colored_triangles)
+                    elif htype == 2:
+                        T = _pn_hit_transmission(f, prim, 1.0 - a - b, a, b,
+                                                 pn_extra, textures)
+                    else:
+                        if ti.static(has_bez != 0):
+                            T = circuit_meta[f % circuit_meta.shape[0],
+                                             prim, _M_TRANSMISSION]
+                    T = ti.math.clamp(T, 0.0, 1.0)
 
                     R = _material_reflectance(rd, normal, reflectivity, ior)
                     if bounces_left <= 0:
                         R = 0.0
 
+                    # A transmissive surface refracts if it is solid geometry
+                    # (is_glass) and transmits unbent if it is a zero-thickness
+                    # circuit (is_pane); mutually exclusive by htype. Mirrors
+                    # ``_scatter_impl``, including the four-way energy split.
                     is_glass = False
+                    is_pane = False
                     if ti.static(refraction != 0):
-                        if (alpha < 1.0 - MIN_ALPHA) and (bounces_left > 0) \
-                                and (ior > 1.0 + 1e-4) \
-                                and ((htype == 1) or (htype == 2)):
-                            is_glass = True
+                        if (T > 1e-4) and (bounces_left > 0) \
+                                and (ior > 1.0 + 1e-4):
+                            if (htype == 1) or (htype == 2):
+                                is_glass = True
+                            else:
+                                is_pane = True
                             cosi = ti.math.clamp(
                                 ti.abs(rd.dot(normal)), 0.0, 1.0)
                             r0 = (1.0 - ior) / (1.0 + ior)
@@ -1901,20 +2112,23 @@ def wavefront_shade(
                             R = r0 + (1.0 - r0) \
                                 * ti.pow(1.0 - cosi, 5.0)
 
-                    acc += (weight * alpha * (1.0 - R)) * color
+                    acc += (weight * alpha * (1.0 - R) * (1.0 - T)) * color
+                    refl_energy = alpha * R
+                    trans_energy = alpha * (1.0 - R) * T
+                    cover_pass = 1.0 - alpha
 
                     # Semi-transparent reflective surface: reflection into a
                     # split slot, pass-through stays primary (see
                     # ``default_scatter`` for why this way round).
                     split_refl = False
                     if ti.static(refraction != 0):
-                        if (alpha * R > MIN_ALPHA) \
-                                and (alpha < 1.0 - MIN_ALPHA) \
+                        if (refl_energy > MIN_ALPHA) \
+                                and (cover_pass > MIN_ALPHA) \
                                 and (bounces_left > 0):
                             split_refl = True
 
                     if is_glass:
-                        wt = weight * (1.0 - R) * (1.0 - alpha)
+                        wt = weight * trans_energy
                         if wt > MIN_WEIGHT:
                             c_local = ti.atomic_add(rs_used[pix], 1)
                             if c_local < splits_per_pixel:
@@ -1938,22 +2152,34 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        nref = normal
-                        if nref.dot(rd) > 0.0:
-                            nref = -nref
-                        hit_point = ro + t_hit * rd
-                        rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
-                        ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
-                        weight *= R
-                        base_dist += t_hit
-                        t_prev = 0.0
-                        layer_prev = 1e30
-                        seam_t = -1e30
-                        bounces_left -= 1
-                        bounced = True
-                        break
-                    elif split_refl:
-                        wt = weight * alpha * R
+                        # Primary carries the heavier of reflection /
+                        # coverage-miss (three continuations, two rays). At full
+                        # coverage the miss is empty, so it always reflects.
+                        if (refl_energy > MIN_ALPHA) \
+                                and (refl_energy >= cover_pass):
+                            nref = normal
+                            if nref.dot(rd) > 0.0:
+                                nref = -nref
+                            hit_point = ro + t_hit * rd
+                            rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                            ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
+                            weight *= refl_energy
+                            base_dist += t_hit
+                            t_prev = 0.0
+                            layer_prev = 1e30
+                            seam_t = -1e30
+                            bounces_left -= 1
+                            bounced = True
+                            break
+                        else:
+                            weight *= cover_pass
+                            t_prev = t_hit
+                            layer_prev = hit_layer
+                    elif is_pane:
+                        # Thin pane: unbent transmission merges into the
+                        # pass-through along with the coverage-miss, so only the
+                        # reflection needs a slot (see ``_scatter_impl``).
+                        wt = weight * refl_energy
                         if wt > MIN_WEIGHT:
                             c_local = ti.atomic_add(rs_used[pix], 1)
                             if c_local < splits_per_pixel:
@@ -1981,19 +2207,52 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        weight *= 1.0 - alpha
+                        weight *= cover_pass + trans_energy
+                        t_prev = t_hit
+                        layer_prev = hit_layer
+                    elif split_refl:
+                        wt = weight * refl_energy
+                        if wt > MIN_WEIGHT:
+                            c_local = ti.atomic_add(rs_used[pix], 1)
+                            if c_local < splits_per_pixel:
+                                c = (num_primary + pix * splits_per_pixel
+                                     + c_local)
+                                nref = normal
+                                if nref.dot(rd) > 0.0:
+                                    nref = -nref
+                                rdr = (rd - 2.0 * rd.dot(nref)
+                                       * nref).normalized()
+                                hp = ro + t_hit * rd
+                                for k in ti.static(range(3)):
+                                    rs_ro[c, k] = (hp[k] + nref[k]
+                                                   * (10.0 * MIN_HIT_DISTANCE))
+                                    rs_rd[c, k] = rdr[k]
+                                for k in ti.static(range(4)):
+                                    rs_acc[c, k] = 0.0
+                                rs_sca[c, 0] = wt
+                                rs_sca[c, 1] = 0.0
+                                rs_sca[c, 2] = 1e30
+                                rs_sca[c, 3] = -1e30
+                                rs_sca[c, 4] = base_dist + t_hit
+                                rs_int[c, 0] = bounces_left - 1
+                                rs_int[c, 1] = processed
+                                rs_int[c, 2] = _ACTIVE
+                                rs_int[c, 3] = 0
+                                rs_pix[c] = pix
+                        weight *= cover_pass
                         t_prev = t_hit
                         layer_prev = hit_layer
                     # No split pool: reflect only while the reflection
                     # outweighs what shows through (see ``default_scatter``).
-                    elif (alpha * R > MIN_ALPHA) and (alpha * R >= 1.0 - alpha):
+                    elif ((refl_energy > MIN_ALPHA)
+                          and (refl_energy >= cover_pass)):
                         nref = normal
                         if nref.dot(rd) > 0.0:
                             nref = -nref
                         hit_point = ro + t_hit * rd
                         rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
                         ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
-                        weight *= alpha * R
+                        weight *= refl_energy
                         base_dist += t_hit
                         t_prev = 0.0
                         layer_prev = 1e30
@@ -2002,7 +2261,7 @@ def wavefront_shade(
                         bounced = True
                         break
                     else:
-                        weight *= 1.0 - alpha
+                        weight *= cover_pass
                         t_prev = t_hit
                         layer_prev = hit_layer
                 else:
@@ -2057,6 +2316,23 @@ def wavefront_shade(
                     elif htype == 2:
                         s_ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
                                             pn_extra, textures)
+                    else:
+                        if ti.static(has_bez != 0):
+                            s_ior = circuit_meta[f % circuit_meta.shape[0],
+                                                 prim, _M_IOR]
+                    s_trans = 0.0
+                    if htype == 1:
+                        s_trans = _tri_transmission_g(
+                            mem_trim, f, prim, 1.0 - a - b, a, b, tri_extra,
+                            col_row, tri_uvs, tri_tex_meta, textures,
+                            num_colored_triangles)
+                    elif htype == 2:
+                        s_trans = _pn_hit_transmission(
+                            f, prim, 1.0 - a - b, a, b, pn_extra, textures)
+                    else:
+                        if ti.static(has_bez != 0):
+                            s_trans = circuit_meta[f % circuit_meta.shape[0],
+                                                   prim, _M_TRANSMISSION]
                     hit_point = ro + t_hit * rd
                     contrib = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
                     pass_w = 0.0
@@ -2071,18 +2347,22 @@ def wavefront_shade(
                          trans_orig, trans_dir, trans_w) = _run_frag_scatter(
                             frag_scatters, tri_mat_id, f, prim, rd, sni, sfn,
                             hit_point, color, alpha, reflectivity, s_ior,
-                            tri_mat, bounces_left, refraction)
+                            s_trans, tri_mat, bounces_left, refraction)
                     elif htype == 2:
                         (contrib, pass_w, refl_orig, refl_dir, refl_w,
                          trans_orig, trans_dir, trans_w) = _run_frag_scatter(
                             frag_scatters, pn_mat_id, f, prim, rd, sni, sfn,
                             hit_point, color, alpha, reflectivity, s_ior,
-                            pn_mat, bounces_left, refraction)
+                            s_trans, pn_mat, bounces_left, refraction)
                     else:
+                        # Circuits are never material-shaded, so no user
+                        # pipeline (hence no user scatter) can own them; they
+                        # always take the built-in continuation -- as a thin
+                        # pane, not refracting solid geometry.
                         (contrib, pass_w, refl_orig, refl_dir, refl_w,
-                         trans_orig, trans_dir, trans_w) = default_scatter(
+                         trans_orig, trans_dir, trans_w) = circuit_scatter(
                             rd, sni, sfn, hit_point, color, alpha,
-                            reflectivity, s_ior, tri_mat, f, prim,
+                            reflectivity, s_ior, s_trans, tri_mat, f, prim,
                             bounces_left, refraction)
                     acc += weight * contrib
                     if ti.static(refraction != 0):

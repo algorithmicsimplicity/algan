@@ -36,8 +36,10 @@ separate from cold data (what only confirmed hits touch):
 
 * triangles: positions ``tri_pos [Tp, N, 9]`` (hot); shading normals
   ``tri_norm [Tn, N, 9]`` (cold: fetched only for mirror bounces or Monte
-  Carlo scattering), ``tri_extra [Te, N, 6]`` (per-corner reflectivity +
-  roughness pairs, usually single-frame) and ``tri_colors [Tc, N, 3, 5]``
+  Carlo scattering), ``tri_extra [Te, N, 9]`` (per-corner reflectivity +
+  roughness pairs, then per-corner IOR, then per-corner transmission;
+  usually single-frame) and
+  ``tri_colors [Tc, N, 3, 5]``
   (RGB, glow, alpha per corner);
 * PN (curved point-normal) triangles, rendered as quadratic Bezier
   (Steiner) triangle patches: monomial coefficients ``pn_ctrl [Tp, N, 18]``
@@ -187,6 +189,17 @@ else:
     NODE_ARG = ti.types.ndarray(dtype=ti.types.vector(BVH_ARITY, ti.f32),
                                 ndim=2)
 
+# tri_extra / pn_extra surface-transport block (see ``_pack_surface_extra``):
+# per-corner (reflectivity, roughness) pairs in 0-5, per-corner IOR in 6-8,
+# per-corner transmission in 9-11.
+_EXTRA_W = 12
+# ``pn_extra`` appends the per-corner UVs and then the per-patch texture
+# metadata after that block (see ``_merge_scene``), so both are addressed
+# relative to its width -- deriving them keeps the kernel in step with the
+# packer instead of hard-coding offsets that silently rot when it changes.
+_PN_UV = _EXTRA_W          # 6 cols: (u, v) per corner
+_PN_META = _EXTRA_W + 6    # 10 cols: color(3), material(3), normal(3), flags
+
 # circuit_meta channel layout.
 _M_CENTER = 0      # 0-2   plane origin
 _M_NORMAL = 3      # 3-5   unit plane normal
@@ -197,6 +210,16 @@ _M_FILLED = 13     # > 0.5 if the circuit interior is filled
 _M_GRID_W = 14     # texture grid width  (1 for plain fills)
 _M_GRID_H = 15     # texture grid height (1 for plain fills)
 _M_TEX = 16        # 16-19 2x2 map from plane (u, v) to texture axes
+_M_GLOW_RADIUS = 20
+# Surface transport, mirroring tri_extra's channels for flat triangles: material
+# metalness (-1 = non-PBR), roughness, the unsigned IOR magnitude (dielectric
+# F0), and transmission. A circuit transmits as a thin pane rather than
+# refracting (see ``circuit_scatter``).
+_M_REFLECTIVITY = 21
+_M_ROUGHNESS = 22
+_M_IOR = 23
+_M_TRANSMISSION = 24
+_M_WIDTH = 25
 
 
 @ti.func
@@ -2658,8 +2681,8 @@ def path_trace_scene_stbvh(
                     prim, f, a, b, border,
                     circuit_meta, circuit_colors, circuit_border_colors)
                 cm = f % circuit_meta.shape[0]
-                reflectivity = circuit_meta[cm, prim, 21]
-                roughness = circuit_meta[cm, prim, 22]
+                reflectivity = circuit_meta[cm, prim, _M_REFLECTIVITY]
+                roughness = circuit_meta[cm, prim, _M_ROUGHNESS]
 
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             if ti.random(ti.f32) >= alpha:
@@ -3008,8 +3031,8 @@ def path_trace_physical_stbvh(
                     prim, f, a, b, border,
                     circuit_meta, circuit_colors, circuit_border_colors)
                 cm = f % circuit_meta.shape[0]
-                reflectivity = circuit_meta[cm, prim, 21]
-                roughness = circuit_meta[cm, prim, 22]
+                reflectivity = circuit_meta[cm, prim, _M_REFLECTIVITY]
+                roughness = circuit_meta[cm, prim, _M_ROUGHNESS]
 
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             if ti.random(ti.f32) >= alpha:

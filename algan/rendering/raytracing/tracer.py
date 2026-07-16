@@ -233,10 +233,10 @@ def get_wavefront_memory_required(
             and not uses_extended_features):
         primary = _route_primary((target_slots * 2) // (3 * split_k))
         pool = primary * split_k
-        # rs_hit(15 f32), rs_key and rs_eprim, plus per-slot rs_vis when
+        # rs_hit(16 f32), rs_key and rs_eprim, plus per-slot rs_vis when
         # shadows are enabled.
         event_slot = (
-            15 * torch.float32.itemsize
+            16 * torch.float32.itemsize
             + 2 * torch.int32.itemsize
             + (torch.int32.itemsize if shadow else 0)
         )
@@ -510,11 +510,10 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
         merged = copy_merged_scene_to_arena(
             merged_host, memory, persist=True)
     aa = max(1, int(anti_alias_level))
-    # Refraction is only implemented by the general wavefront tracer, so a
-    # deterministic batch that contains a refractive surface is routed there
-    # regardless of USE_WAVEFRONT (the megakernel / Monte Carlo paths ignore the
-    # refractive index). Computed before the AA strategy because it, like
-    # USE_WAVEFRONT, forces the super-sampled (non-in-place) AA path.
+    # Refraction is only implemented by the general wavefront tracer, which is
+    # already where every deterministic (samples <= 1) batch goes -- so this
+    # only gates the refraction template, not routing. The Monte Carlo
+    # megakernel (samples > 1) ignores the refractive index.
     refractive_det = (bool(merged.get("has_refractive"))
                       and int(SAMPLES_PER_PIXEL) <= 1)
     # Semi-transparent PBR surfaces split off a reflection branch, so they need
@@ -1429,7 +1428,7 @@ def _raytrace_render_wavefront_sorted(
          rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
         # Event state: hit record, sort key, event primitive index and
         # per-event shadow visibility bits (placeholder when unused).
-        rs_hit = memory.get_tensor((pool, 15), f32)
+        rs_hit = memory.get_tensor((pool, 16), f32)
         rs_key = memory.get_tensor((pool,), i32)
         rs_eprim = memory.get_tensor((pool,), i32)
         rs_vis = memory.get_tensor((pool,) if shadow_flag else (1,),
@@ -1579,8 +1578,8 @@ def _raytrace_render_wavefront_sorted(
         half_screen_w=half_screen_w, half_screen_h=half_screen_h,
         max_bounces=max_bounces, near_clip=0.0,
         run_tile=run_tile,
-        # rs_hit(15 f32) + rs_key + rs_eprim (+ rs_vis with shadows) per slot.
-        auto_extra_slot_bytes=15 * 4 + 4 + 4 + (4 if shadow_flag else 0),
+        # rs_hit(16 f32) + rs_key + rs_eprim (+ rs_vis with shadows) per slot.
+        auto_extra_slot_bytes=16 * 4 + 4 + 4 + (4 if shadow_flag else 0),
         # Compactor output-count word, plus the one-word rs_vis placeholder
         # when shadow visibility is not a per-slot array.
         auto_fixed_bytes=(torch.int32.itemsize
