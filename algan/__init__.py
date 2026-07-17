@@ -1,10 +1,16 @@
-from importlib.metadata import PackageNotFoundError, version
+def __getattr__(name):
+    # PEP 562: resolve __version__ lazily -- the importlib.metadata lookup
+    # costs ~0.1 s and almost no session reads it. (Underscored names are
+    # excluded from `from algan import *`, so star-imports don't force it.)
+    if name == "__version__":
+        from importlib.metadata import PackageNotFoundError, version
 
-try:
-    __version__ = version("algan")
-except PackageNotFoundError:
-    # Source archives may be run directly without installed package metadata.
-    __version__ = "0+unknown"
+        try:
+            return version("algan")
+        except PackageNotFoundError:
+            # Source archives may be run without installed package metadata.
+            return "0+unknown"
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 import os
 
@@ -35,6 +41,13 @@ from algan.constants.spatial import *
 from algan.constants.color import *
 from algan.constants.math import *
 from algan.rendering import camera
+
+# Taichi is imported (via the rendering modules above) but no kernel has
+# materialized yet -- install the warm-start memoization now so every kernel
+# compiled in this process benefits (see utils/taichi_warmstart.py).
+from algan.utils.taichi_warmstart import apply as _apply_taichi_warmstart
+
+_apply_taichi_warmstart()
 
 from algan.mobs.mob import *
 from algan.mobs.manim_mob import *

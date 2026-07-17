@@ -1496,6 +1496,12 @@ class RenderLoopMixin:
             COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
         )
 
+        # Adaptive gen-fused forecast (settings.WF_GEN_FUSED == "auto") is fed
+        # per-batch render timings below; a new job restarts its batch count.
+        from algan.rendering.raytracing import settings as _rt_settings
+
+        _rt_settings._begin_render_job()
+
         with Off(
                 record_attr_modifications=False,
                 record_funcs=False,
@@ -1760,6 +1766,15 @@ class RenderLoopMixin:
                         logger.info(
                             f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
                         )
+                        if _rt_settings._note_batch_rendered(
+                                new_time_ind - current_time_ind, e - s,
+                                end_time_ind - new_time_ind):
+                            logger.info(
+                                "Adaptive gen-fused: forecasted remaining "
+                                "render time justifies compiling the fused "
+                                "generation kernels; fusing from the next "
+                                "batch (output is unaffected)."
+                            )
 
                     retry_lower_duration = 0
                     retry_upper_duration = None

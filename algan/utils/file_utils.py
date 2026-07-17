@@ -1,11 +1,11 @@
-import torchvision
-
 from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.constants.color import Color
 
 
 def get_image(file_path):
     if isinstance(file_path, str):
+        import torchvision  # deferred: ~0.2 s of import algan
+
         file_path = (
             torchvision.io.read_image(file_path)
             .to(COMPUTING_DEFAULTS.animation_device)

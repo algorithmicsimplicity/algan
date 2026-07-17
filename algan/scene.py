@@ -1,7 +1,5 @@
 import torch
 import torch.nn.functional as F
-import torchvision.utils
-from moviepy import CompositeAudioClip
 
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
@@ -243,6 +241,8 @@ class Scene(RenderLoopMixin):
             )
             clips_to_compose.append(timed_clip)
 
+        from moviepy import CompositeAudioClip  # deferred: ~0.3 s of import algan
+
         audio_clip = CompositeAudioClip(clips_to_compose)
         audio_clip.duration = AnimationManager.instance().context.timespan.original_end
         audio_clip.write_audiofile(file_path, fps=frames_per_second, codec=codec, nbytes=nbytes)
@@ -305,6 +305,8 @@ class Scene(RenderLoopMixin):
             frames.append(frame.squeeze(0).permute(-1,0,1))
         if '.' not in filename:
             filename = filename + '.png'
+        import torchvision.utils  # deferred: ~0.2 s of import algan
+
         torchvision.utils.save_image(frames[-1], filename)
         self.render_settings = rs
         return frames

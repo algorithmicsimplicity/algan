@@ -286,7 +286,7 @@ def wf_shade_textured(
             rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
             acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
                                rs_acc[r, 3])
-            weight = rs_sca[r, 0]
+            weight = ti.math.vec3(rs_sca[r, 0], rs_sca[r, 5], rs_sca[r, 6])
             t_prev = rs_sca[r, 1]
             layer_prev = rs_sca[r, 2]
             seam_t = rs_sca[r, 3]
@@ -343,6 +343,9 @@ def wf_shade_textured(
 
                 w0 = 1.0 - a - b
                 color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+                # Raw surface colour before lighting -- tints the metal
+                # Fresnel lobe and the transmitted share (colour transport).
+                albedo3 = ti.math.vec3(0.0, 0.0, 0.0)
                 alpha = 0.0
                 reflectivity = -1.0
                 ior = 0.0
@@ -362,6 +365,7 @@ def wf_shade_textured(
                     cs = _sample_bank(f, uu, vv, color_idx[prim],
                                       color_meta, color_bank, 5)
                     color = ti.math.vec4(cs[0], cs[1], cs[2], cs[3])
+                    albedo3 = ti.math.vec3(cs[0], cs[1], cs[2])
                     alpha = cs[4]
 
                     si = surf_idx[prim]
@@ -427,6 +431,7 @@ def wf_shade_textured(
                     color, alpha = _sample_circuit_color(
                         prim, f, a, b, border, circuit_meta, circuit_colors,
                         circuit_border_colors)
+                    albedo3 = ti.math.vec3(color[0], color[1], color[2])
 
                 # Continuation (scatter). Two compile-time variants: the inline
                 # built-in bounce (default) or the monolith's generic
@@ -442,42 +447,58 @@ def wf_shade_textured(
                     elif ti.static(feat_bez != 0):
                         normal = _bezier_normal(f, prim, circuit_meta)
                     normal = normal.normalized()
-                    R = _material_reflectance(
-                        rd, normal, reflectivity, ior)
+                    R, diel_pass = _material_reflectance(
+                        rd, normal, reflectivity, ior, albedo3)
                     if bounces_left <= 0:
-                        # Out of bounces: the metal share (inside R) must not
-                        # slip through as transmission -- see ``_scatter_impl``.
-                        R = 0.0
-                        T = T * (1.0 - ti.math.clamp(reflectivity, 0.0, 1.0))
+                        # Out of bounces: no reflected ray. Transmission stays
+                        # gated by ``diel_pass`` -- see ``_scatter_impl``.
+                        R = ti.math.vec3(0.0, 0.0, 0.0)
 
                     # Transmission alone gates glass; this kernel is
                     # triangle-only, so there is no thin-pane case here. The
                     # metal-blended Fresnel ``R`` stands (the metal share
-                    # reflects rather than transmits) -- see ``_scatter_impl``.
+                    # reflects rather than transmits) -- see ``_scatter_impl``,
+                    # including the colour transport (vec3 weights, albedo
+                    # tint, max-component decisions).
                     is_glass = False
                     if ti.static(refraction != 0):
                         if (T > 1e-4) and (bounces_left > 0) \
                                 and (ior > 1.0 + 1e-4) and is_tri:
                             is_glass = True
 
-                    acc += (weight * alpha * (1.0 - R) * (1.0 - T)) * color
+                    one3 = ti.math.vec3(1.0, 1.0, 1.0)
+                    tint = ti.math.clamp(albedo3, 0.0, 1.0)
+                    # Only the dielectric-interior share transmits -- see the
+                    # four-way split derivation in ``_scatter_impl``.
+                    trans_share = diel_pass * T
+                    r_glow = ti.max(R[0], ti.max(R[1], R[2]))
+                    w_glow = ti.max(weight[0], ti.max(weight[1], weight[2]))
+                    share = (weight * alpha) * (one3 - R - trans_share)
+                    acc += ti.math.vec4(
+                        share[0], share[1], share[2],
+                        w_glow * alpha
+                        * (1.0 - r_glow - trans_share)) * color
                     refl_energy = alpha * R
-                    trans_energy = alpha * (1.0 - R) * T
+                    refl_max = ti.max(refl_energy[0],
+                                      ti.max(refl_energy[1], refl_energy[2]))
+                    trans_energy = alpha * trans_share
                     cover_pass = 1.0 - alpha
+                    cover3 = ti.math.vec3(cover_pass, cover_pass, cover_pass)
 
                     # Semi-transparent reflective surface: reflection into a
                     # split slot, pass-through stays primary (see
                     # ``default_scatter`` for why this way round).
                     split_refl = False
                     if ti.static(refraction != 0):
-                        if (alpha * R > MIN_ALPHA) \
+                        if (refl_max > MIN_ALPHA) \
                                 and (alpha < 1.0 - MIN_ALPHA) \
                                 and (bounces_left > 0):
                             split_refl = True
 
                     if is_glass:
-                        wt = weight * trans_energy
-                        if wt > MIN_WEIGHT:
+                        wt = weight * trans_energy * tint
+                        wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+                        if wt_max > MIN_WEIGHT:
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
@@ -506,11 +527,13 @@ def wf_shade_textured(
                                     rs_rd[c, k] = rdt[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
-                                rs_sca[c, 0] = wt
+                                rs_sca[c, 0] = wt[0]
                                 rs_sca[c, 1] = 0.0
                                 rs_sca[c, 2] = 1e30
                                 rs_sca[c, 3] = -1e30
                                 rs_sca[c, 4] = base_dist + t_hit
+                                rs_sca[c, 5] = wt[1]
+                                rs_sca[c, 6] = wt[2]
                                 rs_int[c, 0] = bounces_left - 1
                                 rs_int[c, 1] = processed
                                 rs_int[c, 2] = _ACTIVE
@@ -518,8 +541,8 @@ def wf_shade_textured(
                                 rs_pix[c] = pix
                         # Primary carries the heavier of reflection /
                         # coverage-miss (see ``_scatter_impl``).
-                        if ((refl_energy > MIN_ALPHA)
-                                and (refl_energy >= cover_pass)):
+                        if ((refl_max > MIN_ALPHA)
+                                and (refl_max >= cover_pass)):
                             nref = normal
                             if nref.dot(rd) > 0.0:
                                 nref = -nref
@@ -540,7 +563,8 @@ def wf_shade_textured(
                             layer_prev = hit_layer
                     elif split_refl:
                         wt = weight * refl_energy
-                        if wt > MIN_WEIGHT:
+                        wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+                        if wt_max > MIN_WEIGHT:
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
@@ -556,23 +580,25 @@ def wf_shade_textured(
                                     rs_rd[c, k] = rdr[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
-                                rs_sca[c, 0] = wt
+                                rs_sca[c, 0] = wt[0]
                                 rs_sca[c, 1] = 0.0
                                 rs_sca[c, 2] = 1e30
                                 rs_sca[c, 3] = -1e30
                                 rs_sca[c, 4] = base_dist + t_hit
+                                rs_sca[c, 5] = wt[1]
+                                rs_sca[c, 6] = wt[2]
                                 rs_int[c, 0] = bounces_left - 1
                                 rs_int[c, 1] = processed
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        weight *= cover_pass + trans_energy
+                        weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
                     # No split pool: reflect only while the reflection
                     # outweighs what shows through (see ``default_scatter``).
-                    elif ((refl_energy > MIN_ALPHA)
-                          and (refl_energy >= cover_pass)):
+                    elif ((refl_max > MIN_ALPHA)
+                          and (refl_max >= cover_pass)):
                         nref = normal
                         if nref.dot(rd) > 0.0:
                             nref = -nref
@@ -591,7 +617,7 @@ def wf_shade_textured(
                         # Orphaned transmitted share (index-matched ior <= 1,
                         # pool absent, or bounces exhausted) continues unbent
                         # in the pass-through -- see ``_scatter_impl``.
-                        weight *= cover_pass + trans_energy
+                        weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
                 else:
@@ -612,12 +638,19 @@ def wf_shade_textured(
                     hit_point = ro + t_hit * rd
                     (contrib, pass_w, refl_orig, refl_dir, refl_w,
                      trans_orig, trans_dir, trans_w) = default_scatter(
-                        rd, sni, sfn, hit_point, color, alpha, reflectivity,
-                        ior, T, mat_bank, f, prim, bounces_left, refraction)
-                    acc += weight * contrib
+                        rd, sni, sfn, hit_point, color, albedo3, alpha,
+                        reflectivity, ior, T, mat_bank, f, prim, bounces_left,
+                        refraction)
+                    w_glow = ti.max(weight[0],
+                                    ti.max(weight[1], weight[2]))
+                    acc += ti.math.vec4(weight[0], weight[1], weight[2],
+                                        w_glow) * contrib
                     if ti.static(refraction != 0):
                         wt = weight * trans_w
-                        if (trans_w > 0.0) and (wt > MIN_WEIGHT) \
+                        wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+                        trans_w_max = ti.max(trans_w[0],
+                                             ti.max(trans_w[1], trans_w[2]))
+                        if (trans_w_max > 0.0) and (wt_max > MIN_WEIGHT) \
                                 and (bounces_left > 0):
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
@@ -627,17 +660,21 @@ def wf_shade_textured(
                                     rs_rd[c, k] = trans_dir[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
-                                rs_sca[c, 0] = wt
+                                rs_sca[c, 0] = wt[0]
                                 rs_sca[c, 1] = 0.0
                                 rs_sca[c, 2] = 1e30
                                 rs_sca[c, 3] = -1e30
                                 rs_sca[c, 4] = base_dist + t_hit
+                                rs_sca[c, 5] = wt[1]
+                                rs_sca[c, 6] = wt[2]
                                 rs_int[c, 0] = bounces_left - 1
                                 rs_int[c, 1] = processed
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                    if (refl_w > 0.0) and (bounces_left > 0):
+                    refl_w_max = ti.max(refl_w[0],
+                                        ti.max(refl_w[1], refl_w[2]))
+                    if (refl_w_max > 0.0) and (bounces_left > 0):
                         ro = refl_orig
                         rd = refl_dir
                         weight *= refl_w
@@ -652,7 +689,8 @@ def wf_shade_textured(
                         weight *= pass_w
                         t_prev = t_hit
                         layer_prev = hit_layer
-                if weight < MIN_WEIGHT:
+                if ti.max(weight[0], ti.max(weight[1], weight[2])) \
+                        < MIN_WEIGHT:
                     done = True
                     break
 
@@ -666,21 +704,26 @@ def wf_shade_textured(
                 rs_rd[r, k] = rd[k]
             for k in ti.static(range(4)):
                 rs_acc[r, k] = acc[k]
-            rs_sca[r, 0] = weight
+            rs_sca[r, 0] = weight[0]
             rs_sca[r, 1] = t_prev
             rs_sca[r, 2] = layer_prev
             rs_sca[r, 3] = seam_t
             rs_sca[r, 4] = base_dist
+            rs_sca[r, 5] = weight[1]
+            rs_sca[r, 6] = weight[2]
             rs_int[r, 0] = bounces_left
             rs_int[r, 1] = processed
             rs_int[r, 2] = _DONE if done else _ACTIVE
             if done:
                 for k in ti.static(range(4)):
                     ti.atomic_add(pix_accum[pix, k], acc[k])
-                ti.atomic_add(pix_accum[pix, 4], weight)
+                for k in ti.static(range(3)):
+                    ti.atomic_add(pix_accum[pix, 4 + k], weight[k])
         else:
             # Escaped to background: commit colour + leftover throughput.
             for k in ti.static(range(4)):
                 ti.atomic_add(pix_accum[pix, k], rs_acc[r, k])
             ti.atomic_add(pix_accum[pix, 4], rs_sca[r, 0])
+            ti.atomic_add(pix_accum[pix, 5], rs_sca[r, 5])
+            ti.atomic_add(pix_accum[pix, 6], rs_sca[r, 6])
             rs_int[r, 2] = _DONE

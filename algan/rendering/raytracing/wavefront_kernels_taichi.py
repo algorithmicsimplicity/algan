@@ -809,8 +809,9 @@ def _reserve_continuation_slot(rs_alloc: ti.template(), capacity):
 
 
 @ti.func
-def _material_reflectance(rd, normal, metalness, packed_ior):
-    """Scalar Schlick reflectance derived from a Three.js-style material.
+def _material_reflectance(rd, normal, metalness, packed_ior, albedo):
+    """Per-channel (vec3) Schlick reflectance of a Three.js-style material,
+    plus the scalar dielectric pass fraction that gates transmission.
 
     ``metalness < 0`` is the internal sentinel for legacy/unlit materials that
     have no PBR specular lobe.  ``packed_ior`` is an unsigned magnitude (abs
@@ -818,34 +819,58 @@ def _material_reflectance(rd, normal, metalness, packed_ior):
     index-matched with the surrounding air: there is no dielectric interface,
     so the dielectric lobe vanishes entirely.  Schlick's form cannot express
     that limit itself -- any f0 still reflects fully at grazing -- so it is an
-    explicit gate rather than an f0 of zero.  The metal lobe is IOR-independent
-    (f0 = 1, hence R = 1).  The transport state is scalar, so conductor colour
-    is applied by the material shader while this helper uses its
-    energy-equivalent scalar metal lobe.  Blending the two lobes after Schlick
-    is algebraically identical to blending f0 first (R is linear in f0).
+    explicit gate rather than an f0 of zero.
+
+    Transport is full-colour: the metal lobe's F0 is the surface ``albedo``
+    (conductor tint, whitening to 1 at grazing -- same model as the Monte
+    Carlo megakernel's coloured throughput), the dielectric lobe stays
+    achromatic.  A white metal reduces exactly to the old scalar lobe (R = 1).
+    Blending the two lobes after Schlick is algebraically identical to
+    blending f0 first (R is linear in f0).
+
+    Returns ``(R, diel_pass)``.  ``diel_pass = (1-m) * (1-r_diel)`` is the
+    fraction of incident light that enters the dielectric interior -- the
+    only share that can transmit.  It must NOT be derived from ``1 - R``: a
+    coloured metal has ``R < 1`` in its absorbed channels, and that absorbed
+    share would then leak through transmissive surfaces as if dielectric
+    (with scalar transport ``m = 1`` forced ``R = 1``, which hid this).
     """
-    result = 0.0
+    result = ti.math.vec3(0.0, 0.0, 0.0)
+    diel_pass = 1.0
     if metalness >= 0.0:
         m = ti.math.clamp(metalness, 0.0, 1.0)
         ior = ti.abs(packed_ior)
+        n = normal.normalized()
+        cosi = ti.math.clamp(ti.abs(rd.dot(n)), 0.0, 1.0)
+        tail = ti.pow(1.0 - cosi, 5.0)
         r_diel = 0.0
         if ior > 1.0 + 1e-4:
             r0 = (1.0 - ior) / (1.0 + ior)
             dielectric_f0 = r0 * r0
-            n = normal.normalized()
-            cosi = ti.math.clamp(ti.abs(rd.dot(n)), 0.0, 1.0)
-            r_diel = dielectric_f0 \
-                + (1.0 - dielectric_f0) * ti.pow(1.0 - cosi, 5.0)
-        result = r_diel * (1.0 - m) + m
-    return ti.math.clamp(result, 0.0, 1.0)
+            r_diel = dielectric_f0 + (1.0 - dielectric_f0) * tail
+        f0_metal = ti.math.clamp(albedo, 0.0, 1.0)
+        r_metal = f0_metal + (1.0 - f0_metal) * tail
+        result = r_diel * (1.0 - m) + m * r_metal
+        diel_pass = (1.0 - m) * (1.0 - r_diel)
+    return ti.math.clamp(result, 0.0, 1.0), diel_pass
 
 
 @ti.func
-def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
+def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
                   reflectivity, ior, transmission, params: ti.template(),
                   f, prim, bounces_left, refraction: ti.template(),
                   pane: ti.template()):
     """Built-in continuation derived from the material's PBR properties.
+
+    Transport is full-colour: the branch weights (``pass_w``, ``refl_w``,
+    ``trans_w``) are vec3 throughput multipliers. ``albedo`` (vec3, the raw
+    surface colour before lighting) tints the metal share of the Fresnel lobe
+    (coloured mirrors) and the transmitted share (coloured glass); the
+    dielectric reflection stays achromatic. Branch decisions (which
+    continuation is heavier, minimum-weight culls) reduce a colour weight to
+    its maximum component, the same convention as the Monte Carlo megakernel's
+    coloured throughput -- for a white surface every component is equal and
+    all decisions match the old scalar transport exactly.
 
     Shared body of :func:`default_scatter` (``pane`` 0, solid geometry) and
     :func:`circuit_scatter` (``pane`` 1, zero-thickness planar circuits). The
@@ -895,24 +920,22 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
     """
     alpha = ti.math.clamp(alpha, 0.0, 1.0)
     T = ti.math.clamp(transmission, 0.0, 1.0)
+    tint = ti.math.clamp(albedo, 0.0, 1.0)
     normal = n_interp.normalized()
-    R = _material_reflectance(rd, normal, reflectivity, ior)
+    R, diel_pass = _material_reflectance(rd, normal, reflectivity, ior,
+                                         albedo)
     if bounces_left <= 0:
-        # Out of bounces: no reflected ray. The metal share of the surface
-        # normally reflects rather than transmits (it lives inside ``R``), so
-        # when R is zeroed the transmitted share must shrink by 1 - metalness
-        # or the metal share would slip through as if dielectric.
-        R = 0.0
-        T = T * (1.0 - ti.math.clamp(reflectivity, 0.0, 1.0))
+        # Out of bounces: no reflected ray. The transmitted share stays gated
+        # by ``diel_pass`` (the metal share never transmits), so zeroing R
+        # only stops the bounce; a fully metallic surface shades instead.
+        R = ti.math.vec3(0.0, 0.0, 0.0)
 
     # Transmission alone says whether light passes through; solid geometry
     # refracts (is_glass), a zero-thickness circuit does not bend (is_pane).
-    # Both use the metal-blended Fresnel ``R`` above: the metal share of a
-    # surface reflects rather than transmits (its transmitted share
-    # ``alpha * (1-R) * T`` shrinks by exactly ``1 - metalness``, matching
-    # Three.js, where transmission applies to the non-metallic component), so
-    # a fully metallic surface stays a mirror at any transmission. For the
-    # dielectric share the blend reduces to the plain dielectric Schlick term.
+    # Reflection uses the metal-blended Fresnel ``R`` above; transmission is
+    # gated by ``diel_pass = (1-m)(1-R_diel)`` -- only the non-metallic share
+    # that enters the dielectric interior transmits (Three.js semantics), so
+    # a fully metallic surface stays a mirror at any transmission and IOR.
     is_glass = False
     is_pane = False
     glass_ior = ior
@@ -924,11 +947,19 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
             else:
                 is_glass = True
 
-    # The four shares a hit splits into, summing to 1:
-    #   alpha * (1-R) * (1-T)  shaded here      (contrib)
-    #   alpha * R              reflected        (refl_energy)
-    #   alpha * (1-R) * T      transmitted      (trans_energy)
-    #   1 - alpha              missed entirely  (cover_pass)
+    # The four shares a hit splits into, summing to 1 per channel:
+    #   alpha * (1 - R - trans_share)  shaded here      (contrib)
+    #   alpha * R                      reflected        (refl_energy)
+    #   alpha * trans_share            transmitted      (trans_energy,
+    #                                                    albedo-tinted when it
+    #                                                    actually transmits)
+    #   1 - alpha                      missed entirely  (cover_pass)
+    # where trans_share = (1-m)(1-R_diel) * T: only the share entering the
+    # dielectric interior can transmit. It is NOT alpha*(1-R)*T -- a coloured
+    # metal has R < 1 in its absorbed channels, and deriving transmission
+    # from 1-R would leak that absorbed light through the surface (scalar
+    # transport hid this because m = 1 forced R = 1). For achromatic
+    # surfaces 1 - R - trans_share == (1-R)(1-T) exactly.
     # Coverage and transmission are independent: alpha says how much of the
     # surface is there, T how much light the part that IS there passes.
     # When the transmitted share gets no ray of its own (index-matched
@@ -936,23 +967,34 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
     # exhausted) it continues unbent as part of the primary pass-through
     # below instead of being dropped -- dropping it rendered transmissive
     # surfaces as opaque black.
-    contrib = (alpha * (1.0 - R) * (1.0 - T)) * shaded
+    one3 = ti.math.vec3(1.0, 1.0, 1.0)
+    trans_share = diel_pass * T
+    # The accumulator's 4th lane (glow) has no colour channel of its own; it
+    # takes the max-component reduction of the reflectance (exact when the
+    # components are equal, i.e. everywhere the old scalar transport reached).
+    r_glow = ti.max(R[0], ti.max(R[1], R[2]))
+    share = alpha * (one3 - R - trans_share)
+    contrib = ti.math.vec4(share[0], share[1], share[2],
+                           alpha * (1.0 - r_glow - trans_share)) * shaded
     refl_energy = alpha * R
-    trans_energy = alpha * (1.0 - R) * T
+    refl_max = ti.max(refl_energy[0],
+                      ti.max(refl_energy[1], refl_energy[2]))
+    trans_energy = alpha * trans_share
     cover_pass = 1.0 - alpha
+    cover3 = ti.math.vec3(cover_pass, cover_pass, cover_pass)
 
     # A reflective surface with something behind it has two continuations (the
     # reflection and the pass-through). With the split pool compiled in both
     # are traced -- see the branch below.
     split_refl = False
     if ti.static(refraction != 0):
-        if (refl_energy > MIN_ALPHA) and (cover_pass > MIN_ALPHA) \
+        if (refl_max > MIN_ALPHA) and (cover_pass > MIN_ALPHA) \
                 and (bounces_left > 0):
             split_refl = True
-    pass_w = 0.0
-    refl_w = 0.0
-    trans_w = 0.0
     zero3 = ti.math.vec3(0.0, 0.0, 0.0)
+    pass_w = zero3
+    refl_w = zero3
+    trans_w = zero3
     refl_dir = zero3
     refl_orig = zero3
     trans_dir = zero3
@@ -966,8 +1008,8 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
         trans_dir = rdt
         trans_orig = _offset_transmitted_origin(
             hit_point, rdt, face_n, normal)
-        trans_w = trans_energy
-        if (refl_energy > MIN_ALPHA) and (refl_energy >= cover_pass):
+        trans_w = trans_energy * tint
+        if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
             nref = normal
             if nref.dot(rd) > 0.0:
                 nref = -nref
@@ -975,7 +1017,7 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
             refl_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
             refl_w = refl_energy
         else:
-            pass_w = cover_pass
+            pass_w = cover3
     elif is_pane:
         # Thin pane: entry and exit interfaces coincide, so the transmitted ray
         # is unbent and merges into the pass-through (the depth-layer walk,
@@ -987,9 +1029,9 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
         trans_dir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
         trans_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
         trans_w = refl_energy
-        pass_w = cover_pass + trans_energy
-    elif split_refl or ((refl_energy > MIN_ALPHA)
-                        and (refl_energy >= cover_pass)):
+        pass_w = cover3 + trans_energy * tint
+    elif split_refl or ((refl_max > MIN_ALPHA)
+                        and (refl_max >= cover_pass)):
         nref = normal
         if nref.dot(rd) > 0.0:
             nref = -nref
@@ -1002,7 +1044,7 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
             trans_dir = rdir
             trans_orig = rorig
             trans_w = refl_energy
-            pass_w = cover_pass + trans_energy
+            pass_w = cover3 + trans_energy * tint
         else:
             # No split pool compiled in: trace only the heavier continuation,
             # so the dropped term is always the smaller of the two.
@@ -1010,39 +1052,40 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
             refl_orig = rorig
             refl_w = refl_energy
     else:
-        pass_w = cover_pass + trans_energy
+        pass_w = cover3 + trans_energy * tint
     return (contrib, pass_w, refl_orig, refl_dir, refl_w,
             trans_orig, trans_dir, trans_w)
 
 
 @ti.func
-def default_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
+def default_scatter(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
                     reflectivity, ior, transmission, params: ti.template(),
                     f, prim, bounces_left, refraction: ti.template()):
     """Built-in scatter for solid geometry (triangles / PN patches): a
     transmissive surface refracts. This is the signature the scatter contract
     fixes (see ``shading_taichi``), shared with user scatters and injected as
     the sorted pipeline's ``scatter_fn``. See :func:`_scatter_impl`."""
-    return _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
-                         reflectivity, ior, transmission, params, f, prim,
-                         bounces_left, refraction, 0)
+    return _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo,
+                         alpha, reflectivity, ior, transmission, params, f,
+                         prim, bounces_left, refraction, 0)
 
 
 @ti.func
-def circuit_scatter(rd, n_interp, face_n, hit_point, shaded, alpha,
+def circuit_scatter(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
                     reflectivity, ior, transmission, params: ti.template(),
                     f, prim, bounces_left, refraction: ti.template()):
     """Built-in scatter for bezier circuits: a transmissive circuit is a thin
     pane, so it transmits unbent rather than refracting. See
     :func:`_scatter_impl`."""
-    return _scatter_impl(rd, n_interp, face_n, hit_point, shaded, alpha,
-                         reflectivity, ior, transmission, params, f, prim,
-                         bounces_left, refraction, 1)
+    return _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo,
+                         alpha, reflectivity, ior, transmission, params, f,
+                         prim, bounces_left, refraction, 1)
 
 
 @ti.func
 def _run_frag_scatter(frag_scatters: ti.template(), pid_arr: ti.template(),
-                      f, prim, rd, n_interp, face_n, hit_point, shaded, alpha,
+                      f, prim, rd, n_interp, face_n, hit_point, shaded,
+                      albedo, alpha,
                       reflectivity, ior, transmission, params: ti.template(),
                       bounces_left, refraction: ti.template()):
     """Per-primitive ray-continuation dispatch for the monolithic shade kernel:
@@ -1054,8 +1097,8 @@ def _run_frag_scatter(frag_scatters: ti.template(), pid_arr: ti.template(),
     pid = pid_arr[f % pid_arr.shape[0], prim]
     (contrib, pass_w, refl_orig, refl_dir, refl_w,
      trans_orig, trans_dir, trans_w) = default_scatter(
-        rd, n_interp, face_n, hit_point, shaded, alpha, reflectivity, ior,
-        transmission, params, f, prim, bounces_left, refraction)
+        rd, n_interp, face_n, hit_point, shaded, albedo, alpha, reflectivity,
+        ior, transmission, params, f, prim, bounces_left, refraction)
     for pi in ti.static(range(len(frag_scatters))):
         # ``bool(func) is True`` / ``bool(None) is False`` -- avoids an ``is
         # not`` comparison node, which Taichi's AST transformer rejects even
@@ -1065,7 +1108,7 @@ def _run_frag_scatter(frag_scatters: ti.template(), pid_arr: ti.template(),
             if pid == _USER_PIPELINE_BASE + pi:
                 (contrib, pass_w, refl_orig, refl_dir, refl_w,
                  trans_orig, trans_dir, trans_w) = frag_scatters[pi](
-                    rd, n_interp, face_n, hit_point, shaded, alpha,
+                    rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
                     reflectivity, ior, transmission, params, f, prim,
                     bounces_left, refraction)
     return (contrib, pass_w, refl_orig, refl_dir, refl_w,
@@ -1088,11 +1131,14 @@ def wf_composite(
         g = ray_offset + r
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
-        weight = rs_sca[r, 0]
+        # Colour transport: leftover throughput is per-channel (columns 0/5/6);
+        # the glow lane and coverage alpha take its mean.
+        weight = ti.math.vec4(rs_sca[r, 0], rs_sca[r, 5], rs_sca[r, 6], 0.0)
+        weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
         csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            csum[ci] = rs_acc[r, ci] * 255.0 + weight * bg
+            csum[ci] = rs_acc[r, ci] * 255.0 + weight[ci] * bg
         color_final = finalize_pixel_color(csum, 1.0, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
             if ti.static(tonemapping == 3):
@@ -1101,7 +1147,7 @@ def wf_composite(
                 out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
-            val = (1.0 - weight) * 255.0 + weight * bg_a
+            val = (1.0 - weight[3]) * 255.0 + weight[3] * bg_a
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(val + 0.5, 0.0, 255.0), ti.u8)
 
@@ -1122,13 +1168,14 @@ def wf_composite_aa(
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
         idx = f_rel * pixels_per_frame + p
-        weight = rs_sca[r, 0]
+        weight = ti.math.vec4(rs_sca[r, 0], rs_sca[r, 5], rs_sca[r, 6], 0.0)
+        weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            aa_accum[idx, ci] += rs_acc[r, ci] * 255.0 + weight * bg
+            aa_accum[idx, ci] += rs_acc[r, ci] * 255.0 + weight[ci] * bg
         if transparent != 0:
             bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
-            aa_accum[idx, 4] += (1.0 - weight) * 255.0 + weight * bg_a
+            aa_accum[idx, 4] += (1.0 - weight[3]) * 255.0 + weight[3] * bg_a
 
 
 @ti.kernel
@@ -1141,22 +1188,24 @@ def wf_composite_accum(
     """Composite the general path's per-pixel accumulator over the pre-filled
     background. Mirrors ``wf_composite`` arithmetic exactly, but reads the shared
     ``pix_accum`` (premultiplied colour cols 0-3 + summed leftover/background
-    weight col 4, deposited by every terminating ray) instead of one ray slot --
-    so a pixel whose ray split into reflected + refracted branches sums both. For
-    a non-split pixel ``pix_accum[r] == (acc, weight)`` of its lone ray, so the
-    result is byte-identical to ``wf_composite``. Indexed by local pixel ``r``;
-    the global cell is ``ray_offset + r``."""
+    weight cols 4-6, deposited by every terminating ray) instead of one ray slot
+    -- so a pixel whose ray split into reflected + refracted branches sums both.
+    For a non-split pixel ``pix_accum[r] == (acc, weight)`` of its lone ray, so
+    the result is byte-identical to ``wf_composite``. Indexed by local pixel
+    ``r``; the global cell is ``ray_offset + r``."""
     pixels_per_frame = width * height
     num_primary = pix_accum.shape[0]
     for r in range(num_primary):
         g = ray_offset + r
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
-        weight = pix_accum[r, 4]
+        weight = ti.math.vec4(pix_accum[r, 4], pix_accum[r, 5],
+                              pix_accum[r, 6], 0.0)
+        weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
         csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            csum[ci] = pix_accum[r, ci] * 255.0 + weight * bg
+            csum[ci] = pix_accum[r, ci] * 255.0 + weight[ci] * bg
         color_final = finalize_pixel_color(csum, 1.0, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
             if ti.static(tonemapping == 3):
@@ -1165,7 +1214,7 @@ def wf_composite_accum(
                 out[f_rel, p, ci] = ti.cast(color_final[ci], ti.u8)
         if transparent != 0:
             bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
-            val = (1.0 - weight) * 255.0 + weight * bg_a
+            val = (1.0 - weight[3]) * 255.0 + weight[3] * bg_a
             out[f_rel, p, 4] = ti.cast(
                 ti.math.clamp(val + 0.5, 0.0, 255.0), ti.u8)
 
@@ -1185,13 +1234,15 @@ def wf_composite_accum_aa(
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
         idx = f_rel * pixels_per_frame + p
-        weight = pix_accum[r, 4]
+        weight = ti.math.vec4(pix_accum[r, 4], pix_accum[r, 5],
+                              pix_accum[r, 6], 0.0)
+        weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            aa_accum[idx, ci] += pix_accum[r, ci] * 255.0 + weight * bg
+            aa_accum[idx, ci] += pix_accum[r, ci] * 255.0 + weight[ci] * bg
         if transparent != 0:
             bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
-            aa_accum[idx, 4] += (1.0 - weight) * 255.0 + weight * bg_a
+            aa_accum[idx, 4] += (1.0 - weight[3]) * 255.0 + weight[3] * bg_a
 
 
 @ti.kernel
@@ -1287,17 +1338,19 @@ def wavefront_generate_rays(
                 rs_rd[r, k] = rd[k]
             for k in ti.static(range(4)):
                 rs_acc[r, k] = 0.0
-            rs_sca[r, 0] = 1.0     # weight
+            rs_sca[r, 0] = 1.0     # weight (red channel; green/blue in 5/6)
             rs_sca[r, 1] = 0.0     # t_prev
             rs_sca[r, 2] = 1e30    # layer_prev
             rs_sca[r, 3] = -1e30   # seam_t
             rs_sca[r, 4] = t_near  # base_dist
+            rs_sca[r, 5] = 1.0     # weight green
+            rs_sca[r, 6] = 1.0     # weight blue
             rs_int[r, 0] = max_bounces
             rs_int[r, 1] = 0
             rs_int[r, 2] = _ACTIVE
             rs_int[r, 3] = 0
             rs_pix[r] = r
-            for k in ti.static(range(5)):
+            for k in ti.static(range(7)):
                 pix_accum[r, k] = 0.0
         else:
             # Free shared-pool slot: inactive until a continuation append
@@ -1748,7 +1801,7 @@ def wavefront_shade(
             ro = ti.math.vec3(rs_ro[r, 0], rs_ro[r, 1], rs_ro[r, 2])
             rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
             acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-            weight = 1.0
+            weight = ti.math.vec3(1.0, 1.0, 1.0)
             t_prev = 0.0
             layer_prev = 1e30
             seam_t = -1e30
@@ -1760,7 +1813,8 @@ def wavefront_shade(
             else:
                 acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
                                    rs_acc[r, 3])
-                weight = rs_sca[r, 0]
+                weight = ti.math.vec3(rs_sca[r, 0], rs_sca[r, 5],
+                                      rs_sca[r, 6])
                 t_prev = rs_sca[r, 1]
                 layer_prev = rs_sca[r, 2]
                 seam_t = rs_sca[r, 3]
@@ -1856,6 +1910,13 @@ def wavefront_shade(
                         circuit_meta, circuit_colors, circuit_border_colors)
                     cm = f % circuit_meta.shape[0]
                     reflectivity = circuit_meta[cm, prim, 21]
+
+                # Raw surface colour, saved before fragment shading replaces
+                # ``color`` with the lit result: the colour transport tints
+                # the metal Fresnel lobe and the transmitted share with it.
+                # (PBR materials always shade per fragment on this renderer,
+                # so whenever the tint matters this is the true albedo.)
+                albedo3 = ti.math.vec3(color[0], color[1], color[2])
 
                 # Fragment shading: ``color`` arrived as the interpolated raw
                 # albedo for triangle/PN hits; evaluate the lighting model per
@@ -2139,20 +2200,23 @@ def wavefront_shade(
                                              prim, _M_TRANSMISSION]
                     T = ti.math.clamp(T, 0.0, 1.0)
 
-                    R = _material_reflectance(rd, normal, reflectivity, ior)
+                    R, diel_pass = _material_reflectance(
+                        rd, normal, reflectivity, ior, albedo3)
                     if bounces_left <= 0:
-                        # Out of bounces: the metal share (inside R) must not
-                        # slip through as transmission -- see ``_scatter_impl``.
-                        R = 0.0
-                        T = T * (1.0 - ti.math.clamp(reflectivity, 0.0, 1.0))
+                        # Out of bounces: no reflected ray. Transmission stays
+                        # gated by ``diel_pass`` -- see ``_scatter_impl``.
+                        R = ti.math.vec3(0.0, 0.0, 0.0)
 
                     # A transmissive surface refracts if it is solid geometry
                     # (is_glass) and transmits unbent if it is a zero-thickness
                     # circuit (is_pane); mutually exclusive by htype. Mirrors
-                    # ``_scatter_impl``, including the four-way energy split
-                    # and the metal-blended Fresnel ``R`` (the metal share
+                    # ``_scatter_impl``, including the four-way energy split,
+                    # the metal-blended Fresnel ``R`` (the metal share
                     # reflects rather than transmits, so a fully metallic
-                    # surface stays a mirror at any transmission).
+                    # surface stays a mirror at any transmission), and the
+                    # colour transport (vec3 weights; the albedo tints the
+                    # metal lobe inside ``R`` and the transmitted share;
+                    # decisions reduce to the maximum component).
                     is_glass = False
                     is_pane = False
                     if ti.static(refraction != 0):
@@ -2163,24 +2227,42 @@ def wavefront_shade(
                             else:
                                 is_pane = True
 
-                    acc += (weight * alpha * (1.0 - R) * (1.0 - T)) * color
+                    one3 = ti.math.vec3(1.0, 1.0, 1.0)
+                    tint = ti.math.clamp(albedo3, 0.0, 1.0)
+                    # Only the dielectric-interior share transmits -- see the
+                    # four-way split derivation in ``_scatter_impl``.
+                    trans_share = diel_pass * T
+                    # The glow lane has no colour channel; it takes the
+                    # max-component reduction (exact when the components are
+                    # equal, i.e. everywhere the old scalar transport reached).
+                    r_glow = ti.max(R[0], ti.max(R[1], R[2]))
+                    w_glow = ti.max(weight[0], ti.max(weight[1], weight[2]))
+                    share = (weight * alpha) * (one3 - R - trans_share)
+                    acc += ti.math.vec4(
+                        share[0], share[1], share[2],
+                        w_glow * alpha
+                        * (1.0 - r_glow - trans_share)) * color
                     refl_energy = alpha * R
-                    trans_energy = alpha * (1.0 - R) * T
+                    refl_max = ti.max(refl_energy[0],
+                                      ti.max(refl_energy[1], refl_energy[2]))
+                    trans_energy = alpha * trans_share
                     cover_pass = 1.0 - alpha
+                    cover3 = ti.math.vec3(cover_pass, cover_pass, cover_pass)
 
                     # Semi-transparent reflective surface: reflection into a
                     # split slot, pass-through stays primary (see
                     # ``default_scatter`` for why this way round).
                     split_refl = False
                     if ti.static(refraction != 0):
-                        if (refl_energy > MIN_ALPHA) \
+                        if (refl_max > MIN_ALPHA) \
                                 and (cover_pass > MIN_ALPHA) \
                                 and (bounces_left > 0):
                             split_refl = True
 
                     if is_glass:
-                        wt = weight * trans_energy
-                        if wt > MIN_WEIGHT:
+                        wt = weight * trans_energy * tint
+                        wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+                        if wt_max > MIN_WEIGHT:
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
@@ -2225,11 +2307,13 @@ def wavefront_shade(
                                     rs_rd[c, k] = rdt[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
-                                rs_sca[c, 0] = wt
+                                rs_sca[c, 0] = wt[0]
                                 rs_sca[c, 1] = 0.0
                                 rs_sca[c, 2] = 1e30
                                 rs_sca[c, 3] = -1e30
                                 rs_sca[c, 4] = base_dist + t_hit
+                                rs_sca[c, 5] = wt[1]
+                                rs_sca[c, 6] = wt[2]
                                 rs_int[c, 0] = bounces_left - 1
                                 rs_int[c, 1] = processed
                                 rs_int[c, 2] = _ACTIVE
@@ -2238,8 +2322,8 @@ def wavefront_shade(
                         # Primary carries the heavier of reflection /
                         # coverage-miss (three continuations, two rays). At full
                         # coverage the miss is empty, so it always reflects.
-                        if (refl_energy > MIN_ALPHA) \
-                                and (refl_energy >= cover_pass):
+                        if (refl_max > MIN_ALPHA) \
+                                and (refl_max >= cover_pass):
                             nref = normal
                             if nref.dot(rd) > 0.0:
                                 nref = -nref
@@ -2263,7 +2347,8 @@ def wavefront_shade(
                         # pass-through along with the coverage-miss, so only the
                         # reflection needs a slot (see ``_scatter_impl``).
                         wt = weight * refl_energy
-                        if wt > MIN_WEIGHT:
+                        wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+                        if wt_max > MIN_WEIGHT:
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
@@ -2279,22 +2364,25 @@ def wavefront_shade(
                                     rs_rd[c, k] = rdr[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
-                                rs_sca[c, 0] = wt
+                                rs_sca[c, 0] = wt[0]
                                 rs_sca[c, 1] = 0.0
                                 rs_sca[c, 2] = 1e30
                                 rs_sca[c, 3] = -1e30
                                 rs_sca[c, 4] = base_dist + t_hit
+                                rs_sca[c, 5] = wt[1]
+                                rs_sca[c, 6] = wt[2]
                                 rs_int[c, 0] = bounces_left - 1
                                 rs_int[c, 1] = processed
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        weight *= cover_pass + trans_energy
+                        weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
                     elif split_refl:
                         wt = weight * refl_energy
-                        if wt > MIN_WEIGHT:
+                        wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+                        if wt_max > MIN_WEIGHT:
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
@@ -2310,23 +2398,25 @@ def wavefront_shade(
                                     rs_rd[c, k] = rdr[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
-                                rs_sca[c, 0] = wt
+                                rs_sca[c, 0] = wt[0]
                                 rs_sca[c, 1] = 0.0
                                 rs_sca[c, 2] = 1e30
                                 rs_sca[c, 3] = -1e30
                                 rs_sca[c, 4] = base_dist + t_hit
+                                rs_sca[c, 5] = wt[1]
+                                rs_sca[c, 6] = wt[2]
                                 rs_int[c, 0] = bounces_left - 1
                                 rs_int[c, 1] = processed
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                        weight *= cover_pass + trans_energy
+                        weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
                     # No split pool: reflect only while the reflection
                     # outweighs what shows through (see ``default_scatter``).
-                    elif ((refl_energy > MIN_ALPHA)
-                          and (refl_energy >= cover_pass)):
+                    elif ((refl_max > MIN_ALPHA)
+                          and (refl_max >= cover_pass)):
                         nref = normal
                         if nref.dot(rd) > 0.0:
                             nref = -nref
@@ -2345,7 +2435,7 @@ def wavefront_shade(
                         # Orphaned transmitted share (index-matched ior <= 1,
                         # pool absent, or bounces exhausted) continues unbent
                         # in the pass-through -- see ``_scatter_impl``.
-                        weight *= cover_pass + trans_energy
+                        weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
                 else:
@@ -2418,26 +2508,27 @@ def wavefront_shade(
                             s_trans = circuit_meta[f % circuit_meta.shape[0],
                                                    prim, _M_TRANSMISSION]
                     hit_point = ro + t_hit * rd
+                    zero3 = ti.math.vec3(0.0, 0.0, 0.0)
                     contrib = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
-                    pass_w = 0.0
-                    refl_orig = ti.math.vec3(0.0, 0.0, 0.0)
-                    refl_dir = ti.math.vec3(0.0, 0.0, 0.0)
-                    refl_w = 0.0
-                    trans_orig = ti.math.vec3(0.0, 0.0, 0.0)
-                    trans_dir = ti.math.vec3(0.0, 0.0, 0.0)
-                    trans_w = 0.0
+                    pass_w = zero3
+                    refl_orig = zero3
+                    refl_dir = zero3
+                    refl_w = zero3
+                    trans_orig = zero3
+                    trans_dir = zero3
+                    trans_w = zero3
                     if htype == 1:
                         (contrib, pass_w, refl_orig, refl_dir, refl_w,
                          trans_orig, trans_dir, trans_w) = _run_frag_scatter(
                             frag_scatters, tri_mat_id, f, prim, rd, sni, sfn,
-                            hit_point, color, alpha, reflectivity, s_ior,
-                            s_trans, tri_mat, bounces_left, refraction)
+                            hit_point, color, albedo3, alpha, reflectivity,
+                            s_ior, s_trans, tri_mat, bounces_left, refraction)
                     elif htype == 2:
                         (contrib, pass_w, refl_orig, refl_dir, refl_w,
                          trans_orig, trans_dir, trans_w) = _run_frag_scatter(
                             frag_scatters, pn_mat_id, f, prim, rd, sni, sfn,
-                            hit_point, color, alpha, reflectivity, s_ior,
-                            s_trans, pn_mat, bounces_left, refraction)
+                            hit_point, color, albedo3, alpha, reflectivity,
+                            s_ior, s_trans, pn_mat, bounces_left, refraction)
                     else:
                         # Circuits are never material-shaded, so no user
                         # pipeline (hence no user scatter) can own them; they
@@ -2445,13 +2536,19 @@ def wavefront_shade(
                         # pane, not refracting solid geometry.
                         (contrib, pass_w, refl_orig, refl_dir, refl_w,
                          trans_orig, trans_dir, trans_w) = circuit_scatter(
-                            rd, sni, sfn, hit_point, color, alpha,
+                            rd, sni, sfn, hit_point, color, albedo3, alpha,
                             reflectivity, s_ior, s_trans, tri_mat, f, prim,
                             bounces_left, refraction)
-                    acc += weight * contrib
+                    w_glow = ti.max(weight[0],
+                                    ti.max(weight[1], weight[2]))
+                    acc += ti.math.vec4(weight[0], weight[1], weight[2],
+                                        w_glow) * contrib
                     if ti.static(refraction != 0):
                         wt = weight * trans_w
-                        if (trans_w > 0.0) and (wt > MIN_WEIGHT) \
+                        wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+                        trans_w_max = ti.max(trans_w[0],
+                                             ti.max(trans_w[1], trans_w[2]))
+                        if (trans_w_max > 0.0) and (wt_max > MIN_WEIGHT) \
                                 and (bounces_left > 0):
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
@@ -2461,17 +2558,21 @@ def wavefront_shade(
                                     rs_rd[c, k] = trans_dir[k]
                                 for k in ti.static(range(4)):
                                     rs_acc[c, k] = 0.0
-                                rs_sca[c, 0] = wt
+                                rs_sca[c, 0] = wt[0]
                                 rs_sca[c, 1] = 0.0
                                 rs_sca[c, 2] = 1e30
                                 rs_sca[c, 3] = -1e30
                                 rs_sca[c, 4] = base_dist + t_hit
+                                rs_sca[c, 5] = wt[1]
+                                rs_sca[c, 6] = wt[2]
                                 rs_int[c, 0] = bounces_left - 1
                                 rs_int[c, 1] = processed
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                    if (refl_w > 0.0) and (bounces_left > 0):
+                    refl_w_max = ti.max(refl_w[0],
+                                        ti.max(refl_w[1], refl_w[2]))
+                    if (refl_w_max > 0.0) and (bounces_left > 0):
                         ro = refl_orig
                         rd = refl_dir
                         weight *= refl_w
@@ -2486,7 +2587,8 @@ def wavefront_shade(
                         weight *= pass_w
                         t_prev = t_hit
                         layer_prev = hit_layer
-                if weight < MIN_WEIGHT:
+                if ti.max(weight[0], ti.max(weight[1], weight[2])) \
+                        < MIN_WEIGHT:
                     done = True
                     break
 
@@ -2504,11 +2606,13 @@ def wavefront_shade(
                 rs_rd[r, k] = rd[k]
             for k in ti.static(range(4)):
                 rs_acc[r, k] = acc[k]
-            rs_sca[r, 0] = weight
+            rs_sca[r, 0] = weight[0]
             rs_sca[r, 1] = t_prev
             rs_sca[r, 2] = layer_prev
             rs_sca[r, 3] = seam_t
             rs_sca[r, 4] = base_dist
+            rs_sca[r, 5] = weight[1]
+            rs_sca[r, 6] = weight[2]
             rs_int[r, 0] = bounces_left
             rs_int[r, 1] = processed
             rs_int[r, 2] = _DONE if done else _ACTIVE
@@ -2522,15 +2626,17 @@ def wavefront_shade(
                 # the shared per-pixel accumulator. With an environment map the
                 # leftover throughput samples the map in the ray's final
                 # direction instead (so mirrors and glass reflect the sky).
-                if (env_w > 0) and (weight > 0.0):
+                if (env_w > 0) and (ti.max(weight[0], ti.max(
+                        weight[1], weight[2])) > 0.0):
                     ec = _sample_env_map(f, rd, env_off, env_w, env_h,
                                          env_intensity, textures)
                     for k in ti.static(range(3)):
-                        acc[k] += weight * ec[k]
-                    weight = 0.0
+                        acc[k] += weight[k] * ec[k]
+                    weight = ti.math.vec3(0.0, 0.0, 0.0)
                 for k in ti.static(range(4)):
                     ti.atomic_add(pix_accum[pix, k], acc[k])
-                ti.atomic_add(pix_accum[pix, 4], weight)
+                for k in ti.static(range(3)):
+                    ti.atomic_add(pix_accum[pix, 4 + k], weight[k])
         else:
             # Ray escaped to the background this segment: commit its colour +
             # leftover (background) throughput, then retire.
@@ -2542,19 +2648,21 @@ def wavefront_shade(
                                   _safe_inverse(rd[1]),
                                   _safe_inverse(rd[2]))
 
-            w_bg = 1.0
+            w_bg = ti.math.vec3(1.0, 1.0, 1.0)
             if ti.static(first_iter == 0):
-                w_bg = rs_sca[r, 0]
-            if (env_w > 0) and (w_bg > 0.0):
+                w_bg = ti.math.vec3(rs_sca[r, 0], rs_sca[r, 5], rs_sca[r, 6])
+            if (env_w > 0) and (ti.max(w_bg[0], ti.max(
+                    w_bg[1], w_bg[2])) > 0.0):
                 ec = _sample_env_map(f, rd, env_off, env_w, env_h,
                                      env_intensity, textures)
                 for k in ti.static(range(3)):
-                    ti.atomic_add(pix_accum[pix, k], w_bg * ec[k])
-                w_bg = 0.0
+                    ti.atomic_add(pix_accum[pix, k], w_bg[k] * ec[k])
+                w_bg = ti.math.vec3(0.0, 0.0, 0.0)
             if ti.static(first_iter == 0):
                 # First iteration's accumulator is implicitly zero; adding it
                 # would be a no-op, so the read is skipped entirely.
                 for k in ti.static(range(4)):
                     ti.atomic_add(pix_accum[pix, k], rs_acc[r, k])
-            ti.atomic_add(pix_accum[pix, 4], w_bg)
+            for k in ti.static(range(3)):
+                ti.atomic_add(pix_accum[pix, 4 + k], w_bg[k])
             rs_int[r, 2] = _DONE

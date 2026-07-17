@@ -126,7 +126,9 @@ def _alloc_wavefront_state(memory, tn, sca_width):
         memory.get_tensor((tn, 3), f32),          # rs_ro
         memory.get_tensor((tn, 3), f32),          # rs_rd
         memory.get_tensor((tn, 4), f32),          # rs_acc
-        memory.get_tensor((tn, sca_width), f32),  # rs_sca (4 tri / 5 general)
+        # rs_sca: 0 weight red, 1 t_prev, 2 layer_prev, 3 seam_t, 4 base_dist,
+        # 5 weight green, 6 weight blue (colour transport).
+        memory.get_tensor((tn, sca_width), f32),  # rs_sca (7 general)
         # rs_int: 0 bounces_left, 1 processed, 2 status, 3 num_hits, 4 drained
         # (column 4 is used only by the sorted-material path; the classic
         # kernels index columns 0-3 and never read it).
@@ -150,13 +152,14 @@ def _wavefront_state_bytes_per_primary(pool_ratio, extra_bytes_per_slot=0,
     and is accounted separately by the callers. Orchestrator-specific extras
     (for example the sorted path's event record/key arrays) are passed in so
     adaptive tile sizing can account for them."""
-    # rs_ro(3) + rs_rd(3) + rs_acc(4) + rs_sca(5) f32, rs_int(5) i32,
+    # rs_ro(3) + rs_rd(3) + rs_acc(4) + rs_sca(7) f32, rs_int(5) i32,
     # 6 K-buffer arrays of KBUF lanes, rs_pix i32 -- all per pool slot.
     # Core state + rs_pix + two arena-backed active-index ping-pong buffers.
-    per_slot = ((3 + 3 + 4 + 5 + 5) * 4 + 6 * KBUF * 4
+    per_slot = ((3 + 3 + 4 + 7 + 5) * 4 + 6 * KBUF * 4
                 + 4 + 2 * 4 + extra_bytes_per_slot)
-    # pix_accum(5) f32 -- per primary.
-    return pool_ratio * per_slot + 5 * 4 + extra_bytes_per_primary
+    # pix_accum(7) f32 -- per primary (RGB+glow premultiplied colour plus the
+    # per-channel leftover/background weight of the colour transport).
+    return pool_ratio * per_slot + 7 * 4 + extra_bytes_per_primary
 
 
 def get_wavefront_memory_required(
@@ -218,7 +221,7 @@ def get_wavefront_memory_required(
     # Remove the per-primary pix_accum tail to recover one pool slot's core
     # state (including rs_pix and both compaction index arrays). The shared
     # allocator is two int32 words per tile and is included in ``fixed`` below.
-    per_primary_tail = 5 * torch.float32.itemsize
+    per_primary_tail = 7 * torch.float32.itemsize
     base_slot = _wavefront_state_bytes_per_primary(1) - per_primary_tail
 
     uses_extended_features = (
@@ -264,7 +267,7 @@ def get_wavefront_memory_required(
         and not refraction
     )
     gen_fused = bool(
-        rt_settings.WF_GEN_FUSED
+        rt_settings.wf_gen_fused_active()
         and pool_ratio == 1
         and float(near_clip) <= 0.0
     )
@@ -855,11 +858,11 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
 
                 while True:
                     state_ptrs = memory.get_pointers()
-                    state = _alloc_wavefront_state(memory, pool, 5)
+                    state = _alloc_wavefront_state(memory, pool, 7)
                     (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                      rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
                     rs_pix = memory.get_tensor((pool,), i32)
-                    pix_accum = memory.get_tensor((attempt_primary, 5), f32)
+                    pix_accum = memory.get_tensor((attempt_primary, 7), f32)
                     # [0] next free shared slot, [1] overflow flag. The classic
                     # generation kernel initialises both. Fused generation is
                     # split-free, but zeroing keeps the state well-defined.
@@ -1065,7 +1068,7 @@ def raytrace_render_wavefront(
     # split-free (one slot per pixel, so pix == r), near-clip-free (implicit
     # base_dist == 0) renders on the one-sample-per-pixel AA path (fixed
     # 0.5/0.5 jitter). Everything else keeps the classic generate kernel.
-    gen_fused = (rt_settings.WF_GEN_FUSED and pool_ratio == 1
+    gen_fused = (rt_settings.wf_gen_fused_active() and pool_ratio == 1
                  and near_clip <= 0.0 and max(1, int(aa_level)) <= 1)
     if gen_fused:
         gen_meta = _arena_values(

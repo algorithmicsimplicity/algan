@@ -3,7 +3,6 @@ import os
 import hashlib
 from pathlib import Path
 
-from moviepy import AudioFileClip
 import pyttsx3
 
 from algan.settings.defaults import DIRECTORY_DEFAULTS
@@ -200,6 +199,8 @@ def subfinder(mylist, pattern):
     return -1
 
 def get_speech_generator_from_file(audio_file, transcript_file):
+    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
+
     full_ac = AudioFileClip(audio_file)
 
     hasher = hashlib.sha256()
@@ -248,6 +249,8 @@ def get_speech_generator_from_file(audio_file, transcript_file):
 
 
 def get_pyttsx_speech_generator(script):
+    from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
+
     hasher = hashlib.sha256()
     hasher.update(script.encode())
     hash_bytes = hasher.hexdigest()[:32]

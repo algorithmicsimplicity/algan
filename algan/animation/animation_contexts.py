@@ -1,7 +1,6 @@
 import copy
 from typing import Any, Callable, Optional
 
-from moviepy import AudioFileClip
 
 from algan.scene_manager import SceneManager
 from algan.animation.timeline import TimelineSpan
@@ -383,6 +382,8 @@ class Audio(AnimationContext):
     def __init__(self, file_path_or_clip: str, wait_at_end=0, **kwargs):
         audio_clip = file_path_or_clip
         if isinstance(file_path_or_clip, str):
+            from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
+
             audio_clip = AudioFileClip(file_path_or_clip)
         kwargs["run_time"] = audio_clip.duration + wait_at_end
         super().__init__(**kwargs)

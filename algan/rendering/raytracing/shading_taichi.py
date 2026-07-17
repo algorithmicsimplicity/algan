@@ -553,25 +553,32 @@ def make_pipeline_func(stages, offsets):
 # **Scatter contract** (user-customisable ray-bouncing): a scatter is a
 # ``@ti.func`` deciding how a shaded surface event continues its ray::
 #
-#     scatter(rd, n_interp, face_n, hit_point, shaded, alpha, reflectivity,
-#             ior, transmission, params: ti.template(), f, prim, bounces_left,
-#             refraction: ti.template())
+#     scatter(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
+#             reflectivity, ior, transmission, params: ti.template(), f, prim,
+#             bounces_left, refraction: ti.template())
 #         -> (contrib, pass_w,
 #             refl_orig, refl_dir, refl_w,
 #             trans_orig, trans_dir, trans_w)
 #
 # ``rd`` is the unit ray direction, ``shaded`` the pipeline's output colour
-# (vec4: RGB + glow), ``contrib`` the premultiplied colour committed to the ray
-# (the kernel adds ``weight * contrib``). The surface properties come straight
+# (vec4: RGB + glow), ``albedo`` the raw surface colour before lighting
+# (vec3), ``contrib`` the premultiplied colour committed to the ray (the
+# kernel adds ``weight * contrib``). The surface properties come straight
 # from the material: ``alpha`` is coverage, ``transmission`` how much light the
 # covered part passes, ``reflectivity`` packed metalness (negative = non-PBR)
-# and ``ior`` an unsigned magnitude. ``pass_w`` is the throughput multiplier
+# and ``ior`` an unsigned magnitude.
+#
+# Transport is full-colour: ray throughput is a vec3 and the branch weights
+# ``pass_w`` / ``refl_w`` / ``trans_w`` are vec3 per-channel multipliers (the
+# built-in scatter tints the metal Fresnel lobe and the transmitted share by
+# ``albedo``; kernels reduce a weight to its maximum component for branch
+# decisions and minimum-weight culls). ``pass_w`` is the throughput multiplier
 # for continuing *through* the surface to the next depth layer (used only when
-# ``refl_w == 0``). A positive ``refl_w`` bounces the ray from ``refl_orig``
+# ``refl_w`` is zero). A positive ``refl_w`` bounces the ray from ``refl_orig``
 # along ``refl_dir`` with throughput ``weight * refl_w``; a positive
 # ``trans_w`` additionally *splits* off a second branch from ``trans_orig``
 # along ``trans_dir`` -- the refracted ray for glass, or the reflection when
-# the pass-through is the primary (``refl_w == 0``). The built-in scatters
+# the pass-through is the primary (``refl_w`` zero). The built-in scatters
 # (``wavefront_kernels_taichi.default_scatter`` for solid geometry,
 # ``circuit_scatter`` for thin-pane circuits) derive all of this from the
 # material; attach a custom one to a

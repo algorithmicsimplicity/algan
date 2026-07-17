@@ -3,7 +3,14 @@ import torch.types
 from algan.mobs.surfaces.surface import Surface
 from algan.constants.color import Color
 import algan.utils.file_utils as file_utils
-from manim import ImageMobject
+from algan.utils.lazy_import import LazyModule, isinstance_if_loaded
+
+# Deferred: an ImageMob is usually built from a file path / array; only the
+# ManimMob conversion path hands it a manim ImageMobject, and in that case
+# manim is already imported. The isinstance checks below therefore must not
+# force the ~2 s manim import (isinstance_if_loaded is False for free while
+# manim was never loaded).
+_manim = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 
 
 class ImageMob(Surface):
@@ -24,7 +31,7 @@ class ImageMob(Surface):
 
     def __init__(self, rgba_array_or_file_path: torch.Tensor | str, **kwargs):
         submob = rgba_array_or_file_path
-        if isinstance(rgba_array_or_file_path, ImageMobject):
+        if isinstance_if_loaded(rgba_array_or_file_path, _manim, "ImageMobject"):
             rgba_array = Color.add_defaults(torch.from_numpy(submob.pixel_array).float() / 255)
         else:
             rgba_array = file_utils.get_image(rgba_array_or_file_path)
@@ -47,7 +54,7 @@ class ImageMob(Surface):
             color_texture=rgba_array.transpose(-3, -2).flip(-2),
             **kwargs,
         )
-        if isinstance(rgba_array_or_file_path, ImageMobject):
+        if isinstance_if_loaded(rgba_array_or_file_path, _manim, "ImageMobject"):
             self.scale(torch.tensor((submob.width / 2, submob.height / 2, 1)).float())
             self.move_to(submob.get_center())
 

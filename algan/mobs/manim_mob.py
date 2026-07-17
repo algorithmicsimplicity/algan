@@ -6,11 +6,13 @@ from algan.mobs.image_mob import ImageMob
 from algan.mobs.group import Group
 from algan.utils.tensor_utils import unsquish
 from algan.utils.mob_utils import batch_mobs
-from manim import ImageMobject, VectorizedPoint, ThreeDVMobject
+from algan.utils.lazy_import import LazyModule
 
-# Installs the persistent (cross-process) disk cache for Manim SVG/Tex geometry
-# by monkeypatching SVGMobject.init_svg_mobject. Importing has the side effect.
-import algan.utils.manim_svg_cache  # noqa: F401
+# Deferred: a ManimMob wraps an already-constructed manim mobject, so manim
+# is inevitably imported by the caller first; keeping it lazy here means
+# ``import algan`` does not pay manim's ~2 s dependency chain. The svg-cache
+# module patches manim, so it must ride along on the first load.
+_manim = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 
 
 class ManimMob(BezierCircuitCubic):
@@ -35,7 +37,7 @@ class ManimMob(BezierCircuitCubic):
         else:
             kwargs['add_to_scene'] = _add_to_scene
         for submob in manim_mob.submobjects:
-            if isinstance(submob, ImageMobject):
+            if isinstance(submob, _manim.ImageMobject):
                 mob = ImageMob(submob, add_to_scene=_add_to_scene)
                 children.append(mob)
                 continue

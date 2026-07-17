@@ -140,12 +140,14 @@ def wf_peel(
             for k in ti.static(range(4)):
                 ti.atomic_add(pix_accum[pix, k], rs_acc[r, k])
             ti.atomic_add(pix_accum[pix, 4], rs_sca[r, 0])
+            ti.atomic_add(pix_accum[pix, 5], rs_sca[r, 5])
+            ti.atomic_add(pix_accum[pix, 6], rs_sca[r, 6])
             rs_int[r, 2] = ST_DONE
         else:
             f = time_start + (ray_offset + pix) // pixels_per_frame
             acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
                                rs_acc[r, 3])
-            weight = rs_sca[r, 0]
+            weight = ti.math.vec3(rs_sca[r, 0], rs_sca[r, 5], rs_sca[r, 6])
             t_prev = rs_sca[r, 1]
             layer_prev = rs_sca[r, 2]
             seam_t = rs_sca[r, 3]
@@ -215,11 +217,15 @@ def wf_peel(
                             circuit_meta, circuit_colors,
                             circuit_border_colors)
                     alpha = ti.math.clamp(alpha, 0.0, 1.0)
-                    acc += (weight * alpha) * color
+                    w_glow = ti.max(weight[0],
+                                    ti.max(weight[1], weight[2]))
+                    acc += ti.math.vec4(weight[0], weight[1], weight[2],
+                                        w_glow) * alpha * color
                     weight *= 1.0 - alpha
                     t_prev = t_hit
                     layer_prev = hit_layer
-                    if weight < MIN_WEIGHT:
+                    if ti.max(weight[0], ti.max(weight[1], weight[2])) \
+                            < MIN_WEIGHT:
                         done = True
                 else:
                     # Triangle / PN patch: sample every material-independent
@@ -319,17 +325,20 @@ def wf_peel(
 
             for k in ti.static(range(4)):
                 rs_acc[r, k] = acc[k]
-            rs_sca[r, 0] = weight
+            rs_sca[r, 0] = weight[0]
             rs_sca[r, 1] = t_prev
             rs_sca[r, 2] = layer_prev
             rs_sca[r, 3] = seam_t
+            rs_sca[r, 5] = weight[1]
+            rs_sca[r, 6] = weight[2]
             rs_int[r, 1] = processed
             rs_int[r, 4] = drained if suspended else 0
             rs_int[r, 2] = status
             if status == ST_DONE:
                 for k in ti.static(range(4)):
                     ti.atomic_add(pix_accum[pix, k], acc[k])
-                ti.atomic_add(pix_accum[pix, 4], weight)
+                for k in ti.static(range(3)):
+                    ti.atomic_add(pix_accum[pix, 4 + k], weight[k])
 
 
 @ti.kernel
@@ -466,7 +475,7 @@ def wf_shade_event(
         rd = ti.math.vec3(rs_rd[r, 0], rs_rd[r, 1], rs_rd[r, 2])
         acc = ti.math.vec4(rs_acc[r, 0], rs_acc[r, 1], rs_acc[r, 2],
                            rs_acc[r, 3])
-        weight = rs_sca[r, 0]
+        weight = ti.math.vec3(rs_sca[r, 0], rs_sca[r, 5], rs_sca[r, 6])
         base_dist = rs_sca[r, 4]
         bounces_left = rs_int[r, 0]
         processed = rs_int[r, 1]
@@ -500,15 +509,21 @@ def wf_shade_event(
 
         (contrib, pass_w, refl_orig, refl_dir, refl_w,
          trans_orig, trans_dir, trans_w) = scatter_fn(
-            rd, ni, fn, pos, shaded, alpha, refl, ior, transmission,
+            rd, ni, fn, pos, shaded, rgb, alpha, refl, ior, transmission,
             params, f, prim, bounces_left, refraction)
 
-        acc += weight * contrib
+        w_glow = ti.max(weight[0], ti.max(weight[1], weight[2]))
+        acc += ti.math.vec4(weight[0], weight[1], weight[2],
+                            w_glow) * contrib
         done = False
         if ti.static(refraction != 0):
             # Transmitted branch: append to the tile-wide shared pool.
             wt = weight * trans_w
-            if (trans_w > 0.0) and (wt > MIN_WEIGHT) and (bounces_left > 0):
+            wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
+            trans_w_max = ti.max(trans_w[0],
+                                 ti.max(trans_w[1], trans_w[2]))
+            if (trans_w_max > 0.0) and (wt_max > MIN_WEIGHT) \
+                    and (bounces_left > 0):
                 c, have_slot = _reserve_continuation_slot(
                     rs_alloc, rs_ro.shape[0])
                 if have_slot:
@@ -517,11 +532,13 @@ def wf_shade_event(
                         rs_rd[c, k] = trans_dir[k]
                     for k in ti.static(range(4)):
                         rs_acc[c, k] = 0.0
-                    rs_sca[c, 0] = wt
+                    rs_sca[c, 0] = wt[0]
                     rs_sca[c, 1] = 0.0
                     rs_sca[c, 2] = 1e30
                     rs_sca[c, 3] = -1e30
                     rs_sca[c, 4] = base_dist + t_hit
+                    rs_sca[c, 5] = wt[1]
+                    rs_sca[c, 6] = wt[2]
                     rs_int[c, 0] = bounces_left - 1
                     rs_int[c, 1] = processed
                     rs_int[c, 2] = ST_TRAVERSE
@@ -530,7 +547,8 @@ def wf_shade_event(
                     rs_pix[c] = pix
 
         status = ST_PEEL
-        if (refl_w > 0.0) and (bounces_left > 0):
+        refl_w_max = ti.max(refl_w[0], ti.max(refl_w[1], refl_w[2]))
+        if (refl_w_max > 0.0) and (bounces_left > 0):
             # Bounce: continue in this slot along the scatter's reflected
             # branch; the stale K-buffer is abandoned (fresh traverse).
             for k in ti.static(range(3)):
@@ -549,12 +567,15 @@ def wf_shade_event(
             weight *= pass_w
             rs_sca[r, 1] = t_hit     # t_prev
             rs_sca[r, 2] = hit_layer  # layer_prev
-            if weight < MIN_WEIGHT:
+            if ti.max(weight[0], ti.max(weight[1], weight[2])) \
+                    < MIN_WEIGHT:
                 done = True
         if processed >= MAX_SURFACES_PER_RAY:
             done = True
 
-        rs_sca[r, 0] = weight
+        rs_sca[r, 0] = weight[0]
+        rs_sca[r, 5] = weight[1]
+        rs_sca[r, 6] = weight[2]
         for k in ti.static(range(4)):
             rs_acc[r, k] = acc[k]
         if done:
@@ -562,7 +583,8 @@ def wf_shade_event(
             # leftover throughput into the shared per-pixel accumulator.
             for k in ti.static(range(4)):
                 ti.atomic_add(pix_accum[pix, k], acc[k])
-            ti.atomic_add(pix_accum[pix, 4], weight)
+            for k in ti.static(range(3)):
+                ti.atomic_add(pix_accum[pix, 4 + k], weight[k])
             rs_int[r, 2] = ST_DONE
         else:
             rs_int[r, 2] = status

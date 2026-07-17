@@ -12,7 +12,6 @@ import sys
 import subprocess
 
 import torch
-from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter
 
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
@@ -27,6 +26,8 @@ from algan.utils.memory_utils import empty_cache
 
 
 def get_file_writer(temp_file_path, render_settings_resolution, codec, fps, with_mask, ffmpeg_params, audiofile, audio_codec):
+    from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter  # deferred: ~0.3 s of import algan
+
     try:
         file_writer = FFMPEG_VideoWriter(
             filename=temp_file_path,

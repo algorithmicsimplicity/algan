@@ -5,7 +5,12 @@ import torch.nn.functional as F
 from svgelements import Path, Line, Move, Close
 import pathlib
 
-import manim as mn
+# Deferred: manim's import chain (sympy/networkx/scipy/...) costs ~2 s of
+# ``import algan`` and is only needed once a Text/Tex is constructed. The
+# svg-cache module patches manim, so it must ride along on the first load.
+from algan.utils.lazy_import import LazyModule
+
+mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 from algan.settings.defaults import *
 from algan.settings.style_defaults import *
 from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag, Seq
@@ -49,7 +54,7 @@ class Tex(Mob):
         make_manim_dir()
         if "preamble" in kwargs:
             kwargs["tex_template"] = mn.TexTemplate(
-                preamble=_DEFAULT_PREAMBLE + "\n" + kwargs["preamble"]
+                preamble=_default_preamble() + "\n" + kwargs["preamble"]
             )
             del kwargs["preamble"]
         self.latex = latex
@@ -208,7 +213,7 @@ class OldTex(Mob):
     ):
         if "preamble" in kwargs:
             kwargs["tex_template"] = mn.TexTemplate(
-                preamble=_DEFAULT_PREAMBLE + "\n" + kwargs["preamble"]
+                preamble=_default_preamble() + "\n" + kwargs["preamble"]
             )
             del kwargs["preamble"]
 
@@ -421,7 +426,13 @@ class OldTex(Mob):
         ) + self.location.unsqueeze(-2)
 
 
-from algan.external_libraries.manim.utils.tex import _DEFAULT_PREAMBLE
+def _default_preamble():
+    """Vendored manim's default LaTeX preamble, fetched on first use
+    (deferred: importing ``algan.external_libraries.manim`` costs ~2 s of
+    ``import algan`` and is only needed when a Tex has a custom preamble)."""
+    from algan.external_libraries.manim.utils.tex import _DEFAULT_PREAMBLE
+
+    return _DEFAULT_PREAMBLE
 
 
 class Text(Tex):

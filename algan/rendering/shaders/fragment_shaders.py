@@ -298,12 +298,15 @@ cosine_color = FragmentStage(
 # ---------------------------------------------------------------------------
 
 @ti.func
-def _scatter_forced_mirror(rd, n_interp, face_n, hit_point, shaded, alpha,
-                           reflectivity, ior, params: ti.template(), f, prim,
+def _scatter_forced_mirror(rd, n_interp, face_n, hit_point, shaded, albedo,
+                           alpha, reflectivity, ior, transmission,
+                           params: ti.template(), f, prim,
                            bounces_left, refraction: ti.template()):
     """Treat the surface as a 85% mirror regardless of its per-vertex
     reflectivity: commit 15% of the shaded colour and bounce the remaining
-    throughput along the mirror direction (no transmission)."""
+    throughput along the mirror direction (no transmission). Branch weights
+    are vec3 per-channel throughput multipliers (colour transport); this
+    scatter reflects achromatically, so all three channels match."""
     n = n_interp.normalized()
     if n.dot(rd) > 0.0:
         n = -n
@@ -311,11 +314,13 @@ def _scatter_forced_mirror(rd, n_interp, face_n, hit_point, shaded, alpha,
     refl_orig = hit_point + n * 1e-3  # 10 * MIN_HIT_DISTANCE
     contrib = (alpha * 0.15) * shaded
     zero3 = ti.math.vec3(0.0, 0.0, 0.0)
-    refl_w = 0.85 * alpha
+    rw = 0.85 * alpha
     if bounces_left <= 0:  # out of bounces: absorb instead of reflecting
-        refl_w = 0.0
-    return (contrib, 1.0 - alpha, refl_orig, refl_dir, refl_w,
-            zero3, zero3, 0.0)
+        rw = 0.0
+    refl_w = ti.math.vec3(rw, rw, rw)
+    pass_w = ti.math.vec3(1.0 - alpha, 1.0 - alpha, 1.0 - alpha)
+    return (contrib, pass_w, refl_orig, refl_dir, refl_w,
+            zero3, zero3, zero3)
 
 
 #: Example custom scatter: forces mirror bouncing regardless of the mob's

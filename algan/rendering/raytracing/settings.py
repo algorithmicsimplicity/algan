@@ -161,8 +161,91 @@ WF_SKIP_UNLIT_NORMAL = os.environ.get("ALGAN_WF_SKIP_UNLIT_NORMAL", "1") == "1"
 # back exactly as before. Byte-identical (same _generate_ray math, same
 # order; validated by benchmarks/_wf_gen_fused_ab.py); iterations >= 1 and
 # every non-qualifying render use the unchanged classic kernels.
-# ALGAN_WF_GEN_FUSED=0 disables (for A/B and validation).
-WF_GEN_FUSED = os.environ.get("ALGAN_WF_GEN_FUSED", "1") == "1"
+#
+# Values: True / False force fused / classic generation; "auto" (default)
+# picks adaptively per render job. Fusing costs a SECOND compile-time
+# instantiation of the traverse+shade monoliths (the ``first`` variants) on
+# top of the classic ones its later iterations share with the unfused path --
+# roughly 10 s of warm-start kernel prep per program run (AST re-transform +
+# offline-cache load; see utils/taichi_warmstart.py) -- to win ~8.2% of
+# steady-state wavefront time. Auto therefore starts every job unfused and
+# turns fusing on mid-render only once the measured per-frame render rate
+# forecasts a remaining-time saving above WF_GEN_FUSED_MIN_WIN (the decision
+# is sticky for the process: once the fused variants are compiled, later jobs
+# start fused for free). Byte-identical either way, so the switch cannot
+# change output. ALGAN_WF_GEN_FUSED=0/1 forces (for A/B and validation).
+def _parse_gen_fused_mode(v):
+    v = str(v).strip().lower()
+    if v in ("1", "true", "on"):
+        return True
+    if v in ("0", "false", "off"):
+        return False
+    return "auto"
+
+
+WF_GEN_FUSED = _parse_gen_fused_mode(
+    os.environ.get("ALGAN_WF_GEN_FUSED", "auto"))
+
+# Fraction of wavefront render time the fused generation saves (the measured
+# steady-state win; used only by the "auto" forecast).
+WF_GEN_FUSED_GAIN = float(os.environ.get("ALGAN_WF_GEN_FUSED_GAIN", "0.082"))
+# Minimum forecasted saving (seconds of remaining render time * GAIN) before
+# "auto" pays the fused variants' compile cost. The default covers the
+# worst case observed on this project's hardware -- a cold offline cache,
+# where the two extra instantiations cost ~25 s -- so a marginal render never
+# loses time to the switch.
+WF_GEN_FUSED_MIN_WIN = float(
+    os.environ.get("ALGAN_WF_GEN_FUSED_MIN_WIN", "30.0"))
+
+# Adaptive state ("auto" mode only). The decision is process-sticky; the
+# batch counter restarts per render job so the forecast never uses the
+# compile-inflated first batch of a job.
+_WF_GEN_FUSED_ON = False
+_WF_GEN_FUSED_BATCHES = 0
+
+
+def set_gen_fused(mode):
+    """Set fused primary-ray generation on the deterministic wavefront:
+    ``True``/``False`` force it on/off; ``"auto"`` (default) starts unfused
+    for fast startup and enables it mid-render when the forecasted remaining
+    render time justifies compiling the fused kernel variants. All modes are
+    byte-identical (see ``WF_GEN_FUSED``)."""
+    global WF_GEN_FUSED
+    WF_GEN_FUSED = _parse_gen_fused_mode(mode)
+
+
+def wf_gen_fused_active():
+    """Live effective value of the fused-generation toggle (resolves
+    ``"auto"`` to the adaptive decision)."""
+    if WF_GEN_FUSED == "auto":
+        return _WF_GEN_FUSED_ON
+    return bool(WF_GEN_FUSED)
+
+
+def _begin_render_job():
+    """Render-loop hook: a new render job starts (resets the per-job batch
+    count; the fused decision itself stays sticky for the process)."""
+    global _WF_GEN_FUSED_BATCHES
+    _WF_GEN_FUSED_BATCHES = 0
+
+
+def _note_batch_rendered(frames, seconds, frames_remaining):
+    """Render-loop hook: a batch of ``frames`` frames rendered in ``seconds``
+    wall seconds with ``frames_remaining`` still to go. Returns True when this
+    call switches fused generation on (so the caller can log it). The first
+    rendered batch of a job is never used for the forecast -- it typically
+    contains the one-off kernel materialization/compile time."""
+    global _WF_GEN_FUSED_ON, _WF_GEN_FUSED_BATCHES
+    _WF_GEN_FUSED_BATCHES += 1
+    if (WF_GEN_FUSED != "auto" or _WF_GEN_FUSED_ON
+            or _WF_GEN_FUSED_BATCHES < 2
+            or frames <= 0 or seconds <= 0.0 or frames_remaining <= 0):
+        return False
+    projected_win = frames_remaining * (seconds / frames) * WF_GEN_FUSED_GAIN
+    if projected_win <= WF_GEN_FUSED_MIN_WIN:
+        return False
+    _WF_GEN_FUSED_ON = True
+    return True
 
 # "Family A+B" full material-field memory trim for the fragment-shading
 # wavefront. When on, triangles are reordered into material-class bands so

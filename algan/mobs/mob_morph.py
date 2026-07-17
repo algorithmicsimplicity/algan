@@ -8,7 +8,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
-from scipy.optimize import linear_sum_assignment
+def linear_sum_assignment(*args, **kwargs):
+    """scipy.optimize.linear_sum_assignment, imported on first call
+    (deferred: scipy costs ~0.4 s of ``import algan``)."""
+    from scipy.optimize import linear_sum_assignment as _lsa
+
+    return _lsa(*args, **kwargs)
 
 from algan.animation.animation_contexts import Off, Seq, Sync
 from algan.animation.timeline import bump_hierarchy_version
