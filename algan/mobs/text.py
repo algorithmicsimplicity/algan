@@ -1,9 +1,9 @@
 import copy
+import os
 
 import numpy
 import torch.nn.functional as F
 from svgelements import Path, Line, Move, Close
-import pathlib
 
 # Deferred: manim's import chain (sympy/networkx/scipy/...) costs ~2 s of
 # ``import algan`` and is only needed once a Text/Tex is constructed. The
@@ -31,12 +31,24 @@ from algan.utils.mob_utils import BatchedMobViewSequence
 
 
 def make_manim_dir():
-    """Create manim's tex/text output directories if they don't exist yet.
+    """Point manim's tex/text caches into Algan's cache dir and create them.
 
-    Called lazily on first :class:`Tex` construction (manim errors if they are
-    missing) rather than at ``import algan`` time, so importing the package
-    doesn't write to disk.
+    Manim compiles LaTeX (and renders Pango text) into ``{media_dir}/Tex`` /
+    ``{media_dir}/texts`` -- relative to the *current working directory* by
+    default, so every project re-pays every LaTeX compile. Redirect both into
+    ``DIRECTORY_DEFAULTS.cache_directory`` (content-hashed filenames make the
+    cache safely shareable across projects), unless the user already pointed
+    them somewhere custom.
+
+    Called lazily on first :class:`Tex` construction (manim errors if the
+    directories are missing) rather than at ``import algan`` time, so
+    importing the package doesn't write to disk.
     """
+    manim_cache_dir = os.path.join(DIRECTORY_DEFAULTS.cache_directory, "manim")
+    if mn.config.tex_dir == "{media_dir}/Tex":  # manim's stock default
+        mn.config.tex_dir = os.path.join(manim_cache_dir, "Tex")
+    if mn.config.text_dir == "{media_dir}/texts":  # manim's stock default
+        mn.config.text_dir = os.path.join(manim_cache_dir, "texts")
     for tex_dir in [mn.config.get_dir("tex_dir"), mn.config.get_dir("text_dir")]:
         if not tex_dir.exists():
             tex_dir.mkdir(parents=True)
@@ -307,7 +319,6 @@ class OldTex(Mob):
 
     def create_character_mobs(self, text, **kwargs):
         make_manim_dir()
-        pathlib.Path("media/tex").mkdir(exist_ok=True, parents=True)
         # s = 0.105 * self.size / 100
         s = 0.04 * 45 / 100
         self.convert_ratio = (0.105 * self.font_size / 100) / s

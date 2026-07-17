@@ -60,7 +60,27 @@ get_logger().info(f"Rendering device set to {COMPUTING_DEFAULTS.render_device}")
 
 class DirectoryDefaults:
     base_directory = sys.path[0]
-    cache_directory = os.path.join(base_directory, "algan_cache")
+    # Algan's per-user home directory: every persistent cache lives under
+    # ``cache_directory`` (audio stamps, manim Tex/Text geometry + LaTeX
+    # output, bezier tessellations, and the Taichi offline kernel cache),
+    # keyed by content hashes so it is shared safely across projects.
+    # Override with the ALGAN_HOME / ALGAN_CACHE_DIR env vars, or mutate the
+    # attributes before first use. The paths are evaluated once, at import:
+    # reassigning ``cache_directory`` at runtime does *not* move
+    # ``taichi_cache_directory`` (reassign it too if you want it to follow).
+    algan_directory = os.environ.get(
+        "ALGAN_HOME", os.path.join(os.path.expanduser("~"), ".algan")
+    )
+    cache_directory = os.environ.get(
+        "ALGAN_CACHE_DIR", os.path.join(algan_directory, "cache")
+    )
+    # Dedicated home for Taichi's offline kernel cache (compiled-kernel
+    # artifacts). Kept as its own setting because clearing content caches
+    # must not throw away compiled kernels (a ~minutes-long recompile).
+    # NOTE: consumed by ``ti.init`` while ``import algan`` is still running,
+    # so mutating it from user code is too late -- move it via the env vars
+    # above (or TI_OFFLINE_CACHE_FILE_PATH, which takes precedence).
+    taichi_cache_directory = os.path.join(cache_directory, "taichi")
     output_filename = "algan_render_output"
     output_directory = "algan_outputs"
     output_path = None

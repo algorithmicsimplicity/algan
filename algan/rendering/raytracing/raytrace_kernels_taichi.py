@@ -1,11 +1,15 @@
-"""Taichi kernel for ray tracing Algan scenes through spatio-temporal BVHs.
+"""Shared Taichi ray-tracing library + the Monte Carlo path-tracing kernels.
 
-One GPU thread is launched per (frame, pixel). Each thread owns exactly one
-cell of the output buffer ``[num_frames, num_pixels, channels]`` and performs
-the whole render for its pixel -- visibility, alpha blending and mirror
-bounces -- entirely in registers before writing the final color once. There
-are no atomics and no intermediate fragment storage, so memory use is
-independent of depth complexity and of the number of ray bounces.
+This module holds the ``@ti.func`` building blocks every renderer uses --
+sibling-block STBVH traversal, triangle / PN-patch / bezier-circuit
+intersection and colour/material sampling, batched hit gathering
+(``_collect_hits``), shadow occlusion and tonemapping -- plus the Monte Carlo
+megakernels used when ``samples_per_pixel > 1``: ``path_trace_scene_stbvh``
+and the physical-mode ``path_trace_physical_stbvh``, each launching one
+thread per (frame, pixel, sample) path and accumulating atomically into a
+float buffer that ``finalize_samples`` averages. The deterministic
+(``samples_per_pixel == 1``) renderer lives in ``wavefront_kernels_taichi``
+and imports these helpers.
 
 Hits along a ray are processed strictly front-to-back by *batched depth
 peeling*: each BVH traversal gathers the ``KBUF`` nearest hits beyond the
@@ -112,9 +116,11 @@ MIN_ALPHA = 1e-3
 # Marching stops once the remaining transmittance drops below this.
 MIN_WEIGHT = 1e-3
 # A surface this opaque (or more) casts a deterministic hard shadow; more
-# transparent surfaces are ignored by the binary shadow test (no glass/soft
-# shadows -- those need the physical path tracer). Picked at one-half so a
-# surface shadows exactly when it covers most of the light it occludes.
+# transparent surfaces are ignored by the binary shadow test (no glass
+# shadows -- those need the physical path tracer; lights with a shadow
+# radius get a deterministic soft-shadow sample fan instead, see
+# settings.SOFT_SHADOW_SAMPLES). Picked at one-half so a surface shadows
+# exactly when it covers most of the light it occludes.
 SHADOW_ALPHA_THRESHOLD = 0.5
 # Hard cap on blended surfaces per ray, to bound worst-case stacked geometry.
 MAX_SURFACES_PER_RAY = 256
@@ -2566,8 +2572,8 @@ def path_trace_scene_stbvh(
         # width * height, 5] (f32, zero-filled by the caller); converted to
         # u8 means by ``finalize_samples``.
         accum: ti.types.ndarray()):
-    """Monte Carlo estimator of the same light transport as
-    ``render_scene_stbvh``, generalized with random scattering.
+    """Monte Carlo estimator of the same light transport as the deterministic
+    wavefront tracer, generalized with random scattering.
 
     The parallel loop is flattened over (frame, pixel, sample): one thread
     traces one *path*, so the GPU stays saturated even for single-frame

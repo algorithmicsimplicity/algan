@@ -16,7 +16,8 @@ stages run left-to-right, each receiving the previous stage's output colour --
 so a user recolour stage can feed a built-in lighting stage. The built-in *core
 lit* materials are the first stages: the legacy diffuse
 :func:`~algan.rendering.shaders.pbr_shaders.default_shader`, ``MeshBasicMaterial``
-(unlit), ``MeshLambertMaterial``, ``MeshPhongMaterial`` and ``MeshStandardMaterial``.
+(unlit), ``MeshLambertMaterial``, ``MeshPhongMaterial``, ``MeshStandardMaterial``
+and ``MeshPhysicalMaterial``.
 Custom user stages (also ``@ti.func``) are composed into per-pipeline funcs by
 :func:`make_pipeline_func` and injected into the shade kernel as a flat
 ``ti.template()`` tuple (see ``taichi-func-injection``).
@@ -541,14 +542,19 @@ def make_pipeline_func(stages, offsets):
 
 
 # ---------------------------------------------------------------------------
-# Sorted material dispatch (Cycles-style) support.
+# Composed pipeline funcs + the scatter contract.
 #
-# The sorted wavefront (see ``wavefront_sorted_kernels_taichi``) launches one
-# small shade kernel per material bucket with that material's *pipeline func*
-# injected as a ``ti.template()`` -- so the runtime pid switch of
-# ``_run_frag_pipeline`` disappears and a warp never mixes materials. The six
-# built-in single-stage materials are wrapped into composed pipeline funcs here
-# (lazily, cached) so built-in and user pipelines share one injection contract.
+# ``builtin_pipeline_fn`` below exists for the UNSUPPORTED legacy sorted
+# wavefront (see ``wavefront_sorted_kernels_taichi``; kept for reference),
+# which launches one small shade kernel per material bucket with that
+# material's *pipeline func* injected as a ``ti.template()`` -- so the runtime
+# pid switch of ``_run_frag_pipeline`` disappears and a warp never mixes
+# materials. The six built-in single-stage materials are wrapped into composed
+# pipeline funcs (lazily, cached) so built-in and user pipelines share one
+# injection contract.
+#
+# The scatter contract below is LIVE: it is how the supported monolithic
+# ``wavefront_shade`` kernel dispatches custom ray bouncing too.
 #
 # **Scatter contract** (user-customisable ray-bouncing): a scatter is a
 # ``@ti.func`` deciding how a shaded surface event continues its ray::
@@ -594,9 +600,9 @@ _BUILTIN_PIPELINE_FNS = {}
 def builtin_pipeline_fn(pid):
     """Composed single-stage pipeline func for built-in material id ``pid``
     (0 default, 1 unlit, 2 lambert, 3 phong, 4 standard, 5 physical), for
-    injection into a sorted per-material shade kernel. Lazily created and
-    cached so every render reuses the same func objects (stable Taichi
-    template instantiations)."""
+    injection into a per-material shade kernel of the legacy sorted path
+    (unsupported). Lazily created and cached so every render reuses the same
+    func objects (stable Taichi template instantiations)."""
     pid = int(pid)
     if pid not in _BUILTIN_PIPELINE_FNS:
         _BUILTIN_PIPELINE_FNS[pid] = make_pipeline_func(
@@ -613,8 +619,8 @@ def _run_frag_pipeline(frag_pipelines: ti.template(),
     """Evaluate a surface hit's per-primitive shading pipeline.
 
     ``pid_arr[f, prim]`` selects the pipeline: ids 0-5 are the built-in
-    single-stage materials (dispatched directly for a transparently identical
-    result to the pre-pipeline ``_shade_fragment``); ids >= ``_USER_PIPELINE_BASE``
+    single-stage materials (dispatched directly, without the composed-func
+    indirection); ids >= ``_USER_PIPELINE_BASE``
     index the injected ``frag_pipelines`` tuple. ``albedo`` is the interpolated
     raw base RGB (``glow`` the passthrough 4th channel). Returns the shaded
     RGB + glow as a ``vec4``.

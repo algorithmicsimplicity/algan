@@ -875,6 +875,7 @@ class TriangulatedBezierCircuit(Mob):
                 hash_bytes = hasher.hexdigest()[:32]
                 file_path = os.path.join(
                     DIRECTORY_DEFAULTS.cache_directory,
+                    "tessellations",
                     f"{hash_bytes}.txt",
                 )
                 if os.path.exists(file_path):

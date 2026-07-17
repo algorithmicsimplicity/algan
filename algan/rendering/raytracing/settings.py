@@ -260,23 +260,22 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
 # scatter-free triangle path (the common case). Default OFF.
 WF_MEM_TRIM = os.environ.get("ALGAN_WF_MEM_TRIM", "0") == "1"
 
-# Experimental "textured surface" wavefront (Surface / flat-triangle scenes
-# only). When on, the deterministic wavefront shades from three per-triangle
-# texture lookups instead of per-vertex arrays: a colour texture (RGBA+glow), a
+# UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle
+# scenes only). This variant is no longer maintained and no longer works; the
+# monolithic general wavefront is the only supported deterministic tracer.
+# When on, the deterministic wavefront shaded from three per-triangle texture
+# lookups instead of per-vertex arrays: a colour texture (RGBA+glow), a
 # material texture (the shading parameter block) and a surface texture
-# (reflectivity/roughness/index-of-refraction used for scatter). At build time a
-# property group that is constant across a triangle is promoted to a shared 1x1
-# texture and one that varies per vertex to a per-triangle 2x2 texture whose
-# bilinear lookup approximates the barycentric blend (see
-# scene_builder._build_textured_scene + wavefront_textured_kernels_taichi). A
-# proof-of-concept alternative to the per-vertex + constant-promotion path used
-# to benchmark the texture-lookup shading architecture. Default OFF.
+# (reflectivity/roughness/index-of-refraction used for scatter); see
+# scene_builder._build_textured_scene + wavefront_textured_kernels_taichi. It
+# was a proof-of-concept built to benchmark the texture-lookup shading
+# architecture, kept for reference only. Default OFF; do not enable.
 WF_TEXTURED = os.environ.get("ALGAN_WF_TEXTURED", "0") == "1"
 
 
 def set_textured_wavefront(enabled):
-    """Enable the experimental texture-lookup wavefront shader (Surface /
-    flat-triangle scenes only; see ``WF_TEXTURED``)."""
+    """Enable the UNSUPPORTED legacy texture-lookup wavefront shader (kept for
+    reference only, no longer works; see ``WF_TEXTURED``)."""
     global WF_TEXTURED
     WF_TEXTURED = bool(enabled)
 
@@ -387,11 +386,12 @@ def project_on_gpu_active():
     return COMPUTING_DEFAULTS.render_device.type == "cuda"
 
 
-# Feature bitmask for the textured wavefront: each bit compiles one of the
-# monolith's features back into the (otherwise lean) textured shade kernel, so
-# the marginal occupancy / performance cost of each can be measured one at a
-# time (see benchmarks/_wf_textured_features_ab.py). The features are added in
-# the order beziers -> custom scatter -> shadows -> normal maps.
+# Feature bitmask for the UNSUPPORTED legacy textured wavefront (see
+# WF_TEXTURED): each bit compiled one of the monolith's features back into the
+# (otherwise lean) textured shade kernel, so the marginal occupancy /
+# performance cost of each could be measured one at a time (see
+# benchmarks/_wf_textured_features_ab.py). The features are added in the order
+# beziers -> custom scatter -> shadows -> normal maps.
 WF_TEX_BEZ = 1        # bezier-circuit traversal + shading
 WF_TEX_SCATTER = 2    # per-material custom scatter dispatch (ray bouncing)
 WF_TEX_SHADOWS = 4    # binary hard shadow rays (triangle occluders)
@@ -400,32 +400,33 @@ WF_TEXTURED_FEATURES = int(os.environ.get("ALGAN_WF_TEXTURED_FEATURES", "0"))
 
 
 def set_textured_features(mask):
-    """Set which monolith features are compiled into the textured wavefront
-    shade kernel (a bitmask of WF_TEX_BEZ / _SCATTER / _SHADOWS / _NORMALMAP)."""
+    """Set which monolith features are compiled into the UNSUPPORTED legacy
+    textured wavefront shade kernel (a bitmask of WF_TEX_BEZ / _SCATTER /
+    _SHADOWS / _NORMALMAP; see ``WF_TEXTURED``)."""
     global WF_TEXTURED_FEATURES
     WF_TEXTURED_FEATURES = int(mask)
 
 
-# Cycles-style sorted material dispatch for the deterministic wavefront's
-# *fragment-shading* path. When active, the monolithic shade kernel is replaced
-# by a peel (surface-eval) kernel that suspends each ray at its next material
-# event, a host-side sort of the pending events by (geometry type, material
-# pipeline id), and one small geometry-free shade kernel *per material bucket*
-# with the material's pipeline + scatter funcs injected at compile time -- so a
-# warp never mixes materials and no kernel carries another material's code.
-# Shadows become a separate per-event kernel (they are material-independent).
-# The vertex-shaded (fragment-shading off) path has no per-material work and
-# always keeps the classic single shade kernel.
+# UNSUPPORTED legacy Cycles-style sorted material dispatch for the
+# deterministic wavefront's *fragment-shading* path. The sorted pipeline is no
+# longer maintained and no longer works; the monolithic shade kernel is the
+# only supported deterministic shade path. When active, the monolith was
+# replaced by a peel (surface-eval) kernel that suspends each ray at its next
+# material event, a host-side sort of the pending events by (geometry type,
+# material pipeline id), and one small geometry-free shade kernel *per
+# material bucket* with the material's pipeline + scatter funcs injected at
+# compile time -- so a warp never mixes materials and no kernel carries
+# another material's code (see wavefront_sorted_kernels_taichi).
 #
 # Values: "auto" (default) and False/"0" both use the monolithic shade kernel,
-# which now supports *everything* the sorted path does -- custom ray-bouncing
+# which supports *everything* the sorted path did -- custom ray-bouncing
 # (scatter) and normal-mapped lighting -- while staying faster on the built-in
 # materials (it drains up to KBUF hits per launch, whereas sorting pays
-# per-event kernel round trips + host syncs; see benchmarks/_wf_sorted_ab.py and
-# _wf_monolith_scatter_ab.py). True/"1" forces the sorted pipeline (retained for
-# research / potential future workloads with very many heavy material
-# pipelines); it is byte-identical to the monolith. "auto" is kept as a distinct
-# label so the engine can revisit this heuristic later without an API change.
+# per-event kernel round trips + host syncs; see benchmarks/_wf_sorted_ab.py
+# and _wf_monolith_scatter_ab.py). True/"1" still routes to the sorted
+# pipeline, but that route is unsupported (kept for reference only). "auto" is
+# kept as a distinct label so the engine can revisit this heuristic later
+# without an API change.
 def _parse_sort_mode(v):
     v = str(v).strip().lower()
     if v in ("1", "true", "on"):
@@ -441,7 +442,8 @@ WAVEFRONT_SORT_MATERIALS = _parse_sort_mode(
 
 def set_material_sorting(enabled):
     """Set Cycles-style sorted per-material shading of the deterministic
-    wavefront's fragment-shading path: ``True`` forces the sorted pipeline;
+    wavefront's fragment-shading path: ``True`` forces the UNSUPPORTED legacy
+    sorted pipeline (kept for reference only, no longer works);
     ``False`` / ``"auto"`` (default) use the monolithic kernel, which handles
     custom scatter + normal maps itself and is faster on built-in materials.
     See ``WAVEFRONT_SORT_MATERIALS``."""
@@ -490,14 +492,15 @@ def set_ray_traced_shadows(enabled):
     When enabled, every shaded triangle/PN fragment traces one shadow ray per
     scene point light; a light is occluded (its direct diffuse/specular term
     dropped, ambient/emissive kept) when an opaque surface lies between the
-    fragment and the light. Shadows are evaluated inside the per-fragment
-    lighting model, so this implies :func:`set_fragment_shading` for the render
-    and forces the general ``render_scene_stbvh`` kernel (the lean triangle-only
-    and no-PN kernels are bypassed). Shadows are hard-edged and ignore
-    transparency; for soft or glass shadows use the physical path tracer
-    (``set_samples_per_pixel(n)`` with ``n > 1``). Only the deterministic
-    renderer (``set_samples_per_pixel(1)``, non-physical) is affected. Set
-    before rendering.
+    fragment and the light. Shadows are evaluated inside the wavefront shade
+    kernel's per-fragment lighting model, so this implies
+    :func:`set_fragment_shading` for the render. Shadows are binary and ignore
+    partial transparency; lights with a non-zero ``shadow_radius`` /
+    ``shadow_angle`` (and area lights) get *soft* shadows via a deterministic
+    fan of ``SOFT_SHADOW_SAMPLES`` rays, while glass shadows need the physical
+    path tracer (``set_samples_per_pixel(n)`` with ``n > 1``). Only the
+    deterministic renderer (``set_samples_per_pixel(1)``, non-physical) is
+    affected. Set before rendering.
     """
     global SHADOWS
     SHADOWS = bool(enabled)
@@ -651,9 +654,8 @@ def _constant_promotion_active():
     render: it is enabled, and the batch will render through the deterministic
     fragment-shading general wavefront (the only path where a mob's colours are
     raw albedo, so a "constant colour" is genuinely constant per fragment, and
-    the only kernel whose per-vertex reads are guarded for shrunk arrays). The
-    material maps the promotion adds set ``has_material_textures``, which routes
-    the batch to that kernel (see render_batch_ray_traced)."""
+    the only kernel whose per-vertex reads are guarded for shrunk arrays).
+    Every deterministic (samples <= 1) batch renders through that kernel."""
     return PROMOTE_CONSTANTS and FRAGMENT_SHADING and SAMPLES_PER_PIXEL <= 1
 
 def _scene_has_user_pipeline(merged):

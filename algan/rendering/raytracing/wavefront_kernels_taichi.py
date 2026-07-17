@@ -1,20 +1,23 @@
-"""Wavefront (stage-split) variant of deterministic general ray-trace
-kernel.
+"""Wavefront (stage-split) kernels of the deterministic general ray tracer.
 
-This module splits the tracing process into small per-stage kernels connected by
-per-ray state in global memory, driven by a host-side iteration loop:
+This module splits the tracing process into small per-stage kernels connected
+by per-ray state in global memory, driven by a host-side iteration loop
+(``tracer.raytrace_render_wavefront``):
 
-* :func:`wavefront_generate_rays`      -- initialise per-ray state with primary rays.
+* :func:`wavefront_generate_rays` -- initialise per-ray state with primary
+  rays (skipped when fused generation folds this into the first traverse; see
+  ``settings.WF_GEN_FUSED``).
 * :func:`wavefront_traverse` -- for each *active* ray, gather the KBUF nearest
-  hits (reusing the unchanged ``_collect_hits_tri``) into global state.
-* :func:`wavefront_shade`    -- applies a pipeline of built-in fragment shaders (and optionally user-provided custom fragment shaders)..
-* :func:`wf_composite`         -- composite each ray's accumulator over the
-  background.
+  hits (reusing the unchanged ``_collect_hits``) into global state.
+* :func:`wavefront_shade` -- drain the gathered hits: built-in / custom
+  fragment shading, shadows, and reflection / refraction continuations.
+* :func:`wf_composite_accum` (and the AA variants) -- composite each pixel's
+  accumulator over the background.
 
-Between iterations the host compacts the still-active rays with a PyTorch
-``nonzero`` (see ``render_triangles_wavefront`` in ``primitives.py``), so each
-launch processes only rays that still have work -- warps refill as rays drop
-out, which is the divergence fix.
+Between iterations the host compacts the still-active rays with the
+:func:`compact_ray_slots` kernel into arena-backed ping-pong index buffers
+(see ``tracer._ArenaRayCompactor``), so each launch processes only rays that
+still have work -- warps refill as rays drop out, which is the divergence fix.
 """
 import taichi as ti
 
@@ -108,8 +111,11 @@ _GOLDEN_ANGLE = 2.3999632297286533
 
 _PI = 3.141592653589793
 
-# Deferred shadows (opt-in ``DEFER_WF_SHADOWS``) pack a per-(K-buffer hit,
-# light) occlusion bit into a single int32, so at most 32 // KBUF lights fit.
+# Deferred shadows (the ``deferred_shadows`` compile-time template of the
+# shade kernel; currently never enabled -- the tracer always passes 0, the
+# separate shadow kernel having measured slower than inline shadows) pack a
+# per-(K-buffer hit, light) occlusion bit into a single int32, so at most
+# 32 // KBUF lights fit.
 # The inline (default) shadow path uses the full ``MAX_SHADOW_LIGHTS``; only
 # the deferred bit-packing is bounded here (lights past it stay lit in
 # deferred mode -- a no-op unless a user both enables deferred shadows and
@@ -1123,8 +1129,8 @@ def wf_composite(
         tonemapping: ti.template(), tonemap_exposure: ti.f32,
         out: ti.types.ndarray()):
     """Composite each ray's premultiplied accumulator over the pre-filled
-    background (mirrors the tail of ``render_triangles_stbvh``). State is indexed
-    tile-locally by ``r``; the global ray is ``ray_offset + r``."""
+    background. State is indexed tile-locally by ``r``; the global ray is
+    ``ray_offset + r``."""
     pixels_per_frame = width * height
     num_rays = rs_acc.shape[0]
     for r in range(num_rays):
@@ -1275,11 +1281,11 @@ def wf_finalize_aa(
 # ---------------------------------------------------------------------------
 # General (triangle + PN patch + bezier circuit) wavefront kernels.
 #
-# Same stage split as the triangle path, but the traverse stage reuses the
-# general ``_collect_hits`` (all three BVHs + the Matrix Pencil PN solver) and the
-# shade stage replicates ``render_scene_stbvh``'s per-type drain loop. State
-# carries an extra scalar, base_dist (rs_sca column 4), used by the bezier
-# screen-constant border width and accumulated across mirror bounces.
+# The traverse stage reuses the general ``_collect_hits`` (all three BVHs +
+# the Matrix Pencil PN solver) and the shade stage drains the gathered hits
+# front-to-back per geometry type. State carries an extra scalar, base_dist
+# (rs_sca column 4), used by the bezier screen-constant border width and
+# accumulated across mirror bounces.
 # ---------------------------------------------------------------------------
 
 
@@ -1516,7 +1522,7 @@ def wavefront_traverse(
                 circuit_meta, edges_2d, edge_accel, has_tri, has_pn, has_bez,
                 initial_opq_t, initial_opq_layer)
         rs_int[r, 3] = num_hits
-        # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wf_shade_general
+        # num_hits == 0 leaves the ray _ACTIVE (not _DONE) so wavefront_shade
         # commits its accumulated colour + leftover (background) throughput to
         # the per-pixel accumulator before retiring it -- a split branch's
         # background contribution must be summed, not dropped.
@@ -1563,13 +1569,16 @@ def wavefront_shadow(
         rs_kb: ti.types.ndarray(), rs_kp: ti.types.ndarray(),
         rs_kf: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
         rs_vis: ti.types.ndarray()):
-    """Deferred binary hard-shadow stage for the general wavefront: for each
-    active ray, precompute per-(K-buffer hit, light) occlusion into a packed
-    int32 (bit ``q * MAX_SHADOW_LIGHTS + li``). Run between traverse and shade so
-    the shade kernel reads visibility bits instead of inlining the heavy
+    """Deferred binary hard-shadow stage for the general wavefront (currently
+    unused: the tracer always compiles ``wavefront_shade`` with
+    ``deferred_shadows == 0`` -- the split measured slower than inline
+    shadows; kept for a future occupancy-bound workload): for each active ray,
+    precompute per-(K-buffer hit, light) occlusion into a packed int32 (bit
+    ``q * MAX_SHADOW_LIGHTS + li``). Run between traverse and shade so the
+    shade kernel reads visibility bits instead of inlining the heavy
     ``_shadow_occluded`` -> ``_nearest_surface_g`` -> PN-solver call graph
     (register-pressure relief -> higher shade-kernel occupancy). The per-hit
-    shadow geometry mirrors ``wf_shade_general``'s inline block exactly, so the
+    shadow geometry mirrors ``wavefront_shade``'s inline block exactly, so the
     bits drive byte-identical shading. Because ``_collect_hits`` stops gathering
     at the first opaque hit, the K-buffer holds (almost) exactly the hits shade
     consumes, so few bits are computed and never read."""
@@ -1717,8 +1726,8 @@ def wavefront_shade(
         # (this kernel is at Taichi's 64 runtime-arg ceiling): [tri, pn].
         layer_offsets: ti.types.ndarray(),
         # Fragment shading + binary hard shadows (compile-time templates, both
-        # 0 on the default vertex-shaded path so the whole block below compiles
-        # out -- byte-identical to the megakernel's vertex path) and their data.
+        # 0 on the default vertex-shaded path so the whole block below
+        # compiles out) and their data.
         # ``refraction`` (also compile-time) enables Snell-law bending of the
         # transmitted ray for surfaces with a refractive index (extra cols 6-8).
         frag_shading: ti.template(), frag_pipelines: ti.template(),
@@ -1752,14 +1761,15 @@ def wavefront_shade(
         rs_kp: ti.types.ndarray(), rs_kf: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(), pix_accum: ti.types.ndarray(),
         rs_alloc: ti.types.ndarray(), rs_vis: ti.types.ndarray()):
-    """Drain gathered hits front-to-back exactly as ``render_scene_stbvh``'s
-    inner loop, with per-geometry-type shading and mirror bounces.
+    """Drain gathered hits front-to-back, alpha-compositing each surface with
+    per-geometry-type shading and mirror bounces until the ray's throughput is
+    spent or its K-buffer is exhausted.
 
     When ``frag_shading`` is enabled, triangle/PN hits are material-shaded per
     fragment from the raw albedo (bezier circuits keep their sampled colour),
     and when ``shadows`` is also enabled each such fragment fires one binary
-    shadow ray per light through all three BVHs -- the same per-fragment
-    lighting/shadow model the megakernel runs in ``_trace_scene_ray``.
+    shadow ray per light through all three BVHs inside the per-fragment
+    lighting model.
 
     When ``refraction`` is enabled, a transparent refractive surface (glass)
     reflects AND refracts at once. The reflected branch continues in this ray
@@ -1922,7 +1932,7 @@ def wavefront_shade(
                 # albedo for triangle/PN hits; evaluate the lighting model per
                 # fragment. Bezier circuits (htype 0) keep their sampled colour.
                 # Compiled out entirely on the default (vertex-shaded) path via
-                # ti.static -- identical to ``render_scene_stbvh``.
+                # ti.static.
                 if ti.static(frag_shading != 0):
                     # Per-light shadow visibility for this hit (all-lit unless a
                     # binary shadow ray finds an opaque blocker). Compiled out
@@ -1934,7 +1944,7 @@ def wavefront_shade(
                     vis = ti.Vector([1.0] * MAX_SHADOW_LIGHTS)
                     if ti.static((shadows != 0) and (deferred_shadows != 0)):
                         # Deferred shadows: read the per-(hit, light) occlusion
-                        # bits precomputed by ``wf_shadow_general`` for this hit's
+                        # bits precomputed by ``wavefront_shadow`` for this hit's
                         # K-buffer slot (``sel``). Byte-identical to the inline
                         # path below; just relocated to a lean kernel.
                         sbits = rs_vis[r]

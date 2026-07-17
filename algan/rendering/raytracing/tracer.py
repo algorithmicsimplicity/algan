@@ -1,30 +1,31 @@
-"""Ray traced drop-in replacements for Algan's rasterized render primitives.
+"""Ray-traced render orchestration: renderer dispatch and the deterministic
+wavefront's host-side tile / iteration loop.
 
-``RayTracedTrianglePrimitive`` and ``RayTracedBezierCircuitPrimitive`` subclass
-the rasterized primitives to keep their construction and batching, but render
-through a self-contained ray tracing pipeline. ``RayTracedPNTrianglePrimitive``
-additionally renders each triangle as a curved point-normal (PN) patch -- a
-quadratic Bezier triangle bent to match the vertex normals (enable with
-``enable_ray_tracing(pn_triangles=True)``):
+:func:`render_batch_raytraced` is the entry point called by the render loop
+for a batch of frames. It obtains the merged per-geometry-type arrays +
+STBVHs (``scene_builder``), prepares camera / light / environment tensors in
+the render arena, and dispatches on the sample count:
 
-* ``project_to_screen`` shades vertices and packs geometry + per-frame bounds
-  for the whole batch of frames (the spatio-temporal BVH of ``stbvh.py``).
-* ``render`` traces one ray per (frame, pixel) with the unified Taichi kernel
-  (``ray_trace_taichi.py``), which alpha-blends every surface it encounters
-  -- including mirror bounces -- directly into a fixed
-  ``[num_frames, num_pixels, channels]`` output buffer. Memory use is
-  independent of depth complexity and bounce count, and there is no fragment
-  buffer or sorting pass. The Monte Carlo kernels flatten the parallel loop
-  further to one thread per (frame, pixel, sample) path, accumulating into a
-  float32 per-pixel buffer with atomic adds.
+* ``samples_per_pixel == 1`` (default) -- the deterministic *wavefront*
+  tracer (:func:`raytrace_render_wavefront`): bounded ray tiles run
+  generate -> traverse -> shade -> composite kernel stages
+  (``wavefront_kernels_taichi.py``), with per-ray state pool-allocated from
+  ``ManualMemory``, Taichi-side compaction of the still-active rays between
+  host iterations, and a shared continuation pool for reflective /
+  refractive splits (an overflowing tile is discarded and retried with fewer
+  primaries, never approximated).
+* ``samples_per_pixel > 1`` -- the Monte Carlo path-tracing megakernel
+  (``path_trace_scene_stbvh``), one thread per (frame, pixel, sample) path,
+  accumulating into a float32 per-pixel buffer that ``finalize_samples``
+  averages.
 
-Reflections are inferred from the mob's Three.js-style material properties.
-Use ``MeshStandardMaterial(metalness=..., roughness=...)`` or
-``MeshPhysicalMaterial`` before spawning; reflections bounce up to
+Reflections and refraction are inferred from the mob's Three.js-style
+material properties. Use ``MeshStandardMaterial(metalness=..., roughness=...)``
+or ``MeshPhysicalMaterial`` before spawning; rays bounce up to
 ``MAX_BOUNCES`` times.
 
-Call :func:`enable_ray_tracing` *before constructing any mobs* to make new
-mobs render through this pipeline.
+On out-of-memory the frame window is halved and retried
+(``OutOfRenderMemory``); see ``render_batch_raytraced``.
 """
 from __future__ import annotations
 
@@ -130,8 +131,9 @@ def _alloc_wavefront_state(memory, tn, sca_width):
         # 5 weight green, 6 weight blue (colour transport).
         memory.get_tensor((tn, sca_width), f32),  # rs_sca (7 general)
         # rs_int: 0 bounces_left, 1 processed, 2 status, 3 num_hits, 4 drained
-        # (column 4 is used only by the sorted-material path; the classic
-        # kernels index columns 0-3 and never read it).
+        # (column 4 is used only by the legacy sorted-material path
+        # (unsupported); the classic kernels index columns 0-3 and never
+        # read it).
         memory.get_tensor((tn, 5), i32),          # rs_int
         memory.get_tensor((tn, KBUF), f32),       # rs_kt
         memory.get_tensor((tn, KBUF), f32),       # rs_kl
@@ -175,9 +177,11 @@ def get_wavefront_memory_required(
 ):
     """Exact deterministic-wavefront temporary bytes for batch sizing.
 
-    This mirrors the selected general, textured, or material-sorted route,
-    including route metadata, event records, shadow visibility, active-index
-    ping-pong buffers, and fixed counter words.  It excludes the possible
+    This mirrors the selected route -- the general wavefront, or the legacy
+    textured / material-sorted variants (unsupported, but still selectable
+    via their settings toggles) -- including route metadata, event records,
+    shadow visibility, active-index ping-pong buffers, and fixed counter
+    words.  It excludes the possible
     initial four-byte alignment; the caller knows the output buffer's actual
     end pointer and adds that padding exactly.
 
@@ -545,13 +549,15 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     near_clip = float(getattr(cam, "near", 0.0) or 0.0)
     far_clip = float(getattr(cam, "far", 0.0) or 0.0)
 
-    # Anti-aliasing strategy. All deterministic renderers (megakernels and
-    # wavefront) average ``aa^2`` jittered sub-pixel rays *in place* at the
-    # output resolution, so the frame buffer stays ``screen_width x
-    # screen_height`` regardless of ``aa`` (aa^2× less render memory than
-    # super-sampling). The wavefront path runs the full gen→traverse→shade→
-    # compact→composite pipeline once per sub-pixel sample, accumulating into
-    # a float buffer and averaging at the end.
+    # Anti-aliasing strategy. Default: render super-sampled (screen size * aa)
+    # and let post-processing box-average down. ALGAN_INPLACE_AA=1 instead
+    # averages ``aa^2`` jittered sub-pixel rays *in place* at the output
+    # resolution, so the frame buffer stays ``screen_width x screen_height``
+    # regardless of ``aa`` (aa^2x less render memory than super-sampling): the
+    # wavefront runs the full gen→traverse→shade→compact→composite pipeline
+    # once per sub-pixel sample, accumulating into a float buffer and
+    # averaging at the end, while the Monte Carlo megakernel folds the aa^2
+    # factor into its per-pixel sample count (see samples_eff below).
     inplace_aa = os.getenv("ALGAN_INPLACE_AA", "0") != "0"
     if inplace_aa:
         width = screen_width
@@ -944,8 +950,8 @@ def raytrace_render_wavefront(
     5th scalar (base_dist) for bezier border widths across bounces.
 
     ``frag_flag``/``shadow_flag`` select the deterministic per-fragment shading
-    and binary hard-shadow paths (compile-time templates of the shade kernel,
-    matching ``render_scene_stbvh``); ``light_pos``/``light_col`` feed both.
+    and binary hard-shadow paths (compile-time templates of the shade kernel);
+    ``light_pos``/``light_col`` feed both.
 
     ``frag_scatters`` is the per-pipeline custom ray-continuation (scatter) tuple
     (empty when no scene pipeline overrides bouncing); a non-empty tuple switches
@@ -965,24 +971,24 @@ def raytrace_render_wavefront(
     sum.
 
     When fragment shading is active, ``settings.WAVEFRONT_SORT_MATERIALS``
-    selects the shade architecture: the Cycles-style *sorted* pipeline (rays
-    suspended at their material events, bucketed by (geometry type, material
-    pipeline id) and shaded by dedicated per-material kernels -- see
-    ``wavefront_sorted_kernels_taichi``), used only when explicitly forced
-    (``set_material_sorting(True)``), or the monolithic ``wavefront_shade``
-    kernel below (the default). The monolith now handles both custom scatter and
-    normal-mapped lighting, and on the built-in materials it is faster than the
-    sorted path (it drains up to KBUF hits per launch, while sorting pays
-    per-event kernel round trips and host syncs), so ``"auto"`` keeps the
-    monolith. The vertex-shaded path below is unaffected either way.
+    selects the shade architecture: the monolithic ``wavefront_shade`` kernel
+    below (the default, and the only supported path -- it handles custom
+    scatter and normal-mapped lighting, and on the built-in materials it is
+    faster because it drains up to KBUF hits per launch while sorting pays
+    per-event kernel round trips and host syncs), or the UNSUPPORTED legacy
+    Cycles-style *sorted* pipeline (rays suspended at their material events,
+    bucketed by (geometry type, material pipeline id) and shaded by dedicated
+    per-material kernels -- see ``wavefront_sorted_kernels_taichi``), routed
+    only when explicitly forced (``set_material_sorting(True)``) and kept for
+    reference only. The vertex-shaded path below is unaffected either way.
     """
     from algan.rendering.raytracing import settings as rt_settings
-    # Experimental textured-surface shader (Surface / flat-triangle scenes):
-    # shades from three per-triangle texture lookups instead of per-vertex
-    # arrays. Built only for all-flat-triangle scenes (see scene_builder).
-    # Extended lights, environment maps and near/far clipping live in the
-    # monolithic general shade kernel below; a scene using any of them skips
-    # the textured / sorted variants.
+    # UNSUPPORTED legacy textured-surface shader (Surface / flat-triangle
+    # scenes): shades from three per-triangle texture lookups instead of
+    # per-vertex arrays. Only reachable via the opt-in WF_TEXTURED toggle;
+    # kept for reference. Extended lights, environment maps and near/far
+    # clipping live in the monolithic general shade kernel below; a scene
+    # using any of them skips the textured / sorted variants.
     uses_extended_features = (bool(lights_extended) or env_meta is not None
                               or near_clip > 0.0 or far_clip > 0.0)
     if merged.get("textured_active") and not uses_extended_features:
@@ -995,9 +1001,9 @@ def raytrace_render_wavefront(
             light_pos, light_col, num_lights, refraction_flag,
             transparent, memory, out, aa_level)
     sort_mode = rt_settings.WAVEFRONT_SORT_MATERIALS
-    # The monolith now handles custom scatter + normal maps, so it is the
-    # default for every fragment-shaded scene; the sorted pipeline runs only
-    # when explicitly forced (it is slower on built-in materials -- see docs).
+    # The monolith handles custom scatter + normal maps, so it is the default
+    # for every fragment-shaded scene; the UNSUPPORTED legacy sorted pipeline
+    # runs only when explicitly forced (kept for reference -- see settings).
     use_sorted = (bool(frag_flag) and (sort_mode is True)
                   and not uses_extended_features
                   and not merged.get("bez_has_reflective", False))
@@ -1219,10 +1225,12 @@ def _raytrace_render_wavefront_textured(
         has_tri, has_pn, has_bez, max_bounces,
         light_pos, light_col, num_lights, refraction_flag,
         transparent, memory, out, aa_level=1):
-    """Textured-surface wavefront orchestration (Surface / flat-triangle scenes
-    only). Same generate -> traverse -> shade -> composite tile loop as the
-    monolithic :func:`raytrace_render_wavefront`, but the shade stage is
-    ``wf_shade_textured`` reading the three per-triangle texture banks built by
+    """UNSUPPORTED legacy textured-surface wavefront orchestration (Surface /
+    flat-triangle scenes only; no longer maintained, kept for reference --
+    see ``settings.WF_TEXTURED``). Same generate -> traverse -> shade ->
+    composite tile loop as the monolithic :func:`raytrace_render_wavefront`,
+    but the shade stage is ``wf_shade_textured`` reading the three
+    per-triangle texture banks built by
     ``scene_builder._build_textured_scene``. PN and bezier traversals gate out
     (the scene is all flat triangles)."""
     from algan.rendering.raytracing.wavefront_textured_kernels_taichi import (
@@ -1385,8 +1393,10 @@ def _raytrace_render_wavefront_sorted(
         has_tri, has_pn, has_bez, max_bounces,
         light_pos, light_col, num_lights, frag_pipelines, shadow_flag,
         refraction_flag, transparent, memory, out, aa_level=1):
-    """Cycles-style sorted-material orchestration of the fragment-shading
-    wavefront (see ``wavefront_sorted_kernels_taichi`` for the kernel split).
+    """UNSUPPORTED legacy Cycles-style sorted-material orchestration of the
+    fragment-shading wavefront (no longer maintained, kept for reference; only
+    reachable via ``set_material_sorting(True)`` -- see
+    ``wavefront_sorted_kernels_taichi`` for the kernel split).
 
     Per host iteration: rays needing a K-buffer refill are traversed
     (``wavefront_traverse``, unchanged), ``wf_peel`` advances every ray with
@@ -1631,6 +1641,9 @@ _originals = {}
 
 
 def is_ray_tracing_enabled():
-    """True if the ray traced primitive classes are currently active (i.e.
-    :func:`enable_ray_tracing` has been called and not yet disabled)."""
+    """Vestigial: always False. The ray-traced primitive classes are now the
+    engine's only renderer (``RENDERER_SETTINGS`` binds them by default), and
+    the ``enable_ray_tracing`` toggle that used to populate ``_originals`` was
+    removed with the rasterizer. Kept only because ``post_processing.bloom``
+    probes for it defensively."""
     return bool(_originals)

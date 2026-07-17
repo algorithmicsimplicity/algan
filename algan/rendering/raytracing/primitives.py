@@ -57,13 +57,13 @@ def _set_raytrace_memory_estimates(primitive, camera):
     primitive._rt_pixels_per_frame = pixels
     primitive._rt_max_tile_rays = max(
         1, int(rt_settings.WAVEFRONT_TILE_RAYS))
-    # _alloc_wavefront_state: ro(3), rd(3), acc(4), sca(5), int(5),
-    # six KBUF arrays; rs_pix(1); and two arena-backed active-index buffers.
-    # Per-primary storage is pix_accum(5). The continuation allocator is a
-    # fixed two-word counter per tile, not one counter per pixel. All entries
-    # are four bytes.
-    primitive._rt_pool_bytes_per_ray = (23 + 6 * KBUF) * 4
-    primitive._rt_primary_bytes_per_ray = 5 * 4
+    # _alloc_wavefront_state: ro(3), rd(3), acc(4), sca(7: colour transport),
+    # int(5), six KBUF arrays; rs_pix(1); and two arena-backed active-index
+    # buffers. Per-primary storage is pix_accum(7). The continuation allocator
+    # is a fixed two-word counter per tile, not one counter per pixel. All
+    # entries are four bytes.
+    primitive._rt_pool_bytes_per_ray = (25 + 6 * KBUF) * 4
+    primitive._rt_primary_bytes_per_ray = 7 * 4
 
 
 def _fixed_wavefront_bytes(primitive, num_frames):
@@ -81,9 +81,10 @@ def _fixed_wavefront_bytes(primitive, num_frames):
     pool_ratio = max(2, int(rt_settings.REFRACT_INITIAL_POOL_RATIO))
     split_primary = min(max(1, tile // pool_ratio), total_primary)
     split = split_primary * (pool_ratio * pool_b + primary_b)
-    # Sorted event state: rs_hit(15 f32), key, primitive id and worst-case
-    # per-slot shadow bits. Runtime holds about 2/3 as many pool slots.
-    sorted_extra = (15 + 1 + 1 + 1) * 4
+    # Legacy sorted-route event state (unsupported but still selectable):
+    # rs_hit(16 f32), key, primitive id and worst-case per-slot shadow bits.
+    # Runtime holds about 2/3 as many pool slots.
+    sorted_extra = (16 + 1 + 1 + 1) * 4
     sorted_plain_primary = min(max(1, (tile * 2) // 3), total_primary)
     sorted_plain = sorted_plain_primary * (
         pool_b + sorted_extra + primary_b

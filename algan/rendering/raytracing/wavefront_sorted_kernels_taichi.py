@@ -1,4 +1,12 @@
-"""Cycles-style sorted material dispatch for the deterministic wavefront.
+"""UNSUPPORTED legacy variant: Cycles-style sorted material dispatch for the
+deterministic wavefront.
+
+This pipeline is no longer maintained and no longer works; the monolithic
+``wavefront_shade`` kernel -- which handles custom scatter and normal maps
+itself, and is faster on the built-in materials -- is the only supported
+deterministic shade path. The module is kept for reference;
+``set_material_sorting(True)`` still routes here, unsupported. Original
+design rationale follows.
 
 The monolithic fragment-shading shade kernel (``wavefront_shade``) compiles
 *every* material's lighting model, the shadow traversal call graph and the

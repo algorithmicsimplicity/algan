@@ -32,7 +32,9 @@ the primitive's geometry at the ray's exact frame and skips slots whose
 instance does not cover that frame.
 
 Everything in this module is implemented with vectorized PyTorch ops (the
-per-ray traversal lives in ``raytrace_kernels_taichi.py``).
+per-ray traversal lives in the Taichi kernel modules --
+``raytrace_kernels_taichi.py`` holds the shared block-walk funcs, consumed by
+the wavefront and Monte Carlo kernels alike).
 """
 from __future__ import annotations
 
@@ -86,9 +88,10 @@ SPLIT_TIME_WEIGHT = float(os.environ.get("ALGAN_SPLIT_TIME_WEIGHT", "1"))
 # looser boxes admit candidates within a float ulp of the traversal's
 # DEPTH_TIE_EPSILON window boundaries that the exact boxes cull -- measured
 # as epsilon-level image changes (few % of pixels by a few LSB), the same
-# class of deviation as changing ``tightness``. Opt-in, default off. Read
-# once at import by both this module (build) and the traversal kernels
-# (block decode + ndarray element type).
+# class of deviation as changing ``tightness``. Default on;
+# ALGAN_BVH_BLOCK_F16=0 opts out (exact f32 blocks). Read once at import by
+# both this module (build) and the traversal kernels (block decode + ndarray
+# element type).
 BLOCK_F16 = os.environ.get("ALGAN_BVH_BLOCK_F16", "1") == "1"
 
 # Smallest normal float16. Conservative rounding pushes would-be-subnormal
@@ -186,8 +189,8 @@ class STBVH:
         :func:`_build_blocks`). One aligned fetch per node visit tests the
         whole sibling group; a ray belonging to frame ``f`` may only enter
         children whose interval satisfies ``tmin <= f <= tmax``. float16
-        blocks store conservatively out-rounded bounds (``BLOCK_F16``, opt-in
-        and epsilon-level non-identical -- see its comment).
+        blocks store conservatively out-rounded bounds (``BLOCK_F16``, the
+        default, epsilon-level non-identical to f32 -- see its comment).
     node_miss : Tensor[num_nodes] (int32)
         Stackless DFS miss links (next node when a node is skipped or a leaf
         has been processed, -1 terminates). Host-side/debug only: the block

@@ -611,7 +611,8 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
 
 def _promote_property_group(cv, present, num_frames, device):
     """Promote one per-corner property group of a flat-triangle batch to a
-    texture bank (see settings.WF_TEXTURED).
+    texture bank, for the UNSUPPORTED legacy textured wavefront (see
+    settings.WF_TEXTURED; kept for reference).
 
     ``cv`` is the per-corner value tensor ``[T, N, 3, C]`` (T frames, N
     triangles, 3 corners, C channels) and ``present`` a ``[N]`` bool mask of the
@@ -692,9 +693,10 @@ def _promote_property_group(cv, present, num_frames, device):
 
 
 def _build_textured_scene(scene, num_frames, device):
-    """Build the three per-triangle texture banks the textured wavefront shades
-    from (see settings.WF_TEXTURED), from the full per-vertex merged arrays
-    (constant-promotion is disabled for this path so they span every triangle).
+    """Build the three per-triangle texture banks the UNSUPPORTED legacy
+    textured wavefront shades from (see settings.WF_TEXTURED; kept for
+    reference), from the full per-vertex merged arrays (constant-promotion is
+    disabled for this path so they span every triangle).
 
     Groups, each promoted independently by :func:`_promote_property_group`:
 
@@ -814,10 +816,11 @@ def _merge_scene(primitives):
             f"got {[type(p).__name__ for p in unknown]}.")
     num_frames = max(p._rt_num_frames for p in primitives)
 
-    # Any PN patch carrying a texture map forces the whole batch onto the
-    # general wavefront tracer (the only kernel that samples PN textures); the
-    # megakernel's PN path has no UVs. Flags PN color maps too (unlike flat
-    # colour maps, which the megakernel can sample).
+    # PN texture maps are sampled only by the deterministic general wavefront
+    # tracer (which every samples-per-pixel == 1 batch renders through); the
+    # Monte Carlo megakernel's PN path has no UVs. When set, real texture
+    # metadata is folded into the widened pn_extra below. Covers PN color maps
+    # too (unlike flat colour maps, which the megakernel can sample).
     has_pn_textures = any(
         getattr(p, "_rt_pn_uvs", None) is not None for p in pn_patches)
 
@@ -965,9 +968,11 @@ def _merge_scene(primitives):
             scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
             scene["tri_extra"] = torch.zeros((1, 1, 15), device=device)
 
-        # Any promoted group synthesises material maps, so the batch carries
-        # material textures -> it is routed to the general wavefront (the guarded
-        # kernel), never the megakernel / lean path.
+        # Any promoted group synthesises material maps. Promotion only runs
+        # for deterministic fragment-shading renders (see
+        # _constant_promotion_active), whose wavefront shade kernel guards
+        # every per-vertex read, so the shrunk tri_colors/tri_extra arrays are
+        # never mis-indexed.
         has_promoted = any(promo_idx[id(p)].numel() for p in plain_triangles)
         scene["has_material_textures"] = bool(has_promoted) or any(
             getattr(p, "_rt_material_texture", None) is not None
@@ -1047,11 +1052,9 @@ def _merge_scene(primitives):
             torch.empty((0, 0), dtype=torch.bool, device=device))
     scene["num_triangles"] = scene["tri_pos"].shape[1] if triangles else 0
 
-    # Temporal compression of triangle positions (knot representation). The BVH
-    # is already built from the per-frame bounds (independent of tri_pos), so the
-    # dense positions can be dropped once compressed -- the knot kernel
-    # reconstructs each frame's geometry in-register. Only flat triangles are
-    # wired up; reflective/fragment-shaded/shadowed batches keep the dense path.
+    # Vestigial keys from the retired knot temporal-compression experiment
+    # (in-kernel reconstruction of per-frame triangle positions); nothing
+    # reads them any more.
     scene["tri_tc"] = None
     scene["tri_has_reflective"] = False
 
@@ -1271,9 +1274,9 @@ def _merge_scene(primitives):
         scene["num_circuits"] = scene["circuit_meta"].shape[1]
         # Any PBR circuit, not just a metallic one: metalness >= 0 is the whole
         # test, because a dielectric (metalness 0) still reflects its Fresnel
-        # F0 (>= 4%). The sorted pipeline composites circuits with no
-        # reflectance term at all, so it may only be used when every circuit is
-        # non-PBR (metalness -1, reflectance exactly 0).
+        # F0 (>= 4%). The legacy sorted pipeline (unsupported) composites
+        # circuits with no reflectance term at all, so it may only be routed
+        # when every circuit is non-PBR (metalness -1, reflectance exactly 0).
         scene["bez_has_reflective"] = bool(
             (scene["circuit_meta"][..., _M_REFLECTIVITY] >= 0.0).any())
     else:
@@ -1315,9 +1318,10 @@ def _merge_scene(primitives):
     scene["all_visible_opaque"] = (
         scene["has_any_visible"] and not scene["has_any_translucent"])
 
-    # Experimental texture-lookup shading (Surface / flat-triangle scenes only:
-    # no PN patches, no bezier circuits). Builds the three per-triangle texture
-    # banks + indexes the textured wavefront kernel consumes.
+    # UNSUPPORTED legacy texture-lookup shading (Surface / flat-triangle
+    # scenes only: no PN patches, no bezier circuits; opt-in via WF_TEXTURED,
+    # kept for reference). Builds the three per-triangle texture banks +
+    # indexes the textured wavefront kernel consumes.
     scene["textured_active"] = False
     from algan.rendering.raytracing import settings as _rts
     if (_rts.WF_TEXTURED and scene["num_triangles"] > 0

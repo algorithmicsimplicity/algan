@@ -12,6 +12,9 @@ cannot silently regress, plus two empirically-tuned register knobs):
 
 * ``fast_math`` / ``advanced_optimization`` / ``offline_cache`` -- on by
   default in Taichi 1.7.4; pinned here.
+* ``offline_cache_file_path`` -- Algan's dedicated kernel cache,
+  ``DIRECTORY_DEFAULTS.taichi_cache_directory`` (unless the standard
+  ``TI_OFFLINE_CACHE_FILE_PATH`` env var is set, which then wins).
 * ``ALGAN_GPU_MAX_REG`` (env int) -> ``gpu_max_reg``: cap on registers per
   thread for CUDA codegen (ptxas ``-maxrregcount``). 0/unset leaves it to
   ptxas, which for the big deterministic ray-trace kernel settles on 128 and
@@ -26,7 +29,7 @@ import os
 import taichi as ti
 import torch
 
-from algan.settings.defaults import COMPUTING_DEFAULTS
+from algan.settings.defaults import COMPUTING_DEFAULTS, DIRECTORY_DEFAULTS
 
 
 def sync_devices():
@@ -86,6 +89,14 @@ def taichi_init_kwargs():
                   # a 32-bit int, so stay just under 2^31 bytes (~1.9 GB, still
                   # 19x the default).
                   offline_cache_max_size_of_files=1_000_000_000)
+    # Keep Algan's compiled kernels in a dedicated directory under Algan's
+    # cache dir instead of Taichi's global default, so they never contend
+    # with other Taichi programs for the LRU budget. A ti.init kwarg beats
+    # the TI_OFFLINE_CACHE_FILE_PATH env var (Taichi warns and ignores the
+    # env), so only pass it when the env var is unset to keep that standard
+    # escape hatch working.
+    if not os.environ.get("TI_OFFLINE_CACHE_FILE_PATH"):
+        kwargs["offline_cache_file_path"] = DIRECTORY_DEFAULTS.taichi_cache_directory
     max_reg = int(os.environ.get("ALGAN_GPU_MAX_REG", "0"))
     if max_reg > 0:
         kwargs["gpu_max_reg"] = max_reg

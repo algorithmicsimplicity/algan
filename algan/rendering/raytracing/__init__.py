@@ -8,28 +8,30 @@ a fourth dimension alongside x/y/z, primitives are adaptively segmented into
 frame in the batch, with memory proportional to how much the scene *moves*
 rather than ``num_frames * num_primitives``.
 
-Rendering itself is a single Taichi kernel
-(:mod:`algan.rendering.raytracing.ray_trace_taichi`) launching one thread per
-(frame, pixel). Each thread depth-peels its ray front-to-back and
-alpha-blends every surface -- following mirror reflections up to
-``MAX_BOUNCES`` -- directly into its own cell of a fixed
-``[frames, pixels, channels]`` output buffer, so memory use is independent of
-depth complexity and bounce count, with no fragment buffers, sorting passes
-or atomics. Tree and geometry preparation is vectorized PyTorch.
+Rendering is dispatched by sample count (see ``tracer.render_batch_raytraced``,
+the entry point). The default deterministic renderer
+(``samples_per_pixel == 1``) is a *wavefront* tracer
+(:mod:`~algan.rendering.raytracing.wavefront_kernels_taichi`): rays run in
+bounded screen tiles through generate -> traverse -> shade -> composite kernel
+stages, with per-ray state pool-allocated from the render arena and host-side
+compaction between iterations. Each ray depth-peels its hits front-to-back and
+alpha-blends every surface -- following reflections and refractive splits up
+to ``MAX_BOUNCES`` -- into a fixed ``[frames, pixels, channels]`` output
+buffer. ``samples_per_pixel > 1`` switches to the Monte Carlo path-tracing
+megakernel (:mod:`~algan.rendering.raytracing.raytrace_kernels_taichi`), one
+thread per (frame, pixel, sample) path. Tree and geometry preparation is
+vectorized PyTorch.
 
 Usage::
 
     import algan
-    from algan.rendering.raytracing import (
-        enable_ray_tracing)
+    from algan.rendering.raytracing import set_samples_per_pixel
 
     # samples_per_pixel=1 (default) renders with the exact deterministic
-    # kernel; > 1 enables Monte Carlo path tracing: jittered sub-pixel rays,
-    # stochastic transparency, glossy (rough) reflections and optional
-    # diffuse indirect lighting via indirect_bounce_strength.
-    # pn_triangles=True renders triangle mobs as curved point-normal
-    # patches (quadratic Bezier triangles bent to match vertex normals).
-    enable_ray_tracing(samples_per_pixel=64)  # before creating mobs
+    # wavefront tracer; > 1 enables Monte Carlo path tracing: jittered
+    # sub-pixel rays, stochastic transparency, glossy (rough) reflections and
+    # optional diffuse indirect lighting via indirect_bounce_strength.
+    set_samples_per_pixel(64)  # before rendering
 
     mirror = algan.Sphere().set_material(
         algan.MeshStandardMaterial(metalness=1.0, roughness=0.2)

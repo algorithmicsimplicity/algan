@@ -29,6 +29,11 @@ RENDERING_DEFAULTS.settings = PREVIEW
 COMPUTING_DEFAULTS.use_torch_scatter = False
 COMPUTING_DEFAULTS.render_device = torch.device(rendering_device)
 DIRECTORY_DEFAULTS.base_directory = cd
+# Tests wipe the cache per-test (setUp) for hermetic renders. Point it at a
+# test-local directory so the user's shared home cache is never deleted.
+# ``taichi_cache_directory`` is deliberately NOT redirected: compiled kernels
+# are content-independent and cost minutes to rebuild.
+DIRECTORY_DEFAULTS.cache_directory = os.path.join(cd, "algan_cache")
 
 
 class TestOverseer(TestCase):

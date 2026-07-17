@@ -1,5 +1,11 @@
-"""Experimental *textured-surface* wavefront shade kernel (Surface /
-flat-triangle scenes only).
+"""UNSUPPORTED legacy variant: *textured-surface* wavefront shade kernel
+(Surface / flat-triangle scenes only).
+
+This variant is no longer maintained and no longer works; the monolithic
+general wavefront (``wavefront_kernels_taichi``) is the only supported
+deterministic tracer. The module is kept for reference;
+``ALGAN_WF_TEXTURED=1`` still routes here, unsupported. Original design
+rationale follows.
 
 This is a proof-of-concept alternative to the per-vertex shade kernel in
 ``wavefront_kernels_taichi``: instead of reading colour / material / surface
