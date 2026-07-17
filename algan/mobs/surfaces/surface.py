@@ -1,3 +1,6 @@
+import inspect
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -12,6 +15,70 @@ from algan.utils.file_utils import get_image
 from algan.utils.tensor_utils import unsqueeze_left, squish, unsquish
 
 
+
+
+def _call_parametric_function(function, u, v):
+    """Evaluate a Manim-style ``func(u, v)`` on a tensor UV grid.
+
+    Functions written with NumPy/scalar operations are evaluated point by
+    point; torch-vectorized functions stay on the active device.
+    """
+    try:
+        result = function(u, v)
+        if isinstance(result, torch.Tensor):
+            result = result.to(device=u.device, dtype=u.dtype)
+            if result.shape[-1:] == (3,):
+                return result
+            if result.shape[:1] == (3,) and result.shape[1:] == u.shape:
+                return result.movedim(0, -1)
+        array = np.asarray(result)
+        if array.shape[-1:] == (3,) and array.shape[:-1] == tuple(u.shape):
+            return torch.as_tensor(array, device=u.device, dtype=u.dtype)
+    except (TypeError, ValueError, RuntimeError):
+        pass
+
+    flat_u = u.detach().cpu().reshape(-1).numpy()
+    flat_v = v.detach().cpu().reshape(-1).numpy()
+    points = [
+        np.asarray(function(float(uu), float(vv)), dtype=float)
+        for uu, vv in zip(flat_u, flat_v)
+    ]
+    return torch.as_tensor(
+        np.asarray(points).reshape(*u.shape, 3),
+        device=u.device,
+        dtype=u.dtype,
+    )
+
+
+def _looks_like_manim_surface_function(function):
+    if function is None:
+        return False
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    return len(positional) >= 2 or any(
+        parameter.kind == inspect.Parameter.VAR_POSITIONAL
+        for parameter in signature.parameters.values()
+    )
+
+
+def _surface_resolution_pair(resolution):
+    if isinstance(resolution, int):
+        return int(resolution), int(resolution)
+    u_resolution, v_resolution = resolution
+    return int(u_resolution), int(v_resolution)
+
+
 _grid_triangle_indices_cache = {}
 
 def get_grid_to_triangle_indices(grid_width, grid_height, device):
@@ -20,12 +87,12 @@ def get_grid_to_triangle_indices(grid_width, grid_height, device):
         W, H = grid_width, grid_height
         i_indices = torch.arange(W - 1, device=device).unsqueeze(1).expand(-1, H - 1)
         j_indices = torch.arange(H - 1, device=device).unsqueeze(0).expand(W - 1, -1)
-        
+
         idx00 = i_indices * H + j_indices
         idx01 = i_indices * H + (j_indices + 1)
         idx10 = (i_indices + 1) * H + j_indices
         idx11 = (i_indices + 1) * H + (j_indices + 1)
-        
+
         t1 = torch.stack((idx00, idx01, idx10), dim=-1)
         t2 = torch.stack((idx10, idx01, idx11), dim=-1)
         stacked = torch.stack((t1, t2), dim=-2)
@@ -212,10 +279,80 @@ class Surface(Renderable):
         glow_radius_texture=None,
         ignore_normals=False,
         tolerance=0.0005,
-            min_grid_resolution=4,
+        min_grid_resolution=4,
         *args,
+        func=None,
+        u_range=None,
+        v_range=None,
+        resolution=None,
+        surface_piece_config=None,
+        fill_color=None,
+        fill_opacity=None,
+        checkerboard_colors=None,
+        stroke_color=None,
+        stroke_width=None,
+        should_make_jagged=False,
+        pre_function_handle_to_anchor_scale_factor=1e-5,
         **kwargs,
     ):
+        # ``Surface`` predates this compatibility layer in Algan and accepts a
+        # vectorized ``coord_function(uv)``.  Manim instead accepts
+        # ``func(u, v)``.  Support both forms without weakening the native API.
+        manim_function = func
+        if manim_function is None and _looks_like_manim_surface_function(coord_function):
+            manim_function = coord_function
+
+        self._func = manim_function
+        self.u_range = (0, 1) if u_range is None else tuple(u_range)
+        self.v_range = (0, 1) if v_range is None else tuple(v_range)
+        self.surface_piece_config = (
+            {} if surface_piece_config is None else dict(surface_piece_config)
+        )
+        self.should_make_jagged = should_make_jagged
+        self.pre_function_handle_to_anchor_scale_factor = (
+            pre_function_handle_to_anchor_scale_factor
+        )
+        self.stroke_color = stroke_color
+        self.stroke_width = stroke_width
+
+        if manim_function is not None:
+            def mapped_coord_function(uv):
+                u = self.u_range[0] + uv[..., 0] * (self.u_range[1] - self.u_range[0])
+                v = self.v_range[0] + uv[..., 1] * (self.v_range[1] - self.v_range[0])
+                return _call_parametric_function(manim_function, u, v)
+
+            coord_function = mapped_coord_function
+            if resolution is None:
+                resolution = 32
+            u_resolution, v_resolution = _surface_resolution_pair(resolution)
+            grid_width = u_resolution + 1
+            grid_height = v_resolution + 1
+            self.resolution = resolution
+
+            if fill_color is None:
+                fill_color = BLUE_D
+            if fill_opacity is None:
+                fill_opacity = 1.0
+            kwargs.setdefault("color", fill_color)
+            kwargs.setdefault("opacity", fill_opacity)
+
+            if checkerboard_colors is None:
+                checkerboard_colors = [BLUE_D, BLUE_E]
+            self.checkerboard_colors = checkerboard_colors
+            if checkerboard_colors is not False:
+                checkerboard_colors = list(checkerboard_colors)
+                if checkerboard_colors:
+                    kwargs["color"] = checkerboard_colors[0]
+                if len(checkerboard_colors) > 1:
+                    checkered_color = checkerboard_colors[1]
+        else:
+            self.resolution = resolution
+            self.checkerboard_colors = checkerboard_colors
+            if fill_color is not None:
+                kwargs.setdefault("color", fill_color)
+            if fill_opacity is not None:
+                kwargs.setdefault("opacity", fill_opacity)
+
         if coord_function is None:
             coord_function = self.coord_function
         if normal_function is None:
@@ -245,10 +382,10 @@ class Surface(Renderable):
             sample_v = torch.linspace(0, 1, 100, device=device)
             grid_u, grid_v = torch.meshgrid(sample_u, sample_v, indexing='ij')
             sample_uv = torch.stack([grid_u, grid_v], dim=-1)
-            
+
             # Since coord_function may modify uv in-place (e.g. Cylinder/Cone), pass a clone
             sample_points = coord_function(sample_uv.clone())
-            
+
             min_coords = sample_points.min(dim=0).values.min(dim=0).values
             max_coords = sample_points.max(dim=0).values.max(dim=0).values
             scale = (max_coords - min_coords).norm()
@@ -292,7 +429,7 @@ class Surface(Renderable):
                             low = mid + 1
                     except Exception:
                         low = mid + 1
-                
+
                 # 2. Search for best grid_height (H) with grid_width (W) set to a high resolution (200)
                 low = min_grid_resolution
                 high = 200
@@ -308,7 +445,7 @@ class Surface(Renderable):
                             low = mid + 1
                     except Exception:
                         low = mid + 1
-                
+
                 # Joint error correction loop
                 try:
                     joint_error = self._compute_error(coord_function, best_W, best_H)
@@ -322,7 +459,7 @@ class Surface(Renderable):
                         joint_error = self._compute_error(coord_function, best_W, best_H)
                 except Exception:
                     pass
-                
+
                 grid_width = best_W
                 grid_height = best_H
         else:
@@ -407,6 +544,103 @@ class Surface(Renderable):
         self.grid.is_primitive = True
         self.is_primitive = True
         self.ignore_wave_animations = True
+
+    def func(self, u, v):
+        """Evaluate the original Manim-style parametric function."""
+        if self._func is None:
+            raise AttributeError("this Surface was constructed with coord_function, not func")
+        return self._func(u, v)
+
+    def _get_u_values_and_v_values(self):
+        """Return Manim-compatible sample coordinates for the UV domain."""
+        resolution = self.resolution
+        if resolution is None:
+            resolution = (self.grid_width - 1, self.grid_height - 1)
+        u_resolution, v_resolution = _surface_resolution_pair(resolution)
+        return (
+            np.linspace(*self.u_range, u_resolution + 1),
+            np.linspace(*self.v_range, v_resolution + 1),
+        )
+
+    def get_unit_normals(self):
+        """Return one smooth unit normal for each sampled surface vertex."""
+        grid = unsquish(self.grid.location, -2, self.grid_height)
+        return compute_grid_vertex_normals(grid).reshape(*grid.shape[:-3], -1, 3)
+
+    def set_fill_by_checkerboard(self, *colors, opacity=None):
+        """Apply an alternating vertex-color pattern and return this surface."""
+        if not colors:
+            return self
+        converted = [
+            torch.as_tensor(color, device=self.grid.color.device, dtype=self.grid.color.dtype)
+            .reshape(-1, self.grid.color.shape[-1])[0]
+            for color in colors
+        ]
+        palette = torch.stack(converted)
+        u_indices = torch.arange(self.grid_width, device=palette.device).unsqueeze(1)
+        v_indices = torch.arange(self.grid_height, device=palette.device).unsqueeze(0)
+        color_grid = palette[(u_indices + v_indices) % len(palette)]
+        self.grid.color = color_grid.reshape(-1, color_grid.shape[-1])
+        if opacity is not None:
+            self.grid.opacity = opacity
+        self.checkerboard_colors = list(colors)
+        return self
+
+    def set_fill_by_value(self, axes, colorscale=None, axis=2, **kwargs):
+        """Color sampled vertices by their coordinate value along an axis.
+
+        This is the renderer-independent counterpart of Manim's per-face
+        coloring. Algan interpolates these vertex colors over its triangle mesh.
+        """
+        if colorscale is None and "colors" in kwargs:
+            colorscale = kwargs.pop("colors")
+        if kwargs:
+            unsupported = ", ".join(sorted(kwargs))
+            raise ValueError(f"Unsupported keyword argument(s): {unsupported}")
+        if colorscale is None:
+            return self
+
+        values = self.grid.location.reshape(-1, 3)[..., axis]
+        entries = list(colorscale)
+        if not entries:
+            return self
+        if isinstance(entries[0], tuple) and len(entries[0]) == 2:
+            colors, pivots = zip(*entries)
+            pivots = torch.as_tensor(
+                pivots, device=values.device, dtype=values.dtype
+            )
+        else:
+            colors = entries
+            axis_range = getattr(axes, ("x_range", "y_range", "z_range")[axis], None)
+            if axis_range is None:
+                pivot_min, pivot_max = values.min(), values.max()
+            else:
+                pivot_min, pivot_max = axis_range[:2]
+            pivots = torch.linspace(
+                float(pivot_min),
+                float(pivot_max),
+                len(colors),
+                device=values.device,
+                dtype=values.dtype,
+            )
+
+        palette = torch.stack(
+            [
+                torch.as_tensor(
+                    color, device=self.grid.color.device, dtype=self.grid.color.dtype
+                ).reshape(-1, self.grid.color.shape[-1])[0]
+                for color in colors
+            ]
+        )
+        upper = torch.searchsorted(pivots, values).clamp(1, len(pivots) - 1)
+        lower = upper - 1
+        denominator = (pivots[upper] - pivots[lower]).clamp_min(1e-12)
+        alpha = ((values - pivots[lower]) / denominator).clamp(0, 1).unsqueeze(-1)
+        vertex_colors = palette[lower] * (1 - alpha) + palette[upper] * alpha
+        vertex_colors[values <= pivots[0]] = palette[0]
+        vertex_colors[values >= pivots[-1]] = palette[-1]
+        self.grid.color = vertex_colors
+        return self
 
     def _uses_pn_triangles(self):
         """True if newly created surfaces render as curved point-normal (PN)

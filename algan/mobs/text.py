@@ -1,9 +1,9 @@
 import copy
-import os
 
 import numpy
 import torch.nn.functional as F
 from svgelements import Path, Line, Move, Close
+import pathlib
 
 # Deferred: manim's import chain (sympy/networkx/scipy/...) costs ~2 s of
 # ``import algan`` and is only needed once a Text/Tex is constructed. The
@@ -19,7 +19,7 @@ from algan.mobs.triangulated_bezier_circuit import (
     point_to_tensor2,
 )
 from algan.mobs.bezier_circuit import BezierCircuitCubic
-from algan.constants.spatial import DOWN, RIGHT
+from algan.constants.spatial import DOWN, LEFT, ORIGIN, RIGHT, UP
 from algan.constants.color import *
 from algan.mobs.group import Group
 from algan.mobs.mob import Mob
@@ -31,24 +31,16 @@ from algan.utils.mob_utils import BatchedMobViewSequence
 
 
 def make_manim_dir():
-    """Point manim's tex/text caches into Algan's cache dir and create them.
+    """Create manim's tex/text output directories if they don't exist yet.
 
-    Manim compiles LaTeX (and renders Pango text) into ``{media_dir}/Tex`` /
-    ``{media_dir}/texts`` -- relative to the *current working directory* by
-    default, so every project re-pays every LaTeX compile. Redirect both into
-    ``DIRECTORY_DEFAULTS.cache_directory`` (content-hashed filenames make the
-    cache safely shareable across projects), unless the user already pointed
-    them somewhere custom.
+    Touching ``mn.config`` loads manim, and with it
+    :mod:`algan.utils.manim_svg_cache`, which first redirects these
+    directories into ``DIRECTORY_DEFAULTS.cache_directory``.
 
-    Called lazily on first :class:`Tex` construction (manim errors if the
-    directories are missing) rather than at ``import algan`` time, so
-    importing the package doesn't write to disk.
+    Called lazily on first :class:`Tex` construction (manim errors if they are
+    missing) rather than at ``import algan`` time, so importing the package
+    doesn't write to disk.
     """
-    manim_cache_dir = os.path.join(DIRECTORY_DEFAULTS.cache_directory, "manim")
-    if mn.config.tex_dir == "{media_dir}/Tex":  # manim's stock default
-        mn.config.tex_dir = os.path.join(manim_cache_dir, "Tex")
-    if mn.config.text_dir == "{media_dir}/texts":  # manim's stock default
-        mn.config.text_dir = os.path.join(manim_cache_dir, "texts")
     for tex_dir in [mn.config.get_dir("tex_dir"), mn.config.get_dir("text_dir")]:
         if not tex_dir.exists():
             tex_dir.mkdir(parents=True)
@@ -62,20 +54,51 @@ class Tex(Mob):
 
     triangulated = False
 
-    def __init__(self, text, font_size=24, latex=True, *args, **kwargs):
+    def __init__(
+        self,
+        *tex_strings,
+        arg_separator="",
+        tex_environment="center",
+        font_size=24,
+        latex=True,
+        **kwargs,
+    ):
+        """Build TeX from one or more strings using Manim's public API.
+
+        ``latex`` is retained as an Algan extension: when false, the strings are
+        treated as plain text.  Manim's ``arg_separator`` and
+        ``tex_environment`` keyword arguments are accepted directly.
+        """
         make_manim_dir()
         if "preamble" in kwargs:
             kwargs["tex_template"] = mn.TexTemplate(
-                preamble=_default_preamble() + "\n" + kwargs["preamble"]
+                preamble=_default_preamble() + "\n" + kwargs.pop("preamble")
             )
-            del kwargs["preamble"]
+
+        if len(tex_strings) == 1 and isinstance(tex_strings[0], (list, tuple)):
+            tex_strings = tuple(tex_strings[0])
+        if not tex_strings:
+            tex_strings = ("",)
+        self.tex_strings = tuple(str(part) for part in tex_strings)
+        self.tex_environment = tex_environment
+        self.arg_separator = arg_separator
         self.latex = latex
-        # if not self.latex:
-        #    text = f'\\text{{{text}}}'
+
         base_font_size = 48
-        if isinstance(text, str):
-            text = [text]
-        t = (mn.MathTex if self.latex else mn.Text)(*text, font_size=base_font_size)
+        if self.latex:
+            t = mn.MathTex(
+                *self.tex_strings,
+                arg_separator=arg_separator,
+                tex_environment=tex_environment,
+                font_size=base_font_size,
+            )
+        else:
+            if not hasattr(mn, "Text"):
+                raise RuntimeError(
+                    "Plain Text rendering requires Manim's optional Pango support; "
+                    "use algan.Text, which provides a LaTeX fallback."
+                )
+            t = mn.Text(arg_separator.join(self.tex_strings), font_size=base_font_size)
 
         def maybe_flip(submob):
             x = torch.from_numpy(submob.points).to(COMPUTING_DEFAULTS.animation_device)
@@ -88,33 +111,35 @@ class Tex(Mob):
             self.num_mobs_per_segment = torch.tensor([len(_) for _ in sub_mobs])
             self.segment_ends = self.num_mobs_per_segment.cumsum(0)
             self.segment_starts = self.segment_ends - self.num_mobs_per_segment
-            chars = [x for l in sub_mobs for x in l]
+            chars = [x for group in sub_mobs for x in group]
         else:
             chars = t.submobjects
+            self.num_mobs_per_segment = torch.tensor([len(chars)])
+            self.segment_ends = self.num_mobs_per_segment.cumsum(0)
+            self.segment_starts = self.segment_ends - self.num_mobs_per_segment
+
         triangulated_paths = [
-            unsquish(maybe_flip(_), -2, 4).transpose(-3, -2)
-            for _ in [_ for _ in chars if not isinstance(_, mn.ImageMobject)]
+            unsquish(maybe_flip(char), -2, 4).transpose(-3, -2)
+            for char in chars
+            if not isinstance(char, mn.ImageMobject)
         ]
         bezier_paths = [
             unsquish(
-                torch.from_numpy(_.points).to(
-                    COMPUTING_DEFAULTS.animation_device
-                ).float(),
+                torch.from_numpy(char.points)
+                .to(COMPUTING_DEFAULTS.animation_device)
+                .float(),
                 -2,
                 4,
             )
-            for _ in chars
-            if not isinstance(_, mn.ImageMobject)
+            for char in chars
+            if not isinstance(char, mn.ImageMobject)
         ]
         with Off():
             paths = triangulated_paths if self.triangulated else bezier_paths
-            # Both geometry types retain path boundaries in parent_batch_sizes.
-            # Building once avoids a Mob hierarchy (and timeline rows) per glyph.
             if self.triangulated:
                 character_batch = (
                     TriangulatedBezierCircuit(
                         paths,
-                        *args,
                         invert=False,
                         hash_keys=paths,
                         reverse_points=False,
@@ -129,7 +154,7 @@ class Tex(Mob):
                 bezier_kwargs.setdefault("border_color", bezier_kwargs["color"])
                 bezier_kwargs.setdefault("border_width", 0)
                 character_batch = (
-                    BezierCircuitCubic.from_batches(paths, *args, **bezier_kwargs)
+                    BezierCircuitCubic.from_batches(paths, **bezier_kwargs)
                     if paths
                     else None
                 )
@@ -138,9 +163,11 @@ class Tex(Mob):
                 self._character_batch, len(paths)
             )
             self.image_mobs = [
-                ImageMob(_) for _ in chars if isinstance(_, mn.ImageMobject)
+                ImageMob(char, add_to_scene=False)
+                for char in chars
+                if isinstance(char, mn.ImageMobject)
             ]
-            super().__init__(*args, **kwargs)
+            super().__init__(**kwargs)
             if self._character_batch is not None:
                 self.add_children(self._character_batch)
             self.add_children(self.image_mobs)
@@ -456,10 +483,88 @@ class Text(Tex):
     **kwargs
         Passed to :class:`~.Tex`.
 
+    When Pango is unavailable, Algan renders the textual content through
+    LaTeX text mode. Font-family and span-level styling arguments are accepted
+    and retained as metadata, but cannot affect that fallback renderer.
     """
 
-    def __init__(self, text, **kwargs):
-        super().__init__(text, latex=False, **kwargs)
+    def __init__(
+        self,
+        text,
+        fill_opacity=1.0,
+        stroke_width=0,
+        color=None,
+        font_size=48,
+        line_spacing=-1,
+        font="",
+        slant="NORMAL",
+        weight="NORMAL",
+        t2c=None,
+        t2f=None,
+        t2g=None,
+        t2s=None,
+        t2w=None,
+        gradient=None,
+        tab_width=4,
+        warn_missing_font=True,
+        height=None,
+        width=None,
+        should_center=True,
+        disable_ligatures=False,
+        use_svg_cache=False,
+        **kwargs,
+    ):
+        self.text = str(text).expandtabs(tab_width)
+        self.font = font
+        self.slant = slant
+        self.weight = weight
+        self.line_spacing = line_spacing
+        self.t2c, self.t2f, self.t2g = t2c, t2f, t2g
+        self.t2s, self.t2w = t2s, t2w
+        self.gradient = gradient
+        self.disable_ligatures = disable_ligatures
+        self.use_svg_cache = use_svg_cache
+        kwargs.setdefault("opacity", fill_opacity)
+        kwargs.setdefault("border_width", stroke_width / 2)
+        if color is not None:
+            kwargs.setdefault("color", color)
+            kwargs.setdefault("border_color", color)
+
+        if hasattr(mn, "Text"):
+            # This path is retained for vendored builds that opt into Pango.
+            super().__init__(
+                self.text,
+                font_size=font_size,
+                latex=False,
+                **kwargs,
+            )
+        else:
+            import re
+
+            escaped = re.sub(r"([#$%&_{}])", r"\\\1", self.text)
+            escaped = escaped.replace("~", r"\textasciitilde{}")
+            escaped = escaped.replace("^", r"\textasciicircum{}")
+            escaped = escaped.replace("\n", r"\\")
+            super().__init__(
+                rf"\text{{{escaped}}}",
+                font_size=font_size,
+                latex=True,
+                **kwargs,
+            )
+            self.latex = False
+
+        # Match Manim's post-construction size overrides.
+        with Off():
+            if height is not None:
+                current = self.get_length_in_direction(UP)
+                if float(current.reshape(-1)[0]) > 0:
+                    self.scale(float(height) / float(current.reshape(-1)[0]))
+            if width is not None:
+                current = self.get_length_in_direction(RIGHT)
+                if float(current.reshape(-1)[0]) > 0:
+                    self.scale(float(width) / float(current.reshape(-1)[0]))
+            if should_center:
+                self.move_to(ORIGIN)
 
 
 class TexTriangulated(Tex):
@@ -469,7 +574,200 @@ class TexTriangulated(Tex):
 
 
 class TextTriangulated(TexTriangulated):
-    """Plain text rendered as one packed batch of triangulated glyphs."""
+    """Triangulated plain text; accepts the same arguments as :class:`Text`."""
 
     def __init__(self, text, **kwargs):
-        super().__init__(text, latex=False, **kwargs)
+        # Reuse Text's fallback preprocessing, then construct the triangulated
+        # TeX representation directly.
+        import re
+
+        font_size = kwargs.pop("font_size", 48)
+        escaped = re.sub(r"([#$%&_{}])", r"\\\1", str(text))
+        escaped = escaped.replace("~", r"\textasciitilde{}")
+        escaped = escaped.replace("^", r"\textasciicircum{}")
+        super().__init__(rf"\text{{{escaped}}}", font_size=font_size, **kwargs)
+        self.text = str(text)
+        self.latex = False
+
+
+class MarkupText(Text):
+    """Text accepting Manim/Pango markup syntax.
+
+    Markup is stripped when the optional Pango renderer is unavailable; the
+    resulting textual content, entities, and line breaks are preserved.
+    """
+
+    def __init__(
+        self,
+        text,
+        fill_opacity=1,
+        stroke_width=0,
+        color=None,
+        font_size=48,
+        line_spacing=-1,
+        font="",
+        slant="NORMAL",
+        weight="NORMAL",
+        justify=False,
+        gradient=None,
+        tab_width=4,
+        height=None,
+        width=None,
+        should_center=True,
+        disable_ligatures=False,
+        warn_missing_font=True,
+        **kwargs,
+    ):
+        import html
+        import re
+
+        self.original_text = str(text)
+        plain = re.sub(r"<br\s*/?>", "\n", self.original_text, flags=re.IGNORECASE)
+        plain = re.sub(r"<[^>]+>", "", plain)
+        self.justify = justify
+        super().__init__(
+            html.unescape(plain),
+            fill_opacity=fill_opacity,
+            stroke_width=stroke_width,
+            color=color,
+            font_size=font_size,
+            line_spacing=line_spacing,
+            font=font,
+            slant=slant,
+            weight=weight,
+            gradient=gradient,
+            tab_width=tab_width,
+            height=height,
+            width=width,
+            should_center=should_center,
+            disable_ligatures=disable_ligatures,
+            warn_missing_font=warn_missing_font,
+            **kwargs,
+        )
+
+
+class Paragraph(Group):
+    """A group of individually addressable text lines."""
+
+    def __init__(self, *text, line_spacing=-1, alignment=None, **kwargs):
+        add_to_scene = kwargs.pop("add_to_scene", True)
+        lines = []
+        for part in text:
+            lines.extend(str(part).split("\n"))
+        if not lines:
+            lines = [""]
+        mobs = [Text(line, add_to_scene=False, **kwargs) for line in lines]
+        super().__init__(*mobs, add_to_scene=add_to_scene)
+        if mobs:
+            buffer = 0.2 if line_spacing == -1 else line_spacing
+            align_direction = {
+                "left": LEFT,
+                "center": None,
+                "right": RIGHT,
+                None: None,
+            }.get(alignment)
+            if alignment not in {None, "left", "center", "right"}:
+                raise ValueError("alignment must be 'left', 'center', 'right', or None")
+            self.arrange_in_line(
+                DOWN,
+                buffer=buffer,
+                alignment_direction=align_direction,
+            )
+        self.lines_text = lines
+        self.chars = self.mobs
+
+    def set_all_lines_alignments(self, alignment):
+        replacement = Paragraph(
+            *self.lines_text,
+            alignment=alignment,
+            add_to_scene=False,
+        )
+        return self.become(replacement, detach_history=False)
+
+
+class Code(Group):
+    """Source-code display with Manim 0.20.1 constructor names.
+
+    The dependency-light implementation preserves line addressing, line
+    numbers, and both rectangle/window background modes. Syntax tokens use the
+    base text color rather than Pygments span colors.
+    """
+
+    def __init__(
+        self,
+        code_file=None,
+        code_string=None,
+        language=None,
+        formatter_style="vim",
+        tab_width=4,
+        add_line_numbers=True,
+        line_numbers_from=1,
+        background="rectangle",
+        background_config=None,
+        paragraph_config=None,
+        **kwargs,
+    ):
+        from algan.mobs.shapes_2d import Circle, Rectangle, SurroundingRectangle
+
+        add_to_scene = kwargs.pop("add_to_scene", True)
+        if code_string is None:
+            if code_file is None:
+                raise ValueError("either code_file or code_string must be provided")
+            code_string = pathlib.Path(code_file).read_text(encoding="utf-8")
+        source_lines = str(code_string).expandtabs(tab_width).splitlines() or [""]
+        paragraph_config = dict(paragraph_config or {})
+        paragraph_config.update(kwargs)
+        self.code = Paragraph(
+            *source_lines,
+            alignment="left",
+            add_to_scene=False,
+            **paragraph_config,
+        )
+        mobs = [self.code]
+        self.line_numbers = None
+        if add_line_numbers:
+            self.line_numbers = Paragraph(
+                *(str(i) for i in range(line_numbers_from, line_numbers_from + len(source_lines))),
+                alignment="right",
+                add_to_scene=False,
+                **paragraph_config,
+            )
+            with Off():
+                self.line_numbers.move_next_to(self.code, LEFT, buffer=0.2)
+            mobs.insert(0, self.line_numbers)
+        super().__init__(*mobs, add_to_scene=add_to_scene)
+
+        self.background_mobject = None
+        background_config = dict(background_config or {})
+        if background == "rectangle":
+            self.background_mobject = SurroundingRectangle(
+                self,
+                add_to_scene=False,
+                **background_config,
+            )
+        elif background == "window":
+            frame = SurroundingRectangle(
+                self,
+                add_to_scene=False,
+                **background_config,
+            )
+            dots = Group(
+                *[
+                    Circle(radius=0.04, add_to_scene=False)
+                    for _ in range(3)
+                ],
+                add_to_scene=False,
+            )
+            with Off():
+                dots.arrange_in_line(RIGHT, buffer=0.08)
+                dots.move_next_to(frame.get_boundary_in_direction(UP), DOWN, buffer=0.08)
+            self.background_mobject = Group(frame, dots, add_to_scene=False)
+        elif background not in {None, False}:
+            raise ValueError("background must be 'rectangle', 'window', or None")
+        if self.background_mobject is not None:
+            self.add(self.background_mobject)
+
+        self.language = language
+        self.formatter_style = formatter_style
+        self.code_string = str(code_string)
+        self.code_file = code_file

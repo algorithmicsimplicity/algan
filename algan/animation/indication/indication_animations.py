@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from algan.animation.animatable import animated_function
 from algan.animation.animation_contexts import Off, Seq, Sync
+from algan.animation.movement import Homotopy
 from algan.constants import rate_funcs
 from algan.constants.color import GRAY, YELLOW
 from algan.constants.math import RADIANS_TO_DEGREES
@@ -335,39 +336,6 @@ def Circumscribe(
                 frame.despawn(animate=False)
     else:
         ShowPassingFlash(frame, time_width=time_width, run_time=run_time)
-    return mobject
-
-
-@animated_function(
-    animated_args={"t": 0.0},
-    unique_args=["homotopy_func", "full_control_points"],
-)
-def homotopy_step(mob, t, homotopy_func, full_control_points):
-    t = cast_to_tensor(t)
-    num_frames = t.shape[0]
-    t_2d = t.view(num_frames, 1)
-
-    orig_points = full_control_points.expand(num_frames, -1, -1)
-    mob.control_points.location = homotopy_func(orig_points, t_2d)
-
-
-def Homotopy(mobject, homotopy_func, run_time=2.0):
-    from algan.mobs.bezier_circuit import BezierCircuitCubic
-
-    if isinstance(mobject, BezierCircuitCubic):
-        with Sync(run_time=run_time):
-            mobject.animate_function(
-                homotopy_step,
-                homotopy_func=homotopy_func,
-                full_control_points=mobject.control_points.location,
-            )
-    else:
-        beziers = [
-            d for d in mobject.get_descendants() if isinstance(d, BezierCircuitCubic)
-        ]
-        with Sync(run_time=run_time):
-            for b in beziers:
-                Homotopy(b, homotopy_func, run_time=run_time)
     return mobject
 
 

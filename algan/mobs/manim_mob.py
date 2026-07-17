@@ -7,6 +7,7 @@ from algan.mobs.group import Group
 from algan.utils.tensor_utils import unsquish
 from algan.utils.mob_utils import batch_mobs
 from algan.utils.lazy_import import LazyModule
+from manim import ImageMobject, VectorizedPoint, ThreeDVMobject
 
 # Deferred: a ManimMob wraps an already-constructed manim mobject, so manim
 # is inevitably imported by the caller first; keeping it lazy here means
@@ -29,6 +30,10 @@ class ManimMob(BezierCircuitCubic):
     """
 
     def __init__(self, manim_mob, batch=False, _add_to_scene=None, **kwargs):
+        # Retain the source object so compatibility Mobs can delegate Manim-specific
+        # query/build methods (for example Axes.plot and NumberLine.n2p) and can
+        # resynchronise their converted geometry after a delegated mutation.
+        self.manim_mobject = manim_mob
         manim_scale_factor = 1
         children = []
         orig_add_to_scene = _add_to_scene
@@ -76,18 +81,28 @@ class ManimMob(BezierCircuitCubic):
         if orig_add_to_scene is not None:
             kwargs['add_to_scene'] = orig_add_to_scene
 
+        fill_opacity = getattr(manim_mob, "fill_opacity", None)
+        stroke_opacity = getattr(manim_mob, "stroke_opacity", None)
+        stroke_width = getattr(manim_mob, "stroke_width", 0)
+        if stroke_width is None:
+            stroke_width = 0
+
+        has_visible_fill = fill_opacity is not None and bool(
+            torch.as_tensor(fill_opacity).max().item() > 1e-5
+        )
+
         super().__init__(
             control_points * manim_scale_factor,
             color=convert_manim_color(
-                manim_mob.fill_color, opacity=manim_mob.fill_opacity
+                manim_mob.fill_color, opacity=fill_opacity
             ),
             opacity=1,
             border_color=convert_manim_color(
-                manim_mob.stroke_color, manim_mob.stroke_opacity
+                manim_mob.stroke_color, stroke_opacity
             ),
-            border_width=manim_mob.stroke_width / 2,
+            border_width=stroke_width / 2,
             filled=(not hasattr(manim_mob, "end"))
-            and (manim_mob.fill_opacity is not None and manim_mob.fill_opacity > 1e-5),
+            and has_visible_fill,
             empty=empty,
             **kwargs,
         )

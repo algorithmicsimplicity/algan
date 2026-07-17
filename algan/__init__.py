@@ -13,6 +13,15 @@ def __getattr__(name):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 import os
+import sys
+
+# The project vendors the subset of Manim Community used for SVG/Tex and
+# compatibility Mobs.  Expose it under Manim's normal top-level package name
+# before importing any Algan mob modules; those modules intentionally use the
+# public ``manim`` import path.
+from algan.external_libraries import manim as _vendored_manim
+
+sys.modules.setdefault("manim", _vendored_manim)
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import shutil
@@ -54,12 +63,24 @@ from algan.mobs.manim_mob import *
 from algan.mobs.group import *
 from algan.mobs.text import *
 from algan.mobs.image_mob import *
+from algan.mobs.image_compat import *
 from algan.mobs.surfaces.surface import *
 from algan.mobs.shapes_3d import *
 from algan.mobs.shapes_2d import *
+from algan.mobs.point_cloud import *
+from algan.mobs.opengl_compat import *
 from algan.mobs.bezier_circuit import *
 from algan.mobs.three_d_models import ThreeDModelMob, TriangleMesh
 from algan.mobs.numeric_display import NumericDisplay
+from algan.mobs.manim_compat import *
+from algan.mobs.manim_parity import *
+
+# Manim names its root class Mobject; Algan's native equivalent is Mob.  Its
+# abstract graph and OpenGL renderer-specific bases likewise map to Algan's
+# renderer-independent classes.
+Mobject = Mob
+GenericGraph = Graph
+install_opengl_aliases(globals())
 from algan.scene import Scene
 
 from algan.animation.animation_contexts import *
@@ -109,6 +130,8 @@ from algan.settings.kernel_settings import KERNEL_SETTINGS
 KERNEL_SETTINGS.render_kernel = render_batch_raytraced
 
 from algan.animation.manim_animations import *
+from algan.animation.movement import *
+from algan.animation.changing import *
 from algan.animation.indication import *
 from algan.animation.timeline import TimelineManager
 

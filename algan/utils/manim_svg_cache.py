@@ -252,6 +252,43 @@ def _patched_init_svg_mobject(self, use_svg_cache: bool) -> None:
     _rebuild(self, recipe)
 
 
+def _redirect_manim_dirs() -> None:
+    """Point manim's tex/text output into Algan's cache directory.
+
+    Manim compiles LaTeX (and renders Pango text) into ``{media_dir}/Tex`` /
+    ``{media_dir}/texts`` -- relative to the *current working directory* by
+    default, so every project re-pays every LaTeX compile. Redirect both into
+    ``DIRECTORY_DEFAULTS.cache_directory`` (content-hashed filenames make the
+    cache safely shareable across projects), unless the user already pointed
+    them somewhere custom.
+
+    Done here (this module rides along on Algan's first manim import) rather
+    than in the ``Tex``/``Text`` mobs so that raw manim mobjects wrapped in
+    :class:`~algan.mobs.manim_mob.ManimMob` use the same cache.
+    """
+    from manim import config
+    from manim.utils import tex_file_writing
+
+    manim_cache_dir = os.path.join(DIRECTORY_DEFAULTS.cache_directory, "manim")
+    if config.tex_dir == "{media_dir}/Tex":  # manim's stock default
+        config.tex_dir = os.path.join(manim_cache_dir, "Tex")
+    if config.text_dir == "{media_dir}/texts":  # manim's stock default
+        config.text_dir = os.path.join(manim_cache_dir, "texts")
+
+    # Manim's Text path creates ``text_dir`` with mkdir(parents=True), but its
+    # Tex path (``generate_tex_file``) uses a *single-level* mkdir, which
+    # crashes whenever the cache directory tree has been removed (e.g.
+    # ``clear_cache()``, or the test suite's per-test wipe). Wrap it to
+    # guarantee the directory exists, whole tree included, on every call.
+    _orig_generate_tex_file = tex_file_writing.generate_tex_file
+
+    def _generate_tex_file_with_dir(*args, **kwargs):
+        Path(config.get_dir("tex_dir")).mkdir(parents=True, exist_ok=True)
+        return _orig_generate_tex_file(*args, **kwargs)
+
+    tex_file_writing.generate_tex_file = _generate_tex_file_with_dir
+
+
 def install() -> None:
     """Monkeypatch the installed ``manim`` to use the persistent SVG cache.
 
@@ -268,6 +305,11 @@ def install() -> None:
     except Exception as e:  # noqa: BLE001 - never break import if manim moves things
         get_logger().warning(f"manim_svg_cache: could not install ({e}); Tex geometry uncached")
         return
+
+    try:
+        _redirect_manim_dirs()
+    except Exception as e:  # noqa: BLE001 - a failed redirect must not break manim
+        get_logger().warning(f"manim_svg_cache: cache-dir redirect failed ({e})")
 
     # Stash the renderer type on the class so _stable_key can read it without
     # importing manim.config here.

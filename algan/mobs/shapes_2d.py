@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.animation.animation_contexts import Off, Sync
-from algan.constants.spatial import ORIGIN, UP, RIGHT, IN
+from algan.constants.spatial import ORIGIN, UP, RIGHT, LEFT, IN
 from algan.constants.color import *
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
@@ -21,18 +21,123 @@ from algan.utils.tensor_utils import (
 from algan.utils.tensor_utils import mean
 
 
-class Line(BezierCircuitCubic):
-    def __init__(self, start, end, *args, **kwargs):
-        start = cast_to_tensor(start)
-        end = cast_to_tensor(end)
+def _coerce_algan_color(value, opacity=None):
+    """Return an Algan :class:`Color` from a Manim-style color value."""
+    if isinstance(value, str):
+        named = globals().get(value.upper())
+        if isinstance(named, Color):
+            value = named
+        else:
+            value = Color(value)
+    value = cast_to_tensor(value)
+    value = Color.add_defaults(value).as_subclass(Color)
+    if opacity is not None:
+        value = value.set_opacity(opacity)
+    return value
+
+
+def _translate_vector_style_kwargs(kwargs, *, default_color=WHITE, line=False):
+    """Translate common VMobject style keywords to BezierCircuitCubic.
+
+    Algan stores fill color on ``color`` and outline style on
+    ``border_color``/``border_width``.  Manim exposes the same concepts as
+    ``fill_*`` and ``stroke_*``.  Consuming the keywords here also prevents
+    renderer-only VMobject settings from leaking into ``Animatable``.
+    """
+    kwargs = dict(kwargs)
+    color = kwargs.get("color", default_color)
+
+    fill_color = kwargs.pop("fill_color", None)
+    fill_opacity = kwargs.pop("fill_opacity", None)
+    stroke_color = kwargs.pop("stroke_color", None)
+    stroke_opacity = kwargs.pop("stroke_opacity", None)
+    stroke_width = kwargs.pop("stroke_width", None)
+
+    if line:
+        # A Line is an unfilled path; Manim's generic ``color`` controls its
+        # stroke, while fill settings are accepted but have no visible effect.
+        if stroke_color is None:
+            stroke_color = color
         kwargs["filled"] = False
-        if "color" in kwargs:
-            kwargs["border_color"] = kwargs["color"]
-        super().__init__(
-            torch.cat([start * (1 - a) + a * end for a in torch.linspace(0, 1, 4)], -2),
-            *args,
-            **kwargs,
+    else:
+        if fill_color is not None:
+            color = fill_color
+        if fill_opacity is not None:
+            color = _coerce_algan_color(color, fill_opacity)
+        kwargs["color"] = color
+        if stroke_color is None and "color" in kwargs:
+            stroke_color = kwargs["color"]
+
+    if stroke_color is not None:
+        kwargs["border_color"] = _coerce_algan_color(
+            stroke_color,
+            stroke_opacity,
         )
+    elif stroke_opacity is not None:
+        kwargs["border_color"] = _coerce_algan_color(default_color, stroke_opacity)
+    if stroke_width is not None:
+        # ManimMob performs the inverse conversion when importing VMobjects.
+        kwargs["border_width"] = float(stroke_width) / 2
+
+    # Accepted by Manim's VMobject/Mobject constructors but not represented by
+    # Algan's ray-traced Bezier primitive.
+    for key in (
+        "background_stroke_color",
+        "background_stroke_width",
+        "background_stroke_opacity",
+        "sheen_factor",
+        "sheen_direction",
+        "shade_in_3d",
+        "tolerance_for_point_equality",
+        "joint_type",
+        "cap_style",
+        "z_index",
+    ):
+        kwargs.pop(key, None)
+    return kwargs
+
+
+class Line(BezierCircuitCubic):
+    """A straight or circular-arc line segment with Manim-compatible arguments."""
+
+    def __init__(self, start=LEFT, end=RIGHT, buff=0, path_arc=0, *args, **kwargs):
+        start_center = start.get_center() if isinstance(start, Mob) else cast_to_tensor(start)
+        end_center = end.get_center() if isinstance(end, Mob) else cast_to_tensor(end)
+        direction = end_center - start_center
+        if isinstance(start, Mob):
+            start_center = start.get_boundary_in_direction(direction)
+        if isinstance(end, Mob):
+            end_center = end.get_boundary_in_direction(-direction)
+        direction = end_center - start_center
+        length = direction.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-10)
+        if buff:
+            unit = direction / length
+            effective_buff = min(float(buff), max(float(length.reshape(-1)[0]) * 0.5, 0.0))
+            start_center = start_center + unit * effective_buff
+            end_center = end_center - unit * effective_buff
+
+        kwargs = _translate_vector_style_kwargs(kwargs, line=True)
+
+        if abs(float(path_arc)) > 1e-10:
+            import manim as mn
+
+            arc = mn.ArcBetweenPoints(
+                start_center.detach().reshape(-1, 3)[0].cpu().numpy(),
+                end_center.detach().reshape(-1, 3)[0].cpu().numpy(),
+                angle=float(path_arc),
+            )
+            control_points = torch.from_numpy(arc.points).to(
+                device=start_center.device, dtype=start_center.dtype
+            )
+        else:
+            control_points = torch.cat(
+                [
+                    start_center * (1 - a) + a * end_center
+                    for a in torch.linspace(0, 1, 4, device=start_center.device)
+                ],
+                -2,
+            )
+        super().__init__(control_points, *args, **kwargs)
 
     def get_start(self):
         return unsquish(self.control_points.location, -2, 4)[..., 0, :]
@@ -40,11 +145,34 @@ class Line(BezierCircuitCubic):
     def get_end(self):
         return unsquish(self.control_points.location, -2, 4)[..., -1, :]
 
+    def get_vector(self):
+        return self.get_end() - self.get_start()
+
+    def get_unit_vector(self):
+        return F.normalize(self.get_vector(), p=2, dim=-1)
+
+    def get_length(self):
+        return self.get_vector().norm(p=2, dim=-1)
+
+    def put_start_and_end_on(self, start, end):
+        target = Line(start, end, add_to_scene=False)
+        return self.become(target, detach_history=False)
+
 
 class Point(BezierCircuitCubic):
-    def __init__(self, location, *args, **kwargs):
+    def __init__(self, location=ORIGIN, *args, **kwargs):
         location = cast_to_tensor(location)
+        kwargs = _translate_vector_style_kwargs(kwargs, default_color=BLACK)
         super().__init__(torch.cat([location for _ in range(4)], -2), *args, **kwargs)
+
+    def get_num_points(self):
+        return 1
+
+    def get_points(self):
+        return self.get_center().reshape(1, 3)
+
+    def point_from_proportion(self, alpha):
+        return self.get_center()
 
 
 class TriangleTriangulated(Mob):
@@ -193,8 +321,19 @@ class Polygon(BezierCircuitCubic):
 
     """
 
-    def __init__(self, vertex_locations: torch.Tensor, *args, **kwargs):
-        corner_locations = cast_to_tensor(vertex_locations)[0]
+    def __init__(self, *vertex_locations: torch.Tensor, **kwargs):
+        kwargs = _translate_vector_style_kwargs(kwargs)
+        if len(vertex_locations) == 1:
+            corner_locations = cast_to_tensor(vertex_locations[0])
+            while corner_locations.dim() > 2 and corner_locations.shape[0] == 1:
+                corner_locations = corner_locations[0]
+        else:
+            corner_locations = torch.stack(
+                [cast_to_tensor(vertex).reshape(-1, 3)[0] for vertex in vertex_locations],
+                dim=0,
+            )
+        if corner_locations.shape[-2] < 3:
+            raise ValueError("Polygon requires at least three vertices")
         control_points = []
         for line_start, line_end in zip(
             corner_locations, corner_locations.roll(-1, -2)
@@ -209,42 +348,47 @@ class Polygon(BezierCircuitCubic):
             )
 
         control_points = torch.cat(control_points, -2)
-        super().__init__(control_points, *args, **kwargs)
+        super().__init__(control_points, **kwargs)
 
     def get_default_color(self):
         return RED
 
 
 class RegularPolygon(Polygon):
-    """A 2-D planar polygon with the given number of vertices spaced evenly around
-    the unit circle.
+    """A regular polygon with Manim-compatible ``n``/``start_angle`` arguments."""
 
-    Parameters
-    ----------
-    num_vertices
-        The number of vertices of the polygon. Must be greater than or equal to 3.
-    *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`
-
-    """
-
-    def __init__(self, num_vertices: int, *args, **kwargs):
+    def __init__(
+        self,
+        n: int = 6,
+        *,
+        num_vertices: int | None = None,
+        radius: float = 1,
+        start_angle: float | None = None,
+        **kwargs,
+    ):
+        if num_vertices is not None:
+            n = num_vertices
+        if n < 3:
+            raise ValueError("RegularPolygon requires n >= 3")
+        if start_angle is None:
+            start_angle = 0 if n % 2 == 0 else math.pi / 2
+        angles = start_angle + torch.arange(n) * (2 * math.pi / n)
         vertices = torch.stack(
-            [
-                UP * torch.sin(a) + RIGHT * torch.cos(a)
-                for a in torch.linspace(math.pi / 2, -math.pi * 1.5, num_vertices + 1)
-            ],
-            -2,
+            (radius * torch.cos(angles), radius * torch.sin(angles), torch.zeros_like(angles)),
+            dim=-1,
         )
-        super().__init__(vertices, *args, **kwargs)
+        self.n = n
+        self.start_angle = start_angle
+        super().__init__(*vertices, **kwargs)
 
 
 class Quad(Polygon):
     pass
 
 
-class Triangle(Polygon):
-    pass
+class Triangle(RegularPolygon):
+    def __init__(self, **kwargs):
+        super().__init__(n=3, **kwargs)
 
 
 class Rectangle(Quad):
@@ -261,7 +405,22 @@ class Rectangle(Quad):
 
     """
 
-    def __init__(self, width=2, height=2, **kwargs):
+    def __init__(self, color=WHITE, height=2, width=4, **kwargs):
+        if isinstance(color, (int, float)) or (
+            isinstance(color, torch.Tensor) and color.numel() == 1
+        ):
+            # Preserve Algan's former positional ``Rectangle(width, height)``
+            # spelling. Numeric values are not valid Manim colors, so this is
+            # unambiguous with Manim's ``Rectangle(color, height, width)`` API.
+            width, color = color, WHITE
+        for key in (
+            "grid_xstep",
+            "grid_ystep",
+            "mark_paths_closed",
+            "close_new_points",
+        ):
+            kwargs.pop(key, None)
+        kwargs.setdefault("color", color)
         corners = (
             torch.tensor(
                 (
@@ -293,12 +452,32 @@ class SurroundingRectangle(Quad):
 
     """
 
-    def __init__(self, mob, buffer=STYLE_DEFAULTS.buffer * 0.5, bottom_buffer=None, *args, **kwargs):
-        bbox = mob.get_bounding_box()
+    def __init__(
+        self,
+        *mobjects,
+        color=YELLOW,
+        buff=0.1,
+        corner_radius=0.0,
+        buffer=None,
+        bottom_buffer=None,
+        **kwargs,
+    ):
+        if not mobjects:
+            raise ValueError("SurroundingRectangle requires at least one Mobject")
+        if buffer is not None:
+            buff = buffer
+        if isinstance(buff, (tuple, list)):
+            horizontal_buff, vertical_buff = buff
+        else:
+            horizontal_buff = vertical_buff = buff
+        bboxes = torch.cat([mob.get_bounding_box() for mob in mobjects], -2)
+        bbox = bboxes
         mn = bbox.amin(-2)
-        mn[...,:2] -=  buffer
+        mn[..., 0] -= horizontal_buff
+        mn[..., 1] -= vertical_buff
         mx = bbox.amax(-2)
-        mx[..., :2] += buffer
+        mx[..., 0] += horizontal_buff
+        mx[..., 1] += vertical_buff
         if bottom_buffer is not None:
             mn[...,1:2] -= bottom_buffer
         md = (mn + mx) * 0.5
@@ -312,7 +491,27 @@ class SurroundingRectangle(Quad):
             ),
             -2,
         )
-        super().__init__(corners + IN * 0.01, *args, **kwargs)
+        self.corner_radius = corner_radius
+        kwargs.setdefault("color", color)
+        if corner_radius > 0:
+            import manim as manim_ce
+
+            width = float((mx[..., 0] - mn[..., 0]).reshape(-1)[0])
+            height = float((mx[..., 1] - mn[..., 1]).reshape(-1)[0])
+            rounded = manim_ce.RoundedRectangle(
+                width=width,
+                height=height,
+                corner_radius=float(corner_radius),
+            )
+            control_points = torch.from_numpy(rounded.points).to(
+                device=md.device,
+                dtype=md.dtype,
+            )
+            control_points = control_points + md.reshape(-1, 3)[0] + IN * 0.01
+            kwargs = _translate_vector_style_kwargs(kwargs, default_color=color)
+            BezierCircuitCubic.__init__(self, control_points, **kwargs)
+        else:
+            super().__init__(corners + IN * 0.01, **kwargs)
 
 
 class Square(Rectangle):
@@ -328,7 +527,7 @@ class Square(Rectangle):
     """
 
     def __init__(self, side_length=2, **kwargs):
-        super().__init__(side_length, side_length, **kwargs)
+        super().__init__(height=side_length, width=side_length, **kwargs)
 
 
 class Circle(BezierCircuitCubic):
@@ -343,7 +542,11 @@ class Circle(BezierCircuitCubic):
 
     """
 
-    def __init__(self, radius=1, *args, **kwargs):
+    def __init__(self, radius=None, color=RED, *args, **kwargs):
+        if radius is None:
+            radius = 1
+        kwargs.setdefault("color", color)
+        kwargs = _translate_vector_style_kwargs(kwargs, default_color=color)
         a = 1.00005519
         b = 0.55342686
         c = 0.99873585
@@ -382,3 +585,21 @@ class Circle(BezierCircuitCubic):
 
     def get_default_color(self):
         return BLUE
+
+
+class Dot(Circle):
+    """A small filled circle with Manim-compatible constructor arguments."""
+
+    def __init__(
+        self,
+        point=ORIGIN,
+        radius=0.08,
+        stroke_width=0,
+        fill_opacity=1.0,
+        color=WHITE,
+        **kwargs,
+    ):
+        kwargs.setdefault("color", color)
+        kwargs.setdefault("stroke_width", stroke_width)
+        kwargs.setdefault("fill_opacity", fill_opacity)
+        super().__init__(radius=radius, location=point, **kwargs)

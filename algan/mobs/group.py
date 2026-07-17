@@ -101,11 +101,20 @@ class Group(Mob):
     def __len__(self):
         return len(self.mobs)
 
-    def add(self, mob):
-        self.add_children(mob)
-        self.mobs.append(mob)
+    def add(self, *mobs):
+        """Add one or more Mobs and return this group.
+
+        The variadic, chainable form matches Manim's ``Group.add`` while
+        remaining backwards compatible with Algan's former single-Mob API.
+        """
+        mobs = list(traverse(mobs))
+        if not mobs:
+            return self
+        self.add_children(mobs)
+        self.mobs.extend(mobs)
         with Off():
             self.set_non_recursive(location=self.get_mob_midpoint())
+        return self
 
     def get_parts_as_mobs(self):
         return self.mobs

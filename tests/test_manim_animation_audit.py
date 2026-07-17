@@ -1,0 +1,294 @@
+from __future__ import annotations
+
+import numpy as np
+import pytest
+import torch
+
+import algan
+from algan.animation.timeline import TimelineManager
+from algan.scene_manager import SceneManager
+
+
+@pytest.fixture(autouse=True)
+def reset_scene():
+    SceneManager.reset()
+    yield
+    SceneManager.reset()
+
+
+def materialize(*times: float):
+    TimelineManager.instance().set_state_to_times(
+        torch.tensor(times, dtype=torch.get_default_dtype())
+    )
+
+
+def test_high_value_animation_api_is_exported():
+    expected = {
+        "MoveAlongPath",
+        "ApplyPointwiseFunction",
+        "ApplyMatrix",
+        "ApplyComplexFunction",
+        "Homotopy",
+        "ComplexHomotopy",
+        "PhaseFlow",
+        "AnimatedBoundary",
+    }
+    assert expected <= set(vars(algan))
+
+
+def test_move_along_path_uses_arc_length_and_materializes_batches():
+    path = algan.Line(algan.LEFT, algan.RIGHT, add_to_scene=False).spawn(False)
+    dot = algan.Dot(add_to_scene=False).spawn(False)
+
+    algan.MoveAlongPath(
+        dot,
+        path,
+        run_time=1,
+        rate_func=algan.rate_funcs.identity,
+    )
+    materialize(0, 0.5, 0.999999)
+
+    assert torch.allclose(
+        dot.location[:, 0],
+        torch.tensor([[-1, 0, 0], [0, 0, 0], [1, 0, 0]], dtype=dot.location.dtype),
+        atol=2e-5,
+    )
+
+    SceneManager.reset()
+    path = algan.Line(algan.LEFT, algan.RIGHT, add_to_scene=False).spawn(False)
+    dot = algan.Dot(add_to_scene=False).spawn(False)
+    with algan.Sync(run_time=1, rate_func=algan.rate_funcs.identity):
+        path.move(algan.UP)
+        algan.MoveAlongPath(
+            dot, path, run_time=1, rate_func=algan.rate_funcs.identity
+        )
+    materialize(0.5)
+    assert torch.allclose(
+        dot.location[0, 0], torch.tensor([0.0, 0.5, 0.0]), atol=2e-5
+    )
+
+
+def test_apply_matrix_supports_manim_argument_order_and_midpoint_state():
+    square = algan.Square(add_to_scene=False).spawn(False)
+    initial = square.control_points.location.clone()
+
+    algan.ApplyMatrix(
+        [[2, 0], [0, 3]],
+        square,
+        run_time=1,
+        rate_func=algan.rate_funcs.identity,
+    )
+    materialize(0, 0.5, 0.999999)
+
+    scale = torch.tensor([2.0, 3.0, 1.0], dtype=initial.dtype)
+    expected_final = initial * scale
+    assert torch.allclose(square.control_points.location[0], initial[0], atol=1e-6)
+    assert torch.allclose(
+        square.control_points.location[1],
+        torch.lerp(initial[0], expected_final[0], 0.5),
+        atol=2e-5,
+    )
+    assert torch.allclose(
+        square.control_points.location[2], expected_final[0], atol=2e-5
+    )
+
+
+def test_pointwise_function_has_vectorized_and_scalar_callback_paths():
+    vectorized = algan.Line([0, 0, 0], [1, 0, 0], add_to_scene=False).spawn(False)
+    scalar = algan.Line([0, 0, 0], [1, 0, 0], add_to_scene=False).spawn(False)
+    vectorized_initial = vectorized.control_points.location.clone()
+    scalar_initial = scalar.control_points.location.clone()
+
+    def scalar_only(point):
+        point = np.asarray(point)
+        if point.ndim != 1:
+            raise TypeError("one point at a time")
+        return point + np.array([-1.0, 0.5, 0.0])
+
+    with algan.Sync():
+        algan.ApplyPointwiseFunction(
+            vectorized,
+            lambda points: points + torch.tensor([1.0, 2.0, 0.0]),
+            rate_func=algan.rate_funcs.identity,
+        )
+        algan.ApplyPointwiseFunction(
+            scalar_only,
+            scalar,
+            rate_func=algan.rate_funcs.identity,
+        )
+    materialize(0.999999)
+
+    assert torch.allclose(
+        vectorized.control_points.location,
+        vectorized_initial + torch.tensor([1.0, 2.0, 0.0]),
+        atol=2e-5,
+    )
+    assert torch.allclose(
+        scalar.control_points.location,
+        scalar_initial + torch.tensor([-1.0, 0.5, 0.0]),
+        atol=2e-5,
+    )
+
+
+def test_homotopy_accepts_manim_scalar_api_and_surface_geometry():
+    circle = algan.Circle(add_to_scene=False).spawn(False)
+    circle_initial = circle.control_points.location.clone()
+    algan.Homotopy(
+        lambda x, y, z, t: (x, y + t, z),
+        circle,
+        run_time=1,
+        rate_func=algan.rate_funcs.identity,
+    )
+    materialize(0, 0.5, 0.999999)
+    offsets = circle.control_points.location - circle_initial.expand(3, -1, -1)
+    assert torch.allclose(
+        offsets[..., 1].mean(-1), torch.tensor([0.0, 0.5, 1.0]), atol=2e-5
+    )
+
+    SceneManager.reset()
+    surface = algan.Surface(
+        lambda u, v: (u, v, 0),
+        resolution=(2, 2),
+        add_to_scene=False,
+    ).spawn(False)
+    initial_grid = surface.grid.location.clone()
+    algan.Homotopy(
+        surface,
+        lambda points, t: points
+        + torch.cat((torch.zeros_like(t), torch.zeros_like(t), t), dim=-1),
+        run_time=1,
+        rate_func=algan.rate_funcs.identity,
+    )
+    materialize(0.5)
+    assert torch.allclose(
+        surface.grid.location[..., 2],
+        initial_grid[..., 2] + 0.5,
+        atol=2e-5,
+    )
+    assert surface.get_render_primitives() is not None
+
+
+def test_complex_transforms_preserve_z_and_accept_numpy_callbacks():
+    line = algan.Line([1, 0, 2], [2, 0, 2], add_to_scene=False).spawn(False)
+    initial = line.control_points.location.clone()
+    algan.ApplyComplexFunction(
+        lambda z: np.asarray(z) * 1j,
+        line,
+        run_time=1,
+        rate_func=algan.rate_funcs.identity,
+    )
+    materialize(0.999999)
+
+    result = line.control_points.location
+    assert torch.allclose(result[..., 0], -initial[..., 1], atol=2e-5)
+    assert torch.allclose(result[..., 1], initial[..., 0], atol=2e-5)
+    assert torch.allclose(result[..., 2], initial[..., 2], atol=2e-5)
+
+    SceneManager.reset()
+    line = algan.Line([1, 0, 3], [2, 0, 3], add_to_scene=False).spawn(False)
+    initial = line.control_points.location.clone()
+    algan.ComplexHomotopy(
+        lambda z, t: z * torch.exp(1j * torch.pi * t / 2),
+        line,
+        run_time=1,
+        rate_func=algan.rate_funcs.identity,
+    )
+    materialize(0.5)
+    expected = initial[..., 0] / np.sqrt(2)
+    assert torch.allclose(line.control_points.location[..., 0], expected, atol=2e-5)
+    assert torch.allclose(line.control_points.location[..., 1], expected, atol=2e-5)
+    assert torch.allclose(line.control_points.location[..., 2], initial[..., 2], atol=2e-5)
+
+
+def test_phase_flow_is_deterministic_across_frame_batches():
+    line = algan.Line([0, 0, 0], [1, 0, 0], add_to_scene=False).spawn(False)
+    initial = line.control_points.location.clone()
+    algan.PhaseFlow(
+        lambda points: torch.ones_like(points) * torch.tensor([1.0, 2.0, 0.0]),
+        line,
+        virtual_time=2,
+        integration_steps=4,
+        run_time=1,
+    )
+
+    materialize(0.25, 0.75)
+    first_batch = line.control_points.location.clone()
+    materialize(0.75)
+    isolated = line.control_points.location.clone()
+
+    assert torch.allclose(first_batch[1], isolated[0], atol=1e-6)
+    assert torch.allclose(
+        isolated,
+        initial + torch.tensor([1.5, 3.0, 0.0]),
+        atol=2e-5,
+    )
+
+    SceneManager.reset()
+    line = algan.Line([1, 0, 0], [2, 0, 0], add_to_scene=False).spawn(False)
+    initial = line.control_points.location.clone()
+    algan.PhaseFlow(
+        lambda points: points * torch.tensor([1.0, 0.0, 0.0]),
+        line,
+        virtual_time=1,
+        integration_steps=32,
+        run_time=1,
+    )
+    materialize(0.999999)
+    assert torch.allclose(
+        line.control_points.location[..., 0],
+        initial[..., 0] * torch.e,
+        rtol=2e-5,
+        atol=2e-5,
+    )
+
+
+def test_animated_boundary_tracks_source_and_can_stop():
+    source = algan.Circle(add_to_scene=False).spawn(False)
+    boundary = algan.AnimatedBoundary(
+        source,
+        colors=("#FF0000", algan.BLUE),
+        cycle_rate=1,
+        max_stroke_width=4,
+        back_and_forth=False,
+        add_to_scene=False,
+    ).spawn(False)
+    source.move(algan.RIGHT)
+
+    materialize(0.25, 0.75, 1.25)
+    growing = boundary._growing_paths[0]
+    fading = boundary._fading_paths[0]
+
+    assert growing.control_points.location.shape[0] == 3
+    assert torch.allclose(
+        growing.control_points.location[:, 0],
+        source.control_points.location[:, 0],
+        atol=1e-6,
+    )
+    assert torch.allclose(
+        growing.border_width.reshape(3, -1)[:, 0],
+        torch.full((3,), 2.0),
+    )
+    assert fading.border_width.reshape(3, -1)[0, 0] == 0
+    assert fading.border_width.reshape(3, -1)[2, 0] > 0
+    assert growing.get_render_primitives() is not None
+
+    SceneManager.reset()
+    source = algan.Circle(add_to_scene=False).spawn(False)
+    boundary = algan.AnimatedBoundary(source, add_to_scene=False).spawn(False)
+    assert boundary.stop() is boundary
+    updater = TimelineManager.instance().function_timeline.updaters[boundary.updater_id]
+    assert updater.time.end_event is not None
+
+
+def test_invalid_geometry_and_parameters_fail_early():
+    empty = algan.Mob(add_to_scene=False)
+    with pytest.raises(TypeError, match="deformable"):
+        algan.ApplyPointwiseFunction(empty, lambda points: points)
+    with pytest.raises(ValueError, match="shape"):
+        algan.ApplyMatrix(algan.Circle(add_to_scene=False), [[1, 0, 0]])
+    with pytest.raises(ValueError, match="at least 1"):
+        algan.PhaseFlow(
+            algan.Circle(add_to_scene=False),
+            lambda points: points,
+            integration_steps=0,
+        )
