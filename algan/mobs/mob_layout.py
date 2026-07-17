@@ -46,6 +46,8 @@ class MobLayoutMixin:
             self.location.amin(-2, keepdim=True), self.location.amax(-2, keepdim=True)
         )
         out = torch.empty(*lower_corner.shape[:-2], 8, 3)
+        lower_corner = lower_corner.squeeze(-2)
+        upper_corner = upper_corner.squeeze(-2)
         for i in range(2):
             for j in range(2):
                 for k in range(2):

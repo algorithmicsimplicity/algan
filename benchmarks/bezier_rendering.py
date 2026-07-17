@@ -6,7 +6,6 @@ os.environ["ALGAN_INPLACE_AA"] = "0"
 
 from algan import *
 
-from algan.mobs.neural_nets.neural_net import NeuralNetMLP
 from algan.utils.profiling_utils import profile_scene
 
 Boxed = lambda mob, color=BLUE, buffer=0.1, *args, **kwargs: Group(mob,
@@ -26,13 +25,10 @@ def GlowTex(c, *args, **kwargs):
 text_string = ('a' * 50 + '\n') * 50
 
 def text_scene():
-    #with Sync(run_time=0.25):
     with Off():
-        nn = NeuralNetMLP([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(run_time=1.0):
+    with Sync(run_time=0.25):
         mob.move(LEFT)
-        nn.move(LEFT)
     return
 
 set_log_level('DEBUG')

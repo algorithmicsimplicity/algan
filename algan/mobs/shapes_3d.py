@@ -67,22 +67,27 @@ class Sphere(Surface):
         self.radius = radius
         self.u_range = u_range
         self.v_range = v_range
-        # Match Manim's Cairo default rather than triggering Algan's expensive
-        # adaptive surface-resolution search for every sphere (and every
-        # point-cloud dot built from one).
-        if resolution is None:
-            resolution = (24, 12)
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
         kwargs.setdefault("location", center)
         super().__init__(*args, **kwargs)
 
     def coord_function(self, coords_2d):
-        u = self.u_range[0] + coords_2d[..., 0] * (self.u_range[1] - self.u_range[0])
-        v = self.v_range[0] + coords_2d[..., 1] * (self.v_range[1] - self.v_range[0])
-        return self.radius * torch.stack(
-            [torch.cos(u) * torch.sin(v), torch.sin(u) * torch.sin(v), -torch.cos(v)],
+        # Keep the original Algan sampling orientation.  Although a sphere is
+        # rotationally symmetric, rotating its latitude/longitude grid changes
+        # triangle placement, normals, and therefore pixel output.
+        x = coords_2d[..., 0]
+        y = coords_2d[..., 1]
+        longitude = -torch.pi * (1 - x) + x * torch.pi
+        latitude = -torch.pi * 0.5 * (1 - y) + y * torch.pi * 0.5
+        coords_3d = torch.stack(
+            (
+                torch.cos(latitude) * torch.cos(longitude),
+                torch.sin(latitude),
+                torch.cos(latitude) * torch.sin(longitude),
+            ),
             dim=-1,
         )
+        return coords_3d * self.radius
 
     def normal_function(self, uv):
         return self.coord_function(uv)
@@ -175,11 +180,11 @@ class Cylinder(Surface):
     def __init__(
         self,
         radius=1,
-        height=2,
-        direction=OUT,
+        height=1,
+        direction=UP,
         v_range=(0, 2 * PI),
-        show_ends=True,
-        resolution=(24, 24),
+        show_ends=False,
+        resolution=None,
         closed=None,
         *args,
         **kwargs,
@@ -192,12 +197,14 @@ class Cylinder(Surface):
         self.direction = cast_to_tensor(direction)
         self.v_range = v_range
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
-        kwargs.setdefault("grid_aspect_ratio", 1 / PI)
+        if "grid_aspect_ratio" not in kwargs and "grid_height" not in kwargs:
+            kwargs["grid_aspect_ratio"] = 1 / PI
         super().__init__(*args, **kwargs)
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
-        with Off():
-            self.look(direction_t, axis=1)
+        if not torch.allclose(direction_t, UP.to(direction_t)):
+            with Off():
+                self.look(direction_t, axis=1)
         if show_ends:
             self.add_bases(direction_t)
 
@@ -221,15 +228,13 @@ class Cylinder(Surface):
         return self
 
     def coord_function(self, uv):
-        phi = self.v_range[0] + uv[..., :1] * (self.v_range[1] - self.v_range[0])
+        uv[..., 1:] /= uv[..., 1:].amax()
+        u = -uv[..., :1]
         v = uv[..., 1:]
-        return torch.cat(
-            (
-                torch.sin(phi) * self.radius,
-                (v - 0.5) * self.height,
-                torch.cos(phi) * self.radius,
-            ),
-            -1,
+        return (
+            (u * torch.pi * 2).sin() * self.radius * self.get_right_basis()
+            + (v - 0.5) * self.height * self.get_upwards_basis()
+            + (u * torch.pi * 2).cos() * -self.get_forward_basis()
         )
 
     def normal_function(self, uv):
@@ -247,9 +252,9 @@ class Cylinder(Surface):
 
     @animated_function(animated_args={"interpolation": 0})
     def set_start_point(self, point, interpolation=1):
-        offset = self.get_upwards_direction() * self.height * 0.5
-        current_end = self.get_center() + offset
-        current_start = self.get_center() - offset
+        offset = self.get_upwards_basis() * 0.5
+        current_end = self.location + offset
+        current_start = self.location - offset
         point = current_start * (1 - interpolation) + interpolation * cast_to_tensor(point)
         self._move_between_points(point, current_end)
         return self
@@ -258,9 +263,13 @@ class Cylinder(Surface):
     def move_between_points(self, start, end, interpolation=1):
         start = cast_to_tensor(start)
         end = cast_to_tensor(end)
-        offset = self.get_upwards_direction() * self.height * 0.5
-        current_end = self.get_center() + offset
-        current_start = self.get_center() - offset
+        offset = (
+            self.get_upwards_direction()
+            * self.scale_coefficient[..., 1].unsqueeze(-1)
+            * 0.5
+        )
+        current_end = self.location + offset
+        current_start = self.location - offset
         start = current_start * (1 - interpolation) + interpolation * start
         end = current_end * (1 - interpolation) + interpolation * end
         self._move_between_points(start, end)
@@ -270,23 +279,23 @@ class Cylinder(Surface):
         start = cast_to_tensor(start)
         end = cast_to_tensor(end)
         with Sync():
-            direction = F.normalize(end - start, p=2, dim=-1)
-            right_b = get_orthonormal_vector(direction)
-            forward_b = get_orthonormal_vector(direction, right_b)
+            up_b = F.normalize(end - start, p=2, dim=-1)
+            right_b = get_orthonormal_vector(up_b)
+            forward_b = get_orthonormal_vector(up_b, right_b)
             self.move_to((start + end) * 0.5)
             self.setattr_and_record_modification(
                 "basis",
                 torch.cat(
                     (
                         right_b * self.scale_coefficient[..., :1],
-                        direction * (end - start).norm(p=2, dim=-1, keepdim=True),
+                        end - start,
                         forward_b * self.scale_coefficient[..., 2:],
                     ),
                     -1,
                 ),
             )
             self.set_location_by_function(self.coord_function)
-        self.direction = direction
+        self.direction = up_b
         return self
 
 

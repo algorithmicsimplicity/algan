@@ -36,7 +36,7 @@ def _coerce_algan_color(value, opacity=None):
     return value
 
 
-def _translate_vector_style_kwargs(kwargs, *, default_color=WHITE, line=False):
+def _translate_vector_style_kwargs(kwargs, *, default_color=None, line=False):
     """Translate common VMobject style keywords to BezierCircuitCubic.
 
     Algan stores fill color on ``color`` and outline style on
@@ -45,6 +45,7 @@ def _translate_vector_style_kwargs(kwargs, *, default_color=WHITE, line=False):
     renderer-only VMobject settings from leaking into ``Animatable``.
     """
     kwargs = dict(kwargs)
+    has_color = "color" in kwargs
     color = kwargs.get("color", default_color)
 
     fill_color = kwargs.pop("fill_color", None)
@@ -56,17 +57,20 @@ def _translate_vector_style_kwargs(kwargs, *, default_color=WHITE, line=False):
     if line:
         # A Line is an unfilled path; Manim's generic ``color`` controls its
         # stroke, while fill settings are accepted but have no visible effect.
-        if stroke_color is None:
+        if stroke_color is None and has_color:
             stroke_color = color
         kwargs["filled"] = False
     else:
         if fill_color is not None:
             color = fill_color
+            has_color = True
         if fill_opacity is not None:
+            if color is None:
+                color = WHITE
             color = _coerce_algan_color(color, fill_opacity)
-        kwargs["color"] = color
-        if stroke_color is None and "color" in kwargs:
-            stroke_color = kwargs["color"]
+            has_color = True
+        if has_color:
+            kwargs["color"] = color
 
     if stroke_color is not None:
         kwargs["border_color"] = _coerce_algan_color(
@@ -74,7 +78,10 @@ def _translate_vector_style_kwargs(kwargs, *, default_color=WHITE, line=False):
             stroke_opacity,
         )
     elif stroke_opacity is not None:
-        kwargs["border_color"] = _coerce_algan_color(default_color, stroke_opacity)
+        kwargs["border_color"] = _coerce_algan_color(
+            WHITE if default_color is None else default_color,
+            stroke_opacity,
+        )
     if stroke_width is not None:
         # ManimMob performs the inverse conversion when importing VMobjects.
         kwargs["border_width"] = float(stroke_width) / 2
@@ -322,7 +329,7 @@ class Polygon(BezierCircuitCubic):
     """
 
     def __init__(self, *vertex_locations: torch.Tensor, **kwargs):
-        kwargs = _translate_vector_style_kwargs(kwargs)
+        kwargs = _translate_vector_style_kwargs(kwargs, default_color=RED)
         if len(vertex_locations) == 1:
             corner_locations = cast_to_tensor(vertex_locations[0])
             while corner_locations.dim() > 2 and corner_locations.shape[0] == 1:
@@ -371,14 +378,20 @@ class RegularPolygon(Polygon):
         if n < 3:
             raise ValueError("RegularPolygon requires n >= 3")
         if start_angle is None:
-            start_angle = 0 if n % 2 == 0 else math.pi / 2
-        angles = start_angle + torch.arange(n) * (2 * math.pi / n)
+            # Preserve Algan's original topology and orientation: the first
+            # vertex is at the top and the closing vertex is repeated.  The
+            # latter is observable during ``become`` because it determines
+            # how cubic segments are paired.
+            angles = torch.linspace(math.pi / 2, -math.pi * 1.5, n + 1)
+            self.start_angle = math.pi / 2
+        else:
+            angles = start_angle + torch.arange(n) * (2 * math.pi / n)
+            self.start_angle = start_angle
         vertices = torch.stack(
             (radius * torch.cos(angles), radius * torch.sin(angles), torch.zeros_like(angles)),
             dim=-1,
         )
         self.n = n
-        self.start_angle = start_angle
         super().__init__(*vertices, **kwargs)
 
 
@@ -405,14 +418,7 @@ class Rectangle(Quad):
 
     """
 
-    def __init__(self, color=WHITE, height=2, width=4, **kwargs):
-        if isinstance(color, (int, float)) or (
-            isinstance(color, torch.Tensor) and color.numel() == 1
-        ):
-            # Preserve Algan's former positional ``Rectangle(width, height)``
-            # spelling. Numeric values are not valid Manim colors, so this is
-            # unambiguous with Manim's ``Rectangle(color, height, width)`` API.
-            width, color = color, WHITE
+    def __init__(self, width=2, height=2, color=None, **kwargs):
         for key in (
             "grid_xstep",
             "grid_ystep",
@@ -420,7 +426,8 @@ class Rectangle(Quad):
             "close_new_points",
         ):
             kwargs.pop(key, None)
-        kwargs.setdefault("color", color)
+        if color is not None:
+            kwargs.setdefault("color", color)
         corners = (
             torch.tensor(
                 (
@@ -455,8 +462,8 @@ class SurroundingRectangle(Quad):
     def __init__(
         self,
         *mobjects,
-        color=YELLOW,
-        buff=0.1,
+        color=None,
+        buff=STYLE_DEFAULTS.buffer * 0.5,
         corner_radius=0.0,
         buffer=None,
         bottom_buffer=None,
@@ -492,7 +499,8 @@ class SurroundingRectangle(Quad):
             -2,
         )
         self.corner_radius = corner_radius
-        kwargs.setdefault("color", color)
+        if color is not None:
+            kwargs.setdefault("color", color)
         if corner_radius > 0:
             import manim as manim_ce
 
@@ -508,7 +516,7 @@ class SurroundingRectangle(Quad):
                 dtype=md.dtype,
             )
             control_points = control_points + md.reshape(-1, 3)[0] + IN * 0.01
-            kwargs = _translate_vector_style_kwargs(kwargs, default_color=color)
+            kwargs = _translate_vector_style_kwargs(kwargs, default_color=RED)
             BezierCircuitCubic.__init__(self, control_points, **kwargs)
         else:
             super().__init__(corners + IN * 0.01, **kwargs)
@@ -527,7 +535,7 @@ class Square(Rectangle):
     """
 
     def __init__(self, side_length=2, **kwargs):
-        super().__init__(height=side_length, width=side_length, **kwargs)
+        super().__init__(width=side_length, height=side_length, **kwargs)
 
 
 class Circle(BezierCircuitCubic):
@@ -542,11 +550,12 @@ class Circle(BezierCircuitCubic):
 
     """
 
-    def __init__(self, radius=None, color=RED, *args, **kwargs):
+    def __init__(self, radius=1, color=None, *args, **kwargs):
         if radius is None:
             radius = 1
-        kwargs.setdefault("color", color)
-        kwargs = _translate_vector_style_kwargs(kwargs, default_color=color)
+        if color is not None:
+            kwargs.setdefault("color", color)
+        kwargs = _translate_vector_style_kwargs(kwargs, default_color=BLUE)
         a = 1.00005519
         b = 0.55342686
         c = 0.99873585

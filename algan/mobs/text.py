@@ -57,8 +57,8 @@ class Tex(Mob):
     def __init__(
         self,
         *tex_strings,
-        arg_separator="",
-        tex_environment="center",
+        arg_separator=" ",
+        tex_environment=None,
         font_size=24,
         latex=True,
         **kwargs,
@@ -86,12 +86,13 @@ class Tex(Mob):
 
         base_font_size = 48
         if self.latex:
-            t = mn.MathTex(
-                *self.tex_strings,
-                arg_separator=arg_separator,
-                tex_environment=tex_environment,
-                font_size=base_font_size,
-            )
+            tex_kwargs = {
+                "arg_separator": arg_separator,
+                "font_size": base_font_size,
+            }
+            if tex_environment is not None:
+                tex_kwargs["tex_environment"] = tex_environment
+            t = mn.MathTex(*self.tex_strings, **tex_kwargs)
         else:
             if not hasattr(mn, "Text"):
                 raise RuntimeError(
@@ -167,7 +168,13 @@ class Tex(Mob):
                 for char in chars
                 if isinstance(char, mn.ImageMobject)
             ]
-            super().__init__(**kwargs)
+            # Outline settings belong to the packed Bezier child, not the
+            # non-renderable Text container.  Passing them to Mob leaks into
+            # Animatable.__init__ and breaks ordinary Text construction.
+            mob_kwargs = dict(kwargs)
+            mob_kwargs.pop("border_width", None)
+            mob_kwargs.pop("border_color", None)
+            super().__init__(**mob_kwargs)
             if self._character_batch is not None:
                 self.add_children(self._character_batch)
             self.add_children(self.image_mobs)
