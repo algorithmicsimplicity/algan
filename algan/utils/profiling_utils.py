@@ -498,6 +498,16 @@ def install_pipeline_hooks():
     #_try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
     _try_wrap(KERNEL_SETTINGS, "render_kernel", "ray traced render total")
 
+    # Previously-unaccounted wall time: the per-batch memory reclaim
+    # (gc.collect + cuda cache release; gc dominates -- see empty_cache) and
+    # the serial video-encode tail (waiting on ffmpeg after the last frame).
+    # Wrap the reference render_loop actually calls (by-value import), not just
+    # the defining module, so the stage is not silently empty.
+    from algan.render_loop import RenderLoopMixin
+    _try_wrap(rl, "empty_cache", "memory reclaim (gc + cuda cache)")
+    _try_wrap(RenderLoopMixin, "_drain_video_writer",
+              "video encode tail (ffmpeg drain)")
+
 
 def install_instrumentation():
     """Install every hook: pipeline stages + all discovered Taichi kernels.

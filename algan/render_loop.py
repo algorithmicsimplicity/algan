@@ -1794,6 +1794,17 @@ class RenderLoopMixin:
                 if executor is not None:
                     executor.shutdown(wait=True)
 
+    def _drain_video_writer(self, frame_queue, writer_process, file_writer):
+        """Flush the frame queue and wait for the encoder to finish.
+
+        Split out so a profiler can time the serial video-encode tail (the
+        block spent waiting on ffmpeg after the last frame is produced) as its
+        own stage instead of leaving it in the profile's unaccounted bucket.
+        """
+        frame_queue.put(None)  # sentinel: end of stream
+        writer_process.join()
+        file_writer.close()
+
     def render_to_video(
         self,
         file_writer,
@@ -1834,9 +1845,7 @@ class RenderLoopMixin:
             for frame in frame_batch:
                 frame_queue.put(frame)
 
-        self.frame_queue.put(None)
-        writer_process.join()
-        file_writer.close()
+        self._drain_video_writer(frame_queue, writer_process, file_writer)
 
         if os.path.exists(file_path_out):
             os.remove(file_path_out)

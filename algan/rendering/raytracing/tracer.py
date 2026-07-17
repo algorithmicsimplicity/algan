@@ -827,6 +827,19 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
     do_aa = aa > 1
     inv_aa = 1.0 / aa
 
+    # Constant primary-ray init rows (rs_sca / rs_int). When there is no split
+    # pool and no near clip these are identical for every primary, so they are
+    # filled with coalesced broadcast copies here rather than by the strided
+    # per-ray stores in the memory-bound generate kernel (``write_const == 0``
+    # tells the kernel the host already filled them). base_dist (rs_sca[4]) is
+    # 0 without a near clip; _ACTIVE == 0 (rs_int cols 1-3 are all zero).
+    const_fill = (pool_ratio == 1 and near_clip <= 0.0)
+    if const_fill:
+        sca_init = torch.tensor([1.0, 0.0, 1e30, -1e30, 0.0, 1.0, 1.0],
+                                dtype=f32, device=out.device)
+        int_init = torch.tensor([int(max_bounces), 0, 0, 0],
+                                dtype=i32, device=out.device)
+
     aa_accum = None
     if do_aa:
         aa_accum = memory.get_tensor((n, 5 if transparent else 4), f32)
@@ -878,6 +891,23 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                         pix_accum.zero_()
                         rs_alloc.zero_()
                     else:
+                        # rs_acc and pix_accum start all-zero, and the constant
+                        # rs_sca / rs_int primary init rows are filled here for
+                        # the split-free, near-clip-free case. Doing this as
+                        # contiguous memsets / broadcast copies is far cheaper
+                        # than the strided per-ray stores the generate kernel
+                        # otherwise does through the AoS [ray, channel] layout
+                        # (memory-bound kernel); byte-identical -- same values,
+                        # just coalesced.
+                        rs_acc.zero_()
+                        pix_accum.zero_()
+                        if const_fill:
+                            rs_sca[:attempt_primary].copy_(sca_init)
+                            # rs_int is 5 wide; generate only wrote cols 0-3
+                            # (col 4 is the legacy sorted-path "drained" field it
+                            # never touched), so fill only 0-3 to leave col 4
+                            # exactly as before -- byte-identical.
+                            rs_int[:attempt_primary, :4].copy_(int_init)
                         wavefront_generate_rays(
                             cam_origin, screen_point, pixel_basis_x,
                             pixel_basis_y, int(time_start), int(width),
@@ -885,6 +915,7 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                             float(half_screen_h), int(max_bounces),
                             int(tile_start), int(attempt_primary), float(jx),
                             float(jy), float(near_clip),
+                            0 if const_fill else 1,
                             rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                             rs_pix, pix_accum, rs_alloc)
 

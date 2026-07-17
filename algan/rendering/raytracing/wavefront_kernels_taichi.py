@@ -1296,7 +1296,7 @@ def wavefront_generate_rays(
         time_start: int, width: int, height: int,
         half_screen_w: float, half_screen_h: float, max_bounces: int,
         ray_offset: int, num_primary: int, jitter_x: float, jitter_y: float,
-        near_clip: ti.f32,
+        near_clip: ti.f32, write_const: int,
         rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
         rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
         rs_int: ti.types.ndarray(),
@@ -1342,26 +1342,36 @@ def wavefront_generate_rays(
             for k in ti.static(range(3)):
                 rs_ro[r, k] = ro[k]
                 rs_rd[r, k] = rd[k]
-            for k in ti.static(range(4)):
-                rs_acc[r, k] = 0.0
-            rs_sca[r, 0] = 1.0     # weight (red channel; green/blue in 5/6)
-            rs_sca[r, 1] = 0.0     # t_prev
-            rs_sca[r, 2] = 1e30    # layer_prev
-            rs_sca[r, 3] = -1e30   # seam_t
-            rs_sca[r, 4] = t_near  # base_dist
-            rs_sca[r, 5] = 1.0     # weight green
-            rs_sca[r, 6] = 1.0     # weight blue
-            rs_int[r, 0] = max_bounces
-            rs_int[r, 1] = 0
-            rs_int[r, 2] = _ACTIVE
-            rs_int[r, 3] = 0
+            # rs_acc and pix_accum are all-zero at generation, and (when
+            # ``write_const == 0``) rs_sca / rs_int are the constant primary
+            # init rows below. All of that is hoisted to coalesced
+            # ``torch.zero_()`` / broadcast fills in the host tile driver (see
+            # ``_run_wavefront_tiles``): a contiguous fill moves far more
+            # bytes/s than these strided per-ray stores through the AoS
+            # [ray, channel] layout, so keeping them here needlessly slows the
+            # memory-bound generate kernel. ``write_const != 0`` restores the
+            # in-kernel init for the paths the host fill can't cover (a shared
+            # split pool, or a near clip whose base_dist varies per ray).
+            # Byte-identical either way -- same constants.
+            if write_const != 0:
+                rs_sca[r, 0] = 1.0     # weight (red channel; green/blue in 5/6)
+                rs_sca[r, 1] = 0.0     # t_prev
+                rs_sca[r, 2] = 1e30    # layer_prev
+                rs_sca[r, 3] = -1e30   # seam_t
+                rs_sca[r, 4] = t_near  # base_dist
+                rs_sca[r, 5] = 1.0     # weight green
+                rs_sca[r, 6] = 1.0     # weight blue
+                rs_int[r, 0] = max_bounces
+                rs_int[r, 1] = 0
+                rs_int[r, 2] = _ACTIVE
+                rs_int[r, 3] = 0
             rs_pix[r] = r
-            for k in ti.static(range(7)):
-                pix_accum[r, k] = 0.0
         else:
             # Free shared-pool slot: inactive until a continuation append
-            # reserves it.
-            rs_int[r, 2] = _DONE
+            # reserves it. Only reached when a split pool is allocated
+            # (pool > num_primary), which always uses ``write_const != 0``.
+            if write_const != 0:
+                rs_int[r, 2] = _DONE
         if r == 0:
             rs_alloc[0] = num_primary
             rs_alloc[1] = 0
@@ -2168,18 +2178,6 @@ def wavefront_shade(
                     # material metalness / roughness / IOR / transmission; no
                     # independent mirror/refraction controls remain.
                     alpha = ti.math.clamp(alpha, 0.0, 1.0)
-                    normal = ti.math.vec3(0.0, 0.0, 0.0)
-                    if htype == 1:
-                        normal = _tri_normal_g(
-                            mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
-                            tri_pos, tri_uvs, tri_tex_meta, textures,
-                            num_colored_triangles)
-                    elif htype == 2:
-                        normal = _pn_hit_normal(f, prim, a, b, pn_norm,
-                                                pn_ctrl, pn_extra, textures)
-                    else:
-                        normal = _bezier_normal(f, prim, circuit_meta)
-                    normal = normal.normalized()
 
                     ior = 0.0
                     if htype == 1:
@@ -2209,6 +2207,28 @@ def wavefront_shade(
                             T = circuit_meta[f % circuit_meta.shape[0],
                                              prim, _M_TRANSMISSION]
                     T = ti.math.clamp(T, 0.0, 1.0)
+
+                    # The surface normal is consumed only by the PBR Fresnel
+                    # lobe (metalness >= 0) and by a reflective / transmissive
+                    # continuation.  For an unlit, non-transmissive hit (the
+                    # common vertex-shaded flat/text case) _material_reflectance
+                    # ignores the normal and returns R = 0, and every branch
+                    # that reads the normal below is gated on R > 0 or T > 0 --
+                    # so skip its cross-product + normalize entirely.  Byte-
+                    # identical: when the guard is false the normal is dead.
+                    normal = ti.math.vec3(0.0, 0.0, 0.0)
+                    if (reflectivity >= 0.0) or (T > 1e-4):
+                        if htype == 1:
+                            normal = _tri_normal_g(
+                                mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
+                                tri_pos, tri_uvs, tri_tex_meta, textures,
+                                num_colored_triangles)
+                        elif htype == 2:
+                            normal = _pn_hit_normal(f, prim, a, b, pn_norm,
+                                                    pn_ctrl, pn_extra, textures)
+                        else:
+                            normal = _bezier_normal(f, prim, circuit_meta)
+                        normal = normal.normalized()
 
                     R, diel_pass = _material_reflectance(
                         rd, normal, reflectivity, ior, albedo3)
