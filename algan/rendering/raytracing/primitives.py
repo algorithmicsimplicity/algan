@@ -57,11 +57,14 @@ def _set_raytrace_memory_estimates(primitive, camera):
     primitive._rt_pixels_per_frame = pixels
     primitive._rt_max_tile_rays = max(
         1, int(rt_settings.WAVEFRONT_TILE_RAYS))
-    # _alloc_wavefront_state: ro(3), rd(3), acc(4), sca(7: colour transport),
-    # int(5), six KBUF arrays; rs_pix(1); and two arena-backed active-index
-    # buffers. Per-primary storage is pix_accum(7). The continuation allocator
-    # is a fixed two-word counter per tile, not one counter per pixel. All
-    # entries are four bytes.
+    # Peak general-wavefront layout: persistent ro(3), rd(3), acc(4), sca(7:
+    # colour transport), int(5), rs_pix(1), and two arena-backed active-index
+    # buffers, plus one transient six-word KBUF surface-event batch for every
+    # simultaneously active slot. Per-primary storage is pix_accum(7). The
+    # continuation allocator is a fixed two-word counter per tile, not one
+    # counter per pixel. All entries are four bytes. The transient event batch
+    # is charged conservatively at pool capacity even though runtime allocation
+    # is only ``num_active`` rows.
     primitive._rt_pool_bytes_per_ray = (25 + 6 * KBUF) * 4
     primitive._rt_primary_bytes_per_ray = 7 * 4
 

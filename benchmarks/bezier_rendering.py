@@ -3,11 +3,13 @@ os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
 os.environ["ALGAN_KBUF"] =  "4"
 #os.environ["ALGAN_BVH_BUILD"] = "split"
 os.environ["ALGAN_INPLACE_AA"] = "0"
+#os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["ALGAN_HYBRID_RASTER"] = "1"
+os.environ["ALGAN_INPLACE_AA"] = "0"
 
 from algan import *
-
-from algan.mobs.neural_nets.neural_net import NeuralNetMLP
+clear_cache(True)
+from algan.mobs.neural_nets.neural_net import NeuralNetMLP, NeuralNetMLPV3
 from algan.utils.profiling_utils import profile_scene
 
 Boxed = lambda mob, color=BLUE, buffer=0.1, *args, **kwargs: Group(mob,
@@ -28,9 +30,9 @@ text_string = ('a' * 50 + '\n') * 50
 
 def text_scene():
     with Off():
-        nn = NeuralNetMLP([3, 3, 3]).spawn()
+        nn = NeuralNetMLPV3([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(run_time=1.0):
+    with Sync(run_time=0.25):
         mob.move(LEFT)
         nn.move(LEFT)
     return
