@@ -144,6 +144,32 @@ def _alloc_wavefront_state(memory, tn, sca_width):
     )
 
 
+def _alloc_raster_primary_state(device, tn, sca_width):
+    """Allocate the raster frontend's compact primary continuation queue.
+
+    The primary visibility pass never traverses a BVH and therefore has no use
+    for the classic per-ray K-buffer.  Its compact queue lives outside the
+    render arena while raster scratch occupies a temporary arena scope.  Once
+    resolve completes, only ACTIVE continuations are copied into a full
+    secondary-wavefront pool.
+    """
+    f32 = torch.float32
+    i32 = torch.int32
+    # One shared inert placeholder keeps the state tuple compatible with the
+    # classic shape without allocating six ``[pool, KBUF]`` arrays.
+    placeholder_f = torch.empty((1, 1), dtype=f32, device=device)
+    placeholder_i = torch.empty((1, 1), dtype=i32, device=device)
+    return (
+        torch.empty((tn, 3), dtype=f32, device=device),
+        torch.empty((tn, 3), dtype=f32, device=device),
+        torch.empty((tn, 4), dtype=f32, device=device),
+        torch.empty((tn, sca_width), dtype=f32, device=device),
+        torch.empty((tn, 5), dtype=i32, device=device),
+        placeholder_f, placeholder_f, placeholder_f, placeholder_f,
+        placeholder_i, placeholder_i,
+    )
+
+
 def _wavefront_state_bytes_per_primary(pool_ratio, extra_bytes_per_slot=0,
                                        extra_bytes_per_primary=0):
     """Bytes charged to one initial primary when sizing a wavefront tile.
@@ -669,6 +695,7 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # Environment map: append its texels to the shared texture buffer (the
     # merged dict is shallow-copied -- it is cached across batches) and, when
     # its ambient lighting is enabled, its SH irradiance as an extra light row.
+    soft_shadow_flag = False
     if det_frag:
         light_device = torch.device("cpu")
         light_pos_host, light_col_host, num_lights = _pack_lights(
@@ -678,6 +705,12 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                 light_pos_host, light_col_host, num_lights, env_source,
                 float(getattr(scene, "environment_intensity", 1.0)),
                 light_device)
+        # Determine raster soft-shadow eligibility while light metadata is
+        # still on the CPU. Reading the arena-backed device copy in the
+        # frontend gate would introduce an avoidable GPU->host sync.
+        soft_shadow_flag = bool(
+            num_lights > 0 and light_col_host.shape[2] > 11
+            and (light_col_host[..., 11] > 0).any())
         light_pos = _arena_copy(memory, light_pos_host)
         light_col = _arena_copy(memory, light_col_host)
     elif samples > 1:
@@ -772,7 +805,7 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                         1 if transparent_background else 0, memory, out,
                         kernel_aa, lights_extended=lights_extended,
                         env_meta=env_meta, near_clip=near_clip,
-                        far_clip=far_clip)
+                        far_clip=far_clip, soft_shadow_flag=soft_shadow_flag)
             frames = out.view(end - start, height, width, C_out)
             frames = post_process_frames(memory,
                 frames, anti_alias_level=post_aa,
@@ -877,61 +910,94 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
 
                 while True:
                     state_ptrs = memory.get_pointers()
-                    state = _alloc_wavefront_state(memory, pool, 7)
-                    (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                     rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
-                    rs_pix = memory.get_tensor((pool,), i32)
-                    pix_accum = memory.get_tensor((attempt_primary, 7), f32)
-                    # [0] next free shared slot, [1] overflow flag. The classic
-                    # generation kernel initialises both. Fused generation is
-                    # split-free, but zeroing keeps the state well-defined.
-                    rs_alloc = memory.get_tensor((2,), i32)
+                    try:
+                        if raster:
+                            # The primary raster pass needs only continuation data;
+                            # defer the heavyweight K-buffer state until after the
+                            # sparse ACTIVE queue is known.  These compact tensors
+                            # intentionally live outside the arena so raster scratch
+                            # can occupy and then release one temporary arena scope.
+                            state = _alloc_raster_primary_state(out.device, pool, 7)
+                            rs_pix = torch.empty((pool,), dtype=i32, device=out.device)
+                            rs_alloc = torch.zeros((2,), dtype=i32, device=out.device)
+                        else:
+                            state = _alloc_wavefront_state(memory, pool, 7)
+                            rs_pix = memory.get_tensor((pool,), i32)
+                            rs_alloc = memory.get_tensor((2,), i32)
+                        (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                         rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
+                        pix_accum = memory.get_tensor((attempt_primary, 7), f32)
 
-                    if raster:
-                        # Hybrid raster front-end: no generate pass. Primary
-                        # slots are written (or retired) by raster_first_shade;
-                        # pre-mark every pool slot DONE (status 1) so the
-                        # post-raster full-pool compaction sees only the
-                        # continuations the raster actually spawned, and seed
-                        # the shared allocator past the primary slots.
-                        pix_accum.zero_()
-                        rs_int[:, 2].fill_(1)
-                        rs_alloc.zero_()
-                        rs_alloc[0] = attempt_primary
-                    elif gen_fused:
-                        pix_accum.zero_()
-                        rs_alloc.zero_()
-                    else:
-                        # rs_acc and pix_accum start all-zero, and the constant
-                        # rs_sca / rs_int primary init rows are filled here for
-                        # the split-free, near-clip-free case. Doing this as
-                        # contiguous memsets / broadcast copies is far cheaper
-                        # than the strided per-ray stores the generate kernel
-                        # otherwise does through the AoS [ray, channel] layout
-                        # (memory-bound kernel); byte-identical -- same values,
-                        # just coalesced.
-                        rs_acc.zero_()
-                        pix_accum.zero_()
-                        if const_fill:
-                            rs_sca[:attempt_primary].copy_(sca_init)
-                            # rs_int is 5 wide; generate only wrote cols 0-3
-                            # (col 4 is the legacy sorted-path "drained" field it
-                            # never touched), so fill only 0-3 to leave col 4
-                            # exactly as before -- byte-identical.
-                            rs_int[:attempt_primary, :4].copy_(int_init)
-                        wavefront_generate_rays(
-                            cam_origin, screen_point, pixel_basis_x,
-                            pixel_basis_y, int(time_start), int(width),
-                            int(height), float(half_screen_w),
-                            float(half_screen_h), int(max_bounces),
-                            int(tile_start), int(attempt_primary), float(jx),
-                            float(jy), float(near_clip),
-                            0 if const_fill else 1,
-                            rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
-                            rs_pix, pix_accum, rs_alloc)
+                        if raster:
+                            # Hybrid raster front-end: no generate pass. Primary
+                            # slots are written (or retired) by raster_first_shade;
+                            # pre-mark every compact slot DONE and seed the shared
+                            # allocator past the primary slots.
+                            pix_accum.zero_()
+                            rs_int[:, 2].fill_(1)
+                            rs_alloc[0] = attempt_primary
+                        elif gen_fused:
+                            pix_accum.zero_()
+                            rs_alloc.zero_()
+                        else:
+                            # rs_acc and pix_accum start all-zero, and the constant
+                            # rs_sca / rs_int primary init rows are filled here for
+                            # the split-free, near-clip-free case. Doing this as
+                            # contiguous memsets / broadcast copies is far cheaper
+                            # than the strided per-ray stores the generate kernel
+                            # otherwise does through the AoS [ray, channel] layout
+                            # (memory-bound kernel); byte-identical -- same values,
+                            # just coalesced.
+                            rs_acc.zero_()
+                            pix_accum.zero_()
+                            if const_fill:
+                                rs_sca[:attempt_primary].copy_(sca_init)
+                                # rs_int is 5 wide; generate only wrote cols 0-3
+                                # (col 4 is the legacy sorted-path "drained" field it
+                                # never touched), so fill only 0-3 to leave col 4
+                                # exactly as before -- byte-identical.
+                                rs_int[:attempt_primary, :4].copy_(int_init)
+                            wavefront_generate_rays(
+                                cam_origin, screen_point, pixel_basis_x,
+                                pixel_basis_y, int(time_start), int(width),
+                                int(height), float(half_screen_w),
+                                float(half_screen_h), int(max_bounces),
+                                int(tile_start), int(attempt_primary), float(jx),
+                                float(jy), float(near_clip),
+                                0 if const_fill else 1,
+                                rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                rs_pix, pix_accum, rs_alloc)
 
-                    run_tile(tile_start, attempt_primary, pool, state, rs_pix,
-                             pix_accum, rs_alloc)
+                        run_tile(tile_start, attempt_primary, pool, state, rs_pix,
+                                 pix_accum, rs_alloc)
+
+                    except (InsufficientMemoryException,
+                            torch.OutOfMemoryError) as exc:
+                        memory.set_pointers(state_ptrs)
+                        if not raster:
+                            raise
+                        # Drop compact external tensors before asking the CUDA
+                        # caching allocator to release failed-attempt storage.
+                        state = rs_pix = rs_alloc = pix_accum = None
+                        rs_ro = rs_rd = rs_acc = rs_sca = rs_int = None
+                        rs_kt = rs_kl = rs_ka = rs_kb = rs_kp = rs_kf = None
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        if attempt_primary <= 1:
+                            raise OutOfRenderMemory(
+                                "Raster scratch or compact secondary state did "
+                                "not fit for one pixel. Lower the resolution "
+                                "or transparency complexity.") from exc
+                        next_primary = max(1, attempt_primary // 2)
+                        _WAVEFRONT_POOL_RETRIES[0] += 1
+                        logger.warning(
+                            "Hybrid raster tile allocation failed for "
+                            f"{tile_start}:{tile_start + attempt_primary}; "
+                            f"retrying with {next_primary} primaries")
+                        learned_primary_cap = min(learned_primary_cap,
+                                                  next_primary)
+                        attempt_primary = next_primary
+                        continue
 
                     overflow = (pool_ratio > 1
                                 and int(rs_alloc[1].item()) != 0)
@@ -986,7 +1052,8 @@ def raytrace_render_wavefront(
         light_pos, light_col, num_lights, frag_flag, frag_pipelines,
         frag_scatters, shadow_flag,
         refraction_flag, transparent, memory, out, aa_level=1,
-        lights_extended=False, env_meta=None, near_clip=0.0, far_clip=0.0):
+        lights_extended=False, env_meta=None, near_clip=0.0, far_clip=0.0,
+        soft_shadow_flag=False):
     """Wavefront orchestration for the general (triangle + PN + bezier) case:
     stage-split over per-ray global state, with PyTorch ray compaction between host iterations. State carries a
     5th scalar (base_dist) for bezier border widths across bounces.
@@ -1110,29 +1177,12 @@ def raytrace_render_wavefront(
         and len(frag_scatters) == 0
         and not mem_trim
         and not merged.get("textured_active", False))
-    # Hybrid raster front-end (settings.HYBRID_RASTER, raytracer-v2 phase 2/3):
-    # replace this batch's first wavefront iteration with primitive-side
-    # rasterization -- opaque z-prepass + sorted transparent fragment runs +
-    # the raster_first_shade resolve -- when the scene qualifies. Flat triangles
-    # and bezier circuits are supported (PN patches are excluded; raster forces
-    # surfaces to flat, see renderer_settings.effective_triangle_primitive, so
-    # a qualifying scene has num_pn == 0). Shadows / custom scatter / mem-trim /
-    # in-place AA / near-clip keep the classic path. NOT byte-identical
-    # (raw-depth hit order; see settings.HYBRID_RASTER).
-    # Deferred raster shadows (raytracer-v2): the front-end packs binary
-    # hard-shadow bits for the nearest few fragments + the opaque z-hit into a
-    # pre-pass (see raster_shadow). Soft-shadow lights (nonzero emitter radius)
-    # and scenes with more lights than the packed budget stay on the classic
-    # path, which supports soft fans and all MAX_SHADOW_LIGHTS.
-    raster_shadows_ok = True
-    if shadow_flag:
-        from algan.rendering.raytracing.raster_taichi import (
-            _RASTER_SHADOW_LIGHTS)
-        soft_lights = (light_col is not None and num_lights > 0
-                       and light_col.shape[2] > 11
-                       and bool((light_col[..., 11] > 0).any()))
-        raster_shadows_ok = (num_lights <= _RASTER_SHADOW_LIGHTS
-                             and not soft_lights)
+    # Hybrid raster front-end: replace iteration zero with an opaque typed
+    # visibility buffer plus ordered transparent fragment runs. PN patches are
+    # conservatively routed to the classic path without altering their geometry.
+    # Primary hard and soft shadows use the exact sparse event queue. Non-zero
+    # emitter radii are sampled with the same deterministic golden-angle fan as
+    # the classic wavefront path.
     use_raster = (
         rt_settings.HYBRID_RASTER
         and merged.get("tri_frame_valid") is not None
@@ -1141,7 +1191,6 @@ def raytrace_render_wavefront(
         and not merged.get("textured_active")
         and mem_trim == 0
         and len(frag_scatters) == 0
-        and raster_shadows_ok
         and near_clip <= 0.0
         and max(1, int(aa_level)) <= 1
     )
@@ -1177,36 +1226,80 @@ def raytrace_render_wavefront(
             memory,
             [float(layer_offset_triangles), float(layer_offset_pn)], f32)
 
+    tri_screen = None
+    if use_raster:
+        from algan.rendering.raytracing.raster_pipeline import (
+            precompute_triangle_projection)
+        tri_screen = precompute_triangle_projection(
+            merged, cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+            half_screen_w, half_screen_h, memory)
+
     def run_tile(tile_start, tn_primary, pool, state, rs_pix,
                  pix_accum, rs_alloc):
         (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
          rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
-        # Packed per-ray shadow visibility bits (deferred shadows
-        # only); a 1-element placeholder otherwise (the reader
-        # compiles out).
+        # One-element placeholder for the classic shade kernel's legacy
+        # deferred-visibility argument. Raster primary shadows use their own
+        # compact sparse any-hit queue before this loop.
         rs_vis = memory.get_tensor((1,), i32)
-        compactor = _ArenaRayCompactor(memory, pool, i32)
         it = 0
+        secondary_pool = pool
         if use_raster:
-            # Iteration 0 via the raster front-end: primary visibility is
-            # resolved and shaded in full (unbounded transparency depth);
-            # only bounced continuations enter the classic loop below.
             from algan.rendering.raytracing.raster_pipeline import (
                 raster_iteration_zero)
-            raster_iteration_zero(
-                merged, cam_origin, screen_point, pixel_basis_x,
-                pixel_basis_y, pixel_world_scale, layer_offsets_t, gen_meta,
-                light_pos, light_col, num_lights, col_row_arr, frag_flag,
-                frag_pipelines, int(rt_settings.WF_SKIP_UNLIT_NORMAL),
-                refraction_flag, time_start, width, height,
-                half_screen_w, half_screen_h, tile_start, tn_primary,
-                state, rs_pix, pix_accum, rs_alloc,
-                shadow_flag, t_bvh, pn_bvh, bez_bvh,
-                layer_offset_triangles, layer_offset_pn)
-            active = compactor.select(rs_int, 0, source=compactor.current,
-                                      scan_pool=True)
+            # Raster scratch (z-buffer, fragment records, CSR runs and sparse
+            # shadow events) is phase-local. Releasing it before allocating the
+            # secondary K-buffer state is the main memory benefit of the compact
+            # primary continuation queue.
+            with memory.temp():
+                raster_iteration_zero(
+                    merged, tri_screen, memory, cam_origin, screen_point,
+                    pixel_basis_x, pixel_basis_y, pixel_world_scale,
+                    layer_offsets_t, gen_meta, light_pos, light_col, num_lights,
+                    col_row_arr, frag_flag, frag_pipelines,
+                    int(rt_settings.WF_SKIP_UNLIT_NORMAL), refraction_flag,
+                    time_start, width, height, half_screen_w, half_screen_h,
+                    tile_start, tn_primary, state, rs_pix, pix_accum, rs_alloc,
+                    shadow_flag, t_bvh, pn_bvh, bez_bvh,
+                    layer_offset_triangles, layer_offset_pn, max_bounces)
+            # Primary continuation overflow is retried by the tile host before
+            # allocating any full secondary state.
+            if int(rs_alloc[1].item()) != 0:
+                return
+            used = min(pool, int(rs_alloc[0].item()))
+            active_src = torch.nonzero(
+                rs_int[:used, 2] == 0, as_tuple=False).flatten()
+            na0 = int(active_src.numel())
+            if na0 == 0:
+                return
+
+            # Preserve the old tile's continuation reserve while reclaiming all
+            # retired primary slots. A retry with fewer primaries therefore
+            # increases reserve exactly as before, but ordinary scenes allocate
+            # full traversal/K-buffer state only for surviving rays + reserve.
+            reserve = max(0, pool - tn_primary)
+            secondary_pool = min(pool, na0 + reserve)
+            full_state = _alloc_wavefront_state(memory, secondary_pool, 7)
+            (frs_ro, frs_rd, frs_acc, frs_sca, frs_int,
+             frs_kt, frs_kl, frs_ka, frs_kb, frs_kp, frs_kf) = full_state
+            full_pix = memory.get_tensor((secondary_pool,), i32)
+            frs_int[:, 2].fill_(1)
+            for dst, src in ((frs_ro, rs_ro), (frs_rd, rs_rd),
+                             (frs_acc, rs_acc), (frs_sca, rs_sca),
+                             (frs_int, rs_int)):
+                dst[:na0].copy_(src.index_select(0, active_src))
+            full_pix[:na0].copy_(rs_pix.index_select(0, active_src))
+            state = full_state
+            rs_pix = full_pix
+            (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+             rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
+            rs_alloc[0] = na0
+            rs_alloc[1] = 0
+            compactor = _ArenaRayCompactor(memory, secondary_pool, i32)
+            active = compactor.initial(na0)
             it = 1
         else:
+            compactor = _ArenaRayCompactor(memory, pool, i32)
             active = compactor.initial(tn_primary)
         while active.numel() > 0 and it < max_iters:
             na = int(active.numel())

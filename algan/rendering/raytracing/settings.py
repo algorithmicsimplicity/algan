@@ -260,19 +260,18 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
 # scatter-free triangle path (the common case). Default OFF.
 WF_MEM_TRIM = os.environ.get("ALGAN_WF_MEM_TRIM", "0") == "1"
 
-# Hybrid raster front-end for primary visibility (raytracer-v2 phase 2).
-# When on (and the batch qualifies -- see ``use_raster`` in
-# ``tracer.raytrace_render_wavefront``), the deterministic wavefront's first
-# iteration is replaced by a raster pipeline: per-frame screen-space binning
-# of triangle candidates, an opaque z-prepass (packed atomicMin), an exact
-# per-pixel fragment list sorted by raw depth, and a resolve+shade kernel
-# that composites the whole straight-line transparency stack in one pass
-# (unbounded K) and spawns reflection/refraction continuations into the
-# existing wavefront pool. Bounce iterations, compositing and memory tiling
-# are unchanged. NOT byte-identical to the classic path: hit ordering is raw
-# sorted depth (no DEPTH_TIE_EPSILON binning) and the opaque prepass culls
-# strictly. Currently flat-triangle-only scenes, no shadows / custom scatter /
-# mem-trim / in-place AA / near-clip. Default OFF while validating.
+# Hybrid raster front-end for deterministic primary visibility.
+# Eligible flat-triangle/Bezier batches replace iteration zero with a typed
+# opaque visibility buffer, alpha-filtered ordered fragment runs, optional exact
+# sparse hard-shadow events, and a serial per-pixel resolve. Ordering matches the
+# classic transitive depth-bin/descending-layer relation. Surviving reflected or
+# refracted branches enter a compact primary queue and only then receive the
+# classic secondary-ray/K-buffer state. Primary hard shadows and emitter-radius
+# soft shadows use a sparse any-hit event queue. PN geometry is preserved and
+# simply falls back to classic primary traversal. The straight-ray safety limit
+# is MAX_SURFACES_PER_RAY (currently 256), not literally unbounded. Custom
+# scatter, mem-trim, in-place AA, near clipping and legacy routes still fall
+# back to classic. Default OFF while validating.
 HYBRID_RASTER = os.environ.get("ALGAN_HYBRID_RASTER", "0") == "1"
 
 
@@ -283,23 +282,12 @@ def set_hybrid_raster(enabled):
     HYBRID_RASTER = bool(enabled)
 
 
-# Screen-space rasterization inside the hybrid raster front-end. When on
-# (default), each (prim, chunk) pair projects its triangle once and tests
-# candidate pixels with edge functions + perspective-correct barycentric
-# interpolation, instead of generating a world-space ray and running
-# Moller-Trumbore per candidate pixel. Numerically equivalent to the ray-cast
-# path (verified worst |dt| ~5e-5, |d_bary| ~6e-5 -- benchmarks/
-# _rt2_ss_math_check.py); a triangle with any vertex at/behind the camera plane
-# falls back to per-pixel ray casting.
-#
-# The win scales with bbox OVERDRAW (candidate pixels that miss the triangle):
-# the edge-function inside-test rejects a miss far more cheaply than a full
-# ray-gen + Moller-Trumbore. Kernel-isolated A/B: a dense thin-triangle mesh
-# (flat neural_net, ~10x overdraw) runs 1.36x faster with SS; low-overdraw
-# large triangles (spheres that fill their bbox) pay ~6% for the per-triangle
-# setup with no misses to save on. Default ON because the high-overdraw case is
-# both the expensive one and the realistic one; ALGAN_RASTER_SS=0 forces the
-# ray-cast path for A/B.
+# Screen-space intersection mode inside the hybrid raster frontend. When on
+# (default), one projection record is precomputed per (frame, triangle), and
+# candidate chunks use edge functions plus perspective-correct barycentrics.
+# Invalid/camera-plane-straddling projections fall back to exact per-pixel
+# Moller-Trumbore ray casting. ALGAN_RASTER_SS=0 forces ray casting for all
+# triangle candidates; the optimal policy may eventually be selected per pair.
 RASTER_SS = os.environ.get("ALGAN_RASTER_SS", "1") == "1"
 
 

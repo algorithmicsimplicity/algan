@@ -1,528 +1,456 @@
-# Algan Raytracer v2 — Hybrid Rasterization Front-End: Design Document
-
-Status: in progress. Phases 1–3 built and validated; the front-end ships
-behind an opt-in toggle (`ALGAN_HYBRID_RASTER`, default OFF) while the classic
-deterministic wavefront remains the default renderer. This document explains
-the current implementation, the reasoning behind each design decision, the
-benchmark results that drove those decisions, and the planned future work.
-
-Author's note on scope: this is a *ground-up redesign* of the deterministic
-(samples-per-pixel == 1) render path. Byte-for-byte identity with the old
-renderer is explicitly NOT a goal — all render tests are being re-validated,
-and the new path is free to change hit-ordering semantics where that makes the
-output more accurate or the renderer faster. The Monte Carlo path tracer
-(samples > 1) is out of scope and untouched.
-
-
-================================================================================
-1. MOTIVATION
-================================================================================
-
-The existing deterministic renderer is a *wavefront ray tracer*
-(`wavefront_kernels_taichi.py`, orchestrated by `tracer.py`). For each pixel it
-casts a primary ray, traverses a spatio-temporal BVH (STBVH) per geometry type
-(triangles, PN patches, bezier circuits), gathers up to KBUF=4 nearest hits,
-shades them front-to-back, and follows reflection/refraction continuations.
-
-Profiling (universal profiler, `profiling_utils.py`, kernel device times) on a
-dense scene shows where the time goes:
-
-    wavefront_traverse   84.8 %   (BVH traversal)
-    wavefront_shade      11.8 %
-    wavefront_generate    1.5 %
-    wf_composite_accum    1.4 %
-    compact_ray_slots     0.3 %
-
-BVH traversal dominates. It is *latency-bound pointer chasing*: each node visit
-is a dependent global-memory read, and the kernel is occupancy-starved
-(measured 21–25 % achieved occupancy, register-capped, with heavy local-memory
-spilling — see the RT occupancy diagnosis). Two structural problems compound:
-
-  (a) Every one of ~2M pixels/frame (at HD) independently descends the tree
-      from the root. The traversal cost scales with pixels × tree-depth.
-
-  (b) The K-buffer only holds 4 hits, so a ray peeling through a deep
-      transparency stack (a fade, stacked translucent panes, dense text over
-      shapes) re-traverses all three BVHs from the root once per refill. The
-      worst case is exactly Algan's most common transition — a fade, where
-      everything is semi-transparent at once and the opaque-hit pruning that
-      normally caps gathering stops working entirely.
-
-The redesign attacks both by replacing the *primary* ray trace (one ray per
-pixel) with a rasterization step. Instead of gathering candidates from the ray
-side by walking a tree, we enumerate them from the primitive side by scatter:
-each primitive computes its screen-space bounding box, we test the covered
-pixels, and we composite the resulting fragment lists. This is streaming,
-coalesced, embarrassingly-parallel work — the right trade on a bandwidth-limited
-GPU — and it removes the K-buffer refill loop entirely (all hits along a primary
-ray are found in one pass, unbounded in depth).
-
-Secondary rays (shadows, reflections, refractions) still ray-trace, so the BVH
-is not going away; but for many real scenes (no shadows, reflections, or
-refraction) the primary pass needs no BVH at all.
-
-
-================================================================================
-2. MEASUREMENT GATES (Phase 1) — why we believed it would work
-================================================================================
-
-Before writing a kernel, three cheap measurements were run to de-risk the
-design. All three passed. Scripts: `benchmarks/_rt2_sort_bench.py`,
-`benchmarks/_rt2_capture.py` (+ `_rt2_overdraw.py`, `_rt2_refit_sah.py`).
-
-2.1 Sort throughput (GTX 1050)
-------------------------------
-The design sorts per-tile transparent-fragment records by a 64-bit
-(pixel | depth) key. `torch.sort` (cub radix on CUDA):
-
-    raw int64 keys:                        ~230 Mkeys/s
-    end-to-end incl. 16 B payload gather:  ~140 Mkeys/s
-
-Perfectly linear from 1M to 16M keys; no size cliff. Verdict: the sort is not a
-bottleneck. At realistic fragment volumes it costs single-digit ms/frame.
-
-2.2 Candidate / overdraw statistics
------------------------------------
-Captured real merged scenes and projected every primitive's per-frame AABB
-through the exact camera mapping to a screen bbox, comparing candidate-test
-count against true perspective-projected coverage:
-
-    scene (resolution)          cand/px   depth-complexity/px   overdraw   sort/frame
-    basic_mixed (PREVIEW)         0.74           0.55            tri 3.8x    0.09M
-    text_fade (PREVIEW)           1.36           1.36            ~1x         0.33M
-    neural_net (HD AA2, PN)       5.49           0.55            PN 10.3x    0.73M
-
-Candidates/pixel of 0.7–5.5 is ~20x fewer tests than the classic walk's ~99
-node + ~14 leaf tests per sub-ray, and it is streamed rather than
-pointer-chased. The predicted pathology (thin primitives whose bbox area is
-quadratically larger than their coverage — arrows, underlines, synapse
-cylinders) showed up exactly where expected: 10.3x overdraw on the neural net's
-thin cylinders. Mitigations: cheap inside-tests (screen-space edge functions)
-and, for PN, projecting OBB corners rather than AABB corners.
-
-2.3 Refit-topology staleness (for the acceleration structure)
--------------------------------------------------------------
-Compared SAH expected-visit cost of a per-frame-rebuilt tree, a
-union-centroid topology refit per frame, and the current STBVH:
-
-    union-refit vs per-frame rebuild:  1.000–1.04 (mean, all scenes/types)
-    current STBVH vs union-refit:      tri 1.37x, PN 1.67x, bez 1.78–2.33x worse
-
-Refitting one topology across a 7–15-frame batch is essentially free of quality
-loss, and beats the current spatio-temporal instance tree. This validates the
-planned Phase-4 acceleration structure (§7).
-
-
-================================================================================
-3. THE HYBRID RASTER FRONT-END — architecture
-================================================================================
-
-Files:
-  algan/rendering/raytracing/raster_taichi.py     — GPU kernels (Taichi)
-  algan/rendering/raytracing/raster_pipeline.py   — host orchestration (torch)
-  algan/rendering/raytracing/scene_builder.py     — per-frame visibility masks
-  algan/rendering/raytracing/tracer.py            — gate + iteration-0 wiring
-  algan/settings/renderer_settings.py             — force-flat helper
-
-The front-end replaces the wavefront's *first* iteration (generate + first
-traverse + first shade). Bounced continuations (reflection/refraction) it
-spawns are handed to the unchanged classic wavefront loop for iterations >= 1.
-Thus the front-end is a drop-in replacement for primary visibility only; all
-the material, shadow, environment-map, and multi-bounce machinery is reused.
-
-Per screen tile, per frame-group (all torch/Taichi, `memory.temp()`-scoped):
-
-  1. BIN      Project each primitive's per-frame world AABB (or the 3 triangle
-              verts) to a conservative screen bbox; emit fixed-size
-              (primitive, pixel-chunk) pair rows.
-  2. Z-PREPASS (triangles only) Exact ray/triangle test per covered pixel;
-              keep the nearest *opaque* hit per pixel with a packed
-              (depth_bits << 32 | prim) int64 atomicMin.
-  3. COUNT    Per pair, count surviving transparent fragments (strictly nearer
-              than the pixel's opaque z-winner). Sizes the fragment list
-              exactly — no atomic append, deterministic layout.
-  4. WRITE    Emit (key, payload) records at each pair's exact offset.
-  5. SORT     torch.argsort (stable) the fragment keys → per-pixel depth-ordered
-              runs.
-  6. RESOLVE  One thread per tile pixel walks its sorted run front-to-back (the
-              opaque z-winner appended as the terminal hit), alpha-composites,
-              runs material/fragment shading, and spawns reflect/refract
-              continuations into the shared wavefront pool.
-
-The remaining wavefront iterations then trace only the spawned continuations.
-
-
-================================================================================
-4. DESIGN DECISIONS AND RATIONALE
-================================================================================
-
-4.1 Cull before the sort, not after
-------------------------------------
-The original sketch was: rasterize bbox → sort all fragments → null occluded.
-But the sort is the bandwidth-heavy step, so misses must never reach it. The
-exact intersection test (and the cheap alpha fetch) are fused into fragment
-*emission*: a fragment is appended only if the pixel's ray actually hits the
-primitive and clears the opaque z-buffer. Bbox overdraw then costs only
-intersection tests, not sort traffic.
-
-4.2 Opaque z-prepass via packed atomicMin
------------------------------------------
-Fragments from proven-opaque primitives skip the fragment list entirely: an
-`atomicMin` of `(depth_bits << 32 | prim)` per pixel keeps the nearest. `min`
-is commutative, so the winner is deterministic regardless of thread order — no
-sort needed for opaque geometry, and a fully-opaque scene degenerates to a
-plain z-buffer. Transparent emission then culls against this z-buffer, so the
-sort only ever sees translucent survivors. A fully-opaque scene does zero
-sorting; a fade (everything translucent) routes everything to the sorted path,
-which is correct and still one sort.
-
-Per-frame opacity flags already exist (the STBVH marks interval-opaque
-instances); the front-end reuses them as a `[T, N]` mask.
-
-4.3 Two-level (primitive, chunk) pairs bound load imbalance
------------------------------------------------------------
-One thread per primitive iterating its whole bbox has terrible load imbalance
-(a full-screen fade rectangle = millions of pixels in one thread). Instead each
-primitive's clipped bbox is split into chunks of RASTER_CHUNK (=256) pixels;
-one thread processes one (primitive, chunk) pair. This bounds per-thread work
-and gives a natural OOM-retry granularity.
-
-4.4 Per-pixel SERIAL resolve, not a parallel prefix scan
---------------------------------------------------------
-The compositing rules are not a clean associative scan: seam de-duplication
-(edge-flagged triangle hits within a depth tolerance of the previous accepted
-edge hit are dropped), and termination at the first *path-bending* surface
-(refraction / metal reflection / custom scatter make everything behind them
-along the straight ray invalid). A per-pixel thread walking its sorted run
-serially expresses all of this directly — it is the classic shade drain loop
-minus the traversal, with unlimited K. There are ~2M pixels/frame, so
-parallelism is not the constraint, and each run is a genuine sequential
-dependence chain anyway.
-
-4.5 Raw-depth ordering — the deliberate semantics change
---------------------------------------------------------
-The classic renderer bins hit distances into DEPTH_TIE_EPSILON-wide bins and
-falls back to a layer index within a bin. That epsilon-bin order is
-*non-transitive*, which made K-buffer eviction order-sensitive and pixels
-perturb under any BVH change. The new path sorts by *raw f32 depth bits*, a
-true total order — compositing is deterministic and independent of tile size,
-chunking, and build order. This is strictly better; it is also why the new path
-is not byte-identical to the old one (see §6).
-
-4.6 Fragment tagging and coplanar layering
-------------------------------------------
-Payload arrays are SoA: `frag_key` (sort key), `frag_t`, `frag_prim`,
-`frag_ab` (barycentrics or plane u,v), `frag_flags`. A triangle fragment has
-`frag_prim >= 0`; a bezier fragment has `frag_prim = -(circuit + 1)` and its
-in-border flag in `frag_flags`. The resolve decodes the sign. Bezier fragments
-are emitted at *lower indices* than triangle fragments so the stable sort places
-a coplanar circuit ahead of a triangle at equal depth (circuits-over-triangles).
-
-4.7 In-place bounce continuations
----------------------------------
-The resolve thread for pixel r owns ray slot r. A reflected/pass-through
-continuation is written back into slot r (status ACTIVE) exactly like the
-existing fused-generation path; split branches (glass refraction, semi-
-transparent reflectors) atomically append to the shared continuation pool via
-`_reserve_continuation_slot`. The pool's overflow-retry (halve the primaries,
-retry) is unchanged. So the front-end's postcondition matches the classic first
-traverse+shade exactly: `pix_accum` holds every retired pixel's colour +
-leftover background weight, bounced pixels are ACTIVE, and the classic loop
-takes it from there.
-
-4.8 Memory model
-----------------
-The wavefront's per-ray state stays arena-backed (bump allocator, deterministic
-release). The raster's transient buffers (z-buffer, pair rows, fragment arrays,
-run tables) are ordinary torch CUDA allocations *outside* the arena. An
-allocation failure raises OutOfMemoryError, which the render loop's existing
-halve-the-window-and-retry already handles. This is a known wart (the transient
-buffers compete with arena headroom and can trigger extra splits); arena-backing
-them is a planned cleanup (§7).
-
-
-================================================================================
-5. GEOMETRY PATHS
-================================================================================
-
-5.1 Flat triangles
-------------------
-Both the z-prepass and the transparent path test candidate pixels against the
-triangle. Two intersection modes, selected by `ALGAN_RASTER_SS`:
-
-  Ray-cast (`_raycast_pixel`): generate the pixel's world ray and run
-  Möller-Trumbore. Straightforward, exact.
-
-  Screen-space (`_ss_setup` + `_ss_pixel`, default ON): project the triangle's
-  3 vertices ONCE per pair (the exact forward of the camera's `_generate_ray`
-  mapping: screen-plane normal n = pbx × pby, perspective divisor
-  d_i = dot(V_i − cam_o, n)), then per pixel evaluate three edge functions and
-  perspective-correct barycentric weights w_i = (E_i / d_i) / Σ(E_j / d_j). The
-  3D hit point H = Σ w_i V_i gives the exact distance t = |H − cam_o| and
-  barycentrics. A triangle straddling the camera plane (any vertex at/behind it)
-  falls back to ray-cast, where the projective map would be non-finite.
-
-  Why screen-space: for high-overdraw scenes the cheap edge-function sign test
-  rejects a *miss* far more cheaply than a full ray-gen + Möller-Trumbore, and
-  the projection setup is hoisted out of the per-pixel loop. It is numerically
-  equivalent to ray-cast (verified worst |Δt| ~5e-5, |Δbary| ~6e-5 over ~1900
-  random hits, `benchmarks/_rt2_ss_math_check.py`), so parity is unchanged.
-
-  Screen-space math (perspective correctness): the screen coordinate of a world
-  point is a projective function of world position with perspective divisor
-  d_i; interpolating a per-vertex attribute perspective-correctly weights by
-  1/d_i. The barycentric coordinate itself is such an attribute, giving the
-  formula above. A screen-plane point has d = D so it projects to itself
-  (round-trip identity).
-
-5.2 Bezier circuits (2D shapes, text glyphs)
---------------------------------------------
-A circuit is a planar cubic-bezier outline embedded in 3D via a plane
-(center + normal + basis u/v). Bezier is routed ENTIRELY through the transparent
-sorted path — never the z-prepass — which was a deliberate low-risk choice: the
-validated triangle z-prepass and triangle kernels are completely untouched.
-
-  `raster_bez_count` / `raster_bez_write` (`_bez_pair_pixel`): project the
-  circuit's per-frame world AABB (8 corners) to a screen bbox; per candidate
-  pixel, cast the ray, intersect the plane, project to (u, v), and run the
-  existing `_bezier_point_metrics` (crossing count for fill + nearest-edge
-  distance for border/outline) to test inside/border. This ports the bezier
-  branch of the classic `_collect_hits` unchanged; base_dist is 0 for
-  primaries, so the screen-constant border width uses t directly.
-
-  Correctness of always-transparent: an opaque bezier simply appears as a
-  transparent fragment with alpha = 1, which terminates the straight-line
-  accumulation (weight → 0). Transparent bezier fragments are still culled
-  against the opaque *triangle* z-buffer, so geometry behind an opaque triangle
-  is correctly removed. The cost is that opaque bezier does not itself cull
-  geometry behind it in the z-prepass, but bezier coverage is typically small
-  (text/thin shapes), so the extra fragments are few.
-
-  Resolve: circuits keep their sampled colour (they are never material-shaded —
-  a deliberate deviation matching the classic renderer), take reflectivity /
-  IOR / transmission from `circuit_meta`, use `_bezier_normal`, and their
-  continuation is the "thin pane" case (reflect into a split slot, transmit
-  unbent into the pass-through). The pane branch shares the triangle
-  `split_refl` body; the glass (refracting) branch stays triangle-only.
-
-Why bezier and not PN: bezier (text, 2D shapes) is the bulk of real explanatory-
-math content, so without it the front-end helps almost no real scene. PN patches
-(curved surfaces) are the hard case (quadratic patch intersection) — instead of
-rasterizing them, the front-end forces PN surfaces to render as *flat*
-triangles when raster is on.
-
-5.3 Force-flat under raster
----------------------------
-`renderer_settings.effective_triangle_primitive()` returns the flat triangle
-class whenever `HYBRID_RASTER` is on; the three surface/mesh/2D-shape build
-sites go through it, and `Surface._uses_pn_triangles()` returns False under
-raster so surfaces auto-tessellate against the flat error metric. Consequently a
-qualifying raster scene always has `num_pn == 0`; the gate keeps a `num_pn == 0`
-check purely as a safety that routes any stray PN geometry to the classic path.
-
-
-================================================================================
-6. SEMANTICS DELTAS FROM THE CLASSIC RENDERER
-================================================================================
-
-The front-end is intentionally not byte-identical. Known differences, all
-accepted (the test suite is being re-baselined):
-
-  * Raw-depth hit ordering replaces the epsilon-bin + layer order (§4.5). This
-    perturbs scattered pixels wherever surface depths tie — silhouettes,
-    coincident triangle edges. Measured a few tenths of a percent of pixels,
-    visually identical.
-
-  * Strict opaque z-cull: a transparent fragment exactly coincident in depth
-    with an opaque surface is culled (the comparison is strict). If a coplanar
-    decal exactly on an opaque surface ever needs to survive, revisit with a
-    <= comparison plus resolve-side ordering.
-
-  * Coplanar-overlap order for circuits: two overlapping circuits at (near-)
-    equal depth may swap which is on top versus the classic layer order. This is
-    an explicitly accepted difference (user rule: swapping the order of
-    overlapping beziers is fine as long as there are no rendering artifacts).
-
-
-================================================================================
-7. ACCELERATION STRUCTURE
-================================================================================
-
-Current (`stbvh.py`): a spatio-temporal BVH per geometry type. Time is a fourth
-dimension; primitives are adaptively segmented into (frame-interval, union-
-bound) instances, ordered along a 4D Morton curve, and packed into an implicit
-4-ary tree with sibling-block nodes (one aligned fetch tests a whole sibling
-group). Triangles use a median-split build; PN/bezier use Morton. This is used
-by the wavefront (secondary rays) and, until the front-end lands fully, primary
-rays.
-
-Its weakness (measured, §2.3): at the confirmed-optimal tightness=1.0, moving
-geometry segments to near-per-frame instances, so the tree is ~10x larger than
-the primitive count and every ray wades through mostly other-frames' instances
-gated out by frame-interval tests.
-
-Planned (Phase 4): shared-topology SAH tree with per-frame refit. Build ONE
-binned-SAH topology per batch over the N primitives (not instances), with an
-explicit child-base index per sibling block (unlocking unbalanced trees), and
-refit node bounds per frame as a vectorized `[T, blocks, 8, ARITY]` reduction
-(static geometry deduped to T=1). Measured benefits: eliminates the instance
-blowup (nodes ∝ primitives), gives exactly-tight per-frame boxes (the thing the
-tightness A/B proved dominates), removes the frame-interval gates, and makes the
-~14% SAH win affordable because topology is built once per batch. Refit
-staleness over a batch is negligible (§2.3). Also planned: a single mixed-type
-tree for shadow rays (they currently walk three trees serially and only need
-any-hit).
-
-
-================================================================================
-8. BENCHMARK RESULTS
-================================================================================
-
-All perf numbers are kernel-isolated (sync-fenced timing of only the ray-traced
-render call), warm, alternating in one process. Wall-clock at low resolution is
-useless here — the render is sub-0.5s and prep+video-encode dominate — so all
-comparisons are at MD/HD where the GPU render dominates. Hardware: GTX 1050
-(Pascal, 4 GB). Scripts: `benchmarks/_rt2_raster_kp.py` (spheres),
-`_rt2_raster_nn_kp.py` (neural net), `_rt2_raster_bez_parity.py`,
-`_rt2_raster_parity.py`, `_rt2_raster_refract_parity.py`.
-
-IMPORTANT measurement caveat (cost real hours): the raster gate requires
-num_pn == 0 AND num_circuits == 0-eligible geometry. A `Text(...)` label or any
-2D shape is a bezier circuit; before bezier support, its presence silently
-routed the whole batch to classic. Early neural_net numbers were therefore
-classic-vs-classic and bogus. All benchmarks now assert engagement (a counter
-on `raster_iteration_zero`), and the profiler cross-checks (raster kernels
-present, wavefront_generate absent).
-
-8.1 Speed — raster vs classic (engagement-verified)
----------------------------------------------------
-    scene                                    resolution   raster vs classic
-    20 flat-tri spheres                      HD 1920x1080      2.26x
-    dense flat-tri neural_net (no text)      MD 1280x720       3.27x
-    full neural_net (net + Text label)       MD 1280x720       2.75x   *
-      * previously ZERO benefit — the text silently forced classic.
-        classic 8.70s  ->  raster 3.16s.
-
-The win scales with both pixel count and BVH depth/primitive count (the raster
-eliminates per-pixel traversal; classic wavefront_traverse is ~85% of classic
-GPU time). Raster kernel times are also far tighter run-to-run than classic
-(less thermal sensitivity).
-
-8.2 Screen-space vs ray-cast (the intersection-mode A/B)
---------------------------------------------------------
-    scene                                overdraw   SS vs ray-cast
-    20 spheres HD                          low          0.94x  (SS ~6% slower)
-    dense flat neural_net MD               ~10x         1.36x  (SS 36% faster)
-    full neural_net (net + text) MD        mixed        1.11x
-
-Screen-space wins in proportion to bbox overdraw: its edge-function inside-test
-rejects a miss far more cheaply than ray-gen + Möller-Trumbore, and dense/thin
-triangles are almost all misses. Low-overdraw spheres fill their bbox, so
-there are no misses to save on and the per-triangle setup is pure overhead.
-Default ON: the high-overdraw case is both the expensive one and the realistic
-one. (An earlier "SS is a miss" reading was the bezier-text artifact above.)
-
-8.3 Parity (engagement-verified)
---------------------------------
-    test                                          result
-    triangle, vertex-shaded                       0.005% px differ (max 8)
-    triangle, fragment-shaded                     0.331% px differ (max 38)
-    glass refraction + refl-transparent splits    BYTE-IDENTICAL (max 0)
-    bezier: text + shapes + sphere                2.88% px (max 112)
-
-The triangle diffs are the accepted raw-depth tie noise (scattered silhouette /
-coincident-edge pixels; visually identical). The bezier 2.88% is dominated by a
-translucent circle and an opaque square swapping which is on top where they
-overlap — an accepted coplanar-order swap, not an artifact — plus raw-depth edge
-noise on the sphere and text. Adding bezier did not regress the triangle path
-(pure-triangle parity unchanged). The default renderer (raster off) is
-unaffected.
-
-8.4 Phase-1 gate measurements
------------------------------
-Sort ~140 Mkeys/s end-to-end; candidates/pixel 0.7–5.5 (≈20x fewer tests than
-the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
-1.37–2.33x better than the current STBVH. See §2.
-
-
-================================================================================
-9. SETTINGS / TOGGLES
-================================================================================
-
-  ALGAN_HYBRID_RASTER (default 0)   Enable the raster front-end. Also forces
-                                    surfaces to flat triangles.
-  ALGAN_RASTER_SS     (default 1)   Screen-space rasterization vs per-pixel
-                                    ray-cast (both correct; SS wins on high
-                                    overdraw, ~6% slower on low overdraw).
-
-  set_hybrid_raster(bool), set_raster_screen_space(bool) — programmatic setters.
-
-Gate for engaging the front-end (`use_raster` in tracer.py): HYBRID_RASTER on,
-num_pn == 0, (num_triangles > 0 or num_circuits > 0), not textured/sorted-legacy,
-no mem-trim, no custom scatter, no shadows, near_clip <= 0, aa_level <= 1.
-Fragment shading and refraction / refl-transparent splits ARE supported.
-
-
-================================================================================
-10. PLANNED FUTURE IMPROVEMENTS
-================================================================================
-
-Near-term (front-end):
-  * Shadows through the raster path via a post-visibility deferred pass (group
-    survivors, one shadow-ray batch), rather than the gate's current
-    shadows-route-to-classic.
-  * Arena-back the transient raster buffers (z-buffer, fragment arrays) so they
-    stop competing with arena headroom and cannot trigger extra OOM splits.
-  * Material/geometry-type-grouped shading of survivors: one partition of the
-    survivor list, a handful of launches (distinct from the failed sorted-
-    material pipeline, which paid per-event round trips inside a loop). Cuts the
-    resolve kernel's register footprint.
-  * Adaptive per-pair intersection mode: the host already knows each pair's
-    bbox area vs coverage, so it could pick screen-space for high-overdraw pairs
-    and ray-cast for low-overdraw ones, capturing both wins.
-  * Escape the Taichi 64-arg ceiling structurally: pass one scene-descriptor
-    ndarray instead of the current per-type array smuggling.
-
-Acceleration structure (Phase 4):
-  * Shared-topology binned-SAH tree with per-frame refit (§7). Explicit child-
-    base index per sibling block; static geometry deduped to T=1; a single
-    mixed-type any-hit tree for shadow rays.
-
-Loop / scheduling (Phase 5):
-  * Sync-free bounce loop: over-launch the compacted kernels at pool capacity
-    with a device-side active-count read, eliminating the per-iteration
-    count.item() host sync so the whole batch becomes one async stream.
-
-Explicitly OUT of scope:
-  * PN-patch rasterization. Surfaces render as flat triangles under raster; the
-    curved-patch intersection is not worth a rasterizer.
-  * The Monte Carlo path tracer (samples > 1) is untouched by this redesign.
-
-Anti-goals / dead ends already measured (do not re-attempt):
-  * Time-interpolated / OBB-in-node BVH — tightness dominates node count;
-    interpolation nets ~wash and doubles node size.
-  * Forcing the K-buffer into registers — adds register pressure, fatal to the
-    already occupancy-starved kernel.
-  * Byte-identical parity — the raw-depth ordering is a deliberate improvement.
-
-
-================================================================================
-11. FILE MAP
-================================================================================
-
-  raster_taichi.py        raster kernels: _ss_setup/_ss_pixel/_raycast_pixel,
-                          _pair_pixel, _bez_pair_pixel, raster_tri_z,
-                          raster_tri_count/write, raster_bez_count/write,
-                          raster_first_shade (the resolve).
-  raster_pipeline.py      host: _project_verts, _screen_bbox, _frame_pairs,
-                          _frame_bez_pairs, raster_iteration_zero.
-  tracer.py               use_raster gate; _run_wavefront_tiles(raster=...);
-                          iteration-0 call into raster_iteration_zero.
-  scene_builder.py        tri/bez_frame_valid, tri_frame_opaque,
-                          bez_frame_lo/hi masks next to the BVH build.
-  settings.py             HYBRID_RASTER, RASTER_SS + setters.
-  renderer_settings.py    effective_triangle_primitive() (force-flat).
-  stbvh.py                current spatio-temporal BVH (secondary rays).
-
-  benchmarks/_rt2_*.py    all measurement, parity, and A/B scripts referenced
-                          above; captures in benchmarks/_rt2_out/.
+# Algan Raytracer v2: Hybrid Raster Primary Frontend
+
+Status: implemented behind `ALGAN_HYBRID_RASTER` (default off). The frontend
+replaces iteration zero of the deterministic one-sample-per-pixel wavefront
+renderer. The Monte Carlo renderer is unchanged.
+
+This document describes the code as it exists after the first redesign pass,
+including its exact feature gates, memory contract, known limitations, and the
+next architectural steps. It is intentionally implementation-focused; old
+benchmark numbers are omitted because they are not part of the correctness
+contract.
+
+## 1. Goals and scope
+
+The classic deterministic renderer generates one camera ray per pixel, traverses
+separate triangle, PN-patch, and Bezier STBVHs, gathers a four-entry K-buffer,
+shades the entries, and repeats traversal when a straight ray has more than four
+surfaces. Primary traversal is expensive and particularly poor during fades,
+where many surfaces become translucent simultaneously.
+
+The hybrid frontend exploits the coherence of camera rays. Primitives are
+projected to screen bounds and scatter candidate pixel work. Exact intersections
+are evaluated only inside those bounds. Proven-opaque surfaces populate a typed
+visibility buffer; all remaining accepted fragments are ordered per pixel and
+resolved front-to-back. Reflected and refracted branches then enter the classic
+secondary-ray wavefront.
+
+The frontend therefore removes:
+
+- Primary BVH traversal for eligible batches.
+- Primary K-buffer refills through transparency stacks.
+- Permanent K-buffer allocation for primary rays that retire during raster
+  resolve.
+
+It does not yet replace secondary radiance traversal or its global K-buffer.
+
+## 2. Eligibility and fallback
+
+`tracer.py` engages raster only when all of the following hold:
+
+- `HYBRID_RASTER` is enabled.
+- At least one flat triangle or Bezier circuit is present.
+- No PN patches are present.
+- The legacy textured/material-sorted routes are inactive.
+- Memory trimming and custom scatter are inactive.
+- Near clipping is disabled.
+- In-place AA is at one sample.
+- Hard shadows, emitter-radius soft shadows, and packed area-light samples are
+  supported by the sparse primary shadow queue.
+
+Fallback is behavior-preserving. Enabling the raster setting no longer changes
+surface construction or tessellation. In particular, PN surfaces remain PN
+surfaces; a PN batch simply fails the frontend gate and uses classic primary
+traversal.
+
+## 3. Current data flow
+
+The frontend processes the same linear ray tile used by the wavefront host. A
+linear tile is normally a contiguous row band, not a conventional fixed square
+screen tile.
+
+For each tile:
+
+1. **Pair construction**
+   - Per-frame primitive screen bounds are clipped to the current row band.
+   - Each bound is split into `RASTER_CHUNK` candidate groups.
+   - A pair row stores primitive, frame, clipped rectangle, and flattened chunk
+     offset.
+
+2. **Typed opaque visibility pass**
+   - Proven-opaque flat triangles call `raster_tri_z`.
+   - Proven-opaque Bezier circuits call `raster_bez_z`.
+   - Exact hits atomically minimize one packed key per pixel.
+
+3. **Transparent/uncertain count pass**
+   - Exact triangle or circuit intersection is evaluated.
+   - Texture/vertex/circuit alpha is sampled.
+   - Alpha-zero hits and hits ordered behind the opaque winner are rejected.
+   - One count per pair sizes the fragment arrays exactly.
+
+4. **Transparent/uncertain write pass**
+   - The exact test and alpha fetch are repeated.
+   - Accepted records are emitted at prefix-summed pair offsets.
+
+5. **Deterministic ordering**
+   - Host sorting produces runs ordered by pixel, depth bin, then descending
+     layer, matching the classic transitive order.
+   - One CSR-style `run_offsets[pixel:p+2]` table identifies each run.
+
+6. **Optional exact sparse shadow queue**
+   - A serial transport walk performs seam rejection and termination decisions.
+   - Only accepted triangle local-shading events are emitted.
+   - A separate any-hit kernel traces one compact event/light visibility row.
+
+7. **Serial per-pixel resolve**
+   - `raster_first_shade` walks the transparent run and then the opaque terminal
+     winner.
+   - It evaluates color, material transport, local lighting, alpha blending,
+     reflection, thin-pane transmission, and solid refraction.
+   - Retired pixels commit radiance and residual background throughput.
+   - Surviving branches are written to a compact primary continuation pool.
+
+8. **Secondary handoff**
+   - Raster scratch is released as one arena temporary scope.
+   - Only active compact continuations are copied into a full classic wavefront
+     state.
+   - Full K-buffer arrays are allocated for active rays plus continuation
+     reserve, not for every original primary pixel.
+
+## 4. Ordering semantics
+
+The classic deterministic order is a strict total relation:
+
+```text
+(depth_bin = floor(t / DEPTH_TIE_EPSILON), descending layer)
+```
+
+The raster path uses the same relation.
+
+The opaque visibility key packs:
+
+```text
+high 32 bits: depth bin
+low  32 bits: inverted layer
+```
+
+Atomic minimum therefore resolves depth-bin ties by choosing the higher layer.
+The terminal winner's geometry type and primitive index are recovered from the
+layer range: Bezier layers precede triangle layers, and PN layers are absent
+from eligible raster batches.
+
+Transparent fragment records retain exact positive `t` bits for hit-point and
+material calculations. Host sorting derives the depth bin from exact `t` and
+uses stable sorting to preserve descending-layer order within a bin.
+
+This avoids the former raw-depth/coplanar decal problem and prevents a lower
+layer from culling a higher-layer transparent fragment at nearly equal depth.
+
+## 5. Primitive paths
+
+### 5.1 Flat triangles
+
+Triangle screen projection is precomputed once per `(frame, primitive)` rather
+than once per chunk and pass. Camera and geometry timelines may each be
+independently deduplicated to one frame; projection expands to the longest
+dynamic input and indexes every source modulo its own time dimension. The
+compact record contains:
+
+- Three continuous screen x coordinates.
+- Three continuous screen y coordinates.
+- Three reciprocal perspective divisors.
+- A validity flag.
+
+Valid projections use edge functions and perspective-correct barycentric
+weights. Invalid or camera-plane-straddling projections use the exact per-pixel
+ray-cast fallback.
+
+Per-primitive texture alpha certainty is preserved by `scene_builder.py`.
+Unrelated opaque triangles continue to populate the visibility buffer when one
+cutout texture exists elsewhere in the scene. During count/write, sampled
+`alpha <= MIN_ALPHA` hits never enter the sort.
+
+### 5.2 Bezier circuits
+
+Bezier bounds are projected from per-frame world AABBs. Each candidate casts
+the exact camera ray to the circuit plane, maps the hit to plane coordinates,
+and reuses `_bezier_point_metrics` for fill/border coverage.
+
+Proven-opaque circuits now participate in the typed visibility buffer. This is
+important for large filled panels, circles, and backgrounds, which can cull
+substantial geometry behind them. Translucent, reflective, or transmissive
+circuits enter the ordered fragment stream. Their packed negative primitive
+reference includes the border flag.
+
+Circuits use thin-pane transport: reflected energy bends, while the
+transmitted/coverage continuation remains on the original straight ray.
+
+### 5.3 PN patches
+
+PN patches are not rasterized and are not flattened. Their presence routes the
+batch to the classic deterministic frontend. A future PN candidate path may use
+projected OBB bounds plus the existing exact solver, but it is not required for
+the current frontend.
+
+## 6. Fragment and run memory layout
+
+Each emitted fragment stores:
+
+```text
+frag_key : int64   (local pixel in high bits, exact positive f32 t bits low)
+frag_ref : int32   (triangle id, or packed negative Bezier id/border flag)
+frag_ab  : float2  (triangle barycentrics or Bezier plane coordinates)
+```
+
+There is no separate `frag_t` or flags array. `t` is recovered by bit-casting the
+low key bits. One `run_offsets` array of length `tile_pixels + 1` replaces
+separate run-start and run-length arrays.
+
+The fragment depth is not literally unlimited. Both the transport/shadow event
+walk and final resolve stop at `MAX_SURFACES_PER_RAY`, currently 256 confirmed
+hit positions. Shared-edge duplicates count toward the limit before seam rejection,
+matching both walks. This is a safety bound far above the old
+four-entry K-buffer but must remain documented.
+
+## 7. Memory allocation and retry
+
+Large raster transients are arena-backed:
+
+- Typed z-buffer.
+- Pair counts and offsets.
+- Unsorted/sorted fragment arrays.
+- CSR run offsets.
+- Sparse shadow event data and visibility.
+
+PyTorch sort/index scratch remains allocator-owned because `torch.argsort` and
+`index_select` cannot target a supplied arena view.
+
+The host wraps the complete raster phase in `memory.temp()`, so all transients
+are released before secondary state allocation. Allocation failures inside a
+raster tile are caught by the wavefront tile loop. The current primary count is
+halved and retried. This provides a useful retry path even for a single-frame
+batch; it no longer relies only on halving the outer frame window.
+
+The compact primary queue lives outside the arena during raster resolve. It
+contains only:
+
+- Origin and direction.
+- Accumulated radiance.
+- RGB throughput and scalar continuation state.
+- Integer bounce/status state.
+- Pixel id.
+
+It has inert one-element placeholders instead of six `[pool, KBUF]` arrays.
+After resolve, active records are compacted and copied into a full secondary
+wavefront allocation. The old K-buffer is therefore paid only by rays that need
+secondary traversal.
+
+## 8. Shadow queues
+
+Primary hard and soft shadows use a dedicated sparse queue rather than
+position-limited packed bits.
+
+The event build pass mirrors the ordered primary transport decisions sufficiently
+to identify accepted triangle local-shading events. Each event stores:
+
+- World hit point.
+- Viewer-oriented shading normal.
+- Consistently oriented geometric face normal.
+- Frame index.
+
+A separate any-hit kernel traces every event against every supported shadow
+light and writes a float visibility matrix. Zero-radius point/spot/directional
+lights emit one hard-shadow ray. Non-zero point/spot radii and directional
+angular radii emit the same fixed golden-angle fan used by the classic
+wavefront shader. Rect-area lights are already represented as multiple packed
+sample rows, so averaging their per-row visibility naturally produces a soft
+penumbra. Fragment and terminal-winner event IDs map the visibility rows back
+into resolve.
+
+There is no additional raster-specific limit of three transparent positions or
+eight lights. The renderer-wide compile-time `MAX_SHADOW_LIGHTS` limit still
+applies equally to raster and classic material shading. The fan size is the
+compile-time `SOFT_SHADOW_SAMPLES` setting, exactly as on the classic path.
+Secondary-bounce shadows remain inside the classic wavefront shade kernel;
+moving all secondary shadows to a specialized queue is future work.
+
+## 9. Host synchronization
+
+Avoidable camera-projection scalar conversions were removed. Projection math
+remains tensorized on the render device, and pair expansion uses output shapes
+rather than explicit `sum().item()` reads where practical.
+
+Some synchronization remains structurally necessary with dynamic PyTorch
+allocations:
+
+- Total emitted fragment count before allocating exact arrays.
+- Total sparse shadow event count before allocating visibility.
+- Active continuation count before allocating full secondary state.
+- Wavefront continuation overflow flag.
+
+Removing these requires capacity-based persistent buffers, device-side queue
+scheduling, or CUDA-graph-compatible allocator changes rather than local source
+edits.
+
+## 10. Taichi compilation timing
+
+Algan instruments Taichi 1.7.4 at its two compilation boundaries:
+
+- `Kernel.materialize`: Python AST inspection/transformation and creation of the
+  C++ kernel object (reported as `frontend`).
+- `Program.compile_kernel`: backend lowering, or loading the equivalent offline
+  cache artifact (reported as `backend`).
+
+For every newly materialized specialization, the runtime logs a start timestamp
+and a completion timestamp with frontend, backend, and total seconds. Ordinary
+launches of an already-ready specialization are not logged. Logging is enabled
+by default and can be disabled with `ALGAN_LOG_TAICHI_COMPILES=0`. Setting
+`ALGAN_TAICHI_COMPILE_LOG=/path/to/log.jsonl` also writes machine-readable JSON
+records. With an empty offline cache the reported backend duration is cold
+compilation time; with a populated cache it is cache lookup/load time.
+
+## 11. Current limitations
+
+- The frontend uses linear row-band wavefront tiles, not square block tiles.
+- Triangle/circuit exact intersections are repeated in COUNT and WRITE.
+- Camera-plane straddlers conservatively expand to the complete current row
+  band; all-behind bounds are not specially rejected by the host.
+- `RASTER_CHUNK` is fixed at 256 and has not been retuned across scene classes.
+- PN patches, near clipping, custom scatter, and multi-sample AA use the
+  classic frontend.
+- Secondary radiance rays still carry the classic global K-buffer.
+- Secondary shadow queries are still performed by the classic shade path.
+- Raster engagement is feature-based rather than cost-model-based.
+
+## 12. Planned work
+
+### 12.1 Avoid the second exact intersection
+
+COUNT and WRITE currently repeat the expensive geometry test. The following
+alternatives should be benchmarked rather than chosen by intuition:
+
+1. **Candidate records followed by stream compaction**
+   - Emit one provisional record for every bbox candidate.
+   - Store a validity bit and exact hit payload once.
+   - Prefix-scan validity and compact accepted records.
+   - Advantage: one exact test.
+   - Cost: provisional memory scales with bbox overdraw, which is worst for thin
+     cylinders/arrows and can exceed the accepted-fragment volume by an order of
+     magnitude.
+
+2. **One cooperative block per pair with a block-local scan**
+   - Threads test candidate pixels in parallel.
+   - Accepted counts are scanned in shared memory.
+   - One block reservation allocates a contiguous output interval.
+   - Payload is written directly without a second test.
+   - Advantage: projection/setup reuse, fewer global atomics, bounded temporary
+     state.
+   - Cost: Taichi control over block shape/shared storage is less flexible, and
+     very small pairs waste lanes.
+
+3. **Block-local append plus one global atomic reservation**
+   - Threads retain hit payload in registers/local state.
+   - A block count reserves one global range with a single atomic add.
+   - A local prefix determines final positions.
+   - Advantage: no global count array or host prefix allocation.
+   - Cost: output order becomes block-dependent, so the complete deterministic
+     tie-break must be encoded in sort keys. Capacity must be provisioned or an
+     overflow/retry protocol added.
+
+4. **Cache first-pass hit payload per candidate chunk**
+   - COUNT stores accepted hit data in a bounded chunk-local scratch region.
+   - WRITE consumes the cached region after host offsets are known.
+   - Advantage: preserves exact sizing and deterministic pair layout.
+   - Cost: scratch approaches provisional-candidate memory and must survive the
+     host prefix step, reducing the value of the two-pass scheme.
+
+5. **Persistent accepted-fragment pool with device-side offsets**
+   - Each pair or block appends directly into a capacity-sized pool.
+   - A final device-side sort/CSR build consumes the used prefix.
+   - Advantage: one test and fewer host synchronizations.
+   - Cost: requires robust pool sizing, overflow retry, and tighter integration
+     with the manual arena.
+
+### 12.2 Square block tiles
+
+Investigate 8x8 or 16x16 screen tiles with primitive-to-tile binning. Potential
+benefits include projection reuse, tile-local sorting, inline short fragment
+lists, and better cache locality. Costs include another binning hierarchy and
+load imbalance for very large or very sparse primitives. The current linear
+wavefront tile remains the baseline until measured.
+
+### 12.3 Camera/near-plane clipping
+
+Replace full-row fallback for straddlers with one of:
+
+- Reject bounds whose complete control hull is behind the camera plane.
+- Clip flat triangles against camera/near planes before projection.
+- Clip projected conservative polygons for AABB/OBB bounds.
+- Split bounds at the plane and project only the front portion.
+
+Near-clip support must use the same clipped ray origin/base-distance convention
+as the classic renderer.
+
+### 12.4 Chunk-size tuning
+
+Benchmark `RASTER_CHUNK` values 32, 64, 128, and 256. Also store an explicit
+valid count for the final chunk so tiny bboxes do not execute 256 failed loop
+iterations. A cooperative block-per-pair implementation may make the optimal
+value a launch geometry rather than a serial loop length.
+
+### 12.5 Remove the global K-buffer from secondary radiance rays
+
+The current secondary engine permanently attaches six K-buffer arrays to every
+allocated ray. A redesigned traversal should keep a small closest/multi-hit set
+in registers, emit compact surface events, and allocate spill storage only for
+rays with deep same-direction transparency. Separate record types should remain:
+
+- Radiance continuation queue.
+- Any-hit shadow queue.
+- Same-direction transparency/surface-event queue.
+
+### 12.6 BLAS/TLAS instancing
+
+The current STBVH flattens world-space primitives across a frame batch. A future
+renderer should store local-space geometry in reusable BLASes and represent
+rigid animation with per-frame instance transforms and bounds. A small TLAS can
+then be rebuilt/refit per frame or frame group. Deforming geometry can refit or
+rebuild its BLAS according to a quality metric.
+
+### 12.7 Unified typed top-level hierarchy
+
+Secondary radiance currently walks separate triangle, PN, and Bezier trees.
+Introduce one typed TLAS over homogeneous BLAS roots/chunks. Query masks should
+allow rejection of subtrees that cannot satisfy opaque, shadow, geometry-type,
+or visibility requirements. Keep low-level leaves homogeneous to avoid severe
+warp divergence.
+
+### 12.8 Transport events before grouped shading
+
+For material-grouped shading, do not partition raw fragments directly. First run
+an ordered transport stage that performs seam rejection, alpha/material fetch,
+throughput calculation, path-bending decisions, and accepted local-event
+emission. Then group accepted events by material/geometry, shade them, and reduce
+weighted contributions by pixel. The same event stream can feed exact shadows.
+
+### 12.9 Dynamic frontend routing
+
+Add a cheap per-batch cost estimator based on projected candidate count,
+primitive count, opaque fraction, expected accepted fragment volume, resolution,
+and unsupported features. Very sparse scenes with shallow BVHs may remain faster
+through classic primary tracing; dense/faded scenes should strongly prefer
+raster.
+
+### 12.10 Fully asynchronous scheduling
+
+The remaining dynamic-count host reads prevent a single graph-like asynchronous
+batch. Future capacity-sized persistent queues can overlaunch kernels against
+device-side counts, use block-level queue reservations, and swap queue roles
+without `item()` synchronization. This should be attempted only after the queue
+and acceleration-structure redesigns stabilize.
+
+## 13. File map
+
+- `raster_pipeline.py`: host projection, pair construction, exact sizing,
+  sorting, CSR runs, shadow queue orchestration, and primary resolve.
+- `raster_taichi.py`: geometry tests, typed z passes, count/write, shadow event
+  and any-hit kernels, final resolve.
+- `scene_builder.py`: per-frame visibility/AABB masks and per-primitive texture
+  alpha certainty.
+- `tracer.py`: frontend gate, compact primary state, tile retry, projection
+  precompute, secondary handoff.
+- `renderer_settings.py` and `mobs/surfaces/surface.py`: preserve configured PN
+  geometry independently of raster eligibility.
+- `stbvh.py`: unchanged secondary-ray acceleration structure.
+- `rendering/taichi_runtime.py`: runtime initialization and per-specialization
+  frontend/backend compilation timing.

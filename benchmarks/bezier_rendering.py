@@ -3,6 +3,7 @@ os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
 os.environ["ALGAN_KBUF"] =  "4"
 #os.environ["ALGAN_BVH_BUILD"] = "split"
 os.environ["ALGAN_INPLACE_AA"] = "0"
+os.environ["ALGAN_HYBRID_RASTER"] = "1"
 
 from algan import *
 

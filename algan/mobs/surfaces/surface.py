@@ -658,11 +658,6 @@ class Surface(Renderable):
             )
         except Exception:
             return False
-        # The hybrid raster front-end forces flat triangles (no PN rasterizer),
-        # so surfaces tessellate against the flat error metric under raster.
-        from algan.rendering.raytracing import settings as rt_settings
-        if rt_settings.HYBRID_RASTER:
-            return False
         return isinstance(RENDERER_SETTINGS.triangle_primitive, type) and issubclass(
             RENDERER_SETTINGS.triangle_primitive, RayTracedPNTrianglePrimitive
         )
