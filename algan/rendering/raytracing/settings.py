@@ -260,6 +260,56 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
 # scatter-free triangle path (the common case). Default OFF.
 WF_MEM_TRIM = os.environ.get("ALGAN_WF_MEM_TRIM", "0") == "1"
 
+# Hybrid raster front-end for primary visibility (raytracer-v2 phase 2).
+# When on (and the batch qualifies -- see ``use_raster`` in
+# ``tracer.raytrace_render_wavefront``), the deterministic wavefront's first
+# iteration is replaced by a raster pipeline: per-frame screen-space binning
+# of triangle candidates, an opaque z-prepass (packed atomicMin), an exact
+# per-pixel fragment list sorted by raw depth, and a resolve+shade kernel
+# that composites the whole straight-line transparency stack in one pass
+# (unbounded K) and spawns reflection/refraction continuations into the
+# existing wavefront pool. Bounce iterations, compositing and memory tiling
+# are unchanged. NOT byte-identical to the classic path: hit ordering is raw
+# sorted depth (no DEPTH_TIE_EPSILON binning) and the opaque prepass culls
+# strictly. Currently flat-triangle-only scenes, no shadows / custom scatter /
+# mem-trim / in-place AA / near-clip. Default OFF while validating.
+HYBRID_RASTER = os.environ.get("ALGAN_HYBRID_RASTER", "0") == "1"
+
+
+def set_hybrid_raster(enabled):
+    """Toggle the hybrid raster primary-visibility front-end (see
+    ``HYBRID_RASTER``)."""
+    global HYBRID_RASTER
+    HYBRID_RASTER = bool(enabled)
+
+
+# Screen-space rasterization inside the hybrid raster front-end. When on
+# (default), each (prim, chunk) pair projects its triangle once and tests
+# candidate pixels with edge functions + perspective-correct barycentric
+# interpolation, instead of generating a world-space ray and running
+# Moller-Trumbore per candidate pixel. Numerically equivalent to the ray-cast
+# path (verified worst |dt| ~5e-5, |d_bary| ~6e-5 -- benchmarks/
+# _rt2_ss_math_check.py); a triangle with any vertex at/behind the camera plane
+# falls back to per-pixel ray casting.
+#
+# The win scales with bbox OVERDRAW (candidate pixels that miss the triangle):
+# the edge-function inside-test rejects a miss far more cheaply than a full
+# ray-gen + Moller-Trumbore. Kernel-isolated A/B: a dense thin-triangle mesh
+# (flat neural_net, ~10x overdraw) runs 1.36x faster with SS; low-overdraw
+# large triangles (spheres that fill their bbox) pay ~6% for the per-triangle
+# setup with no misses to save on. Default ON because the high-overdraw case is
+# both the expensive one and the realistic one; ALGAN_RASTER_SS=0 forces the
+# ray-cast path for A/B.
+RASTER_SS = os.environ.get("ALGAN_RASTER_SS", "1") == "1"
+
+
+def set_raster_screen_space(enabled):
+    """Toggle screen-space rasterization in the hybrid raster front-end (see
+    ``RASTER_SS``)."""
+    global RASTER_SS
+    RASTER_SS = bool(enabled)
+
+
 # UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle
 # scenes only). This variant is no longer maintained and no longer works; the
 # monolithic general wavefront is the only supported deterministic tracer.

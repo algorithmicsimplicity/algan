@@ -1022,6 +1022,12 @@ def _merge_scene(primitives):
             lo, hi, num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
             opaque=opaque, builder="split")
+        # Per-(frame, prim) visibility/opacity masks for the hybrid raster
+        # front-end (settings.HYBRID_RASTER): candidate emission skips
+        # invisible triangles and routes proven-opaque ones to the z-prepass.
+        # Derived from the same bounds/opacity arrays the STBVH build uses.
+        scene["tri_frame_valid"] = (hi >= lo).all(-1).contiguous()
+        scene["tri_frame_opaque"] = opaque.contiguous()
         if not scene["tri_has_opaque"]:
             scene["tri_opaque_bvh"] = _empty_scene_part(device)
         elif not scene["tri_has_translucent"]:
@@ -1046,6 +1052,10 @@ def _merge_scene(primitives):
         scene["tri_mat"] = torch.zeros((1, 1, MAT_W), device=device)
         scene["tri_bvh"] = _empty_scene_part(device)
         scene["tri_opaque_bvh"] = scene["tri_bvh"]
+        scene["tri_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool,
+                                               device=device)
+        scene["tri_frame_opaque"] = torch.zeros((1, 1), dtype=torch.bool,
+                                                device=device)
         _record_visibility(
             "tri", torch.empty((0, 0, 3), device=device),
             torch.empty((0, 0, 3), device=device),
@@ -1259,6 +1269,14 @@ def _merge_scene(primitives):
         opaque = _cat_collections([p._rt_frame_opaque for p in beziers], 1,
                                   "bezier merge")
         _record_visibility("bez", lo, hi, opaque)
+        # Per-(frame, circuit) visibility + AABBs for the hybrid raster front-
+        # end's bezier candidate emission (settings.HYBRID_RASTER). Bezier is
+        # routed entirely through the transparent (sorted) path, so no opacity
+        # mask is needed -- only which circuits exist on each frame and their
+        # per-frame world AABB (projected to a conservative screen bbox).
+        scene["bez_frame_valid"] = (hi >= lo).all(-1).contiguous()
+        scene["bez_frame_lo"] = lo.contiguous()
+        scene["bez_frame_hi"] = hi.contiguous()
         scene["bez_bvh"] = build_stbvh(
             lo, hi, num_frames=num_frames,
             tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
@@ -1288,6 +1306,10 @@ def _merge_scene(primitives):
                                           device=device)
         scene["bez_bvh"] = _empty_scene_part(device)
         scene["bez_opaque_bvh"] = scene["bez_bvh"]
+        scene["bez_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool,
+                                               device=device)
+        scene["bez_frame_lo"] = torch.full((1, 1, 3), EMPTY_LO, device=device)
+        scene["bez_frame_hi"] = torch.full((1, 1, 3), EMPTY_HI, device=device)
         scene["num_circuits"] = 0
         scene["bez_has_reflective"] = False
         _record_visibility(

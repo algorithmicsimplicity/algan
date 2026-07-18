@@ -22,7 +22,8 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from algan.settings.renderer_settings import RENDERER_SETTINGS
+from algan.settings.renderer_settings import (
+    RENDERER_SETTINGS, effective_triangle_primitive)
 from algan.constants.color import Color, WHITE
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.renderable import Renderable
@@ -301,7 +302,7 @@ class TriangleMesh(Renderable):
             op = self.opacity.reshape(-1, 1, 1, 1)
             texture_map = tmap.as_subclass(Color).mult_opacity(op)
 
-        return RENDERER_SETTINGS.triangle_primitive(
+        return effective_triangle_primitive()(
             corners=corners,
             colors=colors,
             normals=normals,

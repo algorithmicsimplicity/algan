@@ -11,7 +11,7 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.mob import Mob
 from algan.mobs.renderable import Renderable
 from algan.settings.style_defaults import STYLE_DEFAULTS
-from algan.settings.renderer_settings import RENDERER_SETTINGS
+from algan.settings.renderer_settings import effective_triangle_primitive
 from algan.utils.tensor_utils import (
     unsqueeze_left,
     broadcast_all,
@@ -284,7 +284,7 @@ class TriangleVertices(Renderable):
         )
         if n is None:
             n = torch.zeros_like(l)
-        return RENDERER_SETTINGS.triangle_primitive(
+        return effective_triangle_primitive()(
             l,
             c,
             o,

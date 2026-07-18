@@ -5,7 +5,8 @@ import torch
 import torch.nn.functional as F
 
 from algan.mobs.renderable import Renderable
-from algan.settings.renderer_settings import RENDERER_SETTINGS
+from algan.settings.renderer_settings import (
+    RENDERER_SETTINGS, effective_triangle_primitive)
 from algan.utils.tensor_utils import broadcast_cross_product
 from algan.animation.animation_contexts import Sync
 from algan.constants.color import *
@@ -657,6 +658,11 @@ class Surface(Renderable):
             )
         except Exception:
             return False
+        # The hybrid raster front-end forces flat triangles (no PN rasterizer),
+        # so surfaces tessellate against the flat error metric under raster.
+        from algan.rendering.raytracing import settings as rt_settings
+        if rt_settings.HYBRID_RASTER:
+            return False
         return isinstance(RENDERER_SETTINGS.triangle_primitive, type) and issubclass(
             RENDERER_SETTINGS.triangle_primitive, RayTracedPNTrianglePrimitive
         )
@@ -984,7 +990,7 @@ class Surface(Renderable):
         )
         normals = vertex_normals
 
-        return RENDERER_SETTINGS.triangle_primitive(
+        return effective_triangle_primitive()(
             corners=corners,
             colors=colors,
             normals=normals,

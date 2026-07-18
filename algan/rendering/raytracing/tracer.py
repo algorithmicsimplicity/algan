@@ -805,7 +805,7 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                          pixel_basis_y, half_screen_w, half_screen_h,
                          max_bounces, near_clip, run_tile,
                          auto_extra_slot_bytes=0, auto_extra_primary_bytes=0,
-                         auto_fixed_bytes=0, gen_fused=False):
+                         auto_fixed_bytes=0, gen_fused=False, raster=False):
     """Run deterministic-wavefront screen tiles with a shared split pool.
 
     ``run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum,
@@ -887,7 +887,18 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                     # split-free, but zeroing keeps the state well-defined.
                     rs_alloc = memory.get_tensor((2,), i32)
 
-                    if gen_fused:
+                    if raster:
+                        # Hybrid raster front-end: no generate pass. Primary
+                        # slots are written (or retired) by raster_first_shade;
+                        # pre-mark every pool slot DONE (status 1) so the
+                        # post-raster full-pool compaction sees only the
+                        # continuations the raster actually spawned, and seed
+                        # the shared allocator past the primary slots.
+                        pix_accum.zero_()
+                        rs_int[:, 2].fill_(1)
+                        rs_alloc.zero_()
+                        rs_alloc[0] = attempt_primary
+                    elif gen_fused:
                         pix_accum.zero_()
                         rs_alloc.zero_()
                     else:
@@ -1099,6 +1110,41 @@ def raytrace_render_wavefront(
         and len(frag_scatters) == 0
         and not mem_trim
         and not merged.get("textured_active", False))
+    # Hybrid raster front-end (settings.HYBRID_RASTER, raytracer-v2 phase 2/3):
+    # replace this batch's first wavefront iteration with primitive-side
+    # rasterization -- opaque z-prepass + sorted transparent fragment runs +
+    # the raster_first_shade resolve -- when the scene qualifies. Flat triangles
+    # and bezier circuits are supported (PN patches are excluded; raster forces
+    # surfaces to flat, see renderer_settings.effective_triangle_primitive, so
+    # a qualifying scene has num_pn == 0). Shadows / custom scatter / mem-trim /
+    # in-place AA / near-clip keep the classic path. NOT byte-identical
+    # (raw-depth hit order; see settings.HYBRID_RASTER).
+    # Deferred raster shadows (raytracer-v2): the front-end packs binary
+    # hard-shadow bits for the nearest few fragments + the opaque z-hit into a
+    # pre-pass (see raster_shadow). Soft-shadow lights (nonzero emitter radius)
+    # and scenes with more lights than the packed budget stay on the classic
+    # path, which supports soft fans and all MAX_SHADOW_LIGHTS.
+    raster_shadows_ok = True
+    if shadow_flag:
+        from algan.rendering.raytracing.raster_taichi import (
+            _RASTER_SHADOW_LIGHTS)
+        soft_lights = (light_col is not None and num_lights > 0
+                       and light_col.shape[2] > 11
+                       and bool((light_col[..., 11] > 0).any()))
+        raster_shadows_ok = (num_lights <= _RASTER_SHADOW_LIGHTS
+                             and not soft_lights)
+    use_raster = (
+        rt_settings.HYBRID_RASTER
+        and merged.get("tri_frame_valid") is not None
+        and (merged["num_triangles"] > 0 or merged["num_circuits"] > 0)
+        and merged["num_pn"] == 0
+        and not merged.get("textured_active")
+        and mem_trim == 0
+        and len(frag_scatters) == 0
+        and raster_shadows_ok
+        and near_clip <= 0.0
+        and max(1, int(aa_level)) <= 1
+    )
     # Fused primary-ray generation (settings.WF_GEN_FUSED): the tile's first
     # traverse generates its rays in-kernel and the first shade uses the
     # implicit initial state, skipping the standalone generate pass. Only for
@@ -1106,15 +1152,16 @@ def raytrace_render_wavefront(
     # base_dist == 0) renders on the one-sample-per-pixel AA path (fixed
     # 0.5/0.5 jitter). Everything else keeps the classic generate kernel.
     gen_fused = (rt_settings.wf_gen_fused_active() and pool_ratio == 1
-                 and near_clip <= 0.0 and max(1, int(aa_level)) <= 1)
-    if gen_fused:
+                 and near_clip <= 0.0 and max(1, int(aa_level)) <= 1
+                 and not use_raster)
+    if gen_fused or use_raster:
         gen_meta = _arena_values(
             memory, [0.5, 0.5, float(half_screen_w),
                      float(half_screen_h)], f32)
     else:
         gen_meta = memory.get_tensor((1,), f32)
         gen_meta.zero_()
-    if gen_fused or env_meta is not None or far_clip > 0.0:
+    if gen_fused or use_raster or env_meta is not None or far_clip > 0.0:
         # Extras packed behind the two layer offsets (the shade kernel is at
         # the 64-arg ceiling): env map placement in the shared texel buffer +
         # the camera's far clip distance, and -- read only by the fused first
@@ -1139,8 +1186,28 @@ def raytrace_render_wavefront(
         # compiles out).
         rs_vis = memory.get_tensor((1,), i32)
         compactor = _ArenaRayCompactor(memory, pool, i32)
-        active = compactor.initial(tn_primary)
         it = 0
+        if use_raster:
+            # Iteration 0 via the raster front-end: primary visibility is
+            # resolved and shaded in full (unbounded transparency depth);
+            # only bounced continuations enter the classic loop below.
+            from algan.rendering.raytracing.raster_pipeline import (
+                raster_iteration_zero)
+            raster_iteration_zero(
+                merged, cam_origin, screen_point, pixel_basis_x,
+                pixel_basis_y, pixel_world_scale, layer_offsets_t, gen_meta,
+                light_pos, light_col, num_lights, col_row_arr, frag_flag,
+                frag_pipelines, int(rt_settings.WF_SKIP_UNLIT_NORMAL),
+                refraction_flag, time_start, width, height,
+                half_screen_w, half_screen_h, tile_start, tn_primary,
+                state, rs_pix, pix_accum, rs_alloc,
+                shadow_flag, t_bvh, pn_bvh, bez_bvh,
+                layer_offset_triangles, layer_offset_pn)
+            active = compactor.select(rs_int, 0, source=compactor.current,
+                                      scan_pool=True)
+            it = 1
+        else:
+            active = compactor.initial(tn_primary)
         while active.numel() > 0 and it < max_iters:
             na = int(active.numel())
             # Fused generation: the tile's first iteration generates rays in
@@ -1245,7 +1312,7 @@ def raytrace_render_wavefront(
         run_tile=run_tile,
         # rs_vis placeholder + the compactor's output-count word.
         auto_fixed_bytes=2 * torch.int32.itemsize,
-        gen_fused=gen_fused)
+        gen_fused=gen_fused, raster=use_raster)
 
 
 def _raytrace_render_wavefront_textured(
