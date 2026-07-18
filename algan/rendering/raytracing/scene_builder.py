@@ -830,7 +830,7 @@ def _merge_scene(primitives):
     def _texture_alpha_is_opaque(tex):
         """Conservatively prove that a color texture cannot cut a surface."""
         if tex is None or tex.shape[-1] < 4:
-            return tex is None
+            return True
         return bool((tex[..., 3] >= 1.0 - 1e-6).all())
 
     def _record_visibility(prefix, lo, hi, opaque, uncertain_alpha=False):
@@ -944,10 +944,35 @@ def _merge_scene(primitives):
         lo = _cat_collections(_geom("_rt_frame_lo"), 1, "triangle merge")
         hi = _cat_collections(_geom("_rt_frame_hi"), 1, "triangle merge")
         opaque = _cat_collections(_geom("_rt_frame_opaque"), 1, "triangle merge")
-        tri_uncertain_alpha = any(
-            (getattr(p, "_rt_texture_map", None) is not None
-             and not _texture_alpha_is_opaque(p._rt_texture_map))
-            for p in textured_triangles)
+        # Per-primitive color-texture alpha certainty for the hybrid raster
+        # frontend.  The old global ``has_uncertain_texture_alpha`` flag forced
+        # every triangle through the transparent path when a single cutout
+        # texture was present, disabling otherwise-useful opaque z culling.
+        # Keep the aggregate flag for the classic opaque-prepass gate, but also
+        # preserve the exact primitive mask in merged triangle order.
+        alpha_uncertain_parts = []
+        for p in plain_triangles:
+            nk = int(keep_idx[id(p)].numel())
+            if nk:
+                alpha_uncertain_parts.append(torch.zeros(
+                    (1, nk), dtype=torch.bool, device=device))
+        for p in textured_triangles:
+            uncertain = (getattr(p, "_rt_texture_map", None) is not None
+                         and not _texture_alpha_is_opaque(p._rt_texture_map))
+            alpha_uncertain_parts.append(torch.full(
+                (1, p._rt_tri_pos.shape[1]), bool(uncertain),
+                dtype=torch.bool, device=device))
+        for p in plain_triangles:
+            npromo = int(promo_idx[id(p)].numel())
+            if npromo:
+                alpha_uncertain_parts.append(torch.zeros(
+                    (1, npromo), dtype=torch.bool, device=device))
+        tri_alpha_uncertain = (torch.cat(alpha_uncertain_parts, 1)
+                               if alpha_uncertain_parts else torch.zeros(
+                                   (1, scene["tri_pos"].shape[1]),
+                                   dtype=torch.bool, device=device))
+        scene["tri_alpha_uncertain"] = tri_alpha_uncertain.contiguous()
+        tri_uncertain_alpha = bool(tri_alpha_uncertain.any())
         _record_visibility("tri", lo, hi, opaque, tri_uncertain_alpha)
 
         # tri_colors / tri_extra span only the kept per-vertex triangles + the
@@ -1056,6 +1081,8 @@ def _merge_scene(primitives):
                                                device=device)
         scene["tri_frame_opaque"] = torch.zeros((1, 1), dtype=torch.bool,
                                                 device=device)
+        scene["tri_alpha_uncertain"] = torch.zeros(
+            (1, 1), dtype=torch.bool, device=device)
         _record_visibility(
             "tri", torch.empty((0, 0, 3), device=device),
             torch.empty((0, 0, 3), device=device),
@@ -1269,12 +1296,12 @@ def _merge_scene(primitives):
         opaque = _cat_collections([p._rt_frame_opaque for p in beziers], 1,
                                   "bezier merge")
         _record_visibility("bez", lo, hi, opaque)
-        # Per-(frame, circuit) visibility + AABBs for the hybrid raster front-
-        # end's bezier candidate emission (settings.HYBRID_RASTER). Bezier is
-        # routed entirely through the transparent (sorted) path, so no opacity
-        # mask is needed -- only which circuits exist on each frame and their
-        # per-frame world AABB (projected to a conservative screen bbox).
+        # Per-(frame, circuit) visibility, opacity, and AABBs for the hybrid
+        # raster frontend.  Proven-opaque circuits now participate in the typed
+        # visibility buffer and cull geometry behind large filled 2D shapes;
+        # translucent / reflective panes remain in the ordered fragment stream.
         scene["bez_frame_valid"] = (hi >= lo).all(-1).contiguous()
+        scene["bez_frame_opaque"] = opaque.contiguous()
         scene["bez_frame_lo"] = lo.contiguous()
         scene["bez_frame_hi"] = hi.contiguous()
         scene["bez_bvh"] = build_stbvh(
@@ -1308,6 +1335,8 @@ def _merge_scene(primitives):
         scene["bez_opaque_bvh"] = scene["bez_bvh"]
         scene["bez_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool,
                                                device=device)
+        scene["bez_frame_opaque"] = torch.zeros((1, 1), dtype=torch.bool,
+                                                device=device)
         scene["bez_frame_lo"] = torch.full((1, 1, 3), EMPTY_LO, device=device)
         scene["bez_frame_hi"] = torch.full((1, 1, 3), EMPTY_HI, device=device)
         scene["num_circuits"] = 0

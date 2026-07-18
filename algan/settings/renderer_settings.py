@@ -16,13 +16,13 @@ RENDERER_SETTINGS = RendererSettings()
 def effective_triangle_primitive():
     """Triangle primitive class to build for new surfaces / meshes.
 
-    Forced to the flat class when the hybrid raster front-end is enabled: the
-    raster path has no PN-patch rasterizer (by design -- see
-    ``settings.HYBRID_RASTER``), so PN surfaces render as flat triangles under
-    raster. When raster is off this is just the configured
-    ``triangle_primitive`` (flat by default, PN when ``pn_triangles`` is set).
+    Geometry construction must not depend on whether a later render batch is
+    eligible for the hybrid raster front-end.  In particular, enabling raster
+    must not silently flatten PN patches when another feature (near clipping,
+    custom scatter, AA, etc.) routes the batch back to the classic tracer.
+
+    The raster dispatcher therefore treats PN geometry as an unsupported
+    frontend feature and falls back to classic primary traversal while keeping
+    the configured primitive class intact.
     """
-    from algan.rendering.raytracing import settings as rt_settings
-    if rt_settings.HYBRID_RASTER:
-        return RayTracedTrianglePrimitive
     return RENDERER_SETTINGS.triangle_primitive

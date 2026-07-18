@@ -1767,7 +1767,15 @@ def wavefront_shadow(
     shadow geometry mirrors ``wavefront_shade``'s inline block exactly, so the
     bits drive byte-identical shading. Because ``_collect_hits`` stops gathering
     at the first opaque hit, the K-buffer holds (almost) exactly the hits shade
-    consumes, so few bits are computed and never read."""
+    consumes, so few bits are computed and never read.
+
+    HOST CONTRACT if this kernel is ever revived: like ``hit_f``/``hit_i``,
+    ``rs_vis`` is indexed by *active-queue ordinal* (``rs_vis[i]``, not the
+    sparse pool slot), so the host must allocate it with ``num_active``
+    elements per iteration and launch this kernel inside the same temporary
+    arena scope as the surface-event batch, between traverse and shade. The
+    tracer's current 1-element ``rs_vis`` placeholder is only valid while
+    ``wavefront_shade`` is compiled with ``deferred_shadows == 0``."""
     pixels_per_frame = width * height
     for i in range(num_active):
         r = active[i]
