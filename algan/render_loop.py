@@ -1492,13 +1492,16 @@ class RenderLoopMixin:
         original_background = self.background_frame
         original_memory = self.memory
         try:
-            yield from self._get_frames_impl(
-                start_time_ind,
-                end_time_ind,
-                background_color=background_color,
-                post_processes=post_processes,
-                manual_memory=manual_memory,
-            )
+            # Rendering is inference-only, but the scope is local to Algan so
+            # importing the library does not alter PyTorch autograd globally.
+            with torch.inference_mode():
+                yield from self._get_frames_impl(
+                    start_time_ind,
+                    end_time_ind,
+                    background_color=background_color,
+                    post_processes=post_processes,
+                    manual_memory=manual_memory,
+                )
         finally:
             self.background_frame = original_background
             render_memory = self.memory

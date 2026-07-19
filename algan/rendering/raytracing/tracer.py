@@ -29,7 +29,12 @@ On out-of-memory the frame window is halved and retried
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 import torch
+
+from algan.errors import UnsupportedFeatureError
 
 import os
 import sys
@@ -81,6 +86,34 @@ from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.logging.logger import get_logger
 
 logger = get_logger("raytracing")
+
+
+@dataclass(frozen=True)
+class RenderPlan:
+    """Resolved renderer route and capability assessment for one batch.
+
+    The plan is attached to ``scene.last_render_plan`` and returned through
+    :class:`algan.utils.algan_utils.RenderResult` after a file render.  It is
+    intentionally data-only so applications can log or serialize it without
+    depending on Taichi/Torch implementation objects.
+    """
+
+    backend: Literal["deterministic_wavefront", "monte_carlo"]
+    samples_per_pixel: int
+    requested_features: tuple[str, ...]
+    unsupported_features: tuple[str, ...] = ()
+
+    @property
+    def is_supported(self) -> bool:
+        return not self.unsupported_features
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "backend": self.backend,
+            "samples_per_pixel": self.samples_per_pixel,
+            "requested_features": list(self.requested_features),
+            "unsupported_features": list(self.unsupported_features),
+        }
 
 
 def _host_tensor(value):
@@ -501,6 +534,74 @@ def _append_env_sh_light(light_pos, light_col, num_lights, env, intensity,
     return light_pos, light_col, num_lights + 1
 
 
+def _build_render_plan(samples_per_pixel, scene_environment_map, merged,
+                       light_sources=()):
+    """Resolve the renderer route and feature compatibility for a batch."""
+    samples_requested = max(1, int(samples_per_pixel))
+    backend = (
+        "monte_carlo" if samples_requested > 1 else "deterministic_wavefront"
+    )
+    requested = []
+    if scene_environment_map is not None:
+        requested.append("environment maps")
+    if bool(merged.get("has_refractive")):
+        requested.append("refractive materials")
+    if _scene_has_user_pipeline(merged):
+        requested.append("custom fragment-shader pipelines")
+    if any(
+        getattr(light, "_render_aux", None) is not None
+        for light in (light_sources or ())
+    ):
+        requested.append("extended lights")
+
+    unsupported = tuple(requested) if samples_requested > 1 else ()
+    return RenderPlan(
+        backend=backend,
+        samples_per_pixel=samples_requested,
+        requested_features=tuple(requested),
+        unsupported_features=unsupported,
+    )
+
+
+def _validate_render_capabilities(samples_per_pixel, scene_environment_map,
+                                  merged, light_sources=()):
+    """Validate that the selected renderer can honor the authored scene.
+
+    ``samples_per_pixel > 1`` selects the Monte Carlo megakernel. Several
+    features currently exist only in the deterministic wavefront renderer;
+    silently discarding them is more dangerous than failing early. The global
+    unsupported-feature policy permits an explicit warning/ignore migration
+    mode for benchmarks and legacy projects.
+    """
+    plan = _build_render_plan(
+        samples_per_pixel,
+        scene_environment_map,
+        merged,
+        light_sources,
+    )
+    if plan.unsupported_features:
+        feature_list = ", ".join(plan.unsupported_features)
+        rt_settings.report_unsupported_features(
+            "The Monte Carlo renderer selected by samples_per_pixel > 1 "
+            f"cannot honor: {feature_list}. Set samples_per_pixel to 1 to use "
+            "the deterministic wavefront renderer, remove those features, or "
+            "set_unsupported_feature_policy('warn'/'ignore') explicitly."
+        )
+
+    # Keep direct mutation of the legacy globals from bypassing the guarded
+    # public setters. These backends are known-broken and must not render a
+    # misleading result.
+    if bool(getattr(rt_settings, "WF_TEXTURED", False)):
+        raise UnsupportedFeatureError(
+            "The legacy textured wavefront renderer is unsupported."
+        )
+    if getattr(rt_settings, "WAVEFRONT_SORT_MATERIALS", "auto") is True:
+        raise UnsupportedFeatureError(
+            "The legacy sorted-material wavefront renderer is unsupported."
+        )
+    return plan
+
+
 def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                             time_start, time_end, background_color,
                             transparent_background, ray_origin, screen_point,
@@ -525,14 +626,24 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     MAX_BOUNCES = rt_settings.MAX_BOUNCES
     TONEMAP_EXPOSURE = rt_settings.TONEMAP_EXPOSURE
     INDIRECT_BOUNCE_STRENGTH = rt_settings.INDIRECT_BOUNCE_STRENGTH
-    env_map = (getattr(scene, "environment_map", None)
-               if int(SAMPLES_PER_PIXEL) <= 1 else None)
-    env_source = (env_map.detach().cpu()
-                  if torch.is_tensor(env_map) else env_map)
+    scene_env_map = getattr(scene, "environment_map", None)
+    env_map = scene_env_map if int(SAMPLES_PER_PIXEL) <= 1 else None
+    env_source = (
+        env_map.detach().cpu() if torch.is_tensor(env_map) else env_map
+    )
     env_meta = getattr(primitives[0], "_rt_env_meta", None)
     merged = getattr(primitives[0], "_rt_device_scene", None)
     if merged is None:
         merged_host = _merge_scene(primitives)
+        # Validate on host metadata before reserving/copying the persistent
+        # device scene. Unsupported combinations therefore fail before costly
+        # arena allocations or any Taichi kernel compilation.
+        plan = _validate_render_capabilities(
+            SAMPLES_PER_PIXEL,
+            scene_env_map,
+            merged_host,
+            light_sources,
+        )
         if env_map is not None:
             merged_host = dict(merged_host)
             texture_device = merged_host["textures"].device
@@ -542,6 +653,15 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                 texture_device)
         merged = copy_merged_scene_to_arena(
             merged_host, memory, persist=True)
+    else:
+        plan = _validate_render_capabilities(
+            SAMPLES_PER_PIXEL,
+            scene_env_map,
+            merged,
+            light_sources,
+        )
+    scene.last_render_plan = plan
+
     aa = max(1, int(anti_alias_level))
     # Refraction is only implemented by the general wavefront tracer, which is
     # already where every deterministic (samples <= 1) batch goes -- so this
