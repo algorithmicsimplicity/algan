@@ -6,9 +6,10 @@ os.environ["ALGAN_INPLACE_AA"] = "0"
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["ALGAN_HYBRID_RASTER"] = "1"
 os.environ["ALGAN_INPLACE_AA"] = "0"
+os.environ["ALGAN_BVH_REFIT"] = "1"
+
 
 from algan import *
-clear_cache(True)
 from algan.mobs.neural_nets.neural_net import NeuralNetMLP, NeuralNetMLPV3
 from algan.utils.profiling_utils import profile_scene
 
@@ -32,7 +33,7 @@ def text_scene():
     with Off():
         nn = NeuralNetMLPV3([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
-    with Sync(run_time=0.25):
+    with Sync(run_time=1):
         mob.move(LEFT)
         nn.move(LEFT)
     return

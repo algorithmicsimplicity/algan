@@ -534,30 +534,61 @@ and enumerable (the ordering relation itself is classic-exact, §4.5):
 9. ACCELERATION STRUCTURE (secondary rays)
 ================================================================================
 
-Current (`stbvh.py`): a spatio-temporal BVH per geometry type. Time is a fourth
-dimension; primitives are adaptively segmented into (frame-interval, union-
-bound) instances, ordered along a 4D Morton curve, and packed into an implicit
-4-ary tree with sibling-block nodes (one aligned fetch tests a whole sibling
-group). Triangles use a median-split build; PN/bezier use Morton. Used by the
-wavefront (secondary rays), the raster shadow trace, and classic-path primary
-rays.
+Classic (`stbvh.py`, the default): a spatio-temporal BVH per geometry type.
+Time is a fourth dimension; primitives are adaptively segmented into
+(frame-interval, union-bound) instances, ordered along a 4D Morton curve, and
+packed into an implicit 4-ary tree with sibling-block nodes (one aligned
+fetch tests a whole sibling group). Triangles use a median-split build;
+PN/bezier use Morton. Used by the wavefront (secondary rays), the raster
+shadow trace, and classic-path primary rays.
 
 Its weakness (measured, §2.3): at the confirmed-optimal tightness=1.0, moving
 geometry segments to near-per-frame instances, so the tree is ~10x larger than
 the primitive count and every ray wades through mostly other-frames' instances
 gated out by frame-interval tests.
 
-Planned: shared-topology SAH tree with per-frame refit. Build ONE binned-SAH
-topology per batch over the N primitives (not instances), with an explicit
-child-base index per sibling block (unlocking unbalanced trees), and refit
-node bounds per frame as a vectorized `[T, blocks, 8, ARITY]` reduction
-(static geometry deduped to T=1). Measured benefits: eliminates the instance
-blowup (nodes ∝ primitives), gives exactly-tight per-frame boxes (the thing
-the tightness A/B proved dominates), removes the frame-interval gates, and
-makes the ~14% SAH win affordable because topology is built once per batch.
-Refit staleness over a batch is negligible (§2.3). Also planned: a single
-mixed-type any-hit tree for shadow rays (they currently walk three trees
-serially).
+BUILT (2026-07-19, opt-in `ALGAN_BVH_REFIT`, default OFF while soaking):
+shared-topology binned-SAH tree with per-frame refit (`refit_bvh.py`). ONE
+binned-SAH topology per batch over the N ever-visible primitives (not
+instances), built level-synchronously in vectorized torch (one batched
+16-bin SAH split pass per binary level across every node of that level;
+log2(ARITY) binary passes collapse directly into ARITY-wide sibling blocks;
+depth is budgeted against the kernels' 16-deep sibling stack by forced median
+splits). The tree is *unbalanced*, which the implicit heap cannot express, so
+each block stores **explicit per-(frame, child) int32 link words** in the
+lanes the classic tspan occupied: -1 = absent child OR subtree invisible
+this frame (an empty box cannot gate -- the slab test min/max-normalizes each
+axis, so inverted bounds still pass); sign bit = leaf (bits 0-29 the
+primitive, bit 30 its *per-frame* full-opacity flag -- exact, vs the classic
+per-interval flag); >= 0 = the child's block index. Bounds are refit per
+frame as one vectorized `[T, blocks-in-level, ARITY, 3]` reduction per tree
+level (static geometry dedupes to T = 1); blocks flatten to
+`[Tb * num_blocks, 8, ARITY]`, same dtype rules (f16 conservative rounding)
+as classic.
+
+ABI: `RefitBVH` quacks like `STBVH` -- the same five tensor fields, with
+`first_leaf` carrying `num_blocks` and the leaf-slot arrays as 1-element
+stubs -- so every `(blocks, node_miss, leaf_prim, leaf_tspan, first_leaf)`
+launch quintuple, the arena upload and the memory accounting are unchanged.
+The kernels select the walk with ONE compile-time `refit` template threaded
+through `_test_children`/`_collect_hits`/`_shadow_occluded`/`_transmittance`/
+`_nearest_surface(_g)` and every kernel that launches them (wavefront
+traverse/shade, raster shadow trace, both Monte Carlo megakernels), so both
+modes coexist in one process (in-process A/B). All six trees of a batch
+(3 full + 3 opaque-prepass) are built the same kind by
+`scene_builder._build_accel`; the tree object's *type* selects the template
+at launch, never the live toggle. The unsupported legacy textured/sorted
+orchestrators stay classic (`refit_bvh_active` gates them out).
+
+Validated: `benchmarks/_rt2_refit_build_check.py` (structural + conservative-
+walk superset checks on randomized moving scenes with visibility holes);
+`benchmarks/_rt2_refit_parity.py` -- animated multi-frame renders, classic vs
+refit, BYTE-IDENTICAL (max|d| = 0) on all five configs: tri (opaque +
+translucent + mid-batch spawn), bez, hard shadows, soft shadows, glass
+refraction.
+
+Still planned: a single mixed-type any-hit tree for shadow rays (they
+currently walk three trees serially).
 
 
 ================================================================================
@@ -631,8 +662,13 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
   ALGAN_RASTER_SS     (default 1)   Screen-space intersection from the
                                     projection table vs per-pixel ray-cast
                                     (both correct; SS wins on high overdraw).
+  ALGAN_BVH_REFIT     (default 0)   Build the shared-topology binned-SAH
+                                    refit BVH instead of the classic STBVH
+                                    (§9; all render paths honor it via the
+                                    compile-time ``refit`` template).
 
-  set_hybrid_raster(bool), set_raster_screen_space(bool) — programmatic.
+  set_hybrid_raster(bool), set_raster_screen_space(bool),
+  set_refit_bvh(bool) — programmatic.
 
 Gate for engaging the front-end (`use_raster` in tracer.py): HYBRID_RASTER on,
 merged visibility masks present, (num_triangles > 0 or num_circuits > 0),
@@ -672,7 +708,13 @@ with all MAX_SHADOW_LIGHTS lights (§5). NOT gated on shadows or light count.
   scene_builder.py        tri/bez_frame_valid, tri/bez_frame_opaque,
                           tri_alpha_uncertain (per-primitive), bez_frame_lo/hi
                           masks next to the BVH build.
-  settings.py             HYBRID_RASTER, RASTER_SS + setters.
+  refit_bvh.py            RefitBVH + build_refit_bvh: level-synchronous
+                          binned-SAH topology (batch-union boxes, ARITY-wide
+                          blocks with explicit per-(frame, child) links) +
+                          the vectorized per-frame bound refit (§9).
+  settings.py             HYBRID_RASTER, RASTER_SS, BVH_REFIT + setters
+                          (refit_bvh_active gates the legacy orchestrators
+                          back to classic).
   renderer_settings.py    effective_triangle_primitive() (raster-agnostic;
                           returns the configured class, §6.3).
   taichi_runtime.py       single ti.init entry point (init_taichi), tuned
@@ -695,14 +737,16 @@ Ranked by expected wall-clock improvement on real (moving, mixed-content)
 scenes, with the evidence basis for each rank. Measured numbers where they
 exist; ranks without numbers are marked (est.).
 
-  1. Shared-topology binned-SAH refit BVH (§9). Secondary rays — shadows,
-     reflections, refractions — and every classic-fallback batch still pay
-     traversal, which is ~85% of classic GPU time. Measured headroom: the
-     current STBVH is 1.37–2.33x worse in SAH expected-visit cost than a
-     refit topology, refit staleness across a batch is <= 1.04, and the SAH
-     build's ~14% traversal win becomes affordable once topology is built
-     once per batch. Benefits ALL paths, including the raster front-end's
-     shadow/bounce stages. Largest single lever in the codebase.
+  1. Shared-topology binned-SAH refit BVH (§9). BUILT 2026-07-19, opt-in
+     `ALGAN_BVH_REFIT`, byte-identical on all parity configs (see §9).
+     Motivation (measured): secondary rays — shadows, reflections,
+     refractions — and every classic-fallback batch still pay traversal,
+     which is ~85% of classic GPU time; the classic STBVH is 1.37–2.33x
+     worse in SAH expected-visit cost than a refit topology; refit staleness
+     across a batch is <= 1.04. Benefits ALL paths, including the raster
+     front-end's shadow/bounce stages. Remaining work: measure the traversal
+     win on real scenes (`benchmarks/_rt2_refit_ab.py`), then flip the
+     default ON.
 
   2. Re-baseline and default-ON the raster front-end. Measured 2.26–3.27x on
      qualifying scenes — but only scenes that opt in get it. Work: re-run the

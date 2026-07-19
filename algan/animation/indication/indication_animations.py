@@ -31,11 +31,13 @@ def wiggle(t, wiggles=2):
 def Indicate(mobject, scale_factor=1.2, color=YELLOW, run_time=1.0):
     color = cast_to_tensor(color)
     scale_factor = cast_to_tensor(scale_factor)
-    current_scale = mobject.scale_coefficient
     with Sync(run_time=run_time):
         mobject.pulse_color(color)
+        # relative mode: pulse each part to scale_factor times its own current
+        # scale and back. Using the parent's scale_coefficient as an absolute
+        # target would clobber any child that was scaled independently.
         mobject.apply_absolute_change_two(
-            "scale_coefficient", current_scale * scale_factor, current_scale
+            "scale_coefficient", scale_factor, relative=True
         )
     return mobject
 

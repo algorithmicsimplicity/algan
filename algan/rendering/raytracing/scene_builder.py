@@ -21,6 +21,7 @@ from algan.rendering.raytracing.settings import (
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_REFLECTIVITY, _M_WIDTH)
 from algan.rendering.raytracing.shading_taichi import MAT_W, _MID_UNLIT
+from algan.rendering.raytracing.refit_bvh import build_refit_bvh
 from algan.rendering.raytracing.stbvh import EMPTY_LO, EMPTY_HI, STBVH, build_stbvh
 from algan.rendering.raytracing.utils import _expand_frames, _cat_collections, _cat_mat_blocks, _flat_frames
 
@@ -303,10 +304,12 @@ def _rebuild_scene_with_tensors(value, tensor_map, memo):
     if key in memo:
         return memo[key]
     if isinstance(value, STBVH):
-        rebuilt = STBVH.from_prebuilt(
+        # Type-aware: a RefitBVH rebuilds as a RefitBVH, carrying over the
+        # scalar layout fields the tensor shapes alone cannot recover.
+        rebuilt = type(value).from_prebuilt(
             tensor_map[id(value.nodes)], tensor_map[id(value.node_miss)],
             tensor_map[id(value.leaf_prim)], tensor_map[id(value.leaf_tspan)],
-            tensor_map[id(value.blocks)])
+            tensor_map[id(value.blocks)], like=value)
         memo[key] = rebuilt
         return rebuilt
     if isinstance(value, dict):
@@ -486,11 +489,27 @@ def _split_promotable(p, _append_texture, device, scene):
     return keep_idx, promo_idx, promo_meta
 
 
+def _build_accel(lo, hi, num_frames, tightness, opaque=None,
+                 builder="morton"):
+    """Build one geometry type's acceleration structure: the classic
+    spatio-temporal instance tree, or -- under ``settings.BVH_REFIT`` -- the
+    shared-topology binned-SAH refit tree (refit_bvh.py; ``tightness`` /
+    ``builder`` do not apply there). All trees of a batch dispatch through
+    this one gate so every launch passes a single consistent ``refit``
+    template to the kernels."""
+    from algan.rendering.raytracing import settings as _rts
+    if _rts.refit_bvh_active():
+        return build_refit_bvh(lo, hi, num_frames=num_frames, opaque=opaque)
+    return build_stbvh(lo, hi, num_frames=num_frames, tightness=tightness,
+                       opaque=opaque, builder=builder)
+
+
 def _empty_scene_part(device):
-    """Placeholder STBVH + arrays for an absent geometry type."""
+    """Placeholder BVH + arrays for an absent geometry type (same tree kind
+    as the batch's real trees, so one compile-time flag covers all six)."""
     lo = torch.full((1, 1, 3), EMPTY_LO, device=device)
     hi = torch.full((1, 1, 3), EMPTY_HI, device=device)
-    return build_stbvh(lo, hi, num_frames=1)
+    return _build_accel(lo, hi, num_frames=1, tightness=2.0)
 
 
 def _build_opaque_bvh(lo, hi, opaque, num_frames, tightness, builder="morton"):
@@ -508,7 +527,7 @@ def _build_opaque_bvh(lo, hi, opaque, num_frames, tightness, builder="morton"):
     opaque_hi = torch.where(
         visible_opaque.unsqueeze(-1), hi,
         torch.full_like(hi, EMPTY_HI))
-    return build_stbvh(
+    return _build_accel(
         opaque_lo.contiguous(), opaque_hi.contiguous(),
         num_frames=num_frames, tightness=tightness,
         opaque=visible_opaque.contiguous(), builder=builder)
@@ -591,7 +610,7 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
         tri_uvs_t = (tri_uvs.index_select(1, uv_src)
                      * has_meta.view(1, N, 1).to(tri_uvs.dtype))
 
-    tri_bvh_t = build_stbvh(
+    tri_bvh_t = _build_accel(
         lo.index_select(1, perm).contiguous(),
         hi.index_select(1, perm).contiguous(),
         num_frames=num_frames,
@@ -1043,7 +1062,7 @@ def _merge_scene(primitives):
         # extra build per batch; byte-identical for triangles (the depth-peel
         # is arrangement-invariant). PN/bezier BVHs below stay Morton -- their
         # seam de-dup is discovery-order sensitive (see stbvh._BVH_BUILD).
-        scene["tri_bvh"] = build_stbvh(
+        scene["tri_bvh"] = _build_accel(
             lo, hi, num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
             opaque=opaque, builder="split")
@@ -1162,7 +1181,7 @@ def _merge_scene(primitives):
              and not _texture_alpha_is_opaque(p._rt_texture_map))
             for p in pn_patches)
         _record_visibility("pn", lo, hi, opaque, pn_uncertain_alpha)
-        scene["pn_bvh"] = build_stbvh(
+        scene["pn_bvh"] = _build_accel(
             lo, hi, num_frames=num_frames,
             tightness=RayTracedPNTrianglePrimitive.stbvh_tightness,
             opaque=opaque)
@@ -1304,7 +1323,7 @@ def _merge_scene(primitives):
         scene["bez_frame_opaque"] = opaque.contiguous()
         scene["bez_frame_lo"] = lo.contiguous()
         scene["bez_frame_hi"] = hi.contiguous()
-        scene["bez_bvh"] = build_stbvh(
+        scene["bez_bvh"] = _build_accel(
             lo, hi, num_frames=num_frames,
             tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
             opaque=opaque)

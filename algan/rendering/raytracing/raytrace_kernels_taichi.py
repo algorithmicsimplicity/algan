@@ -437,6 +437,103 @@ def _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
 
 
 @ti.func
+def _test_children_refit(row, ro, inv_rd, t_lo, t_hi, blocks: ti.template()):
+    """Refit-tree counterpart of :func:`_test_children` (see refit_bvh.py):
+    ``row`` is the frame's row of internal node ``blk``
+    (``_refit_row0(...) + blk``) in the ``[Tb * num_blocks, 8, ARITY]`` block
+    array. The per-child gate is the link word -- ``-1`` marks an absent
+    child or one whose whole subtree is invisible at this frame -- instead of
+    a frame-interval test; the bounds are already this frame's exact boxes,
+    so no temporal decode remains. The slab test itself is float-for-float
+    the classic one."""
+    lox = blocks[row, 0]
+    loy = blocks[row, 1]
+    loz = blocks[row, 2]
+    hix = blocks[row, 3]
+    hiy = blocks[row, 4]
+    hiz = blocks[row, 5]
+    ts_a = blocks[row, 6]
+    ts_b = blocks[row, 7]
+    mask = 0
+    near = ti.Vector([1e30] * BVH_ARITY)
+    for c in ti.static(range(BVH_ARITY)):
+        w = 0
+        if ti.static(BLOCK_F16):
+            w = ti.cast(ti.bit_cast(ts_a[c], ti.u16), ti.i32) | (
+                ti.cast(ti.bit_cast(ts_b[c], ti.u16), ti.i32) << 16)
+        else:
+            w = ti.bit_cast(ts_a[c], ti.i32)
+        if w != -1:
+            tx0 = (ti.cast(lox[c], ti.f32) - ro[0]) * inv_rd[0]
+            tx1 = (ti.cast(hix[c], ti.f32) - ro[0]) * inv_rd[0]
+            t_near = ti.min(tx0, tx1)
+            t_far = ti.max(tx0, tx1)
+            ty0 = (ti.cast(loy[c], ti.f32) - ro[1]) * inv_rd[1]
+            ty1 = (ti.cast(hiy[c], ti.f32) - ro[1]) * inv_rd[1]
+            t_near = ti.max(t_near, ti.min(ty0, ty1))
+            t_far = ti.min(t_far, ti.max(ty0, ty1))
+            tz0 = (ti.cast(loz[c], ti.f32) - ro[2]) * inv_rd[2]
+            tz1 = (ti.cast(hiz[c], ti.f32) - ro[2]) * inv_rd[2]
+            t_near = ti.max(t_near, ti.min(tz0, tz1))
+            t_far = ti.min(t_far, ti.max(tz0, tz1))
+            if ((t_far >= ti.max(t_near, 0.0)) and (t_near <= t_hi)
+                    and (t_far >= t_lo)):
+                mask |= 1 << c
+                near[c] = t_near
+    return mask, near
+
+
+@ti.func
+def _refit_row0(f, num_blocks, blocks: ti.template()):
+    """Row base of frame ``f``'s sibling blocks in a refit tree: ``blocks``
+    stores ``Tb`` frames of ``num_blocks`` rows flattened together (``Tb`` is
+    1 for static geometry), mirroring the ``f % shape[0]`` convention of the
+    geometry arrays. ``num_blocks`` rides in the walk's ``first_leaf``
+    argument slot."""
+    return (f % (blocks.shape[0] // num_blocks)) * num_blocks
+
+
+@ti.func
+def _refit_link(row, c, blocks: ti.template()):
+    """Per-(frame, child) link word of a refit sibling block ``row``
+    (see refit_bvh.py): ``-1`` invalid, ``< 0`` a leaf child (bits 0-29 the
+    primitive index, bit 30 its per-frame full-opacity flag), ``>= 0`` the
+    child's own block index. Reads the lanes the caller's group test just
+    fetched, so this is a same-cache-line load."""
+    ts_a = blocks[row, 6]
+    ts_b = blocks[row, 7]
+    w = 0
+    for cc in ti.static(range(BVH_ARITY)):
+        if cc == c:
+            if ti.static(BLOCK_F16):
+                w = ti.cast(ti.bit_cast(ts_a[cc], ti.u16), ti.i32) | (
+                    ti.cast(ti.bit_cast(ts_b[cc], ti.u16), ti.i32) << 16)
+            else:
+                w = ti.bit_cast(ts_a[cc], ti.i32)
+    return w
+
+
+# Refit link-word decode masks (must match refit_bvh.LINK_*).
+_REFIT_PRIM_MASK = (1 << 30) - 1
+
+
+@ti.func
+def _group_test(refit: ti.template(), row0, blk, f, ro, inv_rd, t_lo, t_hi,
+                blocks: ti.template()):
+    """Sibling-group test dispatch: the classic frame-gated implicit-heap
+    block (``refit == 0``) or the per-frame link-gated refit block. ``row0``
+    is dead in classic mode."""
+    mask = 0
+    near = ti.Vector([1e30] * BVH_ARITY)
+    if ti.static(refit != 0):
+        mask, near = _test_children_refit(row0 + blk, ro, inv_rd, t_lo, t_hi,
+                                          blocks)
+    else:
+        mask, near = _test_children(blk, f, ro, inv_rd, t_lo, t_hi, blocks)
+    return mask, near
+
+
+@ti.func
 def _nearest_pending_child(mask, near):
     """Return the pending child with the smallest slab entry distance.
 
@@ -1039,23 +1136,33 @@ def _pn_intersect(ro, rd, tp, prim, pn_ctrl: ti.template()):
 
 
 @ti.func
-def _nearest_triangle_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+def _nearest_triangle_hit(refit: ti.template(), ro, rd, inv_rd, f, ff,
+                          t_prev, layer_prev,
                           t_cap, layer_offset,
                           nodes: ti.template(), node_miss: ti.template(),
                           leaf_prim: ti.template(), leaf_tspan: ti.template(),
                           first_leaf, tri_pos: ti.template()):
-    """Nearest triangle intersection strictly after (t_prev, layer_prev)."""
+    """Nearest triangle intersection strictly after (t_prev, layer_prev).
+
+    ``refit != 0`` walks a refit tree instead (see refit_bvh.py): ``nodes``
+    is the per-frame block array, ``first_leaf`` carries num_blocks, children
+    are followed through per-(frame, child) link words and the leaf-slot
+    arrays are unused.
+    """
     best_t = 1e30
     best_layer = -1e30
     best_prim = -1
     best_w1 = 0.0
     best_w2 = 0.0
     tp = f % tri_pos.shape[0]
+    row0 = 0
+    if ti.static(refit != 0):
+        row0 = _refit_row0(f, first_leaf, nodes)
     g_sp = 0
     g_st = ti.Vector([0] * _GROUP_STACK)
     g_cur = 0
-    g_pend, g_near = _test_children(
-        0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+    g_pend, g_near = _group_test(
+        refit, row0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
         ti.min(best_t + DEPTH_TIE_EPSILON,
                t_cap + DEPTH_TIE_EPSILON), nodes)
     while True:
@@ -1066,22 +1173,44 @@ def _nearest_triangle_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             saved = g_st[g_sp]
             g_cur = saved >> BVH_ARITY
             saved_mask = saved & _GROUP_MASK
-            fresh_mask, g_near = _test_children(
-                g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+            fresh_mask, g_near = _group_test(
+                refit, row0, g_cur, f, ro, inv_rd,
+                t_prev - DEPTH_TIE_EPSILON,
                 ti.min(best_t + DEPTH_TIE_EPSILON,
                        t_cap + DEPTH_TIE_EPSILON), nodes)
             g_pend = saved_mask & fresh_mask
         else:
             g_c = _nearest_pending_child(g_pend, g_near)
             g_pend &= ~(1 << g_c)
-            g_child = BVH_ARITY * g_cur + 1 + g_c
-            if g_child >= first_leaf:
-                base = (g_child - first_leaf) * LEAF_SIZE
-                for j in ti.static(range(LEAF_SIZE)):
-                    prim = leaf_prim[base + j]
-                    tspan = leaf_tspan[base + j]
-                    if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                            and (f <= ((tspan >> 16) & 0x7FFF))):
+            descend = 0
+            child_blk = 0
+            l_prim = -1
+            l_base = 0
+            if ti.static(refit != 0):
+                w = _refit_link(row0 + g_cur, g_c, nodes)
+                if w >= 0:
+                    descend = 1
+                    child_blk = w
+                else:
+                    l_prim = w & _REFIT_PRIM_MASK
+            else:
+                g_child = BVH_ARITY * g_cur + 1 + g_c
+                if g_child >= first_leaf:
+                    l_base = (g_child - first_leaf) * LEAF_SIZE
+                else:
+                    descend = 1
+                    child_blk = g_child
+            if descend == 0:
+                for j in ti.static(range(1 if refit != 0 else LEAF_SIZE)):
+                    prim = l_prim
+                    if ti.static(refit == 0):
+                        prim = -1
+                        p0 = leaf_prim[l_base + j]
+                        tspan = leaf_tspan[l_base + j]
+                        if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            prim = p0
+                    if prim >= 0:
                         v0 = ti.math.vec3(tri_pos[tp, prim, 0],
                                           tri_pos[tp, prim, 1],
                                           tri_pos[tp, prim, 2])
@@ -1120,16 +1249,18 @@ def _nearest_triangle_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 if g_pend != 0:
                     g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
                     g_sp += 1
-                g_cur = g_child
-                g_pend, g_near = _test_children(
-                    g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+                g_cur = child_blk
+                g_pend, g_near = _group_test(
+                    refit, row0, g_cur, f, ro, inv_rd,
+                    t_prev - DEPTH_TIE_EPSILON,
                     ti.min(best_t + DEPTH_TIE_EPSILON,
                            t_cap + DEPTH_TIE_EPSILON), nodes)
     return best_t, best_prim, best_w1, best_w2, best_layer
 
 
 @ti.func
-def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
+def _nearest_pn_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
+                    layer_prev, t_cap,
                     layer_offset,
                     nodes: ti.template(), node_miss: ti.template(),
                     leaf_prim: ti.template(), leaf_tspan: ti.template(),
@@ -1152,11 +1283,14 @@ def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
     best_v = 0.0
     tp = f % pn_ctrl.shape[0]
     po = f % pn_obb.shape[0]
+    row0 = 0
+    if ti.static(refit != 0):
+        row0 = _refit_row0(f, first_leaf, nodes)
     g_sp = 0
     g_st = ti.Vector([0] * _GROUP_STACK)
     g_cur = 0
-    g_pend, g_near = _test_children(
-        0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+    g_pend, g_near = _group_test(
+        refit, row0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
         ti.min(best_t + DEPTH_TIE_EPSILON,
                t_cap + DEPTH_TIE_EPSILON), nodes)
     while True:
@@ -1167,22 +1301,44 @@ def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
             saved = g_st[g_sp]
             g_cur = saved >> BVH_ARITY
             saved_mask = saved & _GROUP_MASK
-            fresh_mask, g_near = _test_children(
-                g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+            fresh_mask, g_near = _group_test(
+                refit, row0, g_cur, f, ro, inv_rd,
+                t_prev - DEPTH_TIE_EPSILON,
                 ti.min(best_t + DEPTH_TIE_EPSILON,
                        t_cap + DEPTH_TIE_EPSILON), nodes)
             g_pend = saved_mask & fresh_mask
         else:
             g_c = _nearest_pending_child(g_pend, g_near)
             g_pend &= ~(1 << g_c)
-            g_child = BVH_ARITY * g_cur + 1 + g_c
-            if g_child >= first_leaf:
-                base = (g_child - first_leaf) * LEAF_SIZE
-                for j in ti.static(range(LEAF_SIZE)):
-                    prim = leaf_prim[base + j]
-                    tspan = leaf_tspan[base + j]
-                    if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                            and (f <= ((tspan >> 16) & 0x7FFF))
+            descend = 0
+            child_blk = 0
+            l_prim = -1
+            l_base = 0
+            if ti.static(refit != 0):
+                w = _refit_link(row0 + g_cur, g_c, nodes)
+                if w >= 0:
+                    descend = 1
+                    child_blk = w
+                else:
+                    l_prim = w & _REFIT_PRIM_MASK
+            else:
+                g_child = BVH_ARITY * g_cur + 1 + g_c
+                if g_child >= first_leaf:
+                    l_base = (g_child - first_leaf) * LEAF_SIZE
+                else:
+                    descend = 1
+                    child_blk = g_child
+            if descend == 0:
+                for j in ti.static(range(1 if refit != 0 else LEAF_SIZE)):
+                    prim = l_prim
+                    if ti.static(refit == 0):
+                        prim = -1
+                        p0 = leaf_prim[l_base + j]
+                        tspan = leaf_tspan[l_base + j]
+                        if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            prim = p0
+                    if ((prim >= 0)
                             and (ti.static(not _PN_OBB_ON) or not _obb_misses(
                                 ro, rd, po, prim, pn_obb,
                                 t_prev - DEPTH_TIE_EPSILON,
@@ -1207,16 +1363,18 @@ def _nearest_pn_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
                 if g_pend != 0:
                     g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
                     g_sp += 1
-                g_cur = g_child
-                g_pend, g_near = _test_children(
-                    g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+                g_cur = child_blk
+                g_pend, g_near = _group_test(
+                    refit, row0, g_cur, f, ro, inv_rd,
+                    t_prev - DEPTH_TIE_EPSILON,
                     ti.min(best_t + DEPTH_TIE_EPSILON,
                            t_cap + DEPTH_TIE_EPSILON), nodes)
     return best_t, best_prim, best_u, best_v, best_layer
 
 
 @ti.func
-def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
+def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
+                        layer_prev, t_cap,
                         pixel_size_per_t, base_dist,
                         nodes: ti.template(), node_miss: ti.template(),
                         leaf_prim: ti.template(), leaf_tspan: ti.template(),
@@ -1237,11 +1395,14 @@ def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
     best_v = 0.0
     num_meta_frames = circuit_meta.shape[0]
     num_edge_frames = edges_2d.shape[0]
+    row0 = 0
+    if ti.static(refit != 0):
+        row0 = _refit_row0(f, first_leaf, nodes)
     g_sp = 0
     g_st = ti.Vector([0] * _GROUP_STACK)
     g_cur = 0
-    g_pend, g_near = _test_children(
-        0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+    g_pend, g_near = _group_test(
+        refit, row0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
         ti.min(best_t + DEPTH_TIE_EPSILON,
                t_cap + DEPTH_TIE_EPSILON), nodes)
     while True:
@@ -1252,22 +1413,44 @@ def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
             saved = g_st[g_sp]
             g_cur = saved >> BVH_ARITY
             saved_mask = saved & _GROUP_MASK
-            fresh_mask, g_near = _test_children(
-                g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+            fresh_mask, g_near = _group_test(
+                refit, row0, g_cur, f, ro, inv_rd,
+                t_prev - DEPTH_TIE_EPSILON,
                 ti.min(best_t + DEPTH_TIE_EPSILON,
                        t_cap + DEPTH_TIE_EPSILON), nodes)
             g_pend = saved_mask & fresh_mask
         else:
             g_c = _nearest_pending_child(g_pend, g_near)
             g_pend &= ~(1 << g_c)
-            g_child = BVH_ARITY * g_cur + 1 + g_c
-            if g_child >= first_leaf:
-                base = (g_child - first_leaf) * LEAF_SIZE
-                for j in ti.static(range(LEAF_SIZE)):
-                    circuit = leaf_prim[base + j]
-                    tspan = leaf_tspan[base + j]
-                    if ((circuit >= 0) and ((tspan & 0xFFFF) <= f)
-                            and (f <= ((tspan >> 16) & 0x7FFF))):
+            descend = 0
+            child_blk = 0
+            l_prim = -1
+            l_base = 0
+            if ti.static(refit != 0):
+                w = _refit_link(row0 + g_cur, g_c, nodes)
+                if w >= 0:
+                    descend = 1
+                    child_blk = w
+                else:
+                    l_prim = w & _REFIT_PRIM_MASK
+            else:
+                g_child = BVH_ARITY * g_cur + 1 + g_c
+                if g_child >= first_leaf:
+                    l_base = (g_child - first_leaf) * LEAF_SIZE
+                else:
+                    descend = 1
+                    child_blk = g_child
+            if descend == 0:
+                for j in ti.static(range(1 if refit != 0 else LEAF_SIZE)):
+                    circuit = l_prim
+                    if ti.static(refit == 0):
+                        circuit = -1
+                        p0 = leaf_prim[l_base + j]
+                        tspan = leaf_tspan[l_base + j]
+                        if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            circuit = p0
+                    if circuit >= 0:
                         tm = f % num_meta_frames
                         n = ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
                                          circuit_meta[tm, circuit, _M_NORMAL + 1],
@@ -1327,9 +1510,10 @@ def _nearest_bezier_hit(ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
                 if g_pend != 0:
                     g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
                     g_sp += 1
-                g_cur = g_child
-                g_pend, g_near = _test_children(
-                    g_cur, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+                g_cur = child_blk
+                g_pend, g_near = _group_test(
+                    refit, row0, g_cur, f, ro, inv_rd,
+                    t_prev - DEPTH_TIE_EPSILON,
                     ti.min(best_t + DEPTH_TIE_EPSILON,
                            t_cap + DEPTH_TIE_EPSILON), nodes)
     return best_t, best_circuit, best_border, best_u, best_v, best_layer
@@ -1744,7 +1928,8 @@ def _shade_pn_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
 
 
 @ti.func
-def _nearest_surface_g(has_tri: ti.template(), has_pn: ti.template(),
+def _nearest_surface_g(refit: ti.template(),
+                     has_tri: ti.template(), has_pn: ti.template(),
                      has_bez: ti.template(),
                      ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      t_cap,
@@ -1791,7 +1976,7 @@ def _nearest_surface_g(has_tri: ti.template(), has_pn: ti.template(),
     t_layer = -1e30
     if ti.static(has_tri != 0):
         tt, t_prim, w1, w2, t_layer = _nearest_triangle_hit(
-            ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
+            refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev, t_cap,
             layer_offset_triangles,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
             tri_pos)
@@ -1805,7 +1990,7 @@ def _nearest_surface_g(has_tri: ti.template(), has_pn: ti.template(),
         if t_prim >= 0:
             pn_cap = ti.min(pn_cap, tt + DEPTH_TIE_EPSILON)
         pt, p_prim, p_u, p_v, p_layer = _nearest_pn_hit(
-            ro, rd, inv_rd, f, ff, t_prev, layer_prev, pn_cap,
+            refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev, pn_cap,
             layer_offset_pn,
             p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
             pn_ctrl, pn_obb)
@@ -1822,7 +2007,7 @@ def _nearest_surface_g(has_tri: ti.template(), has_pn: ti.template(),
         if p_prim >= 0:
             bez_cap = ti.min(bez_cap, pt + DEPTH_TIE_EPSILON)
         bt, b_circ, b_border, b_u, b_v, b_layer = _nearest_bezier_hit(
-            ro, rd, inv_rd, f, ff, t_prev, layer_prev, bez_cap,
+            refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev, bez_cap,
             pixel_size_per_t, base_dist, b_nodes, b_node_miss, b_leaf_prim,
             b_leaf_tspan, b_first_leaf, circuit_meta, edges_2d, edge_accel)
 
@@ -2020,7 +2205,8 @@ def _distance_sq_to_point(ro, rd, t_max, p):
 
 
 @ti.func
-def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+def _nearest_surface(refit: ti.template(),
+                     ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
                      layer_offset_pn,
                      t_nodes: ti.template(), t_node_miss: ti.template(),
@@ -2038,7 +2224,7 @@ def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     (Monte-Carlo path tracers + gbuffer) that don't specialize on which geometry
     types are present. Byte-identical to the pre-gating ``_nearest_surface``."""
     return _nearest_surface_g(
-        1, 1, 1,
+        refit, 1, 1, 1,
         ro, rd, inv_rd, f, ff, t_prev, layer_prev,
         1e30,
         pixel_size_per_t, base_dist, layer_offset_triangles, layer_offset_pn,
@@ -2050,7 +2236,8 @@ def _nearest_surface(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
 
 
 @ti.func
-def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+def _collect_hits(refit: ti.template(),
+                  ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                   pixel_size_per_t, base_dist, layer_offset_triangles,
                   layer_offset_pn,
                   hit_t: ti.template(), hit_layer: ti.template(),
@@ -2078,6 +2265,9 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     ``has_tri``/``has_pn``/``has_bez`` flag which geometry types are present;
     a type absent from the whole batch has only a placeholder (empty) BVH, so
     its traversal is skipped outright (a launch-uniform branch, no divergence).
+    ``refit != 0`` selects the refit-tree walk for ALL three trees (see
+    refit_bvh.py): per-frame link-gated blocks, explicit child indices, the
+    per-frame opacity flag in the leaf link word, and unused leaf-slot arrays.
 
     Buffers hold geometry only (the consumer fetches shading data):
     ``hit_flags`` packs the hit type (0 = bezier circuit, 1 = triangle,
@@ -2098,14 +2288,17 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
     # --- Triangle BVH ---
     if ti.static(has_tri != 0):
         tp = f % tri_pos.shape[0]
+        t_row0 = 0
+        if ti.static(refit != 0):
+            t_row0 = _refit_row0(f, t_first_leaf, t_nodes)
         window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
         window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
         g_sp = 0
         g_st = ti.Vector([0] * _GROUP_STACK)
         g_cur = 0
-        g_pend, g_near = _test_children(
-            0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON, window_hi,
-            t_nodes)
+        g_pend, g_near = _group_test(
+            refit, t_row0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+            window_hi, t_nodes)
         while True:
             if g_pend == 0:
                 if g_sp == 0:
@@ -2117,21 +2310,47 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 window_hi = (worst_t + DEPTH_TIE_EPSILON
                              if count == KBUF else 1e30)
                 window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                fresh_mask, g_near = _test_children(
-                    g_cur, f, ro, inv_rd,
+                fresh_mask, g_near = _group_test(
+                    refit, t_row0, g_cur, f, ro, inv_rd,
                     t_prev - DEPTH_TIE_EPSILON, window_hi, t_nodes)
                 g_pend = saved_mask & fresh_mask
             else:
                 g_c = _nearest_pending_child(g_pend, g_near)
                 g_pend &= ~(1 << g_c)
-                g_child = BVH_ARITY * g_cur + 1 + g_c
-                if g_child >= t_first_leaf:
-                    base = (g_child - t_first_leaf) * LEAF_SIZE
-                    for j in ti.static(range(LEAF_SIZE)):
-                        prim = t_leaf_prim[base + j]
-                        tspan = t_leaf_tspan[base + j]
-                        if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                descend = 0
+                child_blk = 0
+                l_prim = -1
+                l_opq = 0
+                l_base = 0
+                if ti.static(refit != 0):
+                    w = _refit_link(t_row0 + g_cur, g_c, t_nodes)
+                    if w >= 0:
+                        descend = 1
+                        child_blk = w
+                    else:
+                        l_prim = w & _REFIT_PRIM_MASK
+                        l_opq = (w >> 30) & 1
+                else:
+                    g_child = BVH_ARITY * g_cur + 1 + g_c
+                    if g_child >= t_first_leaf:
+                        l_base = (g_child - t_first_leaf) * LEAF_SIZE
+                    else:
+                        descend = 1
+                        child_blk = g_child
+                if descend == 0:
+                    for j in ti.static(
+                            range(1 if refit != 0 else LEAF_SIZE)):
+                        prim = l_prim
+                        opq = l_opq
+                        if ti.static(refit == 0):
+                            prim = -1
+                            p0 = t_leaf_prim[l_base + j]
+                            tspan = t_leaf_tspan[l_base + j]
+                            if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                                    and (f <= ((tspan >> 16) & 0x7FFF))):
+                                prim = p0
+                                opq = 1 if tspan < 0 else 0
+                        if prim >= 0:
                             v0 = ti.math.vec3(tri_pos[tp, prim, 0],
                                               tri_pos[tp, prim, 1],
                                               tri_pos[tp, prim, 2])
@@ -2184,7 +2403,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                         hit_flags[slot] = 1 | (eh << 2)
                                         hit_a[slot] = w1
                                         hit_b[slot] = w2
-                                        if (tspan < 0) and _comes_after(
+                                        if (opq != 0) and _comes_after(
                                                 opq_t, opq_layer, t, layer):
                                             opq_t = t
                                             opq_layer = layer
@@ -2207,26 +2426,29 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                     if g_pend != 0:
                         g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
                         g_sp += 1
-                    g_cur = g_child
+                    g_cur = child_blk
                     window_hi = worst_t + DEPTH_TIE_EPSILON \
                         if count == KBUF else 1e30
                     window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                    g_pend, g_near = _test_children(
-                        g_cur, f, ro, inv_rd,
+                    g_pend, g_near = _group_test(
+                        refit, t_row0, g_cur, f, ro, inv_rd,
                         t_prev - DEPTH_TIE_EPSILON, window_hi, t_nodes)
 
     # --- PN patch BVH (window already tightened by the triangle hits) ---
     if ti.static(has_pn != 0):
         pp = f % pn_ctrl.shape[0]
         po = f % pn_obb.shape[0]
+        p_row0 = 0
+        if ti.static(refit != 0):
+            p_row0 = _refit_row0(f, p_first_leaf, p_nodes)
         window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
         window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
         g_sp = 0
         g_st = ti.Vector([0] * _GROUP_STACK)
         g_cur = 0
-        g_pend, g_near = _test_children(
-            0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON, window_hi,
-            p_nodes)
+        g_pend, g_near = _group_test(
+            refit, p_row0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+            window_hi, p_nodes)
         while True:
             if g_pend == 0:
                 if g_sp == 0:
@@ -2238,26 +2460,52 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 window_hi = (worst_t + DEPTH_TIE_EPSILON
                              if count == KBUF else 1e30)
                 window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                fresh_mask, g_near = _test_children(
-                    g_cur, f, ro, inv_rd,
+                fresh_mask, g_near = _group_test(
+                    refit, p_row0, g_cur, f, ro, inv_rd,
                     t_prev - DEPTH_TIE_EPSILON, window_hi, p_nodes)
                 g_pend = saved_mask & fresh_mask
             else:
                 g_c = _nearest_pending_child(g_pend, g_near)
                 g_pend &= ~(1 << g_c)
-                g_child = BVH_ARITY * g_cur + 1 + g_c
-                if g_child >= p_first_leaf:
+                descend = 0
+                child_blk = 0
+                l_prim = -1
+                l_opq = 0
+                l_base = 0
+                if ti.static(refit != 0):
+                    w = _refit_link(p_row0 + g_cur, g_c, p_nodes)
+                    if w >= 0:
+                        descend = 1
+                        child_blk = w
+                    else:
+                        l_prim = w & _REFIT_PRIM_MASK
+                        l_opq = (w >> 30) & 1
+                else:
+                    g_child = BVH_ARITY * g_cur + 1 + g_c
+                    if g_child >= p_first_leaf:
+                        l_base = (g_child - p_first_leaf) * LEAF_SIZE
+                    else:
+                        descend = 1
+                        child_blk = g_child
+                if descend == 0:
                     # Refresh the depth window at the leaf so the OBB cull
                     # prunes with the hits gathered since the parent's test.
                     window_hi = worst_t + DEPTH_TIE_EPSILON \
                         if count == KBUF else 1e30
                     window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                    base = (g_child - p_first_leaf) * LEAF_SIZE
-                    for j in ti.static(range(LEAF_SIZE)):
-                        prim = p_leaf_prim[base + j]
-                        tspan = p_leaf_tspan[base + j]
-                        if ((prim >= 0) and ((tspan & 0xFFFF) <= f)
-                                and (f <= ((tspan >> 16) & 0x7FFF))
+                    for j in ti.static(
+                            range(1 if refit != 0 else LEAF_SIZE)):
+                        prim = l_prim
+                        opq = l_opq
+                        if ti.static(refit == 0):
+                            prim = -1
+                            p0 = p_leaf_prim[l_base + j]
+                            tspan = p_leaf_tspan[l_base + j]
+                            if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                                    and (f <= ((tspan >> 16) & 0x7FFF))):
+                                prim = p0
+                                opq = 1 if tspan < 0 else 0
+                        if ((prim >= 0)
                                 and (ti.static(not _PN_OBB_ON) or not _obb_misses(
                                     ro, rd, po, prim, pn_obb,
                                     t_prev - DEPTH_TIE_EPSILON, window_hi))):
@@ -2291,7 +2539,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                         hit_flags[slot] = 2 | (eh << 2)
                                         hit_a[slot] = u
                                         hit_b[slot] = v
-                                        if (tspan < 0) and _comes_after(
+                                        if (opq != 0) and _comes_after(
                                                 opq_t, opq_layer, t, layer):
                                             opq_t = t
                                             opq_layer = layer
@@ -2311,26 +2559,29 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                     if g_pend != 0:
                         g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
                         g_sp += 1
-                    g_cur = g_child
+                    g_cur = child_blk
                     window_hi = worst_t + DEPTH_TIE_EPSILON \
                         if count == KBUF else 1e30
                     window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                    g_pend, g_near = _test_children(
-                        g_cur, f, ro, inv_rd,
+                    g_pend, g_near = _group_test(
+                        refit, p_row0, g_cur, f, ro, inv_rd,
                         t_prev - DEPTH_TIE_EPSILON, window_hi, p_nodes)
 
     # --- Bezier BVH (window tightened by the triangle and patch hits) ---
     if ti.static(has_bez != 0):
         num_meta_frames = circuit_meta.shape[0]
         num_edge_frames = edges_2d.shape[0]
+        b_row0 = 0
+        if ti.static(refit != 0):
+            b_row0 = _refit_row0(f, b_first_leaf, b_nodes)
         window_hi = worst_t + DEPTH_TIE_EPSILON if count == KBUF else 1e30
         window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
         g_sp = 0
         g_st = ti.Vector([0] * _GROUP_STACK)
         g_cur = 0
-        g_pend, g_near = _test_children(
-            0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON, window_hi,
-            b_nodes)
+        g_pend, g_near = _group_test(
+            refit, b_row0, 0, f, ro, inv_rd, t_prev - DEPTH_TIE_EPSILON,
+            window_hi, b_nodes)
         while True:
             if g_pend == 0:
                 if g_sp == 0:
@@ -2342,21 +2593,47 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 window_hi = (worst_t + DEPTH_TIE_EPSILON
                              if count == KBUF else 1e30)
                 window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                fresh_mask, g_near = _test_children(
-                    g_cur, f, ro, inv_rd,
+                fresh_mask, g_near = _group_test(
+                    refit, b_row0, g_cur, f, ro, inv_rd,
                     t_prev - DEPTH_TIE_EPSILON, window_hi, b_nodes)
                 g_pend = saved_mask & fresh_mask
             else:
                 g_c = _nearest_pending_child(g_pend, g_near)
                 g_pend &= ~(1 << g_c)
-                g_child = BVH_ARITY * g_cur + 1 + g_c
-                if g_child >= b_first_leaf:
-                    base = (g_child - b_first_leaf) * LEAF_SIZE
-                    for j in ti.static(range(LEAF_SIZE)):
-                        circuit = b_leaf_prim[base + j]
-                        tspan = b_leaf_tspan[base + j]
-                        if ((circuit >= 0) and ((tspan & 0xFFFF) <= f)
-                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                descend = 0
+                child_blk = 0
+                l_prim = -1
+                l_opq = 0
+                l_base = 0
+                if ti.static(refit != 0):
+                    w = _refit_link(b_row0 + g_cur, g_c, b_nodes)
+                    if w >= 0:
+                        descend = 1
+                        child_blk = w
+                    else:
+                        l_prim = w & _REFIT_PRIM_MASK
+                        l_opq = (w >> 30) & 1
+                else:
+                    g_child = BVH_ARITY * g_cur + 1 + g_c
+                    if g_child >= b_first_leaf:
+                        l_base = (g_child - b_first_leaf) * LEAF_SIZE
+                    else:
+                        descend = 1
+                        child_blk = g_child
+                if descend == 0:
+                    for j in ti.static(
+                            range(1 if refit != 0 else LEAF_SIZE)):
+                        circuit = l_prim
+                        opq = l_opq
+                        if ti.static(refit == 0):
+                            circuit = -1
+                            p0 = b_leaf_prim[l_base + j]
+                            tspan = b_leaf_tspan[l_base + j]
+                            if ((p0 >= 0) and ((tspan & 0xFFFF) <= f)
+                                    and (f <= ((tspan >> 16) & 0x7FFF))):
+                                circuit = p0
+                                opq = 1 if tspan < 0 else 0
+                        if circuit >= 0:
                             tm = f % num_meta_frames
                             n = ti.math.vec3(circuit_meta[tm, circuit, _M_NORMAL],
                                              circuit_meta[tm, circuit, _M_NORMAL + 1],
@@ -2419,7 +2696,7 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                                             (1 if in_border else 0) << 3)
                                         hit_a[slot] = u
                                         hit_b[slot] = v
-                                        if (tspan < 0) and _comes_after(
+                                        if (opq != 0) and _comes_after(
                                                 opq_t, opq_layer, t, layer):
                                             opq_t = t
                                             opq_layer = layer
@@ -2439,18 +2716,18 @@ def _collect_hits(ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                     if g_pend != 0:
                         g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
                         g_sp += 1
-                    g_cur = g_child
+                    g_cur = child_blk
                     window_hi = worst_t + DEPTH_TIE_EPSILON \
                         if count == KBUF else 1e30
                     window_hi = ti.min(window_hi, opq_t + DEPTH_TIE_EPSILON)
-                    g_pend, g_near = _test_children(
-                        g_cur, f, ro, inv_rd,
+                    g_pend, g_near = _group_test(
+                        refit, b_row0, g_cur, f, ro, inv_rd,
                         t_prev - DEPTH_TIE_EPSILON, window_hi, b_nodes)
     return count
 
 
 @ti.func
-def _shadow_occluded(ro, rd, f, ff, max_t,
+def _shadow_occluded(refit: ti.template(), ro, rd, f, ff, max_t,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
                      layer_offset_pn,
                      has_tri: ti.template(), has_pn: ti.template(),
@@ -2494,7 +2771,7 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
         step += 1
         (found, t_hit, hit_layer, prim, hit_type, a, b, border,
          edge_hit) = _nearest_surface_g(
-            has_tri, has_pn, has_bez,
+            refit, has_tri, has_pn, has_bez,
             ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             1e30,
             pixel_size_per_t, base_dist, layer_offset_triangles,
@@ -2532,6 +2809,8 @@ def _shadow_occluded(ro, rd, f, ff, max_t,
 
 @ti.kernel
 def path_trace_scene_stbvh(
+        # Classic STBVH vs refit-tree walk (compile-time; see refit_bvh.py).
+        refit: ti.template(),
         # Triangle STBVH + packed geometry.
         t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
@@ -2802,7 +3081,7 @@ def finalize_samples(samples_per_pixel: int, transparent: int,
 
 
 @ti.func
-def _transmittance(ro, rd, f, ff, max_t,
+def _transmittance(refit: ti.template(), ro, rd, f, ff, max_t,
                    pixel_size_per_t, base_dist, layer_offset_triangles,
                    layer_offset_pn,
                    t_nodes: ti.template(), t_node_miss: ti.template(),
@@ -2835,7 +3114,7 @@ def _transmittance(ro, rd, f, ff, max_t,
         step += 1
         (found, t_hit, hit_layer, prim, hit_type, a, b, border,
          edge_hit) = _nearest_surface(
-            ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+            refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
             pixel_size_per_t, base_dist, layer_offset_triangles,
             layer_offset_pn,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
@@ -2874,6 +3153,8 @@ def _transmittance(ro, rd, f, ff, max_t,
 
 @ti.kernel
 def path_trace_physical_stbvh(
+        # Classic STBVH vs refit-tree walk (compile-time; see refit_bvh.py).
+        refit: ti.template(),
         # Triangle STBVH + packed geometry.
         t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
@@ -2988,7 +3269,7 @@ def path_trace_physical_stbvh(
             step += 1
             (found, t_hit, hit_layer, prim, hit_type, a, b, border,
              edge_hit) = _nearest_surface(
-                ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+                refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
                 layer_offset_pn,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
@@ -2997,7 +3278,7 @@ def path_trace_physical_stbvh(
                 p_first_leaf, pn_ctrl, pn_obb,
                 b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
                 b_first_leaf, circuit_meta, edges_2d, edge_accel)
-            
+
             t_seg_end = 1e30
             if found != 0:
                 t_seg_end = t_hit
@@ -3108,7 +3389,7 @@ def path_trace_physical_stbvh(
                     cos_i = normal.dot(wi)
                     if cos_i > 1e-4:
                         visible = _transmittance(
-                            shadow_origin, wi, f, ff,
+                            refit, shadow_origin, wi, f, ff,
                             light_dist - 20.0 * MIN_HIT_DISTANCE,
                             pixel_size_per_t, base_dist,
                             layer_offset_triangles, layer_offset_pn,

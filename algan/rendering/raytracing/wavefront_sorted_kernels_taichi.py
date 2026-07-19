@@ -429,7 +429,7 @@ def wf_shadow_event(
                     # (no direct light to occlude / self-shadow acne).
                     if (fnrm.dot(wi) > 1e-3) and (snrm.dot(wi) > 1e-4):
                         occ = _shadow_occluded(
-                            sorigin, wi, f, ff,
+                            0, sorigin, wi, f, ff,
                             ldist - 20.0 * MIN_HIT_DISTANCE,
                             pixel_size_per_t, base_dist,
                             layer_offset_triangles, layer_offset_pn,

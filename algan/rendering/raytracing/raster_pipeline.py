@@ -438,6 +438,7 @@ def raster_iteration_zero(
             memory, (max(1, num_events), max(1, int(num_lights))),
             torch.float32, 1.0)
         if num_events:
+            from algan.rendering.raytracing.refit_bvh import RefitBVH
             raster_shadow_trace(
                 num_events, event_pos, event_snrm, event_fnrm, event_frame,
                 t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
@@ -454,7 +455,9 @@ def raster_iteration_zero(
                 merged["circuit_border_colors"], merged["edges_2d"],
                 merged["edge_accel"], light_pos, light_col, int(num_lights),
                 pixel_world_scale, float(layer_offset_triangles),
-                float(layer_offset_pn), has_tri, has_pn, has_bez, shadow_vis)
+                float(layer_offset_pn),
+                1 if isinstance(t_bvh, RefitBVH) else 0,
+                has_tri, has_pn, has_bez, shadow_vis)
     else:
         shadow_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
 

@@ -186,7 +186,7 @@ def _shadow_occluded_tri(ro, rd, f, ff, max_t, layer_offset_triangles,
     inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                           _safe_inverse(rd[2]))
     best_t, best_prim, _w1, _w2, _layer = _nearest_triangle_hit(
-        ro, rd, inv_rd, f, ff, 0.0, 1e30, max_t, layer_offset_triangles,
+        0, ro, rd, inv_rd, f, ff, 0.0, 1e30, max_t, layer_offset_triangles,
         t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos)
     occluded = 0.0
     if (best_prim >= 0) and (best_t < max_t):

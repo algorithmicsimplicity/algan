@@ -11,6 +11,7 @@ import pathlib
 from algan.utils.lazy_import import LazyModule
 
 mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
+#mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
 from algan.settings.defaults import *
 from algan.settings.style_defaults import *
 from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag, Seq

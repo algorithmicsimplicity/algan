@@ -347,15 +347,16 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         return value
 
     @animated_function(
-        animated_args={"interpolation": 0.0}, unique_args=["key", "recursive"]
+        animated_args={"interpolation": 0.0}, unique_args=["key", "recursive", "relative"]
     )
     def apply_absolute_change_two(
         self,
         key: str,
         change1: any,
-        change2: any,
+        change2: any = None,
         interpolation: float = 1.0,
         recursive: bool = True,
+        relative: bool = False,
     ):
         """Applies an animated change to an attribute, interpolating between two target values.
 
@@ -368,13 +369,19 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
             The name of the attribute to change (e.g., 'location', 'color').
         change1 : Any
             The first target value for the attribute.
-        change2 : Any
-            The second target value for the attribute.
+        change2 : Any, optional
+            The second target value for the attribute. If None, each affected
+            part returns to its own current (pre-animation) value — the right
+            choice for pulses on composite mobs, where a single target value
+            would overwrite per-descendant attributes.
         interpolation : float, optional
             The interpolation factor used for animation.
         recursive : bool, optional
             If True, applies the change recursively to all child Mobs.
             Defaults to True.
+        relative : bool, optional
+            If True, `change1`/`change2` are multipliers of each part's current
+            value instead of absolute targets (e.g. a scale pulse to 1.2x).
 
         Returns
         -------
@@ -382,7 +389,29 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
             The Mob instance itself, allowing for method chaining.
 
         """
-        current_value = self.get_animated_attribute(key, include_descendants=recursive, default=change1)
+        # The allocation default seeds attribute rows for mobs that never had
+        # this attribute set; it only sizes row allocation, the interpolation
+        # below uses the un-expanded changes so they broadcast against however
+        # many rows the (recursive) union covers. In the non-recursive case the
+        # caller may be a record-time batched mob (animate_lagged_by_location's
+        # per-element waves) whose row count is its location row count — a
+        # singleton default would allocate one shared row and the batched
+        # per-element write would no longer fit.
+        default = (
+            change1 if (not relative and change1 is not None)
+            else cast_to_tensor(getattr(self, key))
+        )
+        default = cast_to_tensor(default)
+        if not recursive and default.shape[-2] == 1:
+            default = default.expand(
+                *([-1] * (default.dim() - 2)), self.location.shape[-2], -1
+            )
+        current_value = self.get_animated_attribute(key, include_descendants=recursive, default=default)
+        if relative:
+            change1 = current_value * cast_to_tensor(change1)
+            change2 = current_value if change2 is None else current_value * cast_to_tensor(change2)
+        elif change2 is None:
+            change2 = current_value
         interpolation = (
             cast_to_tensor(interpolation) * 2
         )  # Double interpolation for 2-stage animation
@@ -430,18 +459,22 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
             The Mob instance itself, allowing for method chaining.
 
         """
-        if new_color is None:
-            new_color = self.color
         with Sync():
-            for attr, v1, v2 in [("color", color, new_color), ("opacity", opacity, opacity)]:
-                if v1 is None:
-                    continue
-                n = self.location.shape[-2]
-                self.apply_absolute_change_two(attr, *[cast_to_tensor(_).expand(-1,n,-1) for _ in [v1, v2]], recursive=recursive)
-            #if color is not None:
-            #    self.apply_absolute_change_two("color", color, new_color, recursive=recursive)
-            #if opacity is not None:
-            #    self.apply_absolute_change_two("opacity", opacity, opacity, recursive=recursive)
+            if color is not None:
+                # new_color=None restores each part to its own current color
+                # (resolved inside apply_absolute_change_two). Passing
+                # ``self.color`` here instead would broadcast the parent's own
+                # color over all descendants — for a composite whose parent Mob
+                # never had its color set (Groups, NeuralNetMLP, ...) that is
+                # the default BLACK, leaving the whole mob blackened after the
+                # pulse. [1,1,D] tensors broadcast against however many
+                # attribute rows the (recursive) write covers.
+                new_color = None if new_color is None else cast_to_tensor(new_color)
+                self.apply_absolute_change_two(
+                    "color", cast_to_tensor(color), new_color, recursive=recursive)
+            if opacity is not None:
+                o = cast_to_tensor(opacity)
+                self.apply_absolute_change_two("opacity", o, o, recursive=recursive)
         return self
 
     def wave_color(

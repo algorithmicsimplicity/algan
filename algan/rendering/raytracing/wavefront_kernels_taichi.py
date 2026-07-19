@@ -1410,6 +1410,7 @@ def wavefront_traverse(
         ob_first_leaf: int,
         pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: float, layer_offset_pn: float,
+        refit: ti.template(),
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         opaque_closest: ti.template(),
         opaque_prepass: ti.template(),
@@ -1485,7 +1486,7 @@ def wavefront_traverse(
         if ti.static(opaque_closest):
             (found, t_hit, hit_layer, hit_prim, hit_type, hit_a, hit_b,
              hit_border, edge_hit) = _nearest_surface_g(
-                has_tri, has_pn, has_bez,
+                refit, has_tri, has_pn, has_bez,
                 ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
                 layer_offset_pn,
@@ -1510,7 +1511,7 @@ def wavefront_traverse(
                 (opq_found, initial_opq_t, initial_opq_layer, opq_prim,
                  opq_type, opq_a, opq_b, opq_border, opq_edge) = \
                     _nearest_surface_g(
-                        has_tri, has_pn, has_bez,
+                        refit, has_tri, has_pn, has_bez,
                         ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
                         pixel_size_per_t, base_dist, layer_offset_triangles,
                         layer_offset_pn,
@@ -1525,7 +1526,7 @@ def wavefront_traverse(
                     initial_opq_t = 1e30
                     initial_opq_layer = -1e30
             num_hits = _collect_hits(
-                ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+                refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
                 layer_offset_pn,
                 kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
@@ -1579,6 +1580,7 @@ def wavefront_traverse_events(
         ob_first_leaf: int,
         pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: float, layer_offset_pn: float,
+        refit: ti.template(),
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         opaque_closest: ti.template(),
         opaque_prepass: ti.template(),
@@ -1655,7 +1657,7 @@ def wavefront_traverse_events(
         if ti.static(opaque_closest):
             (found, t_hit, hit_layer, hit_prim, hit_type, hit_a, hit_b,
              hit_border, edge_hit) = _nearest_surface_g(
-                has_tri, has_pn, has_bez,
+                refit, has_tri, has_pn, has_bez,
                 ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
                 layer_offset_pn,
@@ -1680,7 +1682,7 @@ def wavefront_traverse_events(
                 (opq_found, initial_opq_t, initial_opq_layer, opq_prim,
                  opq_type, opq_a, opq_b, opq_border, opq_edge) = \
                     _nearest_surface_g(
-                        has_tri, has_pn, has_bez,
+                        refit, has_tri, has_pn, has_bez,
                         ro, rd, inv_rd, f, ff, t_prev, layer_prev, 1e30,
                         pixel_size_per_t, base_dist, layer_offset_triangles,
                         layer_offset_pn,
@@ -1695,7 +1697,7 @@ def wavefront_traverse_events(
                     initial_opq_t = 1e30
                     initial_opq_layer = -1e30
             num_hits = _collect_hits(
-                ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+                refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
                 layer_offset_pn,
                 kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
@@ -1748,6 +1750,7 @@ def wavefront_shadow(
         edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: float, layer_offset_pn: float,
+        refit: ti.template(),
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         light_pos: ti.types.ndarray(), num_lights: int,
         time_start: int, width: int, height: int, ray_offset: int,
@@ -1856,7 +1859,7 @@ def wavefront_shadow(
                                         if (fnrm.dot(wi) > 1e-3) and \
                                                 (snrm.dot(wi) > 1e-4):
                                             occ = _shadow_occluded(
-                                                sorigin, wi, f, ff,
+                                                refit, sorigin, wi, f, ff,
                                                 ldist - 20.0 * MIN_HIT_DISTANCE,
                                                 pixel_size_per_t, base_dist,
                                                 layer_offset_triangles,
@@ -1928,6 +1931,7 @@ def wavefront_shade(
         frag_scatters: ti.template(),
         shadows: ti.template(),
         refraction: ti.template(),
+        refit: ti.template(),
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         deferred_shadows: ti.template(),
         skip_unlit_normal: ti.template(),
@@ -2289,7 +2293,7 @@ def wavefront_shade(
                                                     and (snrm.dot(wis) > 1e-4):
                                                 n_valid += 1.0
                                                 occ_sum += _shadow_occluded(
-                                                    sorigin, wis, f, ff,
+                                                    refit, sorigin, wis, f, ff,
                                                     ldn - 20.0
                                                     * MIN_HIT_DISTANCE,
                                                     pixel_size_per_t, base_dist,

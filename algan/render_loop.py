@@ -280,16 +280,40 @@ def _prepare_background_for_chunk(
     height = int(screen_height) * aa
     if callable(background):
         # Background contract: x (1,W,1) and y (H,1,1) in [0,1), t (F,1,1,1)
-        # in seconds.
+        # in seconds. Evaluate in small frame slices and quantize each slice
+        # to uint8 rows immediately: the float intermediates weigh
+        # width*height*channels*4 bytes per frame (~74 MB at 720p with 2x
+        # anti-aliasing), so materializing a whole chunk at float precision
+        # would dominate peak memory on any device.
+        callback = background
         x = (torch.arange(width, device=device, dtype=torch.float32)
              / width).view(1, -1, 1)
         y = (torch.arange(height, device=device, dtype=torch.float32)
              / height).view(-1, 1, 1)
-        times = torch.arange(
-            current_ind, new_ind, device=device, dtype=torch.float32
-        ).view(-1, 1, 1, 1)
-        times /= frames_per_second
-        background = background(x, y, times)
+        parts = []
+        slice_frames = new_ind-current_ind#8
+        for s in range(current_ind, new_ind, slice_frames):
+            e = min(new_ind, s + slice_frames)
+            times = torch.arange(
+                s, e, device=device, dtype=torch.float32
+            ).view(-1, 1, 1, 1)
+            times /= frames_per_second
+            part = callback(x, y, times)
+            if not torch.is_tensor(part):
+                part = torch.as_tensor(part, device=device)
+            part = part.to(device)
+            if part.dim() <= 1:
+                # Resolution-free solid color; the prefill handles it directly.
+                return part
+            if part.shape[0] == 1 and e - s > 1:
+                part = part.expand(e - s, *[-1] * (part.dim() - 1))
+            part = part.reshape(-1, part.shape[-1])
+            # 0.5 + 255 * bg: scale [0,1] floats to bytes with round-to-nearest
+            # (clamp before the cast -- float -> uint8 wraps instead of
+            # saturating).
+            part = torch.add(0.5, part, alpha=255).clamp_(0, 255)
+            parts.append(part.to(torch.uint8))
+        return torch.cat((parts[0][:1], *parts))
 
     if torch.is_tensor(background):
         background = background.to(device)
@@ -571,6 +595,7 @@ class RenderLoopMixin:
         Preflighting both sides lets the outer batching loop binary-search a
         maximum fitting prepared duration without rendering speculative frames.
         """
+        self._last_arena_preflight = None
         if not getattr(self.memory, "managed", False):
             return True
 
@@ -734,7 +759,29 @@ class RenderLoopMixin:
             - initial_pointer
             + max(wavefront_bytes, postprocess_bytes)
         )
-        return scene_bytes + forward_bytes <= bytes_remaining
+        need_bytes = scene_bytes + forward_bytes
+        self._last_arena_preflight = (need_bytes, bytes_remaining)
+        margin = int(getattr(self, "_arena_unmodeled_bytes", 0))
+        return need_bytes <= bytes_remaining - margin
+
+    def _note_render_arena_underestimate(self):
+        """Grow the preflight safety margin after a batch that passed the
+        arena preflight still failed to render: some allocation is not being
+        modeled, so future preflights must leave real slack. The failed
+        batch's own (need, remaining) pair makes the margin large enough to
+        reject at least that exact configuration; repeated failures grow it
+        geometrically."""
+        prev = int(getattr(self, "_arena_unmodeled_bytes", 0))
+        last = getattr(self, "_last_arena_preflight", None)
+        observed = 0
+        if last is not None:
+            need, remaining = last
+            observed = max(0, int(remaining) - int(need)) + 1
+        self._arena_unmodeled_bytes = max(prev * 2, observed, 8 << 20)
+        logger.warning(
+            "Arena preflight under-modeled the render; raising its safety "
+            "margin to %.1f MB for the rest of this job.",
+            self._arena_unmodeled_bytes / 1e6)
 
     def render_primitive_batch(
         self,
@@ -1495,6 +1542,12 @@ class RenderLoopMixin:
         self.memory = ManualMemory(
             COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
         )
+        # Safety margin learned from render failures this job: when a batch
+        # that passed the arena preflight still fails to render, the preflight
+        # under-modeled some allocation, so subsequent preflights must leave at
+        # least this much slack (see _note_render_arena_underestimate).
+        self._arena_unmodeled_bytes = 0
+        self._last_arena_preflight = None
 
         # Adaptive gen-fused forecast (settings.WF_GEN_FUSED == "auto") is fed
         # per-batch render timings below; a new job restarts its batch count.
@@ -1730,13 +1783,15 @@ class RenderLoopMixin:
                                 yield frame_batch
                         except (InsufficientMemoryException,
                                 OutOfRenderMemory,
-                                torch.OutOfMemoryError):
+                                torch.OutOfMemoryError) as render_exc:
                             if produced_output or duration <= 1:
                                 raise
+                            self._note_render_arena_underestimate()
                             logger.warning(
-                                "Render failed despite arena preflight; "
+                                "Render failed despite arena preflight "
+                                f"({type(render_exc).__name__}: {render_exc}); "
                                 f"retrying {current_time_ind}:{new_time_ind} "
-                                "with binary duration bounds.")
+                                "at half duration.")
                             # A prefetched successor starts at the old end and
                             # is invalid after this split. Drain and discard it
                             # before rematerializing the smaller current batch.
@@ -1753,8 +1808,17 @@ class RenderLoopMixin:
                             del primitives
                             self.memory.reset()
                             empty_cache(force_gc=False)
+                            # The arena preflight approved this duration and
+                            # was wrong, so it cannot arbitrate durations just
+                            # below it: binary-probing upward would converge to
+                            # duration-1, render-fail again, and repeat -- an
+                            # O(frames) cascade of ~seconds-long refetches.
+                            # Back off geometrically instead: cap the bounds at
+                            # half so the halved candidate renders immediately,
+                            # and let the raised preflight margin (see above)
+                            # arbitrate everything afterwards.
                             retry_lower_duration = 0
-                            retry_upper_duration = duration
+                            retry_upper_duration = max(1, duration // 2)
                             retry_end_ind = (
                                 current_time_ind + max(1, duration // 2))
                             continue

@@ -762,7 +762,10 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                 layer_offset_triangles, layer_offset_pn, int(MAX_BOUNCES),
                 1 if transparent_background else 0)
             if samples > 1:
-                path_trace_scene_stbvh(*shared_args, samples_eff,
+                from algan.rendering.raytracing.refit_bvh import RefitBVH
+                path_trace_scene_stbvh(1 if isinstance(tri_bvh, RefitBVH)
+                                       else 0,
+                                       *shared_args, samples_eff,
                                        float(INDIRECT_BOUNCE_STRENGTH),
                                        merged["pn_obb"], out, accum)
                 finalize_samples(samples_eff,
@@ -1122,6 +1125,13 @@ def raytrace_render_wavefront(
     max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
     n = (time_end - time_start) * width * height
 
+    # Compile-time walk selector: the merge builds either all-classic or
+    # all-refit trees for a batch (see scene_builder._build_accel), so the
+    # tree object's type is the authority -- never the live toggle, which the
+    # user may have flipped since this batch was merged/prewarmed.
+    from algan.rendering.raytracing.refit_bvh import RefitBVH
+    bvh_refit = 1 if isinstance(tri_bvh, RefitBVH) else 0
+
     # Pool over-allocation for ray splitting. Only glass (reflective+refractive)
     # surfaces split, so spare slots are reserved only when refraction is on; the
     # non-refractive path keeps pool_ratio == 1 (one slot per pixel, as before).
@@ -1313,6 +1323,7 @@ def raytrace_render_wavefront(
                     int(merged["bez_opaque_bvh"].first_leaf),
                     pixel_world_scale,
                     float(layer_offset_triangles), float(layer_offset_pn),
+                    bvh_refit,
                     int(has_tri), int(has_pn), int(has_bez),
                     opaque_closest,
                     opaque_prepass,
@@ -1348,6 +1359,7 @@ def raytrace_render_wavefront(
                     int(frag_flag), frag_pipelines, frag_scatters,
                     int(shadow_flag),
                     int(refraction_flag),
+                    bvh_refit,
                     int(has_tri), int(has_pn), int(has_bez),
                     0,
                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
@@ -1465,6 +1477,7 @@ def _raytrace_render_wavefront_textured(
                 int(merged["bez_opaque_bvh"].first_leaf),
                 pixel_world_scale,
                 float(layer_offset_triangles), float(layer_offset_pn),
+                0,
                 int(has_tri), int(has_pn), int(has_bez_eff),
                 0,
                 0,
@@ -1697,6 +1710,7 @@ def _raytrace_render_wavefront_sorted(
                     pixel_world_scale,
                     float(layer_offset_triangles),
                     float(layer_offset_pn),
+                    0,
                     int(has_tri), int(has_pn), int(has_bez),
                     0,
                     0,

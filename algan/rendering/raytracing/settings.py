@@ -260,6 +260,38 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
 # scatter-free triangle path (the common case). Default OFF.
 WF_MEM_TRIM = os.environ.get("ALGAN_WF_MEM_TRIM", "0") == "1"
 
+# Shared-topology binned-SAH refit BVH (raytracer-v2 design doc section 9;
+# refit_bvh.py). When on, the per-batch scene merge builds ONE binned-SAH
+# topology per geometry type over the batch-union primitive boxes and refits
+# its node bounds per frame, instead of the classic spatio-temporal
+# instance tree (stbvh.py). Measured headroom (benchmarks/_rt2_refit_sah.py):
+# the classic STBVH costs 1.37-2.33x more expected node visits than a refit
+# topology, and refit staleness across a batch is <= 1.04 vs a per-frame
+# rebuild. The traversal kernels select the walk with a compile-time
+# ``refit`` template, so both modes coexist in one process (in-process A/B).
+# The set of exact intersections found is identical; discovery order and
+# box-face boundary cases differ, so output parity is epsilon-level (the same
+# class of deviation as ALGAN_BVH_BLOCK_F16 / tightness changes), bounded by
+# benchmarks/_rt2_refit_parity.py. Ignored (classic trees are built) under
+# the unsupported legacy textured / sorted-material orchestrators, which are
+# not plumbed for the refit walk. Default OFF while validating.
+BVH_REFIT = os.environ.get("ALGAN_BVH_REFIT", "1") == "1"
+
+
+def set_refit_bvh(enabled):
+    """Toggle the shared-topology binned-SAH refit BVH (see ``BVH_REFIT``).
+    Takes effect at the next batch's scene merge."""
+    global BVH_REFIT
+    BVH_REFIT = bool(enabled)
+
+
+def refit_bvh_active():
+    """Live effective value of the refit-BVH toggle: the legacy textured /
+    sorted-material orchestrators walk the classic tree only."""
+    return (BVH_REFIT and not WF_TEXTURED
+            and WAVEFRONT_SORT_MATERIALS is not True)
+
+
 # Hybrid raster front-end for deterministic primary visibility.
 # Eligible flat-triangle/Bezier batches replace iteration zero with a typed
 # opaque visibility buffer, alpha-filtered ordered fragment runs, optional exact
@@ -273,7 +305,7 @@ WF_MEM_TRIM = os.environ.get("ALGAN_WF_MEM_TRIM", "0") == "1"
 # is MAX_SURFACES_PER_RAY (currently 256), not literally unbounded. Custom
 # scatter, mem-trim, in-place AA, near clipping and legacy routes still fall
 # back to classic. Default OFF while validating.
-HYBRID_RASTER = os.environ.get("ALGAN_HYBRID_RASTER", "0") == "1"
+HYBRID_RASTER = os.environ.get("ALGAN_HYBRID_RASTER", "1") == "1"
 
 
 def set_hybrid_raster(enabled):

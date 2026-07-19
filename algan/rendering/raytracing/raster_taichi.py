@@ -919,6 +919,7 @@ def raster_shadow_trace(
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int, pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: ti.f32, layer_offset_pn: ti.f32,
+        refit: ti.template(),
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         shadow_vis: ti.types.ndarray()):
     """Trace the dedicated sparse any-hit shadow queue exactly.
@@ -1000,7 +1001,7 @@ def raster_shadow_trace(
                             and (snrm.dot(wis) > 1e-4):
                         n_valid += 1.0
                         occ_sum += _shadow_occluded(
-                            sorigin, wis, f, ff,
+                            refit, sorigin, wis, f, ff,
                             ldn - 20.0 * MIN_HIT_DISTANCE,
                             pixel_world_scale[
                                 f % pixel_world_scale.shape[0]], 0.0,

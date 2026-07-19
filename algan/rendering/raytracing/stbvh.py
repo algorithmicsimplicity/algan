@@ -219,8 +219,12 @@ class STBVH:
         self.blocks = _build_blocks(nodes, self.first_leaf)
 
     @classmethod
-    def from_prebuilt(cls, nodes, node_miss, leaf_prim, leaf_tspan, blocks):
+    def from_prebuilt(cls, nodes, node_miss, leaf_prim, leaf_tspan, blocks,
+                      like=None):
         """Construct an STBVH whose kernel-facing blocks are already built.
+        ``like`` (the source object) is accepted for interface parity with
+        :meth:`refit_bvh.RefitBVH.from_prebuilt` and ignored -- this class
+        derives its layout fields from the tensor shapes.
 
         Scene preparation can build a BVH on the CPU and later upload its
         finished tensors into the render arena.  Calling :class:`STBVH`
