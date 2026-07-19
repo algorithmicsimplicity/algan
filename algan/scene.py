@@ -45,8 +45,10 @@ class Scene(RenderLoopMixin):
     Parameters
     ----------
     background_frame
-        Background color/image, or a callable ``(y, x) -> color`` evaluated
-        per pixel.
+        Background color/image or procedural callable. A Taichi ``@ti.func``
+        uses the scalar ``(x, y, time) -> color`` contract. Python callables
+        passed through the render APIs receive broadcastable Torch tensors;
+        the direct constructor retains its legacy coordinate-grid callback.
     output_path
         Base path for output files.
     memory
@@ -72,7 +74,12 @@ class Scene(RenderLoopMixin):
         self.min_time = 0
         self.max_time = 0
         self.background_is_set = False
-        if hasattr(background_frame, "__call__"):
+        # Preserve the legacy direct-Scene constructor callback while leaving
+        # a Taichi func deferred: a @ti.func can only be called from a kernel.
+        if (
+            callable(background_frame)
+            and not getattr(background_frame, "_is_taichi_function", False)
+        ):
             background_frame = background_frame(
                 torch.stack(
                     (
@@ -90,8 +97,12 @@ class Scene(RenderLoopMixin):
         self.actors = [[]]
         self.effects = []
         self.scene_times = [[self.current_time, self.current_time]]
+        depth_source = (
+            STYLE_DEFAULTS.frame if callable(background_frame)
+            else background_frame
+        )
         self.background_depths = torch.full_like(
-            self.background_frame[..., :1],
+            depth_source[..., :1],
             dtype=torch.get_default_dtype(),
             fill_value=1e12,
         )

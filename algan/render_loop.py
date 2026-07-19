@@ -268,10 +268,12 @@ def _prepare_background_for_chunk(
 ):
     """Prepare one chunk's background for rendering.
 
-    Callable backgrounds are represented by a lightweight deferred value. The
-    ray tracer evaluates them on ``device`` one frame at a time after its
-    arena-backed output exists, avoiding a second full-batch image allocation
-    beside the render arena. Image tensors retain the eager path.
+    Callable backgrounds are represented by a lightweight deferred value.
+    After the arena-backed output exists, the ray tracer streams Python
+    callables one frame at a time or evaluates a Taichi ``@ti.func`` across
+    the complete batch in one kernel launch. Neither path retains a second
+    full-batch image allocation beside the render arena. Image tensors retain
+    the eager path.
     """
     aa = int(anti_alias_level)
     width = int(screen_width) * aa

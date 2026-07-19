@@ -31,11 +31,11 @@ _STBVH_TENSOR_FIELDS = (
 
 
 class _DeferredBackground:
-    """GPU callback plus the metadata needed to stream it into render output."""
+    """Callback plus the metadata needed to fill the render output."""
 
     __slots__ = (
         "callback", "width", "height", "anti_alias_level", "first_frame",
-        "frames_per_second", "device",
+        "frames_per_second", "device", "is_taichi_func",
     )
 
     def __init__(self, callback, width, height, anti_alias_level, first_frame,
@@ -47,6 +47,9 @@ class _DeferredBackground:
         self.first_frame = int(first_frame)
         self.frames_per_second = float(frames_per_second)
         self.device = torch.device(device)
+        self.is_taichi_func = bool(
+            getattr(callback, "_is_taichi_function", False)
+        )
 
 
 def _projected_scene_device(primitives):
@@ -1541,11 +1544,12 @@ def _pack_lights(light_sources, num_frames, device):
 
 
 def _prefill_deferred_background(out, background, frame_offset):
-    """Evaluate a callback on its target device without retaining a batch.
+    """Evaluate a callback directly into its target-device output.
 
-    The render arena already owns ``out``. Each callback frame is quantized and
-    copied into its final row before the next one is evaluated, so temporary
-    GPU memory is bounded by one frame instead of scaling with batch duration.
+    The render arena already owns ``out``. Python callback frames are quantized
+    and copied one at a time, bounding their temporary memory to one frame. A
+    Taichi callback instead fills the complete batch in one kernel launch and
+    has no callback result tensor to retain.
     """
     requested_device = background.device
     device = out.device
@@ -1557,10 +1561,6 @@ def _prefill_deferred_background(out, background, frame_offset):
 
     width = background.width
     height = background.height
-    x = (torch.arange(width, device=device, dtype=torch.float32)
-         / width).view(1, -1, 1)
-    y = (torch.arange(height, device=device, dtype=torch.float32)
-         / height).view(-1, 1, 1)
     output_pixels = out.shape[1]
     full_pixels = width * height
     aa = background.anti_alias_level
@@ -1570,11 +1570,37 @@ def _prefill_deferred_background(out, background, frame_offset):
         raise RuntimeError(
             "deferred background resolution does not match render output")
 
+    if background.is_taichi_func:
+        from algan.rendering.raytracing.background_taichi import (
+            fill_background_from_func,
+        )
+
+        # A Taichi func is inlined into this one batch-wide kernel. It writes
+        # directly into the arena-backed output, so no per-frame loop or
+        # supersampled intermediate allocation is needed.
+        fill_background_from_func(
+            out,
+            background.callback,
+            background.width,
+            background.height,
+            background.anti_alias_level,
+            background.first_frame,
+            frame_offset,
+            background.frames_per_second,
+        )
+        return
+
+    x = (torch.arange(width, device=device, dtype=torch.float32)
+         / width).view(1, -1, 1)
+    y = (torch.arange(height, device=device, dtype=torch.float32)
+         / height).view(-1, 1, 1)
+
     k_ = 1#out.shape[0]
     for local_frame in range(0, out.shape[0], k_):
         k = min(k_, out.shape[0]-local_frame)
         time = torch.arange(
-            local_frame, local_frame+k,
+            background.first_frame + frame_offset + local_frame,
+            background.first_frame + frame_offset + local_frame+k,
             device=device,
             dtype=torch.float32,
         ).view(k, 1, 1, 1) / background.frames_per_second

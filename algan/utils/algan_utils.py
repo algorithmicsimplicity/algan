@@ -148,6 +148,12 @@ def render_to_file(
         Whether the existing file at the output destination should be overwritten if one exists.
     codec
         The codec to use to encode the video frames.
+    background_color
+        A color/image or procedural callable ``(x, y, time) -> color``.
+        Python callables receive broadcastable Torch tensors. A Taichi
+        ``@ti.func`` receives scalar normalized coordinates and time and must
+        return a color vector; it is evaluated for the whole render batch by
+        one Taichi kernel writing directly into the output buffer.
 
     Returns
     -------
