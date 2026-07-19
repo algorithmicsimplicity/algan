@@ -284,4 +284,4 @@ def init_taichi():
     if _already_initialized():
         return
     ti.init(**taichi_init_kwargs())
-    _install_taichi_compile_logger()
+    #_install_taichi_compile_logger()

@@ -32,6 +32,8 @@ from __future__ import annotations
 import torch
 
 import os
+import sys
+import traceback
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.settings import _scene_has_user_pipeline
@@ -75,7 +77,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     wavefront_traverse,
     wavefront_traverse_events,
 )
-from algan.utils.memory_utils import InsufficientMemoryException
+from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.logging.logger import get_logger
 
 logger = get_logger("raytracing")
@@ -802,10 +804,14 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
         except (InsufficientMemoryException, torch.OutOfMemoryError):
             logger.warning(f'Render OOM, splitting {start}:{end}')
             memory.set_pointers(entry_pointers)
+            # All this stuff is necessary to free local variables assigned during the previous render attempt.
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            traceback.clear_frames(exc_traceback)
+            # traceback.print_tb(exc_traceback)
+            # exc_traceback.tb_next.tb_frame.clear()
             # Release the failed allocation (e.g. the wavefront's large per-ray
             # state) so it doesn't fragment/block the smaller retry.
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            empty_cache()
             if end - start <= 1:
                 raise OutOfRenderMemory(
                     "Insufficient memory to ray trace a single frame. "

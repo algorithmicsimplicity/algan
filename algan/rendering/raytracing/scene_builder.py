@@ -30,6 +30,25 @@ _STBVH_TENSOR_FIELDS = (
     "nodes", "blocks", "node_miss", "leaf_prim", "leaf_tspan")
 
 
+class _DeferredBackground:
+    """GPU callback plus the metadata needed to stream it into render output."""
+
+    __slots__ = (
+        "callback", "width", "height", "anti_alias_level", "first_frame",
+        "frames_per_second", "device",
+    )
+
+    def __init__(self, callback, width, height, anti_alias_level, first_frame,
+                 frames_per_second, device):
+        self.callback = callback
+        self.width = int(width)
+        self.height = int(height)
+        self.anti_alias_level = int(anti_alias_level)
+        self.first_frame = int(first_frame)
+        self.frames_per_second = float(frames_per_second)
+        self.device = torch.device(device)
+
+
 def _projected_scene_device(primitives):
     """Device carrying a projected primitive batch's ray-tracing tensors."""
     preferred = (
@@ -1521,11 +1540,95 @@ def _pack_lights(light_sources, num_frames, device):
     return light_pos, light_col, light_pos.shape[1]
 
 
+def _prefill_deferred_background(out, background, frame_offset):
+    """Evaluate a callback on its target device without retaining a batch.
+
+    The render arena already owns ``out``. Each callback frame is quantized and
+    copied into its final row before the next one is evaluated, so temporary
+    GPU memory is bounded by one frame instead of scaling with batch duration.
+    """
+    requested_device = background.device
+    device = out.device
+    if (requested_device.type != device.type or (
+            requested_device.index is not None
+            and device.index is not None
+            and requested_device.index != device.index)):
+        raise RuntimeError("deferred background and render output devices differ")
+
+    width = background.width
+    height = background.height
+    x = (torch.arange(width, device=device, dtype=torch.float32)
+         / width).view(1, -1, 1)
+    y = (torch.arange(height, device=device, dtype=torch.float32)
+         / height).view(-1, 1, 1)
+    output_pixels = out.shape[1]
+    full_pixels = width * height
+    aa = background.anti_alias_level
+    base_pixels = full_pixels // (aa * aa)
+
+    if output_pixels not in (full_pixels, base_pixels):
+        raise RuntimeError(
+            "deferred background resolution does not match render output")
+
+    k_ = 1#out.shape[0]
+    for local_frame in range(0, out.shape[0], k_):
+        k = min(k_, out.shape[0]-local_frame)
+        time = torch.arange(
+            local_frame, local_frame+k,
+            device=device,
+            dtype=torch.float32,
+        ).view(k, 1, 1, 1) / background.frames_per_second
+        frame = background.callback(x, y, time)
+        if not torch.is_tensor(frame):
+            frame = torch.as_tensor(frame, device=device)
+        frame = frame.to(device)
+
+        if frame.dim() <= 1:
+            values = (frame.float().flatten()[:5] * 255).round_().clamp_(0, 255)
+            channels = min(values.shape[0], out.shape[-1])
+            out[local_frame:local_frame+k, :, :channels].copy_(values[:channels])
+            if out.shape[-1] > channels:
+                out[local_frame:local_frame+k, :, channels:].copy_(values[-1])
+            del frame, values, time
+            continue
+
+        channels = frame.shape[-1]
+        rows = frame.reshape(frame.shape[0], -1, channels)
+        if rows.shape[1] != (full_pixels):
+            raise RuntimeError(
+                "callable background must produce one value per supersampled "
+                "pixel or a resolution-free color")
+        rows = torch.add(0.5, rows, alpha=255).clamp_(0, 255).to(torch.uint8)
+
+        if output_pixels == base_pixels and aa > 1:
+            image = rows.view(k, height, width, channels).float().permute(0,3,1,2)
+            rows = F.avg_pool2d(image, aa).permute(0,2,3,1).reshape(-1, channels)
+            rows = (rows + 0.5).clamp_(0, 255).to(torch.uint8)
+
+        copied_channels = min(rows.shape[-1], out.shape[-1])
+        out[local_frame:local_frame+k, :, :copied_channels].copy_(
+            rows[..., :copied_channels])
+        if out.shape[-1] > copied_channels:
+            out[local_frame:local_frame+k, :, copied_channels:].copy_(rows[..., -1:])
+        del frame, rows, time
+        if output_pixels == base_pixels and aa > 1:
+            del image
+
+    del x, y
+    # Return callback intermediates held by PyTorch's caching allocator to the
+    # device before Taichi begins using the arena-backed frame.
+    empty_cache(force_gc=False)
+
+
 def _prefill_background(out, background_color, frame_offset, device):
     """Fill the output buffer with the background. Solid colors arrive as a
     float [channels] tensor in [0, 1]; animated/image backgrounds arrive as a
     uint8 row tensor [1 + frames * pixels, channels] (leading padding row).
     """
+    if isinstance(background_color, _DeferredBackground):
+        _prefill_deferred_background(out, background_color, frame_offset)
+        return
+
     num_frames, num_pixels, C_out = out.shape
     # Keep the background on its source device. ``Tensor.to(device)`` used to
     # materialize a full, untracked peer tensor on the rendering device before

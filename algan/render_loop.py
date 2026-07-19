@@ -264,56 +264,30 @@ def _prepare_background_for_chunk(
     current_ind,
     new_ind,
     frames_per_second,
-        device
+    device,
 ):
-    """Materialize one chunk's background entirely on the host.
+    """Prepare one chunk's background for rendering.
 
-    Background callbacks and image expansion used to inherit the camera's
-    device.  When that was the rendering device, their aranges, callback
-    arithmetic, contiguous copy, concatenation and quantization all allocated
-    beside an already-reserved render arena.  The ray tracer only copies the
-    finished rows into its arena output, so preparing the same values on the
-    CPU avoids those untracked render-device allocations.
+    Callable backgrounds are represented by a lightweight deferred value. The
+    ray tracer evaluates them on ``device`` one frame at a time after its
+    arena-backed output exists, avoiding a second full-batch image allocation
+    beside the render arena. Image tensors retain the eager path.
     """
     aa = int(anti_alias_level)
     width = int(screen_width) * aa
     height = int(screen_height) * aa
     if callable(background):
-        # Background contract: x (1,W,1) and y (H,1,1) in [0,1), t (F,1,1,1)
-        # in seconds. Evaluate in small frame slices and quantize each slice
-        # to uint8 rows immediately: the float intermediates weigh
-        # width*height*channels*4 bytes per frame (~74 MB at 720p with 2x
-        # anti-aliasing), so materializing a whole chunk at float precision
-        # would dominate peak memory on any device.
-        callback = background
-        x = (torch.arange(width, device=device, dtype=torch.float32)
-             / width).view(1, -1, 1)
-        y = (torch.arange(height, device=device, dtype=torch.float32)
-             / height).view(-1, 1, 1)
-        parts = []
-        slice_frames = new_ind-current_ind#8
-        for s in range(current_ind, new_ind, slice_frames):
-            e = min(new_ind, s + slice_frames)
-            times = torch.arange(
-                s, e, device=device, dtype=torch.float32
-            ).view(-1, 1, 1, 1)
-            times /= frames_per_second
-            part = callback(x, y, times)
-            if not torch.is_tensor(part):
-                part = torch.as_tensor(part, device=device)
-            part = part.to(device)
-            if part.dim() <= 1:
-                # Resolution-free solid color; the prefill handles it directly.
-                return part
-            if part.shape[0] == 1 and e - s > 1:
-                part = part.expand(e - s, *[-1] * (part.dim() - 1))
-            part = part.reshape(-1, part.shape[-1])
-            # 0.5 + 255 * bg: scale [0,1] floats to bytes with round-to-nearest
-            # (clamp before the cast -- float -> uint8 wraps instead of
-            # saturating).
-            part = torch.add(0.5, part, alpha=255).clamp_(0, 255)
-            parts.append(part.to(torch.uint8))
-        return torch.cat((parts[0][:1], *parts))
+        from algan.rendering.raytracing.scene_builder import _DeferredBackground
+
+        return _DeferredBackground(
+            callback=background,
+            width=width,
+            height=height,
+            anti_alias_level=aa,
+            first_frame=current_ind,
+            frames_per_second=frames_per_second,
+            device=torch.device(device),
+        )
 
     if torch.is_tensor(background):
         background = background.to(device)
@@ -782,6 +756,18 @@ class RenderLoopMixin:
             "Arena preflight under-modeled the render; raising its safety "
             "margin to %.1f MB for the rest of this job.",
             self._arena_unmodeled_bytes / 1e6)
+
+    def _reset_render_arena_after_failure(self):
+        """Release every allocation owned by a failed render attempt.
+
+        OOM exceptions retain their traceback until the ``except`` block has
+        exited. Those frames can own arena views and ordinary CUDA tensors, so
+        retry cleanup must run afterwards and must collect reference cycles.
+        Resetting both arena pointers releases its forward and persistent
+        allocations without reallocating the backing tensor.
+        """
+        self.memory.reset()
+        empty_cache(force_gc=True)
 
     def render_primitive_batch(
         self,
@@ -1736,7 +1722,7 @@ class RenderLoopMixin:
                     if retry_upper_duration is not None:
                         retry_lower_duration = max(
                             retry_lower_duration, duration)
-                        if retry_upper_duration - retry_lower_duration > 1:
+                        if False:#retry_upper_duration - retry_lower_duration > 1:
                             # This candidate fits, but a failed upper bound
                             # leaves room to probe a larger prepared batch
                             # without emitting speculative frames.
@@ -1768,6 +1754,7 @@ class RenderLoopMixin:
                             f"Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video."
                         )
                         produced_output = False
+                        retry_after_render_failure = False
                         try:
                             for frame_batch in self.render_primitive_batch(
                                 primitives,
@@ -1806,8 +1793,6 @@ class RenderLoopMixin:
                                 primitives[0]._rt_prepared_host_scene = None
                                 primitives[0]._rt_merged_scene = None
                             del primitives
-                            self.memory.reset()
-                            empty_cache(force_gc=False)
                             # The arena preflight approved this duration and
                             # was wrong, so it cannot arbitrate durations just
                             # below it: binary-probing upward would converge to
@@ -1821,6 +1806,12 @@ class RenderLoopMixin:
                             retry_upper_duration = max(1, duration // 2)
                             retry_end_ind = (
                                 current_time_ind + max(1, duration // 2))
+                            retry_after_render_failure = True
+                        if retry_after_render_failure:
+                            # This deliberately runs after the exception handler:
+                            # only then has Python released the exception state
+                            # and traceback frames that may own CUDA tensors.
+                            self._reset_render_arena_after_failure()
                             continue
                         del primitives
                         # Free previous batch data before allocating next batch.
