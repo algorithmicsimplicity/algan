@@ -4,6 +4,6 @@ from algan.settings.abstract_settings import Settings
 
 @dataclass
 class KernelSettings(Settings):
-    render_kernel = None
+    render_kernel: object | None = None
 
 KERNEL_SETTINGS = KernelSettings()

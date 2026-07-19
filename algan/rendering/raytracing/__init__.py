@@ -59,8 +59,10 @@ from algan.rendering.raytracing.primitives import (
     set_light_intensity,
     set_ray_traced_shadows,
     set_samples_per_pixel,
+    set_unsupported_feature_policy,
 )
 from algan.rendering.raytracing.stbvh import STBVH, build_stbvh
+from algan.rendering.raytracing.tracer import RenderPlan
 
 __all__ = [
     "MAX_BOUNCES",
@@ -76,6 +78,8 @@ __all__ = [
     "set_ambient_light",
     "set_fragment_shading",
     "set_ray_traced_shadows",
+    "set_unsupported_feature_policy",
+    "RenderPlan",
     "pn_control_points",
     "pn_patch_coefficients",
     "evaluate_pn_patch",

@@ -1,8 +1,12 @@
+from pathlib import Path
+import math
+
 import torch
 import torch.nn.functional as F
 
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
+from algan.errors import AlganConfigurationError
 
 from algan.constants.color import *
 from algan.constants.spatial import *
@@ -120,7 +124,31 @@ class Scene(RenderLoopMixin):
 
     @staticmethod
     def add_light_source(light_source):
-        SceneManager.instance().light_sources.append(light_source)
+        scene = getattr(light_source, "scene", None) or SceneManager.instance()
+        if not hasattr(scene, "light_sources"):
+            scene.light_sources = []
+        if not any(light is light_source for light in scene.light_sources):
+            scene.light_sources.append(light_source)
+        return light_source
+
+    @staticmethod
+    def remove_light_source(light_source):
+        """Remove a light from its owning scene and return the light."""
+        scene = getattr(light_source, "scene", None) or SceneManager.instance()
+        scene.light_sources[:] = [
+            light for light in scene.light_sources if light is not light_source
+        ]
+        return light_source
+
+    @staticmethod
+    def clear_light_sources():
+        """Remove every registered light and return the active scene."""
+        scene = SceneManager.instance()
+        scene.light_sources.clear()
+        return scene
+
+    add_light = add_light_source
+    remove_light = remove_light_source
 
     @staticmethod
     def set_environment_map(source, intensity=1.0, ambient=True):
@@ -279,9 +307,9 @@ class Scene(RenderLoopMixin):
         from algan.utils.plotting_utils import plot_tensor
         if time_stamp is None:
             time_stamp = AnimationManager.instance().context.current_time + 1.5/self.render_settings.frames_per_second
-        time_ind = round(time_stamp * self.render_settings.frames_per_second)
+        time_ind = self._frame_index_for_timestamp(time_stamp)
         frames = []
-        for frame in self.get_frames(time_ind-1, time_ind):
+        for frame in self.get_frames(time_ind, time_ind + 1):
             frame = frame.float() / 255
             frames.append(frame.squeeze(0).permute(-1,0,1))
         for frame in frames:
@@ -289,33 +317,64 @@ class Scene(RenderLoopMixin):
 
         return frames
 
+    def _frame_index_for_timestamp(self, time_stamp):
+        time_stamp = float(time_stamp)
+        if not math.isfinite(time_stamp) or time_stamp < 0:
+            raise AlganConfigurationError(
+                "time_stamp must be finite and non-negative"
+            )
+        return round(time_stamp * self.render_settings.frames_per_second)
+
     def save_frame(self, filename, time_stamp=None, render_settings=None):
         if not COMPUTING_DEFAULTS.allow_save_frame:
-            return
+            return None
 
-        rs = self.render_settings
-        if render_settings is not None:
-            self.set_render_settings(render_settings)
-        if time_stamp is None:
-            time_stamp = AnimationManager.instance().context.timespan.current_time + 1.5/self.render_settings.frames_per_second
-        time_ind = round(time_stamp * self.render_settings.frames_per_second)
-        frames = []
-        for frame in self.get_frames(time_ind-1, time_ind):
-            frame = frame.float() / 255
-            frames.append(frame.squeeze(0).permute(-1,0,1))
-        if '.' not in filename:
-            filename = filename + '.png'
-        import torchvision.utils  # deferred: ~0.2 s of import algan
+        previous_settings = self.render_settings
+        try:
+            if render_settings is not None:
+                self.set_render_settings(render_settings)
+            if time_stamp is None:
+                time_stamp = (
+                    AnimationManager.instance().context.timespan.current_time
+                    + 1.5 / self.render_settings.frames_per_second
+                )
+            time_ind = self._frame_index_for_timestamp(time_stamp)
+            frames = []
+            with torch.inference_mode():
+                for frame in self.get_frames(time_ind, time_ind + 1):
+                    frame = frame.float() / 255
+                    frames.append(frame.squeeze(0).permute(-1, 0, 1))
+            if not frames:
+                raise RuntimeError("No frame was produced for the requested timestamp")
+            output_path = Path(filename)
+            if output_path.suffix == "":
+                output_path = output_path.with_suffix(".png")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            import torchvision.utils  # deferred: ~0.2 s of import algan
 
-        torchvision.utils.save_image(frames[-1], filename)
-        self.render_settings = rs
-        return frames
+            torchvision.utils.save_image(frames[-1], str(output_path))
+            return frames
+        finally:
+            # set_render_settings restores every derived cache (dimensions,
+            # fps, frame size, pixel count), not merely the settings reference.
+            if self.render_settings is not previous_settings:
+                self.set_render_settings(previous_settings)
 
     def save_frames(self, filename, time_stamps=None):
         if not hasattr(time_stamps, '__len__'):
             time_stamps = [time_stamps]
-        return [self.save_frame(f'{".".join(filename.split(".")[:-1])}_{t}.{filename.split(".")[-1]}',
-                                t) for t in time_stamps]
+        path = Path(filename)
+        suffix = path.suffix or ".png"
+        stem_path = path.with_suffix("") if path.suffix else path
+        return [
+            self.save_frame(
+                stem_path.with_name(f"{stem_path.name}_{time_stamp}").with_suffix(
+                    suffix
+                ),
+                time_stamp,
+            )
+            for time_stamp in time_stamps
+        ]
 
     def set_background_color(self, background_color, overwrite=False):
         if (background_color is None) or (self.background_is_set and not overwrite):

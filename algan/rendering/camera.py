@@ -1,4 +1,5 @@
 import math
+import warnings
 
 from algan.animation.animation_contexts import Off, Sync
 from algan.constants.spatial import *  # CAMERA_ORIGIN
@@ -9,6 +10,7 @@ from algan.utils.tensor_utils import (
     dot_product,
 )
 from algan.geometry.geometry import intersect_line_with_plane_colinear
+from algan.errors import AlganConfigurationError, ApproximationWarning
 import torch.nn.functional as F
 
 
@@ -21,11 +23,21 @@ class Camera(Mob):
         # perspective: it fixes the camera-to-screen distance for the given
         # screen size. near/far are the clip distances (0 disables each);
         # near is a plane, far is a distance along the ray.
+        screen_distance = self._validated_positive(
+            "screen_distance", screen_distance
+        )
+        screen_scale = self._validated_positive("screen_scale", screen_scale)
         if fov is not None:
+            fov = self._validated_fov(fov)
             screen_distance = screen_scale / math.tan(
-                math.radians(float(fov)) * 0.5)
-        self.near = float(near)
-        self.far = float(far)
+                math.radians(fov) * 0.5)
+        self.near = self._validated_clip("near", near)
+        self.far = self._validated_clip("far", far)
+        self._validate_clip_order(self.near, self.far)
+        # Camera ownership is managed by Scene; tolerate the common generic
+        # Mob kwargs without passing duplicates into the base constructor.
+        kwargs.pop("add_to_scene", None)
+        kwargs.pop("init", None)
         super().__init__(add_to_scene=False, init=False, *args, **kwargs)
         self.animatable_attrs.remove("color")
         with Off():
@@ -40,16 +52,88 @@ class Camera(Mob):
             self.screen.is_primitive = True
             self.is_primitive = True
             self.add_children(self.screen)
-            self.screen_distance = 5
-            self.pixel_height = 2 / self.scene.num_pixels_screen_height
-            self.pixel_width = self.pixel_height
+            self.screen_distance = screen_distance
             self.corner_x_coords = torch.tensor([-1, -1, 1, 1]).view(-1, 1, 1, 1)
             self.corner_y_coords = torch.tensor([-1, 1, 1, -1]).view(-1, 1, 1, 1)
             self.spawn(animate=False)
+        if orthographic:
+            with Off():
+                self.set_near_orthographic()
+
+    @property
+    def pixel_height(self):
+        """Current normalized screen height represented by one output pixel."""
+        return 2.0 / self.scene.num_pixels_screen_height
+
+    @property
+    def pixel_width(self):
+        """Current normalized screen width represented by one output pixel."""
+        return 2.0 / self.scene.num_pixels_screen_width
+
+    @staticmethod
+    def _as_finite_number(name, value):
+        try:
+            result = float(value)
+        except (TypeError, ValueError) as exc:
+            raise AlganConfigurationError(
+                f"{name} must be a finite number"
+            ) from exc
+        if not math.isfinite(result):
+            raise AlganConfigurationError(f"{name} must be a finite number")
+        return result
+
+    @classmethod
+    def _validated_positive(cls, name, value):
+        result = cls._as_finite_number(name, value)
+        if result <= 0:
+            raise AlganConfigurationError(f"{name} must be positive")
+        return result
+
+    @classmethod
+    def _validated_fov(cls, fov):
+        value = cls._as_finite_number("fov", fov)
+        if not math.isfinite(value) or not 0.0 < value < 180.0:
+            raise AlganConfigurationError("fov must be finite and in (0, 180)")
+        return value
+
+    @classmethod
+    def _validated_clip(cls, name, value):
+        value = cls._as_finite_number(name, value)
+        if value < 0:
+            raise AlganConfigurationError(
+                f"{name} clip distance must be finite and non-negative"
+            )
+        return value
+
+    @staticmethod
+    def _validate_clip_order(near, far):
+        if near > 0 and far > 0 and near >= far:
+            raise AlganConfigurationError(
+                "near clip distance must be less than far clip distance"
+            )
 
     def set_to_orthographic(self):
-        """Changes the camera to be orthographic, useful for showing 2-D scenes without perspective."""
-        return self.set_distance_to_screen(1e5)
+        """Use Algan's legacy near-orthographic perspective approximation.
+
+        True parallel-ray orthographic projection is not implemented by the
+        current renderer.  This compatibility method is retained with an
+        explicit warning; new code should call :meth:`set_near_orthographic`
+        so the approximation is visible at the call site.
+        """
+        warnings.warn(
+            "Camera.set_to_orthographic() uses a far-distance perspective "
+            "approximation, not true parallel-ray projection. Use "
+            "set_near_orthographic() to opt into that approximation explicitly.",
+            ApproximationWarning,
+            stacklevel=2,
+        )
+        return self.set_near_orthographic()
+
+    def set_near_orthographic(self, distance=1e5):
+        """Flatten perspective by moving the camera far from its screen."""
+        distance = self._validated_positive("distance", distance)
+        self.orthographic = True
+        return self._set_distance_to_screen(distance, preserve_mode=True)
 
     def get_fov(self):
         """The camera's vertical field of view in degrees (like Three.js's
@@ -73,7 +157,9 @@ class Camera(Mob):
         fov
             Vertical field of view in degrees, in (0, 180).
         """
-        d = self.screen_scale_factor / math.tan(math.radians(float(fov)) * 0.5)
+        fov = self._validated_fov(fov)
+        d = self.screen_scale_factor / math.tan(math.radians(fov) * 0.5)
+        self.orthographic = False
         self.screen.move_to(self.location + self.get_forward_direction() * d)
         return self
 
@@ -86,7 +172,9 @@ class Camera(Mob):
 
     def set_near(self, near):
         """Set the near clip plane distance (0 disables near clipping)."""
-        self.near = float(near)
+        near = self._validated_clip("near", near)
+        self._validate_clip_order(near, self.far)
+        self.near = near
         return self
 
     def get_far(self):
@@ -97,7 +185,9 @@ class Camera(Mob):
 
     def set_far(self, far):
         """Set the far clip distance (0 disables far clipping)."""
-        self.far = float(far)
+        far = self._validated_clip("far", far)
+        self._validate_clip_order(self.near, far)
+        self.far = far
         return self
 
     def set_distance_to_screen(self, distance):
@@ -108,6 +198,12 @@ class Camera(Mob):
         distance
             The camera focus will be set to be this distance away from the screen.
         """
+        return self._set_distance_to_screen(distance, preserve_mode=False)
+
+    def _set_distance_to_screen(self, distance, *, preserve_mode):
+        distance = self._validated_positive("distance", distance)
+        if not preserve_mode:
+            self.orthographic = False
         self.set_non_recursive(
             location=self.screen.location - self.get_forward_direction() * distance
         )
@@ -118,6 +214,7 @@ class Camera(Mob):
             self.orbit_around_line(ORIGIN, RIGHT, num_degrees=angle_1)
             self.orbit_around_line(ORIGIN, UP, num_degrees=angle_2)
             self.orbit_around_line(ORIGIN, OUT, num_degrees=angle_3)
+        return self
 
     def get_render_screen_basis(self):
         """Per-frame screen basis used by the renderers to project the scene.
@@ -136,9 +233,9 @@ class Camera(Mob):
         return basis
 
     def retroactive_center(self, mob, **kwargs):
-        self.set_to_retroactive()
-        self.move_to_make_mob_center_of_view(mob, **kwargs)
-        self.set_to_current()
+        with self.retroactive():
+            self.move_to_make_mob_center_of_view(mob, **kwargs)
+        return self
 
     def move_to_make_mob_center_of_view(self, mob, buffer_portion=0.7):
         f = self.get_forward_direction()

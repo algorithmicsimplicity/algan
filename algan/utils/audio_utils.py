@@ -18,7 +18,7 @@ import re, string
 from algan.logging.logger import get_logger
 
 logger = get_logger("audio")
-pattern = re.compile('[\W_]+', re.UNICODE)
+pattern = re.compile(r'[\W_]+', re.UNICODE)
 
 # --- Configuration ---
 # A larger chunk size is more efficient with the optimized torchaudio function.

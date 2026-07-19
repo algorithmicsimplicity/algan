@@ -30,6 +30,7 @@ import torch.nn.functional as F
 
 from algan.mobs.renderable import Renderable
 from algan.constants.spatial import ORIGIN, UP
+from algan.errors import AlganConfigurationError
 
 __all__ = [
     "Light",
@@ -56,6 +57,51 @@ LIGHT_ENV_SH = 6.0
 LIGHT_AUX_COLS = 13
 
 
+
+def _finite_number(
+    name,
+    value,
+    *,
+    minimum=None,
+    maximum=None,
+    minimum_inclusive=True,
+    maximum_inclusive=True,
+):
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise AlganConfigurationError(f"{name} must be a finite number") from exc
+    if not math.isfinite(result):
+        raise AlganConfigurationError(f"{name} must be a finite number")
+    if minimum is not None:
+        invalid = result < minimum if minimum_inclusive else result <= minimum
+        if invalid:
+            relation = "at least" if minimum_inclusive else "greater than"
+            raise AlganConfigurationError(f"{name} must be {relation} {minimum}")
+    if maximum is not None:
+        invalid = result > maximum if maximum_inclusive else result >= maximum
+        if invalid:
+            relation = "at most" if maximum_inclusive else "less than"
+            raise AlganConfigurationError(f"{name} must be {relation} {maximum}")
+    return result
+
+
+def _positive_sample_count(value):
+    if isinstance(value, bool):
+        raise AlganConfigurationError("samples must be a positive integer")
+    try:
+        result = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise AlganConfigurationError("samples must be a positive integer") from exc
+    try:
+        exact = float(value) == result
+    except (TypeError, ValueError, OverflowError):
+        exact = False
+    if result < 1 or not exact:
+        raise AlganConfigurationError("samples must be a positive integer")
+    return result
+
+
 def _as_direction_target(target):
     t = target
     if not torch.is_tensor(t):
@@ -75,9 +121,23 @@ class Light(Renderable):
     light_type = LIGHT_POINT
 
     def __init__(self, *args, intensity=1.0, **kwargs):
-        self.intensity = float(intensity)
+        self.intensity = _finite_number("intensity", intensity, minimum=0.0)
         kwargs["add_to_scene"] = False
         super().__init__(*args, **kwargs)
+
+    def set_intensity(self, intensity):
+        """Set the non-negative light intensity and return this light."""
+        self.intensity = _finite_number("intensity", intensity, minimum=0.0)
+        return self
+
+    def spawn(self, animate: bool = True):
+        """Spawn this light and register it with its owning scene exactly once."""
+        result = super().spawn(animate=animate)
+        if not hasattr(self.scene, "light_sources"):
+            self.scene.light_sources = []
+        if not any(light is self for light in self.scene.light_sources):
+            self.scene.light_sources.append(self)
+        return result
 
     def is_extended(self):
         """Whether this light needs the extended (16-column) packed row.
@@ -146,9 +206,11 @@ class PointLight(Light):
 
     def __init__(self, *args, intensity=1.0, decay=0.0, distance=0.0,
                  shadow_radius=0.0, **kwargs):
-        self.decay = float(decay)
-        self.distance = float(distance)
-        self.shadow_radius = float(shadow_radius)
+        self.decay = _finite_number("decay", decay, minimum=0.0)
+        self.distance = _finite_number("distance", distance, minimum=0.0)
+        self.shadow_radius = _finite_number(
+            "shadow_radius", shadow_radius, minimum=0.0
+        )
         super().__init__(*args, intensity=intensity, **kwargs)
 
     def is_extended(self):
@@ -198,7 +260,10 @@ class DirectionalLight(_TargetedLight):
     light_type = LIGHT_DIRECTIONAL
 
     def __init__(self, *args, target=ORIGIN, shadow_angle=0.0, **kwargs):
-        self.shadow_angle = float(shadow_angle)
+        self.shadow_angle = _finite_number(
+            "shadow_angle", shadow_angle, minimum=0.0, maximum=180.0,
+            maximum_inclusive=False,
+        )
         super().__init__(*args, target=target, **kwargs)
 
     def build_aux(self, location):
@@ -272,11 +337,18 @@ class SpotLight(_TargetedLight):
 
     def __init__(self, *args, target=ORIGIN, angle=30.0, penumbra=0.0,
                  decay=0.0, distance=0.0, shadow_radius=0.0, **kwargs):
-        self.angle = float(angle)
-        self.penumbra = float(min(max(penumbra, 0.0), 1.0))
-        self.decay = float(decay)
-        self.distance = float(distance)
-        self.shadow_radius = float(shadow_radius)
+        self.angle = _finite_number(
+            "angle", angle, minimum=0.0, maximum=90.0,
+            minimum_inclusive=False,
+        )
+        self.penumbra = _finite_number(
+            "penumbra", penumbra, minimum=0.0, maximum=1.0
+        )
+        self.decay = _finite_number("decay", decay, minimum=0.0)
+        self.distance = _finite_number("distance", distance, minimum=0.0)
+        self.shadow_radius = _finite_number(
+            "shadow_radius", shadow_radius, minimum=0.0
+        )
         super().__init__(*args, target=target, **kwargs)
 
     def build_aux(self, location):
@@ -322,11 +394,15 @@ class RectAreaLight(_TargetedLight):
 
     def __init__(self, *args, width=2.0, height=2.0, target=ORIGIN,
                  samples=4, decay=0.0, distance=0.0, **kwargs):
-        self.width = float(width)
-        self.height = float(height)
-        self.samples = max(1, int(samples))
-        self.decay = float(decay)
-        self.distance = float(distance)
+        self.width = _finite_number(
+            "width", width, minimum=0.0, minimum_inclusive=False
+        )
+        self.height = _finite_number(
+            "height", height, minimum=0.0, minimum_inclusive=False
+        )
+        self.samples = _positive_sample_count(samples)
+        self.decay = _finite_number("decay", decay, minimum=0.0)
+        self.distance = _finite_number("distance", distance, minimum=0.0)
         super().__init__(*args, target=target, **kwargs)
 
     def num_samples(self):

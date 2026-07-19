@@ -6,9 +6,9 @@ from algan.rendering.raytracing import RayTracedBezierCircuitPrimitive, RayTrace
 
 @dataclass
 class RendererSettings(Settings):
-    triangle_primitive = RayTracedTrianglePrimitive
-    bezier_circuit_primitive = RayTracedBezierCircuitPrimitive
-    render_kernel = None
+    triangle_primitive: type = RayTracedTrianglePrimitive
+    bezier_circuit_primitive: type = RayTracedBezierCircuitPrimitive
+    render_kernel: object | None = None
 
 RENDERER_SETTINGS = RendererSettings()
 

@@ -1,6 +1,8 @@
 from collections import defaultdict
 import copy
 from functools import wraps
+from contextlib import contextmanager
+import warnings
 import inspect
 
 import torch
@@ -25,6 +27,7 @@ from algan.constants.color import BLACK
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 from algan.scene_manager import SceneManager
 from algan.utils.python_utils import traverse
+from algan.errors import HierarchyError
 
 
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
@@ -339,10 +342,21 @@ class Animatable:
         previous_time = timespan.current_time
         timespan.current_time = self.previous_retroactive_time
         self.previous_retroactive_time = previous_time
+        return self
 
     def set_to_current(self):
         timespan = self.animation_manager.context.timespan
         timespan.current_time = self.previous_retroactive_time
+        return self
+
+    @contextmanager
+    def retroactive(self):
+        """Temporarily author at this Mob's retroactive timestamp safely."""
+        self.set_to_retroactive()
+        try:
+            yield self
+        finally:
+            self.set_to_current()
 
     @property
     def animation_manager(self):
@@ -505,8 +519,9 @@ class Animatable:
         return timeline.get_attr(key, inds, copy=copy)
 
     def wait(self, *args, **kwargs):
-        """An animated function that does nothing for one second!"""
+        """Advance this Mob's active animation context and return ``self``."""
         self.animation_manager.context.wait(*args, **kwargs)
+        return self
 
     def get_default_color(self):
         return BLACK
@@ -527,16 +542,14 @@ class Animatable:
         return self
 
     def __deepcopy__(self, memo):
-        if "___copy_add_to_scene___" not in memo:
-            memo["___copy_add_to_scene___"] = self.copy_add_to_scene
-        if "___copy_spawn___" not in memo:
-            memo["___copy_spawn___"] = self.copy_spawn
-        if "___copy_animate_creation___" not in memo:
-            memo["___copy_animate_creation___"] = self.copy_animate_creation
-        if "___copy_recursive___" not in memo:
-            memo["___copy_recursive___"] = self.copy_recursive
-        if "___clone_data___" not in memo:
-            memo["___clone_data___"] = self.clone_data
+        # Clone policy travels in deepcopy's private memo instead of being
+        # written temporarily onto the source Mob (which was non-reentrant and
+        # left implementation attributes visible on user objects).
+        memo.setdefault("___copy_add_to_scene___", False)
+        memo.setdefault("___copy_spawn___", False)
+        memo.setdefault("___copy_animate_creation___", False)
+        memo.setdefault("___copy_recursive___", True)
+        memo.setdefault("___clone_data___", True)
         add_to_scene = memo["___copy_add_to_scene___"]
         spawn = memo["___copy_spawn___"]
         animate_creation = memo["___copy_animate_creation___"]
@@ -619,16 +632,22 @@ class Animatable:
         clone_data=True,
         reset_history=True,
     ):
-        # reset_history is kept for backwards compatibility but no longer does
-        # anything: a clone's history is fresh by construction (its new id has
-        # no recorded timeline events); history hand-over is done explicitly by
-        # Mob.detach_history.
-        self.copy_add_to_scene = add_to_scene
-        self.copy_spawn = spawn
-        self.copy_animate_creation = animate_creation
-        self.copy_recursive = recursive
-        self.clone_data = clone_data
-        c = copy.deepcopy(self)
+        if reset_history is not True:
+            warnings.warn(
+                "clone(reset_history=...) is deprecated: a data clone always "
+                "has fresh history, while clone_data=False explicitly creates "
+                "a shared timeline view.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        memo = {
+            "___copy_add_to_scene___": bool(add_to_scene),
+            "___copy_spawn___": bool(spawn),
+            "___copy_animate_creation___": bool(animate_creation),
+            "___copy_recursive___": bool(recursive),
+            "___clone_data___": bool(clone_data),
+        }
+        c = copy.deepcopy(self, memo)
 
         if clone_data:
             c.batch_size = 1
@@ -714,32 +733,98 @@ class Animatable:
         return 0
 
     def set_parent_to(self, other_mob):
-        self.parents.append(other_mob)
+        if not any(parent is other_mob for parent in self.parents):
+            self.parents.append(other_mob)
+        return self
+
+    def remove_parent(self, other_mob):
+        self.parents[:] = [
+            parent for parent in self.parents if parent is not other_mob
+        ]
+        return self
+
+    @staticmethod
+    def _contains_in_hierarchy(root, target):
+        stack = [root]
+        visited = set()
+        while stack:
+            current = stack.pop()
+            identity = id(current)
+            if identity in visited:
+                continue
+            visited.add(identity)
+            if current is target:
+                return True
+            stack.extend(getattr(current, "children", ()))
+        return False
+
+    def _validate_new_children(self, mobs):
+        seen = set()
+        for mob in mobs:
+            if not isinstance(mob, Animatable):
+                raise TypeError(
+                    f"Children must be Animatable instances, got {type(mob).__name__}"
+                )
+            identity = id(mob)
+            if identity in seen:
+                raise HierarchyError("A child cannot occur more than once")
+            seen.add(identity)
+            if mob is self:
+                raise HierarchyError("A Mob cannot be its own child")
+            if self._contains_in_hierarchy(mob, self):
+                raise HierarchyError("This hierarchy mutation would create a cycle")
+
+    def replace_children(self, mobs, *, link_parents=True):
+        """Replace the canonical child list while preserving hierarchy links."""
+        new_children = list(traverse(mobs))
+        self._validate_new_children(new_children)
+        old_children = list(self.children)
+
+        for child in old_children:
+            if link_parents and not any(child is item for item in new_children):
+                child.remove_parent(self)
+
+        self.children[:] = new_children
+        if link_parents:
+            for child in new_children:
+                child.set_parent_to(self)
+        self.anchor_priority = max(
+            (1 + child.anchor_priority for child in new_children),
+            default=0,
+        )
+        bump_hierarchy_version()
         return self
 
     def add_children(self, *mobs):
-        """Adds a collection of mobs to this mob's list of children, thereby
-        propagating attribute changes made to the parent to the children.
-
-        Parameters
-        ----------
-        *mobs : Iterable[:class:`~.Mob`]
-            A (possibly nested) iterable of :class:`~.Mob` s to be added as children.
-
-        Returns
-        -------
-        :class:`~.Animatable`
-            The Animatable instance itself, allowing for method chaining.
-
-        """
-        for mob in traverse(mobs):
+        """Add children while rejecting cycles and duplicate relationships."""
+        candidates = list(traverse(mobs))
+        # Re-adding an existing child is idempotent, matching Group.add.
+        candidates = [
+            mob
+            for mob in candidates
+            if not any(existing is mob for existing in self.children)
+        ]
+        if not candidates:
+            return self
+        self._validate_new_children([*self.children, *candidates])
+        for mob in candidates:
             self.children.append(mob)
             mob.set_parent_to(self)
-            self.anchor_priority = max(self.anchor_priority, 1 + mob.anchor_priority)
+            self.anchor_priority = max(
+                self.anchor_priority, 1 + mob.anchor_priority
+            )
         bump_hierarchy_version()
         return self
 
     def remove_child(self, mob):
-        self.children.remove(mob)
-        bump_hierarchy_version()
-        return self
+        for index, child in enumerate(self.children):
+            if child is mob:
+                del self.children[index]
+                child.remove_parent(self)
+                self.anchor_priority = max(
+                    (1 + item.anchor_priority for item in self.children),
+                    default=0,
+                )
+                bump_hierarchy_version()
+                return self
+        raise ValueError("The requested Mob is not a child of this Mob")

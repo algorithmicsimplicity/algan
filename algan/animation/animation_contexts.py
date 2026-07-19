@@ -212,72 +212,106 @@ class AnimationContext:
         self.timespan.current_time = self.timespan.current_time - num_frames
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
-        if exc_type is not None:
-            return False
         if self.ignored:
             return False
 
-        def rescale(x, b=self.timespan.original_start, s=1):
-            return (x - b) * s + b
-
-        def rescale_run_time(context, s):
-            for c in context.get_descendants(include_self=True):
-                c.timespan.start = rescale(c.timespan.start, s=s)
-                c.timespan.end = rescale(c.timespan.end, s=s)
-            return False
-
-        if self.same_run_time:
-            max_run_time = 0
-            for c in self.child_contexts:
-                max_run_time = max(max_run_time, c.timespan.end - c.timespan.start)
-            for c in self.child_contexts:
-                rescale_run_time(c, max_run_time / (c.timespan.end - c.timespan.start))
-
-        if self.run_time is not None:
-            my_run_time = max(self.timespan.original_end - self.timespan.original_start, 1e-6)
-            s = self.run_time / my_run_time
-
-            for c in self.get_descendants(include_self=False):
-                c.timespan.start = rescale(c.timespan.start, s=s)
-                c.timespan.end = rescale(c.timespan.end, s=s)
-            self.timespan.start = rescale(self.timespan.original_start, s=s)
-            self.timespan.end = rescale(self.timespan.original_end, s=s)
-            self.timespan.current_time = rescale(self.timespan.current_time, s=s)
-        else:
-            self.timespan.start = self.timespan.original_start
-            self.timespan.end = self.timespan.original_end
-        if self.combine_rate_func:
-            def wrap(rate_func):
-                if rate_func is None:
-                    return rate_func
-                rate_func.set_full_time(
-                    lambda s=self: s.timespan.start, lambda s=self: s.timespan.end
-                )
-                rate_func.time_set = True
-                return rate_func
-
-            for c in self.get_descendants(include_self=False):
-                wrap(c.rate_func)
-                wrap(c.rate_func_compose)
-        self.finished = True
         am = AnimationManager.instance()
-        am.context = self.prev_context
-        if self.record_funcs:
-            am.context.timespan.original_end = max(am.context.timespan.original_end, self.timespan.end)
-            if self.new_animation:
-                am.context.timespan.current_time = (
-                    self.timespan.start
-                    + (self.timespan.end - self.timespan.start) * am.context.lag_ratio
+        try:
+            if exc_type is not None:
+                # The failed context must not participate in later rescaling.
+                if (
+                    self.prev_context is not None
+                    and self in self.prev_context.child_contexts
+                ):
+                    self.prev_context.child_contexts.remove(self)
+                return False
+
+            def rescale(x, b=self.timespan.original_start, s=1):
+                return (x - b) * s + b
+
+            def rescale_run_time(context, scale):
+                for child in context.get_descendants(include_self=True):
+                    child.timespan.start = rescale(child.timespan.start, s=scale)
+                    child.timespan.end = rescale(child.timespan.end, s=scale)
+                return False
+
+            if self.same_run_time:
+                durations = [
+                    child.timespan.end - child.timespan.start
+                    for child in self.child_contexts
+                ]
+                positive_durations = [duration for duration in durations if duration > 0]
+                max_run_time = max(positive_durations, default=0)
+                for child, duration in zip(self.child_contexts, durations):
+                    # Empty / Off child contexts already have the desired zero
+                    # duration and must not cause a division by zero.
+                    if duration > 0:
+                        rescale_run_time(child, max_run_time / duration)
+
+            if self.run_time is not None:
+                my_run_time = max(
+                    self.timespan.original_end - self.timespan.original_start,
+                    1e-6,
+                )
+                scale = self.run_time / my_run_time
+
+                for child in self.get_descendants(include_self=False):
+                    child.timespan.start = rescale(child.timespan.start, s=scale)
+                    child.timespan.end = rescale(child.timespan.end, s=scale)
+                self.timespan.start = rescale(self.timespan.original_start, s=scale)
+                self.timespan.end = rescale(self.timespan.original_end, s=scale)
+                self.timespan.current_time = rescale(
+                    self.timespan.current_time, s=scale
                 )
             else:
-                am.context.timespan.current_time = self.timespan.current_time
+                self.timespan.start = self.timespan.original_start
+                self.timespan.end = self.timespan.original_end
 
-        if not (self.spawn_at_end and not am.context.spawn_at_end):
+            if self.combine_rate_func:
+                def wrap(rate_func):
+                    if rate_func is None:
+                        return rate_func
+                    rate_func.set_full_time(
+                        lambda context=self: context.timespan.start,
+                        lambda context=self: context.timespan.end,
+                    )
+                    rate_func.time_set = True
+                    return rate_func
+
+                for child in self.get_descendants(include_self=False):
+                    wrap(child.rate_func)
+                    wrap(child.rate_func_compose)
+
+            self.finished = True
+            # Subsequent parent updates and spawn-at-end work must execute in
+            # the parent context, just as normal authoring after the with block.
+            am.context = self.prev_context
+            if self.record_funcs:
+                am.context.timespan.original_end = max(
+                    am.context.timespan.original_end, self.timespan.end
+                )
+                if self.new_animation:
+                    am.context.timespan.current_time = (
+                        self.timespan.start
+                        + (self.timespan.end - self.timespan.start)
+                        * am.context.lag_ratio
+                    )
+                else:
+                    am.context.timespan.current_time = self.timespan.current_time
+
+            if self.spawn_at_end and not am.context.spawn_at_end:
+                with Sync():
+                    for mob in sorted(
+                        self.new_mobs, key=lambda item: -item.anchor_priority
+                    ):
+                        mob.spawn()
             return False
-        with Sync():
-            for mob in sorted(self.new_mobs, key=lambda x: -x.anchor_priority):
-                mob.spawn()
-        return False
+        finally:
+            # Context-stack restoration is unconditional.  In particular, an
+            # exception raised by user code or by finalization must never leave
+            # this context installed globally after the with statement exits.
+            if am.context is self:
+                am.context = self.prev_context
 
     def increment_times(self):
         #self.end_time = max(self.end_time, self.current_time + self.run_time_unit)

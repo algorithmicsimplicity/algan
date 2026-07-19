@@ -1,4 +1,6 @@
 import cProfile
+from dataclasses import dataclass
+from typing import Literal
 import os.path
 import time
 
@@ -10,18 +12,37 @@ import inspect
 import pstats
 import sys
 import subprocess
-
-import torch
+import warnings
 
 from algan.settings.defaults import *
+from algan.errors import AlganConfigurationError, LegacySceneDiscoveryWarning
 from algan.settings.style_defaults import STYLE_DEFAULTS
-from algan.animation.animation_contexts import Off
+from algan.animation.animation_contexts import AnimationManager, Off
 from algan.rendering.camera import Camera
 from algan.scene_manager import SceneManager
 from algan.logging.logger import get_logger
+from algan.sound.audio_effect import AudioManager
 
 logger = get_logger()
-from algan.sound.audio_effect import AudioManager
+
+
+def scene(function=None, *, name=None):
+    """Mark a zero-argument function as an Algan scene entry point.
+
+    ``render_all_funcs`` prefers explicitly decorated functions and falls back
+    to its historical zero-argument scan only when a module has no decorated
+    scenes.
+    """
+    def decorate(func):
+        if not callable(func):
+            raise TypeError("@scene can only decorate callables")
+        setattr(func, "__algan_scene__", True)
+        setattr(func, "__algan_scene_name__", name or func.__name__)
+        return func
+
+    if function is None:
+        return decorate
+    return decorate(function)
 from algan.utils.memory_utils import empty_cache
 
 
@@ -55,6 +76,49 @@ def get_file_writer(temp_file_path, render_settings_resolution, codec, fps, with
 
 # ‘mpeg4’ > ‘libx264’
 # @compiled
+@dataclass(frozen=True)
+class RenderResult:
+    """Outcome metadata returned by :func:`render_to_file`."""
+
+    status: Literal["rendered", "skipped"]
+    output_path: Path
+    duration_seconds: float = 0.0
+    render_plan: object | None = None
+
+    @property
+    def rendered(self) -> bool:
+        return self.status == "rendered"
+
+
+def _resolve_output_destination(
+    file_name,
+    output_directory: Path,
+    file_extension,
+    default_extension: str,
+) -> Path:
+    requested = Path(str(file_name))
+    supplied_suffix = requested.suffix.lower()
+    override_suffix = None
+    if file_extension is not None:
+        cleaned = str(file_extension).strip().lstrip(".").lower()
+        if not cleaned:
+            raise AlganConfigurationError("file_extension cannot be empty")
+        override_suffix = f".{cleaned}"
+        if supplied_suffix and supplied_suffix != override_suffix:
+            raise AlganConfigurationError(
+                f"Conflicting output extensions: '{supplied_suffix}' in file_name "
+                f"and '{override_suffix}' from file_extension"
+            )
+
+    suffix = override_suffix or supplied_suffix or default_extension
+    if not suffix.startswith("."):
+        suffix = f".{suffix}"
+    requested = requested.with_suffix(suffix)
+    destination = requested if requested.is_absolute() else output_directory / requested
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    return destination
+
+
 def render_to_file(
     file_name=None,
     output_dir=None,
@@ -70,8 +134,7 @@ def render_to_file(
     animate_fade_out=None,
     **kwargs,
 ):
-    """Runs all of the animations specified in the active :class:`~.Scene`, then renders the animations to video
-    as captured by the active :class:`~.Camera`, and saves the video to a file.
+    """Render the active scene to a video file.
 
     Parameters
     ----------
@@ -86,61 +149,97 @@ def render_to_file(
     codec
         The codec to use to encode the video frames.
 
+    Returns
+    -------
+    RenderResult
+        Structured metadata indicating whether the file was rendered or
+        skipped because it already existed.
     """
-    with torch.inference_mode():
-        if file_name is None:
-            file_name = DIRECTORY_DEFAULTS.output_filename
-        if output_dir is None:
-            output_dir = DIRECTORY_DEFAULTS.output_directory
+    if file_name is None:
+        file_name = DIRECTORY_DEFAULTS.output_filename
+    if output_dir is None:
+        output_dir = DIRECTORY_DEFAULTS.output_directory
+    if output_path is None:
+        output_path = DIRECTORY_DEFAULTS.output_path
         if output_path is None:
-            output_path = DIRECTORY_DEFAULTS.output_path
-            if output_path is None:
-                output_path = DIRECTORY_DEFAULTS.base_directory
-        output_dir = os.path.join(output_path, output_dir)
-        if render_settings is None:
-            render_settings = RENDERING_DEFAULTS.settings
+            output_path = DIRECTORY_DEFAULTS.base_directory
+    output_directory = Path(output_path) / output_dir
+    output_directory.mkdir(parents=True, exist_ok=True)
+    if render_settings is None:
+        render_settings = RENDERING_DEFAULTS.settings
 
-        file_name, file_ext = os.path.splitext(file_name)
+    scene = SceneManager.instance()
+    previous_settings = scene.render_settings
+    previous_background = (
+        scene.background_frame,
+        getattr(scene, "background_color", None),
+        scene.background_is_set,
+    )
+    destination = None
+    temp_file_path = None
+    audio_file_path = None
+    file_writer = None
+    destructive_render_started = False
 
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        temp_file_path = os.path.join(output_dir, f"{file_name}_temp")
-        file_path = os.path.join(output_dir, f"{file_name}")
-        audio_file_path = os.path.join(output_dir, f"{file_name}_temp.wav")
-        script_file_path = os.path.join(output_dir, f"{file_name}_script.txt")
-
-        if os.path.exists(file_path) and not overwrite:
-            return
-
-        scene = SceneManager.instance()
+    try:
         scene.set_render_settings(render_settings)
+        explicit_background = background_color is not None
+        if background_color is None:
+            background_color = STYLE_DEFAULTS.background_color
+        scene.set_background_color(
+            background_color,
+            overwrite=explicit_background,
+        )
+        # The scene now owns the normalized color/image tensor. Passing the
+        # original argument into get_frames would override authored backgrounds
+        # and would reintroduce string image paths after they were decoded.
+        frame_background_override = None
+
+        default_extension = (
+            ".mov" if scene.background_is_transparent() else ".mp4"
+        )
+        destination = _resolve_output_destination(
+            file_name,
+            output_directory,
+            file_extension,
+            default_extension,
+        )
+
+        if destination.exists() and not overwrite:
+            return RenderResult("skipped", destination)
+
+        suffix = destination.suffix.lower()
+        if suffix == ".mp4" and scene.background_is_transparent():
+            raise AlganConfigurationError(
+                "MP4 does not support Algan's transparent output. Use .mov or "
+                ".webm, or choose an opaque background."
+            )
+
         if scene.camera is None:
             scene.camera = Camera(False)
         empty_cache()
-        if background_color is None:
-            background_color = STYLE_DEFAULTS.background_color
-        scene.set_background_color(background_color)
 
         if animate_fade_out is None:
             animate_fade_out = STYLE_DEFAULTS.fade_out_on_scene_end
+        # From this point onward the active timeline/scene may be intentionally
+        # modified for finalization. Preserve the historical contract by
+        # resetting managers on both success and failure.
+        destructive_render_started = True
         if animate_fade_out:
             scene.clear_scene()
         else:
+            # A scene authored entirely inside Off() otherwise has zero
+            # duration; despawning it at t=0 produces an empty video. Keep one
+            # frame alive before the instantaneous final despawn.
+            timeline_context = AnimationManager.instance().context
+            if (
+                timeline_context is not None
+                and timeline_context.timespan.original_end <= 0
+                and any(actor.is_spawned() for actor in scene.actors[-1])
+            ):
+                timeline_context.wait(1.0 / render_settings.frames_per_second)
             with Off():
                 scene.clear_scene(animate=False)
-
-        if file_ext == "":
-            file_ext = ".mov" if scene.background_is_transparent() else ".mp4"
-        if file_extension is not None:
-            file_ext = f".{file_extension}"
-        temp_file_path = f"{temp_file_path}{file_ext}"
-        file_path = f"{file_path}{file_ext}"
-
-        if file_ext in [".mp4"] and scene.background_is_transparent():
-            raise ValueError(
-                f"You are trying to render a scene with a transparent background to a file format which"
-                f"does not support alpha channels ({file_ext}). Please use a file format that supports"
-                f"alpha channels such as .mov or .webm, or change the background color to be opaque."
-            )
 
         if codec is None:
             codec = "png" if scene.background_is_transparent() else "libx264"
@@ -153,39 +252,86 @@ def render_to_file(
                 else []
             )
 
-        logger.info(f"Began rendering {file_name}{file_ext}")
-        audiofile = scene.render_audio_to_file(audio_file_path, audio_fps,
-                                               nbytes=4, codec='pcm_s32le', )
+        temp_file_path = destination.with_name(
+            f"{destination.stem}_temp{destination.suffix}"
+        )
+        audio_file_path = destination.with_name(
+            f"{destination.stem}_temp.wav"
+        )
+        script_file_path = destination.with_name(
+            f"{destination.stem}_script.txt"
+        )
+
+        logger.info(f"Began rendering {destination.name}")
+        start_time = time.perf_counter()
+        audiofile = scene.render_audio_to_file(
+            str(audio_file_path), audio_fps, nbytes=4, codec="pcm_s32le"
+        )
         if audiofile is not None:
-            with open(script_file_path, "w") as f:
-                f.write(AudioManager.instance().video_transcript)
+            script_file_path.write_text(
+                AudioManager.instance().video_transcript,
+                encoding="utf-8",
+            )
             logger.info("Audio rendered, now rendering video")
 
-        file_writer = get_file_writer(temp_file_path,
-                    render_settings.resolution,
-                    codec,
-                    render_settings.frames_per_second,
-                    scene.background_is_transparent(),
-                    ffmpeg_params,
-                    audiofile,
-                    audio_codec)
+        file_writer = get_file_writer(
+            str(temp_file_path),
+            render_settings.resolution,
+            codec,
+            render_settings.frames_per_second,
+            scene.background_is_transparent(),
+            ffmpeg_params,
+            audiofile,
+            audio_codec,
+        )
+        scene.render_to_video(
+            file_writer,
+            str(temp_file_path),
+            str(destination),
+            background_color=frame_background_override,
+            **kwargs,
+        )
+        duration = time.perf_counter() - start_time
+        plan = getattr(scene, "last_render_plan", None)
+        logger.info(f"Finished rendering {destination.name}")
+        return RenderResult("rendered", destination, duration, plan)
+    finally:
+        if file_writer is not None:
+            try:
+                file_writer.close()
+            except Exception:
+                logger.debug("Video writer cleanup failed", exc_info=True)
+        for temporary in (temp_file_path, audio_file_path):
+            if temporary is None:
+                continue
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                logger.debug(
+                    "Could not remove temporary file %s",
+                    temporary,
+                    exc_info=True,
+                )
 
-        try:
-            scene.render_to_video(file_writer, temp_file_path, file_path, background_color=background_color, **kwargs)
-            logger.info(f"Finished rendering {file_name}{file_ext}")
-        finally:
-            # file_writer.release()
-            file_writer.close()
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-            if os.path.exists(audio_file_path):
-                os.remove(audio_file_path)
+        if destructive_render_started:
+            # Cleanup is unconditional, including failures during audio setup,
+            # writer construction, rendering, or final file replacement.
+            SceneManager.reset()
+            AudioManager.reset()
+        else:
+            # Preflight failures and skipped renders are observational: leave
+            # the authored scene and audio timeline intact.
+            scene.set_render_settings(previous_settings)
+            (
+                scene.background_frame,
+                scene.background_color,
+                scene.background_is_set,
+            ) = previous_background
 
-        SceneManager.reset()
-        AudioManager.reset()
-        # AnimationManager.reset()
-        # scene = SceneManager.instance()
-        # scene.set_render_settings(render_settings)
+
+# Concise stable authoring alias. Keep ``render_to_file`` as the descriptive
+# compatibility name while new examples can use ``render(...)``.
+render = render_to_file
 
 
 # @compiled
@@ -199,59 +345,78 @@ def render_all_funcs(
     output_dir=None,
     output_path=None,
     file_extension="mp4",
-        smoke_test=False,
+    smoke_test=False,
     **kwargs,
 ):
     def run(output_dir=None, render_settings=None, output_path=None):
-        with torch.inference_mode():
-            module = sys.modules[module_name]
+        module = sys.modules[module_name]
+        defined_functions = [
+            (function_name, function)
+            for function_name, function in inspect.getmembers(module, inspect.isfunction)
+            if function.__module__ == module.__name__
+        ]
+        registered = [
+            (getattr(function, "__algan_scene_name__", function_name), function)
+            for function_name, function in defined_functions
+            if getattr(function, "__algan_scene__", False)
+        ]
+        if registered:
+            scene_funcs = registered
+        else:
             scene_funcs = [
-                a
-                for a in inspect.getmembers(module)
-                if inspect.isfunction(a[1])
-                and a[1].__globals__["__file__"] == inspect.getfile(module)
-                and len(inspect.signature(a[1]).parameters) == 0
+                (function_name, function)
+                for function_name, function in defined_functions
+                if len(inspect.signature(function).parameters) == 0
             ]
-            scene_funcs = list(
-                sorted(scene_funcs, key=lambda x: x[1].__code__.co_firstlineno)
-            )
+            if scene_funcs:
+                warnings.warn(
+                    "render_all_funcs is using legacy implicit zero-argument "
+                    "function discovery. Decorate scene entry points with @scene "
+                    "to prevent helper functions from rendering accidentally.",
+                    LegacySceneDiscoveryWarning,
+                    stacklevel=2,
+                )
+        scene_funcs.sort(key=lambda item: item[1].__code__.co_firstlineno)
 
-            if render_settings is None:
-                render_settings = RENDERING_DEFAULTS.settings
+        if render_settings is None:
+            render_settings = RENDERING_DEFAULTS.settings
 
+        if output_path is None:
+            output_path = DIRECTORY_DEFAULTS.output_path
             if output_path is None:
-                output_path = DIRECTORY_DEFAULTS.output_path
-                if output_path is None:
-                    output_path = DIRECTORY_DEFAULTS.base_directory
-            if output_dir is None:
-                output_dir = DIRECTORY_DEFAULTS.output_directory
-            output_dir = os.path.join(output_dir, module_name)
-            if start_index < 0:
-                s = start_index + len(scene_funcs)
-            else:
-                s = start_index
-            if max_rendered < 0:
-                e = len(scene_funcs)
-            else:
-                e = s + max_rendered
-            for i, (func_name, f) in list(enumerate(scene_funcs))[s:e]:
-                scene = SceneManager.reset()
-                scene.set_render_settings(render_settings)
-                if 'background_color' in kwargs:
-                    scene.set_background_color(kwargs['background_color'])
-                f()
-                if not smoke_test:
+                output_path = DIRECTORY_DEFAULTS.base_directory
+        if output_dir is None:
+            output_dir = DIRECTORY_DEFAULTS.output_directory
+        output_dir = os.path.join(output_dir, module_name)
+        if start_index < 0:
+            start = start_index + len(scene_funcs)
+        else:
+            start = start_index
+        if max_rendered < 0:
+            end = len(scene_funcs)
+        else:
+            end = start + max_rendered
+
+        results = []
+        for index, (scene_name, function) in list(enumerate(scene_funcs))[start:end]:
+            active_scene = SceneManager.reset()
+            active_scene.set_render_settings(render_settings)
+            if "background_color" in kwargs:
+                active_scene.set_background_color(kwargs["background_color"])
+            function()
+            if not smoke_test:
+                results.append(
                     render_to_file(
-                        f"{i}_{func_name}.{file_extension}",
+                        f"{index}_{scene_name}.{file_extension}",
                         output_dir,
                         output_path,
                         render_settings,
                         overwrite,
                         **kwargs,
                     )
+                )
+        return results
 
-            #combine_scenes(output_dir)
-            return
 
     if profile:
         pr = cProfile.Profile()

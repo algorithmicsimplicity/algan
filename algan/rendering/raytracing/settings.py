@@ -1,4 +1,7 @@
 import os
+import warnings
+
+from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
 
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 
@@ -8,6 +11,34 @@ MAX_BOUNCES = 4
 # > 1 switches to the Monte Carlo pathtracer (stochastic transparency,
 # glossy reflections, optional diffuse indirect lighting).
 SAMPLES_PER_PIXEL = 1
+
+# Policy for renderer/backend combinations that cannot honor authored scene
+# features. "error" is the safe public default; "warn" and "ignore" are
+# available for controlled migration and benchmarking.
+UNSUPPORTED_FEATURE_POLICY = os.environ.get(
+    "ALGAN_UNSUPPORTED_FEATURE_POLICY", "error"
+).strip().lower()
+if UNSUPPORTED_FEATURE_POLICY not in {"error", "warn", "ignore"}:
+    UNSUPPORTED_FEATURE_POLICY = "error"
+
+
+def set_unsupported_feature_policy(policy):
+    """Set unsupported-feature handling to ``error``, ``warn``, or ``ignore``."""
+    normalized = str(policy).strip().lower()
+    if normalized not in {"error", "warn", "ignore"}:
+        raise UnsupportedFeatureError("policy must be 'error', 'warn', or 'ignore'")
+    global UNSUPPORTED_FEATURE_POLICY
+    UNSUPPORTED_FEATURE_POLICY = normalized
+
+
+def report_unsupported_features(message):
+    """Apply the configured policy to an unsupported render combination."""
+    if UNSUPPORTED_FEATURE_POLICY == "ignore":
+        return
+    if UNSUPPORTED_FEATURE_POLICY == "warn":
+        warnings.warn(message, UnsupportedFeatureWarning, stacklevel=3)
+        return
+    raise UnsupportedFeatureError(message)
 
 TONEMAPPING = True
 TONEMAP_EXPOSURE = 1.0
@@ -341,14 +372,19 @@ def set_raster_screen_space(enabled):
 # scene_builder._build_textured_scene + wavefront_textured_kernels_taichi. It
 # was a proof-of-concept built to benchmark the texture-lookup shading
 # architecture, kept for reference only. Default OFF; do not enable.
-WF_TEXTURED = os.environ.get("ALGAN_WF_TEXTURED", "0") == "1"
+WF_TEXTURED = False
 
 
 def set_textured_wavefront(enabled):
-    """Enable the UNSUPPORTED legacy texture-lookup wavefront shader (kept for
-    reference only, no longer works; see ``WF_TEXTURED``)."""
+    """Reject the removed legacy texture-lookup wavefront renderer."""
     global WF_TEXTURED
-    WF_TEXTURED = bool(enabled)
+    if bool(enabled):
+        WF_TEXTURED = False
+        raise UnsupportedFeatureError(
+            "The legacy textured wavefront renderer is unsupported and cannot "
+            "be enabled. Use the general deterministic wavefront renderer."
+        )
+    WF_TEXTURED = False
 
 
 # --- Scene merge + STBVH build device --------------------------------------
@@ -471,11 +507,15 @@ WF_TEXTURED_FEATURES = int(os.environ.get("ALGAN_WF_TEXTURED_FEATURES", "0"))
 
 
 def set_textured_features(mask):
-    """Set which monolith features are compiled into the UNSUPPORTED legacy
-    textured wavefront shade kernel (a bitmask of WF_TEX_BEZ / _SCATTER /
-    _SHADOWS / _NORMALMAP; see ``WF_TEXTURED``)."""
+    """Reject feature configuration for the removed textured renderer."""
     global WF_TEXTURED_FEATURES
-    WF_TEXTURED_FEATURES = int(mask)
+    if int(mask) != 0:
+        WF_TEXTURED_FEATURES = 0
+        raise UnsupportedFeatureError(
+            "Textured-wavefront feature masks are unsupported because that "
+            "legacy renderer has been removed from the public execution path."
+        )
+    WF_TEXTURED_FEATURES = 0
 
 
 # UNSUPPORTED legacy Cycles-style sorted material dispatch for the
@@ -507,19 +547,20 @@ def _parse_sort_mode(v):
     return "auto"
 
 
-WAVEFRONT_SORT_MATERIALS = _parse_sort_mode(
-    os.environ.get("ALGAN_WF_SORT_MATERIALS", "auto"))
+WAVEFRONT_SORT_MATERIALS = "auto"
 
 
 def set_material_sorting(enabled):
-    """Set Cycles-style sorted per-material shading of the deterministic
-    wavefront's fragment-shading path: ``True`` forces the UNSUPPORTED legacy
-    sorted pipeline (kept for reference only, no longer works);
-    ``False`` / ``"auto"`` (default) use the monolithic kernel, which handles
-    custom scatter + normal maps itself and is faster on built-in materials.
-    See ``WAVEFRONT_SORT_MATERIALS``."""
+    """Reject the removed legacy sorted-material renderer when forced on."""
     global WAVEFRONT_SORT_MATERIALS
-    WAVEFRONT_SORT_MATERIALS = _parse_sort_mode(enabled)
+    parsed = _parse_sort_mode(enabled)
+    if parsed is True:
+        WAVEFRONT_SORT_MATERIALS = "auto"
+        raise UnsupportedFeatureError(
+            "The legacy sorted-material wavefront renderer is unsupported. "
+            "Use the monolithic deterministic shade kernel."
+        )
+    WAVEFRONT_SORT_MATERIALS = parsed
 
 
 def set_fragment_shading(enabled):

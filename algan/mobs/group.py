@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from algan.animation.animation_contexts import Sync, Off
 from algan.constants.spatial import RIGHT, DOWN, ORIGIN
+from algan.errors import AlganConfigurationError
 from algan.mobs.mob import Mob
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.python_utils import traverse
@@ -48,70 +49,102 @@ class Group(Mob):
 
     """
 
-    def __init__(self, *mobs, **kwargs):
-        mobs = list(traverse(mobs))
-        self.mobs = mobs
-        if len(mobs) == 0:
-            super().__init__(ORIGIN, **kwargs)
-            return
+    def __init__(self, *mobs, _link_children=True, **kwargs):
+        initial_mobs = list(traverse(mobs))
+        self._link_children = bool(_link_children)
 
-        def mean(x):
-            x = [_ for _ in x if _ is not None]
-            if len(x) == 0:
+        def mean(values):
+            values = [value for value in values if value is not None]
+            if not values:
                 return None
-            return torch.stack([_.mean(-2, keepdim=True) for _ in x], -1).mean(-1)
+            return torch.stack(
+                [value.mean(-2, keepdim=True) for value in values], -1
+            ).mean(-1)
 
         self.traversable = False
         super().__init__(
-            self.get_mob_midpoint(),
-            color=mean(list(traverse([mob.color for mob in mobs if hasattr(mob, 'color')]))),
+            self._midpoint_for(initial_mobs),
+            color=mean(
+                list(
+                    traverse(
+                        [
+                            mob.color
+                            for mob in initial_mobs
+                            if hasattr(mob, "color")
+                        ]
+                    )
+                )
+            ),
             **kwargs,
         )
 
-        self.traversable = False
-        if all([mob.is_spawned() for mob in mobs]):
+        if self._link_children:
+            self.add_children(initial_mobs)
+        else:
+            # Group slices are non-owning views: operations still recurse over
+            # these children, but creating the view does not mutate parent links.
+            self.children[:] = initial_mobs
+        if self._link_children and initial_mobs and all(
+            mob.is_spawned() for mob in initial_mobs
+        ):
             self.spawn(animate=False)
-        self.add_children(mobs)
 
-    def get_mob_midpoint(self):
-        return midpoint(
-            list(
-                traverse(
-                    [[d.location for d in mob.get_descendants()] for mob in self.mobs]
-                )
+    @property
+    def mobs(self):
+        """Canonical group members (an alias of :attr:`children`)."""
+        return self.children
+
+    @staticmethod
+    def _midpoint_for(mobs):
+        if not mobs:
+            return ORIGIN
+        locations = list(
+            traverse(
+                [
+                    [descendant.location for descendant in mob.get_descendants()]
+                    for mob in mobs
+                ]
             )
         )
+        return midpoint(locations) if locations else ORIGIN
+
+    def get_mob_midpoint(self):
+        return self._midpoint_for(self.children)
 
     def __getitem__(self, item):
-        mobs = self.mobs[item]
+        mobs = self.children[item]
         if isinstance(mobs, Mob):
             return mobs
-        if len(mobs) == 0:
-            return Mob(
-                add_to_scene=False
-            )  # return a null mob so we can still perform ops on the result, they just won't do anything.
-        return Group(mobs)
+        # Slicing is observational: the view is not an actor and does not add
+        # itself as a parent of the selected children. Empty slices remain Group.
+        return Group(*list(mobs), add_to_scene=False, _link_children=False)
 
     def __setitem__(self, item, value):
-        self.mobs[item] = value
+        replacement = list(self.children)
+        if isinstance(item, slice):
+            replacement[item] = list(traverse((value,)))
+        else:
+            replacement[item] = value
+        self.replace_children(replacement, link_parents=self._link_children)
+        return self
 
     def __iter__(self):
-        return self.mobs.__iter__()
+        return iter(self.children)
 
     def __len__(self):
-        return len(self.mobs)
+        return len(self.children)
 
     def add(self, *mobs):
-        """Add one or more Mobs and return this group.
-
-        The variadic, chainable form matches Manim's ``Group.add`` while
-        remaining backwards compatible with Algan's former single-Mob API.
-        """
+        """Add one or more Mobs and return this group."""
         mobs = list(traverse(mobs))
         if not mobs:
             return self
-        self.add_children(mobs)
-        self.mobs.extend(mobs)
+        if self._link_children:
+            self.add_children(mobs)
+        else:
+            new_children = [*self.children, *mobs]
+            self._validate_new_children(new_children)
+            self.children[:] = new_children
         with Off():
             self.set_non_recursive(location=self.get_mob_midpoint())
         return self
@@ -159,6 +192,9 @@ class Group(Mob):
 
         """
 
+        if not self.children:
+            return self
+
         mob_sizes = [
             (
                 m.get_boundary_in_direction(direction)
@@ -197,6 +233,8 @@ class Group(Mob):
         return self
 
     def arrange_between_points(self, start, end):
+        if not self.children:
+            return self
         dif = end - start
         with Sync():
             for i, mob in enumerate(self.mobs):
@@ -249,11 +287,15 @@ class Group(Mob):
             render_to_file()
 
         """
+        if not self.children:
+            return self
         if column_buffer is None:
             column_buffer = buffer
         if num_rows is None:
-            num_rows = math.isqrt(len(self.mobs))
-        num_cols = len(self.mobs) // num_rows
+            num_rows = max(1, math.isqrt(len(self.children)))
+        if not isinstance(num_rows, int) or isinstance(num_rows, bool) or num_rows <= 0:
+            raise AlganConfigurationError("num_rows must be a positive integer")
+        num_cols = len(self.children) // num_rows
         if num_rows * num_cols < len(self.mobs):
             num_cols += 1
         row_direction = F.normalize(row_direction, p=2, dim=-1)
@@ -271,29 +313,31 @@ class Group(Mob):
             if tight_axis == 0:
                 buf_dist1 = [
                     max(
-                        [
-                            self.mobs[i + j * num_cols].get_length_in_direction(
-                                row_direction
-                            )
-                            for j in range(num_rows)
-                        ]
+                        self.mobs[i + j * num_cols].get_length_in_direction(
+                            row_direction
+                        )
+                        for j in range(num_rows)
+                        if i + j * num_cols < len(self.mobs)
                     )
-                    + column_buffer
+                    + buffer
                     for i in range(num_cols)
                 ]
             elif tight_axis == 1:
                 buf_dist2 = [
                     max(
-                        [
-                            self.mobs[i + j * num_cols].get_length_in_direction(
-                                row_direction
-                            )
-                            for i in range(num_cols)
-                        ]
+                        self.mobs[i + j * num_cols].get_length_in_direction(
+                            column_direction
+                        )
+                        for i in range(num_cols)
+                        if i + j * num_cols < len(self.mobs)
                     )
-                    + buffer
+                    + column_buffer
                     for j in range(num_rows)
+                    if j * num_cols < len(self.mobs)
                 ]
+            else:
+                raise ValueError("tight_axis must be 0, 1, or None")
+
 
         start = self.location - (
             row_direction * sum(buf_dist1) * 0.5

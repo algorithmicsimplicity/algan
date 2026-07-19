@@ -38,6 +38,7 @@ c = torch.inference_mode()
 c.__enter__()
 
 from algan.settings.defaults import *
+from algan.errors import *
 from algan.settings.style_defaults import *
 from algan.logging.logger import get_logger, set_log_level
 
@@ -124,7 +125,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _light_vis as fragment_light_vis,
 )
 
-from algan.rendering.raytracing.tracer import render_batch_raytraced
+from algan.rendering.raytracing.tracer import RenderPlan, render_batch_raytraced
 
 from algan.settings.kernel_settings import KERNEL_SETTINGS
 KERNEL_SETTINGS.render_kernel = render_batch_raytraced
@@ -166,11 +167,11 @@ def clear_cache(include_taichi_kernels=False):
 
 def default_scene_initializer(scene):
     scene.camera = Camera(location=CAMERA_ORIGIN).spawn(animate=False)
-    scene.light_sources = [
-        PointLight(
-            location=scene.camera.location + UP * 1 + RIGHT * 5 + OUT * 1, color=WHITE
-        ).spawn(animate=False)
-    ]
+    scene.light_sources = []
+    PointLight(
+        location=scene.camera.location + UP * 1 + RIGHT * 5 + OUT * 1,
+        color=WHITE,
+    ).spawn(animate=False)
 
 
 # The scene itself is created lazily, on the first SceneManager.instance()
@@ -179,3 +180,35 @@ SceneManager.set_scene_class(Scene, default_scene_initializer)
 
 # Re-exported for backwards compatibility; it now runs lazily on first Tex use.
 from algan.mobs.text import make_manim_dir
+
+# Curate star imports without removing backwards-compatible attribute access.
+# Public Algan callables/classes and upper-case authoring constants remain
+# available, while dependency modules, typing helpers, and import machinery do
+# not leak into ``from algan import *``.
+from types import ModuleType as _ModuleType
+
+_ROOT_EXPORT_EXCLUSIONS = {
+    "default_scene_initializer",
+    "get_logger",
+    "install_opengl_aliases",
+}
+
+
+def _is_root_export(name, value):
+    if name.startswith("_") or name in _ROOT_EXPORT_EXCLUSIONS:
+        return False
+    if isinstance(value, _ModuleType):
+        return False
+    origin = getattr(value, "__module__", "")
+    if callable(value):
+        return origin == "algan" or origin.startswith("algan.")
+    return name.isupper()
+
+
+__all__ = tuple(
+    sorted(
+        name
+        for name, value in globals().items()
+        if _is_root_export(name, value)
+    )
+)

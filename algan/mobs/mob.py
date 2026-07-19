@@ -210,8 +210,9 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         return [s * t + (1 - t) * e for t in torch.linspace(0, 1, num_points + 2)[1:-1]]
 
     def reset_basis(self):
-        """Resets the Mob's basis to the identity matrix (no rotation, unit scale)."""
-        self.basis = cast_to_tensor(cast_to_tensor(squish(torch.eye(3))))
+        """Reset the basis to identity and return ``self``."""
+        self.basis = cast_to_tensor(squish(torch.eye(3)))
+        return self
 
     def register_attrs_as_animatable(self, attrs: list[str], my_class=None):
         """
@@ -1454,23 +1455,19 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         return self
 
     def spawn_from_random_direction(self, travel_distance: float = 0.1):
-        """
-        Animates the Mob appearing from a random direction, fading in and optionally rotating.
-        This sets the initial opacity to 0 and then animates it to 1.
-        """
-        with Off():  # Ensure initial state setting is not recorded as an animation
-            self.opacity = 0
-        self._create_recursive(
-            animate=False
-        )  # Mark as created without immediate animation
-        with Sync(
-            run_time=None, rate_func=ease_out_exp
-        ):  # Synchronized animation with ease-out
-            # Example of potential animated properties (currently commented out)
-            # self.location = loc
-            # self.rotate(720, F.normalize(torch.randn_like(self.location), p=2, dim=-1))
-            self.opacity = 1  # Animate opacity to full
-            # with Synchronized(run_time=2, rate_func=tan):
+        """Fade and move this Mob in from a random world-space direction."""
+        final_location = self.location.clone()
+        final_opacity = self.opacity.clone()
+        direction = F.normalize(
+            torch.randn_like(final_location), p=2, dim=-1, eps=1e-12
+        )
+        with Off():
+            self.location = final_location - direction * float(travel_distance)
+            self.opacity = torch.zeros_like(final_opacity)
+        self._create_recursive(animate=False)
+        with Sync(run_time=None, rate_func=ease_out_exp):
+            self.location = final_location
+            self.opacity = final_opacity
         return self
 
     def __len__(self) -> int:
@@ -1481,22 +1478,17 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         return self.location.shape[-2] if hasattr(self, "location") else 1
 
     def despawn_from_random_direction(self, travel_distance: float = 0.1):
-        """Animates the Mob disappearing into a random direction, fading out and optionally rotating.
-        This animates the opacity to 0 and then marks the Mob as destroyed.
-
-        """
-        with Sync(
-            run_time=None, rate_func=inversed(ease_out_exp)
-        ):  # Synchronized animation with inversed ease-out
-            current_location = self.location
-            # Example of potential animated properties (currently commented out)
-            # self.location = current_location + torch.randn_like(current_location) * travel_distance
-            # self.rotate(720, F.normalize(torch.randn_like(self.location), p=2, dim=-1))
-            self.opacity = 0  # Animate opacity to zero
-            # self._destroy_recursive(animate=False)  # Mark as destroyed without immediate animation
-            # with Synchronized(run_time=2, rate_func=tan):
-            # self.destroy()
-        return self
+        """Fade and move this Mob out, then end its lifespan."""
+        if not self.is_spawned() or self.is_despawned():
+            return self
+        current_location = self.location.clone()
+        direction = F.normalize(
+            torch.randn_like(current_location), p=2, dim=-1, eps=1e-12
+        )
+        with Sync(run_time=None, rate_func=inversed(ease_out_exp)):
+            self.location = current_location + direction * float(travel_distance)
+            self.opacity = torch.zeros_like(self.opacity)
+        return self.despawn(animate=False)
 
     def set_data_sub_inds(self, data_sub_inds: list[int] | slice):
         """Sets the sub-indices that this Mob will use when reading and writing

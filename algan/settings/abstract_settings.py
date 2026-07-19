@@ -1,77 +1,98 @@
 import dataclasses
+import difflib
 import typing
 from copy import deepcopy
 
+from algan.errors import AlganConfigurationError
+
 
 def _is_special_var(annotation) -> bool:
-    """
-    Determines if an annotation is a ClassVar, InitVar, or KW_ONLY marker,
-    meaning it is not a standard instance field and shouldn't get a setter.
-    """
-    # 1. Handle string/deferred annotations (e.g. x: 'ClassVar[int]')
+    """Return whether an annotation is not a normal instance setting field."""
     if isinstance(annotation, str):
-        return any(marker in annotation for marker in ('ClassVar', 'InitVar', 'KW_ONLY'))
+        return any(
+            marker in annotation
+            for marker in ("ClassVar", "InitVar", "KW_ONLY")
+        )
 
-    # 2. Check for dataclasses.KW_ONLY (Python 3.10+)
-    if annotation is getattr(dataclasses, 'KW_ONLY', None):
+    if annotation is getattr(dataclasses, "KW_ONLY", None):
         return True
 
-    # Get the origin type (e.g., ClassVar[int] -> ClassVar)
     origin = typing.get_origin(annotation) or annotation
-
-    # 3. Check for typing.ClassVar
     if origin is typing.ClassVar:
         return True
 
-    # 4. Check for dataclasses.InitVar
-    if origin is getattr(dataclasses, 'InitVar', None) or isinstance(annotation,
-                                                                     getattr(dataclasses, 'InitVar', type(None))):
+    init_var = getattr(dataclasses, "InitVar", None)
+    if origin is init_var or (init_var is not None and isinstance(annotation, init_var)):
         return True
 
     return False
 
 
 class Settings:
-    """
-    A base class that automatically generates a set_<field> method
-    for every dataclass field defined in its subclasses, and makes
-    all set operations non-inplace.
+    """Base for non-mutating, validated setting objects.
+
+    Subclasses normally use :func:`dataclasses.dataclass`.  ``set`` and the
+    generated ``set_<field>`` methods return a copy and reject unknown names,
+    so misspelled options fail at the point of use instead of becoming inert
+    attributes.
     """
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
 
-        # Helper function to generate the setter method dynamically.
-        # This prevents late-binding closure bugs in loops.
         def make_setter(field_name: str):
             def setter(self, value):
-                self = self.clone()
-                setattr(self, field_name, value)
-                return self  # Return self to allow method chaining
+                return self.set(**{field_name: value})
 
             setter.__name__ = f"set_{field_name}"
-            setter.__doc__ = f"Automatically generated setter for '{field_name}'."
+            setter.__doc__ = f"Return a copy with '{field_name}' set to value."
             return setter
 
-        # Walk through the MRO (Method Resolution Order) in reverse.
-        # This ensures we handle inherited fields just like @dataclass does.
         for base in reversed(cls.__mro__):
-            if hasattr(base, '__annotations__'):
-                for name, annotation in base.__annotations__.items():
-                    if _is_special_var(annotation):
-                        continue
+            for name, annotation in getattr(base, "__annotations__", {}).items():
+                if _is_special_var(annotation):
+                    continue
+                setter_name = f"set_{name}"
+                if not hasattr(cls, setter_name):
+                    setattr(cls, setter_name, make_setter(name))
 
-                    setter_name = f"set_{name}"
+    @classmethod
+    def _declared_field_names(cls) -> set[str]:
+        names: set[str] = set()
+        for base in reversed(cls.__mro__):
+            for name, annotation in getattr(base, "__annotations__", {}).items():
+                if not _is_special_var(annotation):
+                    names.add(name)
+        return names
 
-                    # Only add the method if it wasn't manually defined by the user
-                    if not hasattr(cls, setter_name):
-                        setattr(cls, setter_name, make_setter(name))
+    def _validate(self):
+        """Hook for non-dataclass subclasses that need semantic validation."""
+        return None
 
     def set(self, **kwargs):
-        self = self.clone()
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-        return self
+        valid = self._declared_field_names()
+        unknown = [name for name in kwargs if name not in valid]
+        if unknown:
+            name = unknown[0]
+            suggestion = difflib.get_close_matches(name, sorted(valid), n=1)
+            hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+            raise AlganConfigurationError(
+                f"Unknown {type(self).__name__} setting '{name}'.{hint}"
+            )
+
+        if dataclasses.is_dataclass(self):
+            try:
+                result = dataclasses.replace(self, **kwargs)
+            except (TypeError, ValueError) as exc:
+                raise AlganConfigurationError(str(exc)) from exc
+        else:
+            result = self.clone()
+            for key, value in kwargs.items():
+                setattr(result, key, value)
+            result._validate()
+        return result
+
+    replace = set
 
     def clone(self):
         return deepcopy(self)
