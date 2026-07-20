@@ -1,4 +1,7 @@
 import gc
+import os
+import time
+
 import torch
 
 from algan.settings.defaults import COMPUTING_DEFAULTS
@@ -41,6 +44,31 @@ def _gpu_memory_pressure(threshold=0.8):
         return True
 
 
+# Opportunistic (force_gc=False) reclaim throttles. On a card where the render
+# arena reserves most of VRAM, the driver-level pressure test above is
+# chronically true, so the "conditional" gc fired on every call and the
+# per-batch reclaim added up to ~5% of render wall time. A full gc pass only
+# matters for breaking reference cycles, which accumulate slowly -- rate-limit
+# it. ``torch.cuda.empty_cache()`` is not free either (each cached-block
+# cudaFree synchronizes the device, serializing the async render pipeline), so
+# it is skipped when the allocator holds too little reclaimable cache to be
+# worth returning. Explicit ``force_gc=True`` callers (OOM retries, arena
+# sizing) always reclaim everything.
+_GC_MIN_INTERVAL_S = float(os.environ.get("ALGAN_GC_MIN_INTERVAL_S", "5.0"))
+_EMPTY_CACHE_MIN_BYTES = int(float(os.environ.get(
+    "ALGAN_EMPTY_CACHE_MIN_MB", "64")) * 1024 * 1024)
+_last_gc_time = 0.0
+
+
+def _cuda_reclaimable_bytes():
+    """Bytes torch's CUDA caching allocator holds but is not using."""
+    try:
+        return (torch.cuda.memory_reserved()
+                - torch.cuda.memory_allocated())
+    except Exception:
+        return _EMPTY_CACHE_MIN_BYTES  # No telemetry; keep reclaiming.
+
+
 def empty_cache(force_gc=True):
     """Reclaim freed memory back to the allocators.
 
@@ -48,15 +76,25 @@ def empty_cache(force_gc=True):
     call (~0.2s each on a large scene; it was costing ~40% of a small render
     when called several times per frame batch). It is only needed to break
     *reference cycles* -- reference counting already frees the (explicitly
-    nulled) geometry tensors immediately -- so it is skipped unless the GPU is
-    actually under memory pressure (where reclaiming cyclic garbage matters for
-    avoiding OOM) or ``force_gc`` is set. ``torch.cuda.empty_cache()`` is cheap
-    (~ms) and always runs to return the freed blocks to the allocator.
+    nulled) geometry tensors immediately -- so opportunistic callers
+    (``force_gc=False``) run it only under GPU memory pressure and at most once
+    per ``ALGAN_GC_MIN_INTERVAL_S`` seconds, and skip the device cache release
+    when the allocator holds under ``ALGAN_EMPTY_CACHE_MIN_MB`` of reclaimable
+    cache (each cached-block cudaFree synchronizes the device). ``force_gc=True``
+    (OOM retries, arena sizing) always reclaims everything.
     """
-    if force_gc or _gpu_memory_pressure():
+    global _last_gc_time
+    if force_gc:
         gc.collect()
+        _last_gc_time = time.monotonic()
+    elif _gpu_memory_pressure():
+        now = time.monotonic()
+        if now - _last_gc_time >= _GC_MIN_INTERVAL_S:
+            gc.collect()
+            _last_gc_time = now
     if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+        if force_gc or _cuda_reclaimable_bytes() >= _EMPTY_CACHE_MIN_BYTES:
+            torch.cuda.empty_cache()
     if torch.mps.is_available():
         torch.mps.empty_cache()
 

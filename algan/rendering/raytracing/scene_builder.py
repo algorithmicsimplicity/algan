@@ -504,6 +504,14 @@ def _split_promotable(p, _append_texture, device, scene):
             mmap.reshape(mmap.shape[0], 1, 1, 5).float().contiguous())
         if bool((mmap[..., 3] > 1e-6).any()):
             scene["tex_has_refractive"] = True
+        # Promoted metalness/IOR that can produce a nonzero Fresnel lobe
+        # (mirrors _material_reflectance: metalness < 0 is the non-PBR
+        # sentinel with R = 0; metalness 0 still reflects through the
+        # dielectric lobe when IOR > 1).
+        if bool(((mmap[..., 0] > 0.0)
+                 | ((mmap[..., 0] >= 0.0)
+                    & (mmap[..., 2].abs() > 1.0 + 1e-4))).any()):
+            scene["tex_has_reflective"] = True
         group_meta.append([*color_meta, *material_meta, -1, 0, 0,
                            1 | 2 | 4 | 8])
     group_meta = torch.tensor(group_meta, dtype=torch.int32, device=device)
@@ -512,29 +520,33 @@ def _split_promotable(p, _append_texture, device, scene):
 
 
 def _build_accel(lo, hi, num_frames, tightness, opaque=None,
-                 builder="morton"):
+                 builder="morton", refit=None):
     """Build one geometry type's acceleration structure: the classic
     spatio-temporal instance tree, or -- under ``settings.BVH_REFIT`` -- the
     shared-topology binned-SAH refit tree (refit_bvh.py; ``tightness`` /
     ``builder`` do not apply there). All trees of a batch dispatch through
     this one gate so every launch passes a single consistent ``refit``
-    template to the kernels."""
+    template to the kernels. ``refit`` overrides the live toggle so a
+    deferred build (see ``build_deferred_bvhs``) reproduces the tree kind the
+    batch's placeholder trees were merged with, even if the user flipped the
+    toggle in between."""
     from algan.rendering.raytracing import settings as _rts
-    if _rts.refit_bvh_active():
+    if _rts.refit_bvh_active() if refit is None else refit:
         return build_refit_bvh(lo, hi, num_frames=num_frames, opaque=opaque)
     return build_stbvh(lo, hi, num_frames=num_frames, tightness=tightness,
                        opaque=opaque, builder=builder)
 
 
-def _empty_scene_part(device):
+def _empty_scene_part(device, refit=None):
     """Placeholder BVH + arrays for an absent geometry type (same tree kind
     as the batch's real trees, so one compile-time flag covers all six)."""
     lo = torch.full((1, 1, 3), EMPTY_LO, device=device)
     hi = torch.full((1, 1, 3), EMPTY_HI, device=device)
-    return _build_accel(lo, hi, num_frames=1, tightness=2.0)
+    return _build_accel(lo, hi, num_frames=1, tightness=2.0, refit=refit)
 
 
-def _build_opaque_bvh(lo, hi, opaque, num_frames, tightness, builder="morton"):
+def _build_opaque_bvh(lo, hi, opaque, num_frames, tightness, builder="morton",
+                      refit=None):
     """Build a BVH containing only primitives proven opaque when visible.
 
     The primitive index space is intentionally unchanged; transparent and
@@ -552,7 +564,170 @@ def _build_opaque_bvh(lo, hi, opaque, num_frames, tightness, builder="morton"):
     return _build_accel(
         opaque_lo.contiguous(), opaque_hi.contiguous(),
         num_frames=num_frames, tightness=tightness,
-        opaque=visible_opaque.contiguous(), builder=builder)
+        opaque=visible_opaque.contiguous(), builder=builder, refit=refit)
+
+
+def _bvh_deferral_eligible(scene):
+    """Conservatively true when this batch provably never traverses a BVH.
+
+    The hybrid raster front-end resolves and shades every primary ray without
+    the trees; the trees are only walked by (a) primary traversal when a batch
+    routes to the classic wavefront, (b) the sparse shadow queue, (c) bounced
+    reflection/refraction/scatter continuations, and (d) the Monte Carlo
+    megakernel. Every merge-time-knowable trigger for those is excluded here;
+    runtime-only triggers (camera near clip, toggles flipped after the merge,
+    an actually spawned continuation) are caught by the tracer, which calls
+    ``build_deferred_bvhs`` before any traversal could happen -- so a false
+    positive here costs a late build, never a wrong image.
+    """
+    from algan.rendering.raytracing import settings as _rts
+    if not (_rts.BVH_DEFER and _rts.HYBRID_RASTER):
+        return False
+    if int(_rts.SAMPLES_PER_PIXEL) > 1 or _rts.SHADOWS or _rts.INPLACE_AA:
+        return False
+    if _rts.WF_TEXTURED or scene.get("textured_active"):
+        return False
+    if scene.get("mem_trim_active"):
+        return False
+    # Custom fragment pipelines may override scattering; conservatively keep
+    # the trees for any scene that carries one.
+    if scene.get("has_user_pipeline"):
+        return False
+    if (scene.get("has_refractive") or scene.get("has_refl_transparent")
+            or scene.get("tri_has_reflective")
+            or scene.get("bez_has_reflective")):
+        return False
+    if scene["num_pn"] > 0:
+        return False
+    return scene["num_triangles"] > 0 or scene["num_circuits"] > 0
+
+
+def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames,
+                   device):
+    """Build each geometry type's STBVHs from the captured merge inputs, or
+    record a deferral (placeholder trees + retained build inputs) for batches
+    that provably never traverse one (see ``_bvh_deferral_eligible``)."""
+    if pn_inputs is not None:
+        lo, hi, opaque = pn_inputs
+        scene["pn_bvh"] = _build_accel(
+            lo, hi, num_frames=num_frames,
+            tightness=RayTracedPNTrianglePrimitive.stbvh_tightness,
+            opaque=opaque)
+        if not scene["pn_has_opaque"]:
+            scene["pn_opaque_bvh"] = _empty_scene_part(device)
+        elif not scene["pn_has_translucent"]:
+            scene["pn_opaque_bvh"] = scene["pn_bvh"]
+        else:
+            scene["pn_opaque_bvh"] = _build_opaque_bvh(
+                lo, hi, opaque, num_frames,
+                RayTracedPNTrianglePrimitive.stbvh_tightness)
+
+    if (_bvh_deferral_eligible(scene)
+            and (tri_inputs is not None or bez_inputs is not None)):
+        from algan.rendering.raytracing import settings as _rts
+        placeholder = _empty_scene_part(device)
+        if tri_inputs is not None:
+            lo, hi, opaque = tri_inputs
+            # Retained for the on-demand build (bez lo/hi are already stored
+            # for the raster frontend; tri pair generation uses tri_screen).
+            scene["tri_frame_lo"] = lo.contiguous()
+            scene["tri_frame_hi"] = hi.contiguous()
+            scene["tri_bvh"] = placeholder
+            scene["tri_opaque_bvh"] = placeholder
+        if bez_inputs is not None:
+            scene["bez_bvh"] = placeholder
+            scene["bez_opaque_bvh"] = placeholder
+        scene["bvh_deferred"] = True
+        scene["bvh_deferred_refit"] = bool(_rts.refit_bvh_active())
+        return
+
+    scene["bvh_deferred"] = False
+    if tri_inputs is not None:
+        lo, hi, opaque = tri_inputs
+        # Median-split ordering: ~25% faster traversal than Morton at ~0.2s
+        # extra build per batch; byte-identical for triangles (the depth-peel
+        # is arrangement-invariant). PN/bezier BVHs stay Morton -- their
+        # seam de-dup is discovery-order sensitive (see stbvh._BVH_BUILD).
+        scene["tri_bvh"] = _build_accel(
+            lo, hi, num_frames=num_frames,
+            tightness=RayTracedTrianglePrimitive.stbvh_tightness,
+            opaque=opaque, builder="split")
+        if not scene["tri_has_opaque"]:
+            scene["tri_opaque_bvh"] = _empty_scene_part(device)
+        elif not scene["tri_has_translucent"]:
+            scene["tri_opaque_bvh"] = scene["tri_bvh"]
+        else:
+            scene["tri_opaque_bvh"] = _build_opaque_bvh(
+                lo, hi, opaque, num_frames,
+                RayTracedTrianglePrimitive.stbvh_tightness, builder="split")
+    if bez_inputs is not None:
+        lo, hi, opaque = bez_inputs
+        scene["bez_bvh"] = _build_accel(
+            lo, hi, num_frames=num_frames,
+            tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
+            opaque=opaque)
+        if not scene["bez_has_opaque"]:
+            scene["bez_opaque_bvh"] = _empty_scene_part(device)
+        elif not scene["bez_has_translucent"]:
+            scene["bez_opaque_bvh"] = scene["bez_bvh"]
+        else:
+            scene["bez_opaque_bvh"] = _build_opaque_bvh(
+                lo, hi, opaque, num_frames,
+                RayTracedBezierCircuitPrimitive.stbvh_tightness)
+
+
+def build_deferred_bvhs(merged):
+    """Build the STBVHs a deferred batch skipped (see ``_finalize_bvhs``).
+
+    Called by the tracer the moment anything actually needs a tree: shadows,
+    classic-wavefront routing, an actually spawned continuation ray, or the
+    Monte Carlo path. Idempotent, and forces the tree kind recorded at merge
+    time so the batch's placeholder and real trees always agree on the
+    ``refit`` kernel template.
+    """
+    if not merged.get("bvh_deferred"):
+        return
+    refit = bool(merged.get("bvh_deferred_refit"))
+    num_frames = int(merged["num_frames"])
+    if merged.get("num_triangles", 0) > 0 \
+            and merged.get("tri_frame_lo") is not None:
+        lo = merged["tri_frame_lo"]
+        hi = merged["tri_frame_hi"]
+        opaque = merged["tri_frame_opaque"]
+        merged["tri_bvh"] = _build_accel(
+            lo, hi, num_frames=num_frames,
+            tightness=RayTracedTrianglePrimitive.stbvh_tightness,
+            opaque=opaque, builder="split", refit=refit)
+        if not merged["tri_has_opaque"]:
+            merged["tri_opaque_bvh"] = _empty_scene_part(lo.device,
+                                                         refit=refit)
+        elif not merged["tri_has_translucent"]:
+            merged["tri_opaque_bvh"] = merged["tri_bvh"]
+        else:
+            merged["tri_opaque_bvh"] = _build_opaque_bvh(
+                lo, hi, opaque, num_frames,
+                RayTracedTrianglePrimitive.stbvh_tightness, builder="split",
+                refit=refit)
+        merged["tri_frame_lo"] = None
+        merged["tri_frame_hi"] = None
+    if merged.get("num_circuits", 0) > 0:
+        lo = merged["bez_frame_lo"]
+        hi = merged["bez_frame_hi"]
+        opaque = merged["bez_frame_opaque"]
+        merged["bez_bvh"] = _build_accel(
+            lo, hi, num_frames=num_frames,
+            tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
+            opaque=opaque, refit=refit)
+        if not merged["bez_has_opaque"]:
+            merged["bez_opaque_bvh"] = _empty_scene_part(lo.device,
+                                                         refit=refit)
+        elif not merged["bez_has_translucent"]:
+            merged["bez_opaque_bvh"] = merged["bez_bvh"]
+        else:
+            merged["bez_opaque_bvh"] = _build_opaque_bvh(
+                lo, hi, opaque, num_frames,
+                RayTracedBezierCircuitPrimitive.stbvh_tightness, refit=refit)
+    merged["bvh_deferred"] = False
 
 
 def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
@@ -914,6 +1089,11 @@ def _merge_scene(primitives):
         return (o, w, h)
 
     scene["tex_has_refractive"] = False
+    scene["tex_has_reflective"] = False
+    # Per-geometry BVH build inputs, captured by the merge sections below and
+    # consumed at the end by ``_finalize_bvhs`` (which either builds the trees
+    # or, for batches that provably never traverse one, defers them).
+    tri_bvh_inputs = pn_bvh_inputs = bez_bvh_inputs = None
     if triangles:
         # Constant-property promotion: triangles whose colour + material params
         # are constant across their corners (and frames) are rendered from a
@@ -1060,6 +1240,11 @@ def _merge_scene(primitives):
             if (mtex is not None and (flags & 8)
                     and bool((mtex[..., 3] > 1e-6).any())):
                 scene["tex_has_refractive"] = True
+            # A metalness-driving material map may produce a Fresnel lobe;
+            # deliberately coarse (any such map counts) -- a false positive
+            # only keeps the BVHs eagerly built.
+            if mtex is not None and (flags & 1):
+                scene["tex_has_reflective"] = True
             meta_parts.append(torch.tensor(
                 [*color_meta, *material_meta, *normal_meta, flags],
                 dtype=torch.int32, device=device).view(1, 10).expand(
@@ -1080,28 +1265,15 @@ def _merge_scene(primitives):
             scene["tri_tex_meta"] = torch.full((1, 10), -1, dtype=torch.int32,
                                                device=device)
 
-        # Median-split ordering: ~25% faster traversal than Morton at ~0.2s
-        # extra build per batch; byte-identical for triangles (the depth-peel
-        # is arrangement-invariant). PN/bezier BVHs below stay Morton -- their
-        # seam de-dup is discovery-order sensitive (see stbvh._BVH_BUILD).
-        scene["tri_bvh"] = _build_accel(
-            lo, hi, num_frames=num_frames,
-            tightness=RayTracedTrianglePrimitive.stbvh_tightness,
-            opaque=opaque, builder="split")
         # Per-(frame, prim) visibility/opacity masks for the hybrid raster
         # front-end (settings.HYBRID_RASTER): candidate emission skips
         # invisible triangles and routes proven-opaque ones to the z-prepass.
         # Derived from the same bounds/opacity arrays the STBVH build uses.
         scene["tri_frame_valid"] = (hi >= lo).all(-1).contiguous()
         scene["tri_frame_opaque"] = opaque.contiguous()
-        if not scene["tri_has_opaque"]:
-            scene["tri_opaque_bvh"] = _empty_scene_part(device)
-        elif not scene["tri_has_translucent"]:
-            scene["tri_opaque_bvh"] = scene["tri_bvh"]
-        else:
-            scene["tri_opaque_bvh"] = _build_opaque_bvh(
-                lo, hi, opaque, num_frames,
-                RayTracedTrianglePrimitive.stbvh_tightness, builder="split")
+        # Triangle STBVHs are built (or deferred) in _finalize_bvhs once every
+        # routing flag this batch needs is known.
+        tri_bvh_inputs = (lo, hi, opaque)
         if _rts.WF_MEM_TRIM:
             _build_mem_trim(scene, lo, hi, opaque, num_frames, device)
     else:
@@ -1130,11 +1302,26 @@ def _merge_scene(primitives):
             torch.empty((0, 0), dtype=torch.bool, device=device))
     scene["num_triangles"] = scene["tri_pos"].shape[1] if triangles else 0
 
-    # Vestigial keys from the retired knot temporal-compression experiment
+    # Vestigial key from the retired knot temporal-compression experiment
     # (in-kernel reconstruction of per-frame triangle positions); nothing
-    # reads them any more.
+    # reads it any more.
     scene["tri_tc"] = None
-    scene["tri_has_reflective"] = False
+    # Any triangle whose material can produce a nonzero Fresnel lobe (mirrors
+    # _material_reflectance: per-corner metalness in tri_extra cols 0/2/4, -1
+    # = non-PBR sentinel with R = 0 exactly; metalness 0 still reflects when
+    # the paired per-corner IOR in cols 6-8 exceeds 1). Promoted / material-
+    # texture-driven metalness is tracked by ``tex_has_reflective``. Consumed
+    # by the BVH deferral predicate: a reflective surface can spawn a
+    # continuation ray, which needs the trees.
+    if triangles:
+        e = scene["tri_extra"]
+        refl = e[..., 0:6:2]
+        ior = e[..., 6:9].abs()
+        scene["tri_has_reflective"] = bool(
+            ((refl > 0.0) | ((refl >= 0.0) & (ior > 1.0 + 1e-4))).any()
+            or scene.get("tex_has_reflective"))
+    else:
+        scene["tri_has_reflective"] = bool(scene.get("tex_has_reflective"))
 
     if pn_patches:
         scene["pn_ctrl"] = _cat_collections(
@@ -1203,18 +1390,9 @@ def _merge_scene(primitives):
              and not _texture_alpha_is_opaque(p._rt_texture_map))
             for p in pn_patches)
         _record_visibility("pn", lo, hi, opaque, pn_uncertain_alpha)
-        scene["pn_bvh"] = _build_accel(
-            lo, hi, num_frames=num_frames,
-            tightness=RayTracedPNTrianglePrimitive.stbvh_tightness,
-            opaque=opaque)
-        if not scene["pn_has_opaque"]:
-            scene["pn_opaque_bvh"] = _empty_scene_part(device)
-        elif not scene["pn_has_translucent"]:
-            scene["pn_opaque_bvh"] = scene["pn_bvh"]
-        else:
-            scene["pn_opaque_bvh"] = _build_opaque_bvh(
-                lo, hi, opaque, num_frames,
-                RayTracedPNTrianglePrimitive.stbvh_tightness)
+        # PN STBVHs are built in _finalize_bvhs (never deferred -- PN routes
+        # to the classic primary traversal).
+        pn_bvh_inputs = (lo, hi, opaque)
     else:
         scene["pn_ctrl"] = torch.zeros((1, 1, 18), device=device)
         scene["pn_obb"] = torch.zeros((1, 1, 12), device=device)
@@ -1345,18 +1523,8 @@ def _merge_scene(primitives):
         scene["bez_frame_opaque"] = opaque.contiguous()
         scene["bez_frame_lo"] = lo.contiguous()
         scene["bez_frame_hi"] = hi.contiguous()
-        scene["bez_bvh"] = _build_accel(
-            lo, hi, num_frames=num_frames,
-            tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
-            opaque=opaque)
-        if not scene["bez_has_opaque"]:
-            scene["bez_opaque_bvh"] = _empty_scene_part(device)
-        elif not scene["bez_has_translucent"]:
-            scene["bez_opaque_bvh"] = scene["bez_bvh"]
-        else:
-            scene["bez_opaque_bvh"] = _build_opaque_bvh(
-                lo, hi, opaque, num_frames,
-                RayTracedBezierCircuitPrimitive.stbvh_tightness)
+        # Bezier STBVHs are built (or deferred) in _finalize_bvhs.
+        bez_bvh_inputs = (lo, hi, opaque)
         scene["num_circuits"] = scene["circuit_meta"].shape[1]
         # Any PBR circuit, not just a metallic one: metalness >= 0 is the whole
         # test, because a dielectric (metalness 0) still reflects its Fresnel
@@ -1420,6 +1588,13 @@ def _merge_scene(primitives):
             and scene["num_pn"] == 0 and scene["num_circuits"] == 0):
         _build_textured_scene(scene, num_frames, device)
         scene["textured_active"] = True
+
+    # Build the per-geometry STBVHs -- or, for batches that provably never
+    # traverse one (hybrid-raster primaries, no shadows, no reflective /
+    # refractive / scatter materials), defer them entirely; the tracer builds
+    # them on demand via ``build_deferred_bvhs`` if anything changes its mind.
+    _finalize_bvhs(scene, tri_bvh_inputs, pn_bvh_inputs, bez_bvh_inputs,
+                   num_frames, device)
 
     # The merged tensors replace the per-collection ones; release the
     # originals so peak GPU memory stays close to one copy of the scene.

@@ -316,6 +316,27 @@ def set_refit_bvh(enabled):
     BVH_REFIT = bool(enabled)
 
 
+# Skip building the per-batch STBVHs when the batch provably never traverses
+# one: the hybrid raster front-end resolves and shades all primary rays
+# without trees, so a deterministic, shadow-free batch with no reflective /
+# refractive / custom-scatter materials leaves them untouched (the trees were
+# ~2.5s of build per batch on the MD bezier profile). Placeholder trees keep
+# the kernel ABI; scene_builder.build_deferred_bvhs builds the real trees on
+# demand the moment shadows, classic routing, an actually spawned continuation
+# ray, or the Monte Carlo path needs them -- so the rendered output is always
+# exactly what the eager build produces. ALGAN_BVH_DEFER=0 disables (for A/B
+# and validation).
+BVH_DEFER = os.environ.get("ALGAN_BVH_DEFER", "1") == "1"
+
+
+def set_bvh_defer(enabled):
+    """Toggle deferred (on-demand) STBVH builds for batches that provably do
+    not traverse them (see ``BVH_DEFER``). Takes effect at the next batch's
+    scene merge."""
+    global BVH_DEFER
+    BVH_DEFER = bool(enabled)
+
+
 def refit_bvh_active():
     """Live effective value of the refit-BVH toggle: the legacy textured /
     sorted-material orchestrators walk the classic tree only."""

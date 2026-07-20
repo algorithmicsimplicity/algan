@@ -90,6 +90,11 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
 # Candidate pixels per (prim, chunk) pair: one fine-raster thread tests at
 # most this many pixels, bounding load imbalance for large bboxes.
 RASTER_CHUNK = 256
+# Survivor bitmask words per pair (one bit per candidate pixel), written by
+# ``raster_bez_count`` and consumed by ``raster_bez_write`` so the write pass
+# re-evaluates only surviving pixels instead of repeating the full (and
+# expensive) circuit hit test for every bbox candidate.
+RASTER_MASK_WORDS = RASTER_CHUNK // 32
 
 # Empty typed visibility-buffer entry. Real hits pack the same strict ordering
 # used by the classic deterministic tracer:
@@ -568,8 +573,15 @@ def raster_bez_count(
         time_start: int, width: int, height: int,
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
-        zbuf: ti.types.ndarray(), pair_count: ti.types.ndarray()):
-    """Count surviving nonzero-alpha translucent circuit fragments."""
+        zbuf: ti.types.ndarray(), pair_count: ti.types.ndarray(),
+        pair_mask: ti.types.ndarray()):
+    """Count surviving nonzero-alpha translucent circuit fragments.
+
+    Alongside the count, every candidate's survival verdict is recorded in a
+    per-pair bitmask (``RASTER_MASK_WORDS`` x 32 bits, candidate order). The
+    write pass replays only the set bits, so the expensive circuit hit test
+    runs once per miss instead of twice.
+    """
     for p in range(num_pairs):
         circuit = pairs[p, 0]
         f = pairs[p, 1]
@@ -579,18 +591,24 @@ def raster_bez_count(
         bh = pairs[p, 5]
         off = pairs[p, 6]
         cnt = 0
-        for j in range(RASTER_CHUNK):
-            ok, lp, t, u, v, ib = _bez_pair_pixel(
-                circuit, f, x0, y0, bw, bh, off, j, time_start, width, height,
-                tile_start, tile_pixels, half_w, half_h, cam_origin,
-                screen_point, pixel_basis_x, pixel_basis_y, pixel_world_scale,
-                circuit_meta, circuit_colors, edges_2d, edge_accel)
-            if ok != 0 and _order_key(t, circuit) < zbuf[lp]:
-                _color, alpha = _sample_circuit_color(
-                    circuit, f, u, v, ib, circuit_meta, circuit_colors,
-                    circuit_border_colors)
-                if alpha > MIN_ALPHA:
-                    cnt += 1
+        for wj in range(RASTER_MASK_WORDS):
+            mw = ti.u32(0)
+            for b in range(32):
+                j = wj * 32 + b
+                ok, lp, t, u, v, ib = _bez_pair_pixel(
+                    circuit, f, x0, y0, bw, bh, off, j, time_start, width,
+                    height, tile_start, tile_pixels, half_w, half_h,
+                    cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+                    pixel_world_scale, circuit_meta, circuit_colors, edges_2d,
+                    edge_accel)
+                if ok != 0 and _order_key(t, circuit) < zbuf[lp]:
+                    _color, alpha = _sample_circuit_color(
+                        circuit, f, u, v, ib, circuit_meta, circuit_colors,
+                        circuit_border_colors)
+                    if alpha > MIN_ALPHA:
+                        cnt += 1
+                        mw |= ti.u32(1) << b
+            pair_mask[p, wj] = ti.bit_cast(mw, ti.i32)
         pair_count[p] = cnt
 
 
@@ -607,9 +625,17 @@ def raster_bez_write(
         time_start: int, width: int, height: int,
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
-        zbuf: ti.types.ndarray(), frag_key: ti.types.ndarray(),
-        frag_ref: ti.types.ndarray(), frag_ab: ti.types.ndarray()):
-    """Emit circuit records with the border flag packed into ``frag_ref``."""
+        frag_key: ti.types.ndarray(),
+        frag_ref: ti.types.ndarray(), frag_ab: ti.types.ndarray(),
+        pair_mask: ti.types.ndarray()):
+    """Emit circuit records with the border flag packed into ``frag_ref``.
+
+    Survival (z-test + nonzero sampled alpha) was already decided by
+    ``raster_bez_count`` and recorded per candidate in ``pair_mask``; only set
+    bits re-run the (deterministic) hit test to recover ``t``/``u``/``v``, in
+    the same ascending candidate order, so the emitted records and their
+    offsets are byte-identical to the old full re-evaluation.
+    """
     for p in range(num_pairs):
         circuit = pairs[p, 0]
         f = pairs[p, 1]
@@ -619,23 +645,28 @@ def raster_bez_write(
         bh = pairs[p, 5]
         off = pairs[p, 6]
         w = pair_offset[p]
-        for j in range(RASTER_CHUNK):
-            ok, lp, t, u, v, ib = _bez_pair_pixel(
-                circuit, f, x0, y0, bw, bh, off, j, time_start, width, height,
-                tile_start, tile_pixels, half_w, half_h, cam_origin,
-                screen_point, pixel_basis_x, pixel_basis_y, pixel_world_scale,
-                circuit_meta, circuit_colors, edges_2d, edge_accel)
-            if ok != 0 and _order_key(t, circuit) < zbuf[lp]:
-                _color, alpha = _sample_circuit_color(
-                    circuit, f, u, v, ib, circuit_meta, circuit_colors,
-                    circuit_border_colors)
-                if alpha > MIN_ALPHA:
-                    tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
-                    frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
-                    frag_ref[w] = _pack_bez_ref(circuit, ib)
-                    frag_ab[w, 0] = u
-                    frag_ab[w, 1] = v
-                    w += 1
+        for wj in range(RASTER_MASK_WORDS):
+            mw = ti.bit_cast(pair_mask[p, wj], ti.u32)
+            if mw != ti.u32(0):
+                for b in range(32):
+                    if (mw & (ti.u32(1) << b)) != ti.u32(0):
+                        j = wj * 32 + b
+                        _ok, lp, t, u, v, ib = _bez_pair_pixel(
+                            circuit, f, x0, y0, bw, bh, off, j, time_start,
+                            width, height, tile_start, tile_pixels, half_w,
+                            half_h, cam_origin, screen_point, pixel_basis_x,
+                            pixel_basis_y, pixel_world_scale, circuit_meta,
+                            circuit_colors, edges_2d, edge_accel)
+                        # The hit test is a pure function of its inputs, so a
+                        # set bit re-derives the identical hit; emit
+                        # unconditionally to keep ``w`` in lockstep with the
+                        # counted offsets.
+                        tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
+                        frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
+                        frag_ref[w] = _pack_bez_ref(circuit, ib)
+                        frag_ab[w, 0] = u
+                        frag_ab[w, 1] = v
+                        w += 1
 
 
 @ti.func

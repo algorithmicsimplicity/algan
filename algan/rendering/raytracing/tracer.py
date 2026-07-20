@@ -748,6 +748,14 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
             background_color, aa, time_end - time_start,
             screen_height, screen_width)
 
+    # A deferred-BVH batch (scene_builder._finalize_bvhs) holds placeholder
+    # trees; the Monte Carlo megakernel traverses unconditionally, so build
+    # the real trees now if that is where this batch is headed. (The
+    # deterministic wavefront has its own later, finer-grained check.)
+    if merged.get("bvh_deferred") and int(SAMPLES_PER_PIXEL) > 1:
+        from algan.rendering.raytracing.scene_builder import (
+            build_deferred_bvhs)
+        build_deferred_bvhs(merged)
     tri_bvh = merged["tri_bvh"]
     pn_bvh = merged["pn_bvh"]
     bez_bvh = merged["bez_bvh"]
@@ -1327,6 +1335,27 @@ def raytrace_render_wavefront(
     # split-free (one slot per pixel, so pix == r), near-clip-free (implicit
     # base_dist == 0) renders on the one-sample-per-pixel AA path (fixed
     # 0.5/0.5 jitter). Everything else keeps the classic generate kernel.
+    def _ensure_bvhs():
+        # Deferred-BVH batch (scene_builder._finalize_bvhs): build the real
+        # trees and rebind everything derived from the placeholders. Deferral
+        # implies mem_trim was inactive at merge, so t_bvh is plain tri_bvh.
+        nonlocal tri_bvh, pn_bvh, bez_bvh, t_bvh, bvh_refit
+        from algan.rendering.raytracing.scene_builder import (
+            build_deferred_bvhs)
+        build_deferred_bvhs(merged)
+        tri_bvh = merged["tri_bvh"]
+        pn_bvh = merged["pn_bvh"]
+        bez_bvh = merged["bez_bvh"]
+        t_bvh = tri_bvh
+        bvh_refit = 1 if isinstance(tri_bvh, RefitBVH) else 0
+
+    if merged.get("bvh_deferred") and (shadow_flag != 0 or not use_raster):
+        # Runtime routing needs the trees after all: primary shadows trace
+        # them inside iteration zero, and a batch that fell back to classic
+        # primary traversal (near clip, in-place AA, flipped toggles, ...)
+        # walks them for every primary ray.
+        _ensure_bvhs()
+
     gen_fused = (rt_settings.wf_gen_fused_active() and pool_ratio == 1
                  and near_clip <= 0.0 and max(1, int(aa_level)) <= 1
                  and not use_raster)
@@ -1399,6 +1428,11 @@ def raytrace_render_wavefront(
                 return
             active = compactor.select(rs_int, 0, source=compactor.current,
                                       scan_pool=True)
+            if active.numel() > 0 and merged.get("bvh_deferred"):
+                # A continuation actually spawned (a reflective/refractive
+                # surface the merge-time deferral analysis missed): build the
+                # deferred trees before the bounce loop traverses them.
+                _ensure_bvhs()
             it = 1
         else:
             active = compactor.initial(tn_primary)

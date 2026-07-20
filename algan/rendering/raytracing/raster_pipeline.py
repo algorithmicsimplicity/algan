@@ -23,6 +23,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 )
 from algan.rendering.raytracing.raster_taichi import (
     RASTER_CHUNK,
+    RASTER_MASK_WORDS,
     Z_SENTINEL,
     raster_bez_count,
     raster_bez_write,
@@ -347,11 +348,15 @@ def raster_iteration_zero(
                      merged["circuit_colors"], merged["edges_2d"],
                      merged["edge_accel"], *geo_args, zbuf)
 
-    bcounts = tcounts = None
+    bcounts = tcounts = bez_mask = None
     if pb is not None:
         bcounts = _arena_tensor(memory, (pb.shape[0],), torch.int32, 0)
+        # Per-pair survivor bitmask filled by the count pass; the write pass
+        # replays only set bits (see raster_bez_write).
+        bez_mask = _arena_tensor(
+            memory, (pb.shape[0], RASTER_MASK_WORDS), torch.int32)
         raster_bez_count(pb, int(pb.shape[0]), *cam_args, *bez_geom,
-                         *geo_args, zbuf, bcounts)
+                         *geo_args, zbuf, bcounts, bez_mask)
     if pt is not None:
         tcounts = _arena_tensor(memory, (pt.shape[0],), torch.int32, 0)
         raster_tri_count(pt, int(pt.shape[0]), tri_pos, tri_screen,
@@ -382,8 +387,8 @@ def raster_iteration_zero(
         frag_ab_u = _arena_tensor(memory, (num_frags, 2), torch.float32)
         if bcounts is not None:
             raster_bez_write(pb, int(pb.shape[0]), bez_offsets, *cam_args,
-                             *bez_geom, *geo_args, zbuf, frag_key_u,
-                             frag_ref_u, frag_ab_u)
+                             *bez_geom, *geo_args, frag_key_u,
+                             frag_ref_u, frag_ab_u, bez_mask)
         if tcounts is not None:
             raster_tri_write(pt, int(pt.shape[0]), tri_offsets, tri_pos,
                              tri_screen, *tri_color_args, *cam_args, *geo_args,

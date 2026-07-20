@@ -68,6 +68,10 @@ import taichi as ti
 from algan.rendering.raytracing.stbvh import BLOCK_F16, BVH_ARITY, LEAF_SIZE
 from algan.rendering.raytracing.bezier_acceleration import (
     BEZIER_ACCEL_HEADER_SIZE,
+    BEZIER_CLASS_BASE,
+    BEZIER_CLASS_DIM,
+    BEZIER_CLASS_INV_U,
+    BEZIER_CLASS_INV_V,
     BEZIER_GRID_INV_U,
     BEZIER_GRID_INV_V,
     BEZIER_MAX_U,
@@ -248,7 +252,9 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
     candidates come from every 2D cell touched by the radius query square.
     Both candidate sets are conservative; the original exact predicates are
     still evaluated here, so the acceleration changes only the number of edges
-    inspected.
+    inspected. The optional cell-classification fast path replaces a loop's
+    result only where it is provably equivalent (same parity / same failed
+    radius comparisons), so every consumer decision stays exact.
     """
     header = ((te * num_circuits + circuit)
               * BEZIER_ACCEL_HEADER_SIZE)
@@ -257,27 +263,61 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
     max_u = ti.bit_cast(edge_accel[header + BEZIER_MAX_U], ti.f32)
     max_v = ti.bit_cast(edge_accel[header + BEZIER_MAX_V], ti.f32)
 
+    # Coarse cell classification (see bezier_acceleration): when the point's
+    # cell provably has one crossing parity everywhere (no edge within a
+    # conservative margin of the cell) the scanline loop is skipped, and when
+    # the cell's conservative squared distance bound to the nearest visible
+    # edge already exceeds the query radius the spatial distance loop is
+    # skipped -- both without changing any downstream comparison result.
+    cls_flags = 0
+    cls_dist_sq = -1.0
+    cls_base = edge_accel[header + BEZIER_CLASS_BASE]
+    if cls_base >= 0:
+        if (u >= min_u) and (u < max_u) and (v >= min_v) and (v < max_v):
+            cdim = edge_accel[header + BEZIER_CLASS_DIM]
+            cinv_u = ti.bit_cast(
+                edge_accel[header + BEZIER_CLASS_INV_U], ti.f32)
+            cinv_v = ti.bit_cast(
+                edge_accel[header + BEZIER_CLASS_INV_V], ti.f32)
+            ccx = ti.cast(ti.floor((u - min_u) * cinv_u), ti.i32)
+            ccy = ti.cast(ti.floor((v - min_v) * cinv_v), ti.i32)
+            if (ccx >= 0) and (ccx < cdim) and (ccy >= 0) and (ccy < cdim):
+                cptr = cls_base + (ccy * cdim + ccx) * 2
+                cls_flags = edge_accel[cptr]
+                cls_dist_sq = ti.bit_cast(edge_accel[cptr + 1], ti.f32)
+
     crossings = 0
     if (v >= min_v) and (v <= max_v):
-        scan_inv_v = ti.bit_cast(
-            edge_accel[header + BEZIER_SCAN_INV_V], ti.f32)
-        scan_bin = ti.cast(ti.floor((v - min_v) * scan_inv_v), ti.i32)
-        scan_bin = ti.math.clamp(scan_bin, 0, BEZIER_SCAN_BINS - 1)
-        begin = edge_accel[header + BEZIER_SCAN_OFFSET_BASE + scan_bin]
-        end = edge_accel[header + BEZIER_SCAN_OFFSET_BASE + scan_bin + 1]
-        for ptr in range(begin, end):
-            e = edge_accel[ptr]
-            x0 = edges_2d[te, e, 0]
-            y0 = edges_2d[te, e, 1]
-            x1 = edges_2d[te, e, 2]
-            y1 = edges_2d[te, e, 3]
-            if (y0 > v) != (y1 > v):
-                x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
-                if x_cross > u:
-                    crossings += 1
+        if (cls_flags & 1) != 0:
+            # Uniform-parity cell: the exact even/odd result is the stored
+            # parity bit (only ``crossings % 2`` is ever consumed).
+            crossings = (cls_flags >> 1) & 1
+        else:
+            scan_inv_v = ti.bit_cast(
+                edge_accel[header + BEZIER_SCAN_INV_V], ti.f32)
+            scan_bin = ti.cast(ti.floor((v - min_v) * scan_inv_v), ti.i32)
+            scan_bin = ti.math.clamp(scan_bin, 0, BEZIER_SCAN_BINS - 1)
+            begin = edge_accel[header + BEZIER_SCAN_OFFSET_BASE + scan_bin]
+            end = edge_accel[header + BEZIER_SCAN_OFFSET_BASE + scan_bin + 1]
+            for ptr in range(begin, end):
+                e = edge_accel[ptr]
+                x0 = edges_2d[te, e, 0]
+                y0 = edges_2d[te, e, 1]
+                x1 = edges_2d[te, e, 2]
+                y1 = edges_2d[te, e, 3]
+                if (y0 > v) != (y1 > v):
+                    x_cross = x0 + (v - y0) * (x1 - x0) / (y1 - y0)
+                    if x_cross > u:
+                        crossings += 1
 
     min_dist_sq = 1e30
-    if ((query_radius > 0.0) and (u + query_radius >= min_u)
+    if (cls_dist_sq >= 0.0) \
+            and (cls_dist_sq >= query_radius * query_radius):
+        # The cell-wide lower bound already exceeds the query radius, so the
+        # exact minimum distance would fail every ``< radius^2`` comparison
+        # just like the bound itself does.
+        min_dist_sq = cls_dist_sq
+    elif ((query_radius > 0.0) and (u + query_radius >= min_u)
             and (u - query_radius <= max_u)
             and (v + query_radius >= min_v)
             and (v - query_radius <= max_v)):
