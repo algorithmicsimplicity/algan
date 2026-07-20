@@ -88,6 +88,7 @@ import algan.rendering.raytracing.stbvh as stbvh_mod
 from algan.scene import Scene
 import algan.mobs.bezier_circuit as bzc
 import algan.rendering.raytracing.tracer as rtr
+import algan.rendering.raytracing.raster_pipeline as rpl
 
 OUT_DIR = os.path.join("algan_outputs", "profiling")
 REPORT_PATH = "algan_profile_report.txt"
@@ -444,6 +445,7 @@ def install_pipeline_hooks():
     _try_wrap(Surface, "get_render_primitives", "Surface.get_render_primitives")
     _try_wrap(BezierCircuitCubic, "get_render_primitives",
               "BezierCircuitCubic.get_render_primitives")
+    _try_wrap(rpl, "raster_iteration_zero", "rasterizing")
 
     # Geometry shading + packing.
     _try_wrap(rtp.RayTracedTrianglePrimitive, "project_to_screen",
@@ -495,6 +497,7 @@ def install_pipeline_hooks():
     _try_wrap(rtr, "_prefill_background", "background prefill")
     _try_wrap(rtr, "post_process_frames",
               "post-process (downsample/FXAA/glow)")
+    _try_wrap(rtr, "raytrace_render_wavefront", "wavefront_loop")
     #_try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
     _try_wrap(KERNEL_SETTINGS, "render_kernel", "ray traced render total")
 
@@ -855,7 +858,7 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
         profiler.enable()
     render_to_file(file_name=f"profiling{tag}_run{run_index}", output_dir=OUT_DIR,
                    output_path="", render_settings=settings,
-                   file_extension="mp4")
+                   file_extension="mp4", )
     if profiler is not None:
         profiler.disable()
     _sync_devices()
@@ -936,8 +939,9 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
                 res["exclusive_times"][k] = res["times"][k]
 
         kp = 'kernel: '
-        res["exclusive_times"]["ray traced render total"] -= sum([v for k, v in res["exclusive_times"].items()
-                                                                  if k[:len(kp)] == kp])
+        res["exclusive_times"]["ray traced render total"]# -= sum([v for k, v in res["exclusive_times"].items()
+                                                         #         if (k[:len(kp)] == kp or
+                                                         #             k == 'wavefront_loop')])
 
         for name, secs in sorted(res["times"].items(), key=lambda kv: -kv[1]):
             lt = res['launch_times'][name] if name in res['launch_times'] else 0

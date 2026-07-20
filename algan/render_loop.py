@@ -524,7 +524,7 @@ class RenderLoopMixin:
                 continue
 
             best = duration
-            if duration == high:
+            if True:#duration == high:
                 logger.info(
                     "Arena planner selected %s/%s fetched frames without "
                     "rematerializing the batch.", duration, total_frames
@@ -548,6 +548,7 @@ class RenderLoopMixin:
         # best fitting duration, so recreate that winning prefix once.
         result = probe(best)
         if result is None:
+            result = probe(best)
             raise OutOfRenderMemory(
                 "Render-arena fit was not monotone while selecting a batch."
             )
