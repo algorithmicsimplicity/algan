@@ -47,13 +47,21 @@ BEZIER_CLASS_MAX_WORDS = int(
     float(os.environ.get("ALGAN_BEZ_CLASS_MAX_MB", "64")) * 1024 * 1024 // 4)
 # Truncation radius of the distance field, in cell half-diagonals. Cells
 # farther than this from every visible edge store the (still conservative)
-# truncated value.
-_CLASS_DIST_CAP_HALF_DIAGS = 8.0
-# Expanded (edge x cell) pair budget per processed frame chunk; frames whose
-# candidate pairs exceed the hard cap keep an all-zero (never-consulted)
-# classification instead of risking a transient OOM during the merge.
-_CLASS_PAIR_BUDGET = 8_000_000
-_CLASS_PAIR_HARD_CAP = 32_000_000
+# truncated value. Build cost grows roughly quadratically with this radius
+# (each edge is inserted into every cell within it), while the benefit only
+# needs the cap to exceed the query radius -- a few screen pixels in plane
+# units -- so a small multiple of the cell size is plenty.
+_CLASS_DIST_CAP_HALF_DIAGS = 4.0
+# Expanded (edge x cell) pair budget per processed frame chunk. The expansion
+# arrays are the build's only large transients and they live in the GPU
+# merge's *headroom* (outside the render arena), which is tight on small
+# cards -- the arena preflight estimates the merge peak from its input bytes
+# and knows nothing about this scratch, so it must stay small (~tens of MB).
+# A single frame whose candidate pairs exceed the hard cap keeps the all-zero
+# (never-consulted, always-safe) classification instead of risking a
+# transient OOM during the merge.
+_CLASS_PAIR_BUDGET = 1_000_000
+_CLASS_PAIR_HARD_CAP = 4_000_000
 
 # Fixed header layout for each (edge frame, circuit) record.
 _BEZ_EDGE_START = 0
@@ -205,27 +213,79 @@ def _build_cell_classification(edges_2d, circuit_of_edge, finite,
     y1 = edges_2d[..., 3]
     visible = edges_2d[..., 4] > 0.5
 
-    frames_per_chunk = max(1, int(_CLASS_PAIR_BUDGET // max(1, E * 40)))
-    for f0 in range(0, T, frames_per_chunk):
-        f1 = min(f0 + frames_per_chunk, T)
-        S = f1 - f0
+    # Static circuits repeat identical edge rows across frames (edges live in
+    # circuit-local plane coordinates, so camera motion never perturbs them).
+    # Classify each *distinct* frame once and broadcast its rows afterwards --
+    # text-heavy scenes are mostly static per batch, so this divides the build
+    # cost by the batch's repetition factor. torch.unique compares exact
+    # values, so a reused classification is bitwise what that frame would have
+    # built for itself.
+    _, frame_class = torch.unique(edges_2d.reshape(T, -1), dim=0,
+                                  return_inverse=True)
+    frame_class = frame_class.cpu()
+    rep_of_class = {}
+    rep_frames = []
+    for t in range(T):
+        cls = int(frame_class[t])
+        if cls not in rep_of_class:
+            rep_of_class[cls] = t
+            rep_frames.append(t)
+
+    # Chunk representative frames by their *estimated* expanded pair counts,
+    # not a fixed frame stride: the distance-pass expansion arrays are the
+    # build's only large transients and they live in the GPU merge's headroom,
+    # which the arena preflight sizes without knowing about this scratch. The
+    # estimate below reproduces the per-edge cell-range math; the exact
+    # in-chunk count still enforces the hard cap.
+    ge_reach = (dist_cap + half_diag + margin)[:, circuit_of_edge]
+    ge_min_u = min_u[:, circuit_of_edge]
+    ge_min_v = min_v[:, circuit_of_edge]
+    ge_cell_w = cell_w[:, circuit_of_edge]
+    ge_cell_h = cell_h[:, circuit_of_edge]
+    fx0 = torch.floor((torch.minimum(x0, x1) - ge_reach - ge_min_u)
+                      / ge_cell_w).clamp_(0, G - 1)
+    fx1 = torch.floor((torch.maximum(x0, x1) + ge_reach - ge_min_u)
+                      / ge_cell_w).clamp_(0, G - 1)
+    fy0 = torch.floor((torch.minimum(y0, y1) - ge_reach - ge_min_v)
+                      / ge_cell_h).clamp_(0, G - 1)
+    fy1 = torch.floor((torch.maximum(y0, y1) + ge_reach - ge_min_v)
+                      / ge_cell_h).clamp_(0, G - 1)
+    est = (fx1 - fx0 + 1) * (fy1 - fy0 + 1)
+    frame_pairs = torch.where(finite, est, torch.zeros_like(est)).sum(
+        1, dtype=torch.float64).cpu()
+    del ge_reach, ge_min_u, ge_min_v, ge_cell_w, ge_cell_h
+    del fx0, fx1, fy0, fy1, est
+
+    idx = 0
+    while idx < len(rep_frames):
+        chunk = [rep_frames[idx]]
+        chunk_total = float(frame_pairs[rep_frames[idx]])
+        idx += 1
+        while (idx < len(rep_frames)
+               and chunk_total + float(frame_pairs[rep_frames[idx]])
+               <= _CLASS_PAIR_BUDGET):
+            chunk_total += float(frame_pairs[rep_frames[idx]])
+            chunk.append(rep_frames[idx])
+            idx += 1
+        S = len(chunk)
+        sel = torch.tensor(chunk, device=device, dtype=torch.long)
         # Flat (chunk frame, edge) rows and their (chunk frame, circuit) group.
         g_local = (torch.arange(S, device=device).view(-1, 1) * C
                    + circuit_of_edge.view(1, -1)).reshape(-1)
-        ex0 = x0[f0:f1].reshape(-1)
-        ey0 = y0[f0:f1].reshape(-1)
-        ex1 = x1[f0:f1].reshape(-1)
-        ey1 = y1[f0:f1].reshape(-1)
-        evis = visible[f0:f1].reshape(-1)
-        efin = finite[f0:f1].reshape(-1)
+        ex0 = x0.index_select(0, sel).reshape(-1)
+        ey0 = y0.index_select(0, sel).reshape(-1)
+        ex1 = x1.index_select(0, sel).reshape(-1)
+        ey1 = y1.index_select(0, sel).reshape(-1)
+        evis = visible.index_select(0, sel).reshape(-1)
+        efin = finite.index_select(0, sel).reshape(-1)
 
-        gm_min_u = min_u[f0:f1].reshape(-1)
-        gm_min_v = min_v[f0:f1].reshape(-1)
-        gm_cell_w = cell_w[f0:f1].reshape(-1)
-        gm_cell_h = cell_h[f0:f1].reshape(-1)
-        gm_half_diag = half_diag[f0:f1].reshape(-1)
-        gm_margin = margin[f0:f1].reshape(-1)
-        gm_cap = dist_cap[f0:f1].reshape(-1)
+        gm_min_u = min_u.index_select(0, sel).reshape(-1)
+        gm_min_v = min_v.index_select(0, sel).reshape(-1)
+        gm_cell_w = cell_w.index_select(0, sel).reshape(-1)
+        gm_cell_h = cell_h.index_select(0, sel).reshape(-1)
+        gm_half_diag = half_diag.index_select(0, sel).reshape(-1)
+        gm_margin = margin.index_select(0, sel).reshape(-1)
+        gm_cap = dist_cap.index_select(0, sel).reshape(-1)
 
         e_min_u = gm_min_u[g_local]
         e_min_v = gm_min_v[g_local]
@@ -260,14 +320,20 @@ def _build_cell_classification(edges_2d, circuit_of_edge, finite,
                  .reshape(-1).clone())
         d_vis = d_all.clone()
         if expanded.numel() > 0:
+            # Free each expansion-sized ([pairs]) temporary as soon as it is
+            # consumed: this scratch is the only multi-MB transient of the
+            # build and it competes with the merge for pool headroom.
             pnx = nx[expanded]
             pcx = cx0[expanded] + local % pnx
             pcy = cy0[expanded] + local // pnx
             pg = g_local[expanded]
+            del local, pnx
+            key = pg * cells + pcy * G + pcx
             ucen = (gm_min_u[pg]
                     + (pcx.to(dtype) + 0.5) * gm_cell_w[pg])
             vcen = (gm_min_v[pg]
                     + (pcy.to(dtype) + 0.5) * gm_cell_h[pg])
+            del pcx, pcy
             sx0 = ex0[expanded]
             sy0 = ey0[expanded]
             dx = ex1[expanded] - sx0
@@ -276,15 +342,18 @@ def _build_cell_classification(edges_2d, circuit_of_edge, finite,
                      / (dx * dx + dy * dy).clamp_min(1e-12)).clamp_(0.0, 1.0)
             du = sx0 + seg_t * dx - ucen
             dv = sy0 + seg_t * dy - vcen
+            del sx0, sy0, dx, dy, seg_t, ucen, vcen
             d_adj = (torch.sqrt(du * du + dv * dv)
                      - gm_half_diag[pg] - gm_margin[pg]).clamp_min(0.0)
-            key = pg * cells + pcy * G + pcx
+            del du, dv
+            vis_mask = evis[expanded]
+            del expanded, pg
             d_all.scatter_reduce_(0, key, d_adj, reduce="amin",
                                   include_self=True)
-            vis_mask = evis[expanded]
             if bool(vis_mask.any()):
                 d_vis.scatter_reduce_(0, key[vis_mask], d_adj[vis_mask],
                                       reduce="amin", include_self=True)
+            del key, d_adj, vis_mask
 
         # --- Crossing parity at cell centers (difference-array prefix) -----
         nonh = efin & (ey0 != ey1)
@@ -332,8 +401,17 @@ def _build_cell_classification(edges_2d, circuit_of_edge, finite,
         dist_sq = (d_vis * d_vis).to(torch.float32).view(
             n_groups_chunk, cells)
 
-        flags_out[f0 * C:f1 * C] = flags
-        dist_out[f0 * C:f1 * C] = dist_sq.view(torch.int32)
+        dist_bits = dist_sq.view(torch.int32)
+        for i, t in enumerate(chunk):
+            flags_out[t * C:(t + 1) * C] = flags[i * C:(i + 1) * C]
+            dist_out[t * C:(t + 1) * C] = dist_bits[i * C:(i + 1) * C]
+
+    # Broadcast each representative frame's rows to its duplicate frames.
+    for t in range(T):
+        r = rep_of_class[int(frame_class[t])]
+        if r != t:
+            flags_out[t * C:(t + 1) * C] = flags_out[r * C:(r + 1) * C]
+            dist_out[t * C:(t + 1) * C] = dist_out[r * C:(r + 1) * C]
 
     return flags_out, dist_out
 

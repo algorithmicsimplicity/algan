@@ -54,7 +54,11 @@ def _gpu_memory_pressure(threshold=0.8):
 # it is skipped when the allocator holds too little reclaimable cache to be
 # worth returning. Explicit ``force_gc=True`` callers (OOM retries, arena
 # sizing) always reclaim everything.
-_GC_MIN_INTERVAL_S = float(os.environ.get("ALGAN_GC_MIN_INTERVAL_S", "5.0"))
+# Opportunistic reclaim runs every few seconds on a busy render loop, so the
+# full-walk interval must be much larger than that spacing or nearly every
+# call still pays the ~0.15-0.3s gen-2 walk (the cheap gen-1 pass below is
+# what handles the load-bearing young cycles between walks).
+_GC_MIN_INTERVAL_S = float(os.environ.get("ALGAN_GC_MIN_INTERVAL_S", "30.0"))
 _EMPTY_CACHE_MIN_BYTES = int(float(os.environ.get(
     "ALGAN_EMPTY_CACHE_MIN_MB", "64")) * 1024 * 1024)
 _last_gc_time = 0.0
@@ -88,6 +92,17 @@ def empty_cache(force_gc=True):
         gc.collect()
         _last_gc_time = time.monotonic()
     elif _gpu_memory_pressure():
+        # Young-generation collection is sub-millisecond and frees the cycles
+        # that actually matter between batches: exception tracebacks from
+        # arena-preflight probes and OOM retries pin their frames' GPU tensors
+        # in a fresh (gen-0) cycle, and the next headroom measurement needs
+        # them gone *now*. Skipping this (an earlier revision throttled all
+        # collection) let failed preflight probes keep hundreds of MB of VRAM
+        # pinned, collapsing the pool headroom and with it the frame windows.
+        # The expensive full (gen-2) walk stays rate-limited. Generation 1
+        # (which includes gen 0) also catches cycles the interpreter's
+        # automatic gen-0 passes promoted in the meantime.
+        gc.collect(1)
         now = time.monotonic()
         if now - _last_gc_time >= _GC_MIN_INTERVAL_S:
             gc.collect()
