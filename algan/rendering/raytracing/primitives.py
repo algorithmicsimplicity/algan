@@ -608,15 +608,53 @@ def _evaluate_cubic_bezier_batch(p, t):
             + (t * t * t) * p[..., 3, :])
 
 
+def _evaluate_cubic_bezier_derivative_batch(p, t):
+    """Evaluate the derivative of cubic control points ``p`` at ``t``."""
+    mt = 1.0 - t
+    return 3.0 * (
+        (mt * mt) * (p[..., 1, :] - p[..., 0, :])
+        + (2.0 * mt * t) * (p[..., 2, :] - p[..., 1, :])
+        + (t * t) * (p[..., 3, :] - p[..., 2, :])
+    )
+
+
+def _uniform_cubic_subcurves(corners, num_subdivisions):
+    """Return the exact world-space controls of uniform cubic subcurves.
+
+    ``corners`` is ``[T, S, 4, 3]`` and the result is
+    ``[T, S, num_subdivisions, 4, 3]``.  Endpoint positions and derivatives
+    determine the four controls of each restricted cubic exactly.
+    """
+    p = corners.unsqueeze(-3)
+    t0 = (torch.arange(num_subdivisions, device=corners.device,
+                       dtype=corners.dtype) / num_subdivisions)
+    t0 = t0.view(1, 1, -1, 1)
+    t1 = t0 + 1.0 / num_subdivisions
+    q0 = _evaluate_cubic_bezier_batch(p, t0)
+    q3 = _evaluate_cubic_bezier_batch(p, t1)
+    derivative_scale = 1.0 / (3.0 * num_subdivisions)
+    q1 = q0 + derivative_scale * _evaluate_cubic_bezier_derivative_batch(p, t0)
+    q2 = q3 - derivative_scale * _evaluate_cubic_bezier_derivative_batch(p, t1)
+    return torch.stack((q0, q1, q2, q3), dim=-2)
+
+
+def _point_to_segment_distance_squared(point, start, delta, length_squared):
+    """Squared distance from ``point`` to the finite segment ``start+delta``."""
+    along = ((point - start) * delta).sum(-1, keepdim=True)
+    along = along / length_squared.clamp_min(1e-20)
+    closest = start + along.clamp_(0.0, 1.0) * delta
+    return (point - closest).square().sum(-1)
+
+
 class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     """Planar bezier circuits rendered by ray tracing a spatio-temporal BVH.
 
-    Circuits are sampled into polylines at a screen-space density (matching
-    the rasterizer's sampling rule) but expressed in each circuit's own plane
-    coordinates; the trace kernel intersects rays with the plane and
-    classifies hits by an even-odd crossing test (fill) plus a min distance
-    to the polyline (border). Texture-mapped circuits (``ImageMob`` etc.) are
-    sampled bilinearly in-kernel from their texture grid.
+    Circuits are sampled into polylines with a per-cubic screen-space error
+    bound, then expressed in each circuit's own plane coordinates.  The trace
+    kernel intersects rays with the plane and classifies hits by an even-odd
+    crossing test (fill) plus a min distance to the polyline (border).
+    Texture-mapped circuits (``ImageMob`` etc.) are sampled bilinearly
+    in-kernel from their texture grid.
     """
 
     frame_dependent_source_attrs = (
@@ -701,34 +739,124 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         return self
 
     def _compute_samples_per_segment(self, corners, cam_o, sp, sb, screen_h):
-        """Choose the polyline density per bezier segment from the maximum
-        projected control-net length over the batch (the rasterizer's rule:
-        one sample every ``num_pixels_per_sample`` screen pixels).
+        """Choose uniform chord counts independently for every cubic segment.
+
+        At each power-of-two subdivision level, the four exact world-space
+        controls of every uniform subcurve are projected to the screen.  A
+        perspective-projected Bezier with control points on the same side of
+        the camera plane is a rational Bezier with positive weights, so it is
+        contained by the projected control hull.  The greatest distance of
+        that hull from the endpoint chord therefore bounds the curve-to-chord
+        error.  We retain the first level whose bound is no larger than
+        ``num_pixels_per_sample`` for every frame in the render batch.
+
+        The returned value is the number of chords, despite the legacy
+        ``num_samples`` name used by the packed geometry.  One chord evaluates
+        two geometric endpoints; its final endpoint is shared with the next
+        cubic in the packed representation.
         """
         device = corners.device
         T = cam_o.shape[0]
         Tc = corners.shape[0]
         S = corners.shape[1]
-        net_max = torch.zeros((S,), device=device)
-        chunk = max(1, int(2e6 // max(S * 4, 1)))
-        for s in range(0, T, chunk):
-            e = min(s + chunk, T)
-            cor = corners if Tc == 1 else corners[s:e]
-            cam_c = cam_o[s:e].view(-1, 1, 1, 3)
-            sp_c = sp[s:e].view(-1, 1, 1, 3)
-            n_c = sb[s:e, 2].view(-1, 1, 1, 3)
-            rays = cor - cam_c
-            denom = (rays * n_c).sum(-1, keepdim=True)
-            t_plane = ((sp_c - cam_c) * n_c).sum(-1, keepdim=True) / denom
-            proj = cam_c + t_plane * rays
-            rel = proj - sp_c
-            pts = torch.stack(((rel * sb[s:e, 0].view(-1, 1, 1, 3)).sum(-1),
-                               (rel * sb[s:e, 1].view(-1, 1, 1, 3)).sum(-1)), -1)
-            pts = pts.nan_to_num_() * (screen_h // 2)
-            net = (pts[..., 1:, :] - pts[..., :-1, :]).norm(p=2, dim=-1).sum(-1)
-            net_max = torch.maximum(net_max, net.amax(0))
-        return (net_max / self.num_pixels_per_sample).ceil().long().clamp_(
-            min=1, max=self.max_samples_per_segment)
+        if S == 0:
+            return torch.empty((0,), dtype=torch.long, device=device)
+        if Tc not in (1, T):
+            raise ValueError(
+                f"Bezier controls have {Tc} frames, but the camera has {T}")
+
+        tolerance = float(self.num_pixels_per_sample)
+        if tolerance <= 0:
+            raise ValueError("num_pixels_per_sample must be greater than zero")
+        tolerance_squared = tolerance * tolerance
+
+        chord_counts = torch.full(
+            (S,), self.max_samples_per_segment,
+            dtype=torch.long, device=device)
+        active = torch.arange(S, device=device)
+        num_subdivisions = 1
+
+        while active.numel() > 0:
+            num_active = active.shape[0]
+            max_error_squared = torch.zeros(
+                (num_active,), dtype=corners.dtype, device=device)
+
+            # Bound the largest temporary by projected control-point count.
+            # The subcurve construction and projection use several arrays of
+            # this shape, so a lower budget than the old single-pass sampler is
+            # intentionally used here.
+            chunk = max(1, int(
+                5e5 // max(num_active * num_subdivisions * 4, 1)))
+            for frame_start in range(0, T, chunk):
+                frame_end = min(frame_start + chunk, T)
+                if Tc == 1:
+                    active_corners = corners[:, active]
+                else:
+                    active_corners = corners[frame_start:frame_end, active]
+                controls = _uniform_cubic_subcurves(
+                    active_corners, num_subdivisions)
+
+                frame_shape = (-1,) + (1,) * (controls.ndim - 2) + (3,)
+                camera_origin = cam_o[frame_start:frame_end].view(frame_shape)
+                screen_point = sp[frame_start:frame_end].view(frame_shape)
+                screen_normal = sb[frame_start:frame_end, 2].view(frame_shape)
+                rays = controls - camera_origin
+                depth = (rays * screen_normal).sum(-1, keepdim=True)
+                screen_distance = (
+                    (screen_point - camera_origin) * screen_normal
+                ).sum(-1, keepdim=True)
+                projected = camera_origin + (screen_distance / depth) * rays
+                relative = projected - screen_point
+                basis_shape = (-1,) + (1,) * (controls.ndim - 2) + (3,)
+                screen_x = sb[frame_start:frame_end, 0].view(basis_shape)
+                screen_y = sb[frame_start:frame_end, 1].view(basis_shape)
+                points = torch.stack(
+                    ((relative * screen_x).sum(-1),
+                     (relative * screen_y).sum(-1)),
+                    dim=-1,
+                ) * (screen_h / 2)
+
+                chord_start = points[..., 0, :]
+                chord_end = points[..., 3, :]
+                chord = chord_end - chord_start
+                chord_length_squared = chord.square().sum(-1, keepdim=True)
+
+                error_squared = torch.maximum(
+                    _point_to_segment_distance_squared(
+                        points[..., 1, :], chord_start, chord,
+                        chord_length_squared),
+                    _point_to_segment_distance_squared(
+                        points[..., 2, :], chord_start, chord,
+                        chord_length_squared),
+                )
+
+                # Positive rational weights are required for the projected
+                # control hull to be a bound.  A subcurve touching/crossing the
+                # camera plane remains active and falls back to the hard cap.
+                depth = depth.squeeze(-1)
+                same_depth_side = (
+                    (depth.amin(-1) > 1e-8)
+                    | (depth.amax(-1) < -1e-8)
+                )
+                finite = torch.isfinite(points).all(-1).all(-1)
+                valid_bound = same_depth_side & finite
+                error_squared = torch.where(
+                    valid_bound, error_squared,
+                    torch.full_like(error_squared, torch.inf))
+                frame_error_squared = error_squared.amax(dim=(0, 2))
+                max_error_squared = torch.maximum(
+                    max_error_squared, frame_error_squared)
+
+            if num_subdivisions == self.max_samples_per_segment:
+                break
+
+            resolved = max_error_squared <= tolerance_squared
+            chord_counts[active[resolved]] = num_subdivisions
+            active = active[~resolved]
+            num_subdivisions = min(
+                num_subdivisions * 2, self.max_samples_per_segment)
+
+        return chord_counts
 
     def _build_circuit_geometry(self, corners, num_samples):
         """Sample world-space polylines into per-circuit plane coordinates and
