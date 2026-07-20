@@ -62,6 +62,9 @@ class Tex(Mob):
         tex_environment=None,
         font_size=24,
         latex=True,
+        pango_kwargs=None,
+        pango_color_map=None,
+        sync_border_color=True,
         **kwargs,
     ):
         """Build TeX from one or more strings using Manim's public API.
@@ -69,6 +72,16 @@ class Tex(Mob):
         ``latex`` is retained as an Algan extension: when false, the strings are
         treated as plain text.  Manim's ``arg_separator`` and
         ``tex_environment`` keyword arguments are accepted directly.
+
+        ``pango_kwargs`` (non-latex only) is forwarded to ``manim.Text`` so
+        Pango styling (font, weight, slant, t2c, gradient, ...) reaches the
+        glyph renderer.  Per-glyph fill colors produced by that styling are
+        read back off the manim submobjects and applied to the packed glyph
+        batch; ``pango_color_map`` maps hex strings back to the original algan
+        colors so glow/opacity survive the SVG round trip.  Glyphs left at
+        manim's default WHITE keep the algan base color.  ``sync_border_color``
+        copies each styled glyph's fill color to its border when a border is
+        drawn (disabled when the caller supplied an explicit border color).
         """
         make_manim_dir()
         if "preamble" in kwargs:
@@ -100,7 +113,11 @@ class Tex(Mob):
                     "Plain Text rendering requires Manim's optional Pango support; "
                     "use algan.Text, which provides a LaTeX fallback."
                 )
-            t = mn.Text(arg_separator.join(self.tex_strings), font_size=base_font_size)
+            t = mn.Text(
+                arg_separator.join(self.tex_strings),
+                font_size=base_font_size,
+                **(pango_kwargs or {}),
+            )
 
         def maybe_flip(submob):
             x = torch.from_numpy(submob.points).to(COMPUTING_DEFAULTS.animation_device)
@@ -119,6 +136,18 @@ class Tex(Mob):
             self.num_mobs_per_segment = torch.tensor([len(chars)])
             self.segment_ends = self.num_mobs_per_segment.cumsum(0)
             self.segment_starts = self.segment_ends - self.num_mobs_per_segment
+
+        if latex:
+            styled_fills = None
+        else:
+            # Pango styling (t2c/t2g/gradient) lands as per-submobject fill
+            # colors on the manim Text; capture them (aligned with the
+            # ImageMobject-filtered glyph list) to re-apply on the batch.
+            styled_fills = [
+                (char.fill_color.to_hex().upper(), float(char.fill_opacity))
+                for char in chars
+                if not isinstance(char, mn.ImageMobject)
+            ]
 
         triangulated_paths = [
             unsquish(maybe_flip(char), -2, 4).transpose(-3, -2)
@@ -179,6 +208,35 @@ class Tex(Mob):
             if self._character_batch is not None:
                 self.add_children(self._character_batch)
             self.add_children(self.image_mobs)
+            if (
+                styled_fills is not None
+                and not self.triangulated
+                and self._character_batch is not None
+            ):
+                color_map = {
+                    k.upper(): v for k, v in (pango_color_map or {}).items()
+                }
+                base_color = bezier_kwargs.get("color", WHITE)
+                base_glow = (
+                    float(base_color.reshape(-1)[3])
+                    if isinstance(base_color, torch.Tensor)
+                    and base_color.numel() >= 5
+                    else 0.0
+                )
+                set_border = sync_border_color and bool(
+                    bezier_kwargs.get("border_width", 0)
+                )
+                for i, (hex_c, fill_op) in enumerate(styled_fills):
+                    styled = color_map.get(hex_c)
+                    if styled is None:
+                        if hex_c == "#FFFFFF":
+                            # Untouched by t2c/gradient: keep the base color.
+                            continue
+                        styled = Color(hex_c, glow=base_glow, opacity=fill_op)
+                    view = self.character_mobs[i]
+                    view.color = styled
+                    if set_border:
+                        view.border_color = styled
             self.scale(font_size / base_font_size)
 
     def become(self, other_mob, *args, **kwargs):
@@ -472,6 +530,34 @@ class OldTex(Mob):
         ) + self.location.unsqueeze(-2)
 
 
+def _to_pango_hex(color, color_map):
+    """Convert a color spec (algan Color/tensor, hex/named string, or manim
+    color) to an RGB hex string that manim's Pango renderer accepts.
+
+    Algan colors carry glow/opacity channels that a plain hex cannot express,
+    so the original is recorded in ``color_map`` keyed by the hex; the Tex
+    constructor uses that map to restore the full algan color on glyphs after
+    the SVG round trip.  Two algan colors with identical RGB collide on one
+    key (the last one wins).
+    """
+    if isinstance(color, torch.Tensor):
+        flat = color.reshape(-1)
+        rgb = [
+            int(round(min(max(float(c), 0.0), 1.0) * 255)) for c in flat[:3]
+        ]
+        hex_c = "#{:02X}{:02X}{:02X}".format(*rgb)
+        if isinstance(color, Color):
+            color_map[hex_c] = color
+        else:
+            color_map[hex_c] = Color(
+                tuple(float(c) for c in flat[:3]),
+                glow=float(flat[3]) if flat.numel() >= 5 else 0,
+                opacity=float(flat[-1]) if flat.numel() >= 4 else 1,
+            )
+        return hex_c
+    return mn.ManimColor(color).to_hex().upper()
+
+
 def _default_preamble():
     """Vendored manim's default LaTeX preamble, fetched on first use
     (deferred: importing ``algan.external_libraries.manim`` costs ~2 s of
@@ -490,6 +576,17 @@ class Text(Tex):
         The text to display.
     **kwargs
         Passed to :class:`~.Tex`.
+
+    When Pango is available (manim's optional ``Text`` support), the styling
+    arguments — ``font``, ``weight``, ``slant``, ``line_spacing``,
+    ``disable_ligatures``, and the span-level ``t2c``/``t2f``/``t2s``/``t2w``/
+    ``t2g``/``gradient`` — are forwarded to the Pango renderer and fully
+    affect the glyphs. Color values in ``t2c``/``t2g``/``gradient`` may be
+    algan colors (glow and opacity are preserved), hex strings, or named
+    manim colors. ``weight`` accepts Pango weight names ("THIN", "LIGHT",
+    "MEDIUM", "SEMIBOLD", "BOLD", "HEAVY", ...), ``slant`` accepts "NORMAL",
+    "ITALIC", "OBLIQUE". Note: a ``t2c`` value of pure white is
+    indistinguishable from unstyled text and falls back to the base color.
 
     When Pango is unavailable, Algan renders the textual content through
     LaTeX text mode. Font-family and span-level styling arguments are accepted
@@ -532,6 +629,7 @@ class Text(Tex):
         self.gradient = gradient
         self.disable_ligatures = disable_ligatures
         self.use_svg_cache = use_svg_cache
+        explicit_border_color = "border_color" in kwargs
         kwargs.setdefault("opacity", fill_opacity)
         kwargs.setdefault("border_width", stroke_width / 2)
         if color is not None:
@@ -539,11 +637,41 @@ class Text(Tex):
             kwargs.setdefault("border_color", color)
 
         if hasattr(mn, "Text"):
-            # This path is retained for vendored builds that opt into Pango.
+            pango_kwargs = {
+                "font": font,
+                "slant": slant,
+                "weight": weight,
+                "line_spacing": line_spacing,
+                "warn_missing_font": warn_missing_font,
+                "disable_ligatures": disable_ligatures,
+            }
+            color_map = {}
+            if t2f:
+                pango_kwargs["t2f"] = dict(t2f)
+            if t2s:
+                pango_kwargs["t2s"] = dict(t2s)
+            if t2w:
+                pango_kwargs["t2w"] = dict(t2w)
+            if t2c:
+                pango_kwargs["t2c"] = {
+                    k: _to_pango_hex(v, color_map) for k, v in t2c.items()
+                }
+            if t2g:
+                pango_kwargs["t2g"] = {
+                    k: tuple(_to_pango_hex(c, color_map) for c in v)
+                    for k, v in t2g.items()
+                }
+            if gradient:
+                pango_kwargs["gradient"] = tuple(
+                    _to_pango_hex(c, color_map) for c in gradient
+                )
             super().__init__(
                 self.text,
                 font_size=font_size,
                 latex=False,
+                pango_kwargs=pango_kwargs,
+                pango_color_map=color_map,
+                sync_border_color=not explicit_border_color,
                 **kwargs,
             )
         else:

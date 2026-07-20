@@ -101,7 +101,15 @@ class Group(Mob):
         locations = list(
             traverse(
                 [
-                    [descendant.location for descendant in mob.get_descendants()]
+                    [
+                        descendant.location
+                        for descendant in mob.get_descendants()
+                        # Internal helper mobs (e.g. a bezier circuit's
+                        # texture_points) sit at off-geometry locations;
+                        # boundary queries already skip them, and including
+                        # them here corrupts the midpoint.
+                        if not descendant.exclude_from_boundary
+                    ]
                     for mob in mobs
                 ]
             )
