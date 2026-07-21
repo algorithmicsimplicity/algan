@@ -48,8 +48,10 @@ class BezierCircuitPrimitive(RenderPrimitive):
         glow_radius=0.2,
         num_texture_points=0,
         filled=True,
-            num_pixels_per_sample=2
+            num_pixels_per_sample=0.5
     ):
+        # Legacy name retained for compatibility.  The ray tracer uses this as
+        # the maximum screen-space curve-to-chord error in pixels.
         self.num_pixels_per_sample = num_pixels_per_sample
         self.num_bezier_parameters = 4
         self.num_texture_points = num_texture_points

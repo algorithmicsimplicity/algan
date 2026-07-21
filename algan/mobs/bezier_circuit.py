@@ -726,7 +726,9 @@ def build_render_primitives_batched(actors, scene):
     device = x.device
     cls = first.render_primitive
     mega = cls.__new__(cls)
-    mega.num_pixels_per_sample = 2
+    # The ray tracer interprets this legacy density setting as the maximum
+    # screen-space curve-to-chord error in pixels.
+    mega.num_pixels_per_sample = 1
     mega.num_bezier_parameters = 4
     mega.num_texture_points = ntp
     mega.filled = first.filled

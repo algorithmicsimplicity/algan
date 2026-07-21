@@ -638,12 +638,34 @@ def _uniform_cubic_subcurves(corners, num_subdivisions):
     return torch.stack((q0, q1, q2, q3), dim=-2)
 
 
+def _packed_uniform_cubic_parameters(chord_counts, dtype):
+    """The exact ``k / n`` parameters used for packed polyline vertices."""
+    repeated_counts = torch.repeat_interleave(chord_counts, chord_counts)
+    return batch_arange(chord_counts).to(dtype) / repeated_counts.to(dtype)
+
+
 def _point_to_segment_distance_squared(point, start, delta, length_squared):
     """Squared distance from ``point`` to the finite segment ``start+delta``."""
     along = ((point - start) * delta).sum(-1, keepdim=True)
     along = along / length_squared.clamp_min(1e-20)
     closest = start + along.clamp_(0.0, 1.0) * delta
     return (point - closest).square().sum(-1)
+
+
+def _bezier_connection_visibility(corners, next_segment_inds):
+    """Whether each selected segment connection is authored geometry.
+
+    Discontinuous connections are synthesized only to close a fill contour and
+    therefore must not contribute to the visible border.
+    """
+    (corners, next_segment_inds), _ = _unify_time(
+        [corners, next_segment_inds.unsqueeze(-1)], "bezier connections")
+    next_segment_inds = next_segment_inds.squeeze(-1)
+    segment_ends = corners[..., 3, :]
+    segment_starts = corners[..., 0, :]
+    gather_inds = next_segment_inds.unsqueeze(-1).expand(-1, -1, 3)
+    next_starts = torch.gather(segment_starts, 1, gather_inds)
+    return (segment_ends - next_starts).norm(p=2, dim=-1) <= 1e-5
 
 
 class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
@@ -872,8 +894,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         vert_circuit = torch.repeat_interleave(circuit_of_segment, num_samples)
         V = int(num_samples.sum())
 
-        t_params = (batch_arange(num_samples)
-                    / torch.repeat_interleave(num_samples, num_samples))
+        t_params = _packed_uniform_cubic_parameters(
+            num_samples, corners.dtype)
         ctrl = torch.repeat_interleave(corners, num_samples, dim=1)
         verts = _evaluate_cubic_bezier_batch(ctrl, t_params.view(1, -1, 1))
 
@@ -904,12 +926,18 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             self.next_segment_inds.shape[0], S).long()
         next_start = seg_starts[nsi]  # [Tn, S]
 
-        Tn = nsi.shape[0]
-        border_visible = torch.ones((Tn, V), device=device, dtype=torch.float32)
-        closing_mask = nsi <= torch.arange(S, device=device).view(1, -1)
+        # A redirected edge is an invisible fill closure only when the cubic's
+        # true endpoint and the selected next cubic's start are discontinuous.
+        # Index wraparound alone is not sufficient: an ordinary closed circuit
+        # (Circle, glyph outline, ...) also wraps to an earlier segment and its
+        # final border edge must remain visible.
+        connection_visible = _bezier_connection_visibility(corners, nsi)
+        Tn = connection_visible.shape[0]
+        border_visible = torch.ones(
+            (Tn, V), device=device, dtype=torch.float32)
         seg_ends_expanded = seg_ends.view(1, -1).expand(Tn, -1)
-        border_visible.scatter_(1, seg_ends_expanded, torch.where(closing_mask, torch.tensor(0.0, device=device),
-                                                                  torch.tensor(1.0, device=device)))
+        border_visible.scatter_(
+            1, seg_ends_expanded, connection_visible.float())
 
         (verts_e, centers_e, basis_u_e, basis_v_e, next_start_e, edge_degenerate_e,
          border_visible_e), T_geo = _unify_time(
