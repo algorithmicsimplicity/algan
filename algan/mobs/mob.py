@@ -544,13 +544,33 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
             return self
         current_inds = tl.mob_id_to_inds[self.id]
         value = cast_to_tensor(value)
-        if (current_inds.shape[0] == value.shape[-2]) or (value.shape[-2] == 1):
+        shared_view_has_full_buffer = (
+            self.data_sub_inds is not None
+            and current_inds.shape[0] == self.batch_size
+        )
+        if (
+            shared_view_has_full_buffer
+            or current_inds.shape[0] == value.shape[-2]
+            or value.shape[-2] == 1
+        ):
             return self
         current_value = self.get_animated_attribute(key, default=None, include_descendants=False)
         if current_value.shape[-2] != 1:
             raise ValueError(f"Attempting to set {key} which currently has value of shape {current_value.shape}"
                              f"to new value with shape {value.shape}, which is not broadcastable.")
-        tl.add(self, current_value.expand(-1, value.shape[-2], -1), overwrite=True)
+        # Indexed mobs share their source's timeline rows.  ``data_sub_inds``
+        # is expressed in that full source index space, so expanding only to
+        # the selected view's local row count would leave later indexing out
+        # of bounds (for example a packed text glyph's control-point color).
+        target_size = (
+            self.batch_size
+            if self.data_sub_inds is not None
+            else value.shape[-2]
+        )
+        expanded = current_value.expand(
+            *([-1] * (current_value.dim() - 2)), target_size, -1
+        )
+        tl.add(self, expanded, overwrite=True)
         return self
 
     @animated_function(animated_args={"interpolation": 0.0})

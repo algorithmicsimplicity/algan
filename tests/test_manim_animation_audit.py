@@ -242,6 +242,39 @@ def test_phase_flow_is_deterministic_across_frame_batches():
     )
 
 
+def test_recursive_replay_uses_rows_captured_before_descendant_rebatch():
+    """A later descendant rebatch must not change an earlier edit's targets."""
+    child = algan.Mob()
+    group = algan.Group([child]).spawn(animate=False)
+    start = algan.AnimationManager.instance().context.timespan.current_time
+    opacity_timeline = TimelineManager.instance().attr_to_timeline["opacity"]
+    old_child_rows = opacity_timeline.mob_id_to_inds[child.id].clone()
+
+    with algan.Sync(rate_func=algan.rate_funcs.identity):
+        group.opacity = 0
+        child.set_non_recursive(opacity=torch.ones((1, 3, 1)))
+
+    new_child_rows = opacity_timeline.mob_id_to_inds[child.id]
+    assert new_child_rows.numel() == 3
+    assert not torch.equal(old_child_rows, new_child_rows)
+
+    materialize(start + 0.5)
+    assert torch.allclose(group.opacity, torch.full_like(group.opacity, 0.5))
+    assert torch.allclose(child.opacity, torch.full_like(child.opacity, 0.5))
+
+
+def test_replay_distinguishes_recursive_edits_from_nonrecursive_reads():
+    cylinder = algan.Cylinder(
+        resolution=(4, 4), add_to_scene=False
+    ).spawn(animate=False)
+    cylinder.set_start_point(algan.LEFT)
+
+    materialize(0.5)
+
+    assert cylinder.location.shape == (1, 1, 3)
+    assert cylinder.basis.shape == (1, 1, 9)
+
+
 def test_animated_boundary_tracks_source_and_can_stop():
     source = algan.Circle(add_to_scene=False).spawn(False)
     boundary = algan.AnimatedBoundary(

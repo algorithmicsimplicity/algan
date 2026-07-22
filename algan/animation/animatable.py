@@ -427,17 +427,25 @@ class Animatable:
         return self.lifespan.end() >= 0
 
     def setattr_and_record_modification(self, key, value, include_descendants=False):
-        inds = self._get_attr_ranges(key, include_descendants=include_descendants)
         timeline = TimelineManager.instance()
+        replay_inds = timeline.replay_inds(
+            key, self.id, include_descendants)
+        inds = (replay_inds if replay_inds is not None else
+                self._get_attr_ranges(key, include_descendants=include_descendants))
 
         context = self.animation_manager.context
-        if (not self.is_spawned()) or (not context.record_attr_modifications):
+        if (replay_inds is not None or not self.is_spawned()
+                or not context.record_attr_modifications):
             timeline.modify_attribute(key, inds, value)
+            if replay_inds is not None:
+                timeline.replay_inds(
+                    key, self.id, include_descendants, consume=True)
             return self
         ts = context.timespan
         nt = ts.current_time + (context.run_time_unit if self.is_spawned() else 0)
         ts.original_end = max(ts.original_end, nt)
-        timeline.modify_attribute_and_record(key, inds, value, ts.get_time(nt))
+        timeline.modify_attribute_and_record(
+            key, self.id, include_descendants, inds, value, ts.get_time(nt))
         return self
 
     def _get_attr_ranges(self, key, include_descendants=False, value=None):
@@ -512,10 +520,14 @@ class Animatable:
 
     def get_animated_attribute(self, key, include_descendants=False, default=None,
                                copy=True):
-        if default is not None:
-            self._prepare_buffers(key, default)
-        inds = self._get_attr_ranges(key, include_descendants=include_descendants, value=default)
         timeline = TimelineManager.instance()
+        replay_inds = timeline.replay_inds(
+            key, self.id, include_descendants)
+        if default is not None and replay_inds is None:
+            self._prepare_buffers(key, default)
+        inds = (replay_inds if replay_inds is not None else
+                self._get_attr_ranges(
+                    key, include_descendants=include_descendants, value=default))
         return timeline.get_attr(key, inds, copy=copy)
 
     def wait(self, *args, **kwargs):

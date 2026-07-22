@@ -352,37 +352,44 @@ def render_all_funcs(
     output_path=None,
     file_extension="mp4",
     smoke_test=False,
+        prefix=None,
+        funcs=None,
     **kwargs,
 ):
-    def run(output_dir=None, render_settings=None, output_path=None):
-        module = sys.modules[module_name]
-        defined_functions = [
-            (function_name, function)
-            for function_name, function in inspect.getmembers(module, inspect.isfunction)
-            if function.__module__ == module.__name__
-        ]
-        registered = [
-            (getattr(function, "__algan_scene_name__", function_name), function)
-            for function_name, function in defined_functions
-            if getattr(function, "__algan_scene__", False)
-        ]
-        if registered:
-            scene_funcs = registered
-        else:
-            scene_funcs = [
+    def run(output_dir=None, render_settings=None, output_path=None, prefix=None):
+        if funcs is None:
+            module = sys.modules[module_name] if isinstance(module_name, str) else module_name
+            if prefix is None:
+                prefix = module.__name__
+            defined_functions = [
                 (function_name, function)
-                for function_name, function in defined_functions
-                if len(inspect.signature(function).parameters) == 0
+                for function_name, function in inspect.getmembers(module, inspect.isfunction)
+                if function.__module__[:len(prefix)] == prefix
             ]
-            if scene_funcs:
-                warnings.warn(
-                    "render_all_funcs is using legacy implicit zero-argument "
-                    "function discovery. Decorate scene entry points with @scene "
-                    "to prevent helper functions from rendering accidentally.",
-                    LegacySceneDiscoveryWarning,
-                    stacklevel=2,
-                )
-        scene_funcs.sort(key=lambda item: item[1].__code__.co_firstlineno)
+            registered = [
+                (getattr(function, "__algan_scene_name__", function_name), function)
+                for function_name, function in defined_functions
+                if getattr(function, "__algan_scene__", False)
+            ]
+            if registered:
+                scene_funcs = registered
+            else:
+                scene_funcs = [
+                    (function_name, function)
+                    for function_name, function in defined_functions
+                    if len(inspect.signature(function).parameters) == 0
+                ]
+                if scene_funcs:
+                    warnings.warn(
+                        "render_all_funcs is using legacy implicit zero-argument "
+                        "function discovery. Decorate scene entry points with @scene "
+                        "to prevent helper functions from rendering accidentally.",
+                        LegacySceneDiscoveryWarning,
+                        stacklevel=2,
+                    )
+            scene_funcs.sort(key=lambda item: item[1].__code__.co_firstlineno)
+        else:
+            scene_funcs = funcs
 
         if render_settings is None:
             render_settings = RENDERING_DEFAULTS.settings
@@ -428,7 +435,7 @@ def render_all_funcs(
         pr = cProfile.Profile()
         start = time.time()
         pr.enable()
-        out = run(output_dir, render_settings, output_path)
+        out = run(output_dir, render_settings, output_path, prefix)
         pr.disable()
         end = time.time()
 
@@ -440,7 +447,7 @@ def render_all_funcs(
         logger.info(f'took {end-start} seconds.')
         return out
     else:
-        return run(output_dir, render_settings, output_path)
+        return run(output_dir, render_settings, output_path, prefix)
 
 
 def profile_func(func):

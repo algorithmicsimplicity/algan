@@ -79,8 +79,8 @@ class RenderSettings(Settings):
             raise AlganConfigurationError("save_image must be a boolean")
 
 
-THUMBNAIL = RenderSettings((1280, 720), 1, save_image=True)
-SMOKE_TEST = RenderSettings((100, 100), 2, anti_alias_level=1)
+THUMBNAIL = RenderSettings((1280, 720), 1, anti_alias_level=4, save_image=True)
+SMOKE_TEST = RenderSettings((32, 32), 2, anti_alias_level=1)
 PREVIEW = RenderSettings((704, 396), 10, anti_alias_level=1)
 LD = RenderSettings((864, 486), 15)
 MD = RenderSettings((1280, 720), 30)

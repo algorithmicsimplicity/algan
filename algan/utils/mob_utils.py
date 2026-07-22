@@ -1,9 +1,12 @@
+from __future__ import annotations
+
+import copy
 from collections.abc import Sequence
 
 import torch
 
-from algan.utils.python_utils import traverse
 from algan.animation.animation_contexts import *
+from algan.utils.python_utils import traverse
 
 
 class BatchedMobViewSequence(Sequence):
@@ -23,6 +26,21 @@ class BatchedMobViewSequence(Sequence):
 
     def __len__(self):
         return self.size
+
+    def __deepcopy__(self, memo):
+        """Copy the packed owner while rebuilding indexed views lazily.
+
+        ``_views`` is a derived cache whose entries share the owner's timeline
+        rows. Deep-copying those entries independently gives them fresh owner
+        rows while retaining their old global ``data_sub_inds``, which can make
+        the copied view index beyond its new local timeline allocation.
+        """
+        clone = self.__class__.__new__(self.__class__)
+        memo[id(self)] = clone
+        clone.mob = copy.deepcopy(self.mob, memo)
+        clone.size = self.size
+        clone._views = {}
+        return clone
 
     def __getitem__(self, item):
         if isinstance(item, slice):
@@ -90,7 +108,7 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
 
         batch_mob.components = components
         for i, c in enumerate(mobs[0].components):
-            for attr in mobs[0].__dict__.keys():
+            for attr in mobs[0].__dict__:
                 if mobs[0].__getattribute__(attr) is c:
                     batch_mob.__setattr__(attr, components[i])
 

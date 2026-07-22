@@ -401,9 +401,10 @@ class AttributeTimeline:
         # (prepare_for_queries, _resolve_replay_windows) consumes them
         # directly, and recording happens once per edit, not once per batch.
         indexes = key.tensor() if isinstance(key, RowRanges) else key
-        self.edits.append(EditRecord(indexes, old_value, time, seq, event))
+        edit = EditRecord(indexes, old_value, time, seq, event)
+        self.edits.append(edit)
         self.modify(key, value)
-        return self
+        return edit
 
     def add(self, mob, values, overwrite=False):
         mob_id = mob.id
@@ -502,10 +503,16 @@ class AttributeTimeline:
             self._query_cache[key] = prepared
         return prepared
 
-    def rematerialize_state_at_times(self, times, active_mob_ids=None):
+    def rematerialize_state_at_times(self, times, active_mob_ids=None,
+                                     extra_rows=None):
         self.prepare_for_queries()
         active_rows = (None if active_mob_ids is None
                        else self.rows_for_mob_ids(active_mob_ids))
+        if active_rows is not None and extra_rows is not None:
+            extra_rows = extra_rows.view(-1)
+            if extra_rows.numel():
+                active_rows = torch.unique(
+                    torch.cat((active_rows, extra_rows)), sorted=True)
         self.active_state = generate_array_states_taichi(
             times, self.pointer + 1, self._edits_sorted,
             active_rows=active_rows,
@@ -613,6 +620,10 @@ class FunctionApplicationEvent:
         # AnimationTimeline._resolve_replay_windows); None until resolved or
         # when the function recorded no attribute edits.
         self.replay_end = None
+        # Exact attribute rows modified while this function was recorded, in
+        # execution order. A mob can be structurally rebatched later, so
+        # replay must not rediscover its rows from the current hierarchy.
+        self.recorded_edits = []
 
 
 class UpdaterSpan:
@@ -719,6 +730,8 @@ class AnimationTimeline:
         self._active_edit_event = None
         self.last_recorded_event = None
         self._replay_windows_resolved = True
+        self._active_replay_event = None
+        self._active_replay_edit_index = 0
 
     def set_active_edit_event(self, event):
         """Set the function application that subsequently recorded attribute
@@ -814,12 +827,35 @@ class AnimationTimeline:
             inds = timeline.add(mob, new_value)
         return timeline, inds
 
-    def modify_attribute_and_record(self, attr_name, mob_inds, new_value, time):
+    def modify_attribute_and_record(self, attr_name, mob_id,
+                                    include_descendants, mob_inds,
+                                    new_value, time):
         timeline = self.attr_to_timeline[attr_name]
         self._edit_seq += 1
-        timeline.record(mob_inds, new_value, time, self._edit_seq, self._active_edit_event)
+        event = self._active_edit_event
+        edit = timeline.record(mob_inds, new_value, time, self._edit_seq, event)
+        if event is not None:
+            event.recorded_edits.append(
+                (attr_name, mob_id, include_descendants, edit.indexes))
         self._replay_windows_resolved = False
         return self
+
+    def replay_inds(self, attr_name, mob_id, include_descendants,
+                    consume=False):
+        """Return the next recorded row set while replaying one function."""
+        event = self._active_replay_event
+        if event is None:
+            return None
+        index = self._active_replay_edit_index
+        if index >= len(event.recorded_edits):
+            return None
+        edit_attr, edit_mob_id, edit_recursive, inds = event.recorded_edits[index]
+        if (edit_attr != attr_name or edit_mob_id != mob_id
+                or edit_recursive != include_descendants):
+            return None
+        if consume:
+            self._active_replay_edit_index += 1
+        return inds
 
     def modify_attribute(self, attr_name, mob_inds, new_value):
         timeline = self.attr_to_timeline[attr_name]
@@ -957,8 +993,16 @@ class AnimationTimeline:
         updaters = self.function_timeline.get_updaters_for_times(times)
         active_mob_ids = self._active_mob_ids(
             active_mobs, functions, updaters)
-        for timeline in self.attr_to_timeline.values():
-            timeline.rematerialize_state_at_times(times, active_mob_ids)
+        replay_rows = {}
+        if active_mob_ids is not None:
+            for function in functions:
+                for attr_name, _, _, inds in function.recorded_edits:
+                    replay_rows.setdefault(attr_name, []).append(inds.view(-1))
+        for attr_name, timeline in self.attr_to_timeline.items():
+            rows = replay_rows.get(attr_name)
+            extra_rows = torch.cat(rows) if rows else None
+            timeline.rematerialize_state_at_times(
+                times, active_mob_ids, extra_rows=extra_rows)
 
         for f in functions:
             s = f.time.start
@@ -990,7 +1034,15 @@ class AnimationTimeline:
                 # per-frame elapsed seconds instead of an interpolated value.
                 kwargs[TIME_PARAMETER_NAME] = elapsed.view(-1, 1, 1)
 
-            f.function(f.caller, **kwargs)
+            previous_event = self._active_replay_event
+            previous_edit_index = self._active_replay_edit_index
+            self._active_replay_event = f
+            self._active_replay_edit_index = 0
+            try:
+                f.function(f.caller, **kwargs)
+            finally:
+                self._active_replay_event = previous_event
+                self._active_replay_edit_index = previous_edit_index
 
         for f in updaters:
             active_time_inds = ((f.time.start <= times) & (times < f.time.end)).nonzero()
