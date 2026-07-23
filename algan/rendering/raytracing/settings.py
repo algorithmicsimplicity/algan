@@ -383,6 +383,25 @@ def set_raster_screen_space(enabled):
     RASTER_SS = bool(enabled)
 
 
+# Once-per-window batched circuit screen-bounds precompute inside the hybrid
+# raster front-end (the bezier analogue of the per-batch triangle projection
+# table). The per-(tile, frame) fallback re-projects every circuit's AABB
+# corners with ~130 small tensor dispatches per call, which dominates host
+# time on circuit-only scenes (tiny scenes measured ~8s of a ~19s render).
+# Byte-identical by construction -- identical elementwise arithmetic, batched
+# over the frame dimension; validated by benchmarks/_raster_bez_pre_parity.py.
+# The toggle is a kill-switch / A-B hook.
+RASTER_BEZ_PRECOMPUTE = (
+    os.environ.get("ALGAN_RASTER_BEZ_PRECOMPUTE", "1") == "1")
+
+
+def set_raster_bez_precompute(enabled):
+    """Toggle the batched circuit screen-bounds precompute in the hybrid
+    raster front-end (see ``RASTER_BEZ_PRECOMPUTE``)."""
+    global RASTER_BEZ_PRECOMPUTE
+    RASTER_BEZ_PRECOMPUTE = bool(enabled)
+
+
 # UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle
 # scenes only). This variant is no longer maintained and no longer works; the
 # monolithic general wavefront is the only supported deterministic tracer.

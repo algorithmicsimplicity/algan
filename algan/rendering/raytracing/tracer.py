@@ -1383,12 +1383,20 @@ def raytrace_render_wavefront(
             [float(layer_offset_triangles), float(layer_offset_pn)], f32)
 
     tri_screen = None
+    bez_screen = None
     if use_raster:
         from algan.rendering.raytracing.raster_pipeline import (
-            precompute_triangle_projection)
+            precompute_circuit_screen_bounds, precompute_triangle_projection)
         tri_screen = precompute_triangle_projection(
             merged, cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
             half_screen_w, half_screen_h, memory)
+        # Live read (settings convention): kill-switch falls back to the
+        # per-(tile, frame) projection inside raster_iteration_zero.
+        if (rt_settings.RASTER_BEZ_PRECOMPUTE
+                and int(merged.get("num_circuits", 0)) > 0):
+            bez_screen = precompute_circuit_screen_bounds(
+                merged, cam_origin, screen_point, pixel_basis_x,
+                pixel_basis_y, half_screen_w, half_screen_h, width, memory)
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix,
                  pix_accum, rs_alloc):
@@ -1412,7 +1420,8 @@ def raytrace_render_wavefront(
                 raster_iteration_zero)
             with memory.temp():
                 raster_iteration_zero(
-                    merged, tri_screen, memory, cam_origin, screen_point,
+                    merged, tri_screen, bez_screen, memory,
+                    cam_origin, screen_point,
                     pixel_basis_x, pixel_basis_y, pixel_world_scale,
                     layer_offsets_t, gen_meta, light_pos, light_col,
                     num_lights, col_row_arr, frag_flag, frag_pipelines,

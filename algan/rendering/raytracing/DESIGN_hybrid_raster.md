@@ -281,6 +281,20 @@ distance and barycentrics. Numerically equivalent to ray-cast (verified worst
 straddling the camera plane falls back to exact per-pixel Möller-Trumbore
 (`_raycast_pixel`).
 
+Circuits have the analogous once-per-window table
+(`precompute_circuit_screen_bounds`, kill-switch
+`ALGAN_RASTER_BEZ_PRECOMPUTE=0`): projected AABB-corner screen bounds,
+fully-clamped bbox columns, and the front/reach/class masks, batched over all
+frames. Candidate emission then runs once per tile for all covered frames
+(`_window_bez_pairs` + `_class_pairs_flat`) instead of per (tile, frame) —
+the per-frame `_frame_bez_pairs` path cost ~130 small tensor dispatches per
+call and dominated host time on circuit-only scenes (tiny-scene render floor:
+~8s of a ~19s 300-frame MD render). Only the row-band clamp of the bbox is
+tile-dependent; flattening (frame, circuit) row-major preserves the exact
+pair-row order the per-frame loop produced, so the fragment sort's
+tie-breaking (and thus output) is byte-identical
+(`benchmarks/_raster_bez_pre_parity.py`).
+
 4.7 Per-primitive texture-alpha certainty
 -----------------------------------------
 A color texture with an alpha channel can cut a surface, making an

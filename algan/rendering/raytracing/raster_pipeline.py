@@ -168,12 +168,14 @@ _AABB_SEL = None
 
 
 def _aabb_corners(lo, hi):
+    """``[..., 3]`` box bounds to ``[..., 8, 3]`` corners (any batch shape)."""
     global _AABB_SEL
     if _AABB_SEL is None or _AABB_SEL.device != lo.device:
         _AABB_SEL = torch.tensor(
             [[cx, cy, cz] for cx in (0, 1) for cy in (0, 1) for cz in (0, 1)],
             dtype=torch.bool, device=lo.device)
-    return torch.where(_AABB_SEL.unsqueeze(0), hi.unsqueeze(1), lo.unsqueeze(1))
+    sel = _AABB_SEL.view((1,) * (lo.dim() - 1) + _AABB_SEL.shape)
+    return torch.where(sel, hi.unsqueeze(-2), lo.unsqueeze(-2))
 
 
 def _project_points(verts, ro, sp, pbx, pby, half_w, half_h):
@@ -245,6 +247,175 @@ def _frame_bez_pairs(merged, f, width, row_lo, row_hi,
     )
 
 
+def precompute_circuit_screen_bounds(
+        merged, cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        half_w, half_h, width, memory):
+    """Batched once-per-window screen bounds for bezier circuits.
+
+    The bezier analogue of :func:`precompute_triangle_projection`: the
+    per-frame fallback (``_frame_bez_pairs``) re-projects every circuit's
+    AABB corners per (tile, frame) -- ~130 small tensor dispatches per call
+    that dominate host time on circuit-only scenes.  Only the row-band clamp
+    of the candidate bbox is tile-dependent, so everything else is computed
+    here in one pass batched over all frames and consumed per tile by
+    ``_window_bez_pairs``.  Byte-identical to the per-frame path by
+    construction: identical elementwise arithmetic, batched over the frame
+    dimension only.
+
+    Every source is independently deduplicatable to T=1, so the tables span
+    the longest source and each source is read modulo its own length --
+    exactly the indexing the per-frame path applies (see the matching comment
+    in ``precompute_triangle_projection``).
+
+    Returns ``(pre_f, pre_x, pre_m)`` arena tensors:
+      pre_f ``[F, C, 4]`` f32: unclamped bbox rows ``floor(ymin-1)`` /
+          ``ceil(ymax+1)`` and the raw projected ``ymin`` / ``ymax`` extremes
+          (for the per-tile row-band on-screen test);
+      pre_x ``[F, C, 2]`` i64: the fully clamped bbox columns ``x0`` / ``x1``
+          (tiles are row bands, so columns are never tile-clamped);
+      pre_m ``[F, C, 5]`` bool: ``all_front``, the all-front reach base
+          (``all_front & x_on``), the straddler reach base
+          (``~all_front & front_any``), and the opaque / translucent class
+          masks.
+    """
+    lo_all = merged["bez_frame_lo"]
+    hi_all = merged["bez_frame_hi"]
+    valid_all = merged["bez_frame_valid"]
+    opaque_all = merged["bez_frame_opaque"]
+    frames = max(
+        int(lo_all.shape[0]), int(hi_all.shape[0]),
+        int(valid_all.shape[0]), int(opaque_all.shape[0]),
+        int(cam_origin.shape[0]), int(screen_point.shape[0]),
+        int(pixel_basis_x.shape[0]), int(pixel_basis_y.shape[0]),
+    )
+    device = lo_all.device
+    frame_ids = torch.arange(frames, device=device)
+    lo = lo_all.index_select(0, frame_ids % lo_all.shape[0])
+    hi = hi_all.index_select(0, frame_ids % hi_all.shape[0])
+    corners = _aabb_corners(lo, hi)                          # [F, C, 8, 3]
+    ro = cam_origin.index_select(0, frame_ids % cam_origin.shape[0])
+    sp = screen_point.index_select(0, frame_ids % screen_point.shape[0])
+    pbx = pixel_basis_x.index_select(0, frame_ids % pixel_basis_x.shape[0])
+    pby = pixel_basis_y.index_select(0, frame_ids % pixel_basis_y.shape[0])
+
+    # _project_points, batched over the leading frame dimension.
+    nvec = torch.linalg.cross(pbx, pby)                      # [F, 3]
+    d = corners - ro[:, None, None, :]
+    wpn = (d * nvec[:, None, None, :]).sum(-1)               # [F, C, 8]
+    big_d = ((sp - ro) * nvec).sum(-1)                       # [F]
+    safe = torch.where(wpn.abs() < 1e-12, torch.ones_like(wpn), wpn)
+    td = big_d[:, None, None] / safe
+    front = (wpn.abs() >= 1e-12) & (td > 0)
+    hit = ro[:, None, None, :] + td.unsqueeze(-1) * d
+    rel = hit - sp[:, None, None, :]
+    dsq = (nvec * nvec).sum(-1).clamp_min(1e-30)             # [F]
+    u = (torch.linalg.cross(rel, pby[:, None, None, :].expand_as(rel))
+         * nvec[:, None, None, :]).sum(-1) / dsq[:, None, None]
+    v = (torch.linalg.cross(pbx[:, None, None, :].expand_as(rel), rel)
+         * nvec[:, None, None, :]).sum(-1) / dsq[:, None, None]
+    px = u * half_h + half_w
+    py = v * half_h + half_h
+
+    # _screen_bbox's tile-independent parts (x is never row-band clamped).
+    all_front = front.all(-1)                                # [F, C]
+    front_any = front.any(-1)
+    xmin = px.amin(-1)
+    xmax = px.amax(-1)
+    ymin = py.amin(-1)
+    ymax = py.amax(-1)
+    fx0 = (xmin - 1.0).floor().clamp_(0, width - 1).long()
+    fx1 = (xmax + 1.0).ceil().clamp_(0, width - 1).long()
+    x0 = torch.where(all_front, fx0, torch.zeros_like(fx0))
+    x1 = torch.where(all_front, fx1, torch.full_like(fx1, width - 1))
+    x_on = (xmax >= -1.0) & (xmin <= width + 1.0)
+    valid = valid_all.index_select(0, frame_ids % valid_all.shape[0]).bool()
+    opaque = valid & opaque_all.index_select(
+        0, frame_ids % opaque_all.shape[0]).bool()
+
+    ncirc = int(lo.shape[1])
+    pre_f = memory.get_tensor((frames, ncirc, 4), torch.float32)
+    pre_f.copy_(torch.stack(
+        ((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1))
+    pre_x = memory.get_tensor((frames, ncirc, 2), torch.int64)
+    pre_x.copy_(torch.stack((x0, x1), -1))
+    # all_front implies front_any (eight corners), so the all-front reach
+    # base omits the redundant ``& front_any``.
+    pre_m = memory.get_tensor((frames, ncirc, 5), torch.bool)
+    pre_m.copy_(torch.stack(
+        (all_front, all_front & x_on, ~all_front & front_any,
+         opaque, valid & ~opaque), -1))
+    return pre_f, pre_x, pre_m
+
+
+def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
+    """Chunk expansion over a ``[frames, C]`` window in one pass.
+
+    Row content and ordering are identical to per-frame ``_class_pairs``
+    calls concatenated in ascending frame order: flattening row-major keeps
+    the (frame, circuit) lexicographic order the per-frame loop produced.
+    """
+    ncirc = mask.shape[1]
+    idx = mask.reshape(-1).nonzero(as_tuple=True)[0]
+    if idx.numel() == 0:
+        return None
+    bx0 = x0.reshape(-1)[idx]
+    by0 = y0.reshape(-1)[idx]
+    bw = x1.reshape(-1)[idx] - bx0 + 1
+    bh = y1.reshape(-1)[idx] - by0 + 1
+    area = bw * bh
+    nch = (area + (RASTER_CHUNK - 1)) // RASTER_CHUNK
+    rep = torch.repeat_interleave(
+        torch.arange(idx.numel(), device=device), nch)
+    if rep.numel() == 0:
+        return None
+    base = torch.cumsum(nch, 0) - nch
+    off = (torch.arange(rep.shape[0], device=device) - base[rep]) * RASTER_CHUNK
+    rows = torch.stack([
+        (idx % ncirc)[rep], f_abs.index_select(0, idx // ncirc)[rep],
+        bx0[rep], by0[rep], bw[rep], bh[rep], off, torch.zeros_like(rep),
+    ], -1)
+    return rows.to(torch.int32).contiguous()
+
+
+def _window_bez_pairs(bez_screen, time_start, g0, g1, ppf, width, device):
+    """Emit a tile's circuit candidate pairs for all covered frames at once.
+
+    Consumes the ``precompute_circuit_screen_bounds`` tables; only the
+    per-frame row-band clamp of the bbox and the chunk expansion happen
+    here.  Replicates ``_frame_bez_pairs`` + ``_screen_bbox`` byte-for-byte
+    (same clamp/cast order on the same values, per-frame bounds supplied as
+    broadcast tensors instead of Python scalars).
+    """
+    pre_f, pre_x, pre_m = bez_screen
+    f0_rel = g0 // ppf
+    f1_rel = (g1 - 1) // ppf
+    f_rel = torch.arange(f0_rel, f1_rel + 1, device=device)
+    f_abs = f_rel + time_start
+    lo_p = (g0 - f_rel * ppf).clamp_(min=0)
+    hi_p = (g1 - f_rel * ppf).clamp_(max=ppf)
+    row_lo = (lo_p // width).view(-1, 1)                     # [Ft, 1] i64
+    row_hi = ((hi_p - 1) // width).view(-1, 1)
+    rows = f_abs % pre_f.shape[0]
+    fy = pre_f.index_select(0, rows)                         # [Ft, C, 4]
+    x01 = pre_x.index_select(0, rows)
+    m = pre_m.index_select(0, rows)
+    all_front = m[..., 0]
+    rl_f = row_lo.to(torch.float32)
+    rh_f = row_hi.to(torch.float32)
+    fy0 = fy[..., 0].clamp(min=rl_f, max=rh_f).long()
+    fy1 = fy[..., 1].clamp(min=rl_f, max=rh_f).long()
+    y0 = torch.where(all_front, fy0, row_lo)
+    y1 = torch.where(all_front, fy1, row_hi)
+    y_on = (fy[..., 3] >= rl_f - 1.0) & (fy[..., 2] <= rh_f + 1.0)
+    reach = (m[..., 1] & y_on) | m[..., 2]
+    x0 = x01[..., 0]
+    x1 = x01[..., 1]
+    return (
+        _class_pairs_flat(m[..., 3] & reach, x0, x1, y0, y1, f_abs, device),
+        _class_pairs_flat(m[..., 4] & reach, x0, x1, y0, y1, f_abs, device),
+    )
+
+
 def _arena_tensor(memory, shape, dtype, fill=None):
     out = memory.get_tensor(shape, dtype)
     if fill is not None:
@@ -274,7 +445,7 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
 
 
 def raster_iteration_zero(
-        merged, tri_screen, memory,
+        merged, tri_screen, bez_screen, memory,
         cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
         pixel_world_scale, layer_offsets, gen_meta, light_pos, light_col,
         num_lights, col_row_arr, frag_flag, frag_pipelines, skip_unlit_normal,
@@ -294,27 +465,37 @@ def raster_iteration_zero(
     has_bez = 1 if int(merged.get("num_circuits", 0)) > 0 else 0
 
     tri_opaque, tri_trans, bez_opaque, bez_trans = [], [], [], []
-    for f_rel in range(g0 // ppf, (g1 - 1) // ppf + 1):
-        f = time_start + f_rel
-        lo_p = max(g0 - f_rel * ppf, 0)
-        hi_p = min(g1 - f_rel * ppf, ppf)
-        row_lo = lo_p // width
-        row_hi = (hi_p - 1) // width
-        if has_tri:
-            po, pt = _frame_pairs(
-                merged, tri_screen, f, width, row_lo, row_hi, device)
-            if po is not None:
-                tri_opaque.append(po)
-            if pt is not None:
-                tri_trans.append(pt)
-        if has_bez:
-            po, pt = _frame_bez_pairs(
-                merged, f, width, row_lo, row_hi, cam_origin, screen_point,
-                pixel_basis_x, pixel_basis_y, half_w, half_h, device)
-            if po is not None:
-                bez_opaque.append(po)
-            if pt is not None:
-                bez_trans.append(pt)
+    use_bez_pre = bool(has_bez) and bez_screen is not None
+    if has_tri or (has_bez and not use_bez_pre):
+        for f_rel in range(g0 // ppf, (g1 - 1) // ppf + 1):
+            f = time_start + f_rel
+            lo_p = max(g0 - f_rel * ppf, 0)
+            hi_p = min(g1 - f_rel * ppf, ppf)
+            row_lo = lo_p // width
+            row_hi = (hi_p - 1) // width
+            if has_tri:
+                po, pt = _frame_pairs(
+                    merged, tri_screen, f, width, row_lo, row_hi, device)
+                if po is not None:
+                    tri_opaque.append(po)
+                if pt is not None:
+                    tri_trans.append(pt)
+            if has_bez and not use_bez_pre:
+                po, pt = _frame_bez_pairs(
+                    merged, f, width, row_lo, row_hi, cam_origin,
+                    screen_point, pixel_basis_x, pixel_basis_y, half_w,
+                    half_h, device)
+                if po is not None:
+                    bez_opaque.append(po)
+                if pt is not None:
+                    bez_trans.append(pt)
+    if use_bez_pre:
+        po, pt = _window_bez_pairs(
+            bez_screen, time_start, g0, g1, ppf, width, device)
+        if po is not None:
+            bez_opaque.append(po)
+        if pt is not None:
+            bez_trans.append(pt)
 
     def _cat(parts):
         return (torch.cat(parts, 0) if len(parts) > 1
