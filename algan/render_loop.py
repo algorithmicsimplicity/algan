@@ -976,7 +976,12 @@ class RenderLoopMixin:
                     ),
                     device=COMPUTING_DEFAULTS.render_device
                 )
-                empty_cache()
+                # Pressure-gated gc (like every other steady-state call site):
+                # a forced full collection here cost ~150 ms per frame window
+                # and reference counting already frees the previous window's
+                # buffers; empty_cache still collects cycles when the device
+                # is genuinely near capacity.
+                empty_cache(force_gc=False)
                 yield primitive_batch[0].render(
                     primitive_batch,
                     self,
@@ -1112,7 +1117,10 @@ class RenderLoopMixin:
                     self.num_pixels_screen_height,
                     self.num_pixels_screen_width,
                 )
-            empty_cache()
+            # Pressure-gated gc: the background-only path allocates almost
+            # nothing per window, so a forced full collection here was pure
+            # fixed cost (see the render_primitive_batch call site).
+            empty_cache(force_gc=False)
             out = self.memory.get_tensor(
                 (duration, width * height, channels), frame_dtype
             )

@@ -402,6 +402,21 @@ def set_raster_bez_precompute(enabled):
     RASTER_BEZ_PRECOMPUTE = bool(enabled)
 
 
+# The flat-triangle companion of RASTER_BEZ_PRECOMPUTE: batches the bbox /
+# class-mask derivation and candidate pair emission that ``_frame_pairs``
+# performed per (tile, frame) on top of the per-batch projection table.
+# Byte-identical by construction; same parity script.
+RASTER_TRI_PRECOMPUTE = (
+    os.environ.get("ALGAN_RASTER_TRI_PRECOMPUTE", "1") == "1")
+
+
+def set_raster_tri_precompute(enabled):
+    """Toggle the batched triangle screen-bounds precompute in the hybrid
+    raster front-end (see ``RASTER_TRI_PRECOMPUTE``)."""
+    global RASTER_TRI_PRECOMPUTE
+    RASTER_TRI_PRECOMPUTE = bool(enabled)
+
+
 # UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle
 # scenes only). This variant is no longer maintained and no longer works; the
 # monolithic general wavefront is the only supported deterministic tracer.

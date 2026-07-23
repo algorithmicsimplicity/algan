@@ -1383,18 +1383,24 @@ def raytrace_render_wavefront(
             [float(layer_offset_triangles), float(layer_offset_pn)], f32)
 
     tri_screen = None
-    bez_screen = None
+    tri_bounds = None
+    bez_bounds = None
     if use_raster:
         from algan.rendering.raytracing.raster_pipeline import (
-            precompute_circuit_screen_bounds, precompute_triangle_projection)
+            precompute_circuit_screen_bounds, precompute_triangle_projection,
+            precompute_triangle_screen_bounds)
         tri_screen = precompute_triangle_projection(
             merged, cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
             half_screen_w, half_screen_h, memory)
-        # Live read (settings convention): kill-switch falls back to the
-        # per-(tile, frame) projection inside raster_iteration_zero.
+        # Live reads (settings convention): each kill-switch falls back to
+        # the per-(tile, frame) pair emission inside raster_iteration_zero.
+        if (rt_settings.RASTER_TRI_PRECOMPUTE
+                and int(merged.get("num_triangles", 0)) > 0):
+            tri_bounds = precompute_triangle_screen_bounds(
+                merged, tri_screen, width, memory)
         if (rt_settings.RASTER_BEZ_PRECOMPUTE
                 and int(merged.get("num_circuits", 0)) > 0):
-            bez_screen = precompute_circuit_screen_bounds(
+            bez_bounds = precompute_circuit_screen_bounds(
                 merged, cam_origin, screen_point, pixel_basis_x,
                 pixel_basis_y, half_screen_w, half_screen_h, width, memory)
 
@@ -1420,7 +1426,7 @@ def raytrace_render_wavefront(
                 raster_iteration_zero)
             with memory.temp():
                 raster_iteration_zero(
-                    merged, tri_screen, bez_screen, memory,
+                    merged, tri_screen, tri_bounds, bez_bounds, memory,
                     cam_origin, screen_point,
                     pixel_basis_x, pixel_basis_y, pixel_world_scale,
                     layer_offsets_t, gen_meta, light_pos, light_col,

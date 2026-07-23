@@ -258,7 +258,7 @@ def precompute_circuit_screen_bounds(
     that dominate host time on circuit-only scenes.  Only the row-band clamp
     of the candidate bbox is tile-dependent, so everything else is computed
     here in one pass batched over all frames and consumed per tile by
-    ``_window_bez_pairs``.  Byte-identical to the per-frame path by
+    ``_window_pairs``.  Byte-identical to the per-frame path by
     construction: identical elementwise arithmetic, batched over the frame
     dimension only.
 
@@ -347,6 +347,65 @@ def precompute_circuit_screen_bounds(
     return pre_f, pre_x, pre_m
 
 
+def precompute_triangle_screen_bounds(merged, tri_screen, width, memory):
+    """Batched once-per-window candidate screen bounds for flat triangles.
+
+    Companion of :func:`precompute_circuit_screen_bounds`, consuming the
+    per-batch projection table (``tri_screen``) instead of re-projecting.
+    ``_frame_pairs`` derived the same bboxes and class masks per
+    (tile, frame); only the row-band clamp is tile-dependent, so the rest is
+    batched here over all frames into the same three-table schema consumed by
+    ``_window_pairs``.  ``tri_screen`` column 9 is the three-state front flag
+    (1 all-front / 0 straddling / -1 behind); all three vertices share it, so
+    ``all_front`` is the flag itself and the behind-cull folds into the
+    straddler reach base.  Byte-identical to the per-frame path by
+    construction.
+    """
+    valid_all = merged["tri_frame_valid"]
+    opaque_all = merged["tri_frame_opaque"]
+    unc_all = merged["tri_alpha_uncertain"]
+    frames = max(
+        int(tri_screen.shape[0]), int(valid_all.shape[0]),
+        int(opaque_all.shape[0]), int(unc_all.shape[0]),
+    )
+    device = tri_screen.device
+    frame_ids = torch.arange(frames, device=device)
+    screen = tri_screen.index_select(0, frame_ids % tri_screen.shape[0])
+    px = screen[..., 0:3]
+    py = screen[..., 3:6]
+    flag = screen[..., 9]
+    all_front = flag > 0.5
+    not_behind = flag > -0.5
+
+    xmin = px.amin(-1)
+    xmax = px.amax(-1)
+    ymin = py.amin(-1)
+    ymax = py.amax(-1)
+    fx0 = (xmin - 1.0).floor().clamp_(0, width - 1).long()
+    fx1 = (xmax + 1.0).ceil().clamp_(0, width - 1).long()
+    x0 = torch.where(all_front, fx0, torch.zeros_like(fx0))
+    x1 = torch.where(all_front, fx1, torch.full_like(fx1, width - 1))
+    x_on = (xmax >= -1.0) & (xmin <= width + 1.0)
+    valid = valid_all.index_select(0, frame_ids % valid_all.shape[0]).bool()
+    unc = unc_all.index_select(0, frame_ids % unc_all.shape[0]).bool()
+    opaque = valid & opaque_all.index_select(
+        0, frame_ids % opaque_all.shape[0]).bool() & ~unc
+
+    ntri = int(screen.shape[1])
+    pre_f = memory.get_tensor((frames, ntri, 4), torch.float32)
+    pre_f.copy_(torch.stack(
+        ((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1))
+    pre_x = memory.get_tensor((frames, ntri, 2), torch.int64)
+    pre_x.copy_(torch.stack((x0, x1), -1))
+    # all_front (flag == 1) implies not-behind, so the all-front reach base
+    # omits the redundant ``& not_behind``.
+    pre_m = memory.get_tensor((frames, ntri, 5), torch.bool)
+    pre_m.copy_(torch.stack(
+        (all_front, all_front & x_on, ~all_front & not_behind,
+         opaque, valid & ~opaque), -1))
+    return pre_f, pre_x, pre_m
+
+
 def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
     """Chunk expansion over a ``[frames, C]`` window in one pass.
 
@@ -377,16 +436,18 @@ def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
     return rows.to(torch.int32).contiguous()
 
 
-def _window_bez_pairs(bez_screen, time_start, g0, g1, ppf, width, device):
-    """Emit a tile's circuit candidate pairs for all covered frames at once.
+def _window_pairs(bounds, time_start, g0, g1, ppf, width, device):
+    """Emit a tile's candidate pairs for all covered frames at once.
 
-    Consumes the ``precompute_circuit_screen_bounds`` tables; only the
-    per-frame row-band clamp of the bbox and the chunk expansion happen
-    here.  Replicates ``_frame_bez_pairs`` + ``_screen_bbox`` byte-for-byte
-    (same clamp/cast order on the same values, per-frame bounds supplied as
-    broadcast tensors instead of Python scalars).
+    Consumes the ``precompute_circuit_screen_bounds`` /
+    ``precompute_triangle_screen_bounds`` tables (both use the same schema);
+    only the per-frame row-band clamp of the bbox and the chunk expansion
+    happen here.  Replicates ``_frame_bez_pairs`` / ``_frame_pairs`` +
+    ``_screen_bbox`` byte-for-byte (same clamp/cast order on the same
+    values, per-frame bounds supplied as broadcast tensors instead of
+    Python scalars).
     """
-    pre_f, pre_x, pre_m = bez_screen
+    pre_f, pre_x, pre_m = bounds
     f0_rel = g0 // ppf
     f1_rel = (g1 - 1) // ppf
     f_rel = torch.arange(f0_rel, f1_rel + 1, device=device)
@@ -445,7 +506,7 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
 
 
 def raster_iteration_zero(
-        merged, tri_screen, bez_screen, memory,
+        merged, tri_screen, tri_bounds, bez_bounds, memory,
         cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
         pixel_world_scale, layer_offsets, gen_meta, light_pos, light_col,
         num_lights, col_row_arr, frag_flag, frag_pipelines, skip_unlit_normal,
@@ -465,15 +526,16 @@ def raster_iteration_zero(
     has_bez = 1 if int(merged.get("num_circuits", 0)) > 0 else 0
 
     tri_opaque, tri_trans, bez_opaque, bez_trans = [], [], [], []
-    use_bez_pre = bool(has_bez) and bez_screen is not None
-    if has_tri or (has_bez and not use_bez_pre):
+    use_tri_pre = bool(has_tri) and tri_bounds is not None
+    use_bez_pre = bool(has_bez) and bez_bounds is not None
+    if (has_tri and not use_tri_pre) or (has_bez and not use_bez_pre):
         for f_rel in range(g0 // ppf, (g1 - 1) // ppf + 1):
             f = time_start + f_rel
             lo_p = max(g0 - f_rel * ppf, 0)
             hi_p = min(g1 - f_rel * ppf, ppf)
             row_lo = lo_p // width
             row_hi = (hi_p - 1) // width
-            if has_tri:
+            if has_tri and not use_tri_pre:
                 po, pt = _frame_pairs(
                     merged, tri_screen, f, width, row_lo, row_hi, device)
                 if po is not None:
@@ -489,9 +551,16 @@ def raster_iteration_zero(
                     bez_opaque.append(po)
                 if pt is not None:
                     bez_trans.append(pt)
+    if use_tri_pre:
+        po, pt = _window_pairs(
+            tri_bounds, time_start, g0, g1, ppf, width, device)
+        if po is not None:
+            tri_opaque.append(po)
+        if pt is not None:
+            tri_trans.append(pt)
     if use_bez_pre:
-        po, pt = _window_bez_pairs(
-            bez_screen, time_start, g0, g1, ppf, width, device)
+        po, pt = _window_pairs(
+            bez_bounds, time_start, g0, g1, ppf, width, device)
         if po is not None:
             bez_opaque.append(po)
         if pt is not None:
