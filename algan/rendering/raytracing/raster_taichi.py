@@ -1048,7 +1048,7 @@ def raster_first_shade(
         frag_shading: ti.template(), frag_pipelines: ti.template(),
         refraction: ti.template(), skip_unlit_normal: ti.template(),
         ss_enabled: ti.template(), has_bez: ti.template(),
-        shadows: ti.template(),
+        shadows: ti.template(), prefill: ti.template(),
         time_start: int, width: int, height: int, tile_start: int,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
@@ -1071,6 +1071,13 @@ def raster_first_shade(
     retires here, committing colour + leftover background weight into
     ``pix_accum``. Free pool slots must be pre-marked DONE by the host.
 
+    ``prefill`` (compile-time): the host pre-filled every primary's
+    ``pix_accum`` row with the retired-empty result ``[0,0,0,0, 1,1,1]``
+    (status already DONE), so empty pixels exit before ray generation with
+    zero writes, retiring pixels *store* their leftover weight into cols
+    4-6, and bouncing pixels zero those columns back out. Byte-identical to
+    the accumulate-onto-zero path (``ALGAN_RASTER_EMPTY_SKIP``).
+
     ``layer_offsets`` is the tracer's 8-wide variant: [2..5] environment map
     placement, [6] far clip (0 = off), [7] max_bounces.
     """
@@ -1082,6 +1089,21 @@ def raster_first_shade(
     far_clip = layer_offsets[6]
     max_bounces = ti.cast(layer_offsets[7] + 0.5, ti.i32)
     for r in range(num_pixels):
+        start = run_offsets[r]
+        end = run_offsets[r + 1]
+        nrun = end - start
+        zk = zbuf[r]
+        has_z = 1 if zk != ti.i64(Z_SENTINEL) else 0
+        total = nrun + has_z
+        if ti.static(prefill):
+            # The host pre-filled every primary's committed state with the
+            # retired-empty result (pix_accum row [0,0,0,0, 1,1,1], pool
+            # status DONE), so a pixel with no fragments, no z-prepass
+            # winner and no environment map to sample is already complete:
+            # exit with zero writes, skipping ray generation entirely.
+            if total == 0 and env_w <= 0:
+                continue
+
         g = tile_start + r
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
@@ -1101,13 +1123,6 @@ def raster_first_shade(
         processed = 0
         bounced = False
         done = False
-
-        start = run_offsets[r]
-        end = run_offsets[r + 1]
-        nrun = end - start
-        zk = zbuf[r]
-        has_z = 1 if zk != ti.i64(Z_SENTINEL) else 0
-        total = nrun + has_z
 
         q = 0
         while q < total and processed < MAX_SURFACES_PER_RAY:
@@ -1405,6 +1420,12 @@ def raster_first_shade(
             done = True
 
         if bounced and not done:
+            if ti.static(prefill):
+                # Undo the host's retired-empty pre-fill: an ACTIVE pixel's
+                # leftover background weight is committed by its continuation
+                # when that retires, so the base must return to zero.
+                for k in ti.static(range(3)):
+                    pix_accum[r, 4 + k] = 0.0
             for k in ti.static(range(3)):
                 rs_ro[r, k] = ro[k]
                 rs_rd[r, k] = rd[k]
@@ -1435,6 +1456,14 @@ def raster_first_shade(
                 weight = ti.math.vec3(0.0, 0.0, 0.0)
             for k in ti.static(range(4)):
                 ti.atomic_add(pix_accum[r, k], acc[k])
-            for k in ti.static(range(3)):
-                ti.atomic_add(pix_accum[r, 4 + k], weight[k])
+            if ti.static(prefill):
+                # Cols 4-6 were pre-filled with 1.0, so the leftover weight
+                # is stored rather than accumulated (this thread is the
+                # pixel's only writer during iteration zero; the colour adds
+                # above keep their zero base).
+                for k in ti.static(range(3)):
+                    pix_accum[r, 4 + k] = weight[k]
+            else:
+                for k in ti.static(range(3)):
+                    ti.atomic_add(pix_accum[r, 4 + k], weight[k])
             rs_int[r, 2] = _DONE

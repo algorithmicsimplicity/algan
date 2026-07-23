@@ -232,7 +232,7 @@ One thread per primitive iterating its whole bbox has terrible load imbalance
 (a full-screen fade rectangle = millions of pixels in one thread). Instead each
 primitive's clipped bbox is split into chunks of RASTER_CHUNK (=256) pixels;
 one thread processes one (primitive, chunk) pair. This bounds per-thread work
-and gives a natural OOM-retry granularity (§4.11).
+and gives a natural OOM-retry granularity (§4.12).
 
 4.4 Per-pixel SERIAL resolve, not a parallel prefix scan
 --------------------------------------------------------
@@ -343,7 +343,40 @@ pixel's colour + leftover background weight, bounced pixels are ACTIVE, and
 the classic loop takes it from there. Free pool slots are pre-marked DONE by
 the host so a full-pool compaction finds exactly the spawned continuations.
 
-4.11 Memory model
+4.11 Empty-pixel fast path (retired-empty pre-fill + host pair flags)
+---------------------------------------------------------------------
+On sparse screens most resolve threads have nothing to shade, yet each one
+paid ray generation plus 8 strided state writes (background weight + DONE
+status) -- ~15 ms/tile of `raster_first_shade` GPU time on an EMPTY screen,
+the dominant kernel of the tiny-scene render floor. Two paired fixes
+(both default ON, byte-identical, `benchmarks/_raster_empty_skip_parity.py`):
+
+  ALGAN_RASTER_EMPTY_SKIP: the host pre-fills every primary's `pix_accum`
+  row with the retired-empty result `[0,0,0,0, 1,1,1]` (one broadcast copy
+  replacing the zero-fill; the pool is already pre-marked DONE), so the
+  committed state of an empty pixel exists before the kernel runs. A
+  `prefill` compile-time template makes empty pixels (no fragments, no
+  z-winner, no environment map) exit before ray generation with ZERO
+  writes; retiring pixels *store* their leftover weight into cols 4-6
+  instead of accumulating onto a zero base, and bouncing pixels store the
+  columns back to zero (each pixel has exactly one writer in iteration 0,
+  so stores are race-free and value-identical). A tile with no candidate
+  pairs at all skips the resolve and shadow-event launches entirely. The
+  toggle is read once per batch so the host fill and kernel template can
+  never disagree. Measured (size-0 circuit, MD 300 frames, warm paired
+  A/B together with PAIR_FLAGS): raster_first_shade 4.97 s -> 1.75 s
+  (GPU sync 3.66 s -> 0.46 s), wall 11.9 s -> 8.8 s (-26%).
+
+  ALGAN_RASTER_PAIR_FLAGS: the candidate-bounds precomputes additionally
+  reduce one conservative host-side (opaque, translucent) any-candidates
+  bool per frame (`_class_any_flags`, one `.cpu()` per window). Per tile,
+  `_window_pairs` skips its ~20 tensor dispatches -- and the synchronizing
+  `.nonzero()` inside `_class_pairs_flat` -- for every (tile, class) whose
+  covered frames provably have no candidates (the per-tile reach mask is
+  contained in the per-frame reach base, so a False flag is exact). This
+  replaces up to 4 per-tile GPU->host syncs with one per-window transfer.
+
+4.12 Memory model
 -----------------
 Persistent per-ray state is the K-buffer-free ~100-byte pool slot of §7,
 arena-backed. Raster transient scratch (projection table aside, which lives
@@ -682,6 +715,12 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
                                     refit BVH instead of the classic STBVH
                                     (§9; all render paths honor it via the
                                     compile-time ``refit`` template).
+  ALGAN_RASTER_EMPTY_SKIP (default 1)  Retired-empty pre-fill + resolve
+                                    early-out / launch skip (§4.11;
+                                    byte-identical kill-switch).
+  ALGAN_RASTER_PAIR_FLAGS (default 1)  Host per-frame candidate-class flags
+                                    skipping empty per-tile pair emission
+                                    and its `.nonzero()` syncs (§4.11).
 
   set_hybrid_raster(bool), set_raster_screen_space(bool),
   set_refit_bvh(bool) — programmatic.
@@ -728,7 +767,8 @@ with all MAX_SHADOW_LIGHTS lights (§5). NOT gated on shadows or light count.
                           binned-SAH topology (batch-union boxes, ARITY-wide
                           blocks with explicit per-(frame, child) links) +
                           the vectorized per-frame bound refit (§9).
-  settings.py             HYBRID_RASTER, RASTER_SS, BVH_REFIT + setters
+  settings.py             HYBRID_RASTER, RASTER_SS, BVH_REFIT,
+                          RASTER_EMPTY_SKIP, RASTER_PAIR_FLAGS + setters
                           (refit_bvh_active gates the legacy orchestrators
                           back to classic).
   renderer_settings.py    effective_triangle_primitive() (raster-agnostic;
@@ -743,6 +783,9 @@ with all MAX_SHADOW_LIGHTS lights (§5). NOT gated on shadows or light count.
                           _rt2_raster_shadow_parity.py (hard shadows),
                           _rt2_raster_soft_bez_parity.py (soft + bezier + PN
                           fallback) are the engagement-asserted parity gates.
+                          _raster_empty_skip_parity.py (byte-identity of the
+                          §4.11 empty-pixel fast paths, incl. bounce/split,
+                          shadow and env-map interplay).
 
 
 ================================================================================
@@ -809,6 +852,16 @@ exist; ranks without numbers are marked (est.).
   9. Scene-descriptor ndarray to escape the Taichi 64-arg ceiling: pass one
      descriptor array instead of per-type array smuggling. Maintainability
      enabler (unblocks items 4 and 6); ~zero direct perf.
+     The *perf* half of this item -- per-launch Python argument marshalling
+     (~0.15-0.3 ms per ndarray arg) -- is DONE without kernel changes:
+     utils/taichi_fast_launch.py caches a launch plan per template
+     instantiation and replays only the C++ set_arg calls (measured
+     2.85x per launch on raster_bez_z, benchmarks/_taichi_fast_launch_kp.py;
+     byte-identical + per-launch instantiation verification,
+     benchmarks/_taichi_fast_launch_check.py; kill-switch
+     ALGAN_TAICHI_FAST_LAUNCH=0). What remains of item 9 is the
+     maintainability/64-arg-ceiling part, plus the C++ pybind per-arg floor
+     (~0.8 ms/launch) that only a real descriptor array can remove.
 
 
 ================================================================================

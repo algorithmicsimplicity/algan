@@ -417,6 +417,50 @@ def set_raster_tri_precompute(enabled):
     RASTER_TRI_PRECOMPUTE = bool(enabled)
 
 
+# Empty-pixel fast path of the raster resolve: the host pre-fills every
+# primary's committed state with the retired-empty result (pix_accum row
+# [0,0,0,0, 1,1,1] -- zero colour, full leftover background weight -- with
+# the pool already pre-marked DONE), so ``raster_first_shade`` threads whose
+# pixel has no fragments and no z-prepass winner exit before ray generation
+# with zero writes, and worked pixels *store* their leftover weight instead
+# of atomically accumulating it onto a zero base.  A tile with no candidate
+# pairs at all additionally skips the resolve (and shadow-event) launches
+# entirely.  Empty screen regions previously paid ~15 ms/tile of per-pixel
+# state writes.  Byte-identical (same values, different write path);
+# validated by benchmarks/_raster_empty_skip_parity.py.  Kill-switch / A-B
+# hook; read once per render batch so the host fill and the kernel template
+# always agree.
+RASTER_EMPTY_SKIP = (
+    os.environ.get("ALGAN_RASTER_EMPTY_SKIP", "1") == "1")
+
+
+def set_raster_empty_skip(enabled):
+    """Toggle the empty-pixel fast path of the hybrid raster resolve (see
+    ``RASTER_EMPTY_SKIP``)."""
+    global RASTER_EMPTY_SKIP
+    RASTER_EMPTY_SKIP = bool(enabled)
+
+
+# Host-side per-frame candidate-class summary flags for the batched screen-
+# bounds tables: one conservative (opaque, translucent) "any candidates"
+# bool per frame, computed once per window and moved to the host beside the
+# tables.  ``_window_pairs`` then skips its per-tile tensor work -- most
+# importantly the synchronizing ``.nonzero()`` inside ``_class_pairs_flat``
+# -- for every (tile, class) whose covered frames provably have no
+# candidates.  Byte-identical: a skipped class is exactly one whose mask was
+# all-false, where ``_class_pairs_flat`` returned None anyway.  Same parity
+# script as RASTER_EMPTY_SKIP.
+RASTER_PAIR_FLAGS = (
+    os.environ.get("ALGAN_RASTER_PAIR_FLAGS", "1") == "1")
+
+
+def set_raster_pair_flags(enabled):
+    """Toggle the host-side per-frame candidate-class flags used to skip
+    empty per-tile pair emission (see ``RASTER_PAIR_FLAGS``)."""
+    global RASTER_PAIR_FLAGS
+    RASTER_PAIR_FLAGS = bool(enabled)
+
+
 # UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle
 # scenes only). This variant is no longer maintained and no longer works; the
 # monolithic general wavefront is the only supported deterministic tracer.

@@ -960,7 +960,7 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                          max_bounces, near_clip, run_tile,
                          auto_extra_slot_bytes=0, auto_extra_primary_bytes=0,
                          auto_fixed_bytes=0, gen_fused=False, raster=False,
-                         global_hits=True):
+                         raster_prefill=False, global_hits=True):
     """Run deterministic-wavefront screen tiles with a shared split pool.
 
     ``run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum,
@@ -994,6 +994,13 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                                 dtype=f32, device=out.device)
         int_init = torch.tensor([int(max_bounces), 0, 0, 0],
                                 dtype=i32, device=out.device)
+    if raster and raster_prefill:
+        # Retired-empty pre-fill (RASTER_EMPTY_SKIP): zero colour + full
+        # leftover background weight. With the pool pre-marked DONE this IS
+        # the committed state of an empty pixel, so raster_first_shade
+        # threads with nothing to shade exit without writing anything.
+        pix_init = torch.tensor([0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                                dtype=f32, device=out.device)
 
     aa_accum = None
     if do_aa:
@@ -1054,7 +1061,10 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                             # compaction sees only the continuations the
                             # raster actually spawned, and seed the shared
                             # allocator past the primary slots.
-                            pix_accum.zero_()
+                            if raster_prefill:
+                                pix_accum.copy_(pix_init)
+                            else:
+                                pix_accum.zero_()
                             rs_int[:, 2].fill_(1)
                             rs_alloc.zero_()
                             rs_alloc[0] = attempt_primary
@@ -1329,6 +1339,13 @@ def raytrace_render_wavefront(
         and near_clip <= 0.0
         and max(1, int(aa_level)) <= 1
     )
+    # Empty-pixel fast path (settings.RASTER_EMPTY_SKIP): read ONCE per batch
+    # so the host's retired-empty pix_accum pre-fill in _run_wavefront_tiles
+    # and raster_first_shade's compile-time ``prefill`` template can never
+    # disagree mid-render. An environment map disables the whole-tile resolve
+    # skip (every empty pixel still samples the map) but keeps the pre-fill.
+    raster_prefill = bool(use_raster and rt_settings.RASTER_EMPTY_SKIP)
+    env_active = env_meta is not None and int(env_meta[1]) > 0
     # Fused primary-ray generation (settings.WF_GEN_FUSED): the tile's first
     # traverse generates its rays in-kernel and the first shade uses the
     # implicit initial state, skipping the standalone generate pass. Only for
@@ -1435,7 +1452,9 @@ def raytrace_render_wavefront(
                     time_start, width, height, half_screen_w, half_screen_h,
                     tile_start, tn_primary, state, rs_pix, pix_accum,
                     rs_alloc, shadow_flag, t_bvh, pn_bvh, bez_bvh,
-                    layer_offset_triangles, layer_offset_pn, max_bounces)
+                    layer_offset_triangles, layer_offset_pn, max_bounces,
+                    prefill=1 if raster_prefill else 0,
+                    env_active=1 if env_active else 0)
             # A continuation-pool overflow is detected and retried by the tile
             # host (with half as many primaries); skip the bounce loop for the
             # doomed attempt.
@@ -1567,7 +1586,8 @@ def raytrace_render_wavefront(
         run_tile=run_tile,
         # rs_vis placeholder + the compactor's output-count word.
         auto_fixed_bytes=2 * torch.int32.itemsize,
-        gen_fused=gen_fused, raster=use_raster, global_hits=False)
+        gen_fused=gen_fused, raster=use_raster,
+        raster_prefill=raster_prefill, global_hits=False)
 
 
 def _raytrace_render_wavefront_textured(

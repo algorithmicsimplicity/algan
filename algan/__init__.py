@@ -54,10 +54,14 @@ from algan.rendering import camera
 
 # Taichi is imported (via the rendering modules above) but no kernel has
 # materialized yet -- install the warm-start memoization now so every kernel
-# compiled in this process benefits (see utils/taichi_warmstart.py).
+# compiled in this process benefits (see utils/taichi_warmstart.py), plus
+# the cached fast launcher that skips Taichi's per-launch Python argument
+# re-validation on repeat launches (see utils/taichi_fast_launch.py).
 from algan.utils.taichi_warmstart import apply as _apply_taichi_warmstart
+from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 
 _apply_taichi_warmstart()
+_apply_taichi_fast_launch()
 
 from algan.mobs.mob import *
 from algan.mobs.manim_mob import *

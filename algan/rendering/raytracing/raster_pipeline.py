@@ -344,7 +344,7 @@ def precompute_circuit_screen_bounds(
     pre_m.copy_(torch.stack(
         (all_front, all_front & x_on, ~all_front & front_any,
          opaque, valid & ~opaque), -1))
-    return pre_f, pre_x, pre_m
+    return pre_f, pre_x, pre_m, _class_any_flags(pre_m)
 
 
 def precompute_triangle_screen_bounds(merged, tri_screen, width, memory):
@@ -403,7 +403,26 @@ def precompute_triangle_screen_bounds(merged, tri_screen, width, memory):
     pre_m.copy_(torch.stack(
         (all_front, all_front & x_on, ~all_front & not_behind,
          opaque, valid & ~opaque), -1))
-    return pre_f, pre_x, pre_m
+    return pre_f, pre_x, pre_m, _class_any_flags(pre_m)
+
+
+def _class_any_flags(pre_m):
+    """Host per-frame (opaque, translucent) candidate-existence flags.
+
+    Conservative superset of every tile's per-class emission mask: the
+    per-tile reach ``(m1 & y_on) | m2`` is contained in ``m1 | m2``, so a
+    frame whose flag is False provably yields an empty mask for every tile
+    and ``_window_pairs`` can skip its tensor work -- most importantly the
+    synchronizing ``.nonzero()`` in ``_class_pairs_flat`` -- outright.  One
+    host transfer per window (RASTER_PAIR_FLAGS kill-switch), instead of
+    per-tile syncs.
+    """
+    if not rt_settings.RASTER_PAIR_FLAGS:
+        return None
+    reach_base = pre_m[..., 1] | pre_m[..., 2]
+    return torch.stack(
+        ((pre_m[..., 3] & reach_base).any(1),
+         (pre_m[..., 4] & reach_base).any(1)), -1).cpu().tolist()
 
 
 def _class_pairs_flat(mask, x0, x1, y0, y1, f_abs, device):
@@ -447,9 +466,23 @@ def _window_pairs(bounds, time_start, g0, g1, ppf, width, device):
     values, per-frame bounds supplied as broadcast tensors instead of
     Python scalars).
     """
-    pre_f, pre_x, pre_m = bounds
+    pre_f, pre_x, pre_m, cls_any = bounds
     f0_rel = g0 // ppf
     f1_rel = (g1 - 1) // ppf
+    need_op = need_tr = True
+    if cls_any is not None:
+        # Host flags (``_class_any_flags``): skip a class -- or the whole
+        # call -- when none of the tile's covered frames has any candidate
+        # of it. Exact: the skipped ``_class_pairs_flat`` would have found
+        # an all-false mask and returned None.
+        nf = len(cls_any)
+        need_op = need_tr = False
+        for fr in range(f0_rel, f1_rel + 1):
+            row = cls_any[(fr + time_start) % nf]
+            need_op = need_op or row[0]
+            need_tr = need_tr or row[1]
+        if not (need_op or need_tr):
+            return None, None
     f_rel = torch.arange(f0_rel, f1_rel + 1, device=device)
     f_abs = f_rel + time_start
     lo_p = (g0 - f_rel * ppf).clamp_(min=0)
@@ -472,8 +505,10 @@ def _window_pairs(bounds, time_start, g0, g1, ppf, width, device):
     x0 = x01[..., 0]
     x1 = x01[..., 1]
     return (
-        _class_pairs_flat(m[..., 3] & reach, x0, x1, y0, y1, f_abs, device),
-        _class_pairs_flat(m[..., 4] & reach, x0, x1, y0, y1, f_abs, device),
+        _class_pairs_flat(m[..., 3] & reach, x0, x1, y0, y1, f_abs, device)
+        if need_op else None,
+        _class_pairs_flat(m[..., 4] & reach, x0, x1, y0, y1, f_abs, device)
+        if need_tr else None,
     )
 
 
@@ -513,8 +548,17 @@ def raster_iteration_zero(
         refraction_flag, time_start, width, height, half_w, half_h,
         tile_start, tn_primary, state, rs_pix, pix_accum, rs_alloc,
         shadow_flag, t_bvh, pn_bvh, bez_bvh,
-        layer_offset_triangles, layer_offset_pn, max_bounces):
-    """Raster, order, resolve, and seed compact primary continuations."""
+        layer_offset_triangles, layer_offset_pn, max_bounces,
+        prefill=0, env_active=0):
+    """Raster, order, resolve, and seed compact primary continuations.
+
+    ``prefill`` (RASTER_EMPTY_SKIP, fixed per batch by the tracer): the host
+    pre-filled every primary's ``pix_accum`` row with the retired-empty
+    result and pre-marked the pool DONE, so a tile whose z-buffer stays
+    all-sentinel and whose fragment stream is empty needs no resolve (nor
+    shadow-event) launch at all -- unless an environment map is active
+    (``env_active``), in which case every empty pixel still samples it.
+    """
     (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
      _rs_kt, _rs_kl, _rs_ka, _rs_kb, _rs_kp, _rs_kf) = state
     device = pix_accum.device
@@ -572,6 +616,14 @@ def raster_iteration_zero(
 
     po_t, pt, po_b, pb = map(_cat,
                              (tri_opaque, tri_trans, bez_opaque, bez_trans))
+    skip_empty = bool(prefill) and not env_active
+    if (skip_empty and po_t is None and pt is None
+            and po_b is None and pb is None):
+        # No candidate pairs anywhere in the tile: the z-buffer would stay
+        # all-sentinel and the fragment stream empty, so the pre-filled
+        # retired-empty state already IS the resolve's postcondition. Skip
+        # every launch, including the shadow-event build (nothing to accept).
+        return
     zbuf = _arena_tensor(memory, (tn_primary,), torch.int64, Z_SENTINEL)
     ss = 1 if rt_settings.RASTER_SS else 0
     tri_pos = merged["tri_pos"]
@@ -623,6 +675,11 @@ def raster_iteration_zero(
             cursor += bcounts.shape[0]
         if tcounts is not None:
             tri_offsets = prefix[cursor:cursor + tcounts.shape[0]].to(torch.int32)
+
+    if (skip_empty and num_frags == 0 and po_t is None and po_b is None):
+        # Transparent candidates existed but every fragment was culled and no
+        # opaque pair touched the z-buffer: same retired-empty postcondition.
+        return
 
     run_offsets = _arena_tensor(
         memory, (tn_primary + 1,), torch.int32, 0)
@@ -724,6 +781,7 @@ def raster_iteration_zero(
         light_pos, light_col, int(num_lights),
         layer_offsets, int(frag_flag), frag_pipelines, int(refraction_flag),
         int(skip_unlit_normal), ss, has_bez, int(shadow_flag),
+        1 if prefill else 0,
         int(time_start), int(width), int(height), int(tile_start),
         *cam_args, gen_meta, rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
         pix_accum, rs_alloc, frag_shadow_id, z_shadow_id, shadow_vis)
