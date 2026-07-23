@@ -6,7 +6,7 @@ from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 
 # Maximum number of ray bounces (mirror reflections / diffuse scatters).
-MAX_BOUNCES = 4
+MAX_BOUNCES = 8
 # Rays averaged per pixel. 1 renders with the exact deterministic kernel;
 # > 1 switches to the Monte Carlo pathtracer (stochastic transparency,
 # glossy reflections, optional diffuse indirect lighting).

@@ -9,7 +9,7 @@ from algan.constants.rate_funcs import identity, ease_in_expo, ease_out_expo
 from algan.rendering.shaders.pbr_shaders import null_shader
 from algan.rendering.shaders.materials import (
     MeshPhysicalMaterial,
-    MeshStandardMaterial,
+    MeshStandardMaterial, MeshBasicMaterial,
 )
 from algan.utils.tensor_utils import dot_product, unsquish, squish
 from algan.mobs.text import Tex
@@ -38,7 +38,7 @@ def tweak_color(c, strength=0.2, min_strength=0.0):
 
 
 gr = 0.15
-gs = 0.5
+gs = 0.75
 
 class Synapse(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
@@ -56,7 +56,7 @@ class Neuron(Mob):
 
     def __init__(self, input_locs, direction, neuron_color, **kwargs):
         super().__init__(**kwargs)
-        grid_height = 12
+        grid_height = 18
         self.core = self._make_core(grid_height, neuron_color).move_to(self.location)
         self.shell = (
             self._make_shell(grid_height, neuron_color)
@@ -346,7 +346,7 @@ class NeuralNetMLP(Mob):
         def pulse_synapses(neuron):
             with Sync(rate_func=pulse_fade):#ease_out_expo):
                 for synapse in neuron.synapses:
-                    synapse.wave_color(color + GLOW * gs, 0.7, reverse,
+                    synapse.wave_color(color + GLOW * 1, 0.7, reverse,
                                        direction=self.get_forward_direction(),
                                        new_color=tweak_color(synapse.color, 0.33) if reverse else None)
 
@@ -354,7 +354,7 @@ class NeuralNetMLP(Mob):
             with Sync(run_time=1.1, rate_func=delay_fade):#lambda t: pulse_fade(t, inflection=1.0)):
                 for n in [neuron.core, neuron.shell]:
                     n.wave_color(
-                        (color + GLOW * gs),#.set_opacity(
+                        (color + GLOW * 0.8),#.set_opacity(
                             #1 / neuron.shell.opacity.clamp_min(1e-5)
                         #),
                         1,
@@ -411,15 +411,18 @@ class SynapseV3(Cylinder):
         else:
             c = WHITE
         super().__init__(grid_height=grid_height, grid_width=grid_width, glow_radius=gr, **kwargs)
-        self.set_material(MeshPhysicalMaterial(
+        """self.set_material(MeshPhysicalMaterial(
             color=c.set_glow(0.04),
             roughness=0.25,
             metalness=0.0,
             clearcoat=0.6,
             clearcoatRoughness=0.15,
             envMapIntensity=5.0,
-        ))
-        self.scale(0.02)
+        ))"""
+        self.color = c
+        #self.set_material(MeshBasicMaterial(color=c.set_glow(0.04)))
+        self.set_shader(None)
+        self.scale(0.01)
 
 
 class NeuronV3(Neuron):
@@ -437,15 +440,16 @@ class NeuronV3(Neuron):
             clearcoat=1.0,
             clearcoatRoughness=0.08,
             envMapIntensity=4.0,
+            #reflectivity=1.0
         )
         return (
-            Sphere(grid_height=grid_height, grid_width=grid_height, color=neuron_color)
+            Sphere(grid_height=grid_height, grid_width=grid_height, color=neuron_color, opacity=1.0)
             .set_material(material)
-            .scale(0.17)
+            .scale(0.09)
         )
 
     def _make_shell(self, grid_height, neuron_color):
-        rim_color = neuron_color * 0.6 + WHITE * 0.4
+        rim_color = neuron_color * 0.8 + WHITE * 0.2
         # The rim still needs a boosted sheen: at shell opacity 0.25 the alpha
         # composite mutes it, and the shell's dark limb shading fights it.
         material = MeshPhysicalMaterial(
@@ -454,13 +458,15 @@ class NeuronV3(Neuron):
             metalness=0.0,
             clearcoat=1.0,
             clearcoatRoughness=0.05,
-            sheen=4.0,
-            sheenRoughness=0.3,
+            sheen=8.0,
+            sheenRoughness=0.1,
             sheenColor=rim_color,
             envMapIntensity=5.0,
+            transmission=0.0,
+            ior=5
         )
         return (
-            Sphere(opacity=0.25, grid_width=grid_height, grid_height=grid_height,
+            Sphere(opacity=1.0, grid_width=grid_height, grid_height=grid_height,
                    color=neuron_color, glow_radius=gr)
             .set_material(material)
             .scale(0.21)

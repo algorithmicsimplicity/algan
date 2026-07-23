@@ -939,7 +939,7 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
                 res["exclusive_times"][k] = res["times"][k]
 
         kp = 'kernel: '
-        res["exclusive_times"]["ray traced render total"]# -= sum([v for k, v in res["exclusive_times"].items()
+        #res["exclusive_times"]["ray traced render total"]# -= sum([v for k, v in res["exclusive_times"].items()
                                                          #         if (k[:len(kp)] == kp or
                                                          #             k == 'wavefront_loop')])
 
