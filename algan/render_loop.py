@@ -1008,6 +1008,126 @@ class RenderLoopMixin:
             # start of each batch, and may already be running on a worker
             # thread for the next batch while this render executes.
 
+    def render_background_batch(
+        self,
+        start_ind,
+        end_ind,
+        post_processes=(),
+        transparent_background=False,
+        background_color=None,
+    ):
+        """Yield background-only frame batches for ``[start_ind, end_ind)``.
+
+        Used for frame windows with no renderable primitives (an empty scene,
+        or a stretch where nothing is spawned) so the output video still
+        covers the window. Mirrors ``render_primitive_batch``'s frame
+        finalization -- background prefill into the render arena followed by
+        the standard post-processing chain -- with the ray tracer itself
+        skipped, so these frames match what the tracer produces when nothing
+        is visible.
+        """
+        from algan.rendering.post_processing.post_process import (
+            post_process_frames,
+        )
+        from algan.rendering.raytracing.scene_builder import (
+            _downsample_background,
+            _prefill_background,
+        )
+        from algan.rendering.raytracing.settings import (
+            is_post_process_tonemap_enabled,
+        )
+
+        aa = max(1, int(self.render_settings.anti_alias_level))
+        # Mirror the tracer's anti-aliasing strategy (render_batch_raytraced):
+        # default super-sampled buffer averaged down in post-processing;
+        # ALGAN_INPLACE_AA keeps the buffer at output resolution.
+        inplace_aa = os.getenv("ALGAN_INPLACE_AA", "0") != "0"
+        if inplace_aa:
+            width = self.num_pixels_screen_width
+            height = self.num_pixels_screen_height
+            post_aa = 1
+        else:
+            width = self.num_pixels_screen_width * aa
+            height = self.num_pixels_screen_height * aa
+            post_aa = aa
+        channels = 5 if transparent_background else 4
+        frame_dtype = (
+            torch.float32 if is_post_process_tonemap_enabled() else torch.uint8
+        )
+        device = self.memory.data.device
+        background_source = (
+            self.background_frame
+            if background_color is None else background_color
+        )
+
+        original_pointers = self.memory.get_pointers()
+        bytes_remaining = self.memory.get_num_bytes_remaining()
+
+        def chunk_fits(num_frames):
+            frames_end = _raytrace_frame_buffers_end(
+                0, num_frames, width, height, channels, frame_dtype, 1
+            )
+            postprocess_bytes = _postprocess_memory_used(
+                frame_shape=(num_frames, height, width, channels),
+                frame_dtype=frame_dtype,
+                anti_alias_level=post_aa,
+                post_processes=post_processes,
+                apply_fxaa=self.render_settings.fxaa,
+                initial_pointer=frames_end,
+                device=device,
+            )
+            return frames_end + postprocess_bytes <= bytes_remaining
+
+        current_ind = start_ind
+        while current_ind < end_ind:
+            if getattr(self.memory, "managed", False):
+                duration = _max_duration_that_fits(
+                    end_ind - current_ind, chunk_fits
+                )
+            else:
+                # Unmanaged mode uses PyTorch's ordinary allocator; there is
+                # no finite arena to size against (see render_primitive_batch).
+                duration = end_ind - current_ind
+            new_ind = current_ind + duration
+
+            bgf = _prepare_background_for_chunk(
+                background_source,
+                screen_width=self.num_pixels_screen_width,
+                screen_height=self.num_pixels_screen_height,
+                anti_alias_level=aa,
+                current_ind=current_ind,
+                new_ind=new_ind,
+                frames_per_second=(
+                    self.frames_per_second
+                    if callable(background_source) else 1
+                ),
+                device=COMPUTING_DEFAULTS.render_device,
+            )
+            # In-place AA samples the background once per output pixel, so a
+            # super-sampled image background must be averaged down first
+            # (solid colors are resolution-free).
+            if aa > 1 and inplace_aa:
+                bgf = _downsample_background(
+                    bgf, aa, duration,
+                    self.num_pixels_screen_height,
+                    self.num_pixels_screen_width,
+                )
+            empty_cache()
+            out = self.memory.get_tensor(
+                (duration, width * height, channels), frame_dtype
+            )
+            _prefill_background(out, bgf, 0, device)
+            frames = post_process_frames(
+                self.memory,
+                out.view(duration, height, width, channels),
+                anti_alias_level=post_aa,
+                post_processes=list(post_processes),
+                apply_fxaa=self.render_settings.fxaa,
+            )
+            self.memory.set_pointers(original_pointers)
+            yield frames
+            current_ind = new_ind
+
     def _is_batchable_surface(self, actor):
         """True if this actor's geometry build can be stacked with same-shaped
         peers into one tensor pass (see surface.get_render_primitives_batched).
@@ -1130,6 +1250,24 @@ class RenderLoopMixin:
                     entry["prims"] = p
                 else:
                     entry["prims"] = [p] if p is not None else []
+
+    def _scene_has_renderable_actors(self, start_time_ind, end_time_ind):
+        """Whether any spawned renderable actor's lifespan intersects the
+        frame window (mirroring ``get_batch_of_primitives``' candidate
+        filter). Cheap -- only lifespan timestamps are evaluated -- so the
+        empty-scene warning can fire before rendering starts rather than
+        after it finishes.
+        """
+        start_time = start_time_ind / self.frames_per_second
+        end_time = end_time_ind / self.frames_per_second
+        return any(
+            (actor.lifespan.start() >= 0)
+            and (actor.lifespan.start() <= end_time)
+            and ((actor.lifespan.end() >= start_time)
+                 or actor.lifespan.end() < 0)
+            and hasattr(actor, "get_render_primitives")
+            for actor in self.actors[-1]
+        )
 
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
@@ -1530,7 +1668,6 @@ class RenderLoopMixin:
         actors = [self.camera, self.camera.screen, *self.light_sources, *self.actors[-1]]
         save_image = False
 
-        self.has_any_active_actors = False
         self.memory = ManualMemory(
             COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
         )
@@ -1753,8 +1890,6 @@ class RenderLoopMixin:
                     if executor is not None and new_time_ind < end_time_ind:
                         pending = executor.submit(fetch_batch, new_time_ind)
                     if len(primitives) > 0:
-                        self.has_any_active_actors = True
-
                         s = time.time()
                         logger.info(
                             f"Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video."
@@ -1836,6 +1971,23 @@ class RenderLoopMixin:
                                 "generation kernels; fusing from the next "
                                 "batch (output is unaffected)."
                             )
+                    else:
+                        # No renderable primitives in this window (an empty
+                        # scene, or a stretch where nothing is spawned): still
+                        # emit background-only frames so the output video
+                        # covers the window instead of silently dropping it.
+                        logger.info(
+                            f"No active actors in {current_time_ind}:"
+                            f"{new_time_ind}; rendering background only."
+                        )
+                        for frame_batch in self.render_background_batch(
+                            current_time_ind,
+                            new_time_ind,
+                            post_processes=post_processes,
+                            transparent_background=transparent_background,
+                            background_color=background_color,
+                        ):
+                            yield frame_batch
 
                     retry_lower_duration = 0
                     retry_upper_duration = None
@@ -1891,6 +2043,12 @@ class RenderLoopMixin:
         for l in self.light_sources:
             l.despawn(animate=False)
 
+        if not self._scene_has_renderable_actors(*self.scene_times[-1]):
+            warnings.warn(
+                "You are rendering an empty scene! Did you forget to spawn() your Mobs?",
+                EmptySceneWarning,
+            )
+
         self.file_path = file_path
         self.file_writer = file_writer
 
@@ -1911,8 +2069,3 @@ class RenderLoopMixin:
         if os.path.exists(file_path_out):
             os.remove(file_path_out)
         os.rename(file_path, file_path_out)
-        if (not hasattr(self, 'has_any_active_actors')) or (not self.has_any_active_actors):
-            warnings.warn(
-                "You rendered an empty scene! Did you forget to spawn() your Mobs?",
-                EmptySceneWarning,
-            )
