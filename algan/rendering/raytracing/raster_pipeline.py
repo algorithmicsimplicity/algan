@@ -512,6 +512,101 @@ def _window_pairs(bounds, time_start, g0, g1, ppf, width, device):
     )
 
 
+def plan_occupied_runs(bounds_list, time_start, g0, g1, ppf, width, height,
+                       *, frac, max_runs, merge_gap_rows, device):
+    """Occupied-scanline sub-tiles for a flat tile ``[g0, g1)`` (RASTER_BIN).
+
+    Reduces the candidate screen-bounds tables (the same
+    ``precompute_*_screen_bounds`` outputs ``_window_pairs`` consumes) to the
+    set of occupied global scanlines and returns contiguous flat runs
+    ``[(sub_start, sub_len), ...]`` that cover every candidate primitive's rows.
+
+    Returns ``[]`` when the range has no candidate at all (skip it entirely)
+    and ``None`` when the occupied region is too dense or fragmented to beat the
+    single dense tile (the caller then keeps today's contiguous walk).
+
+    Byte-identical to the dense tile by construction: the per-frame row extents
+    mirror ``_window_pairs`` / ``_screen_bbox``'s clamp/where exactly, so every
+    pixel a dense tile would touch lies inside some returned run, and the pixels
+    outside every run are precisely the empty pixels the dense tile leaves at
+    the background pre-fill.
+    """
+    bounds_list = [b for b in bounds_list if b is not None]
+    if not bounds_list:
+        return []
+    f0_rel = g0 // ppf
+    f1_rel = (g1 - 1) // ppf
+    f_rel = torch.arange(f0_rel, f1_rel + 1, device=device)
+    f_abs = f_rel + time_start
+    lo_p = (g0 - f_rel * ppf).clamp_(min=0)
+    hi_p = (g1 - f_rel * ppf).clamp_(max=ppf)
+    row_lo = lo_p // width                                    # [Ft] i64
+    row_hi = (hi_p - 1) // width
+    rl_f = row_lo.to(torch.float32).view(-1, 1)
+    rh_f = row_hi.to(torch.float32).view(-1, 1)
+    row_lo_c = row_lo.view(-1, 1)
+    row_hi_c = row_hi.view(-1, 1)
+
+    nft = f_rel.numel()
+    ry0 = torch.full((nft,), height, dtype=torch.int64, device=device)
+    ry1 = torch.full((nft,), -1, dtype=torch.int64, device=device)
+    any_cand = torch.zeros((nft,), dtype=torch.bool, device=device)
+    straddle = torch.zeros((nft,), dtype=torch.bool, device=device)
+    for pre_f, pre_x, pre_m, _cls in bounds_list:
+        rows = f_abs % pre_f.shape[0]
+        fy = pre_f.index_select(0, rows)                     # [Ft, C, 4]
+        m = pre_m.index_select(0, rows)                      # [Ft, C, 5]
+        all_front = m[..., 0]
+        fy0 = fy[..., 0].clamp(min=rl_f, max=rh_f).long()
+        fy1 = fy[..., 1].clamp(min=rl_f, max=rh_f).long()
+        y0 = torch.where(all_front, fy0, row_lo_c)
+        y1 = torch.where(all_front, fy1, row_hi_c)
+        y_on = (fy[..., 3] >= rl_f - 1.0) & (fy[..., 2] <= rh_f + 1.0)
+        reach = (m[..., 1] & y_on) | m[..., 2]
+        # A primitive contributes candidate pixels iff it is a candidate in
+        # either class (opaque m3 xor translucent m4) and its bbox reaches the
+        # band -- exactly the union of _window_pairs' two class masks.
+        cand = (m[..., 3] | m[..., 4]) & reach               # [Ft, C]
+        big_y0 = torch.where(cand, y0, torch.full_like(y0, height))
+        big_y1 = torch.where(cand, y1, torch.full_like(y1, -1))
+        ry0 = torch.minimum(ry0, big_y0.amin(1))
+        ry1 = torch.maximum(ry1, big_y1.amax(1))
+        any_cand |= cand.any(1)
+        # Straddlers (~all_front reach base m2) have no reliable screen bbox --
+        # _screen_bbox gives them the full band -- so a straddling candidate
+        # forces its frame to the whole band (and typically the dense fallback).
+        straddle |= (cand & m[..., 2]).any(1)
+    ry0 = torch.where(straddle, row_lo, ry0)
+    ry1 = torch.where(straddle, row_hi, ry1)
+
+    # One host transfer for the whole range (same sync budget as the existing
+    # per-window ``_class_any_flags`` flags), then build/merge runs on the CPU.
+    rows_host = torch.stack(
+        (any_cand.to(torch.int64), ry0, ry1), -1).cpu().tolist()
+
+    runs = []
+    occupied = 0
+    gap = int(merge_gap_rows) * width
+    for f, (cand, a, b) in zip(range(int(f0_rel), int(f1_rel) + 1), rows_host):
+        if not cand:
+            continue
+        s = max(f * ppf + int(a) * width, g0)
+        e = min(f * ppf + (int(b) + 1) * width, g1)
+        if e <= s:
+            continue
+        if runs and s - runs[-1][1] <= gap:
+            occupied += e - runs[-1][1]
+            runs[-1][1] = e
+        else:
+            occupied += e - s
+            runs.append([s, e])
+    if not runs:
+        return []
+    if occupied >= frac * (g1 - g0) or len(runs) > max_runs:
+        return None
+    return [(s, e - s) for s, e in runs]
+
+
 def _arena_tensor(memory, shape, dtype, fill=None):
     out = memory.get_tensor(shape, dtype)
     if fill is not None:
