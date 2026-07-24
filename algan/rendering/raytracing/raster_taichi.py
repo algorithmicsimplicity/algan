@@ -1049,6 +1049,8 @@ def raster_first_shade(
         refraction: ti.template(), skip_unlit_normal: ti.template(),
         ss_enabled: ti.template(), has_bez: ti.template(),
         shadows: ti.template(), prefill: ti.template(),
+        covered: ti.template(),
+        covered_idx: ti.types.ndarray(), num_covered: int,
         time_start: int, width: int, height: int, tile_start: int,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
@@ -1078,6 +1080,15 @@ def raster_first_shade(
     4-6, and bouncing pixels zero those columns back out. Byte-identical to
     the accumulate-onto-zero path (``ALGAN_RASTER_EMPTY_SKIP``).
 
+    ``covered`` (compile-time, ``ALGAN_RASTER_COVERED_SHADE``): the host
+    passed a compact ascending list ``covered_idx[0:num_covered]`` of the
+    only pixels with a fragment or z-winner, so the loop runs one thread per
+    covered pixel (``r = covered_idx[t]``) instead of one per tile pixel.
+    Empty pixels are simply never launched -- their retired-empty pre-fill
+    already holds their final state -- turning the resolve from O(tile
+    pixels) into O(covered pixels). Requires ``prefill``; the ascending
+    order preserves the original relative shading order (byte-identical).
+
     ``layer_offsets`` is the tracer's 8-wide variant: [2..5] environment map
     placement, [6] far clip (0 = off), [7] max_bounces.
     """
@@ -1088,7 +1099,13 @@ def raster_first_shade(
     env_intensity = layer_offsets[5]
     far_clip = layer_offsets[6]
     max_bounces = ti.cast(layer_offsets[7] + 0.5, ti.i32)
-    for r in range(num_pixels):
+    loop_n = num_pixels
+    if ti.static(covered):
+        loop_n = num_covered
+    for t in range(loop_n):
+        r = t
+        if ti.static(covered):
+            r = covered_idx[t]
         start = run_offsets[r]
         end = run_offsets[r + 1]
         nrun = end - start

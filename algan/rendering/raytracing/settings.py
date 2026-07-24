@@ -461,6 +461,29 @@ def set_raster_pair_flags(enabled):
     RASTER_PAIR_FLAGS = bool(enabled)
 
 
+# Covered-pixel-compacted resolve: the rasterizer already visits only the
+# pixels a primitive covers (its z-prepass sets a z-winner, its count emits
+# surviving fragments), so the set of pixels the resolve must actually shade
+# -- ``(fragments > 0) OR (z-winner)`` -- is a compact list built from those
+# per-pixel products.  ``raster_first_shade`` then launches one thread per
+# COVERED pixel instead of one per tile pixel that early-outs, turning the
+# resolve from O(tile pixels) into O(covered pixels).  Empty pixels keep the
+# host's retired-empty pre-fill untouched (so this requires RASTER_EMPTY_SKIP
+# and is disabled under an environment map, where empty pixels still sample
+# the sky in the resolve).  Byte-identical: the covered list is the ascending
+# nonzero order, so covered pixels are shaded in their original relative order
+# and skipped pixels do exactly what their early-out did (nothing).
+RASTER_COVERED_SHADE = (
+    os.environ.get("ALGAN_RASTER_COVERED_SHADE", "1") == "1")
+
+
+def set_raster_covered_shade(enabled):
+    """Toggle the covered-pixel-compacted raster resolve (see
+    ``RASTER_COVERED_SHADE``)."""
+    global RASTER_COVERED_SHADE
+    RASTER_COVERED_SHADE = bool(enabled)
+
+
 # UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle
 # scenes only). This variant is no longer maintained and no longer works; the
 # monolithic general wavefront is the only supported deterministic tracer.

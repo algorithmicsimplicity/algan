@@ -558,6 +558,11 @@ def raster_iteration_zero(
     all-sentinel and whose fragment stream is empty needs no resolve (nor
     shadow-event) launch at all -- unless an environment map is active
     (``env_active``), in which case every empty pixel still samples it.
+
+    Returns ``True`` when it took that whole-tile empty early-out (so
+    ``pix_accum`` is still the untouched retired-empty constant and the
+    caller can composite it with the lean ``empty`` kernel variant), else
+    ``False``.
     """
     (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
      _rs_kt, _rs_kl, _rs_ka, _rs_kb, _rs_kp, _rs_kf) = state
@@ -623,7 +628,7 @@ def raster_iteration_zero(
         # all-sentinel and the fragment stream empty, so the pre-filled
         # retired-empty state already IS the resolve's postcondition. Skip
         # every launch, including the shadow-event build (nothing to accept).
-        return
+        return True
     zbuf = _arena_tensor(memory, (tn_primary,), torch.int64, Z_SENTINEL)
     ss = 1 if rt_settings.RASTER_SS else 0
     tri_pos = merged["tri_pos"]
@@ -679,7 +684,7 @@ def raster_iteration_zero(
     if (skip_empty and num_frags == 0 and po_t is None and po_b is None):
         # Transparent candidates existed but every fragment was culled and no
         # opaque pair touched the z-buffer: same retired-empty postcondition.
-        return
+        return True
 
     run_offsets = _arena_tensor(
         memory, (tn_primary + 1,), torch.int32, 0)
@@ -712,6 +717,30 @@ def raster_iteration_zero(
         frag_key = _arena_tensor(memory, (1,), torch.int64, 0)
         frag_ref = _arena_tensor(memory, (1,), torch.int32, 0)
         frag_ab = _arena_tensor(memory, (1, 2), torch.float32, 0)
+
+    # Covered-pixel-compacted resolve (RASTER_COVERED_SHADE). A pixel needs
+    # shading iff it has a fragment (nrun > 0) or a z-prepass winner -- exactly
+    # the ``total > 0`` condition raster_first_shade's prefill early-out tests.
+    # Compacting that per-pixel mask into the ascending nonzero list lets the
+    # resolve launch one thread per covered pixel instead of per tile pixel,
+    # while the untouched empties keep their retired-empty pre-fill. Requires
+    # prefill and no env map (empty pixels would still sample the sky).
+    use_covered = (bool(prefill) and not env_active
+                   and rt_settings.RASTER_COVERED_SHADE)
+    covered_idx = None
+    num_covered = 0
+    if use_covered:
+        nrun = run_offsets[1:] - run_offsets[:-1]
+        covered_mask = (nrun > 0) | (zbuf != Z_SENTINEL)
+        covered_idx = covered_mask.nonzero(as_tuple=True)[0].to(torch.int32)
+        num_covered = int(covered_idx.numel())
+        if num_covered == 0:
+            # Candidates existed but produced no fragment and no z-winner
+            # (degenerate / behind-camera geometry): the whole tile is still
+            # the untouched retired-empty constant, like the earlier skips.
+            return True
+    if covered_idx is None:
+        covered_idx = _arena_tensor(memory, (1,), torch.int32, 0)
 
     # Exact sparse shadow queue. The upper bound is one accepted triangle event
     # per raw fragment plus one terminal visibility winner per pixel; the build
@@ -782,6 +811,9 @@ def raster_iteration_zero(
         layer_offsets, int(frag_flag), frag_pipelines, int(refraction_flag),
         int(skip_unlit_normal), ss, has_bez, int(shadow_flag),
         1 if prefill else 0,
+        1 if use_covered else 0, covered_idx, int(num_covered),
         int(time_start), int(width), int(height), int(tile_start),
         *cam_args, gen_meta, rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
         pix_accum, rs_alloc, frag_shadow_id, z_shadow_id, shadow_vis)
+    # The resolve ran and wrote pix_accum, so the composite must read it.
+    return False

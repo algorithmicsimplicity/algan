@@ -376,6 +376,52 @@ the dominant kernel of the tiny-scene render floor. Two paired fixes
   contained in the per-frame reach base, so a False flag is exact). This
   replaces up to 4 per-tile GPU->host syncs with one per-window transfer.
 
+  Covered-pixel-compacted resolve (ALGAN_RASTER_COVERED_SHADE, rides on
+  RASTER_EMPTY_SKIP): the rasterizer already visits only the pixels a
+  primitive covers -- its z-prepass sets a z-winner, its count emits
+  surviving fragments -- so the exact set the resolve must shade is
+  ``(fragments > 0) OR (z-winner)``, precisely the ``total > 0`` condition
+  the prefill early-out tests per pixel. The host compacts that per-pixel
+  mask into the ascending ``nonzero`` list ``covered_idx`` and
+  ``raster_first_shade`` launches ONE thread per covered pixel
+  (``r = covered_idx[t]``) instead of one per tile pixel that reads three
+  words and early-outs -- turning the resolve from O(tile pixels) into
+  O(covered pixels). Empty pixels are never launched; their retired-empty
+  pre-fill already holds their final state. When the compacted count is zero
+  (candidates existed but produced no fragment and no z-winner -- a
+  scale-0/behind-camera mob), the whole tile is still the untouched
+  constant, so it takes the same early-out as a pair-free tile (returns the
+  empty flag, composited by the lean variant). Byte-identical: the ascending
+  order preserves the original relative shading order, and the shared
+  continuation pool's slot numbering is already order-independent in output.
+  Disabled under an environment map (empty pixels still sample the sky in
+  the resolve). Measured on a persistent scale-0 mob at MD:
+  ``raster_first_shade`` 1.99s -> ~0 (every tile hits the zero-covered
+  early-out, which also lets the lean composite engage everywhere:
+  1.38 -> 0.77s), warm render 9.81 -> 7.74s (-21%). On scenes whose shaded
+  tiles are mostly covered the win is proportional to the empty fraction
+  within them (~14% resolve on a sphere over empty frames) and roughly
+  neutral on fully-dense tiles (the mask + nonzero is a cheap per-tile cost).
+  Validated by ``benchmarks/_raster_empty_skip_parity.py`` (covered engaged
+  on all eight configs incl. shadows/glass/splits, all max|d| = 0).
+
+  Lean empty-tile composite (rides on RASTER_EMPTY_SKIP): when a tile takes
+  the whole-tile early-out above, `pix_accum` is still the untouched
+  retired-empty constant, so `raster_iteration_zero` returns that fact up
+  through `run_tile` and the tracer composites the tile with the `empty`
+  compile-time variant of `wf_composite_accum` -- `acc == 0`, `weight == 1`
+  collapse the blend to the bare-background `finalize(bg)`, dropping the
+  28-byte-per-pixel `pix_accum` read that is the composite's dominant memory
+  traffic (the kernel is memory-bound at ~37 GB/s, ~33% of the card's peak).
+  Byte-identical (same arithmetic on the same background bytes); measured
+  1.80x per engaged tile in isolation (18.99 -> 10.56 ms at the ~4.6M-px
+  production tile size, `benchmarks/_wf_composite_accum_kp.py`). The
+  early-out fires only when EVERY frame the tile spans is candidate-free, so
+  the win lands on whole empty frames (intro/outro/scene transitions) and
+  empty row-bands at high resolution -- ~20% off composite device time on a
+  scene that is two-thirds empty frames. It does NOT help a persistent tiny
+  mob at MD, where frame-spanning tiles all contain it.
+
 4.12 Memory model
 -----------------
 Persistent per-ray state is the K-buffer-free ~100-byte pool slot of §7,
@@ -721,6 +767,10 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
   ALGAN_RASTER_PAIR_FLAGS (default 1)  Host per-frame candidate-class flags
                                     skipping empty per-tile pair emission
                                     and its `.nonzero()` syncs (§4.11).
+  ALGAN_RASTER_COVERED_SHADE (default 1)  Compact the resolve to the covered
+                                    pixels the rasterizer emitted, so
+                                    raster_first_shade is O(covered) not
+                                    O(tile) (§4.11; needs RASTER_EMPTY_SKIP).
 
   set_hybrid_raster(bool), set_raster_screen_space(bool),
   set_refit_bvh(bool) — programmatic.
@@ -768,7 +818,8 @@ with all MAX_SHADOW_LIGHTS lights (§5). NOT gated on shadows or light count.
                           blocks with explicit per-(frame, child) links) +
                           the vectorized per-frame bound refit (§9).
   settings.py             HYBRID_RASTER, RASTER_SS, BVH_REFIT,
-                          RASTER_EMPTY_SKIP, RASTER_PAIR_FLAGS + setters
+                          RASTER_EMPTY_SKIP, RASTER_PAIR_FLAGS,
+                          RASTER_COVERED_SHADE + setters
                           (refit_bvh_active gates the legacy orchestrators
                           back to classic).
   renderer_settings.py    effective_triangle_primitive() (raster-agnostic;

@@ -1195,6 +1195,7 @@ def wf_composite_accum(
         ray_offset: int,
         pix_accum: ti.types.ndarray(),
         tonemapping: ti.template(), tonemap_exposure: ti.f32,
+        empty: ti.template(),
         out: ti.types.ndarray()):
     """Composite the general path's per-pixel accumulator over the pre-filled
     background. Mirrors ``wf_composite`` arithmetic exactly, but reads the shared
@@ -1203,20 +1204,33 @@ def wf_composite_accum(
     -- so a pixel whose ray split into reflected + refracted branches sums both.
     For a non-split pixel ``pix_accum[r] == (acc, weight)`` of its lone ray, so
     the result is byte-identical to ``wf_composite``. Indexed by local pixel
-    ``r``; the global cell is ``ray_offset + r``."""
+    ``r``; the global cell is ``ray_offset + r``.
+
+    ``empty`` (compile-time): the raster front-end pre-fills ``pix_accum`` with
+    the retired-empty constant ``[0,0,0,0, 1,1,1]`` and, when a whole tile has
+    no candidate geometry, leaves it untouched (RASTER_EMPTY_SKIP). For that
+    tile the accumulator is *known* to be that constant, so the 28-byte-per-
+    pixel ``pix_accum`` read -- the kernel's dominant memory traffic -- is
+    dropped: ``acc == 0`` and ``weight == 1`` collapse the blend to the bare
+    background ``finalize(bg)``, byte-for-byte what the full read produces."""
     pixels_per_frame = width * height
     num_primary = pix_accum.shape[0]
     for r in range(num_primary):
         g = ray_offset + r
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
-        weight = ti.math.vec4(pix_accum[r, 4], pix_accum[r, 5],
-                              pix_accum[r, 6], 0.0)
-        weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
+        weight = ti.math.vec4(1.0, 1.0, 1.0, 1.0)
+        if ti.static(not empty):
+            weight = ti.math.vec4(pix_accum[r, 4], pix_accum[r, 5],
+                                  pix_accum[r, 6], 0.0)
+            weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
         csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         for ci in ti.static(range(4)):
             bg = ti.cast(out[f_rel, p, ci], ti.f32)
-            csum[ci] = pix_accum[r, ci] * 255.0 + weight[ci] * bg
+            if ti.static(empty):
+                csum[ci] = bg
+            else:
+                csum[ci] = pix_accum[r, ci] * 255.0 + weight[ci] * bg
         color_final = finalize_pixel_color(csum, 1.0, tonemapping, tonemap_exposure)
         for ci in ti.static(range(4)):
             if ti.static(tonemapping == 3):

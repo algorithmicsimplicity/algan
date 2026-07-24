@@ -1014,7 +1014,7 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
         auto_extra_slot_bytes, auto_extra_primary_bytes,
         auto_fixed_bytes + 2 * torch.int32.itemsize)
     primary_capacity = min(max(1, int(primary_per_tile)), max(1, int(n)))
-    shared_pool_capacity = primary_capacity * int(pool_ratio)
+    shared_pool_capaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacity = primary_capacity * int(pool_ratio)
 
     # Remember a successful reduced tile size after an overflow so every
     # subsequent tile does not repeat the same failed first attempt. The pool
@@ -1102,8 +1102,9 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                 rs_pix, pix_accum, rs_alloc)
 
-                        run_tile(tile_start, attempt_primary, pool, state,
-                                 rs_pix, pix_accum, rs_alloc)
+                        tile_empty = bool(run_tile(
+                            tile_start, attempt_primary, pool, state,
+                            rs_pix, pix_accum, rs_alloc))
                     except (InsufficientMemoryException,
                             torch.OutOfMemoryError) as exc:
                         memory.set_pointers(state_ptrs)
@@ -1160,11 +1161,16 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                             1 if transparent else 0, int(tile_start),
                             pix_accum, out, aa_accum)
                     else:
+                        # A whole-tile empty raster tile leaves pix_accum at
+                        # the retired-empty constant, so the lean ``empty``
+                        # variant composites the bare background without the
+                        # dominant per-pixel pix_accum read (byte-identical).
                         wf_composite_accum(
                             int(time_start), int(width), int(height),
                             1 if transparent else 0, int(tile_start),
                             pix_accum, t_val,
-                            float(rt_settings.TONEMAP_EXPOSURE), out)
+                            float(rt_settings.TONEMAP_EXPOSURE),
+                            1 if tile_empty else 0, out)
                     memory.set_pointers(state_ptrs)
                     tile_start += attempt_primary
                     break
@@ -1431,6 +1437,11 @@ def raytrace_render_wavefront(
         rs_vis = memory.get_tensor((1,), i32)
         compactor = _ArenaRayCompactor(memory, pool, i32)
         it = 0
+        # True when the raster front-end took its whole-tile empty early-out,
+        # leaving pix_accum at the untouched retired-empty constant so the
+        # composite can skip the pix_accum read (see wf_composite_accum
+        # ``empty``). Non-raster paths leave it False.
+        tile_empty = False
         if use_raster:
             # Iteration 0 via the raster front-end: primary visibility is
             # resolved and shaded in full (straight-ray transparency capped
@@ -1442,7 +1453,7 @@ def raytrace_render_wavefront(
             from algan.rendering.raytracing.raster_pipeline import (
                 raster_iteration_zero)
             with memory.temp():
-                raster_iteration_zero(
+                tile_empty = raster_iteration_zero(
                     merged, tri_screen, tri_bounds, bez_bounds, memory,
                     cam_origin, screen_point,
                     pixel_basis_x, pixel_basis_y, pixel_world_scale,
@@ -1459,7 +1470,7 @@ def raytrace_render_wavefront(
             # host (with half as many primaries); skip the bounce loop for the
             # doomed attempt.
             if pool_ratio > 1 and int(rs_alloc[1].item()) != 0:
-                return
+                return False
             active = compactor.select(rs_int, 0, source=compactor.current,
                                       scan_pool=True)
             if active.numel() > 0 and merged.get("bvh_deferred"):
@@ -1573,6 +1584,9 @@ def raytrace_render_wavefront(
                 scan_pool=(pool_ratio != 1
                            or not rt_settings.WF_COMPACT_ACTIVE_ONLY))
             it += 1
+        # A tile that spawned any continuation ran the resolve, so it is not
+        # empty; ``tile_empty`` stays true only for the whole-tile early-out.
+        return tile_empty
 
     _run_wavefront_tiles(
         memory, out, n=n, width=width, height=height,
