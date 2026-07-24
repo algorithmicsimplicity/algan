@@ -978,6 +978,12 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
     t_val = _get_tonemap_t_val()
     i32 = torch.int32
     f32 = torch.float32
+    # Post-process tonemapping (t_val == 3): the composite writes linear HDR
+    # and is a no-op on empty pixels, so a whole-empty raster tile needs no
+    # composite launch and a partially-covered one composites over just its
+    # covered pixels. Placeholder covered list for the non-compacted calls.
+    post_tonemap = (t_val == 3)
+    covered_dummy = torch.zeros(1, dtype=i32, device=out.device)
     aa = max(1, int(aa_level))
     do_aa = aa > 1
     inv_aa = 1.0 / aa
@@ -1014,7 +1020,7 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
         auto_extra_slot_bytes, auto_extra_primary_bytes,
         auto_fixed_bytes + 2 * torch.int32.itemsize)
     primary_capacity = min(max(1, int(primary_per_tile)), max(1, int(n)))
-    shared_pool_capaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaacity = primary_capacity * int(pool_ratio)
+    shared_pool_capacity = primary_capacity * int(pool_ratio)
 
     # Remember a successful reduced tile size after an overflow so every
     # subsequent tile does not repeat the same failed first attempt. The pool
@@ -1102,9 +1108,17 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                                 rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                 rs_pix, pix_accum, rs_alloc)
 
-                        tile_empty = bool(run_tile(
+                        _res = run_tile(
                             tile_start, attempt_primary, pool, state,
-                            rs_pix, pix_accum, rs_alloc))
+                            rs_pix, pix_accum, rs_alloc)
+                        # The general raster run_tile returns (tile_empty,
+                        # covered_idx, num_covered); the legacy orchestrators
+                        # return None (never raster, never empty/compacted).
+                        if isinstance(_res, tuple):
+                            tile_empty, tile_covered_idx, tile_num_covered = _res
+                        else:
+                            tile_empty = bool(_res)
+                            tile_covered_idx, tile_num_covered = None, 0
                     except (InsufficientMemoryException,
                             torch.OutOfMemoryError) as exc:
                         memory.set_pointers(state_ptrs)
@@ -1160,17 +1174,28 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                             int(time_start), int(width), int(height),
                             1 if transparent else 0, int(tile_start),
                             pix_accum, out, aa_accum)
+                    elif post_tonemap and tile_empty:
+                        # Linear composite is a no-op on empty pixels and the
+                        # whole tile is empty, so ``out`` already holds the
+                        # pre-filled background -- skip the launch entirely.
+                        pass
                     else:
-                        # A whole-tile empty raster tile leaves pix_accum at
-                        # the retired-empty constant, so the lean ``empty``
-                        # variant composites the bare background without the
-                        # dominant per-pixel pix_accum read (byte-identical).
+                        # Compact over the covered pixels when the linear
+                        # composite makes empty pixels no-ops (post-tonemap
+                        # and a covered list is available); otherwise the full
+                        # pass, using the lean ``empty`` variant for a
+                        # whole-empty tile under in-composite tonemapping.
+                        use_cc = post_tonemap and tile_covered_idx is not None
                         wf_composite_accum(
                             int(time_start), int(width), int(height),
                             1 if transparent else 0, int(tile_start),
                             pix_accum, t_val,
                             float(rt_settings.TONEMAP_EXPOSURE),
-                            1 if tile_empty else 0, out)
+                            0 if use_cc else (1 if tile_empty else 0),
+                            1 if use_cc else 0,
+                            tile_covered_idx if use_cc else covered_dummy,
+                            int(tile_num_covered) if use_cc else 0,
+                            out)
                     memory.set_pointers(state_ptrs)
                     tile_start += attempt_primary
                     break
@@ -1440,8 +1465,12 @@ def raytrace_render_wavefront(
         # True when the raster front-end took its whole-tile empty early-out,
         # leaving pix_accum at the untouched retired-empty constant so the
         # composite can skip the pix_accum read (see wf_composite_accum
-        # ``empty``). Non-raster paths leave it False.
+        # ``empty``). ``covered_idx``/``num_covered`` carry the resolve's
+        # compact covered-pixel list so the composite can compact too (mode 3).
+        # Non-raster paths leave these at the defaults.
         tile_empty = False
+        covered_idx = None
+        num_covered = 0
         if use_raster:
             # Iteration 0 via the raster front-end: primary visibility is
             # resolved and shaded in full (straight-ray transparency capped
@@ -1453,7 +1482,7 @@ def raytrace_render_wavefront(
             from algan.rendering.raytracing.raster_pipeline import (
                 raster_iteration_zero)
             with memory.temp():
-                tile_empty = raster_iteration_zero(
+                tile_empty, covered_idx, num_covered = raster_iteration_zero(
                     merged, tri_screen, tri_bounds, bez_bounds, memory,
                     cam_origin, screen_point,
                     pixel_basis_x, pixel_basis_y, pixel_world_scale,
@@ -1470,7 +1499,7 @@ def raytrace_render_wavefront(
             # host (with half as many primaries); skip the bounce loop for the
             # doomed attempt.
             if pool_ratio > 1 and int(rs_alloc[1].item()) != 0:
-                return False
+                return False, None, 0
             active = compactor.select(rs_int, 0, source=compactor.current,
                                       scan_pool=True)
             if active.numel() > 0 and merged.get("bvh_deferred"):
@@ -1586,7 +1615,7 @@ def raytrace_render_wavefront(
             it += 1
         # A tile that spawned any continuation ran the resolve, so it is not
         # empty; ``tile_empty`` stays true only for the whole-tile early-out.
-        return tile_empty
+        return tile_empty, covered_idx, num_covered
 
     _run_wavefront_tiles(
         memory, out, n=n, width=width, height=height,

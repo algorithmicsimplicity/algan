@@ -628,7 +628,7 @@ def raster_iteration_zero(
         # all-sentinel and the fragment stream empty, so the pre-filled
         # retired-empty state already IS the resolve's postcondition. Skip
         # every launch, including the shadow-event build (nothing to accept).
-        return True
+        return True, None, 0
     zbuf = _arena_tensor(memory, (tn_primary,), torch.int64, Z_SENTINEL)
     ss = 1 if rt_settings.RASTER_SS else 0
     tri_pos = merged["tri_pos"]
@@ -684,7 +684,7 @@ def raster_iteration_zero(
     if (skip_empty and num_frags == 0 and po_t is None and po_b is None):
         # Transparent candidates existed but every fragment was culled and no
         # opaque pair touched the z-buffer: same retired-empty postcondition.
-        return True
+        return True, None, 0
 
     run_offsets = _arena_tensor(
         memory, (tn_primary + 1,), torch.int32, 0)
@@ -738,7 +738,7 @@ def raster_iteration_zero(
             # Candidates existed but produced no fragment and no z-winner
             # (degenerate / behind-camera geometry): the whole tile is still
             # the untouched retired-empty constant, like the earlier skips.
-            return True
+            return True, None, 0
     if covered_idx is None:
         covered_idx = _arena_tensor(memory, (1,), torch.int32, 0)
 
@@ -765,6 +765,7 @@ def raster_iteration_zero(
             merged["circuit_border_colors"], merged["edges_2d"],
             merged["edge_accel"], pixel_world_scale,
             float(layer_offset_triangles), int(refraction_flag), ss, has_bez,
+            1 if use_covered else 0, covered_idx, int(num_covered),
             int(time_start), int(width), int(height), int(tile_start),
             *cam_args, gen_meta, int(max_bounces),
             frag_shadow_id, z_shadow_id, event_pos, event_snrm, event_fnrm,
@@ -816,4 +817,7 @@ def raster_iteration_zero(
         *cam_args, gen_meta, rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
         pix_accum, rs_alloc, frag_shadow_id, z_shadow_id, shadow_vis)
     # The resolve ran and wrote pix_accum, so the composite must read it.
-    return False
+    # Hand the covered list to the caller: under post-process tonemapping the
+    # composite is a linear blend that is a no-op on empty pixels, so it can
+    # run over exactly these covered pixels (byte-identical, mode 3 only).
+    return False, (covered_idx if use_covered else None), num_covered

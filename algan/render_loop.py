@@ -583,6 +583,7 @@ class RenderLoopMixin:
             gpu_project_input_bytes,
         )
         from algan.rendering.raytracing.settings import (
+            hdr_frame_dtype,
             is_post_process_tonemap_enabled,
         )
         from algan.rendering.raytracing.tracer import (
@@ -686,8 +687,12 @@ class RenderLoopMixin:
         render_height = self.num_pixels_screen_height * aa
         render_width = self.num_pixels_screen_width * aa
         render_channels = 5 if transparent_background else 4
+        # Linear-HDR buffer: the composite writes linear HDR here and post
+        # tonemaps last, so bloom runs on unclamped HDR. dtype from
+        # hdr_frame_dtype() -- float32 by default, opt-in float16 (RGBA16F,
+        # half the memory) on GPUs with fast FP16.
         frame_dtype = (
-            torch.float32
+            hdr_frame_dtype()
             if is_post_process_tonemap_enabled()
             else torch.uint8
         )
@@ -866,6 +871,7 @@ class RenderLoopMixin:
 
             render_pointers = self.memory.get_pointers()
             from algan.rendering.raytracing.settings import (
+                hdr_frame_dtype,
                 is_post_process_tonemap_enabled,
             )
             from algan.rendering.raytracing.tracer import (
@@ -876,8 +882,10 @@ class RenderLoopMixin:
             render_height = self.num_pixels_screen_height * aa
             render_width = self.num_pixels_screen_width * aa
             render_channels = 5 if transparent_background else 4
+            # Linear-HDR buffer (hdr_frame_dtype: f32 default, opt-in f16) --
+            # see the matching note in the deterministic render path.
             frame_dtype = (
-                torch.float32
+                hdr_frame_dtype()
                 if is_post_process_tonemap_enabled()
                 else torch.uint8
             )
@@ -1039,6 +1047,7 @@ class RenderLoopMixin:
             _prefill_background,
         )
         from algan.rendering.raytracing.settings import (
+            hdr_frame_dtype,
             is_post_process_tonemap_enabled,
         )
 
@@ -1056,8 +1065,10 @@ class RenderLoopMixin:
             height = self.num_pixels_screen_height * aa
             post_aa = aa
         channels = 5 if transparent_background else 4
+        # Linear-HDR buffer for background-only windows (hdr_frame_dtype);
+        # matches the primitive path so the two never disagree.
         frame_dtype = (
-            torch.float32 if is_post_process_tonemap_enabled() else torch.uint8
+            hdr_frame_dtype() if is_post_process_tonemap_enabled() else torch.uint8
         )
         device = self.memory.data.device
         background_source = (

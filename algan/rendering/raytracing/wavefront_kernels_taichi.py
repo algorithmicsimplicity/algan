@@ -1195,7 +1195,8 @@ def wf_composite_accum(
         ray_offset: int,
         pix_accum: ti.types.ndarray(),
         tonemapping: ti.template(), tonemap_exposure: ti.f32,
-        empty: ti.template(),
+        empty: ti.template(), covered: ti.template(),
+        covered_idx: ti.types.ndarray(), num_covered: int,
         out: ti.types.ndarray()):
     """Composite the general path's per-pixel accumulator over the pre-filled
     background. Mirrors ``wf_composite`` arithmetic exactly, but reads the shared
@@ -1212,10 +1213,25 @@ def wf_composite_accum(
     tile the accumulator is *known* to be that constant, so the 28-byte-per-
     pixel ``pix_accum`` read -- the kernel's dominant memory traffic -- is
     dropped: ``acc == 0`` and ``weight == 1`` collapse the blend to the bare
-    background ``finalize(bg)``, byte-for-byte what the full read produces."""
+    background ``finalize(bg)``, byte-for-byte what the full read produces.
+
+    ``covered`` (compile-time): under post-process tonemapping (``tonemapping
+    == 3``) the composite is a pure linear blend, so an empty pixel's result
+    ``finalize(bg) == bg`` is exactly what the background pre-fill already
+    wrote -- a no-op. The host therefore passes the same compact covered
+    list the resolve used and this loop runs one thread per covered pixel
+    (``r = covered_idx[t]``); the untouched empty pixels keep their
+    pre-filled background. Only valid with ``tonemapping == 3`` (in-kernel
+    tonemap would owe every empty pixel ``tonemap(bg) != bg``)."""
     pixels_per_frame = width * height
     num_primary = pix_accum.shape[0]
-    for r in range(num_primary):
+    loop_n = num_primary
+    if ti.static(covered):
+        loop_n = num_covered
+    for t in range(loop_n):
+        r = t
+        if ti.static(covered):
+            r = covered_idx[t]
         g = ray_offset + r
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame

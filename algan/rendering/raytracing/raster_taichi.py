@@ -89,7 +89,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
 
 # Candidate pixels per (prim, chunk) pair: one fine-raster thread tests at
 # most this many pixels, bounding load imbalance for large bboxes.
-RASTER_CHUNK = 256
+RASTER_CHUNK = 32
 
 # Empty typed visibility-buffer entry. Real hits pack the same strict ordering
 # used by the classic deterministic tracer:
@@ -723,7 +723,8 @@ def raster_shadow_event_build(
         edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
         pixel_world_scale: ti.types.ndarray(), layer_offset_triangles: ti.f32,
         refraction: ti.template(), ss_enabled: ti.template(),
-        has_bez: ti.template(),
+        has_bez: ti.template(), covered: ti.template(),
+        covered_idx: ti.types.ndarray(), num_covered: int,
         time_start: int, width: int, height: int, tile_start: int,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
@@ -740,9 +741,20 @@ def raster_shadow_event_build(
     event.  Their IDs are written back beside the raw fragment (or terminal
     z-winner) so the later resolve can fetch one exact per-light visibility
     row without position-based slot approximations.
+
+    ``covered`` (compile-time): like ``raster_first_shade``, iterate only the
+    compact covered-pixel list -- empty pixels have no fragment and no
+    z-winner, so they reserve no events; skipping them changes only the
+    (already order-independent) event numbering, not the output.
     """
     pixels_per_frame = width * height
-    for r in range(num_pixels):
+    loop_n = num_pixels
+    if ti.static(covered):
+        loop_n = num_covered
+    for t in range(loop_n):
+        r = t
+        if ti.static(covered):
+            r = covered_idx[t]
         g = tile_start + r
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame

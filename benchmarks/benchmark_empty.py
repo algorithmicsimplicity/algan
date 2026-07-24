@@ -1,11 +1,15 @@
+import os
+os.environ['ALGAN_PREFETCH_BATCHES'] = '0'
 from algan import *
 from algan.utils.profiling_utils import profile_scene
 
 rs = MD
+one_mob = False
 
 def empty_scene():
-    with Off():
-        Triangle().scale(0).spawn() # small Mob cause scene won't render if there are 0 Mobs in it.
+    if one_mob:
+        with Off():
+            Triangle().scale(0).spawn()
     Scene.wait(10)
 
 profile_scene(empty_scene, render_settings=rs, runs=2, kernel_profiler=False)

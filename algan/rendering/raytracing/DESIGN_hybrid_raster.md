@@ -405,14 +405,28 @@ the dominant kernel of the tiny-scene render floor. Two paired fixes
   Validated by ``benchmarks/_raster_empty_skip_parity.py`` (covered engaged
   on all eight configs incl. shadows/glass/splits, all max|d| = 0).
 
-  Lean empty-tile composite (rides on RASTER_EMPTY_SKIP): when a tile takes
-  the whole-tile early-out above, `pix_accum` is still the untouched
-  retired-empty constant, so `raster_iteration_zero` returns that fact up
-  through `run_tile` and the tracer composites the tile with the `empty`
-  compile-time variant of `wf_composite_accum` -- `acc == 0`, `weight == 1`
-  collapse the blend to the bare-background `finalize(bg)`, dropping the
-  28-byte-per-pixel `pix_accum` read that is the composite's dominant memory
-  traffic (the kernel is memory-bound at ~37 GB/s, ~33% of the card's peak).
+  Composite compaction under post-process tonemapping (default). With
+  `POST_PROCESS_TONEMAP` on (now the default -- bloom/downsample run in
+  linear HDR and tonemapping is applied last in `post_process_frames`, the
+  physically-correct order), the composite is a pure linear blend, so an
+  empty pixel's result `finalize(bg) == bg` is exactly the pre-filled
+  background -- a no-op. `raster_iteration_zero` hands its covered list out
+  through `run_tile`, and the tracer (a) skips the composite launch entirely
+  for a whole-empty tile and (b) runs `wf_composite_accum` over just the
+  covered pixels (`covered` template, same list as the resolve) for a
+  partially-covered one. Byte-identical (empty pixels were no-ops anyway).
+  The shadow-event build (`raster_shadow_event_build`) is compacted over the
+  same list -- empty pixels reserve no events, and the event numbering is
+  already order-independent, so it is byte-identical in either tonemap mode.
+
+  Lean empty-tile composite (in-composite tonemap only, rides on
+  RASTER_EMPTY_SKIP): when `POST_PROCESS_TONEMAP` is OFF the composite
+  tonemaps in-kernel, so an empty pixel owes `tonemap(bg) != bg` and cannot
+  be skipped. The whole-empty tile instead uses the `empty` compile-time
+  variant of `wf_composite_accum` -- `acc == 0`, `weight == 1` collapse the
+  blend to the bare-background `finalize(bg)`, dropping the 28-byte-per-pixel
+  `pix_accum` read that is the composite's dominant memory traffic (the
+  kernel is memory-bound at ~37 GB/s, ~33% of the card's peak).
   Byte-identical (same arithmetic on the same background bytes); measured
   1.80x per engaged tile in isolation (18.99 -> 10.56 ms at the ~4.6M-px
   production tile size, `benchmarks/_wf_composite_accum_kp.py`). The
@@ -771,6 +785,37 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
                                     pixels the rasterizer emitted, so
                                     raster_first_shade is O(covered) not
                                     O(tile) (§4.11; needs RASTER_EMPTY_SKIP).
+                                    The composite and shadow-event build are
+                                    compacted over the same list; the
+                                    composite compaction also needs
+                                    POST_PROCESS_TONEMAP (linear blend).
+  ALGAN_POST_PROCESS_TONEMAP (default 1)  Tonemap in post-processing (the
+                                    composite writes a linear HDR float
+                                    buffer) rather than in the composite
+                                    kernel, so bloom/glow and the supersample
+                                    downsample run in linear HDR (physically
+                                    correct; HDR highlights keep their chroma).
+                                    post_process_frames normalizes the
+                                    byte-range colour+glow /255 before bloom
+                                    and tonemaps last (the AA downsample no
+                                    longer clamps HDR to uint8). Costs a float
+                                    frame buffer -> fewer frames per batch.
+                                    Enables the composite covered-pixel
+                                    compaction above.
+  ALGAN_POST_TONEMAP_KERNEL (default 1)  Apply the post-process tonemap with
+                                    a standalone Taichi kernel (tonemap_to_u8,
+                                    reusing the in-composite tonemap ti.funcs,
+                                    f32 compute) instead of the torch tonemap
+                                    pipeline -- recovers most of the cost the
+                                    move to post-process tonemapping added
+                                    (post-process device ~3.9->2.0s empty MD).
+  ALGAN_HDR_BUFFER_F16 (default 0)  Use a float16 (RGBA16F) HDR frame buffer
+                                    instead of float32 -- half the memory (~2x
+                                    more frames/batch). Opt-in: on GPUs with
+                                    poor FP16 throughput (consumer Pascal at
+                                    ~1/64 FP32) the f16 torch post-processing
+                                    is ~80% slower end-to-end than f32; a clear
+                                    win only on Turing/Ampere+ (fast f16).
 
   set_hybrid_raster(bool), set_raster_screen_space(bool),
   set_refit_bvh(bool) — programmatic.

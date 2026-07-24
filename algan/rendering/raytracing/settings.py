@@ -43,7 +43,16 @@ def report_unsupported_features(message):
 TONEMAPPING = True
 TONEMAP_EXPOSURE = 1.0
 TONEMAP_METHOD = "neutral"
-POST_PROCESS_TONEMAP = False
+# Tonemap in post-processing (composite writes linear HDR float) rather than
+# in the composite kernel. This is the physically-correct order: bloom/glow
+# and the supersample downsample run in linear HDR and tonemapping is applied
+# last (Unity/Unreal do the same), so HDR highlights keep their chroma
+# instead of clipping to white. It also makes the composite a linear blend
+# that is identity for empty pixels (enabling the covered-pixel compaction).
+# Costs a float32 frame buffer (4x the uint8 one), so fewer frames per batch.
+# Env override for A/B and re-baselining.
+POST_PROCESS_TONEMAP = (
+    os.environ.get("ALGAN_POST_PROCESS_TONEMAP", "1") == "1")
 
 # Strength of diffuse indirect bounces in the Monte Carlo renderer: 0 keeps
 # surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
@@ -792,6 +801,41 @@ def set_post_process_tonemap(enabled):
     """Enable or disable post-process tonemapping instead of in-kernel tonemapping."""
     global POST_PROCESS_TONEMAP
     POST_PROCESS_TONEMAP = bool(enabled)
+
+
+def hdr_frame_dtype():
+    """dtype of the linear-HDR frame buffer used under post-process
+    tonemapping.
+
+    Defaults to float32. float16 (RGBA16F) halves the frame-buffer memory
+    (so ~2x more frames per batch), but is opt-in via ``ALGAN_HDR_BUFFER_F16=1``
+    because GPUs with poor FP16 throughput -- notably consumer Pascal
+    (GTX 10-series) at ~1/64 FP32 -- run the f16 torch post-processing (and
+    f16 buffer traffic) far slower than the memory saving is worth (measured
+    ~80% slower end-to-end on a GTX 1050). On Turing/Ampere+ (fast f16) it is
+    a clear win, so enable it there."""
+    import torch
+    if os.environ.get("ALGAN_HDR_BUFFER_F16", "0") == "1":
+        return torch.float16
+    return torch.float32
+
+
+POST_TONEMAP_KERNEL = (
+    os.environ.get("ALGAN_POST_TONEMAP_KERNEL", "1") == "1")
+
+
+def set_post_tonemap_kernel(enabled):
+    """Toggle the standalone Taichi post-process tonemap kernel (vs the torch
+    tonemap pipeline). The kernel reuses the in-composite tonemap ti.funcs and
+    computes in f32, recovering most of the cost the move to post-process
+    tonemapping added (the torch tonemap ran ~20 ops/pixel over every frame).
+    Kill-switch / A-B hook."""
+    global POST_TONEMAP_KERNEL
+    POST_TONEMAP_KERNEL = bool(enabled)
+
+
+def is_post_tonemap_kernel_enabled():
+    return POST_TONEMAP_KERNEL
 
 
 def is_post_process_tonemap_enabled():

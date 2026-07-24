@@ -171,6 +171,26 @@ def _finalize_on_device(frame, original_num_channels, memory, *,
     )
     output = memory.get_tensor((*frame.shape[:-1], output_channels), torch.uint8)
 
+    # Standalone Taichi tonemap (POST_TONEMAP_KERNEL): under post-process
+    # tonemapping the frame arrives as a linear-HDR float buffer bloom has
+    # already run on. Tonemap + quantize in one f32 Taichi pass (reusing the
+    # in-composite tonemap ti.funcs) instead of the ~20-op/pixel torch
+    # pipeline -- it reads RGB (0-2), drops the glow channel and picks up any
+    # alpha (channel 4) itself, so it needs no torch strip.
+    from algan.rendering.raytracing import settings as _rt
+    if (tonemap_enabled and frame.dtype != torch.uint8
+            and _rt.is_post_tonemap_kernel_enabled()):
+        from algan.rendering.post_processing.tonemap_kernels_taichi import (
+            tonemap_to_u8,
+        )
+        method_id = (0 if not tonemapping
+                     else (1 if tonemap_method == "neutral" else 2))
+        if tonemapping and tonemap_method not in ("neutral", "agx"):
+            raise ValueError(f"Unknown tonemapping method: {tonemap_method}")
+        tonemap_to_u8(frame, output, method_id, float(exposure),
+                      1 if frame.shape[-1] == 5 else 0)
+        return output
+
     with memory.temp():
         stripped = _strip_aux_channel(frame, original_num_channels, memory)
 
@@ -213,13 +233,20 @@ def _finalize_on_device(frame, original_num_channels, memory, *,
 
 
 def post_process_frames(self, frames, anti_alias_level, post_processes=(), apply_fxaa=False):
+    from algan.rendering.raytracing import settings as rt_settings
+    hdr = rt_settings.is_post_process_tonemap_enabled()
+
     self.pre_post_pointers = self.get_pointers()
     frame_out = frames
     if anti_alias_level > 1:
+        # Downsample in the frame's own dtype: uint8 in the in-composite
+        # tonemap mode (as before), but float16 under post-process tonemapping
+        # so the supersample average stays in linear HDR instead of clamping
+        # to 0-255 before bloom.
         aa_frame_out = self.get_tensor([
             frame_out.shape[0], frame_out.shape[1] // anti_alias_level,
             frame_out.shape[2] // anti_alias_level, frame_out.shape[3]
-        ], dtype=torch.uint8)
+        ], dtype=frame_out.dtype)
         with self.temp():
             frame_temp = self.get_tensor(aa_frame_out.shape, torch.float32)
             frame_temp.copy_(frame_out[:, ::anti_alias_level, ::anti_alias_level])
@@ -232,22 +259,34 @@ def post_process_frames(self, frames, anti_alias_level, post_processes=(), apply
             aa_frame_out.copy_(frame_temp)
         frame_out = aa_frame_out
 
+    if hdr:
+        # The render/composite and background pre-fill carry byte-range values
+        # (0-255, with HDR headroom above 255 preserved by the f16 buffer).
+        # Bloom and the post-process tonemap expect linear 0-1, so normalise
+        # the colour + glow channels (0-3) in place -- once, in f16 -- leaving
+        # any alpha channel (4) in byte range for the finalize step. Bloom then
+        # runs on unclamped linear HDR and tonemapping is applied last. In
+        # place (no extra frame-sized buffer): frame_out here is either the
+        # arena downsample target or the soon-discarded render buffer.
+        frame_out[..., :4].div_(255.0)
+
     if apply_fxaa:
-        # The byte result survives while all float FXAA tensors are released.
-        fxaa_u8 = self.get_tensor(frame_out.shape, torch.uint8)
+        # Result kept in the frame's dtype (uint8 normally, f16 under HDR so
+        # the normalised 0-1 values are not truncated) while the float FXAA
+        # scratch is released.
+        fxaa_out = self.get_tensor(frame_out.shape, frame_out.dtype)
         with self.temp():
             fxaa_input = self.cast(frame_out, torch.float32)
             fxaa_float = fxaa(
                 fxaa_input.permute(0, 3, 1, 2), memory=self
             ).permute(0, 2, 3, 1)
-            fxaa_u8.copy_(fxaa_float)
-        frame_out = fxaa_u8
+            fxaa_out.copy_(fxaa_float)
+        frame_out = fxaa_out
 
     num_channels = frame_out.shape[-1]
     for process in post_processes:
         frame_out = process(frame_out, memory=self)
 
-    from algan.rendering.raytracing import settings as rt_settings
     frame_out = _finalize_on_device(
         frame_out, num_channels, self,
         tonemap_enabled=rt_settings.is_post_process_tonemap_enabled(),
