@@ -1052,11 +1052,18 @@ def _merge_scene(primitives):
     def _record_visibility(prefix, lo, hi, opaque, uncertain_alpha=False):
         visible = (hi >= lo).all(-1)
         has_visible = bool(visible.any())
+        # A point-degenerate primitive cannot cover a pixel in the current
+        # triangle/circuit intersection kernels.  Preserve a conservative
+        # batch-wide bit so the sparse raster path can skip exact COUNT
+        # discovery when every materialized primitive is collapsed to a point.
+        has_extent = bool(
+            (visible & ((hi - lo) > 0.0).any(-1)).any())
         has_opaque = bool((visible & opaque).any())
         has_translucent = bool((visible & ~opaque).any())
         if uncertain_alpha and has_visible:
             has_translucent = True
         scene[f"{prefix}_has_visible"] = has_visible
+        scene[f"{prefix}_has_extent"] = has_extent
         scene[f"{prefix}_has_opaque"] = has_opaque
         scene[f"{prefix}_has_translucent"] = has_translucent
         scene["has_uncertain_texture_alpha"] = (
@@ -1500,6 +1507,12 @@ def _merge_scene(primitives):
         scene["circuit_colors"] = _cat_collections(padded, 1, "bezier merge")
         scene["edges_2d"] = _cat_collections(
             [p._rt_edges for p in beziers], 1, "bezier merge")
+        # Degenerate sampled edges use the exact sentinel row installed by
+        # BezierCircuitPrimitives._build_circuit_geometry.  A batch containing
+        # no other edge cannot pass the circuit intersection/winding test even
+        # when border/glow inflation gave its point bounds nonzero extent.
+        scene["bez_has_nondegenerate_edges"] = bool(
+            (~(scene["edges_2d"][..., :4] == 1e9).all(-1)).any())
         offsets, shift = [torch.zeros((1,), dtype=torch.int32, device=device)], 0
         for p in beziers:
             offsets.append(p._rt_edge_offsets[1:].long() + shift)
@@ -1550,6 +1563,7 @@ def _merge_scene(primitives):
         scene["bez_frame_hi"] = torch.full((1, 1, 3), EMPTY_HI, device=device)
         scene["num_circuits"] = 0
         scene["bez_has_reflective"] = False
+        scene["bez_has_nondegenerate_edges"] = False
         _record_visibility(
             "bez", torch.empty((0, 0, 3), device=device),
             torch.empty((0, 0, 3), device=device),

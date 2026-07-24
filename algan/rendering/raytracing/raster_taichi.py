@@ -479,7 +479,8 @@ def raster_tri_count(
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
         ss_enabled: ti.template(), layer_offset_triangles: ti.f32,
-        zbuf: ti.types.ndarray(), pair_count: ti.types.ndarray()):
+        z_cull: ti.template(), zbuf: ti.types.ndarray(),
+        pair_count: ti.types.ndarray()):
     """Count surviving nonzero-alpha transparent triangle fragments."""
     for p in range(num_pairs):
         prim = pairs[p, 0]
@@ -498,13 +499,17 @@ def raster_tri_count(
                 prim, f, x0, y0, bw, bh, off, j, time_start, width, height,
                 tile_start, tile_pixels, half_w, half_h, use_ss, sm, vm, cam_o,
                 cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
-            if ok != 0 and _order_key(t, layer) < zbuf[lp]:
-                w0 = 1.0 - w1 - w2
-                _color, alpha = _tri_color_g(
-                    0, f, prim, w0, w1, w2, tri_colors, col_row, tri_uvs,
-                    tri_tex_meta, textures, num_colored_triangles)
-                if alpha > MIN_ALPHA:
-                    cnt += 1
+            if ok != 0:
+                before_z = True
+                if ti.static(z_cull):
+                    before_z = _order_key(t, layer) < zbuf[lp]
+                if before_z:
+                    w0 = 1.0 - w1 - w2
+                    _color, alpha = _tri_color_g(
+                        0, f, prim, w0, w1, w2, tri_colors, col_row, tri_uvs,
+                        tri_tex_meta, textures, num_colored_triangles)
+                    if alpha > MIN_ALPHA:
+                        cnt += 1
         pair_count[p] = cnt
 
 
@@ -522,7 +527,8 @@ def raster_tri_write(
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
         ss_enabled: ti.template(), layer_offset_triangles: ti.f32,
-        zbuf: ti.types.ndarray(), frag_key: ti.types.ndarray(),
+        z_cull: ti.template(), zbuf: ti.types.ndarray(),
+        frag_key: ti.types.ndarray(),
         frag_ref: ti.types.ndarray(), frag_ab: ti.types.ndarray()):
     """Emit exact-distance triangle records; alpha-zero texels are discarded."""
     for p in range(num_pairs):
@@ -542,18 +548,23 @@ def raster_tri_write(
                 prim, f, x0, y0, bw, bh, off, j, time_start, width, height,
                 tile_start, tile_pixels, half_w, half_h, use_ss, sm, vm, cam_o,
                 cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
-            if ok != 0 and _order_key(t, layer) < zbuf[lp]:
-                w0 = 1.0 - w1 - w2
-                _color, alpha = _tri_color_g(
-                    0, f, prim, w0, w1, w2, tri_colors, col_row, tri_uvs,
-                    tri_tex_meta, textures, num_colored_triangles)
-                if alpha > MIN_ALPHA:
-                    tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
-                    frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
-                    frag_ref[w] = prim
-                    frag_ab[w, 0] = w1
-                    frag_ab[w, 1] = w2
-                    w += 1
+            if ok != 0:
+                before_z = True
+                if ti.static(z_cull):
+                    before_z = _order_key(t, layer) < zbuf[lp]
+                if before_z:
+                    w0 = 1.0 - w1 - w2
+                    _color, alpha = _tri_color_g(
+                        0, f, prim, w0, w1, w2, tri_colors, col_row,
+                        tri_uvs, tri_tex_meta, textures,
+                        num_colored_triangles)
+                    if alpha > MIN_ALPHA:
+                        tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
+                        frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
+                        frag_ref[w] = prim
+                        frag_ab[w, 0] = w1
+                        frag_ab[w, 1] = w2
+                        w += 1
 
 
 @ti.kernel
@@ -568,7 +579,8 @@ def raster_bez_count(
         time_start: int, width: int, height: int,
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
-        zbuf: ti.types.ndarray(), pair_count: ti.types.ndarray()):
+        z_cull: ti.template(), zbuf: ti.types.ndarray(),
+        pair_count: ti.types.ndarray()):
     """Count surviving nonzero-alpha translucent circuit fragments."""
     for p in range(num_pairs):
         circuit = pairs[p, 0]
@@ -585,12 +597,16 @@ def raster_bez_count(
                 tile_start, tile_pixels, half_w, half_h, cam_origin,
                 screen_point, pixel_basis_x, pixel_basis_y, pixel_world_scale,
                 circuit_meta, circuit_colors, edges_2d, edge_accel)
-            if ok != 0 and _order_key(t, circuit) < zbuf[lp]:
-                _color, alpha = _sample_circuit_color(
-                    circuit, f, u, v, ib, circuit_meta, circuit_colors,
-                    circuit_border_colors)
-                if alpha > MIN_ALPHA:
-                    cnt += 1
+            if ok != 0:
+                before_z = True
+                if ti.static(z_cull):
+                    before_z = _order_key(t, circuit) < zbuf[lp]
+                if before_z:
+                    _color, alpha = _sample_circuit_color(
+                        circuit, f, u, v, ib, circuit_meta, circuit_colors,
+                        circuit_border_colors)
+                    if alpha > MIN_ALPHA:
+                        cnt += 1
         pair_count[p] = cnt
 
 
@@ -607,7 +623,8 @@ def raster_bez_write(
         time_start: int, width: int, height: int,
         half_w: ti.f32, half_h: ti.f32,
         tile_start: int, tile_pixels: int,
-        zbuf: ti.types.ndarray(), frag_key: ti.types.ndarray(),
+        z_cull: ti.template(), zbuf: ti.types.ndarray(),
+        frag_key: ti.types.ndarray(),
         frag_ref: ti.types.ndarray(), frag_ab: ti.types.ndarray()):
     """Emit circuit records with the border flag packed into ``frag_ref``."""
     for p in range(num_pairs):
@@ -625,17 +642,21 @@ def raster_bez_write(
                 tile_start, tile_pixels, half_w, half_h, cam_origin,
                 screen_point, pixel_basis_x, pixel_basis_y, pixel_world_scale,
                 circuit_meta, circuit_colors, edges_2d, edge_accel)
-            if ok != 0 and _order_key(t, circuit) < zbuf[lp]:
-                _color, alpha = _sample_circuit_color(
-                    circuit, f, u, v, ib, circuit_meta, circuit_colors,
-                    circuit_border_colors)
-                if alpha > MIN_ALPHA:
-                    tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
-                    frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
-                    frag_ref[w] = _pack_bez_ref(circuit, ib)
-                    frag_ab[w, 0] = u
-                    frag_ab[w, 1] = v
-                    w += 1
+            if ok != 0:
+                before_z = True
+                if ti.static(z_cull):
+                    before_z = _order_key(t, circuit) < zbuf[lp]
+                if before_z:
+                    _color, alpha = _sample_circuit_color(
+                        circuit, f, u, v, ib, circuit_meta, circuit_colors,
+                        circuit_border_colors)
+                    if alpha > MIN_ALPHA:
+                        tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
+                        frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
+                        frag_ref[w] = _pack_bez_ref(circuit, ib)
+                        frag_ab[w, 0] = u
+                        frag_ab[w, 1] = v
+                        w += 1
 
 
 @ti.func
@@ -725,6 +746,7 @@ def raster_shadow_event_build(
         refraction: ti.template(), ss_enabled: ti.template(),
         has_bez: ti.template(), covered: ti.template(),
         covered_idx: ti.types.ndarray(), num_covered: int,
+        compact: ti.template(),
         time_start: int, width: int, height: int, tile_start: int,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
@@ -745,7 +767,9 @@ def raster_shadow_event_build(
     ``covered`` (compile-time): like ``raster_first_shade``, iterate only the
     compact covered-pixel list -- empty pixels have no fragment and no
     z-winner, so they reserve no events; skipping them changes only the
-    (already order-independent) event numbering, not the output.
+    (already order-independent) event numbering, not the output. ``compact``
+    means the CSR/z arrays themselves are compact (row ``t``) rather than
+    dense tile arrays (row ``covered_idx[t]``).
     """
     pixels_per_frame = width * height
     loop_n = num_pixels
@@ -753,9 +777,12 @@ def raster_shadow_event_build(
         loop_n = num_covered
     for t in range(loop_n):
         r = t
+        pixel = r
         if ti.static(covered):
-            r = covered_idx[t]
-        g = tile_start + r
+            pixel = covered_idx[t]
+            if ti.static(not compact):
+                r = pixel
+        g = tile_start + pixel
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
         f = time_start + f_rel
@@ -1063,6 +1090,7 @@ def raster_first_shade(
         shadows: ti.template(), prefill: ti.template(),
         covered: ti.template(),
         covered_idx: ti.types.ndarray(), num_covered: int,
+        compact: ti.template(),
         time_start: int, width: int, height: int, tile_start: int,
         cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
         pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
@@ -1100,6 +1128,9 @@ def raster_first_shade(
     already holds their final state -- turning the resolve from O(tile
     pixels) into O(covered pixels). Requires ``prefill``; the ascending
     order preserves the original relative shading order (byte-identical).
+    ``compact`` additionally means all CSR, z, ray-state, and accumulator rows
+    are indexed by covered ordinal ``t``; ``covered_idx[t]`` is then used only
+    for the actual frame/pixel coordinate.
 
     ``layer_offsets`` is the tracer's 8-wide variant: [2..5] environment map
     placement, [6] far clip (0 = off), [7] max_bounces.
@@ -1116,8 +1147,11 @@ def raster_first_shade(
         loop_n = num_covered
     for t in range(loop_n):
         r = t
+        pixel = r
         if ti.static(covered):
-            r = covered_idx[t]
+            pixel = covered_idx[t]
+            if ti.static(not compact):
+                r = pixel
         start = run_offsets[r]
         end = run_offsets[r + 1]
         nrun = end - start
@@ -1133,7 +1167,7 @@ def raster_first_shade(
             if total == 0 and env_w <= 0:
                 continue
 
-        g = tile_start + r
+        g = tile_start + pixel
         f_rel = g // pixels_per_frame
         p = g - f_rel * pixels_per_frame
         f = time_start + f_rel
@@ -1375,7 +1409,9 @@ def raster_first_shade(
                         rs_int[c, 1] = processed
                         rs_int[c, 2] = _ACTIVE
                         rs_int[c, 3] = 0
-                        rs_pix[c] = r
+                        rs_pix[c] = pixel
+                        if ti.static(compact):
+                            rs_int[c, 4] = r
                 if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
                     nref = normal
                     if nref.dot(rd) > 0.0:
@@ -1423,7 +1459,9 @@ def raster_first_shade(
                         rs_int[c, 1] = processed
                         rs_int[c, 2] = _ACTIVE
                         rs_int[c, 3] = 0
-                        rs_pix[c] = r
+                        rs_pix[c] = pixel
+                        if ti.static(compact):
+                            rs_int[c, 4] = r
                 weight *= cover3 + trans_energy * tint
             elif (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
                 nref = normal
@@ -1471,7 +1509,9 @@ def raster_first_shade(
             rs_int[r, 1] = processed
             rs_int[r, 2] = _ACTIVE
             rs_int[r, 3] = 0
-            rs_pix[r] = r
+            rs_pix[r] = pixel
+            if ti.static(compact):
+                rs_int[r, 4] = r
         else:
             # Retired: the straight-line list is complete, so a pixel that
             # neither bounced nor ran out of throughput has simply seen every

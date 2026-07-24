@@ -939,10 +939,22 @@ class RenderLoopMixin:
                     # output can end unaligned for a transparent uint8 frame.
                     wavefront_bytes += (-frame_buffers_end) % 4
                 temporary_bytes = max(wavefront_bytes, postprocess_bytes)
+                # Sparse-coverage discovery (prepare_sparse_raster_coverage) is a
+                # whole-window arena allocation -- the exact hit stream plus the
+                # persistent compact result -- that the per-primary wavefront
+                # model above cannot predict (it scales with the covered-fragment
+                # count). Reserve its learned per-frame footprint additively so
+                # this chunk is sized to fit the discovery peak, instead of
+                # over-committing and relying on the OOM window-halving. Zero
+                # until the job's first discovery establishes a density, and zero
+                # whenever the sparse path is not taken (nothing records one).
+                sparse_bytes = rt_settings.sparse_discovery_bytes_for_frames(
+                    num_frames)
                 return (
                     frame_buffers_end
                     - render_pointers[0]
                     + temporary_bytes
+                    + sparse_bytes
                 )
 
             bytes_remaining = self.memory.get_num_bytes_remaining()

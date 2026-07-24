@@ -243,6 +243,40 @@ WF_GEN_FUSED_MIN_WIN = float(
 _WF_GEN_FUSED_ON = False
 _WF_GEN_FUSED_BATCHES = 0
 
+# Learned per-output-frame arena footprint of the sparse-coverage discovery
+# (prepare_sparse_raster_coverage): the whole-window exact hit stream + compact
+# result is a data-dependent, whole-window allocation the wavefront memory model
+# cannot predict a priori (it scales with the covered-fragment count, unknown
+# until the COUNT kernel runs). Rather than bound it by a crippling worst-case
+# (full-frame coverage), the actual footprint of each rendered chunk is amortized
+# per output frame here, and the render-chunk preflight reserves
+# ``num_frames * this`` so subsequent chunks are sized to fit the discovery peak
+# instead of over-committing and relying on the OOM window-halving. Reset per
+# render job; tracked as the running maximum (coverage is temporally coherent, so
+# the densest chunk seen is a safe reservation). Bytes per frame, float.
+_SPARSE_DISCOVERY_BYTES_PER_FRAME = 0.0
+# Safety multiplier on the learned footprint: absorbs the small per-pair count
+# arrays, arena alignment, and modest coverage growth between adjacent chunks.
+SPARSE_DISCOVERY_SAFETY = float(
+    os.environ.get("ALGAN_SPARSE_DISCOVERY_SAFETY", "1.25"))
+
+
+def note_sparse_discovery_footprint(arena_bytes, num_frames):
+    """Record the arena footprint of one sparse-coverage discovery pass so the
+    render-chunk preflight can reserve for the next one (see
+    ``_SPARSE_DISCOVERY_BYTES_PER_FRAME``)."""
+    global _SPARSE_DISCOVERY_BYTES_PER_FRAME
+    per_frame = float(arena_bytes) / max(1, int(num_frames))
+    if per_frame > _SPARSE_DISCOVERY_BYTES_PER_FRAME:
+        _SPARSE_DISCOVERY_BYTES_PER_FRAME = per_frame
+
+
+def sparse_discovery_bytes_for_frames(num_frames):
+    """Reserved arena bytes for the sparse-coverage discovery over ``num_frames``
+    frames (0 until the first discovery of the job establishes a density)."""
+    return int(_SPARSE_DISCOVERY_BYTES_PER_FRAME * SPARSE_DISCOVERY_SAFETY
+               * max(1, int(num_frames)))
+
 
 def set_gen_fused(mode):
     """Set fused primary-ray generation on the deterministic wavefront:
@@ -265,8 +299,9 @@ def wf_gen_fused_active():
 def _begin_render_job():
     """Render-loop hook: a new render job starts (resets the per-job batch
     count; the fused decision itself stays sticky for the process)."""
-    global _WF_GEN_FUSED_BATCHES
+    global _WF_GEN_FUSED_BATCHES, _SPARSE_DISCOVERY_BYTES_PER_FRAME
     _WF_GEN_FUSED_BATCHES = 0
+    _SPARSE_DISCOVERY_BYTES_PER_FRAME = 0.0
 
 
 def _note_batch_rendered(frames, seconds, frames_remaining):
@@ -493,70 +528,26 @@ def set_raster_covered_shade(enabled):
     RASTER_COVERED_SHADE = bool(enabled)
 
 
-# Spatial bin sub-tiling of the wavefront raster front-end. A wavefront "tile"
-# is a memory-budget unit -- a contiguous flat span of the frame*H*W pixel
-# space (a scanline band), NOT a spatial region -- so a single covered pixel
-# anywhere in it drags the whole ~2M-pixel band through the dense per-pixel
-# machinery (pool alloc + pix_accum/z-buffer init + compaction), independent of
-# how few pixels the geometry actually covers.  Binning restricts that machinery
-# to the pixels near geometry.
+# Fully sparse primary-raster lifecycle.  The classic hybrid front-end used
+# conservative candidate bboxes for geometry work, but allocated/initialized
+# wavefront state, z/run buffers, accumulators, and a compaction scan for every
+# pixel in the enclosing linear wavefront tile.  This path first emits exact
+# hit records for every candidate, sorts/culls them in sparse hit space, and
+# allocates every downstream structure for the unique covered pixels only.
 #
-# Tier 1 (RASTER_BIN): occupied-scanline sub-tiling.  Before allocating a
-# tile's pool, the candidate screen bboxes (already computed for the pair
-# emission) are reduced to the set of occupied global scanlines and split into
-# contiguous flat runs; each run is rendered as its own sub-tile through the
-# unchanged kernels (a flat run is still ``tile_start + local``, so no kernel
-# change).  Empty scanlines cost nothing.  Host-only, byte-identical.
-RASTER_BIN = os.environ.get("ALGAN_RASTER_BIN", "0") == "1"
-# Tier 2 (RASTER_BIN_2D): true rectangular screen bins.  Within an occupied
-# band the front-end also skips empty columns by remapping each covered
-# ``RASTER_BIN_SIZE``-square bin to a compact index (a small per-tile bin-base
-# grid the kernels index instead of ``pixel - tile_start``); the z-buffer /
-# pool / accumulator are sized to occupied bins only.  Requires RASTER_BIN and
-# recompiles the raster kernels (compile-time template gate).  Byte-identical.
-RASTER_BIN_2D = os.environ.get("ALGAN_RASTER_BIN_2D", "0") == "1"
-# Fall back to the single dense tile when the occupied pixels already cover this
-# fraction of the tile: sub-tiling saves too little to pay for the extra kernel
-# launches + host run-merge.
-RASTER_BIN_FRAC = float(os.environ.get("ALGAN_RASTER_BIN_FRAC", "0.5"))
-# Fall back to dense when the occupied region fragments into more than this many
-# runs/bins (per-run launch + sync overhead would exceed the dense cost).
-RASTER_BIN_MAX_RUNS = int(os.environ.get("ALGAN_RASTER_BIN_MAX_RUNS", "32"))
-# Merge occupied scanline runs separated by fewer than this many blank rows, so
-# a few empty rows between two clusters do not create two sub-tiles.
-RASTER_BIN_MERGE_GAP_ROWS = int(
-    os.environ.get("ALGAN_RASTER_BIN_MERGE_GAP_ROWS", "8"))
-# Tier 2 square bin edge in pixels (bin holds RASTER_BIN_SIZE**2 pixels).
-RASTER_BIN_SIZE = int(os.environ.get("ALGAN_RASTER_BIN_SIZE", "32"))
+# It requires the retired-empty/background identity used by
+# RASTER_EMPTY_SKIP, covered-pixel resolve semantics, post-process tonemapping,
+# and no environment map.  When an environment map is present every primary
+# pixel genuinely samples the sky, so full-screen state is coverage work rather
+# than empty overhead and the dense path remains correct.
+RASTER_SPARSE_COVERAGE = (
+    os.environ.get("ALGAN_RASTER_SPARSE_COVERAGE", "1") == "1")
 
 
-def raster_bin_active():
-    """Whether Tier 1 occupied-scanline sub-tiling is enabled."""
-    return bool(RASTER_BIN)
-
-
-def raster_bin_2d_active():
-    """Whether Tier 2 rectangular-bin remap is enabled (implies Tier 1)."""
-    return bool(RASTER_BIN and RASTER_BIN_2D)
-
-
-def set_raster_bin(enabled, *, two_d=None, frac=None, max_runs=None,
-                   merge_gap_rows=None, bin_size=None):
-    """Toggle/configure the raster front-end spatial binning (see
-    ``RASTER_BIN`` / ``RASTER_BIN_2D``)."""
-    global RASTER_BIN, RASTER_BIN_2D, RASTER_BIN_FRAC, RASTER_BIN_MAX_RUNS
-    global RASTER_BIN_MERGE_GAP_ROWS, RASTER_BIN_SIZE
-    RASTER_BIN = bool(enabled)
-    if two_d is not None:
-        RASTER_BIN_2D = bool(two_d)
-    if frac is not None:
-        RASTER_BIN_FRAC = float(frac)
-    if max_runs is not None:
-        RASTER_BIN_MAX_RUNS = int(max_runs)
-    if merge_gap_rows is not None:
-        RASTER_BIN_MERGE_GAP_ROWS = int(merge_gap_rows)
-    if bin_size is not None:
-        RASTER_BIN_SIZE = int(bin_size)
+def set_raster_sparse_coverage(enabled):
+    """Toggle the exact covered-pixel lifecycle of the hybrid raster path."""
+    global RASTER_SPARSE_COVERAGE
+    RASTER_SPARSE_COVERAGE = bool(enabled)
 
 
 # UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle

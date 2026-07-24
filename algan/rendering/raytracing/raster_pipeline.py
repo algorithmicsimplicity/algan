@@ -512,103 +512,8 @@ def _window_pairs(bounds, time_start, g0, g1, ppf, width, device):
     )
 
 
-def plan_occupied_runs(bounds_list, time_start, g0, g1, ppf, width, height,
-                       *, frac, max_runs, merge_gap_rows, device):
-    """Occupied-scanline sub-tiles for a flat tile ``[g0, g1)`` (RASTER_BIN).
-
-    Reduces the candidate screen-bounds tables (the same
-    ``precompute_*_screen_bounds`` outputs ``_window_pairs`` consumes) to the
-    set of occupied global scanlines and returns contiguous flat runs
-    ``[(sub_start, sub_len), ...]`` that cover every candidate primitive's rows.
-
-    Returns ``[]`` when the range has no candidate at all (skip it entirely)
-    and ``None`` when the occupied region is too dense or fragmented to beat the
-    single dense tile (the caller then keeps today's contiguous walk).
-
-    Byte-identical to the dense tile by construction: the per-frame row extents
-    mirror ``_window_pairs`` / ``_screen_bbox``'s clamp/where exactly, so every
-    pixel a dense tile would touch lies inside some returned run, and the pixels
-    outside every run are precisely the empty pixels the dense tile leaves at
-    the background pre-fill.
-    """
-    bounds_list = [b for b in bounds_list if b is not None]
-    if not bounds_list:
-        return []
-    f0_rel = g0 // ppf
-    f1_rel = (g1 - 1) // ppf
-    f_rel = torch.arange(f0_rel, f1_rel + 1, device=device)
-    f_abs = f_rel + time_start
-    lo_p = (g0 - f_rel * ppf).clamp_(min=0)
-    hi_p = (g1 - f_rel * ppf).clamp_(max=ppf)
-    row_lo = lo_p // width                                    # [Ft] i64
-    row_hi = (hi_p - 1) // width
-    rl_f = row_lo.to(torch.float32).view(-1, 1)
-    rh_f = row_hi.to(torch.float32).view(-1, 1)
-    row_lo_c = row_lo.view(-1, 1)
-    row_hi_c = row_hi.view(-1, 1)
-
-    nft = f_rel.numel()
-    ry0 = torch.full((nft,), height, dtype=torch.int64, device=device)
-    ry1 = torch.full((nft,), -1, dtype=torch.int64, device=device)
-    any_cand = torch.zeros((nft,), dtype=torch.bool, device=device)
-    straddle = torch.zeros((nft,), dtype=torch.bool, device=device)
-    for pre_f, pre_x, pre_m, _cls in bounds_list:
-        rows = f_abs % pre_f.shape[0]
-        fy = pre_f.index_select(0, rows)                     # [Ft, C, 4]
-        m = pre_m.index_select(0, rows)                      # [Ft, C, 5]
-        all_front = m[..., 0]
-        fy0 = fy[..., 0].clamp(min=rl_f, max=rh_f).long()
-        fy1 = fy[..., 1].clamp(min=rl_f, max=rh_f).long()
-        y0 = torch.where(all_front, fy0, row_lo_c)
-        y1 = torch.where(all_front, fy1, row_hi_c)
-        y_on = (fy[..., 3] >= rl_f - 1.0) & (fy[..., 2] <= rh_f + 1.0)
-        reach = (m[..., 1] & y_on) | m[..., 2]
-        # A primitive contributes candidate pixels iff it is a candidate in
-        # either class (opaque m3 xor translucent m4) and its bbox reaches the
-        # band -- exactly the union of _window_pairs' two class masks.
-        cand = (m[..., 3] | m[..., 4]) & reach               # [Ft, C]
-        big_y0 = torch.where(cand, y0, torch.full_like(y0, height))
-        big_y1 = torch.where(cand, y1, torch.full_like(y1, -1))
-        ry0 = torch.minimum(ry0, big_y0.amin(1))
-        ry1 = torch.maximum(ry1, big_y1.amax(1))
-        any_cand |= cand.any(1)
-        # Straddlers (~all_front reach base m2) have no reliable screen bbox --
-        # _screen_bbox gives them the full band -- so a straddling candidate
-        # forces its frame to the whole band (and typically the dense fallback).
-        straddle |= (cand & m[..., 2]).any(1)
-    ry0 = torch.where(straddle, row_lo, ry0)
-    ry1 = torch.where(straddle, row_hi, ry1)
-
-    # One host transfer for the whole range (same sync budget as the existing
-    # per-window ``_class_any_flags`` flags), then build/merge runs on the CPU.
-    rows_host = torch.stack(
-        (any_cand.to(torch.int64), ry0, ry1), -1).cpu().tolist()
-
-    runs = []
-    occupied = 0
-    gap = int(merge_gap_rows) * width
-    for f, (cand, a, b) in zip(range(int(f0_rel), int(f1_rel) + 1), rows_host):
-        if not cand:
-            continue
-        s = max(f * ppf + int(a) * width, g0)
-        e = min(f * ppf + (int(b) + 1) * width, g1)
-        if e <= s:
-            continue
-        if runs and s - runs[-1][1] <= gap:
-            occupied += e - runs[-1][1]
-            runs[-1][1] = e
-        else:
-            occupied += e - s
-            runs.append([s, e])
-    if not runs:
-        return []
-    if occupied >= frac * (g1 - g0) or len(runs) > max_runs:
-        return None
-    return [(s, e - s) for s, e in runs]
-
-
-def _arena_tensor(memory, shape, dtype, fill=None):
-    out = memory.get_tensor(shape, dtype)
+def _arena_tensor(memory, shape, dtype, fill=None, *, persist=False):
+    out = memory.get_tensor(shape, dtype, persist=persist)
     if fill is not None:
         out.fill_(fill)
     return out
@@ -633,6 +538,366 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     primary_key = (pixel << 32) | depth_bin
     depth_order = torch.argsort(primary_key, stable=True)
     return layer_order.index_select(0, depth_order)
+
+
+def prepare_sparse_raster_coverage(
+        merged, tri_screen, tri_bounds, bez_bounds, memory,
+        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        pixel_world_scale, col_row_arr, time_start, time_end,
+        width, height, half_w, half_h, layer_offset_triangles):
+    """Emit one exact, ordered primary-hit stream for the whole frame window.
+
+    Unlike :func:`raster_iteration_zero`, this never allocates a tile-pixel
+    z-buffer, CSR table, coverage mask, or ray state.  Candidate bboxes launch
+    exact intersection COUNT/WRITE passes; the resulting hit records are
+    ordered in sparse hit space, then truncated after each pixel's first
+    proven-opaque hit.  The persistent result is allocated from the arena's
+    reverse pointer so forward coverage-sized wavefront state can coexist with
+    it and be reset independently.
+
+    Returns ``None`` when no exact pixel is covered, otherwise a dict containing
+    compact ``frag_*``, ``covered_idx``, and ``run_offsets`` arrays.
+    """
+    device = merged["tri_pos"].device
+    ppf = int(width) * int(height)
+    g0 = 0
+    g1 = (int(time_end) - int(time_start)) * ppf
+    has_tri = int(merged.get("num_triangles", 0)) > 0
+    has_bez = int(merged.get("num_circuits", 0)) > 0
+
+    tri_opaque, tri_trans, bez_opaque, bez_trans = [], [], [], []
+    use_tri_pre = has_tri and tri_bounds is not None
+    use_bez_pre = has_bez and bez_bounds is not None
+    if (has_tri and not use_tri_pre) or (has_bez and not use_bez_pre):
+        for f_rel in range(g0 // ppf, (g1 - 1) // ppf + 1):
+            f = int(time_start) + f_rel
+            lo_p = max(g0 - f_rel * ppf, 0)
+            hi_p = min(g1 - f_rel * ppf, ppf)
+            row_lo = lo_p // width
+            row_hi = (hi_p - 1) // width
+            if has_tri and not use_tri_pre:
+                po, pt = _frame_pairs(
+                    merged, tri_screen, f, width, row_lo, row_hi, device)
+                if po is not None:
+                    tri_opaque.append(po)
+                if pt is not None:
+                    tri_trans.append(pt)
+            if has_bez and not use_bez_pre:
+                po, pt = _frame_bez_pairs(
+                    merged, f, width, row_lo, row_hi, cam_origin,
+                    screen_point, pixel_basis_x, pixel_basis_y, half_w,
+                    half_h, device)
+                if po is not None:
+                    bez_opaque.append(po)
+                if pt is not None:
+                    bez_trans.append(pt)
+    if use_tri_pre:
+        po, pt = _window_pairs(
+            tri_bounds, int(time_start), g0, g1, ppf, int(width), device)
+        if po is not None:
+            tri_opaque.append(po)
+        if pt is not None:
+            tri_trans.append(pt)
+    if use_bez_pre:
+        po, pt = _window_pairs(
+            bez_bounds, int(time_start), g0, g1, ppf, int(width), device)
+        if po is not None:
+            bez_opaque.append(po)
+        if pt is not None:
+            bez_trans.append(pt)
+
+    def _cat(parts):
+        return (torch.cat(parts, 0) if len(parts) > 1
+                else (parts[0] if parts else None))
+
+    po_t, pt, po_b, pb = map(
+        _cat, (tri_opaque, tri_trans, bez_opaque, bez_trans))
+    specs = [
+        ("bez", po_b, True),
+        ("bez", pb, False),
+        ("tri", po_t, True),
+        ("tri", pt, False),
+    ]
+    specs = [s for s in specs if s[1] is not None]
+    if not specs:
+        return None
+
+    ss = 1 if rt_settings.RASTER_SS else 0
+    tri_pos = merged["tri_pos"]
+    cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
+    geo_args = (
+        int(time_start), int(width), int(height), float(half_w),
+        float(half_h), 0, int(g1))
+    tri_color_args = (
+        merged["tri_colors"], col_row_arr, merged["tri_uvs"],
+        merged["tri_tex_meta"], merged["textures"],
+        int(merged["num_colored_triangles"]),
+    )
+    bez_geom = (
+        pixel_world_scale, merged["circuit_meta"], merged["circuit_colors"],
+        merged["circuit_border_colors"], merged["edges_2d"],
+        merged["edge_accel"],
+    )
+
+    # All forward allocations in this scope are discovery scratch.  Only the
+    # final compact arrays use persist=True (reverse arena) and survive.
+    with memory.temp():
+        dummy_z = _arena_tensor(memory, (1,), torch.int64, Z_SENTINEL)
+        count_parts = []
+        for kind, pairs, opaque in specs:
+            counts = _arena_tensor(
+                memory, (pairs.shape[0],), torch.int32, 0)
+            if kind == "bez":
+                raster_bez_count(
+                    pairs, int(pairs.shape[0]), *cam_args, *bez_geom,
+                    *geo_args, 0, dummy_z, counts)
+            else:
+                raster_tri_count(
+                    pairs, int(pairs.shape[0]), tri_pos, tri_screen,
+                    *tri_color_args, *cam_args, *geo_args, ss,
+                    float(layer_offset_triangles), 0, dummy_z, counts)
+            count_parts.append((kind, pairs, opaque, counts))
+
+        counts_all = torch.cat(
+            [s[3] for s in count_parts], 0) if len(count_parts) > 1 \
+            else count_parts[0][3]
+        counts64 = counts_all.to(torch.int64)
+        prefix = torch.cumsum(counts64, 0) - counts64
+        num_frags = int(counts64.sum().item())
+        if num_frags == 0:
+            return None
+        # Pre-truncation emitted-fragment count: this sizes the discovery
+        # scratch (frag_*_u) and, for an opaque-heavy pixel, exceeds the final
+        # kept count. The arena footprint recorded before the return reserves
+        # for it so later chunks are sized to fit the discovery peak.
+        discovery_frags = num_frags
+
+        frag_key_u = _arena_tensor(memory, (num_frags,), torch.int64)
+        frag_ref_u = _arena_tensor(memory, (num_frags,), torch.int32)
+        frag_ab_u = _arena_tensor(
+            memory, (num_frags, 2), torch.float32)
+        opaque_u = _arena_tensor(memory, (num_frags,), torch.bool, False)
+        pair_cursor = 0
+        frag_cursor = 0
+        for kind, pairs, opaque, counts in count_parts:
+            npairs = int(pairs.shape[0])
+            offsets = prefix[
+                pair_cursor:pair_cursor + npairs].to(torch.int32)
+            n_spec = int(counts.to(torch.int64).sum().item())
+            if kind == "bez":
+                raster_bez_write(
+                    pairs, npairs, offsets, *cam_args, *bez_geom,
+                    *geo_args, 0, dummy_z, frag_key_u, frag_ref_u, frag_ab_u)
+            else:
+                raster_tri_write(
+                    pairs, npairs, offsets, tri_pos, tri_screen,
+                    *tri_color_args, *cam_args, *geo_args, ss,
+                    float(layer_offset_triangles), 0, dummy_z,
+                    frag_key_u, frag_ref_u, frag_ab_u)
+            if opaque and n_spec:
+                opaque_u[frag_cursor:frag_cursor + n_spec].fill_(True)
+            pair_cursor += npairs
+            frag_cursor += n_spec
+
+        order = _exact_fragment_order(
+            frag_key_u, frag_ref_u, layer_offset_triangles)
+        key_s = frag_key_u.index_select(0, order)
+        ref_s = frag_ref_u.index_select(0, order)
+        ab_s = frag_ab_u.index_select(0, order)
+        opaque_s = opaque_u.index_select(0, order)
+        pix_s = key_s >> 32
+        covered, counts = torch.unique_consecutive(
+            pix_s, return_counts=True)
+
+        # The dense z-buffer retained only the nearest opaque hit and discarded
+        # every transparent/opaque record behind it.  Reproduce that relation
+        # in sparse sorted space: each pixel keeps the prefix through its first
+        # opaque event.  The sort uses the exact same depth-bin/layer keys.
+        if bool(opaque_s.any().item()):
+            num_cov = int(covered.numel())
+            positions = torch.arange(
+                num_frags, dtype=torch.int64, device=device)
+            segments = torch.repeat_interleave(
+                torch.arange(num_cov, dtype=torch.int64, device=device),
+                counts)
+            starts = torch.cumsum(counts, 0) - counts
+            ends = starts + counts - 1
+            first_opaque = torch.full(
+                (num_cov,), num_frags, dtype=torch.int64, device=device)
+            opaque_pos = opaque_s.nonzero(as_tuple=True)[0]
+            first_opaque.scatter_reduce_(
+                0, segments.index_select(0, opaque_pos), opaque_pos,
+                reduce="amin", include_self=True)
+            keep_end = torch.minimum(first_opaque, ends)
+            keep = positions <= keep_end.index_select(0, segments)
+            if int(keep.sum().item()) != num_frags:
+                keep_idx = keep.nonzero(as_tuple=True)[0]
+                key_s = key_s.index_select(0, keep_idx)
+                ref_s = ref_s.index_select(0, keep_idx)
+                ab_s = ab_s.index_select(0, keep_idx)
+                pix_s = key_s >> 32
+                covered, counts = torch.unique_consecutive(
+                    pix_s, return_counts=True)
+                num_frags = int(key_s.shape[0])
+
+        num_covered = int(covered.numel())
+        frag_key = _arena_tensor(
+            memory, (num_frags,), torch.int64, persist=True)
+        frag_ref = _arena_tensor(
+            memory, (num_frags,), torch.int32, persist=True)
+        frag_ab = _arena_tensor(
+            memory, (num_frags, 2), torch.float32, persist=True)
+        covered_idx = _arena_tensor(
+            memory, (num_covered,), torch.int32, persist=True)
+        run_offsets = _arena_tensor(
+            memory, (num_covered + 1,), torch.int32, 0, persist=True)
+        frag_key.copy_(key_s)
+        frag_ref.copy_(ref_s)
+        frag_ab.copy_(ab_s)
+        covered_idx.copy_(covered.to(torch.int32))
+        run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
+
+    # Reserve for the next chunk's discovery peak: the pre-truncation scratch
+    # (frag_*_u: 8+4+8+1 B/frag) plus the persistent compact result (frag_key/
+    # ref/ab: 8+4+8 B/frag; covered_idx/run_offsets: 4+4 B/covered) coexist in
+    # the arena at the copy. Amortized per output frame so the render-chunk
+    # preflight sizes later chunks to fit it instead of over-committing.
+    discovery_bytes = discovery_frags * 21 + num_frags * 20 + num_covered * 8
+    rt_settings.note_sparse_discovery_footprint(
+        discovery_bytes, int(time_end) - int(time_start))
+
+    return {
+        "frag_key": frag_key,
+        "frag_ref": frag_ref,
+        "frag_ab": frag_ab,
+        "covered_idx": covered_idx,
+        "run_offsets": run_offsets,
+        "num_fragments": num_frags,
+        "num_covered": num_covered,
+    }
+
+
+def shade_sparse_raster_coverage(
+        coverage, covered_start, covered_end,
+        merged, tri_screen, memory,
+        cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+        pixel_world_scale, layer_offsets, gen_meta, light_pos, light_col,
+        num_lights, col_row_arr, frag_flag, frag_pipelines,
+        skip_unlit_normal, refraction_flag, time_start, width, height,
+        half_w, half_h, state, rs_pix, pix_accum, rs_alloc,
+        shadow_flag, t_bvh, pn_bvh, bez_bvh,
+        layer_offset_triangles, layer_offset_pn, max_bounces):
+    """Resolve one compact covered-pixel slice and seed its continuations."""
+    (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+     _rs_kt, _rs_kl, _rs_ka, _rs_kb, _rs_kp, _rs_kf) = state
+    c0, c1 = int(covered_start), int(covered_end)
+    num_covered = c1 - c0
+    covered_idx = coverage["covered_idx"][c0:c1]
+    event_start = int(coverage["run_offsets"][c0].item())
+    event_end = int(coverage["run_offsets"][c1].item())
+    num_frags = event_end - event_start
+    frag_key = coverage["frag_key"][event_start:event_end]
+    frag_ref = coverage["frag_ref"][event_start:event_end]
+    frag_ab = coverage["frag_ab"][event_start:event_end]
+    run_offsets = _arena_tensor(
+        memory, (num_covered + 1,), torch.int32)
+    torch.sub(
+        coverage["run_offsets"][c0:c1 + 1], event_start, out=run_offsets)
+
+    has_tri = 1 if int(merged.get("num_triangles", 0)) > 0 else 0
+    has_pn = 1 if int(merged.get("num_pn", 0)) > 0 else 0
+    has_bez = 1 if int(merged.get("num_circuits", 0)) > 0 else 0
+    ss = 1 if rt_settings.RASTER_SS else 0
+    tri_pos = merged["tri_pos"]
+    cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
+    # Vestigial by design: the dense path folds the nearest opaque hit into a
+    # separate z-winner that raster_first_shade / raster_shadow_event_build
+    # re-derive via _terminal_z_hit (has_z == 1). The sparse path instead emits
+    # that opaque hit as an ordinary fragment (kept as each pixel's last record
+    # by the opaque truncation), so there is no separate z-winner: this buffer
+    # stays all-sentinel and both kernels see has_z == 0. It is passed only to
+    # satisfy their signatures; do not remove without also dropping the zbuf
+    # parameter from those kernels.
+    zbuf = _arena_tensor(
+        memory, (num_covered,), torch.int64, Z_SENTINEL)
+    frag_shadow_id = _arena_tensor(
+        memory, (max(1, num_frags),), torch.int32, -1)
+    z_shadow_id = _arena_tensor(
+        memory, (num_covered,), torch.int32, -1)
+
+    if shadow_flag:
+        max_events = max(1, num_frags)
+        event_pos = _arena_tensor(
+            memory, (max_events, 3), torch.float32)
+        event_snrm = _arena_tensor(
+            memory, (max_events, 3), torch.float32)
+        event_fnrm = _arena_tensor(
+            memory, (max_events, 3), torch.float32)
+        event_frame = _arena_tensor(
+            memory, (max_events,), torch.int32)
+        event_count = _arena_tensor(memory, (1,), torch.int32, 0)
+        raster_shadow_event_build(
+            num_covered, run_offsets, frag_key, frag_ref, frag_ab, zbuf,
+            tri_pos, tri_screen, merged["tri_norm"], merged["tri_extra"],
+            merged["tri_colors"], merged["tri_uvs"],
+            merged["tri_tex_meta"], merged["textures"],
+            int(merged["num_colored_triangles"]), col_row_arr,
+            merged["circuit_meta"], merged["circuit_colors"],
+            merged["circuit_border_colors"], merged["edges_2d"],
+            merged["edge_accel"], pixel_world_scale,
+            float(layer_offset_triangles), int(refraction_flag), ss, has_bez,
+            1, covered_idx, num_covered, 1,
+            int(time_start), int(width), int(height), 0,
+            *cam_args, gen_meta, int(max_bounces),
+            frag_shadow_id, z_shadow_id, event_pos, event_snrm, event_fnrm,
+            event_frame, event_count)
+        num_events = int(event_count.item())
+        shadow_vis = _arena_tensor(
+            memory, (max(1, num_events), max(1, int(num_lights))),
+            torch.float32, 1.0)
+        if num_events:
+            from algan.rendering.raytracing.refit_bvh import RefitBVH
+            raster_shadow_trace(
+                num_events, event_pos, event_snrm, event_fnrm, event_frame,
+                t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
+                t_bvh.leaf_tspan, int(t_bvh.first_leaf),
+                merged["tri_pos"], merged["tri_colors"], merged["tri_uvs"],
+                merged["tri_tex_meta"], merged["textures"],
+                int(merged["num_colored_triangles"]),
+                pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
+                pn_bvh.leaf_tspan, int(pn_bvh.first_leaf),
+                merged["pn_ctrl"], merged["pn_obb"], merged["pn_colors"],
+                bez_bvh.blocks, bez_bvh.node_miss, bez_bvh.leaf_prim,
+                bez_bvh.leaf_tspan, int(bez_bvh.first_leaf),
+                merged["circuit_meta"], merged["circuit_colors"],
+                merged["circuit_border_colors"], merged["edges_2d"],
+                merged["edge_accel"], light_pos, light_col, int(num_lights),
+                pixel_world_scale, float(layer_offset_triangles),
+                float(layer_offset_pn),
+                1 if isinstance(t_bvh, RefitBVH) else 0,
+                has_tri, has_pn, has_bez, shadow_vis)
+    else:
+        shadow_vis = _arena_tensor(
+            memory, (1, 1), torch.float32, 1.0)
+
+    raster_first_shade(
+        num_covered, run_offsets, frag_key, frag_ref, frag_ab, zbuf,
+        merged["tri_pos"], tri_screen, merged["tri_norm"],
+        merged["tri_extra"], merged["tri_colors"], merged["tri_uvs"],
+        merged["tri_tex_meta"], merged["textures"],
+        int(merged["num_colored_triangles"]), col_row_arr,
+        merged["tri_mat_id"], merged["tri_mat"],
+        merged["circuit_meta"], merged["circuit_colors"],
+        merged["circuit_border_colors"], pixel_world_scale,
+        merged["edges_2d"], merged["edge_accel"],
+        light_pos, light_col, int(num_lights),
+        layer_offsets, int(frag_flag), frag_pipelines, int(refraction_flag),
+        int(skip_unlit_normal), ss, has_bez, int(shadow_flag),
+        0, 1, covered_idx, num_covered, 1,
+        int(time_start), int(width), int(height), 0,
+        *cam_args, gen_meta, rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
+        pix_accum, rs_alloc, frag_shadow_id, z_shadow_id, shadow_vis)
+    return covered_idx
 
 
 def raster_iteration_zero(
@@ -753,12 +1018,12 @@ def raster_iteration_zero(
     if pb is not None:
         bcounts = _arena_tensor(memory, (pb.shape[0],), torch.int32, 0)
         raster_bez_count(pb, int(pb.shape[0]), *cam_args, *bez_geom,
-                         *geo_args, zbuf, bcounts)
+                         *geo_args, 1, zbuf, bcounts)
     if pt is not None:
         tcounts = _arena_tensor(memory, (pt.shape[0],), torch.int32, 0)
         raster_tri_count(pt, int(pt.shape[0]), tri_pos, tri_screen,
                          *tri_color_args, *cam_args, *geo_args, ss,
-                         float(layer_offset_triangles), zbuf, tcounts)
+                         float(layer_offset_triangles), 1, zbuf, tcounts)
 
     count_parts = [x for x in (bcounts, tcounts) if x is not None]
     num_frags = 0
@@ -789,13 +1054,13 @@ def raster_iteration_zero(
         frag_ab_u = _arena_tensor(memory, (num_frags, 2), torch.float32)
         if bcounts is not None:
             raster_bez_write(pb, int(pb.shape[0]), bez_offsets, *cam_args,
-                             *bez_geom, *geo_args, zbuf, frag_key_u,
+                             *bez_geom, *geo_args, 1, zbuf, frag_key_u,
                              frag_ref_u, frag_ab_u)
         if tcounts is not None:
             raster_tri_write(pt, int(pt.shape[0]), tri_offsets, tri_pos,
                              tri_screen, *tri_color_args, *cam_args, *geo_args,
-                             ss, float(layer_offset_triangles), zbuf, frag_key_u,
-                             frag_ref_u, frag_ab_u)
+                             ss, float(layer_offset_triangles), 1, zbuf,
+                             frag_key_u, frag_ref_u, frag_ab_u)
         order = _exact_fragment_order(
             frag_key_u, frag_ref_u, layer_offset_triangles)
         frag_key = _arena_tensor(memory, (num_frags,), torch.int64)
@@ -860,7 +1125,7 @@ def raster_iteration_zero(
             merged["circuit_border_colors"], merged["edges_2d"],
             merged["edge_accel"], pixel_world_scale,
             float(layer_offset_triangles), int(refraction_flag), ss, has_bez,
-            1 if use_covered else 0, covered_idx, int(num_covered),
+            1 if use_covered else 0, covered_idx, int(num_covered), 0,
             int(time_start), int(width), int(height), int(tile_start),
             *cam_args, gen_meta, int(max_bounces),
             frag_shadow_id, z_shadow_id, event_pos, event_snrm, event_fnrm,
@@ -907,7 +1172,7 @@ def raster_iteration_zero(
         layer_offsets, int(frag_flag), frag_pipelines, int(refraction_flag),
         int(skip_unlit_normal), ss, has_bez, int(shadow_flag),
         1 if prefill else 0,
-        1 if use_covered else 0, covered_idx, int(num_covered),
+        1 if use_covered else 0, covered_idx, int(num_covered), 0,
         int(time_start), int(width), int(height), int(tile_start),
         *cam_args, gen_meta, rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
         pix_accum, rs_alloc, frag_shadow_id, z_shadow_id, shadow_vis)

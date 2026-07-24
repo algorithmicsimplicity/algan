@@ -1261,6 +1261,43 @@ def wf_composite_accum(
 
 
 @ti.kernel
+def wf_composite_accum_sparse(
+        time_start: int, width: int, height: int, transparent: int,
+        ray_offset: int, pixel_idx: ti.types.ndarray(),
+        pix_accum: ti.types.ndarray(), tonemap_exposure: ti.f32,
+        out: ti.types.ndarray()):
+    """Composite compact accumulator rows at their real local pixels.
+
+    This is the post-process-tonemapping counterpart of
+    :func:`wf_composite_accum`: empty pixels are already the prefilled
+    background and never appear in ``pixel_idx``.  Row ``r`` of
+    ``pix_accum`` belongs to local pixel ``pixel_idx[r]``.
+    """
+    pixels_per_frame = width * height
+    for r in range(pix_accum.shape[0]):
+        local_pixel = pixel_idx[r]
+        g = ray_offset + local_pixel
+        f_rel = g // pixels_per_frame
+        p = g - f_rel * pixels_per_frame
+        weight = ti.math.vec4(
+            pix_accum[r, 4], pix_accum[r, 5], pix_accum[r, 6], 0.0)
+        weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
+        csum = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+        for ci in ti.static(range(4)):
+            bg = ti.cast(out[f_rel, p, ci], ti.f32)
+            csum[ci] = pix_accum[r, ci] * 255.0 + weight[ci] * bg
+        color_final = finalize_pixel_color(
+            csum, 1.0, 3, tonemap_exposure)
+        for ci in ti.static(range(4)):
+            out[f_rel, p, ci] = color_final[ci]
+        if transparent != 0:
+            bg_a = ti.cast(out[f_rel, p, 4], ti.f32)
+            val = (1.0 - weight[3]) * 255.0 + weight[3] * bg_a
+            out[f_rel, p, 4] = ti.cast(
+                ti.math.clamp(val + 0.5, 0.0, 255.0), ti.u8)
+
+
+@ti.kernel
 def wf_composite_accum_aa(
         time_start: int, width: int, height: int, transparent: int,
         ray_offset: int,
@@ -2005,7 +2042,11 @@ def wavefront_shade(
     ``rs_alloc``. If the append exceeds pool capacity, the host discards and
     reruns the tile with fewer primaries rather than accepting a missing branch.
     Every ray commits its colour + leftover background weight into ``pix_accum``
-    through ``rs_pix``, so all branches of a pixel sum correctly."""
+    through ``rs_pix``, so all branches of a pixel sum correctly.  The sparse
+    raster path stores the compact accumulator row in ``rs_int[:, 4]`` while
+    retaining the real local pixel in ``rs_pix`` for frame/ray addressing;
+    a 9-wide ``layer_offsets`` selects that representation without consuming
+    another runtime argument."""
     pixels_per_frame = width * height
     # Unpack the two layer offsets (packed into one ndarray to stay within the
     # 64-arg ceiling); the body below references these names unchanged.
@@ -2033,6 +2074,9 @@ def wavefront_shade(
         pix = r
         if ti.static(first_iter == 0):
             pix = rs_pix[r]
+        accum_pix = pix
+        if ti.static(layer_offsets.shape[0] > 8):
+            accum_pix = rs_int[r, 4]
         num_hits = rs_int[r, 3]
         if num_hits > 0:
             f = time_start + (ray_offset + pix) // pixels_per_frame
@@ -2567,6 +2611,8 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
+                                if ti.static(layer_offsets.shape[0] > 8):
+                                    rs_int[c, 4] = accum_pix
                         # Primary carries the heavier of reflection /
                         # coverage-miss (three continuations, two rays). At full
                         # coverage the miss is empty, so it always reflects.
@@ -2624,6 +2670,8 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
+                                if ti.static(layer_offsets.shape[0] > 8):
+                                    rs_int[c, 4] = accum_pix
                         weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
@@ -2658,6 +2706,8 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
+                                if ti.static(layer_offsets.shape[0] > 8):
+                                    rs_int[c, 4] = accum_pix
                         weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
                         layer_prev = hit_layer
@@ -2818,6 +2868,8 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
+                                if ti.static(layer_offsets.shape[0] > 8):
+                                    rs_int[c, 4] = accum_pix
                     refl_w_max = ti.max(refl_w[0],
                                         ti.max(refl_w[1], refl_w[2]))
                     if (refl_w_max > 0.0) and (bounces_left > 0):
@@ -2882,9 +2934,9 @@ def wavefront_shade(
                         acc[k] += weight[k] * ec[k]
                     weight = ti.math.vec3(0.0, 0.0, 0.0)
                 for k in ti.static(range(4)):
-                    ti.atomic_add(pix_accum[pix, k], acc[k])
+                    ti.atomic_add(pix_accum[accum_pix, k], acc[k])
                 for k in ti.static(range(3)):
-                    ti.atomic_add(pix_accum[pix, 4 + k], weight[k])
+                    ti.atomic_add(pix_accum[accum_pix, 4 + k], weight[k])
         else:
             # Ray escaped to the background this segment: commit its colour +
             # leftover (background) throughput, then retire.
@@ -2904,13 +2956,15 @@ def wavefront_shade(
                 ec = _sample_env_map(f, rd, env_off, env_w, env_h,
                                      env_intensity, textures)
                 for k in ti.static(range(3)):
-                    ti.atomic_add(pix_accum[pix, k], w_bg[k] * ec[k])
+                    ti.atomic_add(
+                        pix_accum[accum_pix, k], w_bg[k] * ec[k])
                 w_bg = ti.math.vec3(0.0, 0.0, 0.0)
             if ti.static(first_iter == 0):
                 # First iteration's accumulator is implicitly zero; adding it
                 # would be a no-op, so the read is skipped entirely.
                 for k in ti.static(range(4)):
-                    ti.atomic_add(pix_accum[pix, k], rs_acc[r, k])
+                    ti.atomic_add(
+                        pix_accum[accum_pix, k], rs_acc[r, k])
             for k in ti.static(range(3)):
-                ti.atomic_add(pix_accum[pix, 4 + k], w_bg[k])
+                ti.atomic_add(pix_accum[accum_pix, 4 + k], w_bg[k])
             rs_int[r, 2] = _DONE
