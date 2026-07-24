@@ -234,7 +234,13 @@ def _finalize_on_device(frame, original_num_channels, memory, *,
 
 def post_process_frames(self, frames, anti_alias_level, post_processes=(), apply_fxaa=False):
     from algan.rendering.raytracing import settings as rt_settings
-    hdr = rt_settings.is_post_process_tonemap_enabled()
+    # Byte frames are never linear-HDR, whatever the toggle says: the render
+    # loop picks the float buffer from the same setting, but a caller that
+    # hands over uint8 frames (or a scene rendered before the toggle flipped)
+    # must keep the in-composite-tonemap behaviour -- _finalize_on_device makes
+    # the same dtype check -- rather than dividing a byte tensor by 255.
+    hdr = (rt_settings.is_post_process_tonemap_enabled()
+           and frames.dtype != torch.uint8)
 
     self.pre_post_pointers = self.get_pointers()
     frame_out = frames

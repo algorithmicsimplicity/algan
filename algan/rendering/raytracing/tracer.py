@@ -83,7 +83,12 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     wavefront_traverse,
     wavefront_traverse_events,
 )
-from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
+from algan.utils.memory_utils import (
+    InsufficientMemoryException,
+    empty_cache,
+    ensure_render_headroom,
+    is_cuda_oom,
+)
 from algan.logging.logger import get_logger
 
 logger = get_logger("raytracing")
@@ -948,12 +953,27 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                             env_meta=env_meta, near_clip=near_clip,
                             far_clip=far_clip)
             frames = out.view(end - start, height, width, C_out)
+            # Post-processing launches Taichi kernels (the tonemap in particular)
+            # from Taichi's own CUDA pool. The render just accumulated torch
+            # reserved-but-free blocks that Taichi cannot draw on; hand them back
+            # to the driver *before* the tonemap when free VRAM is low, so the
+            # launch has room instead of OOMing into the split-retry round-trip.
+            # Gated internally on free-memory pressure -- a no-op when memory is
+            # plentiful (the common case).
+            ensure_render_headroom(device)
             frames = post_process_frames(memory,
                 frames, anti_alias_level=post_aa,
                 post_processes=list(post_processes), apply_fxaa=scene.render_settings.fxaa)
             memory.set_pointers(entry_pointers)
             return [frames]
-        except (InsufficientMemoryException, torch.OutOfMemoryError):
+        except (InsufficientMemoryException, RuntimeError) as exc:
+            # A Taichi kernel launch (e.g. the post-process tonemap) exhausts
+            # VRAM as a plain RuntimeError from its own allocator, not a torch
+            # OOM; recognise it so the same rewind + empty_cache + split retry
+            # recovers it. Any non-OOM RuntimeError is a real error -- re-raise.
+            if (not isinstance(exc, InsufficientMemoryException)
+                    and not is_cuda_oom(exc)):
+                raise
             logger.warning(f'Render OOM, splitting {start}:{end}')
             memory.set_pointers(entry_pointers)
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
@@ -1144,7 +1164,12 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                             tile_empty = bool(_res)
                             tile_covered_idx, tile_num_covered = None, 0
                     except (InsufficientMemoryException,
-                            torch.OutOfMemoryError) as exc:
+                            RuntimeError) as exc:
+                        # Taichi launches OOM as a bare RuntimeError from their
+                        # own allocator; treat those as OOM, re-raise real ones.
+                        if (not isinstance(exc, InsufficientMemoryException)
+                                and not is_cuda_oom(exc)):
+                            raise
                         memory.set_pointers(state_ptrs)
                         if not raster:
                             raise
@@ -1456,11 +1481,6 @@ def raytrace_render_wavefront(
             float(layer_offset_triangles), float(layer_offset_pn),
             float(eo), float(ew), float(eh), float(ei), float(far_clip),
             float(max_bounces)]
-        if sparse_coverage:
-            # A ninth row is a compile-time shape marker consumed by
-            # wavefront_shade: rs_pix keeps the real local pixel while
-            # rs_int[:, 4] carries the compact accumulator row.
-            layer_values.append(1.0)
         layer_offsets_t = _arena_values(memory, layer_values, f32)
     else:
         layer_offsets_t = _arena_values(
@@ -1577,6 +1597,7 @@ def raytrace_render_wavefront(
                     int(mem_trim),
                     opaque_closest,
                     0,
+                    1,  # compact: rs_int[:, 4] holds the accumulator row
                     a_matid, a_mat,
                     merged["pn_mat_id"], merged["pn_mat"],
                     light_pos, light_col, int(num_lights),
@@ -1660,7 +1681,12 @@ def raytrace_render_wavefront(
                                 layer_offset_triangles, layer_offset_pn,
                                 max_bounces)
                     except (InsufficientMemoryException,
-                            torch.OutOfMemoryError) as exc:
+                            RuntimeError) as exc:
+                        # Taichi launches OOM as a bare RuntimeError from their
+                        # own allocator; treat those as OOM, re-raise real ones.
+                        if (not isinstance(exc, InsufficientMemoryException)
+                                and not is_cuda_oom(exc)):
+                            raise
                         memory.set_pointers(state_ptrs)
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
@@ -1702,7 +1728,12 @@ def raytrace_render_wavefront(
                             active, state, rs_pix, pix_accum, rs_alloc,
                             compactor, rs_vis)
                     except (InsufficientMemoryException,
-                            torch.OutOfMemoryError) as exc:
+                            RuntimeError) as exc:
+                        # Taichi launches OOM as a bare RuntimeError from their
+                        # own allocator; treat those as OOM, re-raise real ones.
+                        if (not isinstance(exc, InsufficientMemoryException)
+                                and not is_cuda_oom(exc)):
+                            raise
                         memory.set_pointers(state_ptrs)
                         if torch.cuda.is_available():
                             torch.cuda.empty_cache()
@@ -1893,6 +1924,7 @@ def raytrace_render_wavefront(
                     int(mem_trim),
                     opaque_closest,
                     first,
+                    0,  # compact: dense tiles accumulate at the ray's pixel
                     a_matid, a_mat,
                     merged["pn_mat_id"], merged["pn_mat"],
                     light_pos, light_col, int(num_lights),

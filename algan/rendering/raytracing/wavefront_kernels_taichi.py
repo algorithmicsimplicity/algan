@@ -2013,6 +2013,14 @@ def wavefront_shade(
         # 64-arg ceiling). Survivors write their state back below exactly as
         # before (plus rs_pix), so iterations >= 1 run the classic kernel.
         first_iter: ti.template(),
+        # Sparse raster coverage: the ray's accumulator row is the compact
+        # covered-pixel index in ``rs_int[:, 4]`` while ``rs_pix`` keeps the
+        # real window-local pixel for frame/ray addressing (matching
+        # raster_first_shade's ``compact``). Compile-time, so the classic
+        # dense path compiles the extra state out entirely -- and unlike the
+        # ndarray shape it probed before, a template is actually a compile-time
+        # constant (``ti.static`` rejects an ndarray ``.shape`` expression).
+        compact: ti.template(),
         tri_mat_id: ti.types.ndarray(), tri_mat: ti.types.ndarray(),
         pn_mat_id: ti.types.ndarray(), pn_mat: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
@@ -2045,7 +2053,7 @@ def wavefront_shade(
     through ``rs_pix``, so all branches of a pixel sum correctly.  The sparse
     raster path stores the compact accumulator row in ``rs_int[:, 4]`` while
     retaining the real local pixel in ``rs_pix`` for frame/ray addressing;
-    a 9-wide ``layer_offsets`` selects that representation without consuming
+    the ``compact`` template selects that representation without consuming
     another runtime argument."""
     pixels_per_frame = width * height
     # Unpack the two layer offsets (packed into one ndarray to stay within the
@@ -2075,7 +2083,7 @@ def wavefront_shade(
         if ti.static(first_iter == 0):
             pix = rs_pix[r]
         accum_pix = pix
-        if ti.static(layer_offsets.shape[0] > 8):
+        if ti.static(compact):
             accum_pix = rs_int[r, 4]
         num_hits = rs_int[r, 3]
         if num_hits > 0:
@@ -2611,7 +2619,7 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                                if ti.static(layer_offsets.shape[0] > 8):
+                                if ti.static(compact):
                                     rs_int[c, 4] = accum_pix
                         # Primary carries the heavier of reflection /
                         # coverage-miss (three continuations, two rays). At full
@@ -2670,7 +2678,7 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                                if ti.static(layer_offsets.shape[0] > 8):
+                                if ti.static(compact):
                                     rs_int[c, 4] = accum_pix
                         weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
@@ -2706,7 +2714,7 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                                if ti.static(layer_offsets.shape[0] > 8):
+                                if ti.static(compact):
                                     rs_int[c, 4] = accum_pix
                         weight *= cover3 + trans_energy * tint
                         t_prev = t_hit
@@ -2868,7 +2876,7 @@ def wavefront_shade(
                                 rs_int[c, 2] = _ACTIVE
                                 rs_int[c, 3] = 0
                                 rs_pix[c] = pix
-                                if ti.static(layer_offsets.shape[0] > 8):
+                                if ti.static(compact):
                                     rs_int[c, 4] = accum_pix
                     refl_w_max = ti.max(refl_w[0],
                                         ti.max(refl_w[1], refl_w[2]))

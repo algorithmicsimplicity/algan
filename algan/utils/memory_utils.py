@@ -9,6 +9,32 @@ class InsufficientMemoryException(Exception):
     pass
 
 
+def is_cuda_oom(exc):
+    """True if ``exc`` is an out-of-memory failure from *either* GPU allocator.
+
+    PyTorch raises :class:`torch.OutOfMemoryError`, but Taichi kernel launches
+    allocate from their own CUDA pool (``cuMemAllocAsync``) and surface
+    exhaustion as a plain :class:`RuntimeError` wrapping the driver string
+    (``CUDA_ERROR_OUT_OF_MEMORY``). The render arena bump-allocator never hits
+    the driver mid-render, so a batch that over-committed VRAM fails *inside a
+    Taichi launch* (typically the post-process tonemap) rather than as a torch
+    OOM -- and the retry loops, which only knew the torch type, let it escape.
+    Matching the driver message lets the same ``empty_cache`` + window-split
+    retry recover it (``torch.cuda.empty_cache`` hands torch's reserved-but-free
+    blocks back to the driver, which is exactly the memory Taichi needs).
+    """
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        return (
+            "out of memory" in msg
+            or "cuda_error_out_of_memory" in msg
+            or "cudaerrormemoryallocation" in msg
+        )
+    return False
+
+
 def get_num_available_bytes(device=torch.device("cuda")):
     device = torch.device(device)
     if device.type == "cuda":
@@ -59,6 +85,40 @@ def empty_cache(force_gc=True):
         torch.cuda.empty_cache()
     if torch.mps.is_available():
         torch.mps.empty_cache()
+
+
+def ensure_render_headroom(device, min_free_fraction=0.15):
+    """Return torch's reserved-but-free CUDA blocks to the driver when free
+    VRAM is low, so a following Taichi kernel launch has room.
+
+    Taichi allocates from its own CUDA pool (``cuMemAllocAsync``), which cannot
+    draw on torch's caching allocator. When both share a device and free memory
+    runs low, a Taichi launch (typically the post-process tonemap) OOMs even
+    though torch is holding plenty of reclaimable cached blocks -- see
+    ``is_cuda_oom``. The retry loops recover from that, but only after gc +
+    re-rendering the chunk; reclaiming *proactively* here avoids the round-trip.
+
+    Gated on driver-level free memory so the common (plentiful) case pays only a
+    cheap ``mem_get_info`` probe: ``torch.cuda.empty_cache()`` (~ms, and it
+    forces the next batch to re-acquire blocks from the driver) runs only when
+    free VRAM drops below ``min_free_fraction`` of the device total -- exactly
+    the regime where a Taichi launch is at risk. ``no-op`` off CUDA. Returns
+    True iff it actually reclaimed.
+    """
+    if device is None or not torch.cuda.is_available():
+        return False
+    device = torch.device(device)
+    if device.type != "cuda":
+        return False
+    try:
+        with torch.cuda.device(device):
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+            if free_bytes < min_free_fraction * total_bytes:
+                torch.cuda.empty_cache()
+                return True
+    except Exception:
+        pass
+    return False
 
 
 class TempMemoryContext:

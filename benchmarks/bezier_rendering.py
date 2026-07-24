@@ -1,14 +1,7 @@
 import os
 os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
-os.environ["ALGAN_KBUF"] =  "4"
-#os.environ["ALGAN_BVH_BUILD"] = "split"
-os.environ["ALGAN_INPLACE_AA"] = "0"
-#os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
-os.environ["ALGAN_HYBRID_RASTER"] = "1"
-os.environ["ALGAN_INPLACE_AA"] = "0"
-os.environ["ALGAN_BVH_REFIT"] = "1"
 
-
+import torch
 from algan import *
 from algan.mobs.neural_nets.neural_net import NeuralNetMLP, NeuralNetMLPV3
 from algan.utils.profiling_utils import profile_scene

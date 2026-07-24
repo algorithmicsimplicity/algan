@@ -34,6 +34,7 @@ from algan.utils.memory_utils import (
     ManualMemory,
     empty_cache,
     get_num_available_bytes,
+    is_cuda_oom,
 )
 
 logger = get_logger("scene")
@@ -610,9 +611,13 @@ class RenderLoopMixin:
                 return False
         try:
             self._prewarm_render_batch(primitive_batch, render_state)
-        except (InsufficientMemoryException, torch.OutOfMemoryError):
+        except (InsufficientMemoryException, RuntimeError) as exc:
             # Device projection overran the pool headroom. Drop partial state
             # and report not-fitting so the caller shrinks the frame window.
+            # (Also treat a Taichi-allocator OOM as such; re-raise real errors.)
+            if (not isinstance(exc, InsufficientMemoryException)
+                    and not is_cuda_oom(exc)):
+                raise
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
             empty_cache(force_gc=False)
@@ -647,10 +652,14 @@ class RenderLoopMixin:
         try:
             merged_host, env_map = self._prepare_merged_host_scene(
                 primitive_batch)
-        except (InsufficientMemoryException, torch.OutOfMemoryError):
+        except (InsufficientMemoryException, RuntimeError) as exc:
             # The device build overran the pool headroom. Drop any partial
             # merge state and report the batch as not fitting so the caller
-            # shrinks the frame window and retries.
+            # shrinks the frame window and retries. (Also treat a Taichi-
+            # allocator OOM as such; re-raise real errors.)
+            if (not isinstance(exc, InsufficientMemoryException)
+                    and not is_cuda_oom(exc)):
+                raise
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
             empty_cache(force_gc=False)
@@ -1942,7 +1951,16 @@ class RenderLoopMixin:
                                 yield frame_batch
                         except (InsufficientMemoryException,
                                 OutOfRenderMemory,
-                                torch.OutOfMemoryError) as render_exc:
+                                RuntimeError) as render_exc:
+                            # A Taichi launch can OOM as a bare RuntimeError from
+                            # its own allocator once the render chunk retry is
+                            # exhausted; treat it as a render OOM here too (and
+                            # re-raise any genuine, non-OOM RuntimeError).
+                            if (not isinstance(render_exc, (
+                                        InsufficientMemoryException,
+                                        OutOfRenderMemory))
+                                    and not is_cuda_oom(render_exc)):
+                                raise
                             if produced_output or duration <= 1:
                                 raise
                             self._note_render_arena_underestimate()
@@ -1985,6 +2003,19 @@ class RenderLoopMixin:
                             # and traceback frames that may own CUDA tensors.
                             self._reset_render_arena_after_failure()
                             continue
+                        # Drop this batch's arena-view caches before the arena
+                        # is reset/reallocated: a rendered primitive's
+                        # ``_rt_device_scene`` holds tensors carved from the
+                        # render arena, and any surviving one keeps the whole
+                        # arena buffer alive past teardown (``data = None`` only
+                        # frees the buffer once no views reference it). The
+                        # failure paths already clear these; do it on the
+                        # success path too so the last batch never pins the
+                        # arena into the next render/reset.
+                        if primitives:
+                            primitives[0]._rt_device_scene = None
+                            primitives[0]._rt_prepared_host_scene = None
+                            primitives[0]._rt_merged_scene = None
                         del primitives
                         # Free previous batch data before allocating next batch.
                         empty_cache(force_gc=False)

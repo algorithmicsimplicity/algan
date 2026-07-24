@@ -188,7 +188,7 @@ def _plan_bloom(sizer, shape, dtype, kwargs, device):
 
 
 def _plan_final(sizer, shape, dtype, original_channels, *, tonemap_enabled,
-                tonemapping, tonemap_method):
+                tonemapping, tonemap_method, tonemap_kernel):
     b, h, w, channels = shape
     same_layout = channels == original_channels
     stripped_channels = (
@@ -207,6 +207,16 @@ def _plan_final(sizer, shape, dtype, original_channels, *, tonemap_enabled,
         return output_shape, torch.uint8
 
     sizer.alloc(output_shape, torch.uint8)
+
+    # Standalone Taichi tonemap (settings.POST_TONEMAP_KERNEL): a linear-HDR
+    # float frame is tonemapped and quantized straight into ``output`` by one
+    # kernel, so none of the torch pipeline's pixel-sized scratch below is
+    # allocated. Modelling that scratch anyway over-reserved ~18 pixel-planes
+    # of arena (at UHD/AA2 roughly 700 MB), which pushed even a single frame
+    # past the whole arena and failed batching with OutOfRenderMemory.
+    if tonemap_enabled and dtype != torch.uint8 and tonemap_kernel:
+        return output_shape, torch.uint8
+
     with sizer.temp():
         if same_layout and channels == 5:
             sizer.alloc(output_shape, dtype)
@@ -252,7 +262,8 @@ def _plan_final(sizer, shape, dtype, original_channels, *, tonemap_enabled,
 def get_post_process_memory_required(
         frame_shape, frame_dtype, anti_alias_level, post_processes=(),
         apply_fxaa=False, *, tonemap_enabled=None, tonemapping=None,
-        tonemap_method=None, initial_pointer=0, device=None):
+        tonemap_method=None, tonemap_kernel=None, initial_pointer=0,
+        device=None):
     """Return the exact additional ManualMemory peak for built-in stages.
 
     ``frame_shape`` is the ray tracer's input layout ``[T, H, W, C]`` before
@@ -274,6 +285,8 @@ def get_post_process_memory_required(
         tonemapping = rt_settings.TONEMAPPING
     if tonemap_method is None:
         tonemap_method = rt_settings.TONEMAP_METHOD
+    if tonemap_kernel is None:
+        tonemap_kernel = rt_settings.is_post_tonemap_kernel_enabled()
     if device is None:
         from algan.settings.defaults import COMPUTING_DEFAULTS
         device = COMPUTING_DEFAULTS.render_device
@@ -286,19 +299,20 @@ def get_post_process_memory_required(
     initial_pointer = int(initial_pointer)
     sizer = PostProcessMemorySizer(initial_pointer)
 
+    # The supersample downsample and FXAA both keep the frame's own dtype (they
+    # used to force uint8, but under post-process tonemapping the frame is a
+    # linear-HDR float buffer that must stay float until the tonemap stage).
     if aa > 1:
         shape = (shape[0], shape[1] // aa, shape[2] // aa, shape[3])
-        sizer.alloc(shape, torch.uint8)
+        sizer.alloc(shape, dtype)
         with sizer.temp():
             sizer.alloc(shape, torch.float32)
-        dtype = torch.uint8
 
     if apply_fxaa:
-        sizer.alloc(shape, torch.uint8)
+        sizer.alloc(shape, dtype)
         with sizer.temp():
             sizer.alloc(shape, torch.float32)  # explicit NHWC cast
             _plan_fxaa(sizer, (shape[0], shape[3], shape[1], shape[2]))
-        dtype = torch.uint8
 
     for process in post_processes:
         bloom_kwargs = _bloom_args(process)
@@ -321,5 +335,6 @@ def get_post_process_memory_required(
         sizer, shape, dtype, original_channels,
         tonemap_enabled=bool(tonemap_enabled),
         tonemapping=bool(tonemapping), tonemap_method=str(tonemap_method),
+        tonemap_kernel=bool(tonemap_kernel),
     )
     return sizer.maximum - initial_pointer
