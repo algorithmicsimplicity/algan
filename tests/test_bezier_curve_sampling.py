@@ -1,5 +1,7 @@
 import torch
 
+from algan.animation.animation_contexts import Off
+from algan.mobs.shapes_2d import Line, Square
 from algan.rendering.raytracing.primitives import (
     RayTracedBezierCircuitPrimitive,
     _bezier_connection_visibility,
@@ -7,6 +9,7 @@ from algan.rendering.raytracing.primitives import (
     _packed_uniform_cubic_parameters,
     _uniform_cubic_subcurves,
 )
+from algan.scene_manager import SceneManager
 
 
 def _sampler(tolerance=1.0):
@@ -205,3 +208,61 @@ def test_sampling_uses_worst_frame_for_each_segment():
     )
 
     assert torch.equal(both_frames, close_frame)
+
+
+def _polyline(mob, chords_per_segment=1):
+    """Pack ``mob``'s circuit into plane-space edges at a fixed chord count."""
+    single = mob.get_render_primitives()
+    # The renderer merges same-kind primitives into one collection before
+    # projecting them, and that merge is what resolves each mob's RELATIVE
+    # next_segment_inds into absolute ones.  Build the same thing here.
+    primitive = type(single)(triangle_collection=[single])
+    corners = primitive.corners.float().contiguous()
+    chords = torch.full((corners.shape[1],), chords_per_segment,
+                        dtype=torch.long, device=corners.device)
+    primitive._build_circuit_geometry(corners, chords)
+    return primitive._rt_edges[0]  # [V, 5]: u0, v0, u1, v1, border_visible
+
+
+def test_open_subpath_polyline_carries_its_own_endpoint():
+    """A ``Line`` is one straight cubic, so it flattens to a single chord.
+
+    The packed polyline samples ``t = k/n`` for ``k < n`` and takes each cubic's
+    endpoint from the first vertex of the segment it connects to -- but an open
+    subpath connects back to its own start, so the endpoint belonged to nobody
+    and the final chord was dropped.  At ``n = 1`` that is the whole outline:
+    the circuit collapsed to a point and a ``Line`` rendered nothing at all.
+    """
+    SceneManager.reset()
+    start = torch.tensor([-1.0, -0.5, 0.0])
+    end = torch.tensor([1.0, 0.5, 0.0])
+    with Off(record_funcs=False, record_attr_modifications=False):
+        line = Line(start, end, border_width=2, add_to_scene=False)
+
+    edges = _polyline(line)
+
+    # Two vertices: t = 0 and the explicit t = 1, not one self-closing point.
+    assert edges.shape[0] == 2
+    drawn = edges[edges[:, 4] > 0.5]
+    assert drawn.shape[0] == 1
+    length = (drawn[0, 2:4] - drawn[0, :2]).norm()
+    assert torch.isclose(length, (end - start).norm(), atol=1e-5)
+    # The edge back to the start is the fill closure and stays undrawn.
+    closure = edges[edges[:, 4] <= 0.5]
+    assert closure.shape[0] == 1
+    assert torch.allclose(closure[0, 2:4], drawn[0, :2], atol=1e-6)
+
+
+def test_closed_circuit_polyline_is_unchanged_by_the_endpoint_rule():
+    """Every connection of a closed circuit is continuous, so no segment needs
+    an endpoint of its own and the packed vertex count stays at one per chord.
+    """
+    SceneManager.reset()
+    with Off(record_funcs=False, record_attr_modifications=False):
+        square = Square(border_width=2, add_to_scene=False)
+
+    edges = _polyline(square)
+    segments = square.get_render_primitives().corners.shape[1]
+
+    assert edges.shape[0] == segments
+    assert bool((edges[:, 4] > 0.5).all())

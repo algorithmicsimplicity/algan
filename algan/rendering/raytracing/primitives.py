@@ -638,10 +638,19 @@ def _uniform_cubic_subcurves(corners, num_subdivisions):
     return torch.stack((q0, q1, q2, q3), dim=-2)
 
 
-def _packed_uniform_cubic_parameters(chord_counts, dtype):
-    """The exact ``k / n`` parameters used for packed polyline vertices."""
-    repeated_counts = torch.repeat_interleave(chord_counts, chord_counts)
-    return batch_arange(chord_counts).to(dtype) / repeated_counts.to(dtype)
+def _packed_uniform_cubic_parameters(chord_counts, dtype, vertex_counts=None):
+    """The exact ``k / n`` parameters used for packed polyline vertices.
+
+    ``vertex_counts`` defaults to ``chord_counts``, which samples ``k < n`` only
+    -- the cubic's final endpoint is supplied by the next segment's first
+    vertex.  A segment that closes an open subpath does not share its endpoint
+    with anything and asks for one extra vertex, giving it ``k == n`` (``t = 1``)
+    as well.
+    """
+    if vertex_counts is None:
+        vertex_counts = chord_counts
+    repeated_counts = torch.repeat_interleave(chord_counts, vertex_counts)
+    return batch_arange(vertex_counts).to(dtype) / repeated_counts.to(dtype)
 
 
 def _point_to_segment_distance_squared(point, start, delta, length_squared):
@@ -777,7 +786,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         The returned value is the number of chords, despite the legacy
         ``num_samples`` name used by the packed geometry.  One chord evaluates
         two geometric endpoints; its final endpoint is shared with the next
-        cubic in the packed representation.
+        cubic in the packed representation -- except at the end of an open
+        subpath, where ``_build_circuit_geometry`` emits it explicitly.
         """
         device = corners.device
         T = cam_o.shape[0]
@@ -902,12 +912,38 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
         circuit_of_segment = torch.repeat_interleave(
             torch.arange(C, device=device), num_segments)
-        vert_circuit = torch.repeat_interleave(circuit_of_segment, num_samples)
-        V = int(num_samples.sum())
+
+        nsi = self.next_segment_inds.to(device).reshape(
+            self.next_segment_inds.shape[0], S).long()
+        # A redirected edge is an invisible fill closure only when the cubic's
+        # true endpoint and the selected next cubic's start are discontinuous.
+        # Index wraparound alone is not sufficient: an ordinary closed circuit
+        # (Circle, glyph outline, ...) also wraps to an earlier segment and its
+        # final border edge must remain visible.
+        connection_visible = _bezier_connection_visibility(corners, nsi)
+
+        # The packed polyline samples t = k/n for k < n, taking each cubic's
+        # endpoint from the first vertex of the segment it connects to.  That
+        # holds only where the connection is continuous; a segment that CLOSES
+        # AN OPEN SUBPATH links back to a start point somewhere else, so its
+        # endpoint is nobody else's vertex and its final chord would simply be
+        # missing.  Those segments get an explicit t = 1 vertex.  A straight
+        # ``Line`` is the extreme case -- it resolves to a single chord, so
+        # without the endpoint its whole outline collapses to one point and it
+        # renders nothing at all.  Whether a connection is continuous can in
+        # principle vary over the batch while the vertex count cannot, so a
+        # segment discontinuous in ANY frame keeps the extra vertex; where it is
+        # continuous the vertex merely duplicates the one it links to, which
+        # contributes a zero-length edge to neither metric.
+        needs_endpoint = (~connection_visible).any(0).long()
+        verts_per_segment = num_samples + needs_endpoint
+        vert_circuit = torch.repeat_interleave(
+            circuit_of_segment, verts_per_segment)
+        V = int(verts_per_segment.sum())
 
         t_params = _packed_uniform_cubic_parameters(
-            num_samples, corners.dtype)
-        ctrl = torch.repeat_interleave(corners, num_samples, dim=1)
+            num_samples, corners.dtype, verts_per_segment)
+        ctrl = torch.repeat_interleave(corners, verts_per_segment, dim=1)
         verts = _evaluate_cubic_bezier_batch(ctrl, t_params.view(1, -1, 1))
 
         # Plane frame per circuit: normal + an arbitrary orthonormal basis.
@@ -924,25 +960,18 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
         segment_lengths = (corners[..., 1:, :] - corners[..., :-1, :]).square().sum(-1).sum(-1)
         is_degenerate = segment_lengths < 1e-9
-        edge_degenerate = torch.repeat_interleave(is_degenerate, num_samples, dim=1)
+        edge_degenerate = torch.repeat_interleave(
+            is_degenerate, verts_per_segment, dim=1)
 
         # Absolute polyline index of the first sample of each segment, and of
         # the sample each segment's last sample connects to (closing each
         # subpath through next_segment_inds, exactly like the rasterizer).
-        seg_starts = num_samples.cumsum(0) - num_samples
+        seg_starts = verts_per_segment.cumsum(0) - verts_per_segment
         seg_ends = seg_starts - 1
         seg_ends[0] = V - 1
         seg_ends = torch.roll(seg_ends, -1, 0)
-        nsi = self.next_segment_inds.to(device).reshape(
-            self.next_segment_inds.shape[0], S).long()
         next_start = seg_starts[nsi]  # [Tn, S]
 
-        # A redirected edge is an invisible fill closure only when the cubic's
-        # true endpoint and the selected next cubic's start are discontinuous.
-        # Index wraparound alone is not sufficient: an ordinary closed circuit
-        # (Circle, glyph outline, ...) also wraps to an earlier segment and its
-        # final border edge must remain visible.
-        connection_visible = _bezier_connection_visibility(corners, nsi)
         Tn = connection_visible.shape[0]
         border_visible = torch.ones(
             (Tn, V), device=device, dtype=torch.float32)
@@ -974,7 +1003,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         )
 
         samples_per_circuit = torch.zeros((C,), dtype=torch.long, device=device)
-        samples_per_circuit.index_add_(0, circuit_of_segment, num_samples)
+        samples_per_circuit.index_add_(0, circuit_of_segment, verts_per_segment)
         edge_offsets = torch.zeros((C + 1,), dtype=torch.long, device=device)
         edge_offsets[1:] = samples_per_circuit.cumsum(0)
         self._rt_edge_offsets = edge_offsets.to(torch.int32).contiguous()

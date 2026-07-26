@@ -607,15 +607,32 @@ proportionally more; quote per-scene numbers, never a headline multiple.
     gates termination; diverging there desynchronizes every shadow id from its
     fragment.
 
-13.3 Known gap (circuits)
--------------------------
-The **unfilled** (band) form of the coverage filter is implemented but
-unexercised: unfilled circuits render nothing at all in this build — a filled
-`Square` draws while a `Line` in the same scene yields an entirely empty frame.
-Verified against the unmodified tree, so it predates analytic AA. Once fixed,
-add an unfilled config to `_analytic_aa_bez_check.py`; the band form is where a
-sub-pixel stroke fades by its width instead of being dilated to a floor, so it
-is the case most likely to need visual tuning.
+13.3 Known gap (circuits) — FIXED 2026-07-26
+--------------------------------------------
+The band form of the coverage filter was unexercised because a `Line` rendered
+nothing at all: a filled `Square` drew while a `Line` in the same scene yielded
+an entirely empty frame. The cause predated analytic AA and was **geometric,
+not a coverage bug** — the packed polyline samples `t = k/n` for `k < n` only
+and takes each cubic's endpoint from the first vertex of the segment it
+connects to. That holds only where the connection is continuous. A segment that
+CLOSES AN OPEN SUBPATH links back to a start point somewhere else, so its
+endpoint was nobody's vertex and its final chord was simply missing; the
+invisible closure edge ran from `t = (n-1)/n` instead of from `t = 1`. A
+straight `Line` flattens to a single chord (`n = 1`, the curve-to-chord error is
+zero), so its whole outline collapsed to one point.
+
+Confirmed by forcing the chord count: at `n` chords exactly `(n-1)/n` of a
+straight `Line` drew (`n=2` half, `n=4` three quarters), and a multi-segment
+open path (`Line(path_arc=...)`, `Arrow`) was short by its last chord.
+
+Fix: `_build_circuit_geometry` gives a segment whose connection is
+discontinuous an explicit `t = 1` vertex (`needs_endpoint`, from the
+`_bezier_connection_visibility` mask it already computed for the border flag),
+so `verts_per_segment = num_samples + needs_endpoint` drives the vertex packing.
+Closed circuits — `Square`, `Circle`, every glyph contour — have continuous
+connections and are geometrically untouched. `_analytic_aa_bez_check.py` gained
+the `unfilled` config (a straight `Line`, an arced one, an `Arrow` and an
+unfilled `Circle`) now that there is something to measure.
 
 
 ================================================================================
