@@ -1,14 +1,12 @@
 from svgelements import Path, Move, Close, Line
 
-import torch
-from algan.animation.animatable import animated_function
-from algan.animation.animation_contexts import Off, Sync
+from algan.animatable_base.animatable import animated_function
+from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import OUT, LEFT, RIGHT, DOWN, UP, ORIGIN
 from algan.constants.color import *
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
 from algan.mobs.group import Group
-from algan.mobs.mob import Mob
-from algan.mobs.renderable import Renderable
+from algan.animatable_base.mob import Mob
 from algan.mobs.shapes_2d import Quad, TriangleTriangulated, Rectangle
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.utils.tensor_utils import squish, broadcast_all
@@ -297,7 +295,7 @@ class FunctionPlotMob(Mob):
         self.despawn_tilewise_recursive()
 
 
-class TriangleVertices2(Renderable):
+class TriangleVertices2(Mob):
     def __init__(self, corner_locations, **kwargs):
         kwargs2 = {k: v for k, v in kwargs.items()}
         if "location" in kwargs2:

@@ -21,8 +21,8 @@ from queue import Queue
 
 import torch
 
-from algan.animation.animation_contexts import AnimationManager, Off
-from algan.animation.timeline import TimelineManager
+from algan.animation_timeline.animation_contexts import AnimationManager, Off
+from algan.animation_timeline.timeline import TimelineManager
 from algan.logging.logger import get_logger
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
@@ -1282,7 +1282,7 @@ class RenderLoopMixin:
         timeline = TimelineManager.instance()
         try:
             for attr in ("opacity", "basis", "glow", "border_width",
-                         "border_color", "glow_radius", "location"):
+                         "border_color", "location"):
                 if timeline.attr_to_timeline[attr].mob_id_to_inds[
                         actor.id].numel() != 1:
                     return False

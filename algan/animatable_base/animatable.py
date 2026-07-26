@@ -8,26 +8,22 @@ import inspect
 import torch
 
 # Re-exported for backwards compatibility (it used to be defined here).
-from algan.animation.timeline import TIME_PARAMETER_NAME, TimelineManager  # noqa: F401
-from algan.animation.timeline import (
+from algan.animation_timeline.timeline import TIME_PARAMETER_NAME, TimelineManager  # noqa: F401
+from algan.animation_timeline.timeline import (
     STRUCTURE_VERSION,
     RowRanges,
     _opt_disabled,
-    bump_hierarchy_version,
-    bump_structure_version,
 )
 from algan.scene import Scene
-from algan.animation.animation_contexts import (
+from algan.animation_timeline.animation_contexts import (
     Sync,
     AnimationManager,
     AnimationContext,
     Off,
 )
-from algan.constants.color import BLACK
+from algan.constants.color import Color, BLACK
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 from algan.scene_manager import SceneManager
-from algan.utils.python_utils import traverse
-from algan.errors import HierarchyError
 
 
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
@@ -215,17 +211,82 @@ class Animatable:
         if init:
             self.init()
 
+    def register_attrs_as_animatable(self, attrs: list[str], my_class=None):
+        """
+        Registers attributes as animatable, meaning their changes can be tracked
+        and interpolated over time for animation.
+
+        This method dynamically creates property getters and setters for the
+        specified attributes if they don't already exist, allowing them to be
+        controlled by the animation system. When an animatable attribute is
+        modified, the change is recorded on the global timeline
+        (:class:`~algan.animation.timeline.AnimationTimeline`).
+
+        Parameters
+        ----------
+        attrs : set[str] or str
+            A collection of attribute names (or a single attribute name) to
+            register as animatable.
+        my_class : type, optional
+            The class to which the property getters and setters should be
+            attached. Defaults to the current Object's class.
+        """
+        if isinstance(attrs, str):
+            attrs = {
+                attrs,
+            }
+        if not hasattr(self, "animatable_attrs"):
+            self.animatable_attrs = []
+        if my_class is None:
+            my_class = self.__class__
+        for attr in attrs:
+            self._add_property_getter_and_setter(attr, my_class)
+        self.animatable_attrs.extend(
+            [_ for _ in attrs if _ not in self.animatable_attrs]
+        )
+
+    def _add_property_getter_and_setter(
+        self, property_name: str, class_to_attach_to=None
+    ):
+        """Dynamically adds a property with a getter and setter for a given attribute name.
+
+        The getter retrieves the current (potentially animated) value of the
+        attribute from the global attribute timeline; the setter writes the
+        value to the timeline, recording the modification so it can be
+        replayed at render time.
+
+        Parameters
+        ----------
+        property_name
+            The name of the property to create (e.g., 'location', 'color').
+        class_to_attach_to : (type, optional)
+            The class to which this property
+            will be added. Defaults to the instance's own class.
+
+        """
+        if class_to_attach_to is None:
+            class_to_attach_to = self.__class__
+        if hasattr(class_to_attach_to, property_name):
+            return
+
+        tensor_subclass = Color if property_name == 'color' else torch.Tensor
+
+        @property
+        def prop(self):
+            return self.get_animated_attribute(property_name).as_subclass(tensor_subclass)
+
+        @prop.setter
+        def prop(self, value):
+            return self.set_animated_attribute(property_name, value)
+
+        setattr(class_to_attach_to, property_name, prop)
+
     @property
     def lifespan(self):
         """This mob's [spawn, despawn) interval on the global timeline (a
         :class:`~algan.animation.timeline.Lifespan`). Sub-mobs created by
         indexing share their source's id, and therefore its lifespan."""
         return TimelineManager.instance().get_lifespan(self.id)
-
-    def to(self, device):
-        # Attribute values live in the global attribute timelines (which stay
-        # on the animation device); nothing per-mob to move.
-        return self
 
     @animated_function(animated_args={"t": 0}, unique_args=["function"])
     def animate_function(self, function, t=1, *args, **kwargs):
@@ -759,100 +820,3 @@ class Animatable:
 
     def get_memory_used_per_timestep(self):
         return 0
-
-    def set_parent_to(self, other_mob):
-        if not any(parent is other_mob for parent in self.parents):
-            self.parents.append(other_mob)
-        return self
-
-    def remove_parent(self, other_mob):
-        self.parents[:] = [
-            parent for parent in self.parents if parent is not other_mob
-        ]
-        return self
-
-    @staticmethod
-    def _contains_in_hierarchy(root, target):
-        stack = [root]
-        visited = set()
-        while stack:
-            current = stack.pop()
-            identity = id(current)
-            if identity in visited:
-                continue
-            visited.add(identity)
-            if current is target:
-                return True
-            stack.extend(getattr(current, "children", ()))
-        return False
-
-    def _validate_new_children(self, mobs):
-        seen = set()
-        for mob in mobs:
-            if not isinstance(mob, Animatable):
-                raise TypeError(
-                    f"Children must be Animatable instances, got {type(mob).__name__}"
-                )
-            identity = id(mob)
-            if identity in seen:
-                raise HierarchyError("A child cannot occur more than once")
-            seen.add(identity)
-            if mob is self:
-                raise HierarchyError("A Mob cannot be its own child")
-            if self._contains_in_hierarchy(mob, self):
-                raise HierarchyError("This hierarchy mutation would create a cycle")
-
-    def replace_children(self, mobs, *, link_parents=True):
-        """Replace the canonical child list while preserving hierarchy links."""
-        new_children = list(traverse(mobs))
-        self._validate_new_children(new_children)
-        old_children = list(self.children)
-
-        for child in old_children:
-            if link_parents and not any(child is item for item in new_children):
-                child.remove_parent(self)
-
-        self.children[:] = new_children
-        if link_parents:
-            for child in new_children:
-                child.set_parent_to(self)
-        self.anchor_priority = max(
-            (1 + child.anchor_priority for child in new_children),
-            default=0,
-        )
-        bump_hierarchy_version()
-        return self
-
-    def add_children(self, *mobs):
-        """Add children while rejecting cycles and duplicate relationships."""
-        candidates = list(traverse(mobs))
-        # Re-adding an existing child is idempotent, matching Group.add.
-        candidates = [
-            mob
-            for mob in candidates
-            if not any(existing is mob for existing in self.children)
-        ]
-        if not candidates:
-            return self
-        self._validate_new_children([*self.children, *candidates])
-        for mob in candidates:
-            self.children.append(mob)
-            mob.set_parent_to(self)
-            self.anchor_priority = max(
-                self.anchor_priority, 1 + mob.anchor_priority
-            )
-        bump_hierarchy_version()
-        return self
-
-    def remove_child(self, mob):
-        for index, child in enumerate(self.children):
-            if child is mob:
-                del self.children[index]
-                child.remove_parent(self)
-                self.anchor_priority = max(
-                    (1 + item.anchor_priority for item in self.children),
-                    default=0,
-                )
-                bump_hierarchy_version()
-                return self
-        raise ValueError("The requested Mob is not a child of this Mob")

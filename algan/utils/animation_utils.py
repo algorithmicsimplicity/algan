@@ -1,7 +1,7 @@
 # from camera import Sequential, Synchronized, Off
 import torch
 
-from algan.animation.animation_contexts import Seq, Sync, Off, ComposeRateFunc
+from algan.animation_timeline.animation_contexts import Seq, Sync, Off, ComposeRateFunc
 from algan.utils.tensor_utils import dot_product
 
 

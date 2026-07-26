@@ -1,19 +1,14 @@
-import torch
-
-from algan.rendering.shaders.pbr_shaders import default_shader
-from algan.animation.animation_contexts import Off, Sync, Seq, Lag
+from algan.animation_timeline.animation_contexts import Off, Sync, Seq, Lag
 from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
-from algan.mobs.mob import Mob
+from algan.animatable_base.mob import Mob
 from algan.mobs.shapes_3d import Sphere, Cylinder
-from algan.constants.rate_funcs import identity, ease_in_expo, ease_out_expo
-from algan.rendering.shaders.pbr_shaders import null_shader
+from algan.constants.rate_funcs import identity
 from algan.rendering.shaders.materials import (
     MeshPhysicalMaterial,
-    MeshStandardMaterial, MeshBasicMaterial,
-)
-from algan.utils.tensor_utils import dot_product, unsquish, squish
+    MeshStandardMaterial, )
+from algan.utils.tensor_utils import dot_product
 from algan.mobs.text import Tex
-from algan.constants.rate_funcs import smooth, pulse_fade, delay_fade
+from algan.constants.rate_funcs import pulse_fade, delay_fade
 
 
 # Synapses jitter their colour for visual variety. Draw that jitter from a
@@ -36,8 +31,6 @@ def tweak_color(c, strength=0.2, min_strength=0.0):
     target_c = c.set_rgb(torch.rand(c.rgb.shape, device=c.rgb.device, dtype=c.rgb.dtype, generator=_color_rng))
     return c * (1 - t) + t * target_c
 
-
-gr = 0.15
 gs = 0.75
 
 class Synapse(Cylinder):
@@ -47,7 +40,7 @@ class Synapse(Cylinder):
         if 'color' in kwargs:
             c = kwargs['color']
             kwargs['color'] = tweak_color(c, strength=0.25, min_strength=0.25)
-        super().__init__(grid_height=grid_height, grid_width=grid_width, glow_radius=gr, **kwargs)
+        super().__init__(grid_height=grid_height, grid_width=grid_width, **kwargs)
         self.scale(0.02)
 
 
@@ -77,7 +70,7 @@ class Neuron(Mob):
     def _make_shell(self, grid_height, neuron_color):
         return (
             Sphere(opacity=0.5, grid_width=grid_height, grid_height=grid_height,
-                   color=neuron_color, glow_radius=gr)
+                   color=neuron_color)
             .set_shader(None)
             .scale(0.2)
         )
@@ -109,7 +102,7 @@ class SynapseV2(Cylinder):
             kwargs['color'] = c
         else:
             c = WHITE
-        super().__init__(grid_height=grid_height, grid_width=grid_width, glow_radius=gr, **kwargs)
+        super().__init__(grid_height=grid_height, grid_width=grid_width, **kwargs)
         # Fill light comes from env_map_intensity (ambient = albedo * 0.1 * env)
         # rather than emissive, so it tracks the albedo during colour-wave
         # pulses instead of tinting them with the resting colour.
@@ -151,7 +144,7 @@ class NeuronV2(Neuron):
         )
         return (
             Sphere(opacity=0.3, grid_width=grid_height, grid_height=grid_height,
-                   color=neuron_color, glow_radius=gr)
+                   color=neuron_color)
             .set_material(material)
             .scale(0.21)
         )
@@ -410,7 +403,7 @@ class SynapseV3(Cylinder):
             kwargs['color'] = c
         else:
             c = WHITE
-        super().__init__(grid_height=grid_height, grid_width=grid_width, glow_radius=gr, **kwargs)
+        super().__init__(grid_height=grid_height, grid_width=grid_width, **kwargs)
         """self.set_material(MeshPhysicalMaterial(
             color=c.set_glow(0.04),
             roughness=0.25,
@@ -467,7 +460,7 @@ class NeuronV3(Neuron):
         )
         return (
             Sphere(opacity=1.0, grid_width=grid_height, grid_height=grid_height,
-                   color=neuron_color, glow_radius=gr)
+                   color=neuron_color)
             .set_material(material)
             .scale(0.21)
         )

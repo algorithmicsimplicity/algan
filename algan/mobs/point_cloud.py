@@ -13,7 +13,7 @@ import math
 import numpy as np
 import torch
 
-from algan.animation.timeline import bump_hierarchy_version
+from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.color import BLACK, WHITE, YELLOW, Color
 from algan.constants.spatial import ORIGIN
 from algan.mobs.group import Group

@@ -1,6 +1,6 @@
-from algan.animation.animation_contexts import Sync, Off
+from algan.animation_timeline.animation_contexts import Sync, Off
 from algan.constants.spatial import *  # RIGHT, LEFT, IN, OUT, ORIGIN, UP
-from algan.mobs.bezier_circuit import BezierCircuitCubic, BezierCurveCubic
+from algan.mobs.bezier_circuit import BezierCurveCubic
 from algan.utils.algan_utils import render_all_funcs
 
 p = torch.stack(

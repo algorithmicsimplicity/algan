@@ -1,14 +1,12 @@
 import hashlib
-import math
 import os
 from collections import defaultdict
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-import svgelements
 
-from algan.constants.color import RED, WHITE, GREEN, RED_A
+from algan.constants.color import WHITE, GREEN
 from algan.constants.spatial import RIGHT, DOWN
 from algan.settings.defaults import *
 from algan.geometry.geometry import (
@@ -16,8 +14,8 @@ from algan.geometry.geometry import (
     get_roots_of_quadratic,
     get_2d_polygon_mask,
 )
-from algan.mobs.mob import Mob
-from algan.mobs.shapes_2d import Quad, TriangleTriangulated
+from algan.animatable_base.mob import Mob
+from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.utils.tensor_utils import (
     dot_product,
     squish,

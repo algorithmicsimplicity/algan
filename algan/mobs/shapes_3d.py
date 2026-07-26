@@ -3,12 +3,12 @@ import math
 import torch
 import torch.nn.functional as F
 
-from algan.animation.animatable import animated_function
-from algan.animation.animation_contexts import Off, Sync
+from algan.animatable_base.animatable import animated_function
+from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.math import PI
-from algan.constants.spatial import DOWN, LEFT, ORIGIN, OUT, RIGHT, UP
+from algan.constants.spatial import LEFT, ORIGIN, OUT, RIGHT, UP
 from algan.constants.color import WHITE
-from algan.mobs.mob import Mob
+from algan.animatable_base.mob import Mob
 from algan.mobs.group import Group
 from algan.geometry.geometry import project_onto_basis, get_orthonormal_vector
 from algan.mobs.surfaces.surface import Surface

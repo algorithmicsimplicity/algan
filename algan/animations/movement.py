@@ -15,12 +15,12 @@ from typing import Any
 import numpy as np
 import torch
 
-from algan.animation.animatable import animated_function
-from algan.animation.animation_contexts import Sync
+from algan.animatable_base.animatable import animated_function
+from algan.animation_timeline.animation_contexts import Sync
 from algan.constants import rate_funcs
 from algan.constants.spatial import ORIGIN
 from algan.mobs.bezier_circuit import BezierCircuitCubic
-from algan.mobs.mob import Mob
+from algan.animatable_base.mob import Mob
 from algan.mobs.surfaces.surface import Surface
 from algan.utils.tensor_utils import cast_to_tensor, unsquish
 

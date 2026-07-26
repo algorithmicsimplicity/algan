@@ -1,15 +1,13 @@
-import torch
 import torch.nn.functional as F
 
 from algan.constants.spatial import OUT, RIGHT
 from algan.settings.render_settings import PREVIEW
 from algan.geometry.geometry import rotate_vector_around_axis
-from algan.animation.animation_contexts import Off
-from algan.mobs.renderable import Renderable
+from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import *
-from algan.mobs.mob import Mob
+from algan.animatable_base.mob import Mob
 
-from algan.animation.animatable import animated_function
+from algan.animatable_base.animatable import animated_function
 from algan.utils.tensor_utils import *
 from algan.settings.renderer_settings import RENDERER_SETTINGS
 from algan.rendering.raytracing.utils import _unify_time
@@ -72,7 +70,7 @@ def _circuit_location_and_basis(control_points):
 
 
 
-class BezierCircuitCubic(Renderable):
+class BezierCircuitCubic(Mob):
     def __init__(
         self,
         control_points,
@@ -261,7 +259,7 @@ class BezierCircuitCubic(Renderable):
         # the shape reads below go through the animated-attribute machinery,
         # so cache the result against the global structure version (row
         # re-allocation bumps it).
-        from algan.animation.timeline import STRUCTURE_VERSION
+        from algan.animation_timeline.timeline import STRUCTURE_VERSION
 
         cache = getattr(self, "_memory_per_timestep_cache", None)
         if cache is not None and cache[0] == STRUCTURE_VERSION[0]:
@@ -310,7 +308,6 @@ class BezierCircuitCubic(Renderable):
                 * self.scene.render_settings.resolution[1] * self.scene.render_settings.anti_alias_level
                 / (PREVIEW.resolution[1] * 2),
                 self.border_color,
-                self.glow_radius,
                 metalness,
                 roughness,
                 ior,
@@ -342,7 +339,7 @@ class BezierCircuitCubic(Renderable):
         )
 
     def _get_render_primitives(
-        self, x, tpc, loc, basis, o, n, g, bw, bc, gr, reflectivity,
+        self, x, tpc, loc, basis, o, n, g, bw, bc, reflectivity,
         roughness, refractive_index, transmission,
         num_segments_per_circuit=None
     ):
@@ -422,7 +419,6 @@ class BezierCircuitCubic(Renderable):
             basis[..., :3],
             basis[..., 3:6],
             glow=g,
-            glow_radius=gr,
             num_texture_points=self.num_texture_points,
             filled=self.filled,
             reflectivity=reflectivity,
@@ -601,7 +597,7 @@ def build_render_primitives_batched(actors, scene):
     attributes, and uniform ``num_texture_points`` / ``filled`` /
     texture-color row count / primitive class across the group.
     """
-    from algan.animation.timeline import RowRanges, TimelineManager
+    from algan.animation_timeline.timeline import RowRanges, TimelineManager
 
     timeline = TimelineManager.instance()
     first = actors[0]
@@ -654,9 +650,8 @@ def build_render_primitives_batched(actors, scene):
         scene.render_settings.resolution[1] * scene.render_settings.anti_alias_level
         / (PREVIEW.resolution[1] * 2))
     bc = read("border_color", actors)
-    gr = read("glow_radius", actors)
     loc = read("location", actors)
-    o, basis, g, bw, bc, gr = broadcast_all([o, basis, g, bw, bc, gr],
+    o, basis, g, bw, bc = broadcast_all([o, basis, g, bw, bc],
                                             ignored_dims=[-1])
     cp = read("location", [a.control_points for a in actors])
     tpc = read("color", [a.texture_points for a in actors])
@@ -743,7 +738,6 @@ def build_render_primitives_batched(actors, scene):
     mega.normals = normals.to(device)
     mega.border_width = bw.to(device)
     mega.border_color = bc.to(device)
-    mega.glow_radius = gr.to(device)
 
     T = loc.shape[0]
 

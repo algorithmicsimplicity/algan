@@ -50,7 +50,6 @@ from algan.settings.render_settings import *
 from algan.constants.spatial import *
 from algan.constants.color import *
 from algan.constants.math import *
-from algan.rendering import camera
 
 # Taichi is imported (via the rendering modules above) but no kernel has
 # materialized yet -- install the warm-start memoization now so every kernel
@@ -63,7 +62,9 @@ from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 _apply_taichi_warmstart()
 _apply_taichi_fast_launch()
 
-from algan.mobs.mob import *
+from algan.animatable_base.animatable import *
+from algan.animatable_base.mob import *
+from algan.rendering import camera
 from algan.mobs.manim_mob import *
 from algan.mobs.group import *
 from algan.mobs.text import *
@@ -88,7 +89,7 @@ GenericGraph = Graph
 install_opengl_aliases(globals())
 from algan.scene import Scene
 
-from algan.animation.animation_contexts import *
+from algan.animation_timeline.animation_contexts import *
 from algan.utils.algan_utils import *
 from algan.rendering.lights import *
 
@@ -134,11 +135,11 @@ from algan.rendering.raytracing.tracer import RenderPlan, render_batch_raytraced
 from algan.settings.kernel_settings import KERNEL_SETTINGS
 KERNEL_SETTINGS.render_kernel = render_batch_raytraced
 
-from algan.animation.manim_animations import *
-from algan.animation.movement import *
-from algan.animation.changing import *
-from algan.animation.indication import *
-from algan.animation.timeline import TimelineManager
+from algan.animations.manim_animations import *
+from algan.animations.movement import *
+from algan.animations.changing import *
+from algan.animations.indication import *
+from algan.animation_timeline.timeline import TimelineManager
 
 
 def clear_cache(include_taichi_kernels=False):

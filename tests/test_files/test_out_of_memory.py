@@ -1,6 +1,6 @@
 import torch.nn.functional as F
 
-from algan.animation.animation_contexts import Sync
+from algan.animation_timeline.animation_contexts import Sync
 from algan.constants.spatial import *  # RIGHT, LEFT, IN, OUT, ORIGIN, UP
 from algan.utils.algan_utils import render_all_funcs
 from algan.mobs.shapes_2d import TriangleTriangulated

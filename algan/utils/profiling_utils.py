@@ -73,13 +73,12 @@ import torch
 # ``import algan`` initializes the Taichi runtime (via the rasterizer modules)
 # and pulls in the mob / scene classes the pipeline hooks below wrap.
 import algan  # noqa: F401
-from algan.constants.color import GREY
 from algan.utils.algan_utils import render_to_file
 
 # Optional pipeline-hook targets. Imported defensively: a rename upstream must
 # degrade the hook, not break the whole profiler.
 from algan.scene_manager import SceneManager
-from algan.animation.animatable import Animatable
+from algan.animatable_base.animatable import Animatable
 from algan.mobs.surfaces.surface import Surface
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 
@@ -431,7 +430,7 @@ def install_pipeline_hooks():
     _try_wrap(bzc, 'build_render_primitives_batched', 'build_render_primitives_batched')
     _try_wrap(Scene, "get_batch_of_primitives", "Scene.get_batch_of_primitives")
     _try_wrap(Animatable, "get_attr_inds", "get_attr_inds")
-    from algan.animation.timeline import AnimationTimeline, AttributeTimeline
+    from algan.animation_timeline.timeline import AnimationTimeline, AttributeTimeline
     _try_wrap(AttributeTimeline, "modify",
               "AttributeTimeline.modify")
     _try_wrap(AttributeTimeline, "get",

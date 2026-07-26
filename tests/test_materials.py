@@ -345,7 +345,7 @@ def test_normal_material_keeps_mob_colour():
 
 def test_set_material_after_spawn_raises():
     from algan import Sphere
-    from algan.mobs.mob import ModifiedProtectedAttributeError
+    from algan.animatable_base.mob import ModifiedProtectedAttributeError
 
     s = Sphere().spawn()
     try:

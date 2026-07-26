@@ -5,7 +5,7 @@ import pytest
 import torch
 
 import algan
-from algan.animation.timeline import TimelineManager
+from algan.animation_timeline.timeline import TimelineManager
 from algan.scene_manager import SceneManager
 
 

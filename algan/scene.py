@@ -1,17 +1,15 @@
 from pathlib import Path
 import math
 
-import torch
 import torch.nn.functional as F
 
 from algan.settings.defaults import *
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.errors import AlganConfigurationError
 
-from algan.constants.color import *
 from algan.constants.spatial import *
 
-from algan.animation.animation_contexts import Seq, Sync, AnimationManager
+from algan.animation_timeline.animation_contexts import Seq, Sync, AnimationManager
 
 # EmptySceneWarning and write_frames_from_queue moved to render_loop.py;
 # re-exported here for backwards compatibility.

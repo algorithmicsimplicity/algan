@@ -26,8 +26,8 @@ class SceneManager(Singleton):
         # Imported here: animation_contexts and timeline both import this
         # module at import time, so importing them at module level would be
         # circular.
-        from algan.animation.animation_contexts import AnimationManager
-        from algan.animation.timeline import TimelineManager
+        from algan.animation_timeline.animation_contexts import AnimationManager
+        from algan.animation_timeline.timeline import TimelineManager
 
         AnimationManager.reset()
         TimelineManager.reset()

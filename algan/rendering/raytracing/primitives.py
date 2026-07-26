@@ -110,7 +110,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     """Triangle batch rendered by ray tracing a spatio-temporal BVH."""
 
     frame_dependent_source_attrs = (
-        "corners", "colors", "normals", "glow_radius",
+        "corners", "colors", "normals",
         "uvs", "texture_map", "material_texture_map",
         "normal_texture_map", "reflectivity", "roughness",
         "refractive_index", "transmission", "shader_param_values",
@@ -690,7 +690,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
     frame_dependent_source_attrs = (
         "corners", "colors", "normals", "border_width",
-        "border_color", "glow_radius", "mob_center", "grid_width",
+        "border_color", "mob_center", "grid_width",
         "grid_height", "basis1", "basis2", "next_segment_inds",
         "reflectivity", "roughness", "refractive_index", "transmission",
     )
@@ -1020,18 +1020,16 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             self.border_width.shape[0], C)
         grid_w = self.grid_width.float().reshape(self.grid_width.shape[0], C)
         grid_h = self.grid_height.float().reshape(self.grid_height.shape[0], C)
-        glow_radius = self.glow_radius.float().reshape(
-            self.glow_radius.shape[0], C)
         reflectivity = self.reflectivity.float()
         roughness = self.roughness.float()
         refractive_index = self.refractive_index.float()
         transmission = self.transmission.float()
         (centers_m, normals_m, bu_m, bv_m, b1_m, b2_m, bw_m, gw_m, gh_m,
-         glow_radius_m, reflectivity_m, roughness_m,
+         reflectivity_m, roughness_m,
          ior_m, transmission_m), Tm = _unify_time(
             [centers, normals, basis_u, basis_v, basis1, basis2,
              border_width.unsqueeze(-1), grid_w.unsqueeze(-1),
-             grid_h.unsqueeze(-1), glow_radius.unsqueeze(-1),
+             grid_h.unsqueeze(-1),
              reflectivity, roughness, refractive_index, transmission],
             "bezier metadata")
         filled = torch.full((Tm, C, 1), 1.0 if self.filled else 0.0,
@@ -1041,7 +1039,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             (b2_m * bu_m).sum(-1), (b2_m * bv_m).sum(-1)), -1).nan_to_num_()
         self._rt_circuit_meta = torch.cat(
             (centers_m, normals_m, bu_m, bv_m, bw_m, filled, gw_m, gh_m,
-             tex, glow_radius_m, reflectivity_m, roughness_m, ior_m,
+             tex, reflectivity_m, roughness_m, ior_m,
              transmission_m), -1).contiguous()
 
         colors = self.colors.float()
@@ -1113,10 +1111,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         dist = (centers - cam_o.view(-1, 1, 3)).norm(p=2, dim=-1)
         world_per_px = (pixel_world_scale.view(-1, 1) * dist).amax(0)
 
-        glow_rad = torch.where(glow_alpha > 0.0, self.glow_radius.squeeze(-1), 0.0)
-        glow_rad_max = glow_rad.amax(0)
-
-        inflate = (self._rt_border_width.amax(0) + 1.0) * world_per_px + glow_rad_max
+        inflate = (self._rt_border_width.amax(0) + 1.0) * world_per_px
         self._rt_frame_lo = (lo - inflate.view(1, -1, 1)).contiguous()
         self._rt_frame_hi = (hi + inflate.view(1, -1, 1)).contiguous()
 

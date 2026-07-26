@@ -45,7 +45,6 @@ class BezierCircuitPrimitive(RenderPrimitive):
         second_basis=None,
         triangle_collection=None,
         glow=0,
-        glow_radius=0.2,
         num_texture_points=0,
         filled=True,
             num_pixels_per_sample=0.5
@@ -86,7 +85,6 @@ class BezierCircuitPrimitive(RenderPrimitive):
                 self.normals,
                 self.border_width,
                 self.border_color,
-                self.glow_radius,
             ) = (
                 (torch.cat([(__) for __ in _], -2)).to(device)
                 for _ in zip(
@@ -95,7 +93,6 @@ class BezierCircuitPrimitive(RenderPrimitive):
                             triangle.normals,
                             triangle.border_width,
                             triangle.border_color,
-                            triangle.glow_radius,
                         )
                         for triangle in triangle_collection
                     )
@@ -139,11 +136,10 @@ class BezierCircuitPrimitive(RenderPrimitive):
         self.colors[..., -2:-1] += glow.unsqueeze(-2)
         self.colors[..., -1:] *= opacity.unsqueeze(-2)
         self.normals = normals
-        self.border_width, self.border_color, self.glow, self.glow_radius = (
+        self.border_width, self.border_color, self.glow = (
             border_width,
             border_color,
             glow,
-            cast_to_tensor(glow_radius).to(self.corners.device),
         )
         self.border_color[..., -2:-1] += glow
         self.border_color[..., -1:] *= opacity

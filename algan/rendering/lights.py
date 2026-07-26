@@ -28,7 +28,7 @@ import math
 import torch
 import torch.nn.functional as F
 
-from algan.mobs.renderable import Renderable
+from algan.animatable_base.mob import Mob
 from algan.constants.spatial import ORIGIN, UP
 from algan.errors import AlganConfigurationError
 
@@ -109,7 +109,7 @@ def _as_direction_target(target):
     return t.float().reshape(-1)[:3]
 
 
-class Light(Renderable):
+class Light(Mob):
     """Base class of all light sources.
 
     Parameters

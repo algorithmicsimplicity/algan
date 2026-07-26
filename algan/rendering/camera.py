@@ -1,9 +1,9 @@
 import math
 import warnings
 
-from algan.animation.animation_contexts import Off, Sync
+from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import *  # CAMERA_ORIGIN
-from algan.mobs.mob import Mob
+from algan.animatable_base.mob import Mob
 from algan.utils.tensor_utils import (
     broadcast_gather,
     unsquish,

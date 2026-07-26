@@ -52,11 +52,12 @@ separate from cold data (what only confirmed hits touch):
   with the same per-corner layouts as triangles, interpolated at vertex
   weights ``(1 - u - v, u, v)``. A ray can pierce one patch up to four
   times; ``_pn_intersect`` returns every hit so depth peeling stays exact;
-* planar bezier circuits: ``circuit_meta [Tm, C, 20]`` (plane frame, border
-  width, fill flag, texture grid transform), 2D polyline ``edges_2d`` with
-  packed scanline/spatial tables ``edge_accel``, fill/texture colors
-  ``circuit_colors [Tf, C, P, 5]`` (bilinearly sampled; P = 1 for plain
-  fills) and ``circuit_border_colors [Tb, C, 5]``.
+* planar bezier circuits: ``circuit_meta [Tm, C, 24]`` (plane frame, border
+  width, fill flag, texture grid transform and four surface-transport
+  channels), 2D polyline ``edges_2d`` with packed scanline/spatial tables
+  ``edge_accel``, fill/texture colors ``circuit_colors [Tf, C, P, 5]``
+  (bilinearly sampled; P = 1 for plain fills) and
+  ``circuit_border_colors [Tb, C, 5]``.
 
 Coplanar-surface layer order is bezier circuits < triangles < PN patches,
 with each type's primitive index breaking ties within the type.
@@ -216,16 +217,15 @@ _M_FILLED = 13     # > 0.5 if the circuit interior is filled
 _M_GRID_W = 14     # texture grid width  (1 for plain fills)
 _M_GRID_H = 15     # texture grid height (1 for plain fills)
 _M_TEX = 16        # 16-19 2x2 map from plane (u, v) to texture axes
-_M_GLOW_RADIUS = 20
 # Surface transport, mirroring tri_extra's channels for flat triangles: material
 # metalness (-1 = non-PBR), roughness, the unsigned IOR magnitude (dielectric
 # F0), and transmission. A circuit transmits as a thin pane rather than
 # refracting (see ``circuit_scatter``).
-_M_REFLECTIVITY = 21
-_M_ROUGHNESS = 22
-_M_IOR = 23
-_M_TRANSMISSION = 24
-_M_WIDTH = 25
+_M_REFLECTIVITY = 20
+_M_ROUGHNESS = 21
+_M_IOR = 22
+_M_TRANSMISSION = 23
+_M_WIDTH = 24
 
 
 @ti.func

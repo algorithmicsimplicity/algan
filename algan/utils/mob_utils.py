@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import copy
 from collections.abc import Sequence
 
 import torch
 
-from algan.animation.animation_contexts import *
+from algan.animation_timeline.animation_contexts import *
 from algan.utils.python_utils import traverse
 
 

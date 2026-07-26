@@ -25,7 +25,7 @@ def test_glow():
     x = get_mob()
     x.glow = 1.0
     x.wait()
-    x.glow_radius = 1
+    x.wait()
     x.wait()
     return
 
@@ -34,7 +34,7 @@ def test_tonemapping():
     #enable_ray_tracing(samples_per_pixel=1, tonemapping=True, tonemap_exposure=1.5)
     x = get_mob()
     x.glow = 10
-    x.glow_radius = 1.0
+    x.wait()
     x.wait()
     return
 
@@ -43,7 +43,7 @@ def test_post_process_tonemapping():
     #enable_ray_tracing(samples_per_pixel=1, tonemapping=True, tonemap_exposure=1.5, post_process_tonemap=True)
     x = get_mob()
     x.glow = 10.0
-    x.glow_radius = 1.0
+    x.wait()
     x.wait()
     return
 

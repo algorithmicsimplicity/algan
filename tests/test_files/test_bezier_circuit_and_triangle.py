@@ -1,6 +1,6 @@
 import torch.nn.functional as F
 
-from algan.animation.animation_contexts import Sync, Off
+from algan.animation_timeline.animation_contexts import Sync, Off
 from algan.constants.spatial import *  # RIGHT, LEFT, IN, OUT, ORIGIN, UP
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.shapes_2d import TriangleTriangulated

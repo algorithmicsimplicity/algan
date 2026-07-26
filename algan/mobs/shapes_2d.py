@@ -1,19 +1,16 @@
 import math
 
-import torch
 import torch.nn.functional as F
 
-from algan.animation.animation_contexts import Off, Sync
-from algan.constants.spatial import ORIGIN, UP, RIGHT, LEFT, IN
+from algan.animation_timeline.animation_contexts import Off
+from algan.constants.spatial import ORIGIN, RIGHT, LEFT, IN
 from algan.constants.color import *
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
-from algan.mobs.mob import Mob
-from algan.mobs.renderable import Renderable
+from algan.animatable_base.mob import Mob
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.settings.renderer_settings import effective_triangle_primitive
 from algan.utils.tensor_utils import (
-    unsqueeze_left,
     broadcast_all,
     cast_to_tensor,
     unsquish,
@@ -240,7 +237,7 @@ class TriangleTriangulated(Mob):
         return YELLOW
 
 
-class TriangleVertices(Renderable):
+class TriangleVertices(Mob):
     def __init__(self, corner_locations, normals=None, **kwargs):
         corner_locations = cast_to_tensor(corner_locations)
         kwargs2 = {k: v for k, v in kwargs.items()}
@@ -271,14 +268,13 @@ class TriangleVertices(Renderable):
         return PURE_RED
 
     def get_render_primitives(self):
-        l, c, o, n, g, gr = broadcast_all(
+        l, c, o, n, g = broadcast_all(
             [
                 self.location,
                 self.color,
-                self.opacity,# * self.max_opacity,
+                self.opacity,
                 self.normals,
                 self.glow,
-                self.glow_radius,
             ],
             ignored_dims=[-1],
         )
@@ -295,7 +291,6 @@ class TriangleVertices(Renderable):
                 dim=-1,
             ),
             glow=g,
-            glow_radius=gr,
             shader=self.shader,
             **self.get_shader_params(),
         )

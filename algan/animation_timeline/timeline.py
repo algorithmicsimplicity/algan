@@ -2,7 +2,7 @@ import math
 
 import torch
 
-from algan.animation.utils_taichi import (
+from algan.animation_timeline.utils_taichi import (
     _query_selected_state_from_edits,
     _query_state_from_edits,
 )

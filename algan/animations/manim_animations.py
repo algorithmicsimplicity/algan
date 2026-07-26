@@ -1,5 +1,4 @@
-from algan.animation.animation_contexts import *
-from algan.constants.spatial import *
+from algan.animation_timeline.animation_contexts import *
 
 
 def write(bezier_mob, border_width: float = 1, run_time=None, lag_ratio=None):

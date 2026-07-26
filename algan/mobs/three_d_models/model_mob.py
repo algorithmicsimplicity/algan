@@ -25,7 +25,7 @@ import os
 
 import torch
 
-from algan.animation.animation_contexts import Off, Seq, Sync
+from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
 from algan.constants.rate_funcs import identity
 from algan.mobs.three_d_models import animation as _anim
@@ -35,7 +35,7 @@ from algan.mobs.three_d_models.mesh import (
     image_to_texture_map,
 )
 from algan.mobs.three_d_models.scene_data import SceneData
-from algan.mobs.mob import Mob
+from algan.animatable_base.mob import Mob
 
 # File extensions routed to the trimesh backend; everything else falls to the
 # assimp (FBX) backend.

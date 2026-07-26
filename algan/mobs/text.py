@@ -12,9 +12,8 @@ from algan.utils.lazy_import import LazyModule
 
 mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 #mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
-from algan.settings.defaults import *
 from algan.settings.style_defaults import *
-from algan.animation.animation_contexts import Sync, Off, AnimationContext, Lag, Seq
+from algan.animation_timeline.animation_contexts import Sync, Off, AnimationContext, Lag, Seq
 from algan.mobs.triangulated_bezier_circuit import (
     TriangulatedBezierCircuit,
     point_to_tensor2,
@@ -23,7 +22,7 @@ from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.constants.spatial import DOWN, LEFT, ORIGIN, RIGHT, UP
 from algan.constants.color import *
 from algan.mobs.group import Group
-from algan.mobs.mob import Mob
+from algan.animatable_base.mob import Mob
 from algan.mobs.image_mob import ImageMob
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.python_utils import traverse
@@ -843,7 +842,7 @@ class Code(Group):
         paragraph_config=None,
         **kwargs,
     ):
-        from algan.mobs.shapes_2d import Circle, Rectangle, SurroundingRectangle
+        from algan.mobs.shapes_2d import Circle, SurroundingRectangle
 
         add_to_scene = kwargs.pop("add_to_scene", True)
         if code_string is None:

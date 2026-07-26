@@ -3,12 +3,11 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from algan.animation.animatable import animated_function
-from algan.animation.animation_contexts import NoExtra, Off, Sync, Seq
-from algan.mobs.mob import Mob
+from algan.animatable_base.animatable import animated_function
+from algan.animation_timeline.animation_contexts import NoExtra, Off, Sync, Seq
+from algan.animatable_base.mob import Mob
 from algan.mobs.text import Tex
 from algan.utils.tensor_utils import cast_to_tensor
-from algan.mobs.renderable import Renderable
 
 
 class NumericDisplay(Mob):
@@ -54,7 +53,7 @@ class NumericDisplay(Mob):
             self.digit_mobs = []
             for _ in range(num_i + num_d):
                 self.digit_mobs.append(Tex("0123456789", **kwargs))
-                self.digit_mobs[-1].set(opacity=0, max_opacity=0)
+                self.digit_mobs[-1].set(opacity=0)
             for i in range(len(self.digit_mobs)):
                 l = self.placeholder[
                     1 + i + (1 if (num_d > 0 and i >= num_i) else 0)
@@ -134,13 +133,9 @@ class NumericDisplay(Mob):
         with Sync():
             if self.decimal is not None:
                 self.decimal.opacity = 1
-            self.negative_sign.set(opacity=neg_opacity, max_opacity=neg_opacity)
+            self.negative_sign.set(opacity=neg_opacity)
             for i in range(len(self.digit_mobs)):
                 for j in range(10):
                     self.digit_mobs[i].character_mobs[j].set(
                         opacity=all_opacities[i, :, j].unsqueeze(-2),
-                        max_opacity=all_opacities[i, :, j].unsqueeze(-2)
                     )
-                #with Off():
-                #    self.digit_mobs[i].set_non_recursive(opacity=torch.cat([
-                #        c.opacity for c in self.digit_mobs[i].character_mobs], -2).amax(-2, keepdim=True))

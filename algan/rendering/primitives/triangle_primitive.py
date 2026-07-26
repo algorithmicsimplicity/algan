@@ -22,7 +22,6 @@ class TrianglePrimitive(RenderPrimitive):
         reverse_perimeter=False,
         triangle_collection=None,
         glow=0,
-        glow_radius=0.2,
         shader=None,
         uvs=None,
         texture_map=None,
@@ -33,7 +32,6 @@ class TrianglePrimitive(RenderPrimitive):
     ):
         device = COMPUTING_DEFAULTS.animation_device
         glow = cast_to_tensor(glow).to(device)
-        glow_radius = cast_to_tensor(glow_radius).to(device)
         opacity = cast_to_tensor(opacity).to(device)
         """
         corners: Tensor[batch[*], num_corners[3], corner_locations[3]]
@@ -60,7 +58,7 @@ class TrianglePrimitive(RenderPrimitive):
             # (kept so the ray tracer can map them to its material slots).
             self.shader_param_names = getattr(
                 triangle_collection[0], "shader_param_names", [])
-            self.corners, self.colors, self.normals, self.glow_radius, *self.shader_param_values = (
+            self.corners, self.colors, self.normals, *self.shader_param_values = (
                 unsquish(torch.cat(_, 1), -2, 3)
                 for _ in zip(
                     *(
@@ -69,7 +67,6 @@ class TrianglePrimitive(RenderPrimitive):
                                 triangle.corners,
                                 triangle.colors,
                                 triangle.normals,
-                                triangle.glow_radius,
                                 *triangle.shader_param_values,
                             ],
                             ignored_dims=[-1],
@@ -126,14 +123,13 @@ class TrianglePrimitive(RenderPrimitive):
         self.corners = corners
         if normals is None:
             normals = torch.zeros_like(corners)
-        colors, opacity, glow, glow_radius = broadcast_all(
-            [colors, opacity, glow, glow_radius], ignored_dims=[-1]
+        colors, opacity, glow = broadcast_all(
+            [colors, opacity, glow], ignored_dims=[-1]
         )
         self.colors = colors.clone()
         self.colors[..., -2:-1] += glow
         self.colors[..., -1:] *= opacity
         self.glow = glow
-        self.glow_radius = glow_radius
         self.normals = normals
         self.shader_param_names = list(shader_kwargs.keys())
         self.shader_param_values = broadcast_all(

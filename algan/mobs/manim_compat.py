@@ -18,14 +18,14 @@ import numpy as np
 import torch
 import manim as _manim
 
-from algan.animation.animation_contexts import Off
+from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import Color
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.manim_mob import ManimMob
-from algan.mobs.mob import Mob
-from algan.animation.timeline import bump_hierarchy_version
+from algan.animatable_base.mob import Mob
+from algan.animation_timeline.timeline import bump_hierarchy_version
 
 
 # Public compatibility classes are registered by Manim class name so methods

@@ -201,7 +201,7 @@ class MobMaterialsMixin:
             #    d.__setattr__(name, value)
             if color5 is not None:
                 d.color = color5
-            d.max_opacity = cast_to_tensor(material.opacity)
+            d.opacity = cast_to_tensor(material.opacity)
             d.material = material
 
         material.emit_warnings()

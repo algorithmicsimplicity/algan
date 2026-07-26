@@ -3,10 +3,10 @@ import math
 import torch
 import torch.nn.functional as F
 
-from algan.animation.animation_contexts import Sync, Off
+from algan.animation_timeline.animation_contexts import Sync, Off
 from algan.constants.spatial import RIGHT, DOWN, ORIGIN
 from algan.errors import AlganConfigurationError
-from algan.mobs.mob import Mob
+from algan.animatable_base.mob import Mob
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import dot_product, broadcast_gather

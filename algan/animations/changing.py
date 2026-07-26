@@ -5,12 +5,12 @@ from collections.abc import Sequence
 
 import torch
 
-from algan.animation.animation_contexts import Off
+from algan.animation_timeline.animation_contexts import Off
 from algan.constants import rate_funcs
 from algan.constants.color import BLUE_B, BLUE_D, BLUE_E, GREY_BROWN, Color
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
-from algan.mobs.mob import Mob
+from algan.animatable_base.mob import Mob
 from algan.utils.tensor_utils import cast_to_tensor
 
 

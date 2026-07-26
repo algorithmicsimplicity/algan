@@ -1,15 +1,14 @@
 import inspect
 
 import numpy as np
-import torch
 import torch.nn.functional as F
 
-from algan.mobs.renderable import Renderable
+from algan.animatable_base.mob import Mob
 from algan.settings.renderer_settings import (
     RENDERER_SETTINGS, effective_triangle_primitive)
 from algan.utils.tensor_utils import broadcast_cross_product
-from algan.animation.animation_contexts import Sync
-from algan.animation.timeline import EditRecord, TimelineManager
+from algan.animation_timeline.animation_contexts import Sync
+from algan.animation_timeline.timeline import EditRecord, TimelineManager
 from algan.constants.color import *
 from algan.constants.spatial import OUT
 from algan.geometry.geometry import (
@@ -217,7 +216,7 @@ def get_render_primitives_batched(surfaces):
     ]
 
 
-class Surface(Renderable):
+class Surface(Mob):
     """A smooth 2-D surface, embedded in 3-D space, A.K.A a manifold.
     The surface is implemented by sampling a uniform grid of 2-D points
     from the unit square (known as intrinsic coordinates, or "UV coordinates"),
@@ -268,7 +267,7 @@ class Surface(Renderable):
         the vertices, so a normal map only affects effects evaluated per
         fragment (mirror reflections, refraction, ray traced shadows, and
         fragment shading when enabled).
-    glow_texture, glow_radius_texture
+    glow_texture
         Optional glow strength/radius maps, each ``[W, H, 1]`` (or ``[W, H]``).
         These are consumed per-vertex by the glow accumulator, so they are
         baked to the surface grid resolution (raise ``grid_width``/
@@ -292,7 +291,6 @@ class Surface(Renderable):
         refractive_index_texture=None,
         normal_texture=None,
         glow_texture=None,
-        glow_radius_texture=None,
         ignore_normals=False,
         tolerance=1,
         min_grid_resolution=4,
@@ -457,8 +455,6 @@ class Surface(Renderable):
                 normal_texture, 3).to(self.location.device)
         if glow_texture is not None:
             kwargs['glow'] = self._bake_texture_to_grid(glow_texture)
-        if glow_radius_texture is not None:
-            kwargs['glow_radius'] = self._bake_texture_to_grid(glow_radius_texture)
 
         base_grid = self.get_base_grid()
         grid_points = squish(coord_function(base_grid), -3, -2) + self.location
@@ -496,7 +492,7 @@ class Surface(Renderable):
         # color = grid_to_triangle_vertices(color)
         kwargs["color"] = color
         kwargs["location"] = grid_points
-        self.grid = Renderable(**kwargs)
+        self.grid = Mob(**kwargs)
         self.add_children(self.grid)
         self.components = [self.grid]
         self.grid.is_primitive = True
@@ -1472,7 +1468,7 @@ class Surface(Renderable):
         t = self._normalize_texture_shape(tex, channels).to(self.location.device)
         if t.shape[0] != 1:
             raise ValueError(
-                "glow/glow_radius textures must be static (no time "
+                "glow textures must be static (no time "
                 f"dimension), got {tuple(t.shape)}")
         t = F.interpolate(t.permute(0, 3, 1, 2),
                           size=(self.grid_width, self.grid_height),
@@ -1565,7 +1561,6 @@ class Surface(Renderable):
             colors=colors,
             normals=normals,
             glow=colors[..., -2:-1].as_subclass(torch.Tensor),
-            glow_radius=self.grid.glow_radius,
             shader=self.shader,
             uvs=uvs,
             texture_map=texture_map,

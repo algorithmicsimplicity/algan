@@ -1,4 +1,4 @@
-from algan.animation.animation_contexts import Sync, Off, Seq
+from algan.animation_timeline.animation_contexts import Sync, Off, Seq
 from algan.constants.spatial import *  # RIGHT, LEFT, IN, OUT, ORIGIN, UP
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.utils.algan_utils import render_all_funcs

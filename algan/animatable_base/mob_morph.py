@@ -15,12 +15,12 @@ def linear_sum_assignment(*args, **kwargs):
 
     return _lsa(*args, **kwargs)
 
-from algan.animation.animation_contexts import Off, Seq, Sync
-from algan.animation.timeline import bump_hierarchy_version
+from algan.animation_timeline.animation_contexts import Off, Seq, Sync
+from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.utils.tensor_utils import cast_to_tensor, mid_point, squish, unsquish
 
 if TYPE_CHECKING:
-    from algan.mobs.mob import Mob
+    from algan.animatable_base.mob import Mob
 
 
 class MobMorphMixin:

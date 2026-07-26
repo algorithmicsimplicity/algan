@@ -1,6 +1,6 @@
 import torch
 
-from algan.animation.animation_contexts import Off
+from algan.animation_timeline.animation_contexts import Off
 from algan.mobs.shapes_2d import Line, Square
 from algan.rendering.raytracing.primitives import (
     RayTracedBezierCircuitPrimitive,
@@ -8,6 +8,13 @@ from algan.rendering.raytracing.primitives import (
     _evaluate_cubic_bezier_batch,
     _packed_uniform_cubic_parameters,
     _uniform_cubic_subcurves,
+)
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    _M_IOR,
+    _M_REFLECTIVITY,
+    _M_ROUGHNESS,
+    _M_TRANSMISSION,
+    _M_WIDTH,
 )
 from algan.scene_manager import SceneManager
 
@@ -222,6 +229,32 @@ def _polyline(mob, chords_per_segment=1):
                         dtype=torch.long, device=corners.device)
     primitive._build_circuit_geometry(corners, chords)
     return primitive._rt_edges[0]  # [V, 5]: u0, v0, u1, v1, border_visible
+
+
+def test_circuit_material_metadata_matches_kernel_layout():
+    """The host packer and every Taichi renderer share this channel contract."""
+    SceneManager.reset()
+    with Off(record_funcs=False, record_attr_modifications=False):
+        square = Square(add_to_scene=False)
+
+    single = square.get_render_primitives()
+    primitive = type(single)(triangle_collection=[single])
+    corners = primitive.corners.float().contiguous()
+    chords = torch.ones(
+        corners.shape[1], dtype=torch.long, device=corners.device
+    )
+    primitive._build_circuit_geometry(corners, chords)
+
+    meta = primitive._rt_circuit_meta
+    assert meta.shape[-1] == _M_WIDTH == 24
+    assert torch.equal(meta[..., _M_REFLECTIVITY:_M_REFLECTIVITY + 1],
+                       primitive.reflectivity)
+    assert torch.equal(meta[..., _M_ROUGHNESS:_M_ROUGHNESS + 1],
+                       primitive.roughness)
+    assert torch.equal(meta[..., _M_IOR:_M_IOR + 1],
+                       primitive.refractive_index)
+    assert torch.equal(meta[..., _M_TRANSMISSION:_M_TRANSMISSION + 1],
+                       primitive.transmission)
 
 
 def test_open_subpath_polyline_carries_its_own_endpoint():

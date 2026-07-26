@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from PIL.Image import Resampling
 
-from algan.animation.animation_contexts import Off
+from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import Color
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.surfaces.surface import Surface

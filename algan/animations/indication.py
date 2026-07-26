@@ -5,9 +5,9 @@ import math
 import torch
 import torch.nn.functional as F
 
-from algan.animation.animatable import animated_function
-from algan.animation.animation_contexts import Off, Seq, Sync
-from algan.animation.movement import Homotopy
+from algan.animatable_base.animatable import animated_function
+from algan.animation_timeline.animation_contexts import Off, Seq, Sync
+from algan.animations.movement import Homotopy
 from algan.constants import rate_funcs
 from algan.constants.color import GRAY, YELLOW
 from algan.constants.math import RADIANS_TO_DEGREES
@@ -131,7 +131,7 @@ def Blink(mobject, time_on=0.5, time_off=0.5, blinks=1, hide_at_end=False):
 
 
 def FocusOn(focus_point, opacity=0.2, color=GRAY, run_time=2.0):
-    from algan.mobs.mob import Mob
+    from algan.animatable_base.mob import Mob
     from algan.mobs.shapes_2d import Circle
 
     if isinstance(focus_point, Mob):
@@ -233,7 +233,7 @@ def Flash(
     time_width=1.0,
     run_time=1.0,
 ):
-    from algan.mobs.mob import Mob
+    from algan.animatable_base.mob import Mob
     from algan.mobs.shapes_2d import Line
 
     if isinstance(point_or_mobject, Mob):

@@ -9,7 +9,7 @@ from, but it is usable on its own for any hand-built or procedurally generated
 mesh.
 
 The class mirrors ``Surface``'s render structure exactly -- a parent
-``Renderable`` holding a child ``self.grid`` ``Renderable`` that carries the
+``Mob`` holding a child ``self.grid`` ``Mob`` that carries the
 per-corner geometry as its animatable ``location``/``color`` -- so it plugs into
 the same scene materialization, batching and (ray traced) texture pipeline that
 already drives ``Surface``/``ImageMob``. Storing the corners as an animatable
@@ -22,11 +22,11 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from algan.animatable_base.mob import Mob
 from algan.settings.renderer_settings import (
     RENDERER_SETTINGS, effective_triangle_primitive)
 from algan.constants.color import Color, WHITE
 from algan.geometry.geometry import map_local_to_global_coords
-from algan.mobs.renderable import Renderable
 from algan.utils.tensor_utils import cast_to_tensor, unsquish
 
 
@@ -77,7 +77,7 @@ def image_to_normal_map(image, flip_green=True):
     return n.transpose(-3, -2).flip(-2).contiguous()
 
 
-class TriangleMesh(Renderable):
+class TriangleMesh(Mob):
     """An arbitrary indexed triangle mesh with optional per-corner normals,
     UVs and a texture map.
 
@@ -211,14 +211,14 @@ class TriangleMesh(Renderable):
                 corner_positions.shape[0], -1)
         corner_colors = corner_colors.contiguous().as_subclass(Color)
 
-        # The child Renderable carries the per-corner geometry as its animatable
+        # The child Mob carries the per-corner geometry as its animatable
         # location/colour (mirrors Surface.self.grid). Style attributes
-        # (opacity, glow, glow_radius) are inherited from kwargs.
+        # (opacity, glow) are inherited from kwargs.
         grid_kwargs = {k: v for k, v in kwargs.items()
                        if k not in ("location", "color", "basis")}
         grid_kwargs["location"] = corner_positions
         grid_kwargs["color"] = corner_colors
-        self.grid = Renderable(**grid_kwargs)
+        self.grid = Mob(**grid_kwargs)
         self.add_children(self.grid)
         self.components = [self.grid]
         self.grid.is_primitive = True
@@ -307,7 +307,6 @@ class TriangleMesh(Renderable):
             colors=colors,
             normals=normals,
             glow=colors[..., -2:-1].as_subclass(torch.Tensor),
-            glow_radius=self.grid.glow_radius,
             shader=self.shader,
             uvs=self.corner_uvs,
             texture_map=texture_map,

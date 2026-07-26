@@ -10,7 +10,7 @@ import pytest
 import torch
 
 import algan
-from algan.animation.animation_contexts import AnimationManager, Sync
+from algan.animation_timeline.animation_contexts import AnimationManager, Sync
 from algan.errors import (
     AlganConfigurationError,
     HierarchyError,

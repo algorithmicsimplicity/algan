@@ -5,208 +5,216 @@ Split out of ``mob.py`` for readability; :class:`MobLayoutMixin` is mixed into
 """
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 
-from algan.animation.animation_contexts import Off, Seq, Sync
+import warnings
+from algan import RADIANS_TO_DEGREES
+from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.spatial import *
-from algan.geometry.geometry import project_point_onto_line
+from algan.geometry.geometry import project_point_onto_line, rotate_vector_around_axis
 from algan.settings.style_defaults import STYLE_DEFAULTS
-from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, dot_product
+from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, dot_product, broadcast_cross_product
 
 DEFAULT_BUFFER = STYLE_DEFAULTS.buffer
 
 
-class MobLayoutMixin:
-    """Bounding boxes, boundary queries, and screen-relative placement
-    (``move_to_edge``, ``move_next_to``, ``move_inline_with_*``, ...)."""
+class MobMovementMixin:
+    """Helpful methods for moving mobs around. """
 
-    def get_axis_aligned_lower_corner(self):
-        return self.location.amin(-2, keepdim=True)
+    def move_between(self, loc1, loc2):
+        loc1, loc2 = [_.get_center() if hasattr(_, 'get_center') else _ for _ in [loc1, loc2]]
+        return self.move_to((loc1 + loc2) / 2)
 
-    def get_axis_aligned_upper_corner(self):
-        return self.location.amax(-2, keepdim=True)
-
-    def _get_bounding_box_recursive(self, lower_corner, upper_corner):
-        if not self.exclude_from_boundary:
-            lower_corner = torch.minimum(
-                lower_corner, self.get_axis_aligned_lower_corner()
-            )
-            upper_corner = torch.maximum(
-                upper_corner, self.get_axis_aligned_upper_corner()
-            )
-        for c in self.children:
-            lower_corner, upper_corner = c._get_bounding_box_recursive(
-                lower_corner, upper_corner
-            )
-        return lower_corner, upper_corner
-
-    def get_bounding_box(self):
-        lower_corner, upper_corner = self._get_bounding_box_recursive(
-            self.location.amin(-2, keepdim=True), self.location.amax(-2, keepdim=True)
-        )
-        out = torch.empty(*lower_corner.shape[:-2], 8, 3)
-        lower_corner = lower_corner.squeeze(-2)
-        upper_corner = upper_corner.squeeze(-2)
-        for i in range(2):
-            for j in range(2):
-                for k in range(2):
-                    a = torch.tensor((i, j, k), device=lower_corner.device)
-                    out[..., i * 4 + j * 2 + k, :] = (
-                        lower_corner * (1 - a) + (a) * upper_corner
-                    )
-        return out
-
-    def get_boundary_points(self) -> torch.Tensor:
-        """Returns the current location of the Mob, serving as its boundary point.
-        For more complex Mobs, this should be overridden to provide actual boundary points.
-        """
-        return self.location
-
-    def get_boundary_points_recursive(self) -> torch.Tensor:
-        """Recursively collects boundary points from this Mob and all its descendants.
-
-        Returns
-        -------
-        torch.Tensor
-            A concatenated tensor of boundary points from all relevant Mobs
-            in the hierarchy.
-
-        """
-        num_children = len(self.children)
-        if num_children == 0:
-            return self.get_boundary_points()
-        elif num_children == 1:
-            return self.children[0].get_boundary_points_recursive()
-        return torch.cat(
-            [
-                child.get_boundary_points_recursive()
-                for child in self.children
-                if not child.exclude_from_boundary
-            ],
-            -2,
-        )
-
-    def _select_in_direction(self, points, direction):
-        ind = dot_product(
-            points, direction, dim=-1, keepdim=True
-        ).argmax(-2, keepdim=True)
-        return broadcast_gather(points, -2, ind, keepdim=True)
-
-    def get_boundary_edge_point_recursive(self, direction):
-        num_children = len(self.children)
-        if num_children == 0:
-            return self._select_in_direction(self.get_boundary_points(), direction)
-        elif num_children == 1:
-            return self.children[0].get_boundary_edge_point_recursive(direction)
-        return self._select_in_direction(torch.cat([
-                child.get_boundary_edge_point_recursive(direction)
-                for child in self.children
-                if not child.exclude_from_boundary
-            ],
-            -2,
-            ), direction)
-
-    def get_boundary_edge_point(self, direction: torch.Tensor) -> torch.Tensor:
-        """Finds the point on the Mob's recursive boundary that is furthest in a given direction.
+    def move_to_point_along_arc(
+        self,
+        point: torch.Tensor,
+        arc_angle_degrees: float | torch.Tensor,
+        arc_normal: torch.Tensor = OUT,
+        recursive: bool = True,
+    ) -> Mob:
+        # TODO: This is bugged and needs to be fixed. The mathematical implementation for arc center calculation might be unstable or incorrect for all cases.
+        """Moves the Mob to a target point along a circular arc. ***Currently bugged***
 
         Parameters
         ----------
-        direction
-            The 3-D vector indicating the direction
-            along which to find the extreme boundary point.
+        point : torch.Tensor
+            The target 3-D location.
+        arc_angle_degrees : float or torch.Tensor
+            The angle subtended by the arc, in degrees. The sign determines
+            the direction of rotation along the arc
+            (clockwise/counter-clockwise).
+        arc_normal : torch.Tensor, optional
+            The normal vector to the plane of the arc. Defaults to `OUT`
+            (positive Z-axis).
+        recursive : bool, optional
+            If True, applies the rotation recursively to children,
+            maintaining their relative positions. Defaults to True.
 
         Returns
         -------
-        torch.Tensor
-            The 3-D coordinate of the boundary point furthest in `direction`.
-
+        Mob
+            The Mob instance itself, allowing for method chaining.
         """
-        return self.get_boundary_edge_point_recursive(direction)
+        warnings.warn(
+            "move_to_point_along_arc (also reached via move_to(path_arc_angle=...)) "
+            "is known to be bugged: the arc-center calculation can be unstable or "
+            "wrong for some configurations.",
+            stacklevel=2,
+        )
+        my_location = self.location
+        displacement_unnormalized = point - my_location
+        # Normalize the displacement for consistent direction calculations
+        displacement_normalized = F.normalize(displacement_unnormalized, p=2, dim=-1)
 
-    def get_center(self) -> torch.Tensor:
-        """Gets the center (median mid-point) of the Mob and its descendants.
+        # Calculate a vector orthogonal to both displacement and arc_normal, which will define one axis for arc plane
+        displacement_normal_orthogonal = F.normalize(
+            broadcast_cross_product(displacement_normalized, arc_normal), p=2, dim=-1
+        )
 
-        """
+        angle_sign = cast_to_tensor(arc_angle_degrees).sign()
+        abs_arc_angle_degrees = (
+            abs(arc_angle_degrees)
+            if not isinstance(arc_angle_degrees, torch.Tensor)
+            else arc_angle_degrees.abs()
+        )
 
-        def get_median_location(tensor_values: torch.Tensor) -> torch.Tensor:
-            """Calculates the median (midpoint of min/max) of a tensor's values."""
-            max_val = tensor_values.amax(-2, keepdim=True)
-            min_val = tensor_values.amin(-2, keepdim=True)
-            return (max_val + min_val) * 0.5
+        # Calculate two vectors `in1` and `in2` that define the tangents or radii for arc center calculation.
+        # These are rotated versions of the normalized displacement, used to form a geometric intersection.
+        in1 = F.normalize(
+            rotate_vector_around_axis(
+                displacement_normalized, abs_arc_angle_degrees - 90, arc_normal, -1
+            ),
+            p=2,
+            dim=-1,
+        )
+        in2 = F.normalize(
+            rotate_vector_around_axis(
+                displacement_normalized, -(abs_arc_angle_degrees + 90), arc_normal, -1
+            ),
+            p=2,
+            dim=-1,
+        )
 
-        bbox = self.get_bounding_box()
-        return get_median_location(bbox)
+        # Calculate the angle of the full circumference based on the dot product of in1 and in2
+        arc_circumference_angle = (
+            dot_product(-in1, -in2).clamp_(min=-1, max=1).arccos_()
+        )
 
-    def get_boundary_in_direction(self, direction: torch.Tensor) -> torch.Tensor:
-        """Gets the point on the Mob's boundary (including children) that lies along
-        the given direction from its center, and is furthest in that direction.
+        # Handle edge cases where angle is exactly 180 degrees or displacement is zero,
+        # which can lead to division by zero or ambiguous arc centers.
+        # In such cases, a simple midpoint is used as the arc center.
+        zero_displacement_mask = (
+            ((math.pi - arc_circumference_angle).abs() <= 1e-5)
+            | (displacement_unnormalized.norm(p=2, dim=-1, keepdim=True) <= 1e-5)
+        ).float()
+
+        # Calculate arc center candidates using geometric intersection formulas.
+        # These involve solving linear equations based on the dot products of vectors.
+        arc_center1 = (
+            my_location + point
+        ) * 0.5  # Midpoint for 180-degree or zero-displacement cases
+
+        x1, y1 = 0.0, 0.0
+        x2, y2 = (
+            dot_product(in1, displacement_normal_orthogonal),
+            dot_product(in1, displacement_normalized),
+        )
+        x3, y3 = (
+            dot_product(displacement_normalized, displacement_normal_orthogonal),
+            dot_product(displacement_normalized, displacement_normalized),
+        )
+        x4, y4 = (
+            dot_product(in2, displacement_normal_orthogonal),
+            dot_product(in2, displacement_normalized),
+        )
+
+        # Solving for intersection point in a 2D plane defined by displacement_normal_orthogonal and displacement_normalized
+        # These are standard formulas for line-line intersection, adapted for vector components.
+        intersect_x = (
+            (x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)
+        ) / ((x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4))
+        intersect_y = (
+            (x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)
+        ) / ((x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4))
+
+        # Reconstruct the arc center from the intersection point and the initial location
+        arc_center2 = (
+            my_location
+            + intersect_x * displacement_normal_orthogonal
+            + intersect_y * displacement_normalized
+        )
+        arc_center2 = arc_center2.nan_to_num_(
+            0, 0, 0
+        )  # Handle potential NaNs from division by zero
+
+        # Select the appropriate arc center based on the edge case mask
+        final_arc_center = (
+            arc_center1 * (zero_displacement_mask)
+            + (1 - zero_displacement_mask) * arc_center2
+        )
+
+        # Perform the rotation around the calculated arc center
+        if recursive:
+            return self.rotate_around_point(
+                final_arc_center,
+                arc_circumference_angle * RADIANS_TO_DEGREES * angle_sign,
+                arc_normal,
+            )
+        else:
+            return self.rotate_around_point_non_recursive(
+                final_arc_center,
+                arc_circumference_angle * RADIANS_TO_DEGREES * angle_sign,
+                arc_normal,
+            )
+
+    def move_to(
+        self, location: torch.Tensor, path_arc_angle: float | None = None, **kwargs
+    ) -> Mob:
+        """Moves the Mob to a specified location.
+
+        If `path_arc_angle` is provided, the Mob moves along a circular arc.
+        Otherwise, it moves in a straight line.
 
         Parameters
         ----------
-        direction : torch.Tensor
-            The 3-D vector defining the direction.
+        location : torch.Tensor
+            The target 3-D location.
+        path_arc_angle : float, optional
+            The angle of the arc in degrees for curved movement. If None,
+            movement is linear. Defaults to None.
+        **kwargs
+            Additional arguments passed to `set_location` or
+            `move_to_point_along_arc`.
 
         Returns
         -------
-        torch.Tensor
-            The 3-D coordinate of the boundary point.
-
+        Mob
+            The Mob instance itself.
         """
-        direction = F.normalize(direction, p=2, dim=-1)
-        edge_point = self.get_boundary_edge_point(direction)
+        if path_arc_angle is None:
+            return self.set_location(location, **kwargs)
+        return self.move_to_point_along_arc(location, path_arc_angle, **kwargs)
 
-        # Get the logical center of the Mob (or its current location if no complex center is defined)
-        mob_center = self.get_center()
-        # Project the offset from the center to the edge point onto the direction
-        # and add it back to the center to get the boundary point in that direction.
-        return (
-            project_point_onto_line(edge_point - mob_center, direction, dim=-1)
-            + mob_center
-        )
+    def move(self, displacement: torch.Tensor, **kwargs) -> Mob:
+        """Moves the Mob by a given displacement vector from its current location.
 
-    def set_x_coord(self, target):
-        return self.set_individual_coords(target, 0)
+        Parameters
+        ----------
+        displacement : torch.Tensor
+            The 3-D vector by which to move the Mob.
+        **kwargs
+            Additional arguments passed to `move_to` (e.g., `path_arc_angle`).
 
-    def set_y_coord(self, target):
-        return self.set_individual_coords(target, 1)
-
-    def set_z_coord(self, target):
-        return self.set_individual_coords(target, 2)
-
-    def set_individual_coords(self, target, coord_indexes):
-        from algan.mobs.mob import Mob
-
-        if isinstance(target, Mob):
-            target = target.location
-        target = cast_to_tensor(target)
-        if not hasattr(coord_indexes, "__len__"):
-            coord_indexes = [coord_indexes]
-        if target.shape[-1] != 1:
-            target = target[..., coord_indexes]
-        new_location = self.location.clone()
-        new_location[..., coord_indexes] = target
-        self.location = new_location
+        Returns
+        -------
+        Mob
+            The Mob instance itself, allowing for method chaining.
+        """
+        self.move_to(self.location + cast_to_tensor(displacement), **kwargs)
         return self
-
-    def get_x_coord(self, *args, **kwargs):
-        return self.get_individual_coords(0, *args, **kwargs)
-
-    def get_y_coord(self, *args, **kwargs):
-        return self.get_individual_coords(1, *args, **kwargs)
-
-    def get_z_coord(self, *args, **kwargs):
-        return self.get_individual_coords(2, *args, **kwargs)
-
-    def get_individual_coords(self, coord_indexes, centered=False):
-        l = self.get_center() if centered else self.location
-        return l[..., coord_indexes].clone()
-
-    def set_x_y_coord(self, xy_coords: torch.Tensor):
-        """Sets the x and y coordinates of the Mob's location, preserving z."""
-        new_location = self.location.clone()
-        new_location[..., :2] = xy_coords[..., :2]
-        self.location = new_location
 
     def move_next_to(
         self,
@@ -258,28 +266,6 @@ class MobLayoutMixin:
             self.move_inline_with_boundary(target_mob, align_edge)
         return self
 
-    def get_length_in_direction(self, direction: torch.Tensor) -> torch.Tensor:
-        """Calculates the spatial extent of the Mob along a given direction.
-        This is the distance between the furthest points on its boundary
-        in that direction and its opposite.
-
-        Parameters
-        ----------
-        direction : torch.Tensor
-            The 3-D vector defining the direction.
-
-        Returns
-        -------
-        torch.Tensor
-            The length of the Mob along the specified direction.
-
-        """
-        # Get the boundary points in the positive and negative directions and calculate their distance
-        return (
-            self.get_boundary_in_direction(direction)
-            - self.get_boundary_in_direction(-direction)
-        ).norm(p=2, dim=-1, keepdim=True)
-
     def move_inline_with_edge(
         self,
         mob: Mob,
@@ -313,7 +299,7 @@ class MobLayoutMixin:
         Mob
             The Mob instance itself, allowing for method chaining.
         """
-        from algan.mobs.mob import Mob
+        from algan.animatable_base.mob import Mob
 
         # Calculate the target location for this Mob if it were moved next to itself
         # using the specified `edge` direction and `buffer`. This acts as a reference point.
@@ -421,29 +407,6 @@ class MobLayoutMixin:
             dot_product(displacement, normalized_align_direction)
             * normalized_align_direction
         )
-
-    def get_displacement_to_boundary(
-        self, mob: Mob, direction: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Calculates the vector displacement required to move this Mob's boundary
-        to match another Mob's boundary along a given direction.
-
-        Parameters
-        ----------
-        mob : Mob
-            The target Mob.
-        direction : torch.Tensor
-            The direction along which to calculate the displacement.
-
-        Returns
-        -------
-        torch.Tensor
-            The displacement vector.
-        """
-        my_boundary = self.get_boundary_in_direction(direction)
-        other_boundary = mob.get_boundary_in_direction(direction)
-        return other_boundary - my_boundary
 
     def move_inline_with_boundary(self, mob: Mob, direction: torch.Tensor) -> Mob:
         """

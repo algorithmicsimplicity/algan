@@ -3,7 +3,7 @@ from typing import Any, Callable, Optional
 
 
 from algan.scene_manager import SceneManager
-from algan.animation.timeline import TimelineSpan
+from algan.animation_timeline.timeline import TimelineSpan
 from algan.sound.audio_effect import AudioEffect, AudioManager
 from algan.constants import rate_funcs
 from dataclasses import dataclass

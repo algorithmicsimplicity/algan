@@ -17,7 +17,7 @@ import warnings
 from algan.settings.defaults import *
 from algan.errors import AlganConfigurationError, LegacySceneDiscoveryWarning
 from algan.settings.style_defaults import STYLE_DEFAULTS
-from algan.animation.animation_contexts import AnimationManager, Off
+from algan.animation_timeline.animation_contexts import AnimationManager, Off
 from algan.rendering.camera import Camera
 from algan.scene_manager import SceneManager
 from algan.logging.logger import get_logger
