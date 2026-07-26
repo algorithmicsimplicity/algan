@@ -9,8 +9,13 @@ from algan.settings.renderer_settings import (
     RENDERER_SETTINGS, effective_triangle_primitive)
 from algan.utils.tensor_utils import broadcast_cross_product
 from algan.animation.animation_contexts import Sync
+from algan.animation.timeline import EditRecord, TimelineManager
 from algan.constants.color import *
 from algan.constants.spatial import OUT
+from algan.geometry.geometry import (
+    map_global_to_local_coords,
+    map_local_to_global_coords,
+)
 from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.utils.file_utils import get_image
 from algan.utils.tensor_utils import unsqueeze_left, squish, unsquish
@@ -233,6 +238,16 @@ class Surface(Renderable):
         Width of the grid from which intrinsic coordinates are sampled.
     grid_aspect_ratio
         If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio.
+    tolerance
+        Maximum permitted screen-space deviation, in output pixels, between
+        the analytic surface and its triangle approximation. Used only when
+        neither grid dimension nor ``resolution`` is specified.
+    min_grid_resolution, max_grid_resolution
+        Bounds for automatic grid sizing, measured in vertices per axis.
+    resolution_shrink_margin
+        Fractional reduction in estimated triangle work required before an
+        automatic resolution update may make the grid smaller. Growth remains
+        immediate so the configured screen-space tolerance is never exceeded.
     color_texture
         Optional color texture map ``[W, H, 5]`` (or ``[T, W, H, 5]`` for an
         animated map), sampled bilinearly in-kernel by the ray tracer.
@@ -279,8 +294,10 @@ class Surface(Renderable):
         glow_texture=None,
         glow_radius_texture=None,
         ignore_normals=False,
-        tolerance=0.0005,
+        tolerance=0.5,
         min_grid_resolution=4,
+        max_grid_resolution=200,
+        resolution_shrink_margin=0.1,
         *args,
         func=None,
         u_range=None,
@@ -323,11 +340,10 @@ class Surface(Renderable):
                 return _call_parametric_function(manim_function, u, v)
 
             coord_function = mapped_coord_function
-            if resolution is None:
-                resolution = 32
-            u_resolution, v_resolution = _surface_resolution_pair(resolution)
-            grid_width = u_resolution + 1
-            grid_height = v_resolution + 1
+            if resolution is not None:
+                u_resolution, v_resolution = _surface_resolution_pair(resolution)
+                grid_width = u_resolution + 1
+                grid_height = v_resolution + 1
             self.resolution = resolution
 
             if fill_color is None:
@@ -348,6 +364,10 @@ class Surface(Renderable):
                     checkered_color = checkerboard_colors[1]
         else:
             self.resolution = resolution
+            if resolution is not None and grid_width is None and grid_height is None:
+                u_resolution, v_resolution = _surface_resolution_pair(resolution)
+                grid_width = u_resolution + 1
+                grid_height = v_resolution + 1
             self.checkerboard_colors = checkerboard_colors
             if fill_color is not None:
                 kwargs.setdefault("color", fill_color)
@@ -362,109 +382,46 @@ class Surface(Renderable):
         self.coord_function_active = coord_function
         self.normal_function_active = normal_function
         self.ignore_normals = ignore_normals
+        self._color_texture_attr = None
+        self._auto_resolution_enabled = grid_height is None and grid_width is None
+        self._resolution_tolerance = float(tolerance)
+        self._min_grid_resolution = int(min_grid_resolution)
+        self._max_grid_resolution = int(max_grid_resolution)
+        self._resolution_shrink_margin = float(resolution_shrink_margin)
+        self._grid_aspect_ratio = grid_aspect_ratio
+        self._pending_auto_resolution = None
+        self._resolution_update_in_progress = True
+        if self._resolution_tolerance <= 0:
+            raise ValueError("tolerance must be a positive pixel deviation")
+        if self._min_grid_resolution < 2:
+            raise ValueError("min_grid_resolution must be at least 2")
+        if self._max_grid_resolution < self._min_grid_resolution:
+            raise ValueError(
+                "max_grid_resolution must be greater than or equal to "
+                "min_grid_resolution"
+            )
+        if not 0 <= self._resolution_shrink_margin < 1:
+            raise ValueError("resolution_shrink_margin must be in [0, 1)")
         # triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
         super().__init__(*args, **kwargs)
-        # A surface with an explicit texture map keeps it as an animatable
-        # attribute; without one (color_texture=None) the per-vertex colours are
-        # built from `color` in the else-branch below, so leave it None (the
-        # downstream texture path is guarded by `self.color_texture is not None`).
-        if color_texture is not None:
-            self.register_attrs_as_animatable(['color_texture'])
-            self.color_texture = squish(color_texture, -3, -1)
-            self.texture_height, self.texture_width = color_texture.shape[-3:-1]
+        # Texture timelines are keyed by texel count. AttributeTimeline fixes
+        # its channel width at first creation, so differently sized textures
+        # must never share the generic ``color_texture`` key.
+        self.color_texture = color_texture
+
+        # Auto-tuning grid resolution. ``tolerance`` is measured in output
+        # pixels, so distant or very small surfaces naturally use fewer
+        # triangles than the same shape close to the camera.
+        if self._auto_resolution_enabled:
+            initial_location = self.location.clone()
+
+            def initial_surface_function(uv):
+                return coord_function(uv.clone()) + initial_location
+
+            grid_width, grid_height = self._find_screen_space_resolution(
+                initial_surface_function
+            )
         else:
-            self.color_texture = None
-
-        # Auto-tuning grid resolution
-        if grid_height is None and grid_width is None:
-            device = self.location.device
-            # We sample the true surface on a fine grid to determine the bounding box diagonal scale.
-            sample_u = torch.linspace(0, 1, 100, device=device)
-            sample_v = torch.linspace(0, 1, 100, device=device)
-            grid_u, grid_v = torch.meshgrid(sample_u, sample_v, indexing='ij')
-            sample_uv = torch.stack([grid_u, grid_v], dim=-1)
-
-            # Since coord_function may modify uv in-place (e.g. Cylinder/Cone), pass a clone
-            sample_points = coord_function(sample_uv.clone())
-
-            min_coords = sample_points.min(dim=0).values.min(dim=0).values
-            max_coords = sample_points.max(dim=0).values.max(dim=0).values
-            scale = (max_coords - min_coords).norm()
-            if scale < 1e-8:
-                scale = torch.tensor(1.0, device=device)
-
-            if grid_aspect_ratio is not None:
-                # Fixed aspect ratio: search for a single resolution parameter
-                low = min_grid_resolution
-                high = 200
-                best_N = high
-                while low <= high:
-                    mid = (low + high) // 2
-                    W = mid
-                    H = max(min_grid_resolution, int(mid * grid_aspect_ratio))
-                    try:
-                        error = self._compute_error(coord_function, W, H)
-                        if error < tolerance * scale:
-                            best_N = mid
-                            high = mid - 1
-                        else:
-                            low = mid + 1
-                    except Exception:
-                        low = mid + 1
-                grid_width = best_N
-                grid_height = max(min_grid_resolution, int(best_N * grid_aspect_ratio))
-            else:
-                # Independent rectangular search
-                # 1. Search for best grid_width (W) with grid_height (H) set to a high resolution (200)
-                low = min_grid_resolution
-                high = 200
-                best_W = high
-                while low <= high:
-                    mid = (low + high) // 2
-                    try:
-                        error = self._compute_error(coord_function, mid, 200)
-                        if error < tolerance * scale:
-                            best_W = mid
-                            high = mid - 1
-                        else:
-                            low = mid + 1
-                    except Exception:
-                        low = mid + 1
-
-                # 2. Search for best grid_height (H) with grid_width (W) set to a high resolution (200)
-                low = min_grid_resolution
-                high = 200
-                best_H = high
-                while low <= high:
-                    mid = (low + high) // 2
-                    try:
-                        error = self._compute_error(coord_function, 200, mid)
-                        if error < tolerance * scale:
-                            best_H = mid
-                            high = mid - 1
-                        else:
-                            low = mid + 1
-                    except Exception:
-                        low = mid + 1
-
-                # Joint error correction loop
-                try:
-                    joint_error = self._compute_error(coord_function, best_W, best_H)
-                    while joint_error > tolerance * scale and (best_W < 200 or best_H < 200):
-                        ratio = joint_error / (tolerance * scale)
-                        factor = max(1.15, float(torch.sqrt(ratio).item()))
-                        if best_W < 200:
-                            best_W = min(200, int(best_W * factor) + 1)
-                        if best_H < 200:
-                            best_H = min(200, int(best_H * factor) + 1)
-                        joint_error = self._compute_error(coord_function, best_W, best_H)
-                except Exception:
-                    pass
-
-                grid_width = best_W
-                grid_height = best_H
-        else:
-            # Fall back to specified manual resolution
             if grid_width is None:
                 grid_width = grid_height
             if grid_height is None:
@@ -545,12 +502,53 @@ class Surface(Renderable):
         self.grid.is_primitive = True
         self.is_primitive = True
         self.ignore_wave_animations = True
+        self._resolution_update_in_progress = False
 
     def func(self, u, v):
         """Evaluate the original Manim-style parametric function."""
         if self._func is None:
             raise AttributeError("this Surface was constructed with coord_function, not func")
         return self._func(u, v)
+
+    @property
+    def color_texture(self):
+        attr = getattr(self, "_color_texture_attr", None)
+        if attr is None:
+            return None
+        return self.get_animated_attribute(attr)
+
+    @color_texture.setter
+    def color_texture(self, texture):
+        previous_attr = getattr(self, "_color_texture_attr", None)
+        if texture is None:
+            if previous_attr is not None and self.is_spawned():
+                self.detach_history()
+            self._color_texture_attr = None
+            return self
+
+        texture = torch.as_tensor(texture)
+        if texture.dim() not in (3, 4) or texture.shape[-1] != 5:
+            raise ValueError(
+                "color_texture must have shape [W, H, 5] or [T, W, H, 5]"
+            )
+        texture_height, texture_width = texture.shape[-3:-1]
+        attr = f"color_texture_{texture_height * texture_width}"
+
+        if (
+            previous_attr is not None
+            and previous_attr != attr
+            and self.is_spawned()
+        ):
+            # Keep the old texture topology on a frozen historical clone. The
+            # live surface then receives a fresh timeline with the new width.
+            self.detach_history()
+
+        self._color_texture_attr = attr
+        self.texture_height = int(texture_height)
+        self.texture_width = int(texture_width)
+        self.register_attrs_as_animatable([attr])
+        setattr(self, attr, squish(texture, -3, -1))
+        return self
 
     def _get_u_values_and_v_values(self):
         """Return Manim-compatible sample coordinates for the UV domain."""
@@ -643,6 +641,586 @@ class Surface(Renderable):
         self.grid.color = vertex_colors
         return self
 
+    def _prepare_auto_resolution_translation(self, displacement):
+        if not self._can_update_resolution():
+            return False
+        current_function = self._current_surface_function()
+
+        def target_function(uv):
+            return current_function(uv) + displacement
+
+        target_width, target_height = self._find_screen_space_resolution(
+            target_function
+        )
+        self._pending_auto_resolution = (
+            target_width,
+            target_height,
+            target_function,
+        )
+        pre_width = max(self.grid_width, target_width)
+        pre_height = max(self.grid_height, target_height)
+        if (pre_width, pre_height) != (self.grid_width, self.grid_height):
+            self._change_resolution(pre_width, pre_height, current_function)
+        return True
+
+    def _prepare_auto_resolution_basis_change(
+        self, transform_location, current_basis, target_basis
+    ):
+        if not self._can_update_resolution():
+            return False
+        current_function = self._current_surface_function()
+
+        def target_function(uv):
+            points = current_function(uv)
+            local_points = map_global_to_local_coords(
+                transform_location, current_basis, points
+            )
+            return map_local_to_global_coords(
+                transform_location, target_basis, local_points
+            )
+
+        target_width, target_height = self._find_screen_space_resolution(
+            target_function
+        )
+        self._pending_auto_resolution = (
+            target_width,
+            target_height,
+            target_function,
+        )
+        pre_width = max(self.grid_width, target_width)
+        pre_height = max(self.grid_height, target_height)
+        if (pre_width, pre_height) != (self.grid_width, self.grid_height):
+            self._change_resolution(pre_width, pre_height, current_function)
+        return True
+
+    def _finalize_auto_resolution_change(self):
+        prepared = self._pending_auto_resolution
+        self._pending_auto_resolution = None
+        if prepared is None:
+            return self._update_resolution_for_current_shape(
+                allow_upsample=False
+            )
+        required_width, required_height, target_function = prepared
+        width, height = self._select_auto_resolution(
+            required_width, required_height
+        )
+        if (width, height) == (self.grid_width, self.grid_height):
+            return self
+        return self._change_resolution(width, height, target_function)
+
+    def _select_auto_resolution(
+        self, required_width, required_height, allow_upsample=True
+    ):
+        """Apply asymmetric hysteresis to a required grid resolution.
+
+        Any required growth is retained immediately. A smaller dimension is
+        adopted only when the complete required grid would reduce triangle
+        count by more than ``resolution_shrink_margin``; otherwise that
+        dimension stays at its current size.
+        """
+        current_width = self.grid_width
+        current_height = self.grid_height
+        required_width = int(required_width)
+        required_height = int(required_height)
+        if not allow_upsample:
+            required_width = min(required_width, current_width)
+            required_height = min(required_height, current_height)
+
+        target_width = max(current_width, required_width)
+        target_height = max(current_height, required_height)
+        current_work = max(current_width - 1, 1) * max(current_height - 1, 1)
+        required_work = max(required_width - 1, 1) * max(
+            required_height - 1, 1
+        )
+        shrink_boundary = current_work * (
+            1.0 - self._resolution_shrink_margin
+        )
+        if required_work < shrink_boundary:
+            return required_width, required_height
+        return target_width, target_height
+
+    def _can_update_resolution(self):
+        if not getattr(self, "_auto_resolution_enabled", False):
+            return False
+        if getattr(self, "_resolution_update_in_progress", False):
+            return False
+        if not hasattr(self, "grid"):
+            return False
+        timeline = TimelineManager.instance()
+        return not any(
+            attr_timeline.active_state is not attr_timeline.current_state
+            for attr_timeline in timeline.attr_to_timeline.values()
+        )
+
+    def _current_surface_function(self):
+        """Return a continuous evaluator for the current world-space surface."""
+        base_grid = self.get_base_grid()
+        canonical = self.coord_function_active(base_grid.clone()).reshape(-1, 3)
+        current = self.grid.location.reshape(
+            -1, self.grid_width * self.grid_height, 3
+        )[0]
+        design = torch.cat(
+            (canonical, torch.ones_like(canonical[..., :1])), dim=-1
+        )
+        try:
+            affine = torch.linalg.lstsq(design, current).solution
+        except RuntimeError:
+            affine = torch.linalg.pinv(design) @ current
+
+        def current_function(uv):
+            points = self.coord_function_active(uv.clone())
+            homogeneous = torch.cat(
+                (points, torch.ones_like(points[..., :1])), dim=-1
+            )
+            return homogeneous @ affine
+
+        return current_function
+
+    def _project_points_to_pixels(self, points):
+        camera = getattr(self.scene, "camera", None)
+        if camera is None:
+            return None, None
+
+        camera_location = camera.location.reshape(-1, 3)[0]
+        forward = camera.get_forward_direction().reshape(-1, 3)[0]
+        right = camera.get_right_direction().reshape(-1, 3)[0]
+        upwards = camera.get_upwards_direction().reshape(-1, 3)[0]
+        relative = points - camera_location
+        depth = (relative * forward).sum(dim=-1)
+
+        screen_vector = camera.screen.location.reshape(-1, 3)[0] - camera_location
+        screen_distance = (screen_vector * forward).sum().abs().clamp_min(1e-8)
+        pixel_scale = (
+            self.scene.render_settings.resolution[1]
+            / (2.0 * float(camera.screen_scale_factor))
+        )
+        safe_depth = depth.clamp_min(1e-8)
+        x = (relative * right).sum(dim=-1) * screen_distance / safe_depth
+        y = (relative * upwards).sum(dim=-1) * screen_distance / safe_depth
+        return torch.stack((x, y), dim=-1) * pixel_scale, depth
+
+    def _screen_space_error(self, approximated, exact):
+        approximated_pixels, approximated_depth = self._project_points_to_pixels(
+            approximated
+        )
+        exact_pixels, exact_depth = self._project_points_to_pixels(exact)
+        if approximated_pixels is None:
+            # Without a camera there is no meaningful pixel-space metric.
+            # Conservatively force the automatic search to its configured
+            # maximum rather than silently reverting to world-space error.
+            return torch.tensor(
+                float("inf"),
+                device=approximated.device,
+                dtype=approximated.dtype,
+            )
+
+        near = max(float(getattr(self.scene.camera, "near", 0.0)), 1e-6)
+        approximated_visible = approximated_depth > near
+        exact_visible = exact_depth > near
+        if torch.any(approximated_visible != exact_visible):
+            return torch.tensor(
+                float("inf"), device=approximated.device, dtype=approximated.dtype
+            )
+        visible = approximated_visible & exact_visible
+        if not torch.any(visible):
+            return torch.zeros((), device=approximated.device, dtype=approximated.dtype)
+        return (
+            approximated_pixels[visible] - exact_pixels[visible]
+        ).norm(p=2, dim=-1).max()
+
+    def _find_screen_space_resolution(self, surface_function):
+        minimum = self._min_grid_resolution
+        maximum = self._max_grid_resolution
+        tolerance = self._resolution_tolerance
+
+        def acceptable(width, height):
+            try:
+                error = self._compute_error(surface_function, width, height)
+            except Exception:
+                return False
+            return bool(torch.isfinite(error).item() and error.item() <= tolerance)
+
+        def first_acceptable(other, vary_width):
+            low, high = minimum, maximum
+            best = maximum
+            while low <= high:
+                middle = (low + high) // 2
+                width, height = (
+                    (middle, other) if vary_width else (other, middle)
+                )
+                if acceptable(width, height):
+                    best = middle
+                    high = middle - 1
+                else:
+                    low = middle + 1
+            return best
+
+        if self._grid_aspect_ratio is not None:
+            ratio = float(self._grid_aspect_ratio)
+            low, high = minimum, maximum
+            best_width = maximum
+            while low <= high:
+                width = (low + high) // 2
+                height = min(
+                    maximum, max(minimum, int(round(width * ratio)))
+                )
+                if acceptable(width, height):
+                    best_width = width
+                    high = width - 1
+                else:
+                    low = width + 1
+            return best_width, min(
+                maximum, max(minimum, int(round(best_width * ratio)))
+            )
+
+        width = first_acceptable(maximum, vary_width=True)
+        height = first_acceptable(maximum, vary_width=False)
+        while not acceptable(width, height) and (
+            width < maximum or height < maximum
+        ):
+            if width < maximum:
+                width = min(maximum, max(width + 1, int(width * 1.25)))
+            if height < maximum:
+                height = min(maximum, max(height + 1, int(height * 1.25)))
+        return width, height
+
+    @staticmethod
+    def _resample_grid_value(value, old_width, old_height, new_width, new_height):
+        leading_shape = value.shape[:-2]
+        channels = value.shape[-1]
+        image = value.reshape(
+            -1, old_width, old_height, channels
+        ).permute(0, 3, 1, 2)
+        resized = F.interpolate(
+            image,
+            size=(new_width, new_height),
+            mode="bilinear",
+            align_corners=True,
+        )
+        return resized.permute(0, 2, 3, 1).reshape(
+            *leading_shape, new_width * new_height, channels
+        )
+
+    def _capture_resolution_boundary_events(self):
+        """Capture transform events that begin at a topology split.
+
+        A sibling transform recorded earlier in the same ``Sync`` starts at
+        the instant ``detach_history`` replaces this surface.  It must migrate
+        to the replacement topology; moving it to the historical clone makes
+        it invisible because that clone despawns at the same instant.
+        """
+        timeline = TimelineManager.instance()
+        detach_time = self.animation_manager.context.timespan.current_time
+        descendants = self.get_descendants()
+        descendant_ids = {mob.id for mob in descendants}
+        captured = []
+
+        for event in timeline.function_timeline.function_applications:
+            if event.caller not in descendants or event.time.start < detach_time:
+                continue
+            if any(
+                mob_id not in descendant_ids
+                for _, mob_id, _, _ in event.recorded_edits
+            ):
+                # A callback that also edits external mobs cannot be migrated
+                # atomically by a surface-only topology rewrite.
+                continue
+
+            edits = []
+            for attr, mob_id, recursive, indexes in event.recorded_edits:
+                attr_timeline = timeline.attr_to_timeline[attr]
+                source = next(
+                    (
+                        edit
+                        for edit in attr_timeline.edits
+                        if edit.event is event and edit.indexes is indexes
+                    ),
+                    None,
+                )
+                if source is None:
+                    edits = None
+                    break
+                edits.append(
+                    {
+                        "attr": attr,
+                        "mob_id": mob_id,
+                        "recursive": recursive,
+                        "indexes": indexes.clone(),
+                        "values": source.values.clone(),
+                        "time": source.time,
+                        "seq": source.seq,
+                    }
+                )
+            if edits is not None:
+                captured.append(
+                    {
+                        "event": event,
+                        "caller": event.caller,
+                        "edits": edits,
+                    }
+                )
+
+        attrs = {
+            edit["attr"]
+            for captured_event in captured
+            for edit in captured_event["edits"]
+        }
+        owner_rows = {
+            (attr, mob.id): timeline.attr_to_timeline[attr]
+            .mob_id_to_inds[mob.id]
+            .clone()
+            for attr in attrs
+            for mob in descendants
+            if mob.id in timeline.attr_to_timeline[attr].mob_id_to_inds
+        }
+        current_location = self.location.clone()
+        current_basis = self.basis.clone()
+        for captured_event in captured:
+            captured_event["current_location"] = current_location
+            captured_event["current_basis"] = current_basis
+            captured_event["pre_location"] = current_location
+            captured_event["pre_basis"] = current_basis
+            for edit in captured_event["edits"]:
+                if edit["attr"] not in ("location", "basis"):
+                    continue
+                surface_rows = owner_rows.get((edit["attr"], self.id))
+                if surface_rows is None:
+                    continue
+                surface_mask = torch.isin(edit["indexes"], surface_rows)
+                if not torch.any(surface_mask):
+                    continue
+                captured_event[f"pre_{edit['attr']}"] = edit["values"][
+                    :, surface_mask
+                ]
+        return captured, owner_rows
+
+    def _map_resolution_boundary_block(
+        self,
+        attr,
+        owner,
+        values,
+        old_width,
+        old_height,
+        new_width,
+        new_height,
+        new_surface_points,
+        captured_event,
+    ):
+        if owner is not self.grid:
+            return values
+        if values.shape[-2] != old_width * old_height:
+            # Shared grid attributes such as ``basis`` retain a singleton row
+            # regardless of the number of sampled vertices.
+            return values
+
+        if attr == "location":
+            # Resolution changes accompany affine Mob transforms.  Map the new
+            # analytic grid through the exact parent transform captured by the
+            # event, avoiding a numerically unstable least-squares fit.
+            new_points = new_surface_points.to(values)
+            local_points = map_global_to_local_coords(
+                captured_event["current_location"].to(values),
+                captured_event["current_basis"].to(values),
+                new_points,
+            )
+            return map_local_to_global_coords(
+                captured_event["pre_location"].to(values),
+                captured_event["pre_basis"].to(values),
+                local_points,
+            )
+
+        return self._resample_grid_value(
+            values, old_width, old_height, new_width, new_height
+        )
+
+    def _migrate_resolution_boundary_events(
+        self,
+        captured,
+        owner_rows,
+        old_width,
+        old_height,
+        new_surface_points,
+    ):
+        timeline = TimelineManager.instance()
+        id_to_mob = {mob.id: mob for mob in self.get_descendants()}
+
+        for captured_event in captured:
+            event = captured_event["event"]
+            migrated_edits = []
+            pending_records = []
+            try:
+                for edit in captured_event["edits"]:
+                    attr = edit["attr"]
+                    target = id_to_mob[edit["mob_id"]]
+                    owners = (
+                        target.get_descendants()
+                        if edit["recursive"]
+                        else [target]
+                    )
+                    attr_timeline = timeline.attr_to_timeline[attr]
+                    new_indexes = target._get_attr_ranges(
+                        attr, include_descendants=edit["recursive"]
+                    ).tensor()
+                    index_blocks = []
+                    value_blocks = []
+
+                    for owner in owners:
+                        old_owner_rows = owner_rows.get((attr, owner.id))
+                        new_owner_rows = attr_timeline.mob_id_to_inds.get(owner.id)
+                        if old_owner_rows is None or new_owner_rows is None:
+                            continue
+                        old_mask = torch.isin(edit["indexes"], old_owner_rows)
+                        new_mask = torch.isin(new_indexes, new_owner_rows)
+                        if not torch.any(old_mask) or not torch.any(new_mask):
+                            continue
+                        block = self._map_resolution_boundary_block(
+                            attr,
+                            owner,
+                            edit["values"][:, old_mask],
+                            old_width,
+                            old_height,
+                            self.grid_width,
+                            self.grid_height,
+                            new_surface_points,
+                            captured_event,
+                        )
+                        owner_new_indexes = new_indexes[new_mask]
+                        if block.shape[-2] != owner_new_indexes.numel():
+                            raise ValueError(
+                                "could not map animation rows to new surface resolution"
+                            )
+                        index_blocks.append(owner_new_indexes)
+                        value_blocks.append(block)
+
+                    combined_indexes = torch.cat(index_blocks)
+                    combined_values = torch.cat(value_blocks, dim=-2)
+                    order = torch.argsort(combined_indexes)
+                    combined_indexes = combined_indexes[order]
+                    combined_values = combined_values[:, order]
+                    if not torch.equal(combined_indexes, new_indexes):
+                        raise ValueError(
+                            "incomplete animation-row migration for surface resolution"
+                        )
+                    pending_records.append(
+                        (
+                            attr_timeline,
+                            EditRecord(
+                                new_indexes,
+                                combined_values,
+                                edit["time"],
+                                edit["seq"],
+                                event,
+                            ),
+                        )
+                    )
+                    migrated_edits.append(
+                        (
+                            attr,
+                            edit["mob_id"],
+                            edit["recursive"],
+                            new_indexes,
+                        )
+                    )
+            except (KeyError, RuntimeError, ValueError):
+                # Leave an unsupported callback on the historical topology
+                # rather than partially migrating its row history.
+                continue
+
+            for attr_timeline, record in pending_records:
+                attr_timeline.edits.append(record)
+                attr_timeline._is_ready_for_queries = False
+                attr_timeline._query_cache.clear()
+            event.recorded_edits = migrated_edits
+            event.caller = captured_event["caller"]
+            event.replay_end = None
+            timeline._replay_windows_resolved = False
+
+    def _change_resolution(self, grid_width, grid_height, surface_function=None):
+        grid_width = int(grid_width)
+        grid_height = int(grid_height)
+        if (grid_width, grid_height) == (self.grid_width, self.grid_height):
+            return self
+        if surface_function is None:
+            surface_function = self._current_surface_function()
+
+        old_width, old_height = self.grid_width, self.grid_height
+        old_count = old_width * old_height
+        boundary_events = []
+        boundary_owner_rows = {}
+        old_values = {}
+        for attr in dict.fromkeys(self.grid.animatable_attrs):
+            try:
+                old_values[attr] = getattr(self.grid, attr).clone()
+            except AttributeError:
+                continue
+
+        self._resolution_update_in_progress = True
+        try:
+            # Unspawned mobs have no interpolation history to detach. Once a
+            # surface has spawned (including one that was later despawned),
+            # detach_history transfers the old topology to a frozen clone and
+            # leaves this surface with fresh timeline rows for the new shape.
+            if self.is_spawned():
+                boundary_events, boundary_owner_rows = (
+                    self._capture_resolution_boundary_events()
+                )
+                self.detach_history()
+            self.grid_width = grid_width
+            self.grid_height = grid_height
+            self.resolution = (grid_width - 1, grid_height - 1)
+            self.__dict__.pop("_cached_base_grid", None)
+            self.__dict__.pop("_cached_base_grid_key", None)
+
+            base_grid = self.get_base_grid()
+            new_location = squish(surface_function(base_grid), -3, -2)
+            if new_location.dim() == 2:
+                new_location = new_location.unsqueeze(0)
+            self.grid.setattr_and_rebatch_without_record("location", new_location)
+
+            for attr, value in old_values.items():
+                if attr == "location":
+                    continue
+                if value.shape[-2] == old_count:
+                    value = self._resample_grid_value(
+                        value,
+                        old_width,
+                        old_height,
+                        grid_width,
+                        grid_height,
+                    )
+                self.grid.setattr_and_rebatch_without_record(attr, value)
+
+            self.grid.batch_size = grid_width * grid_height
+            self._memory_per_timestep_cache = None
+            if boundary_events:
+                new_surface_points = surface_function(base_grid).reshape(-1, 3)
+                self._migrate_resolution_boundary_events(
+                    boundary_events,
+                    boundary_owner_rows,
+                    old_width,
+                    old_height,
+                    new_surface_points,
+                )
+        finally:
+            self._resolution_update_in_progress = False
+        return self
+
+    def _update_resolution_for_current_shape(self, allow_upsample=True):
+        if not self._can_update_resolution():
+            return self
+        surface_function = self._current_surface_function()
+        required_width, required_height = self._find_screen_space_resolution(
+            surface_function
+        )
+        width, height = self._select_auto_resolution(
+            required_width,
+            required_height,
+            allow_upsample=allow_upsample,
+        )
+        if (width, height) == (self.grid_width, self.grid_height):
+            return self
+        return self._change_resolution(width, height, surface_function)
+
     def _uses_pn_triangles(self):
         """True if newly created surfaces render as curved point-normal (PN)
         triangles, i.e. ``enable_ray_tracing(pn_triangles=True)`` is active.
@@ -663,8 +1241,7 @@ class Surface(Renderable):
         )
 
     def _compute_error(self, coord_function, W, H):
-        """Max deviation between the rendered mesh and the true surface for a
-        ``W x H`` grid, used to drive auto-resolution.
+        """Max screen-space deviation in pixels for a ``W x H`` grid.
 
         With PN (curved) triangles active each triangle is bent to a quadratic
         patch, so we measure against that patch. Otherwise the surface is drawn
@@ -723,8 +1300,7 @@ class Surface(Renderable):
         uv_true = w * uv0 + u * uv1 + v * uv2
         P_true = coord_function(uv_true.clone())
 
-        errors = (S_points - P_true).norm(p=2, dim=-1)
-        return errors.max()
+        return self._screen_space_error(S_points, P_true)
 
     def _compute_pn_error(self, coord_function, W, H):
         device = self.location.device
@@ -840,8 +1416,7 @@ class Surface(Renderable):
         uv_true = w_expanded * uv0 + u_expanded * uv1 + v_expanded * uv2
         P_true = coord_function(uv_true.clone())
 
-        errors = (S_points - P_true).norm(p=2, dim=-1)
-        return errors.max()
+        return self._screen_space_error(S_points, P_true)
 
     @staticmethod
     def _normalize_texture_shape(tex, channels):
@@ -1029,7 +1604,8 @@ class Surface(Renderable):
 
     def get_base_grid(self):
         device = self.grid.location.device if hasattr(self, "grid") and hasattr(self.grid, "location") else None
-        if not hasattr(self, "_cached_base_grid") or self._cached_base_grid.device != device:
+        cache_key = (self.grid_width, self.grid_height, device)
+        if getattr(self, "_cached_base_grid_key", None) != cache_key:
             grid = torch.stack(
                 (
                     torch.linspace(0, 1, self.grid_width, device=device)
@@ -1042,6 +1618,7 @@ class Surface(Renderable):
                 -1,
             )
             self._cached_base_grid = grid
+            self._cached_base_grid_key = cache_key
         return self._cached_base_grid
 
     def set_shape_to(self, other_surface: "Surface"):
@@ -1059,8 +1636,33 @@ class Surface(Renderable):
             # self.set_normal_by_function(other_surface.normal_function)
 
     def set_location_by_function(self, function):
-        new_loc = function(squish(self.get_base_grid(), -3, -2).unsqueeze(0)) + self.location
+        current_function = (
+            self._current_surface_function() if self._can_update_resolution() else None
+        )
+        target_resolution = None
+
+        def target_function(uv):
+            return function(uv.clone()) + self.location
+
+        if current_function is not None:
+            target_width, target_height = self._find_screen_space_resolution(
+                target_function
+            )
+            target_resolution = (target_width, target_height)
+            pre_width = max(self.grid_width, target_width)
+            pre_height = max(self.grid_height, target_height)
+            if (pre_width, pre_height) != (self.grid_width, self.grid_height):
+                self._change_resolution(pre_width, pre_height, current_function)
+
+        self.coord_function_active = function
+        new_loc = target_function(
+            squish(self.get_base_grid(), -3, -2).unsqueeze(0)
+        )
         self.grid.location = new_loc
+        if target_resolution is not None:
+            width, height = self._select_auto_resolution(*target_resolution)
+            if (width, height) != (self.grid_width, self.grid_height):
+                self._change_resolution(width, height, target_function)
         return self
 
     def set_normal_by_function(self, function):

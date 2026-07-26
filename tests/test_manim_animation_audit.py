@@ -275,6 +275,84 @@ def test_replay_distinguishes_recursive_edits_from_nonrecursive_reads():
     assert cylinder.basis.shape == (1, 1, 9)
 
 
+def test_surface_resolution_change_preserves_concurrent_rotation():
+    cylinder = algan.Cylinder(add_to_scene=False).spawn(animate=False)
+    initial_basis = cylinder.basis.clone()
+    initial_width = cylinder.grid_width
+
+    with algan.Sync(run_time=1, rate_func=algan.rate_funcs.identity):
+        cylinder.rotate(720, algan.OUT)
+        cylinder.move_out_of_screen(algan.LEFT, despawn=False)
+
+    assert cylinder.grid_width > initial_width
+    rotate_event = next(
+        event
+        for event in TimelineManager.instance().function_timeline.function_applications
+        if event.function.__name__ == "rotate"
+    )
+    assert rotate_event.caller is cylinder
+
+    materialize(0.125)
+    assert not torch.allclose(cylinder.basis, initial_basis)
+
+
+def test_surface_auto_resolution_uses_asymmetric_shrink_hysteresis():
+    surface = object.__new__(algan.Surface)
+    object.__setattr__(surface, "grid_width", 100)
+    object.__setattr__(surface, "grid_height", 100)
+    object.__setattr__(surface, "_resolution_shrink_margin", 0.1)
+    object.__setattr__(surface, "_pending_auto_resolution", None)
+    object.__setattr__(surface, "_can_update_resolution", lambda: True)
+    object.__setattr__(
+        surface, "_current_surface_function", lambda: lambda uv: uv
+    )
+
+    required = [(95, 95)]
+    searches = []
+
+    def find_resolution(_surface_function):
+        searches.append(required[-1])
+        return required[-1]
+
+    changes = []
+
+    def change_resolution(width, height, _surface_function):
+        changes.append((width, height))
+        object.__setattr__(surface, "grid_width", width)
+        object.__setattr__(surface, "grid_height", height)
+        return surface
+
+    object.__setattr__(
+        surface, "_find_screen_space_resolution", find_resolution
+    )
+    object.__setattr__(surface, "_change_resolution", change_resolution)
+
+    # A 95x95 grid saves less than 10% of the 99x99 cell work, so retain it.
+    assert surface._prepare_auto_resolution_translation(torch.zeros(3))
+    surface._finalize_auto_resolution_change()
+    assert changes == []
+    assert len(searches) == 1
+
+    # This reduction saves more than 10%, so one downsize is worthwhile.
+    required.append((94, 95))
+    assert surface._prepare_auto_resolution_translation(torch.zeros(3))
+    surface._finalize_auto_resolution_change()
+    assert changes == [(94, 95)]
+    assert len(searches) == 2
+
+    # Growth in either dimension is immediate, while an insignificant shrink
+    # in the other dimension is suppressed. The prepared target is reused, so
+    # finalization performs no second resolution search or resize.
+    object.__setattr__(surface, "grid_width", 100)
+    object.__setattr__(surface, "grid_height", 100)
+    required.append((101, 99))
+    assert surface._prepare_auto_resolution_translation(torch.zeros(3))
+    surface._finalize_auto_resolution_change()
+    assert changes[-1] == (101, 100)
+    assert len(searches) == 3
+    assert changes.count((101, 100)) == 1
+
+
 def test_animated_boundary_tracks_source_and_can_stop():
     source = algan.Circle(add_to_scene=False).spawn(False)
     boundary = algan.AnimatedBoundary(

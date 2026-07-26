@@ -301,8 +301,14 @@ class Animatable:
                 update_function, self, args, kwargs, context
             )
             # Apply once at elapsed = 0 so the scene-definition state reflects
-            # the updater immediately (e.g. a tracker snaps to its target).
-            update_function(self, cast_to_tensor(0.0), *args, **kwargs)
+            # the updater immediately (e.g. a tracker snaps to its target),
+            # while tracing every Mob state it reads or writes.
+            event = timeline.function_timeline.updaters[updater_id]
+            previous_trace = timeline.begin_updater_dependency_trace(event)
+            try:
+                update_function(self, cast_to_tensor(0.0), *args, **kwargs)
+            finally:
+                timeline.end_updater_dependency_trace(previous_trace)
         return updater_id
 
     def remove_updater(self, updater_id):
@@ -327,9 +333,16 @@ class Animatable:
             # Record the updater's final state as an ordinary attribute
             # modification at the removal time, so the mob keeps it afterwards.
             elapsed = event.time.end_event() - event.time.start_event()
-            event.function(
-                event.caller, cast_to_tensor(elapsed), *event.args, **event.kwargs
-            )
+            previous_trace = timeline.begin_updater_dependency_trace(event)
+            try:
+                event.function(
+                    event.caller,
+                    cast_to_tensor(elapsed),
+                    *event.args,
+                    **event.kwargs,
+                )
+            finally:
+                timeline.end_updater_dependency_trace(previous_trace)
 
     def remove_all_updaters(self):
         timeline = TimelineManager.instance()
@@ -459,6 +472,9 @@ class Animatable:
         """
         timeline = TimelineManager.instance()
         inds = timeline.get_inds(key, self, value)
+        # Trace after row allocation so a lazily introduced animatable
+        # attribute can be materialized immediately on first updater access.
+        timeline.trace_updater_mob_access(self, include_descendants)
         attr_timeline = timeline.attr_to_timeline[key]
 
         def ranges_for_mob(mob):

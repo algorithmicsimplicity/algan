@@ -611,9 +611,24 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         value = cast_to_tensor(location)
         attr = "location"
 
-        current_value = self.get_animated_attribute(attr, include_descendants=False, default=value, copy=False)
+        current_value = self.get_animated_attribute(
+            attr, include_descendants=False, default=value, copy=False
+        )
         change = value - current_value
+        affected_mobs = (
+            self.get_descendants(include_self=True) if recursive else [self]
+        )
+        resolution_updates = []
+        for mob in affected_mobs:
+            prepare = getattr(
+                mob, "_prepare_auto_resolution_translation", None
+            )
+            if prepare is not None and prepare(change):
+                resolution_updates.append(mob)
+
         self._apply_change(attr, change, recursive=recursive)
+        for mob in resolution_updates:
+            mob._finalize_auto_resolution_change()
         return self
 
     @property
@@ -647,15 +662,40 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         # Convert the absolute target into a relative change against the
         # current basis, so that concurrent basis writers (e.g. a rotate and a
         # scale in the same Sync) compose instead of overriding each other.
-        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=value, copy=False)
+        my_basis = self.get_animated_attribute(
+            "basis", include_descendants=False, default=value, copy=False
+        )
+        recursive = not self._prevent_recursive_sets
+        affected_mobs = (
+            self.get_descendants(include_self=True) if recursive else [self]
+        )
+        resolution_updates = []
+        if any(
+            hasattr(mob, "_prepare_auto_resolution_basis_change")
+            for mob in affected_mobs
+        ):
+            my_location = self.get_animated_attribute(
+                "location", include_descendants=False, copy=False
+            )
+            for mob in affected_mobs:
+                prepare = getattr(
+                    mob, "_prepare_auto_resolution_basis_change", None
+                )
+                if prepare is not None and prepare(
+                    my_location, my_basis, value
+                ):
+                    resolution_updates.append(mob)
+
         change = inverse_relation(my_basis, value)
         # recursive must be passed as an explicit kwarg (not read from
         # self._prevent_recursive_sets inside _apply_basis_change) so that it
         # is recorded with the function application and replays correctly at
         # render time, when _prevent_recursive_sets has been restored.
         self._apply_basis_change(
-            change, default_basis=value, recursive=not self._prevent_recursive_sets
+            change, default_basis=value, recursive=recursive
         )
+        for mob in resolution_updates:
+            mob._finalize_auto_resolution_change()
 
     @animated_function(animated_args={'interpolation': 0.0})
     def _apply_basis_change(
@@ -1175,6 +1215,7 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
         with the new resolution (shapes mis-match), so you must detatch the history before changing
         resolution.
         """
+        detach_time = self.animation_manager.context.timespan.current_time
         with Off(), NoExtra(priority_level=1):
             clone_mob = self.clone(reset_history=False, spawn=False)
             descendant_map = dict(zip(self.get_descendants(), clone_mob.get_descendants()))
@@ -1213,7 +1254,17 @@ class Mob(MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
                         attr_timeline.reassign_inds(orig.id, clone_inds)
                         attr_timeline.reassign_inds(clone.id, orig_inds)
             for f in timeline.function_timeline.function_applications:
-                if f.caller in descendant_map:
+                if (
+                    f.caller in descendant_map
+                    # Functions without captured row edits replay against the
+                    # caller's current topology.  If such a function begins at
+                    # the detach boundary, it belongs to the replacement mob,
+                    # not the historical clone whose lifespan ends there.
+                    and not (
+                        not f.recorded_edits
+                        and f.time.start >= detach_time
+                    )
+                ):
                     f.caller = descendant_map[f.caller]
 
             for orig, clone in descendant_map.items():

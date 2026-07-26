@@ -538,6 +538,34 @@ class AttributeTimeline:
     def set_active_time_inds(self, time_inds):
         self.active_time_inds = time_inds
 
+    def materialize_additional_rows(self, times, rows):
+        """Fill selected rows in an already materialized sparse state.
+
+        Updater dependency tracing can discover a previously unseen mob while
+        the updater is executing. Materializing those rows lazily keeps that
+        first frame correct; the dependency is retained on the updater so
+        subsequent frame windows include it in their initial working set.
+        """
+        rows = rows.view(-1)
+        if rows.numel() == 0 or self.active_state is self.current_state:
+            return self
+        self.prepare_for_queries()
+        queried = generate_array_states_taichi(
+            times,
+            self.pointer + 1,
+            self._edits_sorted,
+            active_rows=rows,
+            prepared=self._prepared_queries(times),
+        )
+        device_rows = rows.to(self.active_state.device)
+        self.active_state[:, device_rows] = queried[:, device_rows]
+        if self.record_end_points:
+            t = times.view(-1, 1)
+            endpoint = self._end_points[:, rows].to(self.active_state.device)
+            mask = ((endpoint[..., 0] <= t) & (t < endpoint[..., 1])).unsqueeze(-1)
+            self.active_state[:, device_rows] *= mask
+        return self
+
     def clear_buffers(self):
         self.active_state = self.current_state
         self.active_time_inds = slice(None, None, None)
@@ -652,7 +680,14 @@ class UpdaterEvent:
     at every frame in ``time.start <= t < time.end``, with ``time_elapsed``
     equal to ``t - time.start``."""
 
-    __slots__ = ("function", "caller", "args", "kwargs", "time")
+    __slots__ = (
+        "function",
+        "caller",
+        "args",
+        "kwargs",
+        "time",
+        "dependency_mob_ids",
+    )
 
     def __init__(self, function, caller, args, kwargs, time):
         self.function = function
@@ -660,6 +695,7 @@ class UpdaterEvent:
         self.args = args
         self.kwargs = kwargs
         self.time = time
+        self.dependency_mob_ids = set()
 
 
 class FunctionTimeline:
@@ -732,6 +768,9 @@ class AnimationTimeline:
         self._replay_windows_resolved = True
         self._active_replay_event = None
         self._active_replay_edit_index = 0
+        self._active_updater_trace = None
+        self._materialization_times = None
+        self._materialized_mob_ids = None
 
     def set_active_edit_event(self, event):
         """Set the function application that subsequently recorded attribute
@@ -740,6 +779,41 @@ class AnimationTimeline:
         previous = self._active_edit_event
         self._active_edit_event = event
         return previous
+
+    def begin_updater_dependency_trace(self, event):
+        """Trace Mob state read or written by ``event`` until restored."""
+        previous = self._active_updater_trace
+        self._active_updater_trace = event
+        return previous
+
+    def end_updater_dependency_trace(self, previous):
+        self._active_updater_trace = previous
+
+    def trace_updater_mob_access(self, mob, include_descendants=False):
+        """Record one updater Mob access and materialize newly seen rows.
+
+        The initial updater invocation records the common dependency set at
+        authoring time. The same trace remains active during materialization,
+        so time-dependent branches can safely discover extra Mobs on demand.
+        """
+        event = self._active_updater_trace
+        if event is None:
+            return
+        if include_descendants:
+            mob_ids = self._collect_mob_ids((mob,))
+        else:
+            mob_ids = {mob.id}
+        event.dependency_mob_ids.update(mob_ids)
+
+        if self._materialized_mob_ids is None or self._materialization_times is None:
+            return
+        missing = mob_ids.difference(self._materialized_mob_ids)
+        if not missing:
+            return
+        for timeline in self.attr_to_timeline.values():
+            rows = timeline.rows_for_mob_ids(missing)
+            timeline.materialize_additional_rows(self._materialization_times, rows)
+        self._materialized_mob_ids.update(missing)
 
     def get_lifespan(self, mob_id):
         """The :class:`Lifespan` of the mob with the given id, created on
@@ -811,8 +885,11 @@ class AnimationTimeline:
         """Register an updater starting at the context's current time and
         lasting until :meth:`end_updater` (or forever). Returns its id."""
         span = UpdaterSpan(animation_context.timespan.get_current_time())
-        self.function_timeline.add_updater(
-            UpdaterEvent(function, caller, args, kwargs, span))
+        event = UpdaterEvent(function, caller, args, kwargs, span)
+        event.dependency_mob_ids.update(
+            self._collect_mob_ids((caller, args, kwargs))
+        )
+        self.function_timeline.add_updater(event)
         return len(self.function_timeline.updaters) - 1
 
     def end_updater(self, updater_id, animation_context):
@@ -960,14 +1037,12 @@ class AnimationTimeline:
     def _active_mob_ids(self, active_mobs, functions, updaters):
         """Resolve a conservative working set for one frame window.
 
-        User callbacks and updaters may close over arbitrary mobs that are not
-        visible in their argument lists, so those cases retain the full-state
-        path. Built-in Algan animations declare their dependencies through the
-        caller and arguments and can safely use selected-row materialization.
+        Built-in animation dependencies come from their caller and arguments.
+        Updaters additionally retain the Mob reads/writes observed by their
+        dependency trace, including dependencies discovered lazily in a
+        time-dependent branch.
         """
         if active_mobs is None:
-            return None
-        if updaters:
             return None
         custom_entry_points = {"animate_function", "animate_function_of_time"}
         for event in functions:
@@ -978,7 +1053,10 @@ class AnimationTimeline:
         roots = list(active_mobs)
         for event in functions:
             roots.extend((event.caller, event.kwargs, event.animated_args))
-        return self._collect_mob_ids(roots)
+        mob_ids = self._collect_mob_ids(roots)
+        for event in updaters:
+            mob_ids.update(event.dependency_mob_ids)
+        return mob_ids
 
     def set_state_to_times(self, times, active_mobs=None):
         """Materialize animated state at ``times``.
@@ -993,6 +1071,10 @@ class AnimationTimeline:
         updaters = self.function_timeline.get_updaters_for_times(times)
         active_mob_ids = self._active_mob_ids(
             active_mobs, functions, updaters)
+        self._materialization_times = times
+        self._materialized_mob_ids = (
+            None if active_mob_ids is None else set(active_mob_ids)
+        )
         replay_rows = {}
         if active_mob_ids is not None:
             for function in functions:
@@ -1051,10 +1133,21 @@ class AnimationTimeline:
             for timeline in self.attr_to_timeline.values():
                 timeline.set_active_time_inds(active_time_inds)
             elapsed = times[active_time_inds.squeeze(-1)] - f.time.start
-            f.function(f.caller, elapsed.view(-1, 1, 1), *f.args, **f.kwargs)
+            previous_trace = self.begin_updater_dependency_trace(f)
+            try:
+                f.function(
+                    f.caller,
+                    elapsed.view(-1, 1, 1),
+                    *f.args,
+                    **f.kwargs,
+                )
+            finally:
+                self.end_updater_dependency_trace(previous_trace)
 
         for timeline in self.attr_to_timeline.values():
             timeline.set_active_time_inds(slice(None, None, None))
+        self._materialization_times = None
+        self._materialized_mob_ids = None
         return self
 
     def clear_buffers(self):

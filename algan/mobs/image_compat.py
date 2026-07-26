@@ -12,7 +12,6 @@ from algan.constants.color import Color
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.surfaces.surface import Surface
 from algan.utils.file_utils import get_image
-from algan.utils.tensor_utils import squish
 
 
 def _load_rgba5(filename_or_array) -> torch.Tensor:
@@ -158,8 +157,7 @@ class ImageMobject(AbstractImageMobject):
             (rgba[..., :3], torch.zeros_like(rgba[..., :1]), rgba[..., 3:4]), -1
         )
         texture = rgba5.transpose(-3, -2).flip(-2)
-        self.color_texture = squish(texture, -3, -1)
-        self.texture_height, self.texture_width = texture.shape[-3:-1]
+        self.color_texture = texture
         return self
 
     def get_pixel_array(self):
