@@ -294,7 +294,7 @@ class Surface(Renderable):
         glow_texture=None,
         glow_radius_texture=None,
         ignore_normals=False,
-        tolerance=0.5,
+        tolerance=1,
         min_grid_resolution=4,
         max_grid_resolution=200,
         resolution_shrink_margin=0.1,

@@ -300,7 +300,7 @@ class Group(Mob):
         if column_buffer is None:
             column_buffer = buffer
         if num_rows is None:
-            num_rows = max(1, math.isqrt(len(self.children)))
+            num_rows = max(1, math.ceil(math.sqrt(len(self.children))))
         if not isinstance(num_rows, int) or isinstance(num_rows, bool) or num_rows <= 0:
             raise AlganConfigurationError("num_rows must be a positive integer")
         num_cols = len(self.children) // num_rows
