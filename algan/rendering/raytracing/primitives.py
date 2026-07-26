@@ -745,7 +745,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                             num_frames).to(device)
 
         num_samples = self._compute_samples_per_segment(
-            corners, cam_o, sp, sb, camera.screen_height)
+            corners, cam_o, sp, sb, camera.screen_height,
+            bool(getattr(camera, "analytic_raster", False)))
         self._build_circuit_geometry(corners, num_samples)
         self._build_frame_bounds(corners, cam_o, sp, sb,
                                  camera.screen_height)
@@ -760,7 +761,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         empty_cache(force_gc=False)
         return self
 
-    def _compute_samples_per_segment(self, corners, cam_o, sp, sb, screen_h):
+    def _compute_samples_per_segment(
+            self, corners, cam_o, sp, sb, screen_h, analytic_raster=False):
         """Choose uniform chord counts independently for every cubic segment.
 
         At each power-of-two subdivision level, the four exact world-space
@@ -790,7 +792,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         tolerance = float(self.num_pixels_per_sample)
         if tolerance <= 0:
             raise ValueError("num_pixels_per_sample must be greater than zero")
-        if rt_settings.analytic_aa_bez_active():
+        if analytic_raster and rt_settings.analytic_aa_bez_active():
             # Analytic coverage resolves the outline continuously, so it also
             # exposes the flattening facets that the supersample box filter
             # hides. The classic 0.5 is measured against the SUPERSAMPLED

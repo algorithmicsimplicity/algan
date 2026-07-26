@@ -36,7 +36,6 @@ import torch
 
 from algan.errors import UnsupportedFeatureError
 
-import os
 import sys
 import traceback
 from algan.rendering.post_processing.post_process import post_process_frames
@@ -199,7 +198,7 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
     return core + (stub_f, stub_f, stub_f, stub_f, stub_i, stub_i)
 
 
-def _secondary_split_needed(merged):
+def _secondary_split_needed(merged, analytic_raster=False):
     """Does analytic AA make this scene's reflectors a SPLITTING path?
 
     Two independent reasons, both of which need the shared continuation pool that
@@ -226,6 +225,8 @@ def _secondary_split_needed(merged):
     property of the batch. The refraction-only kernel branches this compiles in
     stay runtime-inert on a mirror-only scene.
     """
+    if not analytic_raster:
+        return False
     reflective = bool(merged.get("tri_has_reflective")
                       or merged.get("bez_has_reflective")
                       or merged.get("tex_has_reflective")
@@ -238,36 +239,142 @@ def _secondary_split_needed(merged):
                 or int(rt_settings.analytic_aa_secondary_samples()) > 1)
 
 
-def _split_pool_ratio(splitting, merged):
+def _split_pool_ratio(splitting, merged, analytic_raster=False,
+                      custom_scatter=False):
     """Spare pool slots per primary for a splitting batch.
 
-    Secondary supersampling needs N-1 slots for every reflective primary at once,
-    so the initial ratio is raised to N: the overflow retry (half the primaries,
-    same pool) would otherwise fire on every tile of a large mirror.
-
-    The base ratio is MULTIPLIED by N, not maxed against it. ``max`` was tried
-    and is a trap: the base of two exists because a pixel can hold several
-    splitting layers (glass has two -- the sphere's front and back sheets), so
-    with N continuations each the requirement is N per layer. At N=4 a
-    ``max(2, 4) = 4`` pool overflowed on every tile of a glass scene, and an
-    overflow DISCARDS the whole finished tile and re-renders it with half the
-    primaries: measured three retries and 12 resolve launches against
-    anti_alias_level=2's one retry and 4, i.e. the scene rendered about three
-    times over. A pool that is merely larger costs a smaller tile; a pool that
-    is too small costs the tile twice.
-
-    Only for a STRONG reflector or a refractor, though: a fragment whose
-    reflected branch is a dielectric's ~4% sheen spawns one ray, not N
-    (``ANALYTIC_AA_SECONDARY_MIN_ENERGY``), so it needs no extra slots.
+    Physical glass retains the measured ``base * N`` allowance because its
+    front/back layers can split concurrently. An opaque analytic mirror needs
+    only N sampled reflections plus, at a partially covered silhouette, one
+    pass-through slot; allocating ``N + 1`` instead of the glass path's ``2N``
+    admits larger primary tiles without weakening the overflow retry. A weak
+    dielectric sheen emits only one reflection and needs two total slots.
     """
-    ratio = int(REFRACT_INITIAL_POOL_RATIO) if splitting else 1
-    if _secondary_split_needed(merged) and bool(
+    physical_split = bool(
+        merged.get("has_refractive")
+        or merged.get("has_refl_transparent")
+        or custom_scatter
+    )
+    ratio = int(REFRACT_INITIAL_POOL_RATIO) if physical_split else 1
+    if _secondary_split_needed(merged, analytic_raster):
+        samples = int(rt_settings.analytic_aa_secondary_samples())
+        strong = bool(
             merged.get("has_strong_reflective")
             or merged.get("has_refractive")
-            or merged.get("has_refl_transparent")):
-        ratio = max(ratio, 1) * int(
-            rt_settings.analytic_aa_secondary_samples())
+            or merged.get("has_refl_transparent")
+        )
+        if strong and physical_split:
+            # Glass can split at several layers, so retain the measured
+            # physical-path multiplier.
+            ratio = max(ratio, 1) * samples
+        elif strong:
+            # An opaque mirror needs N continuation slots when fully covered.
+            # At a silhouette it can need those N plus the original
+            # pass-through branch, but it does not need the glass path's 2N.
+            ratio = max(ratio, samples + 1)
+        else:
+            # A weak dielectric sheen emits one reflection plus, at a
+            # silhouette, the original pass-through.
+            ratio = max(ratio, 2)
     return ratio
+
+
+def analytic_raster_route_active(
+    merged,
+    *,
+    light_sources=(),
+    environment_map=None,
+    near_clip=0.0,
+    far_clip=0.0,
+):
+    """Whether this batch can use analytic coverage at output resolution.
+
+    This is the single host-side route decision shared by allocation planning
+    and rendering.  A requested supersample level is therefore retained for
+    every route that the raster frontend cannot honor; only a batch whose
+    complete primary geometry has analytic coverage selects AA=1.
+    """
+    if (int(rt_settings.SAMPLES_PER_PIXEL) > 1
+            or not rt_settings.HYBRID_RASTER
+            or not rt_settings.ANALYTIC_AA
+            or merged.get("tri_frame_valid") is None
+            or int(merged.get("num_pn", 0)) > 0
+            or merged.get("textured_active")
+            or float(near_clip) > 0.0):
+        return False
+
+    num_tri = int(merged.get("num_triangles", 0))
+    num_bez = int(merged.get("num_circuits", 0))
+    if num_tri <= 0 and num_bez <= 0:
+        return False
+    if num_tri > 0 and not rt_settings.analytic_aa_tri_active():
+        return False
+    if num_bez > 0 and not rt_settings.analytic_aa_bez_active():
+        return False
+
+    shadow = bool(rt_settings.SHADOWS)
+    lights_extended = any(
+        getattr(light, "_render_aux", None) is not None
+        for light in (light_sources or ())
+    )
+    has_environment = environment_map is not None
+    frag = (
+        bool(rt_settings.FRAGMENT_SHADING)
+        or shadow
+        or _scene_has_user_pipeline(merged)
+        or lights_extended
+        or has_environment
+    )
+    custom_scatter = bool(frag and _scene_has_custom_scatter(merged))
+    if custom_scatter:
+        return False
+
+    extended = (
+        lights_extended
+        or has_environment
+        or float(near_clip) > 0.0
+        or float(far_clip) > 0.0
+    )
+    if (frag and rt_settings.WAVEFRONT_SORT_MATERIALS is True
+            and not extended
+            and not merged.get("bez_has_reflective", False)):
+        return False
+
+    analytic_split = _secondary_split_needed(merged, True)
+    refraction = bool(
+        merged.get("has_refractive")
+        or merged.get("has_refl_transparent")
+        or analytic_split
+    )
+    mem_trim = bool(
+        rt_settings.WF_MEM_TRIM
+        and merged.get("mem_trim_active")
+        and not shadow
+        and not refraction
+    )
+    return not mem_trim
+
+
+def effective_anti_alias_level(
+    merged,
+    requested,
+    *,
+    light_sources=(),
+    environment_map=None,
+    near_clip=0.0,
+    far_clip=0.0,
+):
+    """Return 1 for analytic raster, otherwise the requested AA setting."""
+    requested = max(1, int(requested))
+    if analytic_raster_route_active(
+        merged,
+        light_sources=light_sources,
+        environment_map=environment_map,
+        near_clip=near_clip,
+        far_clip=far_clip,
+    ):
+        return 1
+    return requested
 
 
 def _wavefront_state_bytes_per_primary(pool_ratio, extra_bytes_per_slot=0,
@@ -339,12 +446,20 @@ def get_wavefront_memory_required(
         or has_environment
     )
     has_custom_scatter = bool(frag and _scene_has_custom_scatter(merged))
+    analytic_raster = analytic_raster_route_active(
+        merged,
+        light_sources=light_sources,
+        environment_map=environment_map,
+        near_clip=near_clip,
+        far_clip=far_clip,
+    )
     # Must stay in step with ``refraction_flag`` in render_batch_raytraced (it
     # sizes the split pool the kernel then writes into).
     refraction = bool(merged.get("has_refractive") or has_custom_scatter
                       or merged.get("has_refl_transparent")
-                      or _secondary_split_needed(merged))
-    pool_ratio = _split_pool_ratio(refraction, merged)
+                      or _secondary_split_needed(merged, analytic_raster))
+    pool_ratio = _split_pool_ratio(
+        refraction, merged, analytic_raster, has_custom_scatter)
     target_slots = max(1, int(rt_settings.WAVEFRONT_TILE_RAYS))
 
     def _route_primary(static_target):
@@ -740,7 +855,6 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
         )
     scene.last_render_plan = plan
 
-    aa = max(1, int(anti_alias_level))
     # Refraction is only implemented by the general wavefront tracer, which is
     # already where every deterministic (samples <= 1) batch goes -- so this
     # only gates the refraction template, not routing. The Monte Carlo
@@ -765,17 +879,26 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     cam = getattr(scene, "camera", None)
     near_clip = float(getattr(cam, "near", 0.0) or 0.0)
     far_clip = float(getattr(cam, "far", 0.0) or 0.0)
+    analytic_raster = analytic_raster_route_active(
+        merged,
+        light_sources=light_sources,
+        environment_map=env_map,
+        near_clip=near_clip,
+        far_clip=far_clip,
+    )
+    aa = 1 if analytic_raster else max(1, int(anti_alias_level))
 
-    # Anti-aliasing strategy. Default: render super-sampled (screen size * aa)
-    # and let post-processing box-average down. ALGAN_INPLACE_AA=1 instead
-    # averages ``aa^2`` jittered sub-pixel rays *in place* at the output
+    # Anti-aliasing strategy. Analytic raster coverage always renders at output
+    # resolution (aa == 1). Every route it cannot cover keeps the requested
+    # setting and either renders a supersampled buffer or, with INPLACE_AA,
+    # averages ``aa^2`` jittered sub-pixel rays in place at the output
     # resolution, so the frame buffer stays ``screen_width x screen_height``
     # regardless of ``aa`` (aa^2x less render memory than super-sampling): the
     # wavefront runs the full gen→traverse→shade→compact→composite pipeline
     # once per sub-pixel sample, accumulating into a float buffer and
     # averaging at the end, while the Monte Carlo megakernel folds the aa^2
     # factor into its per-pixel sample count (see samples_eff below).
-    inplace_aa = os.getenv("ALGAN_INPLACE_AA", "0") != "0"
+    inplace_aa = bool(rt_settings.INPLACE_AA)
     if inplace_aa:
         width = screen_width
         height = screen_height
@@ -917,7 +1040,8 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     refraction_flag = 1 if (refractive_det or refl_transparent_det
                             or frag_scatters
                             or (samples <= 1
-                                and _secondary_split_needed(merged))) else 0
+                                and _secondary_split_needed(
+                                    merged, analytic_raster))) else 0
     # Environment map: append its texels to the shared texture buffer (the
     # merged dict is shallow-copied -- it is cached across batches) and, when
     # its ambient lighting is enabled, its SH irradiance as an extra light row.
@@ -1028,7 +1152,8 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                             1 if transparent_background else 0, memory, out,
                             kernel_aa, lights_extended=lights_extended,
                             env_meta=env_meta, near_clip=near_clip,
-                            far_clip=far_clip)
+                            far_clip=far_clip,
+                            analytic_raster=analytic_raster)
             frames = out.view(end - start, height, width, C_out)
             # Post-processing launches Taichi kernels (the tonemap in particular)
             # from Taichi's own CUDA pool. The render just accumulated torch
@@ -1342,7 +1467,8 @@ def raytrace_render_wavefront(
         light_pos, light_col, num_lights, frag_flag, frag_pipelines,
         frag_scatters, shadow_flag,
         refraction_flag, transparent, memory, out, aa_level=1,
-        lights_extended=False, env_meta=None, near_clip=0.0, far_clip=0.0):
+        lights_extended=False, env_meta=None, near_clip=0.0, far_clip=0.0,
+        analytic_raster=False):
     """Wavefront orchestration for the general triangle/PN/bezier path.
 
     Persistent continuation state is stage-split in global memory and PyTorch
@@ -1437,7 +1563,8 @@ def raytrace_render_wavefront(
     # surfaces split, and so does any reflector under continuation-ray
     # supersampling; the plain single-ray path keeps pool_ratio == 1 (one slot
     # per pixel, as before).
-    pool_ratio = _split_pool_ratio(refraction_flag, merged)
+    pool_ratio = _split_pool_ratio(
+        refraction_flag, merged, analytic_raster, bool(frag_scatters))
     # Read live (settings convention): runtime-mutable for tile-size A/B.
     primary_per_tile = max(1, rt_settings.WAVEFRONT_TILE_RAYS // pool_ratio)
 
@@ -1497,6 +1624,11 @@ def raytrace_render_wavefront(
         and near_clip <= 0.0
         and max(1, int(aa_level)) <= 1
     )
+    if analytic_raster and not use_raster:
+        raise RuntimeError(
+            "Analytic raster AA was selected before allocation, but the "
+            "wavefront route rejected the batch."
+        )
     # Empty-pixel fast path (settings.RASTER_EMPTY_SKIP): read ONCE per batch
     # so the host's retired-empty pix_accum pre-fill in _run_wavefront_tiles
     # and raster_first_shade's compile-time ``prefill`` template can never

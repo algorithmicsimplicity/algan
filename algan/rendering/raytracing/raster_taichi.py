@@ -468,10 +468,15 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
             d0 = e0 * il[0]
             d1 = e1 * il[1]
             d2 = e2 * il[2]
-            accept = (((d0 > -0.7072) and (d1 > -0.7072) and (d2 > -0.7072))
-                      or ((d0 < 0.7072) and (d1 < 0.7072) and (d2 < 0.7072)))
+            accept = (
+                ((d0 > -0.7072) and (d1 > -0.7072) and (d2 > -0.7072))
+                or ((d0 < 0.7072) and (d1 < 0.7072) and (d2 < 0.7072)))
             if accept:
-                # EXACT fixed-point coverage (DESIGN_analytic_aa.md ss15).
+                # Keep the exact path for every accepted candidate. A
+                # full-interior branch adds enough edge-support arithmetic to
+                # regress dense moving meshes despite skipping sample tests.
+                if ti.static(aa):
+                    # EXACT fixed-point coverage (DESIGN_analytic_aa.md ss15).
                 #
                 # Snap the projected vertices to a 1/256-pixel integer lattice
                 # and evaluate the edge functions in int64. Two triangles that
@@ -499,23 +504,25 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                 # vertex, and the projection is one elementwise torch
                 # expression. If that ever stopped holding, the failure is
                 # graceful -- back to the float-era ambiguity on those edges.
-                fx0 = ti.cast(ti.round(sx0 * _AA_FIXED_SCALE), ti.i64)
-                fx1 = ti.cast(ti.round(sx1 * _AA_FIXED_SCALE), ti.i64)
-                fx2 = ti.cast(ti.round(sx2 * _AA_FIXED_SCALE), ti.i64)
-                fy0 = ti.cast(ti.round(sy0 * _AA_FIXED_SCALE), ti.i64)
-                fy1 = ti.cast(ti.round(sy1 * _AA_FIXED_SCALE), ti.i64)
-                fy2 = ti.cast(ti.round(sy2 * _AA_FIXED_SCALE), ti.i64)
-                qxf = (ti.cast(px, ti.i64) << _AA_FIXED_SHIFT) + _AA_FIXED_HALF
-                qyf = (ti.cast(py, ti.i64) << _AA_FIXED_SHIFT) + _AA_FIXED_HALF
-                ex0 = fx2 - fx1
-                ey0 = fy2 - fy1
-                ex1 = fx0 - fx2
-                ey1 = fy0 - fy2
-                ex2 = fx1 - fx0
-                ey2 = fy1 - fy0
-                r0 = ex0 * (qyf - fy1) - ey0 * (qxf - fx1)
-                r1 = ex1 * (qyf - fy2) - ey1 * (qxf - fx2)
-                r2 = ex2 * (qyf - fy0) - ey2 * (qxf - fx0)
+                    fx0 = ti.cast(ti.round(sx0 * _AA_FIXED_SCALE), ti.i64)
+                    fx1 = ti.cast(ti.round(sx1 * _AA_FIXED_SCALE), ti.i64)
+                    fx2 = ti.cast(ti.round(sx2 * _AA_FIXED_SCALE), ti.i64)
+                    fy0 = ti.cast(ti.round(sy0 * _AA_FIXED_SCALE), ti.i64)
+                    fy1 = ti.cast(ti.round(sy1 * _AA_FIXED_SCALE), ti.i64)
+                    fy2 = ti.cast(ti.round(sy2 * _AA_FIXED_SCALE), ti.i64)
+                    qxf = ((ti.cast(px, ti.i64) << _AA_FIXED_SHIFT)
+                           + _AA_FIXED_HALF)
+                    qyf = ((ti.cast(py, ti.i64) << _AA_FIXED_SHIFT)
+                           + _AA_FIXED_HALF)
+                    ex0 = fx2 - fx1
+                    ey0 = fy2 - fy1
+                    ex1 = fx0 - fx2
+                    ey1 = fy0 - fy2
+                    ex2 = fx1 - fx0
+                    ey2 = fy1 - fy0
+                    r0 = ex0 * (qyf - fy1) - ey0 * (qxf - fx1)
+                    r1 = ex1 * (qyf - fy2) - ey1 * (qxf - fx2)
+                    r2 = ex2 * (qyf - fy0) - ey2 * (qxf - fx0)
                 # Orientation from the EXACT integer sum -- which is twice the
                 # lattice signed area, and is the ONLY safe source for it. The
                 # float sum is the same quantity but formed from three large
@@ -525,19 +532,19 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                 # fill rule partitioning a shared edge, and it was measured
                 # doing so (scratch fill-rule harness: every double-claimed
                 # sample traced back to an orientation disagreement).
-                area2 = r0 + r1 + r2
-                oi = ti.i64(1)
-                if area2 < 0:
-                    oi = ti.i64(-1)
-                ec0 = oi * r0
-                ec1 = oi * r1
-                ec2 = oi * r2
-                gx0 = oi * ex0
-                gy0 = oi * ey0
-                gx1 = oi * ex1
-                gy1 = oi * ey1
-                gx2 = oi * ex2
-                gy2 = oi * ey2
+                    area2 = r0 + r1 + r2
+                    oi = ti.i64(1)
+                    if area2 < 0:
+                        oi = ti.i64(-1)
+                    ec0 = oi * r0
+                    ec1 = oi * r1
+                    ec2 = oi * r2
+                    gx0 = oi * ex0
+                    gy0 = oi * ey0
+                    gx1 = oi * ex1
+                    gy1 = oi * ey1
+                    gx2 = oi * ex2
+                    gy2 = oi * ey2
                 # Top-left rule as a +1 bias: a sample exactly on an owned edge
                 # (q == 0) then tests strictly positive, and on a disowned one
                 # it does not.
@@ -545,42 +552,43 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                 # must not be touched -- assigning an integer into them would
                 # keep them f32, silently dragging every "exact" value below
                 # into float and corrupting the barycentrics on the way out.
-                tl0 = ti.i64(0)
-                if (gy0 > 0) or ((gy0 == 0) and (gx0 < 0)):
-                    tl0 = ti.i64(1)
-                tl1 = ti.i64(0)
-                if (gy1 > 0) or ((gy1 == 0) and (gx1 < 0)):
-                    tl1 = ti.i64(1)
-                tl2 = ti.i64(0)
-                if (gy2 > 0) or ((gy2 == 0) and (gx2 < 0)):
-                    tl2 = ti.i64(1)
-                m = 0
-                best_k = 0
-                best_q = ti.i64(-_AA_Q_INF)
-                for k in ti.static(range(len(_AA_SAMPLES))):  # noqa: B007
-                    ox = ti.static(_AA_SAMPLES[k][0])
-                    oy = ti.static(_AA_SAMPLES[k][1])
-                    q0 = ec0 + gx0 * oy - gy0 * ox + tl0
-                    q1 = ec1 + gx1 * oy - gy1 * ox + tl1
-                    q2 = ec2 + gx2 * oy - gy2 * ox + tl2
-                    qq = ti.min(q0, ti.min(q1, q2))
-                    if qq > 0:
-                        m |= 1 << k
+                    tl0 = ti.i64(0)
+                    if (gy0 > 0) or ((gy0 == 0) and (gx0 < 0)):
+                        tl0 = ti.i64(1)
+                    tl1 = ti.i64(0)
+                    if (gy1 > 0) or ((gy1 == 0) and (gx1 < 0)):
+                        tl1 = ti.i64(1)
+                    tl2 = ti.i64(0)
+                    if (gy2 > 0) or ((gy2 == 0) and (gx2 < 0)):
+                        tl2 = ti.i64(1)
+                    m = 0
+                    best_k = 0
+                    best_q = ti.i64(-_AA_Q_INF)
+                    for k in ti.static(range(len(_AA_SAMPLES))):  # noqa: B007
+                        ox = ti.static(_AA_SAMPLES[k][0])
+                        oy = ti.static(_AA_SAMPLES[k][1])
+                        q0 = ec0 + gx0 * oy - gy0 * ox + tl0
+                        q1 = ec1 + gx1 * oy - gy1 * ox + tl1
+                        q2 = ec2 + gx2 * oy - gy2 * ox + tl2
+                        qq = ti.min(q0, ti.min(q1, q2))
+                        if qq > 0:
+                            m |= 1 << k
                     # Only the sliver policies need to know which sample the
                     # triangle came closest to.
-                    if ti.static(_sliver_mode(aa) != _AA_SLIVER_DROP):
-                        if qq > best_q:
-                            best_q = qq
-                            best_k = k
-                if area2 == 0:
+                        if ti.static(_sliver_mode(aa) != _AA_SLIVER_DROP):
+                            if qq > best_q:
+                                best_q = qq
+                                best_k = k
+                    if area2 == 0:
                     # Foreshortened to zero area on the lattice. Its edge
                     # functions are all zero, so the top-left bias alone would
                     # otherwise let it claim the entire pixel. Clearing the set
                     # hands it to the sample-less policy below, which under the
                     # default drops it -- an error bounded by one lattice unit
                     # (1/4096 px), not a hole.
-                    m = 0
-                c = ti.cast(_popcount_samples(m), ti.f32) * _AA_SAMPLE_WEIGHT
+                        m = 0
+                    c = (ti.cast(_popcount_samples(m), ti.f32)
+                         * _AA_SAMPLE_WEIGHT)
                 # A triangle thinner than the sample spacing contains no sample,
                 # so the set says nothing about it. The DEFAULT policy is to let
                 # it contribute nothing, exactly as supersampling does -- sound
@@ -594,38 +602,47 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                 # give it the sample it comes closest to, weighted by how much of
                 # the pixel it covers, and mark it a sliver so the resolve treats
                 # that claim as provisional.
-                if ti.static(_sliver_mode(aa) != _AA_SLIVER_DROP):
-                    if m == 0:
+                    if ti.static(_sliver_mode(aa) != _AA_SLIVER_DROP):
+                        if m == 0:
                         # The weight must be the EXACT clipped area: the
                         # continuous product form spreads half a pixel past the
                         # geometry, so a silhouette rim of tiling slivers sums to
                         # a halo and dilates the whole mesh (ss15.3).
-                        if ti.static(_sliver_mode(aa) == _AA_SLIVER_AREA):
-                            ofl = 1.0
-                            if oi < 0:
-                                ofl = -1.0
-                            od0 = ofl * d0
-                            od1 = ofl * d1
-                            od2 = ofl * d2
-                            if (od0 > -0.5) and (od1 > -0.5) and (od2 > -0.5):
-                                m = (1 << best_k) | _AA_SLIVER_BIT
-                                c = (ti.math.clamp(od0 + 0.5, 0.0, 1.0)
-                                     * ti.math.clamp(od1 + 0.5, 0.0, 1.0)
-                                     * ti.math.clamp(od2 + 0.5, 0.0, 1.0))
-                        else:
-                            ca = _pixel_clip_area(
-                                ti.math.vec3(sx0 - qx, sx1 - qx, sx2 - qx),
-                                ti.math.vec3(sy0 - qy, sy1 - qy, sy2 - qy))
-                            if ca > 0.0:
+                            if ti.static(
+                                    _sliver_mode(aa) == _AA_SLIVER_AREA):
+                                ofl = 1.0
+                                if oi < 0:
+                                    ofl = -1.0
+                                od0 = ofl * d0
+                                od1 = ofl * d1
+                                od2 = ofl * d2
+                                if ((od0 > -0.5) and (od1 > -0.5)
+                                        and (od2 > -0.5)):
+                                    m = (1 << best_k) | _AA_SLIVER_BIT
+                                    c = (
+                                        ti.math.clamp(
+                                            od0 + 0.5, 0.0, 1.0)
+                                        * ti.math.clamp(
+                                            od1 + 0.5, 0.0, 1.0)
+                                        * ti.math.clamp(
+                                            od2 + 0.5, 0.0, 1.0)
+                                    )
+                            else:
+                                ca = _pixel_clip_area(
+                                    ti.math.vec3(
+                                        sx0 - qx, sx1 - qx, sx2 - qx),
+                                    ti.math.vec3(
+                                        sy0 - qy, sy1 - qy, sy2 - qy))
+                                if ca > 0.0:
                                 # exact and exact_occ coincide under per-sample
                                 # transmittance: there is no separate occlusion
                                 # set to opt into, since attenuating a sample IS
                                 # occluding it (ss18).
-                                m = (1 << best_k) | _AA_SLIVER_BIT
-                                c = ca
-                accept = ((m & _AA_MASK_ALL) != 0) and (c > 0.0)
-                if oi < 0:
-                    m |= _AA_BACKFACE_BIT
+                                    m = (1 << best_k) | _AA_SLIVER_BIT
+                                    c = ca
+                    accept = ((m & _AA_MASK_ALL) != 0) and (c > 0.0)
+                    if oi < 0:
+                        m |= _AA_BACKFACE_BIT
         if accept:
             v0 = ti.math.vec3(vm[0, 0], vm[0, 1], vm[0, 2])
             v1 = ti.math.vec3(vm[1, 0], vm[1, 1], vm[1, 2])
@@ -1644,7 +1661,7 @@ def raster_shadow_event_build(
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
         edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
-        pixel_world_scale: ti.types.ndarray(), tri_obj: ti.types.ndarray(),
+        pixel_world_scale: ti.types.ndarray(),
         layer_offset_triangles: ti.f32,
         refraction: ti.template(), ss_enabled: ti.template(),
         has_bez: ti.template(), aa_bez: ti.template(), aa_tri: ti.template(),
@@ -1659,7 +1676,8 @@ def raster_shadow_event_build(
         frag_shadow_id: ti.types.ndarray(), z_shadow_id: ti.types.ndarray(),
         event_pos: ti.types.ndarray(), event_snrm: ti.types.ndarray(),
         event_fnrm: ti.types.ndarray(), event_frame: ti.types.ndarray(),
-        event_dp: ti.types.ndarray(), event_count: ti.types.ndarray()):
+        event_dp: ti.types.ndarray(), event_msk: ti.types.ndarray(),
+        event_count: ti.types.ndarray()):
     """Build an exact sparse queue of accepted primary triangle shade events.
 
     The ordered transport walk mirrors ``raster_first_shade`` through seam
@@ -1834,6 +1852,16 @@ def raster_shadow_event_build(
                     event_snrm[eid, k] = snrm[k]
                     event_fnrm[eid, k] = fnrm[k]
                 event_frame[eid] = f
+                # Shadow visibility is sampled only at sub-pixel positions the
+                # triangle fragment owns. A terminal z-winner owns all four
+                # positions; an areal sliver has no discrete position and uses
+                # all four as the least-biased representation of its area.
+                shadow_msk = 0xF
+                if ti.static(aa_tri):
+                    if (not from_z) and (not sliver):
+                        shadow_msk, _shadow_n = _sec_positions(
+                            msk & _AA_MASK_ALL, 4)
+                event_msk[eid] = shadow_msk
                 if ti.static(sec_aa > 1):
                     # Footprint for sub-pixel shadow sampling: coverage cannot
                     # antialias a shadow EDGE, because visibility is a binary
@@ -1957,6 +1985,7 @@ def raster_shadow_trace(
         num_events: int,
         event_pos: ti.types.ndarray(), event_snrm: ti.types.ndarray(),
         event_fnrm: ti.types.ndarray(), event_frame: ti.types.ndarray(),
+        event_msk: ti.types.ndarray(),
         t_nodes: NODE_ARG, t_node_miss: ti.types.ndarray(),
         t_leaf_prim: ti.types.ndarray(), t_leaf_tspan: ti.types.ndarray(),
         t_first_leaf: int,
@@ -2064,6 +2093,9 @@ def raster_shadow_trace(
                     sorg = sorigin
                     if ti.static(sec_aa > 1):
                         sorg = _sub_pixel_origin(sorigin, dpx, dpy, s)
+                        if ((event_msk[e] >> (s & 3)) & 1) == 0:
+                            ok = 0
+                    off = ti.math.vec3(0.0, 0.0, 0.0)
                     if radius > 0.0:
                         ang = _GOLDEN_ANGLE * s
                         rr = radius * ti.sqrt(
@@ -2072,13 +2104,17 @@ def raster_shadow_trace(
                         off = (ti.cos(ang) * b1 + ti.sin(ang) * b2) * rr
                         if ltype == _LT_DIRECTIONAL:
                             wis = (wi + off).normalized()
+                    if ltype != _LT_DIRECTIONAL:
+                        # Moving the origin over the pixel changes both the
+                        # direction and finite distance to a point/spot/area
+                        # emitter. Retaining the centre ray here makes the
+                        # samples non-convergent and can trace past the light.
+                        tls = lp + off - sorg
+                        ldn = tls.norm()
+                        if ldn > 1e-5:
+                            wis = tls / ldn
                         else:
-                            tls = lp + off - spos
-                            ldn = tls.norm()
-                            if ldn > 1e-5:
-                                wis = tls / ldn
-                            else:
-                                ok = 0
+                            ok = 0
                     if (ok == 1) and (fnrm.dot(wis) > 1e-3) \
                             and (snrm.dot(wis) > 1e-4):
                         n_valid += 1.0
@@ -2127,7 +2163,7 @@ def raster_first_shade(
         edge_accel: ti.types.ndarray(),
         light_pos: ti.types.ndarray(), light_col: ti.types.ndarray(),
         num_lights: int,
-        layer_offsets: ti.types.ndarray(), tri_obj: ti.types.ndarray(),
+        layer_offsets: ti.types.ndarray(),
         frag_shading: ti.template(), frag_pipelines: ti.template(),
         refraction: ti.template(), skip_unlit_normal: ti.template(),
         ss_enabled: ti.template(), has_bez: ti.template(),

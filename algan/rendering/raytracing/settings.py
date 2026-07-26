@@ -578,12 +578,11 @@ ANALYTIC_AA = os.environ.get("ALGAN_ANALYTIC_AA", "1") == "1"
 # PHASE 2 (implemented): flat triangles. Coverage comes from the screen-space
 # edge functions ``_ss_pixel`` already evaluates, normalised by the edge lengths
 # in columns 10:12 of the projection table. Triangles need a seam rule that
-# circuits do not: two triangles of one mesh sharing an edge inside a pixel
-# cover it completely between them, and plain multiplicative compositing would
-# leave a background-coloured lattice on every internal edge of every Surface,
-# Sphere and imported model. The resolve therefore UNIONS the coverage of
-# consecutive fragments that share a source primitive (``tri_obj``) -- see
-# DESIGN_analytic_aa.md ss5 and ss13.
+# circuits do not: two triangles sharing an edge inside a pixel cover it
+# completely between them, and plain multiplicative compositing would leave a
+# background-coloured lattice on every internal edge. The resolve therefore
+# tracks transmittance independently for the fixed sub-pixel samples; disjoint
+# masks partition the pixel without a source-object side table.
 #
 # Subordinate per-geometry switches (only meaningful while ANALYTIC_AA is on).
 ANALYTIC_AA_BEZ = os.environ.get("ALGAN_ANALYTIC_AA_BEZ", "1") == "1"

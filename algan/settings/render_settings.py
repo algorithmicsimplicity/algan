@@ -35,7 +35,7 @@ class RenderSettings(Settings):
 
     resolution: Tuple[int, int]
     frames_per_second: int = 30
-    anti_alias_level: int = 1
+    anti_alias_level: int = 2
     fxaa: bool = False
     audio_frames_per_second: int = 44100
     save_image: bool = False

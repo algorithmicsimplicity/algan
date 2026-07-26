@@ -103,7 +103,7 @@ def precompute_triangle_projection(
     # behind (the host culls the primitive from candidate emission entirely,
     # instead of the old full-window fallback that made every behind-camera
     # primitive a full-screen candidate scan).
-    behind = cam_ok & ~vert_front.any(-1)
+    behind = ~cam_ok | (cam_ok & ~vert_front.any(-1))
 
     safe_denom = torch.where(
         denom.abs() > 1e-20, denom, torch.ones_like(denom))
@@ -928,6 +928,8 @@ def shade_sparse_raster_coverage(
             memory, (max_events, 3), torch.float32)
         event_frame = _arena_tensor(
             memory, (max_events,), torch.int32)
+        event_msk = _arena_tensor(
+            memory, (max_events,), torch.int32, 0xF)
         event_count = _arena_tensor(memory, (1,), torch.int32, 0)
         # World-space pixel footprint per event, for sub-pixel shadow sampling.
         # One row when it is off, so the argument always exists.
@@ -942,14 +944,14 @@ def shade_sparse_raster_coverage(
             int(merged["num_colored_triangles"]), col_row_arr,
             merged["circuit_meta"], merged["circuit_colors"],
             merged["circuit_border_colors"], merged["edges_2d"],
-            merged["edge_accel"], pixel_world_scale, merged["tri_obj"],
+            merged["edge_accel"], pixel_world_scale,
             float(layer_offset_triangles), int(refraction_flag), ss, has_bez,
             aa_bez, aa_tri, aa_grp, sec_aa,
             1, covered_idx, num_covered, 1,
             int(time_start), int(width), int(height), 0,
             *cam_args, gen_meta, int(max_bounces),
             frag_shadow_id, z_shadow_id, event_pos, event_snrm, event_fnrm,
-            event_frame, event_dp, event_count)
+            event_frame, event_dp, event_msk, event_count)
         num_events = int(event_count.item())
         shadow_vis = _arena_tensor(
             memory, (max(1, num_events), max(1, int(num_lights))),
@@ -958,6 +960,7 @@ def shade_sparse_raster_coverage(
             from algan.rendering.raytracing.refit_bvh import RefitBVH
             raster_shadow_trace(
                 num_events, event_pos, event_snrm, event_fnrm, event_frame,
+                event_msk,
                 t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
                 t_bvh.leaf_tspan, int(t_bvh.first_leaf),
                 merged["tri_pos"], merged["tri_colors"], merged["tri_uvs"],
@@ -991,7 +994,7 @@ def shade_sparse_raster_coverage(
         merged["circuit_border_colors"], pixel_world_scale,
         merged["edges_2d"], merged["edge_accel"],
         light_pos, light_col, int(num_lights),
-        layer_offsets, merged["tri_obj"],
+        layer_offsets,
         int(frag_flag), frag_pipelines, int(refraction_flag),
         int(skip_unlit_normal), ss, has_bez, aa_bez, aa_tri, aa_grp, sec_aa,
         float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
@@ -1271,6 +1274,8 @@ def raster_iteration_zero(
         event_snrm = _arena_tensor(memory, (max_events, 3), torch.float32)
         event_fnrm = _arena_tensor(memory, (max_events, 3), torch.float32)
         event_frame = _arena_tensor(memory, (max_events,), torch.int32)
+        event_msk = _arena_tensor(
+            memory, (max_events,), torch.int32, 0xF)
         event_count = _arena_tensor(memory, (1,), torch.int32, 0)
         sec_aa = rt_settings.analytic_aa_secondary_samples()
         event_dp = _arena_tensor(
@@ -1284,14 +1289,14 @@ def raster_iteration_zero(
             int(merged["num_colored_triangles"]), col_row_arr,
             merged["circuit_meta"], merged["circuit_colors"],
             merged["circuit_border_colors"], merged["edges_2d"],
-            merged["edge_accel"], pixel_world_scale, merged["tri_obj"],
+            merged["edge_accel"], pixel_world_scale,
             float(layer_offset_triangles), int(refraction_flag), ss, has_bez,
             aa_bez, aa_tri, aa_grp, sec_aa,
             1 if use_covered else 0, covered_idx, int(num_covered), 0,
             int(time_start), int(width), int(height), int(tile_start),
             *cam_args, gen_meta, int(max_bounces),
             frag_shadow_id, z_shadow_id, event_pos, event_snrm, event_fnrm,
-            event_frame, event_dp, event_count)
+            event_frame, event_dp, event_msk, event_count)
         num_events = int(event_count.item())
         shadow_vis = _arena_tensor(
             memory, (max(1, num_events), max(1, int(num_lights))),
@@ -1300,6 +1305,7 @@ def raster_iteration_zero(
             from algan.rendering.raytracing.refit_bvh import RefitBVH
             raster_shadow_trace(
                 num_events, event_pos, event_snrm, event_fnrm, event_frame,
+                event_msk,
                 t_bvh.blocks, t_bvh.node_miss, t_bvh.leaf_prim,
                 t_bvh.leaf_tspan, int(t_bvh.first_leaf),
                 merged["tri_pos"], merged["tri_colors"], merged["tri_uvs"],
@@ -1332,7 +1338,7 @@ def raster_iteration_zero(
         merged["circuit_border_colors"], pixel_world_scale,
         merged["edges_2d"], merged["edge_accel"],
         light_pos, light_col, int(num_lights),
-        layer_offsets, merged["tri_obj"],
+        layer_offsets,
         int(frag_flag), frag_pipelines, int(refraction_flag),
         int(skip_unlit_normal), ss, has_bez, aa_bez, aa_tri, aa_grp,
         rt_settings.analytic_aa_secondary_samples(),

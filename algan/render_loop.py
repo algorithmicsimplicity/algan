@@ -114,6 +114,52 @@ def _primitive_source_device(primitive, fallback=None):
     return COMPUTING_DEFAULTS.animation_device
 
 
+def _projection_anti_alias_level(scene, primitives):
+    """Choose conservative camera projection scale before scene merging.
+
+    The exact analytic-raster route is known only after packed-scene metadata
+    exists.  Projection happens earlier, so use output resolution whenever the
+    primitive classes and live settings make that route possible.  If a later
+    material/legacy check falls back, Bezier tessellation remains at least as
+    fine as the AA=2 reference and its bounds are merely more conservative.
+    """
+    requested = max(1, int(scene.render_settings.anti_alias_level))
+    from algan.rendering.raytracing import settings as rt_settings
+    from algan.rendering.raytracing.primitives import (
+        RayTracedBezierCircuitPrimitive,
+        RayTracedPNTrianglePrimitive,
+        RayTracedTrianglePrimitive,
+    )
+
+    if (not primitives
+            or int(rt_settings.SAMPLES_PER_PIXEL) > 1
+            or not rt_settings.HYBRID_RASTER
+            or not rt_settings.ANALYTIC_AA
+            or float(getattr(scene.camera, "near", 0.0) or 0.0) > 0.0):
+        return requested, False
+    ray_types = (
+        RayTracedTrianglePrimitive, RayTracedBezierCircuitPrimitive)
+    if not all(isinstance(primitive, ray_types) for primitive in primitives):
+        return requested, False
+
+    has_pn = any(
+        isinstance(p, RayTracedPNTrianglePrimitive) for p in primitives)
+    has_tri = any(
+        isinstance(p, RayTracedTrianglePrimitive)
+        and not isinstance(p, RayTracedPNTrianglePrimitive)
+        for p in primitives
+    )
+    has_bez = any(
+        isinstance(p, RayTracedBezierCircuitPrimitive) for p in primitives)
+    possible = (
+        not has_pn
+        and (has_tri or has_bez)
+        and (not has_tri or rt_settings.analytic_aa_tri_active())
+        and (not has_bez or rt_settings.analytic_aa_bez_active())
+    )
+    return (1 if possible else requested), bool(possible)
+
+
 def _slice_render_state(render_state, start, end, total_frames):
     """Return a frame-window view of an immutable render-state snapshot."""
     start = int(start)
@@ -588,6 +634,7 @@ class RenderLoopMixin:
             is_post_process_tonemap_enabled,
         )
         from algan.rendering.raytracing.tracer import (
+            effective_anti_alias_level,
             get_wavefront_memory_required,
         )
 
@@ -692,7 +739,14 @@ class RenderLoopMixin:
             light._render_aux = aux
             lights.append(light)
 
-        aa = int(self.render_settings.anti_alias_level)
+        aa = effective_anti_alias_level(
+            merged_host,
+            self.render_settings.anti_alias_level,
+            light_sources=lights,
+            environment_map=env_map,
+            near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
+            far_clip=float(getattr(self.camera, "far", 0.0) or 0.0),
+        )
         render_height = self.num_pixels_screen_height * aa
         render_width = self.num_pixels_screen_width * aa
         render_channels = 5 if transparent_background else 4
@@ -804,12 +858,11 @@ class RenderLoopMixin:
             camera.ray_origin = render_state["ray_origin"]
             camera.screen_point = render_state["screen_point"]
             camera.screen_basis = render_state["screen_basis"]
-            camera.screen_width = (
-                self.num_pixels_screen_width * self.render_settings.anti_alias_level
-            )
-            camera.screen_height = (
-                self.num_pixels_screen_height * self.render_settings.anti_alias_level
-            )
+            projection_aa, projection_analytic = (
+                _projection_anti_alias_level(self, primitive_batch))
+            camera.screen_width = self.num_pixels_screen_width * projection_aa
+            camera.screen_height = self.num_pixels_screen_height * projection_aa
+            camera.analytic_raster = projection_analytic
             for l, (origin, light_color, aux) in zip(
                 self.light_sources, render_state["lights"]
             ):
@@ -884,10 +937,18 @@ class RenderLoopMixin:
                 is_post_process_tonemap_enabled,
             )
             from algan.rendering.raytracing.tracer import (
+                effective_anti_alias_level,
                 get_wavefront_memory_required,
             )
 
-            aa = int(self.render_settings.anti_alias_level)
+            aa = effective_anti_alias_level(
+                merged_host,
+                self.render_settings.anti_alias_level,
+                light_sources=self.light_sources,
+                environment_map=env_map,
+                near_clip=float(getattr(camera, "near", 0.0) or 0.0),
+                far_clip=float(getattr(camera, "far", 0.0) or 0.0),
+            )
             render_height = self.num_pixels_screen_height * aa
             render_width = self.num_pixels_screen_width * aa
             render_channels = 5 if transparent_background else 4
@@ -996,7 +1057,7 @@ class RenderLoopMixin:
                     background_source,
                     screen_width=self.num_pixels_screen_width,
                     screen_height=self.num_pixels_screen_height,
-                    anti_alias_level=self.render_settings.anti_alias_level,
+                    anti_alias_level=aa,
                     current_ind=current_ind,
                     new_ind=new_ind,
                     frames_per_second=(
@@ -1546,7 +1607,7 @@ class RenderLoopMixin:
             return
         from algan.rendering.raytracing import settings as rt_settings
 
-        aa = self.render_settings.anti_alias_level
+        aa, analytic_raster = _projection_anti_alias_level(self, primitives)
         # Projection runs on the render device by default (see
         # settings.PROJECT_ON_GPU); the primitive source geometry and the
         # camera/light snapshot are moved there so the packed _rt_* outputs are
@@ -1570,6 +1631,7 @@ class RenderLoopMixin:
         camera.screen_basis = _to_device(render_state["screen_basis"])
         camera.screen_width = self.num_pixels_screen_width * aa
         camera.screen_height = self.num_pixels_screen_height * aa
+        camera.analytic_raster = analytic_raster
 
         class _ShimLight:
             pass
