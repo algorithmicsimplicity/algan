@@ -817,8 +817,17 @@ the classic walk); refit-topology staleness 1.00–1.04 vs per-frame rebuild and
                                     is ~80% slower end-to-end than f32; a clear
                                     win only on Turing/Ampere+ (fast f16).
 
+  ALGAN_ANALYTIC_AA (default 0)     Analytic anti-aliasing: raster fragments
+                                    carry the fraction of the pixel square they
+                                    cover and the resolve folds it into alpha,
+                                    replacing the `anti_alias_level` supersample
+                                    tax. Phase 1 (shipped) covers Bezier
+                                    circuits only; flat triangles keep coverage
+                                    1.0, so a triangle-only scene is unchanged.
+                                    See DESIGN_analytic_aa.md.
+
   set_hybrid_raster(bool), set_raster_screen_space(bool),
-  set_refit_bvh(bool) — programmatic.
+  set_refit_bvh(bool), set_analytic_aa(bool) — programmatic.
 
 Gate for engaging the front-end (`use_raster` in tracer.py): HYBRID_RASTER on,
 merged visibility masks present, (num_triangles > 0 or num_circuits > 0),

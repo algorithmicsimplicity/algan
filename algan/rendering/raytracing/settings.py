@@ -550,6 +550,204 @@ def set_raster_sparse_coverage(enabled):
     RASTER_SPARSE_COVERAGE = bool(enabled)
 
 
+# Analytic anti-aliasing (see DESIGN_analytic_aa.md). Instead of rendering at
+# ``anti_alias_level`` times the output resolution and box-filtering back down
+# (aa^2 work for every stage), each raster fragment carries the FRACTION OF THE
+# PIXEL SQUARE its primitive covers, and the resolve folds that into the
+# fragment's alpha. One shade per fragment, coverage resolved continuously.
+#
+# PHASE 1 (implemented): Bezier circuits only -- text and 2D shapes, the bulk of
+# real Algan content. ``_bezier_point_metrics`` already returns the distance to
+# the nearest outline segment plus a crossing parity, i.e. a signed distance
+# field, so circuit coverage is a box filter of an SDF that is already computed.
+# Circuits also have no shared-edge seam problem (a glyph or shape is ONE closed
+# circuit), which is why they can ship ahead of triangles.
+#
+# Flat triangles are covered too (see ANALYTIC_AA_TRI below), and the quantities
+# coverage cannot express analytically -- shadow-edge visibility and the image
+# seen inside a reflection or refraction -- are handled by taking N sub-pixel
+# samples of those specific queries (ANALYTIC_AA_SECONDARY_SAMPLES). Measured
+# against the supersampled anti_alias_level=2 default across eleven
+# feature-specific scenes, analytic AA at aa=1 is better on eight and 7-9% short
+# on three (specular highlights, a flat mirror's reflected image, a lens's
+# refracted image), where the residual is the CONTENT of a minified secondary
+# image. Read DESIGN_analytic_aa.md ss19 before dropping ``anti_alias_level``
+# to 1; what is still untouched is texture minification (no mip chain).
+ANALYTIC_AA = os.environ.get("ALGAN_ANALYTIC_AA", "1") == "1"
+
+# PHASE 2 (implemented): flat triangles. Coverage comes from the screen-space
+# edge functions ``_ss_pixel`` already evaluates, normalised by the edge lengths
+# in columns 10:12 of the projection table. Triangles need a seam rule that
+# circuits do not: two triangles of one mesh sharing an edge inside a pixel
+# cover it completely between them, and plain multiplicative compositing would
+# leave a background-coloured lattice on every internal edge of every Surface,
+# Sphere and imported model. The resolve therefore UNIONS the coverage of
+# consecutive fragments that share a source primitive (``tri_obj``) -- see
+# DESIGN_analytic_aa.md ss5 and ss13.
+#
+# Subordinate per-geometry switches (only meaningful while ANALYTIC_AA is on).
+ANALYTIC_AA_BEZ = os.environ.get("ALGAN_ANALYTIC_AA_BEZ", "1") == "1"
+#
+# Triangle coverage: exact fixed-point rasterization (a 1/4096-pixel integer
+# lattice, int64 edge functions and a top-left fill rule) partitions eight
+# sub-pixel samples among the triangles covering a pixel, the seam rule sums the
+# disjoint sub-areas of one object, and per-sample occlusion keeps a mesh's back
+# faces out of its own silhouette. Against an anti_alias_level=4 reference it
+# beats the plain aliased render on every config -- a subdivided sphere, a
+# translucent one, sub-pixel rods, a slanted quad -- at 40-78% less error, with
+# essentially the reference's own edge gradation (588 distinct edge levels
+# against 608). See DESIGN_analytic_aa.md ss14-ss16.
+ANALYTIC_AA_TRI = os.environ.get("ALGAN_ANALYTIC_AA_TRI", "1") == "1"
+
+# The seam rule itself. Off, coverage still scales alpha but consecutive
+# fragments of one object composite multiplicatively instead of unioning their
+# disjoint sub-areas -- which is the lattice this exists to remove. Kept as a
+# toggle purely so the parity script can measure the difference; there is no
+# reason to turn it off in a real render.
+ANALYTIC_AA_SEAM = os.environ.get("ALGAN_ANALYTIC_AA_SEAM", "1") == "1"
+
+# What to do with a triangle that CONTAINS NO SUB-PIXEL SAMPLE. The exact
+# fixed-point test answers "does this triangle contain this sample"; a triangle
+# narrower than the sample spacing contains none, and a mesh produces a rim of
+# exactly those where it turns edge-on at a silhouette. The four policies:
+#
+#   drop      Contribute nothing, exactly as supersampling does -- a sub-pixel
+#             sample either lands on the geometry or it does not. Sound because
+#             the fill rule PARTITIONS the samples: any sample a narrow triangle
+#             misses is contained by whichever neighbour of the tiling does
+#             contain it, so dropping cannot open a hole in a closed surface.
+#   exact     Claim the nearest sample with the EXACT area of (triangle n pixel
+#             square) as its coverage, but do not occlude it (the sample belongs
+#             to whoever contains it). Keeps sub-sample-width geometry visible.
+#   exact_occ As ``exact``, but the claimed sample is also occluded. NOTE this
+#             now coincides with ``exact``: per-sample transmittance (ss18) has
+#             no separate occlusion set to opt into -- attenuating a sample IS
+#             occluding it -- and an areal fragment attenuates all of them.
+#   area      The pre-exact-area fallback: the continuous product of clamped
+#             edge distances. It is a reconstruction filter that deliberately
+#             spreads coverage half a pixel past the geometry, so a rim of
+#             tiling slivers sums to more than the pixel and dilates every mesh.
+#             Kept only so the parity script can measure against it.
+#
+# See DESIGN_analytic_aa.md ss15/ss16 for the measurements behind the default.
+ANALYTIC_AA_SLIVER_MODES = ("area", "exact", "drop", "exact_occ")
+ANALYTIC_AA_SLIVER = os.environ.get("ALGAN_ANALYTIC_AA_SLIVER", "drop")
+
+# Sub-pixel samples for what coverage CANNOT antialias analytically: the image
+# seen inside a reflection or through refracting glass. Coverage resolves a
+# mirror's own outline exactly, but the reflected scene is sampled by the
+# continuation ray, and one continuation per pixel aliases however good the
+# primary coverage is (DESIGN_analytic_aa.md ss7).
+#
+# With this at N, a reflective or refractive hit spawns N continuations instead
+# of one: each is the primary ray re-generated through a different sub-pixel
+# position and re-intersected with that hit's own plane, so the reflected image
+# is sampled at N sub-pixel positions, each carrying 1/N of the throughput. At
+# N=4 those positions are the 2x2 grid anti_alias_level=2 supersamples at, which
+# is the arm this is meant to match.
+#
+# The split happens ONCE, at the primary hit; deeper bounces continue as single
+# rays, so the cost is N times the secondary traversal, not N^depth. Only the
+# reflective/refractive pixels pay it. 1 disables it, and is byte-identical.
+ANALYTIC_AA_SECONDARY_SAMPLES = int(
+    os.environ.get("ALGAN_ANALYTIC_AA_SECONDARY", "4"))
+
+# Minimum share of a pixel a REFLECTED or REFRACTED branch must carry before it
+# is worth spending N sub-pixel continuations on instead of one.
+#
+# Without this, a plain glossy sphere -- whose only "reflection" is the ~4%
+# Fresnel sheen every PBR dielectric has -- spawns four extra traced rays per
+# pixel for a lobe contributing 4% of its colour, and measures both slower and
+# slightly worse than plain supersampling. The whole value of coverage is that
+# the expensive fallbacks fire only on the pixels that need them.
+ANALYTIC_AA_SECONDARY_MIN_ENERGY = float(
+    os.environ.get("ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY", "0.12"))
+
+# Minimum half-width, in pixels, of a filled circuit's drawn region. This
+# replaces the classic ``outline_w = 0.6 * pixel_size`` fill dilation, whose
+# purpose is to keep sub-pixel features (hairlines, thin glyph stems, degenerate
+# zero-area fills) from vanishing entirely. The classic constant is 0.6 of a
+# SUPERSAMPLE pixel and is therefore NOT anti-alias-level invariant: at the
+# reference AA=2 it dilates by 0.3 output pixels, at AA=1 by 0.6. Analytic AA
+# runs at AA=1, so 0.3 reproduces the reference appearance rather than doubling
+# every stroke weight. Tune only against rendered Text/Tex.
+ANALYTIC_AA_BEZ_MIN_HALF_WIDTH = float(
+    os.environ.get("ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH", "0.3"))
+
+# Maximum curve-to-chord flattening error, in pixels, for Bezier circuits under
+# analytic AA (overrides the primitive's own ``num_pixels_per_sample`` only when
+# it is looser). The classic 0.5 is measured against the SUPERSAMPLED height, so
+# at the AA=2 reference it is 0.25 output pixels; at AA=1 it would relax to 0.5
+# and a continuous coverage function would expose the flattening facets that box
+# filtering currently hides. Costs edges (memory + _bezier_point_metrics work).
+ANALYTIC_AA_CHORD_TOLERANCE = float(
+    os.environ.get("ALGAN_ANALYTIC_AA_CHORD_TOLERANCE", "0.25"))
+
+
+def set_analytic_aa(enabled, *, bezier=None, triangles=None, seam=None,
+                    sliver=None, secondary=None):
+    """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
+    global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
+    global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES
+    if secondary is not None:
+        ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
+    ANALYTIC_AA = bool(enabled)
+    if bezier is not None:
+        ANALYTIC_AA_BEZ = bool(bezier)
+    if triangles is not None:
+        ANALYTIC_AA_TRI = bool(triangles)
+    if seam is not None:
+        ANALYTIC_AA_SEAM = bool(seam)
+    if sliver is not None:
+        if sliver not in ANALYTIC_AA_SLIVER_MODES:
+            raise ValueError(
+                f"sliver must be one of {ANALYTIC_AA_SLIVER_MODES}")
+        ANALYTIC_AA_SLIVER = sliver
+
+
+def analytic_aa_secondary_samples():
+    """Live continuation-ray sample count; 1 (off) unless analytic AA is on.
+
+    Snapped to a supported set size, because the sub-pixel positions are a
+    compile-time table and N reaches the resolve as a template value.
+    """
+    if not ANALYTIC_AA:
+        return 1
+    n = int(ANALYTIC_AA_SECONDARY_SAMPLES)
+    for k in (8, 4, 2):
+        if n >= k:
+            return k
+    return 1
+
+
+def analytic_aa_sliver_mode():
+    """Index of the live sample-less-triangle policy in the mode tuple.
+
+    Read at call time (never imported by value) and returned as an int, because
+    it reaches the kernels as part of the ``aa`` template value: the geometry
+    kernels see ``1 + mode``, so each policy compiles its own variant and the
+    offline cache cannot serve one policy's kernel for another.
+    """
+    try:
+        return ANALYTIC_AA_SLIVER_MODES.index(ANALYTIC_AA_SLIVER)
+    except ValueError:
+        return ANALYTIC_AA_SLIVER_MODES.index("drop")
+
+
+def analytic_aa_bez_active():
+    """Live effective value of circuit analytic coverage.
+
+    Read at call time, never imported by value: settings are module globals with
+    env-var defaults and user code flips them after import.
+    """
+    return ANALYTIC_AA and ANALYTIC_AA_BEZ
+
+
+def analytic_aa_tri_active():
+    """Live effective value of flat-triangle analytic coverage."""
+    return ANALYTIC_AA and ANALYTIC_AA_TRI
+
+
 # UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle
 # scenes only). This variant is no longer maintained and no longer works; the
 # monolithic general wavefront is the only supported deterministic tracer.

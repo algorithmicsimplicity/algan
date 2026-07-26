@@ -199,6 +199,77 @@ def _alloc_wavefront_state(memory, tn, sca_width, *, global_hits=True):
     return core + (stub_f, stub_f, stub_f, stub_f, stub_i, stub_i)
 
 
+def _secondary_split_needed(merged):
+    """Does analytic AA make this scene's reflectors a SPLITTING path?
+
+    Two independent reasons, both of which need the shared continuation pool that
+    only a "splitting" batch gets:
+
+    1. ANALYTIC COVERAGE ITSELF. A reflector's silhouette pixel is only partly
+       covered, so its fragment's alpha is partial -- and the resolve sends a
+       reflection into the pixel's own ray slot only when the reflected energy
+       DOMINATES the pass-through (``refl_max >= cover_pass``). At a silhouette
+       it does not, so without the split path compiled in the reflection is
+       dropped outright: a dark rim around every mirror, and the more so the
+       better the coverage. Splitting is the correct answer there -- the
+       reflection goes to a pool slot and the pass-through continues -- and it is
+       the same thing a semi-transparent reflector already does.
+    2. CONTINUATION-RAY SUPERSAMPLING (``ANALYTIC_AA_SECONDARY_SAMPLES > 1``),
+       which needs N-1 spare slots for every reflective primary at once.
+
+    A plain opaque mirror was never a splitting path before, so such a scene got
+    ``pool_ratio == 1`` -- no spare slots at all -- and every attempted
+    reservation would fail. Worse, at ratio 1 the host IGNORES the pool's
+    overflow flag, so those failures are silent. Joining the existing split flag
+    rather than inventing a second notion of splitting also gets the compaction
+    and gen-fused decisions right, since both already treat splitting as a
+    property of the batch. The refraction-only kernel branches this compiles in
+    stay runtime-inert on a mirror-only scene.
+    """
+    reflective = bool(merged.get("tri_has_reflective")
+                      or merged.get("bez_has_reflective")
+                      or merged.get("tex_has_reflective")
+                      or merged.get("has_refl_transparent")
+                      or merged.get("has_refractive"))
+    if not reflective:
+        return False
+    return bool(rt_settings.analytic_aa_tri_active()
+                or rt_settings.analytic_aa_bez_active()
+                or int(rt_settings.analytic_aa_secondary_samples()) > 1)
+
+
+def _split_pool_ratio(splitting, merged):
+    """Spare pool slots per primary for a splitting batch.
+
+    Secondary supersampling needs N-1 slots for every reflective primary at once,
+    so the initial ratio is raised to N: the overflow retry (half the primaries,
+    same pool) would otherwise fire on every tile of a large mirror.
+
+    The base ratio is MULTIPLIED by N, not maxed against it. ``max`` was tried
+    and is a trap: the base of two exists because a pixel can hold several
+    splitting layers (glass has two -- the sphere's front and back sheets), so
+    with N continuations each the requirement is N per layer. At N=4 a
+    ``max(2, 4) = 4`` pool overflowed on every tile of a glass scene, and an
+    overflow DISCARDS the whole finished tile and re-renders it with half the
+    primaries: measured three retries and 12 resolve launches against
+    anti_alias_level=2's one retry and 4, i.e. the scene rendered about three
+    times over. A pool that is merely larger costs a smaller tile; a pool that
+    is too small costs the tile twice.
+
+    Only for a STRONG reflector or a refractor, though: a fragment whose
+    reflected branch is a dielectric's ~4% sheen spawns one ray, not N
+    (``ANALYTIC_AA_SECONDARY_MIN_ENERGY``), so it needs no extra slots.
+    """
+    ratio = int(REFRACT_INITIAL_POOL_RATIO) if splitting else 1
+    if _secondary_split_needed(merged) and bool(
+            merged.get("has_strong_reflective")
+            or merged.get("has_refractive")
+            or merged.get("has_refl_transparent")):
+        ratio = max(ratio, 1) * int(
+            rt_settings.analytic_aa_secondary_samples())
+    return ratio
+
+
 def _wavefront_state_bytes_per_primary(pool_ratio, extra_bytes_per_slot=0,
                                        extra_bytes_per_primary=0):
     """Bytes charged to one initial primary when sizing a wavefront tile.
@@ -271,8 +342,9 @@ def get_wavefront_memory_required(
     # Must stay in step with ``refraction_flag`` in render_batch_raytraced (it
     # sizes the split pool the kernel then writes into).
     refraction = bool(merged.get("has_refractive") or has_custom_scatter
-                      or merged.get("has_refl_transparent"))
-    pool_ratio = int(REFRACT_INITIAL_POOL_RATIO) if refraction else 1
+                      or merged.get("has_refl_transparent")
+                      or _secondary_split_needed(merged))
+    pool_ratio = _split_pool_ratio(refraction, merged)
     target_slots = max(1, int(rt_settings.WAVEFRONT_TILE_RAYS))
 
     def _route_primary(static_target):
@@ -839,8 +911,13 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # Refraction (general wavefront only; see refractive_det above). A custom
     # scatter may spawn a transmitted branch, so it needs the same split pool +
     # transmitted-branch code the refraction path compiles in.
+    # Continuation-ray supersampling makes every reflector a splitting path, so
+    # it needs the same shared pool (see _secondary_split_needed). Deterministic
+    # only: the Monte Carlo path tracer antialiases by jittered sampling already.
     refraction_flag = 1 if (refractive_det or refl_transparent_det
-                            or frag_scatters) else 0
+                            or frag_scatters
+                            or (samples <= 1
+                                and _secondary_split_needed(merged))) else 0
     # Environment map: append its texels to the shared texture buffer (the
     # merged dict is shallow-copied -- it is cached across batches) and, when
     # its ambient lighting is enabled, its SH irradiance as an extra light row.
@@ -1356,10 +1433,11 @@ def raytrace_render_wavefront(
     from algan.rendering.raytracing.refit_bvh import RefitBVH
     bvh_refit = 1 if isinstance(tri_bvh, RefitBVH) else 0
 
-    # Pool over-allocation for ray splitting. Only glass (reflective+refractive)
-    # surfaces split, so spare slots are reserved only when refraction is on; the
-    # non-refractive path keeps pool_ratio == 1 (one slot per pixel, as before).
-    pool_ratio = REFRACT_INITIAL_POOL_RATIO if refraction_flag else 1
+    # Pool over-allocation for ray splitting. Glass (reflective+refractive)
+    # surfaces split, and so does any reflector under continuation-ray
+    # supersampling; the plain single-ray path keeps pool_ratio == 1 (one slot
+    # per pixel, as before).
+    pool_ratio = _split_pool_ratio(refraction_flag, merged)
     # Read live (settings convention): runtime-mutable for tile-size A/B.
     primary_per_tile = max(1, rt_settings.WAVEFRONT_TILE_RAYS // pool_ratio)
 

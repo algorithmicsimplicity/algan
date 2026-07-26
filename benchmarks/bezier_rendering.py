@@ -1,5 +1,7 @@
 import os
 os.environ['ALGAN_PREFETCH_BATCHES'] = "0"
+os.environ["ALGAN_ADV_OPT"] = "1"
+os.environ["ALGAN_ANALYTIC_AA"] = "1"
 
 import torch
 from algan import *
@@ -24,7 +26,7 @@ text_string = ('a' * 50 + '\n') * 50
 
 def text_scene():
     with Off():
-        nn = NeuralNetMLPV3([3, 3, 3]).spawn()
+        nn = NeuralNetMLP([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
     with Sync(run_time=1):
         mob.move(LEFT)
@@ -33,4 +35,4 @@ def text_scene():
 
 set_log_level('DEBUG')
 
-profile_scene(text_scene, UHD.set_frames_per_second(60), runs=2, kernel_profiler=False)
+profile_scene(text_scene, UHD.set_frames_per_second(60).set_anti_alias_level(1), runs=2, kernel_profiler=False)

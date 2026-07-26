@@ -1203,6 +1203,40 @@ def _merge_scene(primitives):
         tri_uncertain_alpha = bool(tri_alpha_uncertain.any())
         _record_visibility("tri", lo, hi, opaque, tri_uncertain_alpha)
 
+        # Per-triangle source-primitive id, in merged triangle order (the same
+        # three-block layout ``_geom`` produces). Analytic anti-aliasing's seam
+        # rule unions the pixel coverage of consecutive fragments sharing this
+        # id instead of compositing them multiplicatively: two triangles of one
+        # mesh splitting a pixel at a shared edge cover it completely between
+        # them, and multiplicative blending would leave a background-coloured
+        # lattice along every internal edge (DESIGN_analytic_aa.md ss5).
+        # Granularity is the source primitive, which for a batched surface may
+        # hold several mobs -- deliberately conservative: over-grouping only
+        # trades a little background bleed at a silhouette where two mobs of one
+        # batch overlap, while under-grouping brings the lattice straight back.
+        obj_of = {id(p): i for i, p in
+                  enumerate(plain_triangles + textured_triangles)}
+
+        def _obj_block(p, n):
+            return torch.full((n,), obj_of[id(p)], dtype=torch.int32,
+                              device=device)
+
+        obj_parts = []
+        for p in plain_triangles:
+            nk = int(keep_idx[id(p)].numel())
+            if nk:
+                obj_parts.append(_obj_block(p, nk))
+        for p in textured_triangles:
+            obj_parts.append(_obj_block(p, int(p._rt_tri_pos.shape[1])))
+        for p in plain_triangles:
+            npromo = int(promo_idx[id(p)].numel())
+            if npromo:
+                obj_parts.append(_obj_block(p, npromo))
+        scene["tri_obj"] = (
+            torch.cat(obj_parts, 0).contiguous() if obj_parts
+            else torch.zeros((scene["tri_pos"].shape[1],), dtype=torch.int32,
+                             device=device))
+
         # tri_colors / tri_extra span only the kept per-vertex triangles + the
         # textured primitives (a textured primitive may carry only material /
         # normal maps and fall back to per-vertex colour, color-map offset -1).
@@ -1303,6 +1337,7 @@ def _merge_scene(primitives):
                                                 device=device)
         scene["tri_alpha_uncertain"] = torch.zeros(
             (1, 1), dtype=torch.bool, device=device)
+        scene["tri_obj"] = torch.zeros((1,), dtype=torch.int32, device=device)
         _record_visibility(
             "tri", torch.empty((0, 0, 3), device=device),
             torch.empty((0, 0, 3), device=device),
@@ -1327,8 +1362,16 @@ def _merge_scene(primitives):
         scene["tri_has_reflective"] = bool(
             ((refl > 0.0) | ((refl >= 0.0) & (ior > 1.0 + 1e-4))).any()
             or scene.get("tex_has_reflective"))
+        # A STRONG reflector -- metallic, not merely a dielectric's ~4% Fresnel
+        # sheen. Consumed by the tracer to decide whether a batch is worth
+        # over-allocating the split ray pool for: every PBR dielectric is
+        # "reflective" by the test above, and treating those as splitting
+        # quarters the tile size for a lobe nobody can see.
+        scene["has_strong_reflective"] = bool(
+            (refl > 0.2).any() or scene.get("tex_has_reflective"))
     else:
         scene["tri_has_reflective"] = bool(scene.get("tex_has_reflective"))
+        scene["has_strong_reflective"] = bool(scene.get("tex_has_reflective"))
 
     if pn_patches:
         scene["pn_ctrl"] = _cat_collections(

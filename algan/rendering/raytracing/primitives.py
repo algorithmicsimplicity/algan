@@ -790,6 +790,15 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         tolerance = float(self.num_pixels_per_sample)
         if tolerance <= 0:
             raise ValueError("num_pixels_per_sample must be greater than zero")
+        if rt_settings.analytic_aa_bez_active():
+            # Analytic coverage resolves the outline continuously, so it also
+            # exposes the flattening facets that the supersample box filter
+            # hides. The classic 0.5 is measured against the SUPERSAMPLED
+            # height, i.e. 0.25 output pixels at the AA=2 reference; analytic AA
+            # runs at AA=1, where the same number would relax to 0.5. Tighten
+            # (never loosen) to keep the reference smoothness.
+            tolerance = min(
+                tolerance, float(rt_settings.ANALYTIC_AA_CHORD_TOLERANCE))
         tolerance_squared = tolerance * tolerance
 
         chord_counts = torch.full(
