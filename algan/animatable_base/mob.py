@@ -122,7 +122,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
                 "location": additive_relation,
                 "basis": (
                     lambda x, y: squish(
-                        unsquish(y, -1, 3) @ unsquish(x, -1, 3), -2, -1
+                        unsquish(x, -1, 3) @ unsquish(y, -1, 3), -2, -1
                     ),
                     lambda x, y: squish(
                         get_rotation_between_bases(

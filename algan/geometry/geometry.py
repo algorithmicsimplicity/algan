@@ -190,13 +190,12 @@ def normalize(x, dim=-1, p=2, memory=None):
 
 
 def get_rotation_between_bases(basis1, basis2):
-    n1 = torch.diag_embed(1/basis1.norm(p=2, dim=-1))
+    """Return the right-side transform taking row basis1 to row basis2."""
+    n1 = torch.diag_embed(1 / basis1.norm(p=2, dim=-1))
     n2 = torch.diag_embed(basis2.norm(p=2, dim=-1))
     o1 = F.normalize(basis1, p=2, dim=-1)
     o2 = F.normalize(basis2, p=2, dim=-1)
-    rot = o2 @ o1.transpose(-2, -1)
-    # scale = n2 / n1
-    return (n2 @ (rot @ (n1)))  # .transpose(-2,-1)
+    return o1.transpose(-2, -1) @ (n1 @ (n2 @ o2))
 
 
 def get_rotation_between_orthonormal_bases(basis1, basis2):
