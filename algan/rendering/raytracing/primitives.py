@@ -1,3 +1,4 @@
+from algan.settings import SETTINGS
 import os
 
 import torch
@@ -18,9 +19,9 @@ from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 # rt_settings values are mutable module globals (set_samples_per_pixel etc.);
 # read them live as rt_settings.X -- importing them by value freezes them at
 # import time, before user code runs.
-from algan.rendering.raytracing import settings as rt_settings
+rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.settings import *  # noqa: F403 -- re-export for callers of this module
-from algan.settings.kernel_settings import KERNEL_SETTINGS
+from algan.settings.kernel_settings import KERNEL_REGISTRY
 
 
 def _set_raytrace_memory_estimates(primitive, camera):
@@ -537,7 +538,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     def render(self, primitives, scene, save_image, screen_width,
                screen_height, time_start, time_end, background_color,
                transparent_background=False, *args, **kwargs):
-        return KERNEL_SETTINGS.render_kernel(
+        return KERNEL_REGISTRY.render_kernel(
             primitives, scene, screen_width, screen_height, time_start,
             time_end, background_color, transparent_background, *args,
             **kwargs)
@@ -1129,7 +1130,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     def render(self, primitives, scene, save_image, screen_width,
                screen_height, time_start, time_end, background_color,
                transparent_background=False, *args, **kwargs):
-        return KERNEL_SETTINGS.render_kernel(
+        return KERNEL_REGISTRY.render_kernel(
             primitives, scene, screen_width, screen_height, time_start,
             time_end, background_color, transparent_background, *args,
             **kwargs)

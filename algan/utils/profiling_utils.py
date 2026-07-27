@@ -5,7 +5,7 @@ with it to get an end-to-end breakdown of video-production time. It is meant to
 be the one profiler reached for whenever a scene is being optimized:
 
     from algan.utils.profiling_utils import profile_scene
-    profile_scene(my_scene_func, render_settings, tag="my_scene")
+    profile_scene(my_scene_func, video_settings, tag="my_scene")
 
 What it reports
 ---------------
@@ -45,7 +45,7 @@ Usage from a benchmark script::
 
     from algan.utils.profiling_utils import profile_scene
     enable_ray_tracing(...)
-    profile_scene(scene_func, render_settings, tag)
+    profile_scene(scene_func, video_settings, tag)
 
 Env knobs (all optional):
     ALGAN_TI_KERNEL_PROFILER=0   disable the Taichi kernel profiler re-init
@@ -54,6 +54,7 @@ Env knobs (all optional):
     ALGAN_PROFILE_NVPROF=1       auto-run nvprof for registers/occupancy
     ALGAN_UNDER_NVPROF=1         (set by the nvprof child) run one lean render
 """
+from algan.settings import SETTINGS
 import os
 import cProfile
 import pstats
@@ -63,7 +64,7 @@ import sys
 import threading
 import time
 
-from algan import KERNEL_SETTINGS
+from algan import KERNEL_REGISTRY
 from collections import defaultdict
 from contextlib import contextmanager
 
@@ -498,7 +499,7 @@ def install_pipeline_hooks():
               "post-process (downsample/FXAA/glow)")
     _try_wrap(rtr, "raytrace_render_wavefront", "wavefront_loop")
     #_try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
-    _try_wrap(KERNEL_SETTINGS, "render_kernel", "ray traced render total")
+    _try_wrap(KERNEL_REGISTRY, "render_kernel", "ray traced render total")
 
     # Previously-unaccounted wall time: the per-batch memory reclaim
     # (gc.collect + cuda cache release; gc dominates -- see empty_cache) and
@@ -843,7 +844,7 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
             pass
 
     scene = SceneManager.reset()
-    scene.set_render_settings(settings)
+    scene.set_video_settings(settings)
     scene_func()
 
     sampler = GpuTelemetrySampler().start() if telemetry else None
@@ -857,7 +858,7 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
         profiler.enable()
     render_to_file(
         os.path.join(OUT_DIR, f"profiling{tag}_run{run_index}.mp4"),
-        render_settings=settings,
+        video_settings=settings,
     )
     if profiler is not None:
         profiler.disable()
@@ -1048,7 +1049,7 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
 # ---------------------------------------------------------------------------
 # The one universal entry point
 # ---------------------------------------------------------------------------
-def profile_scene(scene_func, render_settings, tag="", runs=None,
+def profile_scene(scene_func, video_settings, tag="", runs=None,
                   kernel_profiler=None, telemetry=None, nvprof=None,
                   samples_per_pixel=1):
     """Profile ``scene_func`` end-to-end and write a report.
@@ -1060,7 +1061,7 @@ def profile_scene(scene_func, render_settings, tag="", runs=None,
     scene_func : callable
         Builds the scene (spawns mobs, issues animations). Called after a fresh
         ``SceneManager.reset()`` each run.
-    render_settings : RenderSettings
+    video_settings : VideoSettings
         Passed straight to ``render_to_file`` (e.g. ``HD``).
     tag : str
         Suffix for the output mp4 / report / cProfile files.
@@ -1088,7 +1089,7 @@ def profile_scene(scene_func, render_settings, tag="", runs=None,
     if under_nvprof():
         install_instrumentation()
         os.makedirs(OUT_DIR, exist_ok=True)
-        run_once(scene_func, render_settings, tag, 0, telemetry=False)
+        run_once(scene_func, video_settings, tag, 0, telemetry=False)
         return
 
     if runs is None:
@@ -1112,7 +1113,7 @@ def profile_scene(scene_func, render_settings, tag="", runs=None,
     results = []
     for i in range(1, runs + 1):
         print(f"\n===== profiling run {i}/{runs} ({'cold' if i == 1 else 'warm'}) =====")
-        results.append(run_once(scene_func, render_settings, tag, i,
+        results.append(run_once(scene_func, video_settings, tag, i,
                                 telemetry=telemetry))
 
     nvprof_results = None

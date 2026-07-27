@@ -1,4 +1,5 @@
 from __future__ import annotations
+from algan.settings import SETTINGS
 
 import torch
 
@@ -177,7 +178,7 @@ def _finalize_on_device(frame, original_num_channels, memory, *,
     # in-composite tonemap ti.funcs) instead of the ~20-op/pixel torch
     # pipeline -- it reads RGB (0-2), drops the glow channel and picks up any
     # alpha (channel 4) itself, so it needs no torch strip.
-    from algan.rendering.raytracing import settings as _rt
+    _rt = SETTINGS.raytracing
     if (tonemap_enabled and frame.dtype != torch.uint8
             and _rt.is_post_tonemap_kernel_enabled()):
         from algan.rendering.post_processing.tonemap_kernels_taichi import (
@@ -233,7 +234,7 @@ def _finalize_on_device(frame, original_num_channels, memory, *,
 
 
 def post_process_frames(self, frames, anti_alias_level, post_processes=(), apply_fxaa=False):
-    from algan.rendering.raytracing import settings as rt_settings
+    rt_settings = SETTINGS.raytracing
     # Byte frames are never linear-HDR, whatever the toggle says: the render
     # loop picks the float buffer from the same setting, but a caller that
     # hands over uint8 frames (or a scene rendered before the toggle flipped)

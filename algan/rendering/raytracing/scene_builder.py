@@ -1,10 +1,11 @@
 """Collection of helper functions used to combine collections of primitives
 into contiguous tensor data-structures, ready to be shipped to ray tracing kernels.
 """
+from algan.settings import SETTINGS
+from algan.settings._startup import _RENDER_DEVICE
 import torch
 import torch.nn.functional as F
 
-from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
 from algan.rendering.raytracing.primitives import (
     RayTracedBezierCircuitPrimitive,
@@ -530,7 +531,7 @@ def _build_accel(lo, hi, num_frames, tightness, opaque=None,
     deferred build (see ``build_deferred_bvhs``) reproduces the tree kind the
     batch's placeholder trees were merged with, even if the user flipped the
     toggle in between."""
-    from algan.rendering.raytracing import settings as _rts
+    _rts = SETTINGS.raytracing
     if _rts.refit_bvh_active() if refit is None else refit:
         return build_refit_bvh(lo, hi, num_frames=num_frames, opaque=opaque)
     return build_stbvh(lo, hi, num_frames=num_frames, tightness=tightness,
@@ -580,7 +581,7 @@ def _bvh_deferral_eligible(scene):
     ``build_deferred_bvhs`` before any traversal could happen -- so a false
     positive here costs a late build, never a wrong image.
     """
-    from algan.rendering.raytracing import settings as _rts
+    _rts = SETTINGS.raytracing
     if not (_rts.BVH_DEFER and _rts.HYBRID_RASTER):
         return False
     if int(_rts.SAMPLES_PER_PIXEL) > 1 or _rts.SHADOWS or _rts.INPLACE_AA:
@@ -624,7 +625,7 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames,
 
     if (_bvh_deferral_eligible(scene)
             and (tri_inputs is not None or bez_inputs is not None)):
-        from algan.rendering.raytracing import settings as _rts
+        _rts = SETTINGS.raytracing
         placeholder = _empty_scene_part(device)
         if tri_inputs is not None:
             lo, hi, opaque = tri_inputs
@@ -991,7 +992,7 @@ def _merge_scene(primitives):
     if cached is not None:
         return cached
 
-    from algan.rendering.raytracing import settings as _rts
+    _rts = SETTINGS.raytracing
 
     # By default the merge + STBVH build run on the render device (much faster
     # than the CPU build) rather than on the projected primitives' source
@@ -1006,7 +1007,7 @@ def _merge_scene(primitives):
     track_peak = gpu_merge and _rts.MERGE_TRACK_PEAK
     peak_base = None
     if gpu_merge:
-        device = COMPUTING_DEFAULTS.render_device
+        device = _RENDER_DEVICE
         if track_peak:
             torch.cuda.reset_peak_memory_stats(device)
             peak_base = torch.cuda.memory_allocated(device)
@@ -1113,7 +1114,7 @@ def _merge_scene(primitives):
         # every triangle is kept and this reduces byte-identically to the plain
         # per-vertex merge (see _sel: an all-keep selection returns the original
         # tensor, uncopied).
-        from algan.rendering.raytracing import settings as _rts
+        _rts = SETTINGS.raytracing
         # The textured wavefront does its own (three-group) constant/per-vertex
         # promotion from the full per-vertex arrays, so the built-in single-map
         # promotion is turned off for it (it would shrink tri_colors/tri_extra
@@ -1605,7 +1606,7 @@ def _merge_scene(primitives):
     # kept for reference). Builds the three per-triangle texture banks +
     # indexes the textured wavefront kernel consumes.
     scene["textured_active"] = False
-    from algan.rendering.raytracing import settings as _rts
+    _rts = SETTINGS.raytracing
     if (_rts.WF_TEXTURED and scene["num_triangles"] > 0
             and scene["num_pn"] == 0 and scene["num_circuits"] == 0):
         _build_textured_scene(scene, num_frames, device)

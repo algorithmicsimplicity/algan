@@ -1,3 +1,4 @@
+from algan.settings import SETTINGS
 import math
 
 import torch.nn.functional as F
@@ -11,7 +12,6 @@ from algan.constants.color import *
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.animatable_base.mob import Mob
-from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.settings.renderer_settings import effective_triangle_primitive
 from algan.utils.tensor_utils import (
     broadcast_all,
@@ -464,7 +464,7 @@ class SurroundingRectangle(Quad):
         self,
         *mobjects,
         color=None,
-        buff=STYLE_DEFAULTS.buffer * 0.5,
+        buff=None,
         corner_radius=0.0,
         buffer=None,
         bottom_buffer=None,
@@ -474,6 +474,8 @@ class SurroundingRectangle(Quad):
             raise ValueError("SurroundingRectangle requires at least one Mobject")
         if buffer is not None:
             buff = buffer
+        elif buff is None:
+            buff = SETTINGS.style.buffer * 0.5
         if isinstance(buff, (tuple, list)):
             horizontal_buff, vertical_buff = buff
         else:

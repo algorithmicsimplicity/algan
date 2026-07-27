@@ -1,4 +1,4 @@
-from algan.settings.defaults import COMPUTING_DEFAULTS
+from algan.settings._startup import _ANIMATION_DEVICE
 from algan.constants.color import Color
 
 
@@ -8,7 +8,7 @@ def get_image(file_path):
 
         file_path = (
             torchvision.io.read_image(file_path)
-            .to(COMPUTING_DEFAULTS.animation_device)
+            .to(_ANIMATION_DEVICE)
             .permute(1, 2, 0)
         )
         file_path = file_path.float() / 255

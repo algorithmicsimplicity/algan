@@ -1,10 +1,10 @@
-from pathlib import Path
 import math
+from pathlib import Path
+
+from algan.settings import SETTINGS
 
 import torch.nn.functional as F
 
-from algan.settings.defaults import *
-from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.errors import AlganConfigurationError
 
 from algan.constants.spatial import *
@@ -49,6 +49,7 @@ class active_scene_method:
 
         return call_on_active_scene
 
+
 class Scene(RenderLoopMixin):
     """The container that turns recorded animations into rendered video.
 
@@ -68,9 +69,9 @@ class Scene(RenderLoopMixin):
 
     Parameters
     ----------
-    render_settings
+    video_settings
         Resolution / fps / quality settings (see
-        :mod:`algan.settings.render_settings`).
+        :mod:`algan.settings.video_settings`).
     background_frame
         Background color/image or procedural callable. A Taichi ``@ti.func``
         uses the scalar ``(x, y, time) -> color`` contract. Python callables
@@ -87,17 +88,25 @@ class Scene(RenderLoopMixin):
 
     def __init__(
         self,
-            render_settings=None,
+        video_settings=None,
         background_frame=None,
         output_path="output",
         memory=None,
         scene_initializer=None,
+        *,
+        render_settings=None,
     ):
-        if render_settings is None:
-            render_settings = RENDERING_DEFAULTS.settings
+        if render_settings is not None:
+            if video_settings is not None:
+                raise AlganConfigurationError(
+                    "Specify video_settings or legacy render_settings, not both"
+                )
+            video_settings = render_settings
+        if video_settings is None:
+            video_settings = SETTINGS.video
         if background_frame is None:
-            background_frame = STYLE_DEFAULTS.frame
-        self.set_render_settings(render_settings)
+            background_frame = SETTINGS.style.frame
+        self.set_video_settings(video_settings)
         self.current_time = 0
         self.min_time = 0
         self.max_time = 0
@@ -130,7 +139,7 @@ class Scene(RenderLoopMixin):
         self.light_sources = []
         self.scene_times = [[self.current_time, self.current_time]]
         depth_source = (
-            STYLE_DEFAULTS.frame if callable(background_frame) else background_frame
+            SETTINGS.style.frame if callable(background_frame) else background_frame
         )
         self.background_depths = torch.full_like(
             depth_source[..., :1],
@@ -320,7 +329,7 @@ class Scene(RenderLoopMixin):
             return None
 
         clips_to_compose = []
-        start_time = self.scene_times[-1][0] / self.render_settings.frames_per_second
+        start_time = self.scene_times[-1][0] / self.video_settings.frames_per_second
         for audio_effect in self.effects:
             timed_clip = audio_effect.audio_clip.with_start(
                 audio_effect.start_time_func() - start_time
@@ -363,7 +372,7 @@ class Scene(RenderLoopMixin):
         self.background_color = self._initial_background_frame
         self.background_is_set = False
         depth_source = (
-            STYLE_DEFAULTS.frame
+            SETTINGS.style.frame
             if callable(self.background_frame)
             else self.background_frame
         )
@@ -385,18 +394,38 @@ class Scene(RenderLoopMixin):
         self.reset_scene()
         return self
 
-    def set_render_settings(self, render_settings):
-        self.render_settings = render_settings
+    def set_video_settings(self, video_settings):
+        if not hasattr(video_settings, "resolution"):
+            raise AlganConfigurationError(
+                "video_settings must be a VideoSettings instance or compatible preset"
+            )
+        self.video_settings = (
+            video_settings.as_preset()
+            if hasattr(video_settings, "as_preset")
+            else video_settings
+        )
+        video_settings = self.video_settings
         self.num_pixels_screen_width, self.num_pixels_screen_height = (
-            render_settings.resolution
+            video_settings.resolution
         )
         self.frame_size = torch.tensor(
             (self.num_pixels_screen_height, self.num_pixels_screen_width)
         )
-        self.frames_per_second = render_settings.frames_per_second
+        self.frames_per_second = video_settings.frames_per_second
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
         return self
+
+    # Backwards-compatible name retained for existing scene scripts.
+    set_render_settings = set_video_settings
+
+    @property
+    def render_settings(self):
+        return self.video_settings
+
+    @render_settings.setter
+    def render_settings(self, value):
+        self.set_video_settings(value)
 
     def background_is_transparent(self):
         if hasattr(self.background_frame, '__call__'):
@@ -409,7 +438,10 @@ class Scene(RenderLoopMixin):
     def show_frame(self, time_stamp=None):
         from algan.utils.plotting_utils import plot_tensor
         if time_stamp is None:
-            time_stamp = self.animation_manager.context.current_time + 1.5/self.render_settings.frames_per_second
+            time_stamp = (
+                self.animation_manager.context.current_time
+                + 1.5 / self.video_settings.frames_per_second
+            )
         time_ind = self._frame_index_for_timestamp(time_stamp)
         frames = []
         for frame in self.get_frames(time_ind, time_ind + 1):
@@ -426,20 +458,20 @@ class Scene(RenderLoopMixin):
             raise AlganConfigurationError(
                 "time_stamp must be finite and non-negative"
             )
-        return round(time_stamp * self.render_settings.frames_per_second)
+        return round(time_stamp * self.video_settings.frames_per_second)
 
-    def _save_frame(self, file_path, render_settings=None, time_stamp=None):
-        if not COMPUTING_DEFAULTS.allow_save_frame:
+    def _save_frame(self, file_path, video_settings=None, time_stamp=None):
+        if not SETTINGS.computing.allow_save_frame:
             return None
 
-        previous_settings = self.render_settings
+        previous_settings = self.video_settings
         try:
-            if render_settings is not None:
-                self.set_render_settings(render_settings)
+            if video_settings is not None:
+                self.set_video_settings(video_settings)
             if time_stamp is None:
                 time_stamp = (
                     self.animation_manager.context.timespan.current_time
-                    + 1.5 / self.render_settings.frames_per_second
+                    + 1.5 / self.video_settings.frames_per_second
                 )
             time_ind = self._frame_index_for_timestamp(time_stamp)
             frames = []
@@ -454,13 +486,20 @@ class Scene(RenderLoopMixin):
             torchvision.utils.save_image(frames[-1], str(file_path))
             return frames
         finally:
-            # set_render_settings restores every derived cache (dimensions,
+            # set_video_settings restores every derived cache (dimensions,
             # fps, frame size, pixel count), not merely the settings reference.
-            if self.render_settings is not previous_settings:
-                self.set_render_settings(previous_settings)
+            if self.video_settings is not previous_settings:
+                self.set_video_settings(previous_settings)
 
     @active_scene_method
-    def save_frame(self, file_path, render_settings=None, time_stamps=None):
+    def save_frame(
+        self,
+        file_path,
+        video_settings=None,
+        time_stamps=None,
+        *,
+        render_settings=None,
+    ):
         """Render one or more still frames to ``file_path``.
 
         A bare filename is placed in Algan's default output directory. A
@@ -472,11 +511,17 @@ class Scene(RenderLoopMixin):
         # package initialization while sharing video output's exact resolver.
         from algan.utils.algan_utils import _resolve_output_destination
 
+        if render_settings is not None:
+            if video_settings is not None:
+                raise AlganConfigurationError(
+                    "Specify video_settings or legacy render_settings, not both"
+                )
+            video_settings = render_settings
         output_path = _resolve_output_destination(file_path, ".png")
         if not hasattr(time_stamps, "__len__"):
             return self._save_frame(
                 output_path,
-                render_settings,
+                video_settings,
                 time_stamps,
             )
         suffix = output_path.suffix
@@ -484,7 +529,7 @@ class Scene(RenderLoopMixin):
         return [
             self._save_frame(
                 stem_path.with_name(f"{stem_path.name}_{time_stamp}{suffix}"),
-                render_settings,
+                video_settings,
                 time_stamp,
             )
             for time_stamp in time_stamps
@@ -494,7 +539,7 @@ class Scene(RenderLoopMixin):
         if (background_color is None) or (self.background_is_set and not overwrite):
             return self
         if isinstance(background_color, str):
-            a = self.render_settings.anti_alias_level
+            a = self.video_settings.anti_alias_level
             background_color = F.interpolate(get_image(background_color).transpose(0,-1).unsqueeze(0), [_*a for _ in tuple(self.frame_size)],
                                              mode='bilinear', antialias='bilinear').squeeze(0).permute(1,2,0).unsqueeze(0)
         self.background_frame = self.background_color = background_color

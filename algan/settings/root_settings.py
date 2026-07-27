@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import dataclass
+
+from algan.errors import AlganConfigurationError
+from algan.settings.computing_settings import ComputingSettings
+from algan.settings.path_settings import PathSettings
+from algan.settings.raytracing_settings import RayTracingPreset, RayTracingSettings
+from algan.settings.style_settings import StyleSettings
+from algan.settings.video_settings import LD, VideoSettings
+
+
+@dataclass(frozen=True)
+class SettingsSnapshot:
+    """Immutable snapshot of all public runtime-adjustable settings."""
+
+    computing: ComputingSettings
+    paths: PathSettings
+    style: StyleSettings
+    video: VideoSettings
+    raytracing: RayTracingPreset
+
+
+class AlganSettings:
+    """Stable process-global root for runtime-adjustable Algan settings.
+
+    Section objects keep stable identities. Call ``SETTINGS.video.set(...)``
+    rather than replacing ``SETTINGS.video`` so imports made by engine modules
+    always observe the current values.
+    """
+
+    __slots__ = ("computing", "paths", "style", "video", "raytracing")
+
+    def __init__(self):
+        object.__setattr__(self, "computing", ComputingSettings())
+        object.__setattr__(self, "paths", PathSettings())
+        object.__setattr__(self, "style", StyleSettings())
+        object.__setattr__(self, "video", LD.as_mutable())
+        object.__setattr__(self, "raytracing", RayTracingSettings())
+
+    def __setattr__(self, name, value):
+        if name in self.__slots__:
+            raise AlganConfigurationError(
+                f"SETTINGS.{name} has stable identity; call SETTINGS.{name}.set(...)"
+            )
+        raise AttributeError(name)
+
+    def snapshot(self) -> SettingsSnapshot:
+        return SettingsSnapshot(
+            computing=self.computing.as_preset(),
+            paths=self.paths.as_preset(),
+            style=self.style.as_preset(),
+            video=self.video.as_preset(),
+            raytracing=self.raytracing.as_preset(),
+        )
+
+    def restore(self, snapshot: SettingsSnapshot):
+        if not isinstance(snapshot, SettingsSnapshot):
+            raise AlganConfigurationError("SETTINGS.restore requires a SettingsSnapshot")
+        self.computing.set(**snapshot.computing.to_dict())
+        self.paths.set(**snapshot.paths.to_dict())
+        self.style.set(**snapshot.style.to_dict())
+        self.video.set(**snapshot.video.to_dict())
+        self.raytracing._restore(snapshot.raytracing.to_dict())
+        return self
+
+    @contextmanager
+    def override(self, **sections):
+        """Temporarily override one or more sections and restore on exit.
+
+        Example: ``with SETTINGS.override(raytracing={"samples_per_pixel": 4}):``
+        """
+        unknown = [name for name in sections if name not in self.__slots__]
+        if unknown:
+            raise AlganConfigurationError(f"Unknown settings section '{unknown[0]}'")
+        snapshot = self.snapshot()
+        try:
+            for name, values in sections.items():
+                if not isinstance(values, dict):
+                    raise AlganConfigurationError(
+                        f"SETTINGS.override({name}=...) requires a dict of fields"
+                    )
+                getattr(self, name).set(**values)
+            yield self
+        finally:
+            self.restore(snapshot)

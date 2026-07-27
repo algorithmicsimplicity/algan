@@ -74,7 +74,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shadow_occluded,
 )
 from algan.rendering.raytracing.shading_taichi import _MID_UNLIT
-from algan.rendering.raytracing.settings import SOFT_SHADOW_SAMPLES
+from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     _DONE,

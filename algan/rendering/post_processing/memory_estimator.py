@@ -8,6 +8,9 @@ from functools import partial
 
 import torch
 
+from algan.settings import SETTINGS
+from algan.settings._startup import _RENDER_DEVICE
+
 
 def _numel(shape):
     return math.prod(int(x) for x in shape)
@@ -278,7 +281,7 @@ def get_post_process_memory_required(
     lifetime cannot be inferred safely; they should expose a built-in-style
     planner before participating in automatic batching.
     """
-    from algan.rendering.raytracing import settings as rt_settings
+    rt_settings = SETTINGS.raytracing
     if tonemap_enabled is None:
         tonemap_enabled = rt_settings.is_post_process_tonemap_enabled()
     if tonemapping is None:
@@ -288,8 +291,7 @@ def get_post_process_memory_required(
     if tonemap_kernel is None:
         tonemap_kernel = rt_settings.is_post_tonemap_kernel_enabled()
     if device is None:
-        from algan.settings.defaults import COMPUTING_DEFAULTS
-        device = COMPUTING_DEFAULTS.render_device
+        device = _RENDER_DEVICE
     device = torch.device(device)
 
     shape = tuple(int(x) for x in frame_shape)

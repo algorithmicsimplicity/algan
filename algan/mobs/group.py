@@ -1,3 +1,4 @@
+from algan.settings import SETTINGS
 import math
 
 import torch
@@ -7,7 +8,6 @@ from algan.animation_timeline.animation_contexts import Sync, Off
 from algan.constants.spatial import RIGHT, DOWN, ORIGIN
 from algan.errors import AlganConfigurationError
 from algan.animatable_base.mob import Mob
-from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.python_utils import traverse
 from algan.utils.tensor_utils import dot_product, broadcast_gather
 
@@ -188,7 +188,7 @@ class Group(Mob):
     def arrange_in_line(
         self,
         direction: torch.Tensor = RIGHT,
-        buffer: float = STYLE_DEFAULTS.buffer,
+        buffer: float | None = None,
         start_at_first: bool = False,
         equal_displacement: bool = False,
         alignment_direction: torch.Tensor | None = None,
@@ -219,6 +219,8 @@ class Group(Mob):
 
         if not self.children:
             return self
+        if buffer is None:
+            buffer = SETTINGS.style.buffer
 
         mob_sizes = [
             (
@@ -271,7 +273,7 @@ class Group(Mob):
         num_rows: int = None,
         row_direction: torch.Tensor = RIGHT,
         column_direction: torch.Tensor = DOWN,
-        buffer=STYLE_DEFAULTS.buffer,
+        buffer=None,
         column_buffer=None,
         tight_axis=None,
     ):
@@ -314,6 +316,8 @@ class Group(Mob):
         """
         if not self.children:
             return self
+        if buffer is None:
+            buffer = SETTINGS.style.buffer
         if column_buffer is None:
             column_buffer = buffer
         if num_rows is None:

@@ -1,3 +1,5 @@
+from algan.settings._startup import _ANIMATION_DEVICE
+from algan.settings import SETTINGS
 import copy
 
 import numpy
@@ -12,7 +14,6 @@ from algan.utils.lazy_import import LazyModule
 
 mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 #mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
-from algan.settings.style_defaults import *
 from algan.animation_timeline.animation_contexts import (
     Sync,
     Off,
@@ -42,7 +43,7 @@ def make_manim_dir():
 
     Touching ``mn.config`` loads manim, and with it
     :mod:`algan.utils.manim_svg_cache`, which first redirects these
-    directories into ``DIRECTORY_DEFAULTS.cache_directory``.
+    directories into ``SETTINGS.paths.cache_directory``.
 
     Called lazily on first :class:`Tex` construction (manim errors if they are
     missing) rather than at ``import algan`` time, so importing the package
@@ -128,7 +129,7 @@ class Tex(Mob):
             )
 
         def maybe_flip(submob):
-            x = torch.from_numpy(submob.points).to(COMPUTING_DEFAULTS.animation_device)
+            x = torch.from_numpy(submob.points).to(_ANIMATION_DEVICE)
             if (not latex) or (not isinstance(submob, mn.VMobjectFromSVGPath)):
                 return x.flip(-2)
             return x
@@ -165,7 +166,7 @@ class Tex(Mob):
         bezier_paths = [
             unsquish(
                 torch.from_numpy(char.points)
-                .to(COMPUTING_DEFAULTS.animation_device)
+                .to(_ANIMATION_DEVICE)
                 .float(),
                 -2,
                 4,
@@ -333,7 +334,7 @@ class OldTex(Mob):
             del kwargs["preamble"]
 
         if "color" not in kwargs:
-            kwargs["color"] = STYLE_DEFAULTS.text_color
+            kwargs["color"] = SETTINGS.style.text_color
 
         kwargs2 = {k: v for k, v in kwargs.items()}
         if "create" in kwargs2:

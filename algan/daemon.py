@@ -29,12 +29,9 @@ coalesce into at most one queued re-run):
 Between runs the daemon restores a clean slate:
 
 * ``SceneManager.reset()`` -- fresh scene, camera, light and timeline.
-* Settings snapshot/restore -- public scalar toggles of
-  ``algan.rendering.raytracing.settings`` and the ``*_DEFAULTS`` singletons
-  are reset to their import-time values, so one run's ``set_*`` calls cannot
-  leak into the next. (Shallow: in-place mutation of a tensor held by a
-  default would leak; reassignments -- the normal pattern -- are covered.
-  Private state is deliberately kept, e.g. the adaptive gen-fused decision.)
+* ``SETTINGS.snapshot()`` / ``SETTINGS.restore()`` resets every public
+  runtime settings section to its import-time value, so one run cannot leak
+  configuration into the next. Private adaptive renderer state is retained.
 * User helper modules -- modules imported from the script's directory tree
   are evicted from ``sys.modules`` so the next run picks up their edits (the
   daemon prints what it evicted). Modules imported from elsewhere are NOT
@@ -45,6 +42,7 @@ modules stay stale, and editing ``*_taichi.py`` kernel sources under a live
 Taichi JIT can compile mixed-version kernels (the daemon warns when it sees
 algan sources change). Keep to one rendering process at a time on Windows.
 """
+from algan.settings import SETTINGS
 import argparse
 import os
 import queue
@@ -61,7 +59,6 @@ from algan import SceneManager
 DEFAULT_PORT = int(os.environ.get("ALGAN_DAEMON_PORT", "46711"))
 _ALGAN_DIR = os.path.dirname(os.path.abspath(algan.__file__))
 
-_SIMPLE = (bool, int, float, str, tuple, type(None))
 
 
 def _say(msg):
@@ -78,40 +75,25 @@ def _is_under(path, root):
 
 
 class _SettingsSnapshot:
-    """Import-time snapshot of the mutable settings surface."""
+    """Import-time snapshot of the public settings and service registries."""
 
     def __init__(self):
-        from algan.rendering.raytracing import settings as rt_settings
+        self._settings = SETTINGS.snapshot()
+        from algan.settings.kernel_settings import KERNEL_REGISTRY
+        from algan.settings.renderer_settings import RENDERER_REGISTRY
 
-        self._module_values = [
-            (rt_settings, {
-                name: value for name, value in vars(rt_settings).items()
-                if not name.startswith("_") and name.isupper()
-                and isinstance(value, _SIMPLE)
-            }),
-        ]
-        self._object_dicts = []
-        for attr in ("COMPUTING_DEFAULTS", "RENDERING_DEFAULTS",
-                     "STYLE_DEFAULTS", "DIRECTORY_DEFAULTS"):
-            obj = getattr(algan, attr, None)
-            if obj is not None:
-                self._object_dicts.append((obj, dict(vars(obj))))
-        try:
-            from algan.settings.renderer_settings import RENDERER_SETTINGS
-            self._object_dicts.append(
-                (RENDERER_SETTINGS, dict(vars(RENDERER_SETTINGS))))
-        except Exception:
-            pass
+        self._renderer = dict(vars(RENDERER_REGISTRY))
+        self._kernel = dict(vars(KERNEL_REGISTRY))
 
     def restore(self):
-        for module, values in self._module_values:
-            for name, value in values.items():
-                setattr(module, name, value)
-        for obj, saved in self._object_dicts:
-            live = vars(obj)
-            for key in [k for k in live if k not in saved]:
-                del live[key]
-            live.update(saved)
+        SETTINGS.restore(self._settings)
+        from algan.settings.kernel_settings import KERNEL_REGISTRY
+        from algan.settings.renderer_settings import RENDERER_REGISTRY
+
+        vars(RENDERER_REGISTRY).clear()
+        vars(RENDERER_REGISTRY).update(self._renderer)
+        vars(KERNEL_REGISTRY).clear()
+        vars(KERNEL_REGISTRY).update(self._kernel)
 
 
 class _AlganSourceGuard:

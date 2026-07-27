@@ -4,7 +4,7 @@ import torch
 import re
 
 from algan.utils.tensor_utils import broadcast, cast_to_tensor
-from algan.settings.defaults import COMPUTING_DEFAULTS
+from algan.settings._startup import _ANIMATION_DEVICE
 
 re_hex = re.compile("((?<=#)|(?<=0x))[A-F0-9]{6,8}", re.IGNORECASE)
 
@@ -24,7 +24,7 @@ class Color(torch.Tensor):
         return (
             super()
             .__new__(cls, (*rgb, glow, opacity), *args, **kwargs)
-            .to(COMPUTING_DEFAULTS.animation_device)
+            .to(_ANIMATION_DEVICE)
         )
 
     def __init__(self, rgb, glow=0, opacity=1, *args, **kwargs):

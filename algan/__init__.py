@@ -37,15 +37,22 @@ torch.set_grad_enabled(False)
 c = torch.inference_mode()
 c.__enter__()
 
+from algan.settings import *
+from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
 from algan.settings.defaults import *
+
+if _ANIMATION_DEVICE.type != "cpu":
+    torch.set_default_device(_ANIMATION_DEVICE)
+torch.set_default_dtype(torch.float32)
 from algan.errors import *
 from algan.settings.style_defaults import *
 from algan.logging.logger import get_logger, set_log_level
+get_logger().info(f"Rendering device set to {_RENDER_DEVICE}")
 
 from algan.utils.memory_utils import ManualMemory
 from algan.scene_manager import SceneManager
 
-from algan.settings.render_settings import *
+from algan.settings.video_settings import *
 
 from algan.constants.spatial import *
 from algan.constants.color import *
@@ -115,6 +122,7 @@ from algan.rendering.shaders.pbr_shaders import (
     basic_pbr_shader,
     null_shader,
 )
+SETTINGS.style.set(default_shader=default_shader)
 from algan.rendering.shaders.fragment_shaders import (
     FragmentStage,
     cosine_color,
@@ -136,8 +144,8 @@ from algan.rendering.raytracing.shading_taichi import (
 
 from algan.rendering.raytracing.tracer import RenderPlan, render_batch_raytraced
 
-from algan.settings.kernel_settings import KERNEL_SETTINGS
-KERNEL_SETTINGS.render_kernel = render_batch_raytraced
+from algan.settings.kernel_settings import KERNEL_REGISTRY
+KERNEL_REGISTRY.render_kernel = render_batch_raytraced
 
 from algan.animations.manim_animations import *
 from algan.animations.movement import *
@@ -150,20 +158,21 @@ def clear_cache(include_taichi_kernels=False):
     """Delete Algan's content caches (tessellations, manim Tex/Text, audio).
 
     The Taichi offline kernel cache lives inside the cache directory too
-    (``DIRECTORY_DEFAULTS.taichi_cache_directory``) but is spared by default:
+    (the environment-selected Taichi cache directory) but is spared by default:
     it holds compiled kernels (minutes to rebuild), is version-keyed, and is
     never invalidated by scene-content changes. Pass
     ``include_taichi_kernels=True`` to wipe it as well (e.g. before
     A/B-benchmarking kernel edits -- the offline cache does not invalidate on
     ``@ti.func`` changes).
     """
-    f = DIRECTORY_DEFAULTS.cache_directory
+    f = SETTINGS.paths.cache_directory
     if not os.path.exists(f):
         return
     if include_taichi_kernels:
         shutil.rmtree(f)
         return
-    keep = os.path.normcase(os.path.abspath(DIRECTORY_DEFAULTS.taichi_cache_directory))
+    from algan.settings._startup import _TAICHI_CACHE_DIRECTORY
+    keep = os.path.normcase(os.path.abspath(_TAICHI_CACHE_DIRECTORY))
     for entry in os.listdir(f):
         p = os.path.join(f, entry)
         if os.path.normcase(os.path.abspath(p)) == keep:

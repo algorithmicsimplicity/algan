@@ -1,7 +1,8 @@
+from algan.settings._startup import _RENDER_DEVICE
+from algan.settings import SETTINGS
 import gc
 import torch
 
-from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.constants.math import GIGABYTES
 
 
@@ -52,7 +53,7 @@ def get_num_available_bytes(device=torch.device("cuda")):
         free_bytes = min(free_bytes, 1 * GIGABYTES)
         return free_bytes
     else:
-        return COMPUTING_DEFAULTS.max_cpu_memory_used
+        return SETTINGS.computing.max_cpu_memory_used
 
 
 def _gpu_memory_pressure(threshold=0.8):
@@ -151,7 +152,7 @@ class ManualMemory:
         num_bytes=None,
     ):
         if device is None:
-            device = COMPUTING_DEFAULTS.render_device
+            device = _RENDER_DEVICE
         self.current_pointer = 0
         self.max_pointer = 0
         self.stack = []

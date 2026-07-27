@@ -1,3 +1,4 @@
+from algan.settings._startup import _ANIMATION_DEVICE
 from algan.animation_timeline.animation_contexts import Off, Sync, Seq, Lag
 from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
 from algan.animatable_base.mob import Mob
@@ -20,7 +21,7 @@ from algan.constants.rate_funcs import pulse_fade, delay_fade
 # synapse-to-synapse variety while making each render byte-reproducible, and
 # leaves the global torch RNG untouched for everything else.
 COLOR_JITTER_SEED = 0xA76A
-_color_rng = torch.Generator(device=COMPUTING_DEFAULTS.animation_device).manual_seed(COLOR_JITTER_SEED)
+_color_rng = torch.Generator(device=_ANIMATION_DEVICE).manual_seed(COLOR_JITTER_SEED)
 
 
 def tweak_color(c, strength=0.2, min_strength=0.0):

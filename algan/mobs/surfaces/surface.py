@@ -1,3 +1,4 @@
+from algan.settings import SETTINGS
 import inspect
 
 import numpy as np
@@ -5,7 +6,7 @@ import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
 from algan.settings.renderer_settings import (
-    RENDERER_SETTINGS, effective_triangle_primitive)
+    RENDERER_REGISTRY, effective_triangle_primitive)
 from algan.utils.tensor_utils import broadcast_cross_product
 from algan.animation_timeline.animation_contexts import Sync
 from algan.animation_timeline.timeline import EditRecord
@@ -788,7 +789,7 @@ class Surface(Mob):
         screen_vector = camera.screen.location.reshape(-1, 3)[0] - camera_location
         screen_distance = (screen_vector * forward).sum().abs().clamp_min(1e-8)
         pixel_scale = (
-            self.scene.render_settings.resolution[1]
+            self.scene.video_settings.resolution[1]
             / (2.0 * float(camera.screen_scale_factor))
         )
         safe_depth = depth.clamp_min(1e-8)
@@ -1233,8 +1234,8 @@ class Surface(Mob):
             )
         except Exception:
             return False
-        return isinstance(RENDERER_SETTINGS.triangle_primitive, type) and issubclass(
-            RENDERER_SETTINGS.triangle_primitive, RayTracedPNTrianglePrimitive
+        return isinstance(RENDERER_REGISTRY.triangle_primitive, type) and issubclass(
+            RENDERER_REGISTRY.triangle_primitive, RayTracedPNTrianglePrimitive
         )
 
     def _compute_error(self, coord_function, W, H):

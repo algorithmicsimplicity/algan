@@ -24,7 +24,7 @@ import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
 from algan.settings.renderer_settings import (
-    RENDERER_SETTINGS, effective_triangle_primitive)
+    RENDERER_REGISTRY, effective_triangle_primitive)
 from algan.constants.color import Color, WHITE
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.utils.tensor_utils import cast_to_tensor, unsquish

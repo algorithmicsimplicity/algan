@@ -97,8 +97,7 @@ from docutils import nodes
 from docutils.parsers.rst import Directive, directives
 from docutils.statemachine import StringList
 
-from algan.settings.defaults import COMPUTING_DEFAULTS
-from algan.settings.render_settings import QUALITIES
+from algan.settings.video_settings import QUALITIES
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx

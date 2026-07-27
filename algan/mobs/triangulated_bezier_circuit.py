@@ -1,3 +1,5 @@
+from algan.settings._startup import _ANIMATION_DEVICE
+from algan.settings import SETTINGS
 import hashlib
 import os
 from collections import defaultdict
@@ -8,7 +10,6 @@ import torch.nn.functional as F
 
 from algan.constants.color import WHITE, GREEN
 from algan.constants.spatial import RIGHT, DOWN
-from algan.settings.defaults import *
 from algan.geometry.geometry import (
     get_roots_of_cubic,
     get_roots_of_quadratic,
@@ -212,7 +213,7 @@ def tile_region(
         ((perimeter_points) if reverse_points else perimeter_points), squish(grid)
     )
 
-    if COMPUTING_DEFAULTS.animation_device.type != "cpu":
+    if _ANIMATION_DEVICE.type != "cpu":
         torch.set_default_device(torch.device("cpu"))
     perimeter_points = perimeter_points.cpu()
     grid4 = grid4.cpu()
@@ -548,9 +549,9 @@ def tile_region(
             all_grid_ids.append(ri.item())
 
     out = [*triangulate_simple_polygon(all_polygons)]
-    out = [_.to(COMPUTING_DEFAULTS.animation_device) for _ in out]
-    if COMPUTING_DEFAULTS.animation_device.type != "cpu":
-        torch.set_default_device(COMPUTING_DEFAULTS.animation_device)
+    out = [_.to(_ANIMATION_DEVICE) for _ in out]
+    if _ANIMATION_DEVICE.type != "cpu":
+        torch.set_default_device(_ANIMATION_DEVICE)
     out[1] = [out[1], torch.tensor(all_grid_ids), (len(grid_x) - 1), len(grid_y) - 1]
     return out
 
@@ -872,13 +873,13 @@ class TriangulatedBezierCircuit(Mob):
                 hasher.update(hash_bytes.encode())
                 hash_bytes = hasher.hexdigest()[:32]
                 file_path = os.path.join(
-                    DIRECTORY_DEFAULTS.cache_directory,
+                    SETTINGS.paths.cache_directory,
                     "tessellations",
                     f"{hash_bytes}.txt",
                 )
                 if os.path.exists(file_path):
                     tiles, tile_counts = torch.load(
-                        file_path, map_location=COMPUTING_DEFAULTS.animation_device
+                        file_path, map_location=_ANIMATION_DEVICE
                     )
                     tiles = tiles + offset.float()[:2]
                     found_hash = True

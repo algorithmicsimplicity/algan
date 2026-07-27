@@ -14,10 +14,11 @@ sort/index scratch remains allocator-owned because PyTorch's radix sort cannot
 write directly into an arena view.
 """
 from __future__ import annotations
+from algan.settings import SETTINGS
 
 import torch
 
-from algan.rendering.raytracing import settings as rt_settings
+rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     DEPTH_TIE_EPSILON,
 )
@@ -891,7 +892,7 @@ def shade_sparse_raster_coverage(
     # Continuation-ray supersampling is independent of the fragment lanes -- it
     # only changes how many secondary rays a reflective/refractive hit spawns --
     # so it is read live rather than pinned with them.
-    sec_aa = rt_settings.analytic_aa_secondary_samples()
+    sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
     run_offsets = _arena_tensor(
         memory, (num_covered + 1,), torch.int32)
     torch.sub(
@@ -1277,7 +1278,7 @@ def raster_iteration_zero(
         event_msk = _arena_tensor(
             memory, (max_events,), torch.int32, 0xF)
         event_count = _arena_tensor(memory, (1,), torch.int32, 0)
-        sec_aa = rt_settings.analytic_aa_secondary_samples()
+        sec_aa = rt_settings.effective_analytic_aa_secondary_samples()
         event_dp = _arena_tensor(
             memory, (max_events if sec_aa > 1 else 1, 6), torch.float32)
         raster_shadow_event_build(
@@ -1341,7 +1342,7 @@ def raster_iteration_zero(
         layer_offsets,
         int(frag_flag), frag_pipelines, int(refraction_flag),
         int(skip_unlit_normal), ss, has_bez, aa_bez, aa_tri, aa_grp,
-        rt_settings.analytic_aa_secondary_samples(),
+        rt_settings.effective_analytic_aa_secondary_samples(),
         float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
         int(shadow_flag),
         1 if prefill else 0,

@@ -1,9 +1,13 @@
-from dataclasses import dataclass
-from algan.settings.abstract_settings import Settings
+"""Render-kernel registry (runtime service, not user configuration)."""
 
 
-@dataclass
-class KernelSettings(Settings):
-    render_kernel: object | None = None
+class KernelRegistry:
+    def __init__(self):
+        self.render_kernel = None
 
-KERNEL_SETTINGS = KernelSettings()
+
+KERNEL_REGISTRY = KernelRegistry()
+# Compatibility alias.
+KERNEL_SETTINGS = KERNEL_REGISTRY
+
+__all__ = ["KernelRegistry", "KERNEL_REGISTRY", "KERNEL_SETTINGS"]

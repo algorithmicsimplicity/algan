@@ -9,6 +9,8 @@ the prefetch pipeline (:meth:`~RenderLoopMixin.get_frames`), per-batch
 rendering (:meth:`~RenderLoopMixin.render_primitive_batch`), and video file
 output (:meth:`~RenderLoopMixin.render_to_video`).
 """
+from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
+from algan.settings import SETTINGS
 import collections
 import logging
 import math
@@ -27,7 +29,6 @@ from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.taichi_runtime import sync_devices as _sync_devices
-from algan.settings.defaults import COMPUTING_DEFAULTS
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     ManualMemory,
@@ -110,7 +111,7 @@ def _primitive_source_device(primitive, fallback=None):
             return value.device
     if fallback is not None:
         return torch.device(fallback)
-    return COMPUTING_DEFAULTS.animation_device
+    return _ANIMATION_DEVICE
 
 
 def _projection_anti_alias_level(scene, primitives):
@@ -122,8 +123,8 @@ def _projection_anti_alias_level(scene, primitives):
     material/legacy check falls back, Bezier tessellation remains at least as
     fine as the AA=2 reference and its bounds are merely more conservative.
     """
-    requested = max(1, int(scene.render_settings.anti_alias_level))
-    from algan.rendering.raytracing import settings as rt_settings
+    requested = max(1, int(scene.video_settings.anti_alias_level))
+    rt_settings = SETTINGS.raytracing
     from algan.rendering.raytracing.primitives import (
         RayTracedBezierCircuitPrimitive,
         RayTracedPNTrianglePrimitive,
@@ -204,7 +205,7 @@ def _raytrace_persistent_input_end(
     prepared primitive batch, so they are paid once and do not shrink with an
     individual render chunk.
     """
-    from algan.rendering.raytracing import settings as rt_settings
+    rt_settings = SETTINGS.raytracing
     from algan.rendering.raytracing.settings import _scene_has_user_pipeline
 
     pointer = int(initial_pointer)
@@ -368,7 +369,7 @@ class RenderLoopMixin:
         if cached is not None:
             return cached
 
-        from algan.rendering.raytracing import settings as rt_settings
+        rt_settings = SETTINGS.raytracing
         from algan.rendering.raytracing.scene_builder import _merge_scene
 
         merged_host = _merge_scene(primitive_batch)
@@ -444,11 +445,11 @@ class RenderLoopMixin:
         if total_frames <= 1 or not primitive_batch:
             return False
 
-        from algan.rendering.raytracing import settings as rt_settings
+        rt_settings = SETTINGS.raytracing
 
         if not rt_settings.project_on_gpu_active():
             return False
-        render_device = torch.device(COMPUTING_DEFAULTS.render_device)
+        render_device = torch.device(_RENDER_DEVICE)
         for primitive in primitive_batch:
             if getattr(primitive, "_rt_projected", False):
                 return False
@@ -505,7 +506,7 @@ class RenderLoopMixin:
         if not self._can_slice_fetched_batch(primitive_batch, total_frames):
             return None
 
-        from algan.rendering.raytracing import settings as rt_settings
+        rt_settings = SETTINGS.raytracing
         from algan.rendering.raytracing.scene_builder import (
             gpu_project_input_bytes,
         )
@@ -622,7 +623,7 @@ class RenderLoopMixin:
         if not getattr(self.memory, "managed", False):
             return True
 
-        from algan.rendering.raytracing import settings as rt_settings
+        rt_settings = SETTINGS.raytracing
         from algan.rendering.raytracing.scene_builder import (
             get_merged_scene_arena_nbytes,
             gpu_merge_input_bytes,
@@ -740,7 +741,7 @@ class RenderLoopMixin:
 
         aa = effective_anti_alias_level(
             merged_host,
-            self.render_settings.anti_alias_level,
+            self.video_settings.anti_alias_level,
             light_sources=lights,
             environment_map=env_map,
             near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
@@ -782,7 +783,7 @@ class RenderLoopMixin:
             frame_dtype=frame_dtype,
             anti_alias_level=aa,
             post_processes=post_processes,
-            apply_fxaa=self.render_settings.fxaa,
+            apply_fxaa=self.video_settings.fxaa,
             initial_pointer=frame_buffers_end,
             device=self.memory.data.device,
         )
@@ -905,7 +906,7 @@ class RenderLoopMixin:
             # merge no CUDA-side cat/BVH scratch ever sat beside the pool; on
             # the GPU merge that scratch has already been freed (its transient
             # peak was bounded against the pool headroom in the preflight).
-            from algan.rendering.raytracing import settings as rt_settings
+            rt_settings = SETTINGS.raytracing
             from algan.rendering.raytracing.scene_builder import (
                 copy_merged_scene_to_arena,
             )
@@ -942,7 +943,7 @@ class RenderLoopMixin:
 
             aa = effective_anti_alias_level(
                 merged_host,
-                self.render_settings.anti_alias_level,
+                self.video_settings.anti_alias_level,
                 light_sources=self.light_sources,
                 environment_map=env_map,
                 near_clip=float(getattr(camera, "near", 0.0) or 0.0),
@@ -989,7 +990,7 @@ class RenderLoopMixin:
                     frame_dtype=frame_dtype,
                     anti_alias_level=aa,
                     post_processes=post_processes,
-                    apply_fxaa=self.render_settings.fxaa,
+                    apply_fxaa=self.video_settings.fxaa,
                     initial_pointer=frame_buffers_end,
                     device=self.memory.data.device,
                 )
@@ -1063,7 +1064,7 @@ class RenderLoopMixin:
                         self.frames_per_second
                         if callable(background_source) else 1
                     ),
-                    device=COMPUTING_DEFAULTS.render_device
+                    device=_RENDER_DEVICE
                 )
                 # Pressure-gated gc (like every other steady-state call site):
                 # a forced full collection here cost ~150 ms per frame window
@@ -1084,7 +1085,7 @@ class RenderLoopMixin:
                     camera.ray_origin,
                     camera.screen_point,
                     camera.screen_basis,
-                    anti_alias_level=self.render_settings.anti_alias_level,
+                    anti_alias_level=self.video_settings.anti_alias_level,
                     light_sources=self.light_sources,
                     memory=self.memory,
                     post_processes=post_processes,
@@ -1132,7 +1133,7 @@ class RenderLoopMixin:
             is_post_process_tonemap_enabled,
         )
 
-        aa = max(1, int(self.render_settings.anti_alias_level))
+        aa = max(1, int(self.video_settings.anti_alias_level))
         # Mirror the tracer's anti-aliasing strategy (render_batch_raytraced):
         # default super-sampled buffer averaged down in post-processing;
         # ALGAN_INPLACE_AA keeps the buffer at output resolution.
@@ -1169,7 +1170,7 @@ class RenderLoopMixin:
                 frame_dtype=frame_dtype,
                 anti_alias_level=post_aa,
                 post_processes=post_processes,
-                apply_fxaa=self.render_settings.fxaa,
+                apply_fxaa=self.video_settings.fxaa,
                 initial_pointer=frames_end,
                 device=device,
             )
@@ -1198,7 +1199,7 @@ class RenderLoopMixin:
                     self.frames_per_second
                     if callable(background_source) else 1
                 ),
-                device=COMPUTING_DEFAULTS.render_device,
+                device=_RENDER_DEVICE,
             )
             # In-place AA samples the background once per output pixel, so a
             # super-sampled image background must be averaged down first
@@ -1222,7 +1223,7 @@ class RenderLoopMixin:
                 out.view(duration, height, width, channels),
                 anti_alias_level=post_aa,
                 post_processes=list(post_processes),
-                apply_fxaa=self.render_settings.fxaa,
+                apply_fxaa=self.video_settings.fxaa,
             )
             self.memory.set_pointers(original_pointers)
             yield frames
@@ -1392,7 +1393,7 @@ class RenderLoopMixin:
         def get_duration():
             requested_duration = min(
                 max_end_time_ind - start_time_ind,
-                COMPUTING_DEFAULTS.max_animate_batch_size,
+                SETTINGS.computing.max_animation_batch_size,
             )
 
             def fits(duration):
@@ -1604,7 +1605,7 @@ class RenderLoopMixin:
                 primitives[0], (RayTracedTrianglePrimitive,
                                 RayTracedBezierCircuitPrimitive)):
             return
-        from algan.rendering.raytracing import settings as rt_settings
+        rt_settings = SETTINGS.raytracing
 
         aa, analytic_raster = _projection_anti_alias_level(self, primitives)
         # Projection runs on the render device by default (see
@@ -1613,7 +1614,7 @@ class RenderLoopMixin:
         # built on it (ready for the GPU merge, no upload). Off keeps
         # projection on the snapshot's source (CPU) device.
         gpu_project = rt_settings.project_on_gpu_active()
-        project_device = (COMPUTING_DEFAULTS.render_device
+        project_device = (_RENDER_DEVICE
                           if gpu_project else None)
 
         def _to_device(value):
@@ -1770,7 +1771,7 @@ class RenderLoopMixin:
         save_image = False
 
         self.memory = ManualMemory(
-            COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering, managed=manual_memory,
+            SETTINGS.computing.rendering_memory_fraction, managed=manual_memory,
         )
         # Safety margin learned from render failures this job: when a batch
         # that passed the arena preflight still fails to render, the preflight
@@ -1781,7 +1782,7 @@ class RenderLoopMixin:
 
         # Adaptive gen-fused forecast (settings.WF_GEN_FUSED == "auto") is fed
         # per-batch render timings below; a new job restarts its batch count.
-        from algan.rendering.raytracing import settings as _rt_settings
+        _rt_settings = SETTINGS.raytracing
 
         _rt_settings._begin_render_job()
 
@@ -1794,8 +1795,8 @@ class RenderLoopMixin:
             current_time_ind = start_time_ind
 
             max_animate_mem = int(
-                COMPUTING_DEFAULTS.portion_of_memory_used_for_animating
-                * get_num_available_bytes(COMPUTING_DEFAULTS.animation_device)
+                SETTINGS.computing.animation_memory_fraction
+                * get_num_available_bytes(_ANIMATION_DEVICE)
             )
 
             # Prefetch pipeline: while batch b renders on this thread, batch

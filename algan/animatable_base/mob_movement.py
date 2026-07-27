@@ -4,6 +4,7 @@ Split out of ``mob.py`` for readability; :class:`MobLayoutMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
 from __future__ import annotations
+from algan.settings import SETTINGS
 
 import torch
 import torch.nn.functional as F
@@ -12,7 +13,6 @@ from algan import animated_function
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.spatial import *
 from algan.geometry.geometry import project_point_onto_line
-from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
     broadcast_gather,
@@ -20,7 +20,8 @@ from algan.utils.tensor_utils import (
     dot_product,
 )
 
-DEFAULT_BUFFER = STYLE_DEFAULTS.buffer
+def _resolve_buffer(buffer):
+    return SETTINGS.style.buffer if buffer is None else buffer
 
 
 class MobMovementMixin:
@@ -263,7 +264,7 @@ class MobMovementMixin:
         self,
         target_mob: Mob | torch.Tensor,
         direction: torch.Tensor,
-        buffer: float = DEFAULT_BUFFER,
+        buffer: float | None = None,
         align_edge=None,
         **kwargs,
     ) -> Mob:
@@ -289,6 +290,7 @@ class MobMovementMixin:
             The Mob instance itself, allowing for method chaining.
 
         """
+        buffer = _resolve_buffer(buffer)
         normalized_direction = F.normalize(direction, p=2, dim=-1)
         # Get the boundary point of the target_mob along the given direction
         target_edge_point = (
@@ -314,7 +316,7 @@ class MobMovementMixin:
         mob: Mob,
         direction: torch.Tensor,
         edge: torch.Tensor | None = None,
-        buffer: float = DEFAULT_BUFFER,
+        buffer: float | None = None,
         **kwargs,
     ) -> Mob:
         """Moves this Mob so its specified edge is aligned with another Mob's edge
@@ -365,7 +367,7 @@ class MobMovementMixin:
         return self
 
     def move_inline_with_center(
-        self, mob: Mob, direction: torch.Tensor, buffer: float = DEFAULT_BUFFER
+        self, mob: Mob, direction: torch.Tensor, buffer: float | None = None
     ) -> Mob:
         """Moves this Mob so its center is aligned with another Mob's center
         along a given direction.
@@ -401,7 +403,7 @@ class MobMovementMixin:
         align_direction: torch.Tensor,
         center: bool = False,
         from_mob: Mob | None = None,
-        buffer: float = DEFAULT_BUFFER,
+        buffer: float | None = None,
     ) -> Mob:
         """Moves this Mob to align with another Mob along a specific direction,
         either by their edges or by their centers.
@@ -502,7 +504,7 @@ class MobMovementMixin:
             new_loc = bottom * (1 - y) + y * top
         return self.move_to(new_loc)
 
-    def move_to_edge(self, edge: torch.Tensor, buffer: float = DEFAULT_BUFFER) -> Mob:
+    def move_to_edge(self, edge: torch.Tensor, buffer: float | None = None) -> Mob:
         """Moves the Mob to an edge of the screen.
 
         Parameters
@@ -517,6 +519,7 @@ class MobMovementMixin:
         :class:`~.Mob`
             The Mob instance itself, allowing for method chaining.
         """
+        buffer = _resolve_buffer(buffer)
         normalized_edge = F.normalize(edge, p=2, dim=-1)
         # Get the boundary point of this Mob that is furthest towards the 'edge' direction
         mob_boundary_point = self.get_boundary_in_direction(normalized_edge)
@@ -536,7 +539,7 @@ class MobMovementMixin:
         return self
 
     def move_to_corner(
-        self, edge1: torch.Tensor, edge2: torch.Tensor, buffer: float = DEFAULT_BUFFER
+        self, edge1: torch.Tensor, edge2: torch.Tensor, buffer: float | None = None
     ) -> Mob:
         """Moves the Mob to a corner of the screen, defined by two intersecting edge directions.
 
@@ -561,7 +564,7 @@ class MobMovementMixin:
             )
 
     def move_out_of_screen(
-        self, edge: torch.Tensor, buffer: float = DEFAULT_BUFFER, despawn: bool = True
+        self, edge: torch.Tensor, buffer: float | None = None, despawn: bool = True
     ) -> Mob:
         """Animates the Mob moving off-screen in a given edge direction and then optionally despawns it.
 
@@ -580,6 +583,7 @@ class MobMovementMixin:
             The Mob instance itself, allowing for method chaining.
 
         """
+        buffer = _resolve_buffer(buffer)
         bbox = self.get_bounding_box()
 
         points_on_screen_edge = self.scene.camera.project_point_onto_screen_border(

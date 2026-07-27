@@ -61,7 +61,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
 )
-from algan.rendering.raytracing.settings import SOFT_SHADOW_SAMPLES
+from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 
 # Per-ray status codes (rs_int column 2).
 _ACTIVE = 0

@@ -1,7 +1,8 @@
+from algan.settings import SETTINGS
 import torch.nn.functional as F
 
 from algan.constants.spatial import OUT, RIGHT
-from algan.settings.render_settings import PREVIEW
+from algan.settings.video_settings import PREVIEW
 from algan.geometry.geometry import rotate_vector_around_axis
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import *
@@ -9,7 +10,7 @@ from algan.animatable_base.mob import Mob
 
 from algan.animatable_base.animatable import animated_function
 from algan.utils.tensor_utils import *
-from algan.settings.renderer_settings import RENDERER_SETTINGS
+from algan.settings.renderer_settings import RENDERER_REGISTRY
 from algan.rendering.raytracing.utils import _unify_time
 
 
@@ -177,7 +178,7 @@ class BezierCircuitCubic(Mob):
 
         self.normals = normals
         self.is_primitive = True
-        self.render_primitive = RENDERER_SETTINGS.bezier_circuit_primitive
+        self.render_primitive = RENDERER_REGISTRY.bezier_circuit_primitive
 
     @classmethod
     def from_batches(cls, control_point_batches, *args, **kwargs):
@@ -306,7 +307,7 @@ class BezierCircuitCubic(Mob):
                 self.basis,
                 self.glow,
                 self.border_width
-                * self.scene.render_settings.resolution[1] * self.scene.render_settings.anti_alias_level
+                * self.scene.video_settings.resolution[1] * self.scene.video_settings.anti_alias_level
                 / (PREVIEW.resolution[1] * 2),
                 self.border_color,
                 metalness,
@@ -648,7 +649,7 @@ def build_render_primitives_batched(actors, scene):
     basis = read("basis", actors)
     g = read("glow", actors)
     bw = read("border_width", actors) * (
-        scene.render_settings.resolution[1] * scene.render_settings.anti_alias_level
+        scene.video_settings.resolution[1] * scene.video_settings.anti_alias_level
         / (PREVIEW.resolution[1] * 2))
     bc = read("border_color", actors)
     loc = read("location", actors)

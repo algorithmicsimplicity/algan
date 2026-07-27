@@ -1,3 +1,4 @@
+from algan.settings import SETTINGS
 import cProfile
 from dataclasses import dataclass
 from typing import Literal
@@ -14,9 +15,7 @@ import sys
 import subprocess
 import warnings
 
-from algan.settings.defaults import *
 from algan.errors import AlganConfigurationError, LegacySceneDiscoveryWarning
-from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.animation_timeline.animation_contexts import Off
 from algan.rendering.camera import Camera
 from algan.scene_manager import SceneManager
@@ -45,13 +44,13 @@ def scene(function=None, *, name=None):
 from algan.utils.memory_utils import empty_cache
 
 
-def get_file_writer(temp_file_path, render_settings_resolution, codec, fps, with_mask, ffmpeg_params, audiofile, audio_codec):
+def get_file_writer(temp_file_path, video_settings_resolution, codec, fps, with_mask, ffmpeg_params, audiofile, audio_codec):
     from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter  # deferred: ~0.3 s of import algan
 
     try:
         file_writer = FFMPEG_VideoWriter(
             filename=temp_file_path,
-            size=render_settings_resolution,
+            size=video_settings_resolution,
             codec=codec,
             fps=fps,
             with_mask=with_mask,
@@ -63,7 +62,7 @@ def get_file_writer(temp_file_path, render_settings_resolution, codec, fps, with
         # Older moviepy releases spell the mask parameter "withmask".
         file_writer = FFMPEG_VideoWriter(
             filename=temp_file_path,
-            size=render_settings_resolution,
+            size=video_settings_resolution,
             codec=codec,
             fps=fps,
             withmask=with_mask,
@@ -91,7 +90,7 @@ class RenderResult:
 
 def _resolve_output_destination(file_path, default_extension: str) -> Path:
     if file_path is None:
-        file_path = DIRECTORY_DEFAULTS.output_filename
+        file_path = SETTINGS.paths.output_filename
 
     raw_path = os.fspath(file_path)
     requested = Path(raw_path)
@@ -101,12 +100,12 @@ def _resolve_output_destination(file_path, default_extension: str) -> Path:
     # A bare filename uses Algan's standard output directory. Paths with an
     # explicit parent (including ``./``) are honoured exactly as supplied.
     if not requested.is_absolute() and os.path.dirname(raw_path) == "":
-        default_base = DIRECTORY_DEFAULTS.output_path
+        default_base = SETTINGS.paths.output_path
         if default_base is None:
-            default_base = DIRECTORY_DEFAULTS.base_directory
+            default_base = SETTINGS.paths.base_directory
         requested = (
             Path(default_base)
-            / DIRECTORY_DEFAULTS.output_directory
+            / SETTINGS.paths.output_directory
             / requested
         )
 
@@ -117,7 +116,7 @@ def _resolve_output_destination(file_path, default_extension: str) -> Path:
 def _render_scene_to_file(
     scene,
     file_path=None,
-    render_settings=None,
+    video_settings=None,
     overwrite=True,
     codec=None,
     audio_codec=None,
@@ -133,12 +132,12 @@ def _render_scene_to_file(
     ----------
     file_path
         Output file path. A bare filename is placed in
-        ``DIRECTORY_DEFAULTS.output_directory``; a relative or absolute path
+        ``SETTINGS.paths.output_directory``; a relative or absolute path
         with a parent directory is used as supplied. If no extension is given,
         Algan selects ``.mp4`` for opaque output or ``.mov`` for transparent
-        output. If None, ``DIRECTORY_DEFAULTS.output_filename`` is used.
-    render_settings
-        The :class:`.RenderSettings` object to use to specify video properties. If None will use `RENDERING_DEFAULTS.render_settings`.
+        output. If None, ``SETTINGS.paths.output_filename`` is used.
+    video_settings
+        The :class:`.VideoSettings` object to use to specify video properties. If omitted, uses ``SETTINGS.video``.
     overwrite
         Whether the existing file at the output destination should be overwritten if one exists.
     codec
@@ -156,10 +155,17 @@ def _render_scene_to_file(
         Structured metadata indicating whether the file was rendered or
         skipped because it already existed.
     """
-    if render_settings is None:
-        render_settings = RENDERING_DEFAULTS.settings
+    legacy_video_settings = kwargs.pop("render_settings", None)
+    if legacy_video_settings is not None:
+        if video_settings is not None:
+            raise AlganConfigurationError(
+                "Specify video_settings or legacy render_settings, not both"
+            )
+        video_settings = legacy_video_settings
+    if video_settings is None:
+        video_settings = SETTINGS.video
 
-    previous_settings = scene.render_settings
+    previous_settings = scene.video_settings
     previous_background = (
         scene.background_frame,
         getattr(scene, "background_color", None),
@@ -172,10 +178,10 @@ def _render_scene_to_file(
     destructive_render_started = False
 
     try:
-        scene.set_render_settings(render_settings)
+        scene.set_video_settings(video_settings)
         explicit_background = background_color is not None
         if background_color is None:
-            background_color = STYLE_DEFAULTS.background_color
+            background_color = SETTINGS.style.background_color
         scene.set_background_color(
             background_color,
             overwrite=explicit_background,
@@ -205,7 +211,7 @@ def _render_scene_to_file(
         empty_cache()
 
         if animate_fade_out is None:
-            animate_fade_out = STYLE_DEFAULTS.fade_out_on_scene_end
+            animate_fade_out = SETTINGS.style.fade_out_on_scene_end
         # From this point onward the active timeline/scene may be intentionally
         # modified for finalization. Preserve the historical contract by
         # resetting managers on both success and failure.
@@ -222,7 +228,7 @@ def _render_scene_to_file(
                 and timeline_context.timespan.original_end <= 0
                 and any(actor.is_spawned() for actor in scene.actors[-1])
             ):
-                timeline_context.wait(1.0 / render_settings.frames_per_second)
+                timeline_context.wait(1.0 / video_settings.frames_per_second)
             with Off(animation_manager=scene.animation_manager):
                 scene.clear_scene(animate=False)
 
@@ -261,9 +267,9 @@ def _render_scene_to_file(
 
         file_writer = get_file_writer(
             str(temp_file_path),
-            render_settings.resolution,
+            video_settings.resolution,
             codec,
-            render_settings.frames_per_second,
+            video_settings.frames_per_second,
             scene.background_is_transparent(),
             ffmpeg_params,
             audiofile,
@@ -301,12 +307,12 @@ def _render_scene_to_file(
         if destructive_render_started:
             # Cleanup is unconditional, including failures during audio setup,
             # writer construction, rendering, or final file replacement.
-            scene.set_render_settings(previous_settings)
+            scene.set_video_settings(previous_settings)
             scene.reset()
         else:
             # Preflight failures and skipped renders are observational: leave
             # the authored scene and audio timeline intact.
-            scene.set_render_settings(previous_settings)
+            scene.set_video_settings(previous_settings)
             (
                 scene.background_frame,
                 scene.background_color,
@@ -330,7 +336,7 @@ render = render_to_file
 # @compiled
 def render_all_funcs(
     module_name,
-    render_settings=None,
+    video_settings=None,
     profile=False,
     overwrite=True,
     start_index=0,
@@ -343,7 +349,15 @@ def render_all_funcs(
     funcs=None,
     **kwargs,
 ):
-    def run(output_dir=None, render_settings=None, output_path=None, prefix=None):
+    legacy_video_settings = kwargs.pop("render_settings", None)
+    if legacy_video_settings is not None:
+        if video_settings is not None:
+            raise AlganConfigurationError(
+                "Specify video_settings or legacy render_settings, not both"
+            )
+        video_settings = legacy_video_settings
+
+    def run(output_dir=None, video_settings=None, output_path=None, prefix=None):
         if funcs is None:
             module = sys.modules[module_name] if isinstance(module_name, str) else module_name
             if prefix is None:
@@ -378,15 +392,15 @@ def render_all_funcs(
         else:
             scene_funcs = funcs
 
-        if render_settings is None:
-            render_settings = RENDERING_DEFAULTS.settings
+        if video_settings is None:
+            video_settings = SETTINGS.video
 
         if output_path is None:
-            output_path = DIRECTORY_DEFAULTS.output_path
+            output_path = SETTINGS.paths.output_path
             if output_path is None:
-                output_path = DIRECTORY_DEFAULTS.base_directory
+                output_path = SETTINGS.paths.base_directory
         if output_dir is None:
-            output_dir = DIRECTORY_DEFAULTS.output_directory
+            output_dir = SETTINGS.paths.output_directory
         output_dir = os.path.join(output_dir, module_name)
         if start_index < 0:
             start = start_index + len(scene_funcs)
@@ -401,7 +415,7 @@ def render_all_funcs(
         from algan.scene import Scene
 
         for index, (scene_name, function) in list(enumerate(scene_funcs))[start:end]:
-            with Scene(render_settings=render_settings) as active_scene:
+            with Scene(video_settings=video_settings) as active_scene:
                 if "background_color" in kwargs:
                     active_scene.set_background_color(kwargs["background_color"])
                 function()
@@ -411,7 +425,7 @@ def render_all_funcs(
                             Path(output_path)
                             / output_dir
                             / f"{index}_{scene_name}.{file_extension}",
-                            render_settings=render_settings,
+                            video_settings=video_settings,
                             overwrite=overwrite,
                             **kwargs,
                         )
@@ -423,7 +437,7 @@ def render_all_funcs(
         pr = cProfile.Profile()
         start = time.time()
         pr.enable()
-        out = run(output_dir, render_settings, output_path, prefix)
+        out = run(output_dir, video_settings, output_path, prefix)
         pr.disable()
         end = time.time()
 
@@ -435,7 +449,7 @@ def render_all_funcs(
         logger.info(f'took {end-start} seconds.')
         return out
     else:
-        return run(output_dir, render_settings, output_path, prefix)
+        return run(output_dir, video_settings, output_path, prefix)
 
 
 def profile_func(func):

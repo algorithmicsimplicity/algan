@@ -321,8 +321,8 @@ class Camera(Mob):
         b = unsquish(self.screen.basis, -1, 3)
         b = b / b.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-6)
         aspect_ratio = (
-            self.scene.render_settings.resolution[0]
-            / self.scene.render_settings.resolution[1]
+            self.scene.video_settings.resolution[0]
+            / self.scene.video_settings.resolution[1]
         )
         return (
             self.screen.location

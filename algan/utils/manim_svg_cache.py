@@ -15,7 +15,7 @@ every subsequent run.
 
 The design mirrors the on-disk geometry cache used by
 :mod:`algan.mobs.triangulated_bezier_circuit`: a stable ``sha256`` content key
-selects a file under ``DIRECTORY_DEFAULTS.cache_directory``; the value is the
+selects a file under ``SETTINGS.paths.cache_directory``; the value is the
 per-glyph point arrays + style, saved with :func:`torch.save` and rebuilt into
 lightweight VMobjects (no LaTeX, no ``svgelements`` parse, no deep copy).
 
@@ -26,6 +26,7 @@ It is wired in by :func:`install`, which monkeypatches
 ``SVGMobject.init_svg_mobject`` on the *installed* ``manim`` package (the one
 Algan actually imports).  Importing this module installs the patch once.
 """
+from algan.settings import SETTINGS
 
 import hashlib
 import importlib
@@ -35,7 +36,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from algan.settings.defaults import DIRECTORY_DEFAULTS
 from algan.logging.logger import get_logger
 
 # Keys we never persist per glyph: ``path_obj`` is a large ``svgelements`` Path
@@ -65,7 +65,7 @@ def _max_cache_bytes() -> int:
 
 
 def _cache_dir() -> Path:
-    return Path(DIRECTORY_DEFAULTS.cache_directory) / "manim_svg"
+    return Path(SETTINGS.paths.cache_directory) / "manim_svg"
 
 
 def _stable_key(svg_mob) -> str:
@@ -258,7 +258,7 @@ def _redirect_manim_dirs() -> None:
     Manim compiles LaTeX (and renders Pango text) into ``{media_dir}/Tex`` /
     ``{media_dir}/texts`` -- relative to the *current working directory* by
     default, so every project re-pays every LaTeX compile. Redirect both into
-    ``DIRECTORY_DEFAULTS.cache_directory`` (content-hashed filenames make the
+    ``SETTINGS.paths.cache_directory`` (content-hashed filenames make the
     cache safely shareable across projects), unless the user already pointed
     them somewhere custom.
 
@@ -269,7 +269,7 @@ def _redirect_manim_dirs() -> None:
     from manim import config
     from manim.utils import tex_file_writing
 
-    manim_cache_dir = os.path.join(DIRECTORY_DEFAULTS.cache_directory, "manim")
+    manim_cache_dir = os.path.join(SETTINGS.paths.cache_directory, "manim")
     if config.tex_dir == "{media_dir}/Tex":  # manim's stock default
         config.tex_dir = os.path.join(manim_cache_dir, "Tex")
     if config.text_dir == "{media_dir}/texts":  # manim's stock default

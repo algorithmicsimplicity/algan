@@ -1,28 +1,33 @@
-from dataclasses import dataclass
+"""Renderer backend registry.
 
-from algan.settings.abstract_settings import Settings
-from algan.rendering.raytracing import RayTracedBezierCircuitPrimitive, RayTracedTrianglePrimitive
+Backend classes and kernels are runtime services, not user configuration, so
+this registry deliberately lives outside the global ``SETTINGS`` object.
+"""
+from algan.rendering.raytracing import (
+    RayTracedBezierCircuitPrimitive,
+    RayTracedTrianglePrimitive,
+)
 
 
-@dataclass
-class RendererSettings(Settings):
-    triangle_primitive: type = RayTracedTrianglePrimitive
-    bezier_circuit_primitive: type = RayTracedBezierCircuitPrimitive
-    render_kernel: object | None = None
+class RendererRegistry:
+    def __init__(self):
+        self.triangle_primitive = RayTracedTrianglePrimitive
+        self.bezier_circuit_primitive = RayTracedBezierCircuitPrimitive
 
-RENDERER_SETTINGS = RendererSettings()
+
+RENDERER_REGISTRY = RendererRegistry()
+# Compatibility alias.
+RENDERER_SETTINGS = RENDERER_REGISTRY
 
 
 def effective_triangle_primitive():
-    """Triangle primitive class to build for new surfaces / meshes.
+    """Triangle primitive class to build for new surfaces / meshes."""
+    return RENDERER_REGISTRY.triangle_primitive
 
-    Geometry construction must not depend on whether a later render batch is
-    eligible for the hybrid raster front-end.  In particular, enabling raster
-    must not silently flatten PN patches when another feature (near clipping,
-    custom scatter, AA, etc.) routes the batch back to the classic tracer.
 
-    The raster dispatcher therefore treats PN geometry as an unsupported
-    frontend feature and falls back to classic primary traversal while keeping
-    the configured primitive class intact.
-    """
-    return RENDERER_SETTINGS.triangle_primitive
+__all__ = [
+    "RendererRegistry",
+    "RENDERER_REGISTRY",
+    "RENDERER_SETTINGS",
+    "effective_triangle_primitive",
+]

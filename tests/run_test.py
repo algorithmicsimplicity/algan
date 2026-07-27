@@ -7,14 +7,7 @@ import shutil
 from unittest import TestCase
 from parameterized import parameterized
 
-from algan import (
-    PREVIEW,
-    HD,
-    RENDERING_DEFAULTS,
-    STYLE_DEFAULTS,
-    COMPUTING_DEFAULTS,
-    DIRECTORY_DEFAULTS,
-)
+from algan import *
 
 current_file_path = os.path.abspath(__file__)
 cd = os.path.dirname(current_file_path)
@@ -24,16 +17,15 @@ test_files = [[f] for f in os.listdir(test_file_dir) if f.endswith(".py")]
 rendering_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-STYLE_DEFAULTS.fade_out_on_scene_end = True
-RENDERING_DEFAULTS.settings = PREVIEW
-COMPUTING_DEFAULTS.use_torch_scatter = False
-COMPUTING_DEFAULTS.render_device = torch.device(rendering_device)
-DIRECTORY_DEFAULTS.base_directory = cd
+SETTINGS.style.fade_out_on_scene_end = True
+SETTINGS.video.set(PREVIEW)
+SETTINGS.computing.rendering_device = torch.device(rendering_device)
+SETTINGS.paths.base_directory = cd
 # Tests wipe the cache per-test (setUp) for hermetic renders. Point it at a
 # test-local directory so the user's shared home cache is never deleted.
 # ``taichi_cache_directory`` is deliberately NOT redirected: compiled kernels
 # are content-independent and cost minutes to rebuild.
-DIRECTORY_DEFAULTS.cache_directory = os.path.join(cd, "algan_cache")
+SETTINGS.paths.cache_directory = os.path.join(cd, "algan_cache")
 
 
 class TestOverseer(TestCase):

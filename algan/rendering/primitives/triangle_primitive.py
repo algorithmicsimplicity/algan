@@ -1,7 +1,8 @@
+from algan.settings._startup import _ANIMATION_DEVICE
+from algan.settings import SETTINGS
 import torch
 
 from algan.constants.color import BLUE
-from algan.settings.defaults import COMPUTING_DEFAULTS, RENDERING_DEFAULTS
 from algan.rendering.primitives.primitive import RenderPrimitive
 from algan.utils.tensor_utils import (
     broadcast_all,
@@ -30,7 +31,7 @@ class TrianglePrimitive(RenderPrimitive):
         normal_texture_map=None,
         **shader_kwargs,
     ):
-        device = COMPUTING_DEFAULTS.animation_device
+        device = _ANIMATION_DEVICE
         glow = cast_to_tensor(glow).to(device)
         opacity = cast_to_tensor(opacity).to(device)
         """
@@ -148,7 +149,7 @@ class TrianglePrimitive(RenderPrimitive):
                                    if normal_texture_map is not None else None)
 
         if shader is None:
-            shader = RENDERING_DEFAULTS.shader
+            shader = SETTINGS.style.default_shader
         self.shader = shader
 
     def get_batch_identifier(self):

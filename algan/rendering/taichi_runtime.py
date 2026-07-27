@@ -13,7 +13,7 @@ cannot silently regress, plus two empirically-tuned register knobs):
 * ``fast_math`` / ``advanced_optimization`` / ``offline_cache`` -- on by
   default in Taichi 1.7.4; pinned here.
 * ``offline_cache_file_path`` -- Algan's dedicated kernel cache,
-  ``DIRECTORY_DEFAULTS.taichi_cache_directory`` (unless the standard
+  ``_TAICHI_CACHE_DIRECTORY`` (unless the standard
   ``TI_OFFLINE_CACHE_FILE_PATH`` env var is set, which then wins).
 * ``ALGAN_GPU_MAX_REG`` (env int) -> ``gpu_max_reg``: cap on registers per
   thread for CUDA codegen (ptxas ``-maxrregcount``). 0/unset leaves it to
@@ -24,6 +24,8 @@ cannot silently regress, plus two empirically-tuned register knobs):
 * ``ALGAN_OPT_LEVEL`` (env int) -> ``opt_level`` (Taichi default 1). Higher is
   more aggressive but can *increase* register pressure, so it is opt-in.
 """
+from algan.settings._startup import _RENDER_DEVICE, _TAICHI_CACHE_DIRECTORY
+from algan.settings import SETTINGS
 import datetime as _datetime
 import json
 import os
@@ -33,7 +35,6 @@ import time
 import taichi as ti
 import torch
 
-from algan.settings.defaults import COMPUTING_DEFAULTS, DIRECTORY_DEFAULTS
 
 
 _COMPILE_LOG_LOCK = threading.Lock()
@@ -228,8 +229,8 @@ def _taichi_arch():
     has already probed the usable render device, so select the matching Taichi
     backend directly and never trigger that fallback chain.
     """
-    render_device = COMPUTING_DEFAULTS.render_device
-    if COMPUTING_DEFAULTS.render_on_cpu or render_device.type == "cpu":
+    render_device = _RENDER_DEVICE
+    if render_device.type == "cpu":
         return ti.cpu
     return ti.gpu
 
@@ -269,7 +270,7 @@ def taichi_init_kwargs():
     # env), so only pass it when the env var is unset to keep that standard
     # escape hatch working.
     if not os.environ.get("TI_OFFLINE_CACHE_FILE_PATH"):
-        kwargs["offline_cache_file_path"] = DIRECTORY_DEFAULTS.taichi_cache_directory
+        kwargs["offline_cache_file_path"] = str(_TAICHI_CACHE_DIRECTORY)
     max_reg = int(os.environ.get("ALGAN_GPU_MAX_REG", "0"))
     if max_reg > 0:
         kwargs["gpu_max_reg"] = max_reg

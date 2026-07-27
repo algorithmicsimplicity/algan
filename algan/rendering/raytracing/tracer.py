@@ -28,6 +28,7 @@ On out-of-memory the frame window is halved and retried
 (``OutOfRenderMemory``); see ``render_batch_raytraced``.
 """
 from __future__ import annotations
+from algan.settings import SETTINGS
 
 from dataclasses import dataclass
 from typing import Literal
@@ -55,10 +56,12 @@ from algan.rendering.raytracing.scene_builder import (
 # NOTE: only immutable settings values may be imported by value here; the
 # mutable module globals (SAMPLES_PER_PIXEL, TONEMAP_*, SHADOWS, ...) must be
 # read live as ``rt_settings.X`` or their setters silently stop working.
-from algan.rendering.raytracing.settings import _get_tonemap_t_val, REFRACT_INITIAL_POOL_RATIO, \
-    GATE_EMPTY_TRAVERSALS, is_post_process_tonemap_enabled
+from algan.rendering.raytracing.settings import (
+    _get_tonemap_t_val,
+    is_post_process_tonemap_enabled,
+)
 
-from algan.rendering.raytracing import settings as rt_settings
+rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
@@ -236,7 +239,7 @@ def _secondary_split_needed(merged, analytic_raster=False):
         return False
     return bool(rt_settings.analytic_aa_tri_active()
                 or rt_settings.analytic_aa_bez_active()
-                or int(rt_settings.analytic_aa_secondary_samples()) > 1)
+                or int(rt_settings.effective_analytic_aa_secondary_samples()) > 1)
 
 
 def _split_pool_ratio(splitting, merged, analytic_raster=False,
@@ -255,9 +258,9 @@ def _split_pool_ratio(splitting, merged, analytic_raster=False,
         or merged.get("has_refl_transparent")
         or custom_scatter
     )
-    ratio = int(REFRACT_INITIAL_POOL_RATIO) if physical_split else 1
+    ratio = int(rt_settings.refract_initial_pool_ratio) if physical_split else 1
     if _secondary_split_needed(merged, analytic_raster):
-        samples = int(rt_settings.analytic_aa_secondary_samples())
+        samples = int(rt_settings.effective_analytic_aa_secondary_samples())
         strong = bool(
             merged.get("has_strong_reflective")
             or merged.get("has_refractive")
@@ -962,7 +965,7 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     bez_bvh = merged["bez_bvh"]
     # A geometry type absent from the whole batch has only a placeholder BVH;
     # tell the deterministic kernel so it skips that empty traversal per ray.
-    if GATE_EMPTY_TRAVERSALS:
+    if rt_settings.gate_empty_traversals:
         has_tri = 1 if merged["num_triangles"] > 0 else 0
         has_pn = 1 if merged["num_pn"] > 0 else 0
         has_bez = 1 if merged["num_circuits"] > 0 else 0
@@ -1165,7 +1168,7 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
             ensure_render_headroom(device)
             frames = post_process_frames(memory,
                 frames, anti_alias_level=post_aa,
-                post_processes=list(post_processes), apply_fxaa=scene.render_settings.fxaa)
+                post_processes=list(post_processes), apply_fxaa=scene.video_settings.fxaa)
             memory.set_pointers(entry_pointers)
             return [frames]
         except (InsufficientMemoryException, RuntimeError) as exc:
@@ -1512,7 +1515,7 @@ def raytrace_render_wavefront(
     only when explicitly forced (``set_material_sorting(True)``) and kept for
     reference only. The vertex-shaded path below is unaffected either way.
     """
-    from algan.rendering.raytracing import settings as rt_settings
+    rt_settings = SETTINGS.raytracing
     # UNSUPPORTED legacy textured-surface shader (Surface / flat-triangle
     # scenes): shades from three per-triangle texture lookups instead of
     # per-vertex arrays. Only reachable via the opt-in WF_TEXTURED toggle;
@@ -2186,7 +2189,7 @@ def _raytrace_render_wavefront_textured(
     (the scene is all flat triangles)."""
     from algan.rendering.raytracing.wavefront_textured_kernels_taichi import (
         wf_shade_textured)
-    from algan.rendering.raytracing import settings as rt_settings
+    rt_settings = SETTINGS.raytracing
 
     device = out.device
     i32 = torch.int32
@@ -2205,7 +2208,9 @@ def _raytrace_render_wavefront_textured(
     # bezier feature is on, so its cost is included even on a bezier-free scene.
     has_bez_eff = 1 if (feat_bez or has_bez) else 0
 
-    pool_ratio = REFRACT_INITIAL_POOL_RATIO if refraction_flag else 1
+    pool_ratio = (
+        rt_settings.refract_initial_pool_ratio if refraction_flag else 1
+    )
     primary_per_tile = max(1, rt_settings.WAVEFRONT_TILE_RAYS // pool_ratio)
     # Placeholder for the fused-generation traverse args (classic generate
     # kernel is kept on this path; the gen block compiles out).
@@ -2415,7 +2420,9 @@ def _raytrace_render_wavefront_sorted(
     max_iters = (MAX_SURFACES_PER_RAY + MAX_SURFACES_PER_RAY // KBUF
                  + max_bounces * 2 + 8)
 
-    pool_ratio = REFRACT_INITIAL_POOL_RATIO if refraction_flag else 1
+    pool_ratio = (
+        rt_settings.refract_initial_pool_ratio if refraction_flag else 1
+    )
     # The sorted path carries ~1.5x the classic per-ray state (the event
     # record + keys), so tiles hold fewer rays for the same memory envelope.
     primary_per_tile = max(1, (rt_settings.WAVEFRONT_TILE_RAYS * 2)
@@ -2595,7 +2602,7 @@ _originals = {}
 
 def is_ray_tracing_enabled():
     """Vestigial: always False. The ray-traced primitive classes are now the
-    engine's only renderer (``RENDERER_SETTINGS`` binds them by default), and
+    engine's only renderer (``RENDERER_REGISTRY`` binds them by default), and
     the ``enable_ray_tracing`` toggle that used to populate ``_originals`` was
     removed with the rasterizer. Kept only because ``post_processing.bloom``
     probes for it defensively."""

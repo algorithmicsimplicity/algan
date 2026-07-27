@@ -1,3 +1,4 @@
+from algan.settings import SETTINGS
 import bisect
 import os
 import hashlib
@@ -5,7 +6,6 @@ from pathlib import Path
 
 import pyttsx3
 
-from algan.settings.defaults import DIRECTORY_DEFAULTS
 
 class Timer:
     def __init__(self):
@@ -206,7 +206,7 @@ def get_speech_generator_from_file(audio_file, transcript_file):
     hasher = hashlib.sha256()
     hasher.update((f'{audio_file}!!___!!{full_ac.duration}').encode())
     hash_bytes = hasher.hexdigest()[:64]
-    time_stamp_file = os.path.join(DIRECTORY_DEFAULTS.cache_directory, 'audio', f"{hash_bytes}.csv")
+    time_stamp_file = os.path.join(SETTINGS.paths.cache_directory, 'audio', f"{hash_bytes}.csv")
 
     if os.path.exists(time_stamp_file):
         word_time_stamps = []
@@ -254,7 +254,7 @@ def get_pyttsx_speech_generator(script):
     hasher = hashlib.sha256()
     hasher.update(script.encode())
     hash_bytes = hasher.hexdigest()[:32]
-    file = os.path.join(DIRECTORY_DEFAULTS.cache_directory, 'audio', f"{hash_bytes}.mp3")
+    file = os.path.join(SETTINGS.paths.cache_directory, 'audio', f"{hash_bytes}.mp3")
     if not os.path.exists(file):
         Path(file).parent.mkdir(parents=True, exist_ok=True)
         engine = pyttsx3.init()

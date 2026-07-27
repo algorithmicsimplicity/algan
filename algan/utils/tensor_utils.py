@@ -8,7 +8,7 @@ import re
 import numpy as np
 import torch
 
-from algan.settings.defaults import *
+from algan.settings._startup import _ANIMATION_DEVICE
 
 
 def packed_reorder(x, counts, ids):
@@ -75,7 +75,7 @@ def make_grid(
     if max_coord2 is None:
         max_coord2 = max_coord
 
-    device = COMPUTING_DEFAULTS.animation_device
+    device = _ANIMATION_DEVICE
     return torch.stack(
         (
             torch.zeros((height, width), device=device),

@@ -2,6 +2,7 @@ import os
 import warnings
 
 from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
+from algan.settings._startup import _HDR_BUFFER_F16, _RENDER_DEVICE
 
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 
@@ -830,9 +831,8 @@ def merge_on_gpu_active():
     """
     if not MERGE_ON_GPU:
         return False
-    from algan.settings.defaults import COMPUTING_DEFAULTS
 
-    return COMPUTING_DEFAULTS.render_device.type == "cuda"
+    return _RENDER_DEVICE.type == "cuda"
 
 
 # --- project_to_screen device ----------------------------------------------
@@ -873,9 +873,8 @@ def project_on_gpu_active():
     """
     if not PROJECT_ON_GPU:
         return False
-    from algan.settings.defaults import COMPUTING_DEFAULTS
 
-    return COMPUTING_DEFAULTS.render_device.type == "cuda"
+    return _RENDER_DEVICE.type == "cuda"
 
 
 # Feature bitmask for the UNSUPPORTED legacy textured wavefront (see
@@ -979,8 +978,6 @@ SHADOWS = False
 # non-zero shadow radius, per shaded fragment). More = smoother penumbras,
 # linearly more shadow cost. Baked into the shade kernel at compile time; set
 # the env var ALGAN_SOFT_SHADOW_SAMPLES before the first render to change it.
-SOFT_SHADOW_SAMPLES = max(2, int(os.environ.get(
-    "ALGAN_SOFT_SHADOW_SAMPLES", "8")))
 
 
 def set_ray_traced_shadows(enabled):
@@ -1069,7 +1066,7 @@ def hdr_frame_dtype():
     ~80% slower end-to-end on a GTX 1050). On Turing/Ampere+ (fast f16) it is
     a clear win, so enable it there."""
     import torch
-    if os.environ.get("ALGAN_HDR_BUFFER_F16", "0") == "1":
+    if _HDR_BUFFER_F16:
         return torch.float16
     return torch.float32
 
