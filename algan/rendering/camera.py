@@ -40,9 +40,10 @@ class Camera(Mob):
         kwargs.pop("init", None)
         super().__init__(add_to_scene=False, init=False, *args, **kwargs)
         self.animatable_attrs.remove("color")
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.orthographic = orthographic
             self.screen = Mob(
+                scene=self.scene,
                 location=self.location + screen_distance * self.get_forward_direction(),
                 add_to_scene=False,
                 init=False,
@@ -57,7 +58,7 @@ class Camera(Mob):
             self.corner_y_coords = torch.tensor([-1, 1, 1, -1]).view(-1, 1, 1, 1)
             self.spawn(animate=False)
         if orthographic:
-            with Off():
+            with Off(animation_manager=self.animation_manager):
                 self.set_near_orthographic()
 
     @property
@@ -210,7 +211,7 @@ class Camera(Mob):
         return self
 
     def set_euler_angles(self, angle_1, angle_2, angle_3):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             self.orbit_around_line(ORIGIN, RIGHT, num_degrees=angle_1)
             self.orbit_around_line(ORIGIN, UP, num_degrees=angle_2)
             self.orbit_around_line(ORIGIN, OUT, num_degrees=angle_3)
@@ -249,7 +250,7 @@ class Camera(Mob):
         mob_boundary_points = (mob_boundary_points - mobl) * (1 + buffer_portion) + mobl
         selfl = self.location
 
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             self.move_to(mobl - f * dot_product(mobl - selfl, f))
             selfl = self.location
 

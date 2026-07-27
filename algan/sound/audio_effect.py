@@ -1,31 +1,26 @@
 from algan.utils.audio_utils import get_pyttsx_speech_generator
-from algan.utils.singleton import Singleton
 
 
-class AudioManager(Singleton):
-    # Configuration, not per-render state: survives reset() like
-    # SceneManager._scene_class does.
-    _speech_generator = None
+class AudioManager:
+    """Per-scene audio transcript and speech-source state."""
 
-    @classmethod
-    def _create(cls):
-        instance = cls.__new__(cls)
-        instance.video_transcript = ""
-        return instance
+    def __init__(self, scene=None, speech_generator=None):
+        self.scene = scene
+        self.speech_generator = speech_generator
+        self.video_transcript = ""
 
-    @classmethod
-    def set_speech_source(cls, speech_generator):
-        cls._speech_generator = speech_generator
+    def set_speech_source(self, speech_generator):
+        self.speech_generator = speech_generator
+        return self
 
-    @classmethod
-    def append_script(cls, script):
-        cls.instance().video_transcript += script.strip(' ') + '\n\n'
+    def append_script(self, script):
+        self.video_transcript += script.strip(" ") + "\n\n"
+        return self
 
-    @classmethod
-    def get_speech(cls, script):
-        if cls._speech_generator is None:
+    def get_speech(self, script):
+        if self.speech_generator is None:
             return get_pyttsx_speech_generator(script)
-        return cls._speech_generator(script)
+        return self.speech_generator(script)
 
 
 class AudioEffect:

@@ -364,7 +364,7 @@ class MobMorphMixin:
                 "When using become(), the target mob must be of the same primitive type as the original."
             )
 
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             new_self = self
             if detach_history:
                 # Detach this mob's history so that the (potentially shape-changing)
@@ -387,8 +387,8 @@ class MobMorphMixin:
 
         my_children = new_self.get_non_component_children()
         other_children = other_mob.get_non_component_children()
-        with Seq():
-            with Sync():
+        with Seq(animation_manager=self.animation_manager):
+            with Sync(animation_manager=self.animation_manager):
                 if len(new_self.get_non_component_children()) > 0:
                     # Recursively apply 'become' to children to handle nested transformations
                     if minimize_movement:

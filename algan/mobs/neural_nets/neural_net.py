@@ -57,20 +57,30 @@ class Neuron(Mob):
             .look(direction, axis=1)
         )
         self.synapses = [
-            self.synapse_cls(grid_height, color=neuron_color).move_between_points(l, self.location)
+            self.synapse_cls(
+                grid_height, scene=self.scene, color=neuron_color
+            ).move_between_points(l, self.location)
             for l in input_locs
         ]
         self.add_children(self.core, self.shell, self.synapses)
 
     def _make_core(self, grid_height, neuron_color):
         return Sphere(
-            grid_height=grid_height, grid_width=grid_height, color=neuron_color
+            scene=self.scene,
+            grid_height=grid_height,
+            grid_width=grid_height,
+            color=neuron_color,
         ).scale(0.17)
 
     def _make_shell(self, grid_height, neuron_color):
         return (
-            Sphere(opacity=0.5, grid_width=grid_height, grid_height=grid_height,
-                   color=neuron_color)
+            Sphere(
+                scene=self.scene,
+                opacity=0.5,
+                grid_width=grid_height,
+                grid_height=grid_height,
+                color=neuron_color,
+            )
             .set_shader(None)
             .scale(0.2)
         )
@@ -130,7 +140,12 @@ class NeuronV2(Neuron):
             envMapIntensity=4.0,
         )
         return (
-            Sphere(grid_height=grid_height, grid_width=grid_height, color=neuron_color)
+            Sphere(
+                scene=self.scene,
+                grid_height=grid_height,
+                grid_width=grid_height,
+                color=neuron_color,
+            )
             .set_material(material)
             .scale(0.17)
         )
@@ -143,8 +158,13 @@ class NeuronV2(Neuron):
             envMapIntensity=2.5,
         )
         return (
-            Sphere(opacity=0.3, grid_width=grid_height, grid_height=grid_height,
-                   color=neuron_color)
+            Sphere(
+                scene=self.scene,
+                opacity=0.3,
+                grid_width=grid_height,
+                grid_height=grid_height,
+                color=neuron_color,
+            )
             .set_material(material)
             .scale(0.21)
         )
@@ -153,17 +173,17 @@ k = 1
 
 
 def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
-    with Off():
+    with Off(animation_manager=mob1.animation_manager):
         p1 = mob1.get_points_evenly_along_direction(direction)
         p2 = mob2.get_points_evenly_along_direction(direction)
-        syns = [Synapse().move_between_points(p1[i], p2[i]) for i in range(num_points)]
+        syns = [Synapse(scene=mob1.scene).move_between_points(p1[i], p2[i]) for i in range(num_points)]
         for s in syns:
             for _ in s.get_descendants():
                 if not _.is_primitive:
                     continue
                 _.color = _.color.set_opacity(0)
             s.spawn(animate=False)
-    with Sync(run_time=1):
+    with Sync(run_time=1, animation_manager=mob1.animation_manager):
         for s in syns:
             s.wave_color(
                 color + GLOW,
@@ -171,7 +191,7 @@ def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
                 opacity=1,
                 wave_length=1.5,
             )
-    with Off():
+    with Off(animation_manager=mob1.animation_manager):
         [s.despawn(animate=False) for s in syns]
     return
 
@@ -216,20 +236,27 @@ class NeuralNetMLP(Mob):
         if input_locs is not None:
             neuron_locs[0] = input_locs
         self.input_synapse_offset = -layer_spacing * 0.5
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.layers = [
                 [
                     self.neuron_cls(
                         [l + direction * self.input_synapse_offset],
                         direction,
                         location=l,
-                        neuron_color=neuron_color
+                        neuron_color=neuron_color,
+                        scene=self.scene,
                     )
                     for l in neuron_locs[0]
                 ]
             ] + [
                 [
-                    self.neuron_cls(neuron_locs[i], direction, location=l, neuron_color=neuron_color)
+                    self.neuron_cls(
+                        neuron_locs[i],
+                        direction,
+                        location=l,
+                        neuron_color=neuron_color,
+                        scene=self.scene,
+                    )
                     for l in neuron_locs[i + 1]
                 ]
                 for i in range(len(neuron_locs) - 1)
@@ -241,14 +268,18 @@ class NeuralNetMLP(Mob):
     def increment_weight(self):
         weight = self.layers[1][0].synapses[0]
         weight.orig_color = weight.color
-        with Seq():
+        with Seq(animation_manager=self.animation_manager):
             weight.color = weight.color + GLOW * 0.2
-            self.increment_label = Tex('w := w + 0.001').move_next_to(weight, LEFT+DOWN, buffer=0.05).spawn()
+            self.increment_label = (
+                Tex("w := w + 0.001", scene=self.scene)
+                .move_next_to(weight, LEFT + DOWN, buffer=0.05)
+                .spawn()
+            )
         self.incremented_weight = weight
         return weight
 
     def unincrement_weight(self):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             self.increment_label.despawn()
             self.incremented_weight.color = self.incremented_weight.orig_color
 
@@ -280,22 +311,22 @@ class NeuralNetMLP(Mob):
             ]
         else:
             inputs = [[_.location for _ in inputs] for _ in range(len(self.layers[0]))]
-        with Seq(run_time=run_time):
-            with Sync(run_time=1):
+        with Seq(run_time=run_time, animation_manager=self.animation_manager):
+            with Sync(run_time=1, animation_manager=self.animation_manager):
                 for neuron, neuron_inputs in zip(self.layers[0], inputs):
                     for syn, inp in zip(neuron.synapses, neuron_inputs):
                         syn.set_start_point(inp)  # , n.location)
             out = self.activate(
                 run_time=run_time, output_generator=output_generator, **kwargs
             )
-            with Sync():
+            with Sync(animation_manager=self.animation_manager):
                 if reset:
                     self.reset_input_synapses()
                 out.move(self.get_forward_direction() * 0.25)
             return out
 
     def reset_input_synapses(self):
-        with Sync(run_time=1):
+        with Sync(run_time=1, animation_manager=self.animation_manager):
             for n in self.layers[0]:
                 for syn in n.synapses:
                     syn.move_between_points(
@@ -315,9 +346,9 @@ class NeuralNetMLP(Mob):
     def backward(
         self, output=None, label=None, color=PURE_BLUE * k + (1 - k) * WHITE, run_time=3
     ):
-        with Seq(run_time=run_time):
+        with Seq(run_time=run_time, animation_manager=self.animation_manager):
             if label is not None:
-                with Lag(0.65, run_time=6):
+                with Lag(0.65, run_time=6, animation_manager=self.animation_manager):
                     zap(label, output, color=color)
                     zap(output, self.layers[-1][0].shell, color=color)
                 self.animation_manager.context.timespan.current_time = (
@@ -337,14 +368,14 @@ class NeuralNetMLP(Mob):
         layers = self.layers
 
         def pulse_synapses(neuron):
-            with Sync(rate_func=pulse_fade):#ease_out_expo):
+            with Sync(rate_func=pulse_fade, animation_manager=neuron.animation_manager):#ease_out_expo):
                 for synapse in neuron.synapses:
                     synapse.wave_color(color + GLOW * 1, 0.7, reverse,
                                        direction=self.get_forward_direction(),
                                        new_color=tweak_color(synapse.color, 0.33) if reverse else None)
 
         def pulse_neuron(neuron):
-            with Sync(run_time=1.1, rate_func=delay_fade):#lambda t: pulse_fade(t, inflection=1.0)):
+            with Sync(run_time=1.1, rate_func=delay_fade, animation_manager=neuron.animation_manager):#lambda t: pulse_fade(t, inflection=1.0)):
                 for n in [neuron.core, neuron.shell]:
                     n.wave_color(
                         (color + GLOW * 0.8),#.set_opacity(
@@ -361,12 +392,12 @@ class NeuralNetMLP(Mob):
             pulse_funcs = list(reversed(pulse_funcs))
             layers = list(reversed(layers))
 
-        with Seq():
-            with Lag(0.70, rate_func=identity):  # , run_time=run_time):
+        with Seq(animation_manager=self.animation_manager):
+            with Lag(0.70, rate_func=identity, animation_manager=self.animation_manager):  # , run_time=run_time):
                 for layer in layers:
-                    with Sync():
+                    with Sync(animation_manager=self.animation_manager):
                         for neuron in layer:
-                            with Lag(0.5):
+                            with Lag(0.5, animation_manager=self.animation_manager):
                                 for f in pulse_funcs:
                                     f(neuron)
             self.animation_manager.context.timespan.current_time = (
@@ -374,7 +405,7 @@ class NeuralNetMLP(Mob):
             )
             if output_generator is None:
                 return
-            with Off():
+            with Off(animation_manager=self.animation_manager):
                 output = output_generator().move_next_to(
                     self.layers[-1][len(self.layers[-1]) // 2], self.get_forward_direction(), buffer=0
                 )
@@ -383,7 +414,7 @@ class NeuralNetMLP(Mob):
                         continue
                     _.set_opacity(0)
                 output.spawn(animate=False)
-            with Seq(run_time=3):
+            with Seq(run_time=3, animation_manager=self.animation_manager):
                 output.wave_color(
                     color + GLOW, direction=self.get_forward_direction(), opacity=1, wave_length=1.5
                 )
@@ -436,7 +467,13 @@ class NeuronV3(Neuron):
             #reflectivity=1.0
         )
         return (
-            Sphere(grid_height=grid_height, grid_width=grid_height, color=neuron_color, opacity=1.0)
+            Sphere(
+                scene=self.scene,
+                grid_height=grid_height,
+                grid_width=grid_height,
+                color=neuron_color,
+                opacity=1.0,
+            )
             .set_material(material)
             .scale(0.09)
         )
@@ -459,8 +496,13 @@ class NeuronV3(Neuron):
             ior=5
         )
         return (
-            Sphere(opacity=1.0, grid_width=grid_height, grid_height=grid_height,
-                   color=neuron_color)
+            Sphere(
+                scene=self.scene,
+                opacity=1.0,
+                grid_width=grid_height,
+                grid_height=grid_height,
+                color=neuron_color,
+            )
             .set_material(material)
             .scale(0.21)
         )

@@ -9,7 +9,14 @@ from algan.errors import AlganConfigurationError
 
 from algan.constants.spatial import *
 
-from algan.animation_timeline.animation_contexts import Seq, Sync, AnimationManager
+from algan.animation_timeline.animation_contexts import (
+    Seq,
+    Sync,
+    AnimationManager,
+    animation_manager_context,
+)
+from algan.animation_timeline.timeline import TimelineManager
+from algan.sound.audio_effect import AudioManager
 
 # EmptySceneWarning and write_frames_from_queue moved to render_loop.py;
 # re-exported here for backwards compatibility.
@@ -21,19 +28,38 @@ from algan.render_loop import (  # noqa: F401
 from algan.utils.file_utils import get_image
 from algan.scene_manager import SceneManager
 
+from functools import wraps
+
+
+class active_scene_method:
+    """Bind to an instance, or resolve the active Scene when called on Scene."""
+
+    def __init__(self, function):
+        self.function = function
+        wraps(function)(self)
+
+    def __get__(self, instance, owner):
+        if instance is not None:
+            return self.function.__get__(instance, owner)
+
+        @wraps(self.function)
+        def call_on_active_scene(*args, **kwargs):
+            scene = SceneManager.instance().current_scene
+            return self.function(scene, *args, **kwargs)
+
+        return call_on_active_scene
 
 class Scene(RenderLoopMixin):
     """The container that turns recorded animations into rendered video.
 
-    A Scene owns the registry of every :class:`~.Animatable` created while it
-    is active (``actors``), the camera and light sources, and the render loop.
-    User scripts rarely construct one: importing ``algan`` configures the
-    :class:`~algan.scene_manager.SceneManager` singleton, which creates the
-    scene lazily on first use, and ``render_to_file()`` drives it.
+    A Scene owns its actor registry, camera, lights, timeline, animation
+    contexts, audio state, and render loop. Creating one pushes it onto the
+    process-global :class:`~algan.scene_manager.SceneManager` stack, making it
+    the destination for mobs constructed without an explicit ``scene``.
 
     Rendering (:meth:`get_frames`, from
     :class:`~algan.render_loop.RenderLoopMixin`) proceeds in batches of frames
-    sized to the memory budget: for each batch the global timeline
+    sized to the memory budget: for each batch this scene's timeline
     materializes every actor's animated state at the batch's frame times,
     actors produce render primitives, and the ray tracer renders and
     post-processes the frames, which are streamed to the video writer. Batch
@@ -42,6 +68,9 @@ class Scene(RenderLoopMixin):
 
     Parameters
     ----------
+    render_settings
+        Resolution / fps / quality settings (see
+        :mod:`algan.settings.render_settings`).
     background_frame
         Background color/image or procedural callable. A Taichi ``@ti.func``
         uses the scalar ``(x, y, time) -> color`` contract. Python callables
@@ -51,9 +80,6 @@ class Scene(RenderLoopMixin):
         Base path for output files.
     memory
         Optional :class:`~algan.utils.memory_utils.ManualMemory` render arena.
-    render_settings
-        Resolution / fps / quality settings (see
-        :mod:`algan.settings.render_settings`).
     scene_initializer
         Callable run on (re)creation; the default spawns the camera and a
         point light.
@@ -61,12 +87,16 @@ class Scene(RenderLoopMixin):
 
     def __init__(
         self,
-        background_frame=STYLE_DEFAULTS.frame,
+            render_settings=None,
+        background_frame=None,
         output_path="output",
         memory=None,
-        render_settings=RENDERING_DEFAULTS.settings,
-        scene_initializer=lambda x: x,
+        scene_initializer=None,
     ):
+        if render_settings is None:
+            render_settings = RENDERING_DEFAULTS.settings
+        if background_frame is None:
+            background_frame = STYLE_DEFAULTS.frame
         self.set_render_settings(render_settings)
         self.current_time = 0
         self.min_time = 0
@@ -92,12 +122,15 @@ class Scene(RenderLoopMixin):
                 )
             )
         self.background_frame = background_frame
+        self._initial_background_frame = background_frame
+        self.background_color = background_frame
         self.actors = [[]]
         self.effects = []
+        self.camera = None
+        self.light_sources = []
         self.scene_times = [[self.current_time, self.current_time]]
         depth_source = (
-            STYLE_DEFAULTS.frame if callable(background_frame)
-            else background_frame
+            STYLE_DEFAULTS.frame if callable(background_frame) else background_frame
         )
         self.background_depths = torch.full_like(
             depth_source[..., :1],
@@ -105,89 +138,102 @@ class Scene(RenderLoopMixin):
             fill_value=1e12,
         )
         self.animation_off = False
+        self.context_max_time = 0
+        self.environment_map = None
+        self.environment_intensity = 1.0
+        self.environment_ambient = True
         self.output_path = output_path
         self.priority = 0
         self.id_count = 0
-        self.scene_initializer = scene_initializer
-        self.reset_scene()
         self.allow_new_actors = True
         self.animate_scene_clear = False
-
         self.memory = memory
 
-    @staticmethod
-    def wait(time=1):
-        return AnimationManager.wait(time)
+        # Every Scene is a self-contained authoring universe.  Mobs always use
+        # these references after construction rather than consulting globals.
+        self.timeline_manager = TimelineManager()
+        self.animation_manager = AnimationManager(scene=self)
+        self.audio_manager = AudioManager(scene=self)
+
+        manager = SceneManager.instance()
+        if scene_initializer is None:
+            scene_initializer = (
+                type(manager)._scene_initializer or (lambda scene: scene)
+            )
+        self.scene_initializer = scene_initializer
+        self._terminated = False
+        self._context_depth = 0
+        manager.push(self)
+        try:
+            self.reset_scene()
+        except Exception:
+            manager.terminate(self)
+            raise
+
+    def __enter__(self):
+        SceneManager.instance().push(self)
+        self._context_depth += 1
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._context_depth = max(0, self._context_depth - 1)
+        if self._context_depth == 0:
+            self.terminate()
+        return False
+
+    def terminate(self):
+        """Pop this scene from the active-scene stack and return it."""
+        SceneManager.instance().terminate(self)
+        return self
+
+    @active_scene_method
+    def wait(self, time=1):
+        self.animation_manager.wait(time)
+        return self
 
     @staticmethod
     def instance():
-        return SceneManager.instance()
+        """Compatibility accessor for the current active scene."""
+        return SceneManager.instance().current_scene
 
     @staticmethod
-    def get_camera():
-        return SceneManager.instance().camera
+    def current():
+        """Alias for instance."""
+        return Scene.instance()
 
-    @staticmethod
-    def get_light_sources():
-        return SceneManager.instance().light_sources
+    def get_camera(self):
+        return self.camera
 
-    @staticmethod
-    def add_light_source(light_source):
-        scene = getattr(light_source, "scene", None) or SceneManager.instance()
-        if not hasattr(scene, "light_sources"):
-            scene.light_sources = []
-        if not any(light is light_source for light in scene.light_sources):
-            scene.light_sources.append(light_source)
+    def get_light_sources(self):
+        return self.light_sources
+
+    def add_light_source(self, light_source):
+        if not hasattr(self, "light_sources"):
+            self.light_sources = []
+        if not any(light is light_source for light in self.light_sources):
+            self.light_sources.append(light_source)
         return light_source
 
-    @staticmethod
-    def remove_light_source(light_source):
-        """Remove a light from its owning scene and return the light."""
-        scene = getattr(light_source, "scene", None) or SceneManager.instance()
-        scene.light_sources[:] = [
-            light for light in scene.light_sources if light is not light_source
+    def remove_light_source(self, light_source):
+        """Remove a light from this scene and return the light."""
+        self.light_sources[:] = [
+            light for light in self.light_sources if light is not light_source
         ]
         return light_source
 
-    @staticmethod
-    def clear_light_sources():
-        """Remove every registered light and return the active scene."""
-        scene = SceneManager.instance()
-        scene.light_sources.clear()
-        return scene
+    def clear_light_sources(self):
+        """Remove every registered light and return this scene."""
+        self.light_sources.clear()
+        return self
 
     add_light = add_light_source
     remove_light = remove_light_source
 
-    @staticmethod
-    def set_environment_map(source, intensity=1.0, ambient=True):
-        """Set an equirectangular environment map for the scene.
-
-        The map is used as a skybox (rays that leave the scene show the map,
-        including in reflections and refractions) and -- when ``ambient`` is
-        True -- as diffuse image-based lighting: every lit surface receives
-        the map's irradiance (an order-1 spherical-harmonics approximation)
-        in addition to the scene's explicit lights.
-
-        Supported by the deterministic (single-sample) ray tracer.
-
-        Parameters
-        ----------
-        source
-            Path to an image file, or a ``[H, W, >=3]`` tensor/array holding
-            an equirectangular (longitude x latitude, sky at the top row)
-            RGB image. Values may be 0-255 or 0-1. Pass ``None`` to remove
-            the environment map.
-        intensity
-            Brightness multiplier applied to the map.
-        ambient
-            Whether the map also lights surfaces (image-based lighting), or
-            is only visible as a background/in reflections.
-        """
-        scene = SceneManager.instance()
+    def set_environment_map(self, source, intensity=1.0, ambient=True):
+        """Set an equirectangular environment map for this scene."""
         if source is None:
-            scene.environment_map = None
-            return
+            self.environment_map = None
+            return self
         env = source
         if isinstance(env, str):
             import cv2
@@ -195,7 +241,8 @@ class Scene(RenderLoopMixin):
             img = cv2.imread(env, cv2.IMREAD_COLOR)
             if img is None:
                 raise FileNotFoundError(
-                    f"Could not read environment map image: {env}")
+                    f"Could not read environment map image: {env}"
+                )
             env = torch.from_numpy(img[..., ::-1].copy())  # BGR -> RGB
         if not torch.is_tensor(env):
             env = torch.tensor(env)
@@ -203,12 +250,14 @@ class Scene(RenderLoopMixin):
         if env.dim() != 3 or env.shape[-1] < 3:
             raise ValueError(
                 "Environment map must have shape [height, width, >=3], got "
-                f"{tuple(env.shape)}")
+                f"{tuple(env.shape)}"
+            )
         if env.max() > 1.5:
             env = env / 255.0
-        scene.environment_map = env[..., :3].contiguous()
-        scene.environment_intensity = float(intensity)
-        scene.environment_ambient = bool(ambient)
+        self.environment_map = env[..., :3].contiguous()
+        self.environment_intensity = float(intensity)
+        self.environment_ambient = bool(ambient)
+        return self
 
     def length_to_num_pixels(self, length):
         return length * 0.5 * self.num_pixels_screen_height
@@ -247,12 +296,12 @@ class Scene(RenderLoopMixin):
         self.num_frames = int((self.max_time - self.min_time) * self.frames_per_second)
         return
 
-    @staticmethod
-    def clear():
-        SceneManager.instance().clear_scene()
+    def clear(self):
+        self.clear_scene()
+        return self
 
     def despawn_scene(self, **kwargs):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for actor in list(
                 sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)
             ):
@@ -260,7 +309,7 @@ class Scene(RenderLoopMixin):
                     actor.despawn(**kwargs)
 
     def clear_scene(self, **kwargs):
-        with Seq(run_time=0.5):
+        with Seq(run_time=0.5, animation_manager=self.animation_manager):
             self.despawn_scene(**kwargs)
         self.actors[-1] = [
             _ for _ in self.actors[-1] if (_.is_spawned() and _.is_despawned())
@@ -281,7 +330,7 @@ class Scene(RenderLoopMixin):
         from moviepy import CompositeAudioClip  # deferred: ~0.3 s of import algan
 
         audio_clip = CompositeAudioClip(clips_to_compose)
-        audio_clip.duration = AnimationManager.instance().context.timespan.original_end
+        audio_clip.duration = self.animation_manager.context.timespan.original_end
         audio_clip.write_audiofile(file_path, fps=frames_per_second, codec=codec, nbytes=nbytes)
         audio_clip.close()
         return file_path
@@ -289,7 +338,52 @@ class Scene(RenderLoopMixin):
     def reset_scene(self):
         self.actors = [[]]
         self.effects = []
-        self.scene_initializer(self)
+        self.camera = None
+        self.light_sources = []
+        with (
+            SceneManager.instance().activating(self),
+            animation_manager_context(self.animation_manager),
+        ):
+            self.scene_initializer(self)
+
+    def reset(self):
+        """Reset only this scene's authoring state.
+
+        Enclosing or sibling scenes on the SceneManager stack are untouched.
+        Existing mob references from the old timeline should be considered
+        invalid, matching the historical post-render reset contract.
+        """
+        self.current_time = 0
+        self.min_time = 0
+        self.max_time = 0
+        self.context_max_time = 0
+        self.id_count = 0
+        self.scene_times = [[0, 0]]
+        self.background_frame = self._initial_background_frame
+        self.background_color = self._initial_background_frame
+        self.background_is_set = False
+        depth_source = (
+            STYLE_DEFAULTS.frame
+            if callable(self.background_frame)
+            else self.background_frame
+        )
+        self.background_depths = torch.full_like(
+            depth_source[..., :1],
+            dtype=torch.get_default_dtype(),
+            fill_value=1e12,
+        )
+        self.environment_map = None
+        self.environment_intensity = 1.0
+        self.environment_ambient = True
+        self.animation_off = False
+        self.priority = 0
+        self.allow_new_actors = True
+        self.animate_scene_clear = False
+        self.timeline_manager = TimelineManager()
+        self.animation_manager = AnimationManager(scene=self)
+        self.audio_manager = AudioManager(scene=self)
+        self.reset_scene()
+        return self
 
     def set_render_settings(self, render_settings):
         self.render_settings = render_settings
@@ -315,7 +409,7 @@ class Scene(RenderLoopMixin):
     def show_frame(self, time_stamp=None):
         from algan.utils.plotting_utils import plot_tensor
         if time_stamp is None:
-            time_stamp = AnimationManager.instance().context.current_time + 1.5/self.render_settings.frames_per_second
+            time_stamp = self.animation_manager.context.current_time + 1.5/self.render_settings.frames_per_second
         time_ind = self._frame_index_for_timestamp(time_stamp)
         frames = []
         for frame in self.get_frames(time_ind, time_ind + 1):
@@ -334,7 +428,7 @@ class Scene(RenderLoopMixin):
             )
         return round(time_stamp * self.render_settings.frames_per_second)
 
-    def save_frame(self, filename, time_stamp=None, render_settings=None):
+    def _save_frame(self, file_path, render_settings=None, time_stamp=None):
         if not COMPUTING_DEFAULTS.allow_save_frame:
             return None
 
@@ -344,7 +438,7 @@ class Scene(RenderLoopMixin):
                 self.set_render_settings(render_settings)
             if time_stamp is None:
                 time_stamp = (
-                    AnimationManager.instance().context.timespan.current_time
+                    self.animation_manager.context.timespan.current_time
                     + 1.5 / self.render_settings.frames_per_second
                 )
             time_ind = self._frame_index_for_timestamp(time_stamp)
@@ -355,13 +449,9 @@ class Scene(RenderLoopMixin):
                     frames.append(frame.squeeze(0).permute(-1, 0, 1))
             if not frames:
                 raise RuntimeError("No frame was produced for the requested timestamp")
-            output_path = Path(filename)
-            if output_path.suffix == "":
-                output_path = output_path.with_suffix(".png")
-            output_path.parent.mkdir(parents=True, exist_ok=True)
             import torchvision.utils  # deferred: ~0.2 s of import algan
 
-            torchvision.utils.save_image(frames[-1], str(output_path))
+            torchvision.utils.save_image(frames[-1], str(file_path))
             return frames
         finally:
             # set_render_settings restores every derived cache (dimensions,
@@ -369,17 +459,32 @@ class Scene(RenderLoopMixin):
             if self.render_settings is not previous_settings:
                 self.set_render_settings(previous_settings)
 
-    def save_frames(self, filename, time_stamps=None):
-        if not hasattr(time_stamps, '__len__'):
-            time_stamps = [time_stamps]
-        path = Path(filename)
-        suffix = path.suffix or ".png"
-        stem_path = path.with_suffix("") if path.suffix else path
+    @active_scene_method
+    def save_frame(self, file_path, render_settings=None, time_stamps=None):
+        """Render one or more still frames to ``file_path``.
+
+        A bare filename is placed in Algan's default output directory. A
+        relative or absolute path with a parent directory is used as supplied.
+        Missing extensions default to ``.png``. When ``time_stamps`` is a
+        sequence, each timestamp is appended to the resolved filename stem.
+        """
+        # Import lazily to avoid the Scene/algan_utils import cycle during
+        # package initialization while sharing video output's exact resolver.
+        from algan.utils.algan_utils import _resolve_output_destination
+
+        output_path = _resolve_output_destination(file_path, ".png")
+        if not hasattr(time_stamps, "__len__"):
+            return self._save_frame(
+                output_path,
+                render_settings,
+                time_stamps,
+            )
+        suffix = output_path.suffix
+        stem_path = output_path.with_suffix("")
         return [
-            self.save_frame(
-                stem_path.with_name(f"{stem_path.name}_{time_stamp}").with_suffix(
-                    suffix
-                ),
+            self._save_frame(
+                stem_path.with_name(f"{stem_path.name}_{time_stamp}{suffix}"),
+                render_settings,
                 time_stamp,
             )
             for time_stamp in time_stamps
@@ -402,6 +507,31 @@ class Scene(RenderLoopMixin):
     def get_new_id(self):
         self.id_count += 1
         return self.id_count - 1
+
+    @active_scene_method
+    def save_video(self, *args, **kwargs):
+        """Render this scene to a file.
+
+        The module-level :func:`algan.render_to_file` remains as a compatibility
+        wrapper that dispatches to the active scene.
+        """
+        from algan.utils.algan_utils import _render_scene_to_file
+
+        with (
+            SceneManager.instance().activating(self),
+            animation_manager_context(self.animation_manager),
+        ):
+            return _render_scene_to_file(self, *args, **kwargs)
+
+    render_to_file = save_video
+    render = render_to_file
+
+    @staticmethod
+    def render_all_funcs(*args, **kwargs):
+        """Render discovered scene functions in isolated Scene contexts."""
+        from algan.utils.algan_utils import render_all_funcs
+
+        return render_all_funcs(*args, **kwargs)
 
     def __copy__(self):
         return self

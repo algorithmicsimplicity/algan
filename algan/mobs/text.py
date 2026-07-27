@@ -13,7 +13,14 @@ from algan.utils.lazy_import import LazyModule
 mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 #mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
 from algan.settings.style_defaults import *
-from algan.animation_timeline.animation_contexts import Sync, Off, AnimationContext, Lag, Seq
+from algan.animation_timeline.animation_contexts import (
+    Sync,
+    Off,
+    AnimationContext,
+    Lag,
+    Seq,
+    active_scene_for_new_mob,
+)
 from algan.mobs.triangulated_bezier_circuit import (
     TriangulatedBezierCircuit,
     point_to_tensor2,
@@ -82,6 +89,8 @@ class Tex(Mob):
         copies each styled glyph's fill color to its border when a border is
         drawn (disabled when the caller supplied an explicit border color).
         """
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
         make_manim_dir()
         if "preamble" in kwargs:
             kwargs["tex_template"] = mn.TexTemplate(
@@ -164,7 +173,7 @@ class Tex(Mob):
             for char in chars
             if not isinstance(char, mn.ImageMobject)
         ]
-        with Off():
+        with Off(animation_manager=kwargs["scene"].animation_manager):
             paths = triangulated_paths if self.triangulated else bezier_paths
             if self.triangulated:
                 character_batch = (
@@ -193,7 +202,9 @@ class Tex(Mob):
                 self._character_batch, len(paths)
             )
             self.image_mobs = [
-                ImageMob(char, add_to_scene=False)
+                ImageMob(
+                    char, scene=kwargs["scene"], add_to_scene=False
+                )
                 for char in chars
                 if isinstance(char, mn.ImageMobject)
             ]
@@ -255,7 +266,7 @@ class Tex(Mob):
         return self[self.segment_starts[i]:self.segment_ends[i]]
 
     def __getitem__(self, item):
-        return Group([self.character_mobs[item]])
+        return Group([self.character_mobs[item]], scene=self.scene)
 
     def __len__(self):
         return len(self.character_mobs)
@@ -264,8 +275,8 @@ class Tex(Mob):
         return BLUE
 
     def on_create(self):
-        with Seq(run_time=1):
-            with Off():  # Ensure initial state setting is not recorded as an animation
+        with Seq(run_time=1, animation_manager=self.animation_manager):
+            with Off(animation_manager=self.animation_manager):  # Ensure initial state setting is not recorded as an animation
                 opacity = self.opacity
                 self.opacity = 0
             self._create_recursive(animate=False)  # Mark as created without immediate animation
@@ -273,7 +284,7 @@ class Tex(Mob):
             #self.opacity = 1
         return self
         tiles = list(traverse([c.children for c in self.children]))
-        with AnimationContext(run_time_unit=2):
+        with AnimationContext(run_time_unit=2, animation_manager=self.animation_manager):
             animate_lagged_by_location(
                 tiles,
                 lambda m: m.spawn_from_random_direction(),
@@ -285,7 +296,7 @@ class Tex(Mob):
         # tiles = list(traverse([c.children for c in self.children]))
         # with AnimationContext(run_time_unit=2):
         #    animate_lagged_by_location(tiles, lambda m: m.despawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
-        with Seq():
+        with Seq(animation_manager=self.animation_manager):
             self.wave_color(
                 None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=0
             )
@@ -338,11 +349,11 @@ class OldTex(Mob):
         self.latex = latex
         self.create_character_mobs(text, **kwargs2)
         self.add_children(self.character_mobs)
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.scale(self.convert_ratio)
 
     def __getitem__(self, item):
-        return Group([self.character_mobs[item]])
+        return Group([self.character_mobs[item]], scene=self.scene)
 
     def __len__(self):
         return len(self.character_mobs)
@@ -352,20 +363,20 @@ class OldTex(Mob):
 
     def highlight(self):
         self.orig_color = self.color
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for _ in self.get_descendants():
                 _.color = RED_A
         return self
 
     def highlight_off(self):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for _ in self.get_descendants():
                 _.color = WHITE
         return self
 
     def on_create(self):
         tiles = list(traverse([c.children for c in self.children]))
-        with AnimationContext(run_time_unit=2):
+        with AnimationContext(run_time_unit=2, animation_manager=self.animation_manager):
             animate_lagged_by_location(
                 tiles,
                 lambda m: m.spawn_from_random_direction(),
@@ -375,7 +386,7 @@ class OldTex(Mob):
 
     def on_destroy(self):
         tiles = list(traverse([c.children for c in self.children]))
-        with AnimationContext(run_time_unit=2):
+        with AnimationContext(run_time_unit=2, animation_manager=self.animation_manager):
             animate_lagged_by_location(
                 tiles,
                 lambda m: m.despawn_from_random_direction(),
@@ -384,20 +395,20 @@ class OldTex(Mob):
         return self
 
     def set_fill_width(self, fill_portion):
-        with Lag(0.5, run_time=1.0):
+        with Lag(0.5, run_time=1.0, animation_manager=self.animation_manager):
             for c in self.character_mobs:
                 c.fill_portion = fill_portion
             self.fill_portion = fill_portion
 
     def set_color(self, color):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for c in self.character_mobs:
                 c.color = color
             self.color = color
         return self
 
     def set_size(self, size):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for c in self.character_mobs:
                 c.size = size
             self.size = size
@@ -493,7 +504,8 @@ class OldTex(Mob):
         self.mn_point = torch.cat((torch.zeros_like(mn_point[..., :1]), mn_point), -1)
         self.mx_point = torch.cat((torch.zeros_like(mx_point[..., :1]), mx_point), -1)
 
-        with Off():
+        kwargs.setdefault("scene", self.scene)
+        with Off(animation_manager=self.animation_manager):
             self.character_mobs = TriangulatedBezierCircuit(
                 [c.path_obj for c in svg_mobs],
                 invert=True,
@@ -689,7 +701,7 @@ class Text(Tex):
             self.latex = False
 
         # Match Manim's post-construction size overrides.
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             if height is not None:
                 current = self.get_length_in_direction(UP)
                 if float(current.reshape(-1)[0]) > 0:
@@ -785,6 +797,8 @@ class Paragraph(Group):
     """A group of individually addressable text lines."""
 
     def __init__(self, *text, line_spacing=-1, alignment=None, **kwargs):
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
         add_to_scene = kwargs.pop("add_to_scene", True)
         lines = []
         for part in text:
@@ -814,6 +828,7 @@ class Paragraph(Group):
     def set_all_lines_alignments(self, alignment):
         replacement = Paragraph(
             *self.lines_text,
+            scene=self.scene,
             alignment=alignment,
             add_to_scene=False,
         )
@@ -844,6 +859,8 @@ class Code(Group):
     ):
         from algan.mobs.shapes_2d import Circle, SurroundingRectangle
 
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
         add_to_scene = kwargs.pop("add_to_scene", True)
         if code_string is None:
             if code_file is None:
@@ -867,7 +884,7 @@ class Code(Group):
                 add_to_scene=False,
                 **paragraph_config,
             )
-            with Off():
+            with Off(animation_manager=kwargs["scene"].animation_manager):
                 self.line_numbers.move_next_to(self.code, LEFT, buffer=0.2)
             mobs.insert(0, self.line_numbers)
         super().__init__(*mobs, add_to_scene=add_to_scene)
@@ -877,26 +894,33 @@ class Code(Group):
         if background == "rectangle":
             self.background_mobject = SurroundingRectangle(
                 self,
+                scene=self.scene,
                 add_to_scene=False,
                 **background_config,
             )
         elif background == "window":
             frame = SurroundingRectangle(
                 self,
+                scene=self.scene,
                 add_to_scene=False,
                 **background_config,
             )
             dots = Group(
                 *[
-                    Circle(radius=0.04, add_to_scene=False)
+                    Circle(
+                        radius=0.04, scene=self.scene, add_to_scene=False
+                    )
                     for _ in range(3)
                 ],
+                scene=self.scene,
                 add_to_scene=False,
             )
-            with Off():
+            with Off(animation_manager=self.animation_manager):
                 dots.arrange_in_line(RIGHT, buffer=0.08)
                 dots.move_next_to(frame.get_boundary_in_direction(UP), DOWN, buffer=0.08)
-            self.background_mobject = Group(frame, dots, add_to_scene=False)
+            self.background_mobject = Group(
+                frame, dots, scene=self.scene, add_to_scene=False
+            )
         elif background not in {None, False}:
             raise ValueError("background must be 'rectangle', 'window', or None")
         if self.background_mobject is not None:

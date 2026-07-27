@@ -62,7 +62,14 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
     mobs = list(traverse(mobs))
     if len(mobs) == 0:
         return None
-    with Off(record_funcs=False, record_attr_modifications=False):
+    scene = mobs[0].scene
+    if any(mob.scene is not scene for mob in mobs[1:]):
+        raise ValueError("Cannot batch Mobs from multiple Scenes")
+    with Off(
+        record_funcs=False,
+        record_attr_modifications=False,
+        animation_manager=scene.animation_manager,
+    ):
         batch_mob = mobs[0].clone(recursive=False, clone_data=True, add_to_scene=add_to_scene)
         for attr in batch_mob.animatable_attrs:
             if not all(hasattr(mob, attr) for mob in mobs):

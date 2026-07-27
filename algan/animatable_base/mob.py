@@ -10,9 +10,6 @@ from algan.animatable_base.animatable import (
     animated_function,
 )
 from algan.animation_timeline.animation_contexts import AnimationContext, NoExtra, Off, Sync, Seq
-from algan.animation_timeline.timeline import (
-    TimelineManager,
-)
 from algan.animatable_base.mob_hierarchy import MobHierarchyMixin
 from algan.animatable_base.mob_orientation import MobOrientationMixin
 from algan.animatable_base.mob_movement import MobMovementMixin
@@ -167,7 +164,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         spawned, buffer not yet allocated) whose setter would only establish
         the initial value -- the state inside :meth:`__init__`. Falls back to
         the full setter if any precondition does not hold."""
-        tm = TimelineManager.instance()
+        tm = self.scene.timeline_manager
         tl = tm.attr_to_timeline.get(attr)
         if self.children or (tl is not None and self.id in tl.mob_id_to_inds):
             setattr(self, attr, value)
@@ -270,7 +267,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         return self
 
     def set_opacity_via_color(self, opacity):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for d in self.get_descendants():
                 d._original_color_set_opacity_via_color = d.color
                 d.set_non_recursive(color=d.color.set_opacity(opacity))
@@ -300,7 +297,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             The Mob instance itself, allowing for method chaining.
 
         """
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             if color is not None:
                 # new_color=None restores each part to its own current color
                 # (resolved inside apply_absolute_change_two). Passing
@@ -358,7 +355,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         """
         if direction is None:
             direction = self.get_upwards_direction()
-        with AnimationContext(run_time_unit=wave_length / lag_duration):
+        with AnimationContext(run_time_unit=wave_length / lag_duration, animation_manager=self.animation_manager):
             # Filters for primitive parts to ensure the wave animates on individual rendering elements
             # TODO change this to use non_recursive set
             primitive_mobs = [
@@ -376,7 +373,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         return self
 
     def _prepare_buffers(self, key, value):
-        tm = TimelineManager.instance()
+        tm = self.scene.timeline_manager
         tm.add_mob_attr(self, key, value, add_mob=False)
         tl = tm.attr_to_timeline[key]
         if self.id not in tl.mob_id_to_inds:
@@ -704,7 +701,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         resolution.
         """
         detach_time = self.animation_manager.context.timespan.current_time
-        with Off(), NoExtra(priority_level=1):
+        with Off(animation_manager=self.animation_manager), NoExtra(priority_level=1, animation_manager=self.animation_manager):
             clone_mob = self.clone(reset_history=False, spawn=False)
             descendant_map = dict(zip(self.get_descendants(), clone_mob.get_descendants()))
 
@@ -715,7 +712,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             # (which hold the current values and no history). Past function
             # applications are re-targeted at the clone so that at render time
             # they replay onto the old rows.
-            timeline = TimelineManager.instance()
+            timeline = self.scene.timeline_manager
             for orig, clone in descendant_map.items():
                 for attr_timeline in timeline.attr_to_timeline.values():
                     orig_inds = attr_timeline.mob_id_to_inds.get(orig.id)
@@ -766,8 +763,8 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             return self
 
     def check_properties_are_valid(self, property_names):
-        #TODO this: available_attrs = union(self.animatable_attrs, TimelineManager.attr_to_timeline.keys())
-        available_attrs = set([*self.animatable_attrs, *TimelineManager.instance().attr_to_timeline.keys()])
+        # TODO: consider caching this union on the owning timeline.
+        available_attrs = set([*self.animatable_attrs, *self.scene.timeline_manager.attr_to_timeline.keys()])
         for p in property_names:
             if not hasattr(self, p) and (p not in available_attrs):
                 raise AttributeError(f'"{p}" is not recognized as an animatable Mob property. '
@@ -825,7 +822,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
 
         """
         self.check_properties_are_valid(kwargs.keys())
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for key, value in kwargs.items():
                 self.__setattr__(
                     key, value
@@ -834,10 +831,10 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
 
     def on_create(self):
         opacity = self.opacity
-        with Seq():
+        with Seq(animation_manager=self.animation_manager):
             prs = self._prevent_recursive_sets
             self._prevent_recursive_sets = True
-            with Off():
+            with Off(animation_manager=self.animation_manager):
                 self.opacity = 0
             self.opacity = opacity
             self._prevent_recursive_sets = prs

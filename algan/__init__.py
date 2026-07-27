@@ -90,10 +90,14 @@ install_opengl_aliases(globals())
 from algan.scene import Scene
 
 from algan.animation_timeline.animation_contexts import *
+from algan.sound.audio_effect import AudioEffect, AudioManager
 from algan.utils.algan_utils import *
 from algan.rendering.lights import *
 
-set_environment_map = Scene.set_environment_map
+def set_environment_map(*args, **kwargs):
+    """Set the environment map on the current active scene."""
+    return SceneManager.instance().current_scene.set_environment_map(*args, **kwargs)
+
 from algan.rendering.shaders.materials import *
 from algan.rendering.shaders.material_shaders import (
     basic_material_shader,
@@ -171,16 +175,18 @@ def clear_cache(include_taichi_kernels=False):
 
 
 def default_scene_initializer(scene):
-    scene.camera = Camera(location=CAMERA_ORIGIN).spawn(animate=False)
+    scene.camera = Camera(scene=scene, location=CAMERA_ORIGIN).spawn(animate=False)
     scene.light_sources = []
     PointLight(
+        scene=scene,
         location=scene.camera.location + UP * 1 + RIGHT * 5 + OUT * 1,
         color=WHITE,
     ).spawn(animate=False)
 
 
-# The scene itself is created lazily, on the first SceneManager.instance()
-# call (e.g. the first Mob construction or render_to_file()).
+# The SceneManager singleton is created lazily. Its default Scene is created
+# only when current_scene is first requested (e.g. by Mob construction or a
+# module-level render_to_file call).
 SceneManager.set_scene_class(Scene, default_scene_initializer)
 
 # Re-exported for backwards compatibility; it now runs lazily on first Tex use.

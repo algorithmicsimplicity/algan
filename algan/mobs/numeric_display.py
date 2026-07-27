@@ -4,7 +4,13 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
-from algan.animation_timeline.animation_contexts import NoExtra, Off, Sync, Seq
+from algan.animation_timeline.animation_contexts import (
+    NoExtra,
+    Off,
+    Sync,
+    Seq,
+    active_scene_for_new_mob,
+)
 from algan.animatable_base.mob import Mob
 from algan.mobs.text import Tex
 from algan.utils.tensor_utils import cast_to_tensor
@@ -27,6 +33,8 @@ class NumericDisplay(Mob):
             are clamped to the largest displayable value, so pass this
             explicitly for counters that grow (e.g. 4 to count up to 9999).
         """
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
         value = cast_to_tensor(value)
         self.num_decimal_places = num_decimal_places
         if num_integer_places is None:
@@ -35,7 +43,10 @@ class NumericDisplay(Mob):
             )
         self.num_integer_places = num_integer_places
         num_i, num_d = num_integer_places, num_decimal_places
-        with Off(), NoExtra(priority_level=1):
+        animation_manager = kwargs["scene"].animation_manager
+        with Off(animation_manager=animation_manager), NoExtra(
+            priority_level=1, animation_manager=animation_manager
+        ):
             self.placeholder = Tex(
                 "-" + "0" * num_i + ("." + "0" * num_d if num_d > 0 else ""), **kwargs
             )
@@ -73,11 +84,11 @@ class NumericDisplay(Mob):
         #self.components = [*self.digit_mobs, self.decimal, self.negative_sign]
 
     def on_create(self):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for c in self.get_descendants():
                 o = c.opacity
-                with Seq():
-                    with Off():
+                with Seq(animation_manager=self.animation_manager):
+                    with Off(animation_manager=self.animation_manager):
                         c.set_non_recursive(opacity = 0)
                     c.set_non_recursive(opacity = o)
 
@@ -130,7 +141,7 @@ class NumericDisplay(Mob):
 
         all_opacities = torch.stack([get_opacities(_) for _ in value], -3)
 
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             if self.decimal is not None:
                 self.decimal.opacity = 1
             self.negative_sign.set(opacity=neg_opacity)

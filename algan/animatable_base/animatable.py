@@ -20,15 +20,15 @@ from algan.animation_timeline.animation_contexts import (
     AnimationManager,
     AnimationContext,
     Off,
+    animation_manager_bound,
+    active_scene_for_new_mob,
 )
 from algan.constants.color import Color, BLACK
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
-from algan.scene_manager import SceneManager
 
 
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
-    """Combine args and kwargs into one dict, using default values where arg is missing,
-    and record the function application on the global timeline."""
+    """Combine args and kwargs and record the call on this mob's timeline."""
     params = inspect.signature(func).parameters
     arg_names = list(params.keys())[1:]
     kwargs.update({arg_names[i]: args[i] for i in range(len(args))})
@@ -42,7 +42,7 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
         k: cast_to_tensor(v) if k in initial_args else v
         for k, v in default_kwargs.items()
     }
-    timeline = TimelineManager.instance()
+    timeline = self.scene.timeline_manager
     timeline.record_function(
         func, self, initial_args, kwargs, self.animation_manager.context
     )
@@ -77,6 +77,7 @@ def animated_function(
         animated_args = {}
 
     def _decorate(func):
+        @animation_manager_bound
         @wraps(func)
         def wrapper_func(self, *args, **kwargs):
             if not self.is_animating():
@@ -92,10 +93,10 @@ def animated_function(
                 # Spawned but non-recording (e.g. inside Off(record_funcs=
                 # False)): attribute edits still record timestamps against
                 # the current context, so keep the context wrap.
-                with AnimationContext(record_funcs=False):
+                with AnimationContext(record_funcs=False, animation_manager=self.animation_manager):
                     return func(self, *args, **kwargs)
             else:
-                with AnimationContext():
+                with AnimationContext(animation_manager=self.animation_manager):
                     kwargs = prepare_kwargs(
                         self, func, args, kwargs, animated_args, unique_args
                     )
@@ -103,12 +104,12 @@ def animated_function(
                     # the function application recorded by prepare_kwargs, so
                     # overlapping edits' replay windows can be resolved (see
                     # AnimationTimeline._resolve_replay_windows).
-                    timeline = TimelineManager.instance()
+                    timeline = self.scene.timeline_manager
                     previous_event = timeline.set_active_edit_event(
                         timeline.last_recorded_event
                     )
                     try:
-                        with AnimationContext(record_funcs=False):
+                        with AnimationContext(record_funcs=False, animation_manager=self.animation_manager):
                             out = func(self, **kwargs)
                     finally:
                         timeline.set_active_edit_event(previous_event)
@@ -125,7 +126,7 @@ def animated_function(
 class Animatable:
     """Base class for anything that needs animation.
 
-    All animation state lives on the global timeline
+    All animation state lives on this mob's Scene-owned timeline
     (:class:`~algan.animation.timeline.AnimationTimeline`, via
     :class:`~algan.animation.timeline.TimelineManager`): each animatable
     attribute occupies rows of a per-attribute buffer keyed by this object's
@@ -160,7 +161,7 @@ class Animatable:
 
     animatable_attrs : list[str]
         Attribute names which will be treated as animatable. Whenever an animatable attribute is modified,
-        the modification is recorded on the global timeline so it can be replayed at render time.
+        the modification is recorded on this mob's Scene timeline for replay at render time.
     """
 
     def __init__(
@@ -180,14 +181,14 @@ class Animatable:
         self.generate_animatable_attr_set_get_methods()
 
         if scene is None:
-            scene = SceneManager.instance()
+            scene = active_scene_for_new_mob()
         self.scene = scene
         self.id = self.scene.get_new_id()
         if add_to_scene:
             self.scene.add_actor(self)
 
         if animation_manager is None:
-            animation_manager = AnimationManager.instance()
+            animation_manager = scene.animation_manager
         self.animation_manager = animation_manager
         if add_to_scene:
             animation_manager.context.add_mob(self)
@@ -219,7 +220,7 @@ class Animatable:
         This method dynamically creates property getters and setters for the
         specified attributes if they don't already exist, allowing them to be
         controlled by the animation system. When an animatable attribute is
-        modified, the change is recorded on the global timeline
+        modified, the change is recorded on this mob's Scene timeline
         (:class:`~algan.animation.timeline.AnimationTimeline`).
 
         Parameters
@@ -250,8 +251,8 @@ class Animatable:
     ):
         """Dynamically adds a property with a getter and setter for a given attribute name.
 
-        The getter retrieves the current (potentially animated) value of the
-        attribute from the global attribute timeline; the setter writes the
+        The getter retrieves the current (potentially animated) value from
+        this mob's Scene-owned attribute timeline; the setter writes the
         value to the timeline, recording the modification so it can be
         replayed at render time.
 
@@ -283,10 +284,10 @@ class Animatable:
 
     @property
     def lifespan(self):
-        """This mob's [spawn, despawn) interval on the global timeline (a
+        """This mob's [spawn, despawn) interval on its Scene timeline (a
         :class:`~algan.animation.timeline.Lifespan`). Sub-mobs created by
         indexing share their source's id, and therefore its lifespan."""
-        return TimelineManager.instance().get_lifespan(self.id)
+        return self.scene.timeline_manager.get_lifespan(self.id)
 
     @animated_function(animated_args={"t": 0}, unique_args=["function"])
     def animate_function(self, function, t=1, *args, **kwargs):
@@ -353,11 +354,11 @@ class Animatable:
             the updater will continue forever.
 
         """
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         # The span must be recorded on an *entered* context: only contexts
         # that enter and exit get their rescaled timestamps synced, so events
         # on the top-level context's timespan would all evaluate to time 0.
-        with Off(record_funcs=False) as context:
+        with Off(record_funcs=False, animation_manager=self.animation_manager) as context:
             updater_id = timeline.record_updater(
                 update_function, self, args, kwargs, context
             )
@@ -383,13 +384,13 @@ class Animatable:
             recently added updater.
 
         """
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         event = timeline.function_timeline.updaters[updater_id]
         if event.time.end_event is not None:
             # Already removed.
             return
         # See add_updater: the end event must live on an entered context.
-        with Off(record_funcs=False) as context:
+        with Off(record_funcs=False, animation_manager=self.animation_manager) as context:
             timeline.end_updater(updater_id, context)
             # Record the updater's final state as an ordinary attribute
             # modification at the removal time, so the mob keeps it afterwards.
@@ -406,7 +407,7 @@ class Animatable:
                 timeline.end_updater_dependency_trace(previous_trace)
 
     def remove_all_updaters(self):
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         for i, event in enumerate(timeline.function_timeline.updaters):
             if event.caller is self:
                 self.remove_updater(i)
@@ -434,13 +435,15 @@ class Animatable:
 
     @property
     def animation_manager(self):
-        if not hasattr(self, "_animation_manager"):
-            return AnimationManager.instance()
-        return self._animation_manager
+        """This mob's scene-owned animation manager."""
+        return self.scene.animation_manager
 
     @animation_manager.setter
-    def animation_manager(self, a):
-        self._animation_manager = a
+    def animation_manager(self, manager):
+        if manager is not self.scene.animation_manager:
+            raise ValueError(
+                "A Mob must use the AnimationManager owned by its Scene"
+            )
 
     def is_animating(self):
         if not hasattr(self, "id"):
@@ -464,14 +467,14 @@ class Animatable:
             )
 
     def _try_add_to_timeline(self, key, value):
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         timeline.add_mob_attr(self, key, value)
         return self
 
     def setattr_without_record(self, key, value, include_descendants=False):
         self._try_add_to_timeline(key, value)
         inds = self._get_attr_ranges(key, include_descendants=include_descendants)
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         timeline.modify_attribute(key, inds, value)
         return self
 
@@ -483,7 +486,7 @@ class Animatable:
         only be used for structural rewrites (e.g. the batch expansions in
         :meth:`~.Mob.become`) on mobs whose history is fresh."""
         value = cast_to_tensor(value)
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         timeline.add_mob_attr(self, key, value)
         attr_timeline = timeline.attr_to_timeline[key]
         inds = attr_timeline.mob_id_to_inds[self.id]
@@ -501,7 +504,7 @@ class Animatable:
         return self.lifespan.end() >= 0
 
     def setattr_and_record_modification(self, key, value, include_descendants=False):
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         replay_inds = timeline.replay_inds(
             key, self.id, include_descendants)
         inds = (replay_inds if replay_inds is not None else
@@ -531,7 +534,7 @@ class Animatable:
         every frame batch, so it is cached against the global structure
         version (bumped on any hierarchy / row-allocation change).
         """
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         inds = timeline.get_inds(key, self, value)
         # Trace after row allocation so a lazily introduced animatable
         # attribute can be materialized immediately on first updater access.
@@ -597,7 +600,7 @@ class Animatable:
 
     def get_animated_attribute(self, key, include_descendants=False, default=None,
                                copy=True):
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         replay_inds = timeline.replay_inds(
             key, self.id, include_descendants)
         if default is not None and replay_inds is None:
@@ -650,7 +653,6 @@ class Animatable:
         clone.anchor_priority = 0
         memo[id(self)] = clone
         object.__setattr__(clone, "scene", self.scene)
-        object.__setattr__(clone, "_animation_manager", self.animation_manager)
         object.__setattr__(clone, "animatable_attrs", self.animatable_attrs)
 
         if clone_data:
@@ -768,11 +770,11 @@ class Animatable:
         return self
 
     def _create_recursive(self, animate=True):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             lifespan = self.lifespan
             if lifespan.start() < 0:
                 lifespan.start = self.animation_manager.context.get_current_time()
-                TimelineManager.instance().register_spawn(self, lifespan)
+                self.scene.timeline_manager.register_spawn(self, lifespan)
                 if animate:
                     self.on_create()
             for c in self.children:
@@ -788,13 +790,13 @@ class Animatable:
         return self
 
     def _destroy_recursive(self, animate=True):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             lifespan = self.lifespan
             if lifespan.end() < 0:
                 if animate:
                     self.on_destroy()
                 lifespan.end = self.animation_manager.context.get_end_time()
-                TimelineManager.instance().register_despawn(self, lifespan)
+                self.scene.timeline_manager.register_despawn(self, lifespan)
             for c in self.children:
                 c._destroy_recursive(animate)
         return self

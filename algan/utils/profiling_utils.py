@@ -855,9 +855,10 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
     t0 = time.perf_counter()
     if profiler is not None:
         profiler.enable()
-    render_to_file(file_name=f"profiling{tag}_run{run_index}", output_dir=OUT_DIR,
-                   output_path="", render_settings=settings,
-                   file_extension="mp4", )
+    render_to_file(
+        os.path.join(OUT_DIR, f"profiling{tag}_run{run_index}.mp4"),
+        render_settings=settings,
+    )
     if profiler is not None:
         profiler.disable()
     _sync_devices()

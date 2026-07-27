@@ -1,30 +1,17 @@
-"""Shared base for algan's process-global singletons.
+"""Shared base for Algan's process-global singleton services.
 
-:class:`SceneManager <algan.scene_manager.SceneManager>`,
-:class:`TimelineManager <algan.animation.timeline.TimelineManager>`,
-:class:`AnimationManager <algan.animation.animation_contexts.AnimationManager>`
-and :class:`AudioManager <algan.sound.audio_effect.AudioManager>` all follow
-the same pattern: a lazily-created instance reached via ``cls.instance()``,
-dropped by ``cls.reset()`` so the next access recreates it. Configuration that
-must survive a reset (scene class, speech source, ...) lives in class
-attributes on the subclass, not on the instance.
+Only :class:`~algan.scene_manager.SceneManager` currently uses this base.
+Timeline, animation, and audio managers are ordinary per-scene objects.
 """
 
 
 class Singleton:
-    """Lazily-created process-global singleton.
-
-    Subclasses implement :meth:`_create` returning the instance. Direct
-    construction raises; go through :meth:`instance`. Never cache the returned
-    object across a :meth:`reset` — it is replaced wholesale.
-    """
+    """Lazily-created process-global singleton base."""
 
     _instance = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        # Each subclass gets its own slot; otherwise resetting one manager
-        # would clobber the cached instance of another via the shared base.
         cls._instance = None
 
     def __init__(self):

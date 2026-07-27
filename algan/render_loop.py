@@ -21,8 +21,7 @@ from queue import Queue
 
 import torch
 
-from algan.animation_timeline.animation_contexts import AnimationManager, Off
-from algan.animation_timeline.timeline import TimelineManager
+from algan.animation_timeline.animation_contexts import Off
 from algan.logging.logger import get_logger
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
@@ -1279,7 +1278,7 @@ class RenderLoopMixin:
             return False
         if actor.control_points.parent_batch_sizes is not None:
             return False
-        timeline = TimelineManager.instance()
+        timeline = self.timeline_manager
         try:
             for attr in ("opacity", "basis", "glow", "border_width",
                          "border_color", "location"):
@@ -1300,7 +1299,7 @@ class RenderLoopMixin:
             BezierCircuitPrimitive,
         )
 
-        timeline = TimelineManager.instance()
+        timeline = self.timeline_manager
         tex_rows = timeline.attr_to_timeline["color"].mob_id_to_inds[
             actor.texture_points.id].numel()
         return (
@@ -1427,7 +1426,7 @@ class RenderLoopMixin:
         ]
         time_inds = torch.arange(start_time_ind, start_time_ind + duration)
 
-        timeline = TimelineManager.instance()
+        timeline = self.timeline_manager
         # Restrict base-state queries to actors that can contribute to this
         # frame window. Animation replay retains global row ids, and the
         # timeline conservatively falls back to all rows for user callbacks or
@@ -1787,16 +1786,17 @@ class RenderLoopMixin:
         _rt_settings._begin_render_job()
 
         with Off(
-                record_attr_modifications=False,
-                record_funcs=False,
-                priority_level=math.inf,
+            record_attr_modifications=False,
+            record_funcs=False,
+            priority_level=math.inf,
+            animation_manager=self.animation_manager,
         ):
             current_time_ind = start_time_ind
 
             max_animate_mem = int(
-                    COMPUTING_DEFAULTS.portion_of_memory_used_for_animating
-                    * get_num_available_bytes(COMPUTING_DEFAULTS.animation_device)
-                )
+                COMPUTING_DEFAULTS.portion_of_memory_used_for_animating
+                * get_num_available_bytes(COMPUTING_DEFAULTS.animation_device)
+            )
 
             # Prefetch pipeline: while batch b renders on this thread, batch
             # b+1 is prepped (animation/source-device geometry generation) on
@@ -2118,7 +2118,7 @@ class RenderLoopMixin:
                     current_time_ind = new_time_ind
                     if new_time_ind >= end_time_ind:
                         break
-                TimelineManager.instance().clear_buffers()
+                self.timeline_manager.clear_buffers()
             finally:
                 # Always drain the worker before leaving (normal completion,
                 # error, or abandoned generator): a prep still running while
@@ -2155,7 +2155,7 @@ class RenderLoopMixin:
                 self.scene_times[-1][0],
                 (
                     round(
-                        AnimationManager.instance().context.timespan.original_end
+                        self.animation_manager.context.timespan.original_end
                         * self.frames_per_second
                     )
                 ),

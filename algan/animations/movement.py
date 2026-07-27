@@ -16,7 +16,7 @@ import numpy as np
 import torch
 
 from algan.animatable_base.animatable import animated_function
-from algan.animation_timeline.animation_contexts import Sync
+from algan.animation_timeline.animation_contexts import Sync, animation_manager_for
 from algan.constants import rate_funcs
 from algan.constants.spatial import ORIGIN
 from algan.mobs.bezier_circuit import BezierCircuitCubic
@@ -201,7 +201,7 @@ def ApplyPointwiseFunction(
         mobject, function, function_name="ApplyPointwiseFunction"
     )
     about_point = cast_to_tensor(about_point)
-    with Sync(run_time=run_time, rate_func=rate_func):
+    with Sync(run_time=run_time, rate_func=rate_func, animation_manager=animation_manager_for(mobject)):
         for owner in _geometry_point_owners(mobject):
             initial = owner.location.clone()
             centered = initial - about_point.to(initial)
@@ -319,7 +319,7 @@ def Homotopy(
     mobject, homotopy_func = _resolve_mobject_and_callable(
         mobject, homotopy_func, function_name="Homotopy"
     )
-    with Sync(run_time=run_time, rate_func=rate_func):
+    with Sync(run_time=run_time, rate_func=rate_func, animation_manager=animation_manager_for(mobject)):
         for owner in _geometry_point_owners(mobject):
             owner.animate_function(
                 _homotopy_step,
@@ -411,7 +411,7 @@ def PhaseFlow(
     )
     if integration_steps < 1:
         raise ValueError("integration_steps must be at least 1")
-    with Sync(run_time=run_time, rate_func=rate_func):
+    with Sync(run_time=run_time, rate_func=rate_func, animation_manager=animation_manager_for(mobject)):
         for owner in _geometry_point_owners(mobject):
             owner.animate_function(
                 _phase_flow_step,
@@ -541,7 +541,7 @@ def MoveAlongPath(
         raise ValueError("samples_per_curve must be at least 2")
     # Validate eagerly so a malformed path fails while defining the scene.
     _path_control_points(path)
-    with Sync(run_time=run_time, rate_func=rate_func):
+    with Sync(run_time=run_time, rate_func=rate_func, animation_manager=animation_manager_for(mobject, path)):
         mobject.animate_function(
             _move_along_path_step,
             path=path,

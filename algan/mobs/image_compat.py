@@ -146,7 +146,7 @@ class ImageMobject(AbstractImageMobject):
         # scene units). ImageMob's unscaled surface has height 1.
         if scale_to_resolution:
             height = self.pixel_array.shape[0] / scale_to_resolution * 8.0
-            with Off():
+            with Off(animation_manager=self.animation_manager):
                 self.scale(height)
 
     def _sync_texture(self):
@@ -216,7 +216,7 @@ class ImageMobjectFromCamera(ImageMobject):
         if pixel_array is None:
             pixel_array = np.zeros((1, 1, 4), dtype=np.uint8)
         super().__init__(pixel_array, scale_to_resolution=False, **kwargs)
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.scale(3)
 
     def get_pixel_array(self):
@@ -239,7 +239,7 @@ class ImageMobjectFromCamera(ImageMobject):
         if "stroke_color" in config:
             config["border_color"] = config.pop("stroke_color")
         self.display_frame = SurroundingRectangle(
-            self, add_to_scene=False, **config
+            self, scene=self.scene, add_to_scene=False, **config
         )
         self.add_children(self.display_frame)
         return self

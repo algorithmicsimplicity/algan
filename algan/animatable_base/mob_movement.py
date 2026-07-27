@@ -5,18 +5,20 @@ Split out of ``mob.py`` for readability; :class:`MobLayoutMixin` is mixed into
 """
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn.functional as F
 
-import warnings
-from algan import RADIANS_TO_DEGREES
+from algan import animated_function
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.spatial import *
-from algan.geometry.geometry import project_point_onto_line, rotate_vector_around_axis
+from algan.geometry.geometry import project_point_onto_line
 from algan.settings.style_defaults import STYLE_DEFAULTS
-from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, dot_product, broadcast_cross_product
+from algan.utils.tensor_utils import (
+    broadcast_cross_product,
+    broadcast_gather,
+    cast_to_tensor,
+    dot_product,
+)
 
 DEFAULT_BUFFER = STYLE_DEFAULTS.buffer
 
@@ -35,140 +37,181 @@ class MobMovementMixin:
         arc_normal: torch.Tensor = OUT,
         recursive: bool = True,
     ) -> Mob:
-        # TODO: This is bugged and needs to be fixed. The mathematical implementation for arc center calculation might be unstable or incorrect for all cases.
-        """Moves the Mob to a target point along a circular arc. ***Currently bugged***
+        """Move the Mob to ``point`` along a signed circular arc.
+
+        The start and target points form the chord of the arc. ``arc_normal``
+        fixes the plane of the circle, and ``arc_angle_degrees`` is the signed
+        sweep from the start to the target. Its sign follows the same rotation
+        convention as :meth:`~.Mob.rotate`; angles whose magnitude exceeds
+        180 degrees therefore trace the corresponding major arc.
+
+        A zero sweep is treated as the limiting straight-line path. Coincident
+        endpoints are a no-op because the radius of a non-trivial closed arc
+        cannot be inferred from the endpoint alone.
 
         Parameters
         ----------
-        point : torch.Tensor
+        point
             The target 3-D location.
-        arc_angle_degrees : float or torch.Tensor
-            The angle subtended by the arc, in degrees. The sign determines
-            the direction of rotation along the arc
-            (clockwise/counter-clockwise).
-        arc_normal : torch.Tensor, optional
-            The normal vector to the plane of the arc. Defaults to `OUT`
-            (positive Z-axis).
-        recursive : bool, optional
-            If True, applies the rotation recursively to children,
-            maintaining their relative positions. Defaults to True.
+        arc_angle_degrees
+            Signed arc sweep in degrees. Sweeps outside ``[-360, 360]`` are
+            supported, except exact non-zero multiples of 360 degrees when the
+            endpoints differ; such a path would require an infinite radius.
+        arc_normal
+            Normal vector of the arc plane. The chord from the current
+            location to ``point`` must be perpendicular to this vector.
+        recursive
+            If True, propagate the location change to descendants, preserving
+            their offsets from this Mob. If False, move only this Mob.
 
         Returns
         -------
         Mob
-            The Mob instance itself, allowing for method chaining.
+            The Mob instance itself, allowing method chaining.
+
+        Raises
+        ------
+        ValueError
+            If ``arc_normal`` is zero, if the endpoints do not lie in a plane
+            perpendicular to ``arc_normal``, or if distinct endpoints are
+            paired with a non-zero whole-turn sweep.
         """
-        warnings.warn(
-            "move_to_point_along_arc (also reached via move_to(path_arc_angle=...)) "
-            "is known to be bugged: the arc-center calculation can be unstable or "
-            "wrong for some configurations.",
-            stacklevel=2,
-        )
-        my_location = self.location
-        displacement_unnormalized = point - my_location
-        # Normalize the displacement for consistent direction calculations
-        displacement_normalized = F.normalize(displacement_unnormalized, p=2, dim=-1)
+        start = self.location
+        dtype = start.dtype
+        device = start.device
 
-        # Calculate a vector orthogonal to both displacement and arc_normal, which will define one axis for arc plane
-        displacement_normal_orthogonal = F.normalize(
-            broadcast_cross_product(displacement_normalized, arc_normal), p=2, dim=-1
+        target = cast_to_tensor(point).to(device=device, dtype=dtype)
+        normal = cast_to_tensor(arc_normal).to(device=device, dtype=dtype)
+        angle_degrees = cast_to_tensor(arc_angle_degrees).to(
+            device=device, dtype=dtype
         )
 
-        angle_sign = cast_to_tensor(arc_angle_degrees).sign()
-        abs_arc_angle_degrees = (
-            abs(arc_angle_degrees)
-            if not isinstance(arc_angle_degrees, torch.Tensor)
-            else arc_angle_degrees.abs()
+        if not torch.all(torch.isfinite(target)):
+            raise ValueError("point must contain only finite values")
+        if not torch.all(torch.isfinite(angle_degrees)):
+            raise ValueError("arc_angle_degrees must contain only finite values")
+        if not torch.all(torch.isfinite(normal)):
+            raise ValueError("arc_normal must contain only finite values")
+
+        # A circular rotation around ``normal`` preserves the coordinate along
+        # that axis, so the chord must lie in the perpendicular plane.
+        normal_length = normal.norm(p=2, dim=-1, keepdim=True)
+        if torch.any(normal_length == 0):
+            raise ValueError("arc_normal must be a non-zero vector")
+        normal = normal / normal_length
+
+        chord = target - start
+        chord_length = chord.norm(p=2, dim=-1, keepdim=True)
+        coplanar_error = dot_product(chord, normal).abs()
+        coplanar_tolerance = torch.maximum(
+            torch.ones_like(chord_length), chord_length
+        ) * 1e-5
+        if torch.any(coplanar_error > coplanar_tolerance):
+            raise ValueError(
+                "The start and target points must lie in a plane "
+                "perpendicular to arc_normal"
+            )
+
+        zero_angle = angle_degrees == 0
+        coincident = chord_length == 0
+        whole_turn_count = torch.round(angle_degrees / 360)
+        exact_whole_turn = (
+            (whole_turn_count != 0)
+            & (angle_degrees == whole_turn_count * 360)
+        )
+        invalid_whole_turn = exact_whole_turn & ~coincident
+        if torch.any(invalid_whole_turn):
+            raise ValueError(
+                "Distinct endpoints cannot be connected by an exact non-zero "
+                "multiple-of-360-degree circular arc"
+            )
+
+        return self._move_along_arc_displacement(
+            chord,
+            angle_degrees,
+            normal,
+            recursive=recursive,
         )
 
-        # Calculate two vectors `in1` and `in2` that define the tangents or radii for arc center calculation.
-        # These are rotated versions of the normalized displacement, used to form a geometric intersection.
-        in1 = F.normalize(
-            rotate_vector_around_axis(
-                displacement_normalized, abs_arc_angle_degrees - 90, arc_normal, -1
-            ),
-            p=2,
-            dim=-1,
+    @animated_function(
+        animated_args={"interpolation": 0.0}, unique_args=["recursive"]
+    )
+    def _move_along_arc_displacement(
+        self,
+        chord: torch.Tensor,
+        arc_angle_degrees: torch.Tensor,
+        arc_normal: torch.Tensor,
+        recursive: bool = True,
+        interpolation: float | torch.Tensor = 1.0,
+    ) -> Mob:
+        """Apply a pre-validated arc displacement at ``interpolation``."""
+        dtype = self.location.dtype
+        device = self.location.device
+        chord = cast_to_tensor(chord).to(device=device, dtype=dtype)
+        normal = cast_to_tensor(arc_normal).to(device=device, dtype=dtype)
+        angle_degrees = cast_to_tensor(arc_angle_degrees).to(
+            device=device, dtype=dtype
         )
-        in2 = F.normalize(
-            rotate_vector_around_axis(
-                displacement_normalized, -(abs_arc_angle_degrees + 90), arc_normal, -1
-            ),
-            p=2,
-            dim=-1,
-        )
-
-        # Calculate the angle of the full circumference based on the dot product of in1 and in2
-        arc_circumference_angle = (
-            dot_product(-in1, -in2).clamp_(min=-1, max=1).arccos_()
-        )
-
-        # Handle edge cases where angle is exactly 180 degrees or displacement is zero,
-        # which can lead to division by zero or ambiguous arc centers.
-        # In such cases, a simple midpoint is used as the arc center.
-        zero_displacement_mask = (
-            ((math.pi - arc_circumference_angle).abs() <= 1e-5)
-            | (displacement_unnormalized.norm(p=2, dim=-1, keepdim=True) <= 1e-5)
-        ).float()
-
-        # Calculate arc center candidates using geometric intersection formulas.
-        # These involve solving linear equations based on the dot products of vectors.
-        arc_center1 = (
-            my_location + point
-        ) * 0.5  # Midpoint for 180-degree or zero-displacement cases
-
-        x1, y1 = 0.0, 0.0
-        x2, y2 = (
-            dot_product(in1, displacement_normal_orthogonal),
-            dot_product(in1, displacement_normalized),
-        )
-        x3, y3 = (
-            dot_product(displacement_normalized, displacement_normal_orthogonal),
-            dot_product(displacement_normalized, displacement_normalized),
-        )
-        x4, y4 = (
-            dot_product(in2, displacement_normal_orthogonal),
-            dot_product(in2, displacement_normalized),
+        interpolation = cast_to_tensor(interpolation).to(
+            device=device, dtype=dtype
         )
 
-        # Solving for intersection point in a 2D plane defined by displacement_normal_orthogonal and displacement_normalized
-        # These are standard formulas for line-line intersection, adapted for vector components.
-        intersect_x = (
-            (x1 * y2 - y1 * x2) * (x3 - x4) - (x1 - x2) * (x3 * y4 - y3 * x4)
-        ) / ((x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4))
-        intersect_y = (
-            (x1 * y2 - y1 * x2) * (y3 - y4) - (y1 - y2) * (x3 * y4 - y3 * x4)
-        ) / ((x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4))
+        # Let h be half the total sweep. Direct circular interpolation can be
+        # written using only the chord d and n x d:
+        #
+        #   offset(t) = A(t) d + B(t) (n x d)
+        #   A(t) = sin(t h) cos((1-t) h) / sin(h)
+        #   B(t) = sin(t h) sin((1-t) h) / sin(h)
+        #
+        # This is algebraically equivalent to rotating around the circle
+        # centre, but avoids constructing that centre. For shallow arcs the
+        # centre can be arbitrarily far away and subtraction around it loses
+        # substantial precision.
+        half_angle = torch.deg2rad(angle_degrees) * 0.5
+        sin_half_angle = torch.sin(half_angle)
+        zero_angle = angle_degrees == 0
+        coincident = chord.norm(p=2, dim=-1, keepdim=True) == 0
 
-        # Reconstruct the arc center from the intersection point and the initial location
-        arc_center2 = (
-            my_location
-            + intersect_x * displacement_normal_orthogonal
-            + intersect_y * displacement_normalized
+        # Substitute a harmless denominator for entries whose result is taken
+        # from the linear/no-op branch below. This keeps mixed batched inputs
+        # finite without weakening the validation performed by the public
+        # method before the animation is recorded.
+        linear_path = zero_angle | coincident
+        safe_sin_half_angle = torch.where(
+            linear_path,
+            torch.ones_like(sin_half_angle),
+            sin_half_angle,
         )
-        arc_center2 = arc_center2.nan_to_num_(
-            0, 0, 0
-        )  # Handle potential NaNs from division by zero
-
-        # Select the appropriate arc center based on the edge case mask
-        final_arc_center = (
-            arc_center1 * (zero_displacement_mask)
-            + (1 - zero_displacement_mask) * arc_center2
+        traversed_half_angle = interpolation * half_angle
+        remaining_half_angle = (1 - interpolation) * half_angle
+        chord_coefficient = (
+            torch.sin(traversed_half_angle)
+            * torch.cos(remaining_half_angle)
+            / safe_sin_half_angle
+        )
+        normal_coefficient = (
+            torch.sin(traversed_half_angle)
+            * torch.sin(remaining_half_angle)
+            / safe_sin_half_angle
         )
 
-        # Perform the rotation around the calculated arc center
+        circular_offset = (
+            chord_coefficient * chord
+            + normal_coefficient * broadcast_cross_product(normal, chord)
+        )
+        linear_offset = interpolation * chord
+        offset = torch.where(
+            linear_path.expand_as(circular_offset),
+            linear_offset,
+            circular_offset,
+        )
+        new_location = self.location + offset
+
         if recursive:
-            return self.rotate_around_point(
-                final_arc_center,
-                arc_circumference_angle * RADIANS_TO_DEGREES * angle_sign,
-                arc_normal,
-            )
+            self.location = new_location
         else:
-            return self.rotate_around_point_non_recursive(
-                final_arc_center,
-                arc_circumference_angle * RADIANS_TO_DEGREES * angle_sign,
-                arc_normal,
-            )
+            self.set_non_recursive(location=new_location)
+        return self
 
     def move_to(
         self, location: torch.Tensor, path_arc_angle: float | None = None, **kwargs
@@ -304,14 +347,14 @@ class MobMovementMixin:
         # Calculate the target location for this Mob if it were moved next to itself
         # using the specified `edge` direction and `buffer`. This acts as a reference point.
         old_location_reference = (
-            Mob(add_to_scene=False)
+            Mob(scene=self.scene, add_to_scene=False)
             .move_next_to(self, direction if edge is None else edge, buffer)
             .location
         )
         # Calculate the target location for this Mob if it were moved next to the `mob`
         # using the primary `direction` and `buffer`.
         new_location_target = (
-            Mob(add_to_scene=False).move_next_to(mob, direction, buffer).location
+            Mob(scene=self.scene, add_to_scene=False).move_next_to(mob, direction, buffer).location
         )
         # Calculate the displacement needed to move from the reference point to the target point,
         # projected onto the `direction` to ensure alignment only along that axis.
@@ -444,7 +487,7 @@ class MobMovementMixin:
             The Mob instance itself, allowing for method chaining.
 
         """
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             clone = self.clone(add_to_scene=False)
             clone.move_to_corner(DOWN, LEFT)
             bottom_left = clone.location.clone()
@@ -512,7 +555,7 @@ class MobMovementMixin:
             The Mob instance itself, allowing for method chaining.
         """
         # Chain two calls to move_to_edge to reach the corner
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             return self.move_to_edge(edge1, buffer=buffer).move_to_edge(
                 edge2, buffer=buffer
             )
@@ -551,7 +594,7 @@ class MobMovementMixin:
             keepdim=True,
         )
 
-        with Seq():  # Ensure movement and despawn happen sequentially
+        with Seq(animation_manager=self.animation_manager):  # Ensure movement and despawn happen sequentially
             self.move(largest_disp + buffer * F.normalize(edge, p=2, dim=-1))
             if despawn:
                 self.despawn(animate=False)
@@ -589,7 +632,7 @@ class MobMovementMixin:
             * normalized_displacement_direction
         )
 
-        with Seq(run_time=1):
+        with Seq(run_time=1, animation_manager=self.animation_manager):
             self.move(displacement)
             self.move(orthogonal_displacement)
             self.location = destination

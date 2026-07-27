@@ -1,46 +1,128 @@
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
 from typing import Any, Callable, Optional
 
 
 from algan.scene_manager import SceneManager
 from algan.animation_timeline.timeline import TimelineSpan
-from algan.sound.audio_effect import AudioEffect, AudioManager
+from algan.sound.audio_effect import AudioEffect
 from algan.constants import rate_funcs
 from dataclasses import dataclass
 
 from algan.utils.python_utils import traverse
-from algan.utils.singleton import Singleton
 
 DEFAULT_RUN_TIME = 2
 DEFAULT_RATE_FUNC = rate_funcs.smooth
 
 
-class AnimationManager(Singleton):
-    @classmethod
-    def _create(cls):
-        instance = cls.__new__(cls)
-        instance.context = Seq(
+class AnimationManager:
+    """Per-scene owner of the active animation-context stack."""
+
+    def __init__(self, scene=None):
+        self.scene = scene
+        self.context = Seq(
             run_time_unit=1.0,
             priority_level=0,
             rate_func=rate_funcs.smooth,
             record_funcs=True,
             record_attr_modifications=True,
             spawn_at_end=False,
+            animation_manager=self,
         )
-        instance.execution_count = 0
-        return instance
+        self.execution_count = 0
 
-    @classmethod
-    def get_execution_count(cls):
-        am = AnimationManager.instance()
-        c = am.execution_count
-        am.execution_count += 1
-        return c
+    def get_execution_count(self):
+        count = self.execution_count
+        self.execution_count += 1
+        return count
 
-    @classmethod
-    def wait(cls, t=None):
-        am = AnimationManager.instance()
-        am.context.wait(t)
+    def wait(self, t=None):
+        self.context.wait(t)
+        return self
+
+
+_ANIMATION_MANAGER_OVERRIDE = ContextVar(
+    "algan_animation_manager_override", default=None
+)
+
+
+@contextmanager
+def animation_manager_context(animation_manager):
+    """Temporarily bind implicit AnimationContexts to one scene manager."""
+    token = _ANIMATION_MANAGER_OVERRIDE.set(animation_manager)
+    try:
+        yield animation_manager
+    finally:
+        _ANIMATION_MANAGER_OVERRIDE.reset(token)
+
+
+def animation_manager_bound(function):
+    """Run an initialized Animatable method with its Scene manager bound."""
+
+    @wraps(function)
+    def wrapped(self, *args, **kwargs):
+        scene = getattr(self, "scene", None)
+        manager = getattr(scene, "animation_manager", None)
+        if manager is None:
+            # Some constructors call animated helpers before Animatable.__init__.
+            # Those fast-path calls have no scene state to bind yet.
+            return function(self, *args, **kwargs)
+        with animation_manager_context(manager):
+            return function(self, *args, **kwargs)
+
+    return wrapped
+
+
+def _active_animation_manager():
+    override = _ANIMATION_MANAGER_OVERRIDE.get()
+    if override is not None:
+        return override
+    return SceneManager.instance().current_scene.animation_manager
+
+
+def active_scene_for_new_mob():
+    """Return the SceneManager's current active scene."""
+    return SceneManager.instance().current_scene
+
+
+def animation_manager_for(*owners):
+    """Resolve the one animation manager associated with ``owners``.
+
+    Owners may be scenes, mobs, or nested Python collections containing them.
+    A context cannot coherently combine mobs from different scenes, so mixed
+    managers are rejected instead of silently recording into whichever scene
+    happens to be globally active.
+    """
+    managers = []
+
+    def collect(owner):
+        if owner is None:
+            return
+        manager = getattr(owner, "animation_manager", None)
+        if manager is not None:
+            if not any(existing is manager for existing in managers):
+                managers.append(manager)
+            return
+        scene = getattr(owner, "scene", None)
+        manager = getattr(scene, "animation_manager", None)
+        if manager is not None:
+            if not any(existing is manager for existing in managers):
+                managers.append(manager)
+            return
+        if isinstance(owner, dict):
+            for value in owner.values():
+                collect(value)
+        elif isinstance(owner, (list, tuple, set, frozenset)):
+            for value in owner:
+                collect(value)
+
+    for owner in owners:
+        collect(owner)
+    if len(managers) > 1:
+        raise ValueError("One animation context cannot span multiple Scenes")
+    return managers[0] if managers else _active_animation_manager()
 
 
 class RateFuncWrapper:
@@ -93,9 +175,9 @@ class AnimationContext:
         Setting this parameter sets the rate_func to be the composition of the parent context's `rate_func` with this
         `rate_func_compose`.
     record_funcs
-        Whether :func:`~.animated_function` s within this context should be recorded on the global timeline.
+        Whether animated functions in this context are recorded on the owning Scene timeline.
     record_attr_modifications
-        Whether changes to `animatable_attributes` within this context should be recorded on the global timeline.
+        Whether animatable-attribute changes are recorded on the owning Scene timeline.
     prev_context : :class:`~.AnimationContext`
         The parent context in which this AnimationContext was created.
     spawn_at_end
@@ -121,6 +203,7 @@ class AnimationContext:
     new_mobs: list | None = None
     child_contexts: list | None = None
     kwargs: Any = None
+    animation_manager: Any = None
 
     def __post_init__(self):
         if self.new_mobs is None:
@@ -132,11 +215,13 @@ class AnimationContext:
         self.timespan = TimelineSpan()
 
     def __enter__(self):
-        am = AnimationManager.instance()
+        am = self.animation_manager or _active_animation_manager()
+        self.animation_manager = am
         if self.priority_level is None:
             self.priority_level = am.context.priority_level
         if am.context.priority_level > self.priority_level:
             self.ignored = True
+            self._manager_override_token = _ANIMATION_MANAGER_OVERRIDE.set(am)
             return am.context
 
         self.ignored = False
@@ -175,6 +260,7 @@ class AnimationContext:
 
         t = self.prev_context.timespan.current_time
         self.timespan = TimelineSpan(t, t, t)
+        self._manager_override_token = _ANIMATION_MANAGER_OVERRIDE.set(am)
         return self
 
     def add_child_context(self, c):
@@ -212,10 +298,14 @@ class AnimationContext:
         self.timespan.current_time = self.timespan.current_time - num_frames
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
+        token = getattr(self, "_manager_override_token", None)
         if self.ignored:
+            if token is not None:
+                _ANIMATION_MANAGER_OVERRIDE.reset(token)
+                self._manager_override_token = None
             return False
 
-        am = AnimationManager.instance()
+        am = self.animation_manager or _active_animation_manager()
         try:
             if exc_type is not None:
                 # The failed context must not participate in later rescaling.
@@ -300,7 +390,7 @@ class AnimationContext:
                     am.context.timespan.current_time = self.timespan.current_time
 
             if self.spawn_at_end and not am.context.spawn_at_end:
-                with Sync():
+                with Sync(animation_manager=am):
                     for mob in sorted(
                         self.new_mobs, key=lambda item: -item.anchor_priority
                     ):
@@ -312,6 +402,9 @@ class AnimationContext:
             # this context installed globally after the with statement exits.
             if am.context is self:
                 am.context = self.prev_context
+            if token is not None:
+                _ANIMATION_MANAGER_OVERRIDE.reset(token)
+                self._manager_override_token = None
 
     def increment_times(self):
         #self.end_time = max(self.end_time, self.current_time + self.run_time_unit)
@@ -426,7 +519,7 @@ class Audio(AnimationContext):
     def __enter__(self):
         context = super().__enter__()
         if self.prev_context.run_time_unit > 0:
-            SceneManager.instance().add_effect(
+            self.animation_manager.scene.add_effect(
                 AudioEffect(self.audio_clip, self.get_current_time())
             )
         return context
@@ -444,8 +537,11 @@ class Speech(Audio):
     """
 
     def __init__(self, script, wait_at_end=1, *args, **kwargs):
-        AudioManager.append_script(script)
-        super().__init__(AudioManager.get_speech(script), wait_at_end, *args, **kwargs)
+        animation_manager = kwargs.get("animation_manager") or _active_animation_manager()
+        kwargs["animation_manager"] = animation_manager
+        audio_manager = animation_manager.scene.audio_manager
+        audio_manager.append_script(script)
+        super().__init__(audio_manager.get_speech(script), wait_at_end, *args, **kwargs)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         super().__exit__(exc_type, exc_val, exc_tb)
@@ -461,7 +557,7 @@ class SlideShow(Seq):
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         super().__exit__(exc_type, exc_val, exc_tb)
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for mob in self.new_mobs:
                 mob.despawn()
         self.wait()

@@ -7,6 +7,7 @@ from algan.mobs.group import Group
 from algan.utils.tensor_utils import unsquish
 from algan.utils.mob_utils import batch_mobs
 from algan.utils.lazy_import import LazyModule
+from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
 from manim import ImageMobject, VectorizedPoint, ThreeDVMobject
 
 # Deferred: a ManimMob wraps an already-constructed manim mobject, so manim
@@ -30,6 +31,8 @@ class ManimMob(BezierCircuitCubic):
     """
 
     def __init__(self, manim_mob, batch=False, _add_to_scene=None, **kwargs):
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
         # Retain the source object so compatibility Mobs can delegate Manim-specific
         # query/build methods (for example Axes.plot and NumberLine.n2p) and can
         # resynchronise their converted geometry after a delegated mutation.
@@ -43,7 +46,11 @@ class ManimMob(BezierCircuitCubic):
             kwargs['add_to_scene'] = _add_to_scene
         for submob in manim_mob.submobjects:
             if isinstance(submob, _manim.ImageMobject):
-                mob = ImageMob(submob, add_to_scene=_add_to_scene)
+                mob = ImageMob(
+                    submob,
+                    scene=kwargs["scene"],
+                    add_to_scene=_add_to_scene,
+                )
                 children.append(mob)
                 continue
             if submob.n_points_per_curve != 4 or submob.n_points_per_cubic_curve != 4:
@@ -112,5 +119,14 @@ class ManimMob(BezierCircuitCubic):
                 add_to_scene = True
             else:
                 add_to_scene = kwargs['add_to_scene']
-            self.add_children(batch_mobs(children, add_to_scene=add_to_scene) if batch else Group(children, add_to_scene=add_to_scene))
+            grouped = (
+                batch_mobs(children, add_to_scene=add_to_scene)
+                if batch
+                else Group(
+                    children,
+                    scene=self.scene,
+                    add_to_scene=add_to_scene,
+                )
+            )
+            self.add_children(grouped)
         self.submobjects = children

@@ -138,7 +138,7 @@ class MobOrientationMixin:
         return self
 
     def orbit_around_point(self, point, num_degrees, axis):
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             self.rotate_around_point(point, num_degrees, axis)
             self.rotate(num_degrees, axis)
         return self

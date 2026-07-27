@@ -130,7 +130,7 @@ class AnimatedBoundary(Group):
         self.draw_rate_func = draw_rate_func
         self.fade_rate_func = fade_rate_func
 
-        with Off():
+        with Off(animation_manager=vmobject.animation_manager):
             growing_copy = vmobject.clone(add_to_scene=False, spawn=False)
             fading_copy = vmobject.clone(add_to_scene=False, spawn=False)
             growing_paths = _bezier_family(growing_copy)

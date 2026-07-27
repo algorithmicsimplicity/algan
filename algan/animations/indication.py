@@ -6,7 +6,9 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
-from algan.animation_timeline.animation_contexts import Off, Seq, Sync
+from algan.animation_timeline.animation_contexts import (
+    Off, Seq, Sync, animation_manager_for,
+)
 from algan.animations.movement import Homotopy
 from algan.constants import rate_funcs
 from algan.constants.color import GRAY, YELLOW
@@ -31,7 +33,7 @@ def wiggle(t, wiggles=2):
 def Indicate(mobject, scale_factor=1.2, color=YELLOW, run_time=1.0):
     color = cast_to_tensor(color)
     scale_factor = cast_to_tensor(scale_factor)
-    with Sync(run_time=run_time):
+    with Sync(run_time=run_time, animation_manager=animation_manager_for(mobject)):
         mobject.pulse_color(color)
         # relative mode: pulse each part to scale_factor times its own current
         # scale and back. Using the parent's scale_coefficient as an absolute
@@ -100,7 +102,7 @@ def Wiggle(
 ):
     basis_0 = mobject.basis.clone()
     location_0 = mobject.location.clone()
-    with Sync(run_time=run_time):
+    with Sync(run_time=run_time, animation_manager=animation_manager_for(mobject)):
         mobject.animate_function(
             wiggle_step,
             basis_0=basis_0,
@@ -115,16 +117,16 @@ def Wiggle(
 
 
 def Blink(mobject, time_on=0.5, time_off=0.5, blinks=1, hide_at_end=False):
-    with Seq():
+    with Seq(animation_manager=animation_manager_for(mobject)):
         for _ in range(blinks):
-            with Off():
+            with Off(animation_manager=animation_manager_for(mobject)):
                 mobject.set_opacity_via_color(1.0)
             mobject.wait(time_on)
-            with Off():
+            with Off(animation_manager=animation_manager_for(mobject)):
                 mobject.set_opacity_via_color(0.0)
             mobject.wait(time_off)
         if not hide_at_end:
-            with Off():
+            with Off(animation_manager=animation_manager_for(mobject)):
                 mobject.set_opacity_via_color(1.0)
             mobject.wait(time_on)
     return mobject
@@ -134,19 +136,24 @@ def FocusOn(focus_point, opacity=0.2, color=GRAY, run_time=2.0):
     from algan.animatable_base.mob import Mob
     from algan.mobs.shapes_2d import Circle
 
+    animation_manager = animation_manager_for(focus_point)
     if isinstance(focus_point, Mob):
         focus_point = focus_point.get_center()
     else:
         focus_point = cast_to_tensor(focus_point)
-    with Seq():
-        with Off():
+    with Seq(animation_manager=animation_manager):
+        with Off(animation_manager=animation_manager):
             spotlight = Circle(
-                radius=10.0, color=color, opacity=0.0, location=focus_point
+                scene=animation_manager.scene,
+                radius=10.0,
+                color=color,
+                opacity=0.0,
+                location=focus_point,
             ).spawn()
-        with Sync(run_time=run_time):
+        with Sync(run_time=run_time, animation_manager=animation_manager):
             spotlight.scale(1e-4)
             spotlight.opacity = opacity
-        with Off():
+        with Off(animation_manager=animation_manager):
             spotlight.despawn(animate=False)
     return spotlight
 
@@ -179,24 +186,24 @@ def ShowPassingFlash(mobject, time_width=0.1, run_time=1.0):
     from algan.mobs.bezier_circuit import BezierCircuitCubic
 
     if isinstance(mobject, BezierCircuitCubic):
-        with Seq():
-            with Off():
+        with Seq(animation_manager=animation_manager_for(mobject)):
+            with Off(animation_manager=animation_manager_for(mobject)):
                 full_pts = mobject.control_points.location.clone()
                 mobject.set_control_points_to_partial(full_pts, 0.0, 0.0)
                 mobject.spawn()
-            with Sync(run_time=run_time):
+            with Sync(run_time=run_time, animation_manager=animation_manager_for(mobject)):
                 mobject.animate_function(
                     passing_flash_step,
                     time_width=time_width,
                     full_control_points=full_pts,
                 )
-            with Off():
+            with Off(animation_manager=animation_manager_for(mobject)):
                 mobject.despawn(animate=False)
     else:
         beziers = [
             d for d in mobject.get_descendants() if isinstance(d, BezierCircuitCubic)
         ]
-        with Sync(run_time=run_time):
+        with Sync(run_time=run_time, animation_manager=animation_manager_for(mobject)):
             for b in beziers:
                 ShowPassingFlash(b, time_width=time_width, run_time=run_time)
     return mobject
@@ -209,7 +216,7 @@ def ShowPassingFlashWithThinningStrokeWidth(
     if isinstance(max_stroke_width, torch.Tensor):
         max_stroke_width = max_stroke_width.item()
     clones = []
-    with Off():
+    with Off(animation_manager=animation_manager_for(vmobject)):
         for i in range(n_segments):
             factor = i / (n_segments - 1) if n_segments > 1 else 1.0
             stroke_w = factor * max_stroke_width
@@ -217,7 +224,7 @@ def ShowPassingFlashWithThinningStrokeWidth(
             clone = vmobject.clone(spawn=False)
             clone.border_width = stroke_w
             clones.append((clone, time_w))
-    with Sync(run_time=run_time):
+    with Sync(run_time=run_time, animation_manager=animation_manager_for(vmobject)):
         for clone, time_w in clones:
             ShowPassingFlash(clone, time_width=time_w, run_time=run_time)
     return vmobject
@@ -236,12 +243,13 @@ def Flash(
     from algan.animatable_base.mob import Mob
     from algan.mobs.shapes_2d import Line
 
+    animation_manager = animation_manager_for(point_or_mobject)
     if isinstance(point_or_mobject, Mob):
         center = point_or_mobject.get_center()
     else:
         center = cast_to_tensor(point_or_mobject)
     lines = []
-    with Off():
+    with Off(animation_manager=animation_manager):
         for i in range(num_lines):
             angle = i * (2 * math.pi / num_lines)
             direction = torch.tensor(
@@ -249,9 +257,15 @@ def Flash(
             )
             start = center + flash_radius * direction
             end = start + line_length * direction
-            line = Line(start, end, border_color=color, border_width=line_stroke_width)
+            line = Line(
+                start,
+                end,
+                scene=animation_manager.scene,
+                border_color=color,
+                border_width=line_stroke_width,
+            )
             lines.append(line)
-    with Sync(run_time=run_time):
+    with Sync(run_time=run_time, animation_manager=animation_manager):
         for line in lines:
             ShowPassingFlash(line, time_width=time_width, run_time=run_time)
     return point_or_mobject
@@ -270,9 +284,11 @@ def Circumscribe(
 ):
     from algan.mobs.shapes_2d import Circle, Rectangle, Square, SurroundingRectangle
 
+    animation_manager = animation_manager_for(mobject)
     if shape is None or shape in (Rectangle, Square):
         frame = SurroundingRectangle(
             mobject,
+            scene=mobject.scene,
             color=color,
             buffer=buff,
             border_width=stroke_width,
@@ -287,6 +303,7 @@ def Circumscribe(
         height = mx[..., 1] - mn[..., 1]
         radius = 0.5 * torch.sqrt(width**2 + height**2) + buff
         frame = Circle(
+            scene=mobject.scene,
             radius=radius,
             border_color=color,
             border_width=stroke_width,
@@ -297,44 +314,44 @@ def Circumscribe(
         raise ValueError("shape should be either Rectangle or Circle.")
 
     if fade_in and fade_out:
-        with Seq():
-            with Off():
+        with Seq(animation_manager=animation_manager):
+            with Off(animation_manager=animation_manager):
                 frame.spawn()
                 frame.opacity = 0.0
-            with Seq(run_time=run_time):
-                with Sync(run_time=run_time / 2):
+            with Seq(run_time=run_time, animation_manager=animation_manager):
+                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
                     frame.opacity = 1.0
-                with Sync(run_time=run_time / 2):
+                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
                     frame.opacity = 0.0
-            with Off():
+            with Off(animation_manager=animation_manager):
                 frame.despawn(animate=False)
     elif fade_in:
-        with Seq():
-            with Off():
+        with Seq(animation_manager=animation_manager):
+            with Off(animation_manager=animation_manager):
                 frame.opacity = 0.0
                 frame.portion_of_curve_drawn = 1.0
                 full_pts = frame.control_points.location.clone()
                 frame.spawn()
-            with Seq(run_time=run_time):
-                with Sync(run_time=run_time / 2):
+            with Seq(run_time=run_time, animation_manager=animation_manager):
+                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
                     frame.opacity = 1.0
-                with Sync(run_time=run_time / 2):
+                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
                     frame.animate_function(undraw_step, full_control_points=full_pts)
-            with Off():
+            with Off(animation_manager=animation_manager):
                 frame.despawn(animate=False)
     elif fade_out:
-        with Seq():
-            with Off():
+        with Seq(animation_manager=animation_manager):
+            with Off(animation_manager=animation_manager):
                 frame.opacity = 1.0
                 full_pts = frame.control_points.location.clone()
                 frame.set_control_points_to_partial(full_pts, 0.0, 0.0)
                 frame.spawn()
-            with Seq(run_time=run_time):
-                with Sync(run_time=run_time / 2):
+            with Seq(run_time=run_time, animation_manager=animation_manager):
+                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
                     frame.animate_function(draw_step, full_control_points=full_pts)
-                with Sync(run_time=run_time / 2):
+                with Sync(run_time=run_time / 2, animation_manager=animation_manager):
                     frame.opacity = 0.0
-            with Off():
+            with Off(animation_manager=animation_manager):
                 frame.despawn(animate=False)
     else:
         ShowPassingFlash(frame, time_width=time_width, run_time=run_time)

@@ -144,6 +144,7 @@ class TriangleMesh(Mob):
         self.recompute_normals = recompute_normals
 
         super().__init__(**kwargs)
+        kwargs["scene"] = self.scene
         device = self.location.device
         vertices = vertices.to(device)
         corner_index = corner_index.to(device)

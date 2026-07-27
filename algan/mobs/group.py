@@ -52,6 +52,18 @@ class Group(Mob):
     def __init__(self, *mobs, _link_children=True, **kwargs):
         initial_mobs = list(traverse(mobs))
         self._link_children = bool(_link_children)
+        if initial_mobs:
+            scenes = {id(mob.scene): mob.scene for mob in initial_mobs}
+            if len(scenes) != 1:
+                raise AlganConfigurationError(
+                    "A Group cannot contain Mobs from multiple Scenes"
+                )
+            child_scene = next(iter(scenes.values()))
+            requested_scene = kwargs.setdefault("scene", child_scene)
+            if requested_scene is not child_scene:
+                raise AlganConfigurationError(
+                    "A Group and its children must belong to the same Scene"
+                )
 
         def mean(values):
             values = [value for value in values if value is not None]
@@ -125,7 +137,12 @@ class Group(Mob):
             return mobs
         # Slicing is observational: the view is not an actor and does not add
         # itself as a parent of the selected children. Empty slices remain Group.
-        return Group(*list(mobs), add_to_scene=False, _link_children=False)
+        return Group(
+            *list(mobs),
+            scene=self.scene,
+            add_to_scene=False,
+            _link_children=False,
+        )
 
     def __setitem__(self, item, value):
         replacement = list(self.children)
@@ -153,7 +170,7 @@ class Group(Mob):
             new_children = [*self.children, *mobs]
             self._validate_new_children(new_children)
             self.children[:] = new_children
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.set_non_recursive(location=self.get_mob_midpoint())
         return self
 
@@ -229,7 +246,7 @@ class Group(Mob):
             if start_at_first
             else (self.location - direction * total_size / 2)
         )
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for i, mob in enumerate(self.mobs):
                 start = start + direction * (mob_sizes[i] / 2)
                 l = start
@@ -244,7 +261,7 @@ class Group(Mob):
         if not self.children:
             return self
         dif = end - start
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for i, mob in enumerate(self.mobs):
                 mob.location = start + dif * ((i + 1) / (len(self.mobs) + 1))
         return self
@@ -351,7 +368,7 @@ class Group(Mob):
             row_direction * sum(buf_dist1) * 0.5
             + column_direction * sum(buf_dist2) * 0.5
         )
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             for i, mob in enumerate(self.mobs):
                 x = i % num_cols
                 y = i // num_cols

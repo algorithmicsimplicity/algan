@@ -1,7 +1,11 @@
 from svgelements import Path, Move, Close, Line
 
 from algan.animatable_base.animatable import animated_function
-from algan.animation_timeline.animation_contexts import Off, Sync
+from algan.animation_timeline.animation_contexts import (
+    Off,
+    Sync,
+    active_scene_for_new_mob,
+)
 from algan.constants.spatial import OUT, LEFT, RIGHT, DOWN, UP, ORIGIN
 from algan.constants.color import *
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
@@ -104,6 +108,7 @@ class Arrow(TriangulatedBezierCircuit):
 class AxesMob(Mob):
     def __init__(self, width=1.0, quadrant=False, **kwargs):
         super().__init__(**kwargs)
+        kwargs["scene"] = self.scene
         self.width = width
         self.horizontal_axis = Arrow(
             LEFT * width * 0.5 if not quadrant else ORIGIN,
@@ -141,7 +146,7 @@ class Bar(Quad):
             get_corners(start, self.direction, width, self.height, facing_direction),
             **kwargs,
         )
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.set_non_recursive(location=start)
 
     @animated_function(animated_args={"interpolation": 0}, unique_args=["height_func"])
@@ -180,6 +185,7 @@ class FunctionPlotMob(Mob):
         kwargs["create"] = False
         kwargs["init"] = False
         super().__init__(**kwargs)
+        kwargs["scene"] = self.scene
         new_axes = axes is None
         if axes is None:
             axes = AxesMob(**kwargs)
@@ -226,7 +232,7 @@ class FunctionPlotMob(Mob):
         )[..., :2]
 
         kwargs["constants"] = func_color
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             if not bar_plot:
                 self.func = TriangulatedBezierCircuit(
                     [convert_points_to_path(func_points)], **kwargs
@@ -238,9 +244,10 @@ class FunctionPlotMob(Mob):
                 widths = (x[..., 1] - x[..., 0]) * 0.5
                 self.func = Group(
                     [
-                        Rectangle(h, w).move_to(l)
+                        Rectangle(h, w, scene=self.scene).move_to(l)
                         for h, w, l in zip(heights, widths, locs)
-                    ]
+                    ],
+                    scene=self.scene,
                 )
         # self.axes = axes
         self.add_children(self.func)
@@ -319,13 +326,15 @@ class TriangleVertices2(Mob):
 
 class Quad(Mob):
     def __init__(self, corner_locations, color=None, *args, **kwargs):
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
         if color is None:
             color = self.get_default_color()
         if color.dim() == 1:
             color = color.unsqueeze(0)
         if color.shape[0] == 1:
             color = color.expand(corner_locations.shape[-2], -1)
-        with Sync():
+        with Sync(animation_manager=kwargs["scene"].animation_manager):
 
             def q(_):
                 return torch.cat((_[..., 2:4, :], _[..., :1, :]), -2)

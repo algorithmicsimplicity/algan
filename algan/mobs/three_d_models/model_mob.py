@@ -190,7 +190,7 @@ class ThreeDModelMob(Mob):
         self.mesh_mobs: list[TriangleMesh] = []
         # Node name -> the mesh mobs built for that node (for part access).
         self.parts: dict[str, list[TriangleMesh]] = {}
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             for mesh_idx, mesh in enumerate(scene_data.meshes):
                 node_indices = mesh_nodes.get(mesh_idx, [-1])
                 for node_idx in node_indices:
@@ -255,6 +255,7 @@ class ThreeDModelMob(Mob):
         # Meshes stay lit: with authored normals (smooth_normals) they shade
         # smooth; otherwise TriangleMesh derives flat per-face normals.
         mob = TriangleMesh(
+            scene=self.scene,
             vertices=vertices,
             faces=mesh.faces.to(device),
             normals=normals,
@@ -380,7 +381,7 @@ class ThreeDModelMob(Mob):
         center = (lo + hi) * 0.5
         diagonal = (hi - lo).norm().clamp_min(1e-8)
         scale = float(target_size) / float(diagonal)
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             for mob in self.mesh_mobs:
                 mob.grid.location = (mob.grid.location - center) * scale
         # Record so bake_animation lands baked poses in the same space.
@@ -525,13 +526,13 @@ class ThreeDModelMob(Mob):
         # Frame 0 is set instantly, then the geometry is swept through the
         # remaining baked poses; each Sync step moves every mesh together and
         # Seq sequences the steps (rescaled to run_time).
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             for mob in self.mesh_mobs:
                 mob.grid.set_location(corners[mob][0])
         for _lap in range(max(1, int(loop))):
-            with Seq(run_time=run_time, rate_func=rate_func):
+            with Seq(run_time=run_time, rate_func=rate_func, animation_manager=self.animation_manager):
                 for k in range(1, len(times)):
-                    with Sync():
+                    with Sync(animation_manager=self.animation_manager):
                         for mob in self.mesh_mobs:
                             mob.grid.set_location(corners[mob][k])
         return self

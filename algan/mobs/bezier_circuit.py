@@ -128,6 +128,7 @@ class BezierCircuitCubic(Mob):
         self.second_basis = second_basis
 
         super().__init__(**kwargs2)
+        kwargs["scene"] = self.scene
         self.register_attrs_as_animatable(
             ["border_width", "border_color", "portion_of_curve_drawn"],
             BezierCircuitCubic,
@@ -162,7 +163,7 @@ class BezierCircuitCubic(Mob):
             border_color if not self.empty else border_color.set_opacity(0)
         )
         kwargs["color"] = self.color if self.filled else self.border_color
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.texture_points = Mob(texture_triangle_vertices, **kwargs)
             self.texture_points.exclude_from_boundary = True
             self.texture_points.is_primitive = True
@@ -209,7 +210,7 @@ class BezierCircuitCubic(Mob):
         bases = torch.stack(bases, -2).unsqueeze(0)
         count = len(batches)
 
-        with Off(record_funcs=False, record_attr_modifications=False):
+        with Off(record_funcs=False, record_attr_modifications=False, animation_manager=mob.animation_manager):
             for attr in mob.animatable_attrs:
                 try:
                     value = getattr(mob, attr)
@@ -597,9 +598,9 @@ def build_render_primitives_batched(actors, scene):
     attributes, and uniform ``num_texture_points`` / ``filled`` /
     texture-color row count / primitive class across the group.
     """
-    from algan.animation_timeline.timeline import RowRanges, TimelineManager
+    from algan.animation_timeline.timeline import RowRanges
 
-    timeline = TimelineManager.instance()
+    timeline = scene.timeline_manager
     first = actors[0]
     ntp = first.num_texture_points
     M = len(actors)

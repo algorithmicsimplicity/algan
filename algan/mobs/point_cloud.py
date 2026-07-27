@@ -13,6 +13,7 @@ import math
 import numpy as np
 import torch
 
+from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
 from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.color import BLACK, WHITE, YELLOW, Color
 from algan.constants.spatial import ORIGIN
@@ -95,7 +96,9 @@ class PMobject(Group):
             if len(self.rgbas) != len(self.points):
                 raise ValueError("points and rgbas must have same length")
         self.point_color = color
-        geometry = self._build_geometry()
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
+        geometry = self._build_geometry(scene=kwargs["scene"])
         super().__init__(*([] if geometry is None else [geometry]), **kwargs)
         # Animatable installs instance-level generic color accessors while
         # registering Mob attributes. Point clouds need color accessors that
@@ -103,7 +106,9 @@ class PMobject(Group):
         self.set_color = PMobject.set_color.__get__(self, type(self))
         self.get_color = PMobject.get_color.__get__(self, type(self))
 
-    def _build_geometry(self):
+    def _build_geometry(self, scene=None):
+        if scene is None and hasattr(self, "scene"):
+            scene = self.scene
         dots = [
             Dot3D(
                 point=point,
@@ -111,6 +116,7 @@ class PMobject(Group):
                 resolution=(4, 4),
                 color=_rgba_to_color(rgba),
                 add_to_scene=False,
+                scene=scene,
             )
             for point, rgba in zip(self.points, self.rgbas)
         ]
@@ -286,7 +292,7 @@ class PMobject(Group):
     def get_point_mobject(self, center=None):
         if center is None:
             center = self.points.mean(0) if len(self.points) else ORIGIN
-        return Point(center, add_to_scene=False)
+        return Point(center, scene=self.scene, add_to_scene=False)
 
     def interpolate_color(self, mobject1, mobject2, alpha):
         self.rgbas = mobject1.rgbas * (1 - alpha) + mobject2.rgbas * alpha

@@ -106,6 +106,10 @@ class MobHierarchyMixin:
             seen.add(identity)
             if mob is self:
                 raise HierarchyError("A Mob cannot be its own child")
+            if mob.scene is not self.scene:
+                raise HierarchyError(
+                    "A Mob hierarchy cannot span multiple Scenes"
+                )
             if self._contains_in_hierarchy(mob, self):
                 raise HierarchyError("This hierarchy mutation would create a cycle")
 

@@ -143,20 +143,34 @@ def _wrapper_type_for(source) -> type["ManimCompatMob"]:
     return ManimCompatMob
 
 
-def from_manim(value: Any, *, add_to_scene: bool = False):
+def from_manim(value: Any, *, scene=None, add_to_scene: bool = False):
     """Recursively convert values returned by delegated Manim APIs."""
     if isinstance(value, _manim.ImageMobject):
-        return ImageMob(value, add_to_scene=add_to_scene)
+        return ImageMob(value, scene=scene, add_to_scene=add_to_scene)
     if isinstance(value, _manim.Mobject):
-        return _wrapper_type_for(value)._from_manim(value, add_to_scene=add_to_scene)
+        return _wrapper_type_for(value)._from_manim(
+            value, scene=scene, add_to_scene=add_to_scene
+        )
     if isinstance(value, np.ndarray):
         return torch.from_numpy(value).to(torch.get_default_device())
     if isinstance(value, Mapping):
-        return type(value)((key, from_manim(item, add_to_scene=add_to_scene)) for key, item in value.items())
+        return type(value)(
+            (
+                key,
+                from_manim(item, scene=scene, add_to_scene=add_to_scene),
+            )
+            for key, item in value.items()
+        )
     if isinstance(value, tuple):
-        return tuple(from_manim(item, add_to_scene=add_to_scene) for item in value)
+        return tuple(
+            from_manim(item, scene=scene, add_to_scene=add_to_scene)
+            for item in value
+        )
     if isinstance(value, list):
-        return [from_manim(item, add_to_scene=add_to_scene) for item in value]
+        return [
+            from_manim(item, scene=scene, add_to_scene=add_to_scene)
+            for item in value
+        ]
     return value
 
 
@@ -171,7 +185,9 @@ class ManimCompatMob(ManimMob):
     """
 
     _manim_class = _manim.VMobject
-    _ALGAN_ONLY_KWARGS = {"add_to_scene", "glow", "glow_radius", "batch"}
+    _ALGAN_ONLY_KWARGS = {
+        "add_to_scene", "glow", "glow_radius", "batch", "scene"
+    }
 
     def __init__(self, *args, **kwargs):
         algan_kwargs = {
@@ -198,9 +214,11 @@ class ManimCompatMob(ManimMob):
         super().__init__(source, batch=batch, **kwargs)
 
     @classmethod
-    def _from_manim(cls, source, *, add_to_scene=False):
+    def _from_manim(cls, source, *, scene=None, add_to_scene=False):
         obj = cls.__new__(cls)
-        obj._initialize_from_manim(source, add_to_scene=add_to_scene)
+        obj._initialize_from_manim(
+            source, scene=scene, add_to_scene=add_to_scene
+        )
         return obj
 
     def get_manim_mobject(self):
@@ -210,7 +228,7 @@ class ManimCompatMob(ManimMob):
     def _animate_to_manim(self, source):
         """Record an Algan morph to an edited copy of the backing Mobject."""
         self.manim_mobject = source
-        target = ManimMob(source, add_to_scene=False)
+        target = ManimMob(source, scene=self.scene, add_to_scene=False)
         return self.become(target, detach_history=False)
 
     # These names also exist on Algan's Mob.  Override them so compatibility
@@ -256,13 +274,13 @@ class ManimCompatMob(ManimMob):
 
     def copy(self):
         return _wrapper_type_for(self.manim_mobject)._from_manim(
-            self.manim_mobject.copy(), add_to_scene=False
+            self.manim_mobject.copy(), scene=self.scene, add_to_scene=False
         )
 
     def sync_from_manim(self):
         """Refresh converted geometry after directly editing the backing object."""
-        target = ManimMob(self.manim_mobject, add_to_scene=False)
-        with Off():
+        target = ManimMob(self.manim_mobject, scene=self.scene, add_to_scene=False)
+        with Off(animation_manager=self.animation_manager):
             self.become(target, detach_history=False)
 
         # ``become`` morphs existing child slots, but a delegated Manim method
@@ -283,7 +301,7 @@ class ManimCompatMob(ManimMob):
             raise AttributeError(name)
         attribute = getattr(self.manim_mobject, name)
         if not callable(attribute):
-            return from_manim(attribute, add_to_scene=False)
+            return from_manim(attribute, scene=self.scene, add_to_scene=False)
 
         @wraps(attribute)
         def delegated(*args, **kwargs):
@@ -297,7 +315,7 @@ class ManimCompatMob(ManimMob):
             if result is None:
                 self.sync_from_manim()
                 return None
-            return from_manim(result, add_to_scene=False)
+            return from_manim(result, scene=self.scene, add_to_scene=False)
 
         return delegated
 

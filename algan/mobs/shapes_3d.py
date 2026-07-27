@@ -130,14 +130,15 @@ class Cone(Surface):
         super().__init__(*args, **kwargs)
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.look(direction_t, axis=1)
         self.base_circle = Circle(
+            scene=self.scene,
             radius=base_radius,
             color=self.color,
             add_to_scene=False,
         )
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.base_circle.look(-direction_t, axis=2)
             self.base_circle.move_to(-direction_t * height * 0.5)
         if show_base:
@@ -203,7 +204,7 @@ class Cylinder(Surface):
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         if not torch.allclose(direction_t, UP.to(direction_t)):
-            with Off():
+            with Off(animation_manager=self.animation_manager):
                 self.look(direction_t, axis=1)
         if show_ends:
             self.add_bases(direction_t)
@@ -212,12 +213,12 @@ class Cylinder(Surface):
         if direction is None:
             direction = F.normalize(cast_to_tensor(self.direction), p=2, dim=-1)
         self.bottom_cap = Circle(
-            radius=self.radius, color=self.color, add_to_scene=False
+            scene=self.scene, radius=self.radius, color=self.color, add_to_scene=False
         )
         self.top_cap = Circle(
-            radius=self.radius, color=self.color, add_to_scene=False
+            scene=self.scene, radius=self.radius, color=self.color, add_to_scene=False
         )
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.bottom_cap.look(-direction, axis=2)
             self.top_cap.look(direction, axis=2)
             self.bottom_cap.move_to(-direction * self.height * 0.5)
@@ -278,7 +279,7 @@ class Cylinder(Surface):
     def _move_between_points(self, start, end):
         start = cast_to_tensor(start)
         end = cast_to_tensor(end)
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             up_b = F.normalize(end - start, p=2, dim=-1)
             right_b = get_orthonormal_vector(up_b)
             forward_b = get_orthonormal_vector(up_b, right_b)
@@ -327,6 +328,7 @@ class Arrow3D(Mob):
             (resolution, resolution) if isinstance(resolution, int) else resolution
         )
         self.tail = Cylinder(
+            scene=self.scene,
             radius=thickness,
             height=float((shaft_end - start).norm(p=2, dim=-1).reshape(-1)[0]),
             direction=direction,
@@ -335,9 +337,10 @@ class Arrow3D(Mob):
             color=color,
             add_to_scene=False,
         )
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.tail.move_to((start + shaft_end) * 0.5)
         self.head = Cone(
+            scene=self.scene,
             base_radius=base_radius,
             height=height,
             direction=direction,
@@ -346,7 +349,7 @@ class Arrow3D(Mob):
             color=color,
             add_to_scene=False,
         )
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.head.move_to(end - direction * height * 0.5)
         self.cone = self.head
         self.start_point = start
@@ -386,7 +389,7 @@ class Dot3D(Sphere):
             kwargs.setdefault("grid_width", int(resolution[0]))
             kwargs.setdefault("grid_height", int(resolution[1]))
         super().__init__(radius=radius, **kwargs)
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.move_to(point)
 
 
@@ -416,7 +419,7 @@ class Line3D(Cylinder):
         self.end = cast_to_tensor(end)
         self.thickness = thickness
         super().__init__(radius=thickness, height=1, closed=True, **kwargs)
-        with Off():
+        with Off(animation_manager=self.animation_manager):
             self.move_between_points(self.start, self.end)
 
     def get_start(self):
@@ -573,14 +576,35 @@ class Polyhedron(Mob):
                 corners = torch.stack(
                     (self.vertex_coords[face[0]], self.vertex_coords[face[i]], self.vertex_coords[face[i + 1]])
                 )
-                triangles.append(TriangleTriangulated(corners, add_to_scene=False, **face_style))
-            face_groups.append(Group(*triangles, add_to_scene=False))
-        self.faces = Group(*face_groups, add_to_scene=False)
+                triangles.append(
+                    TriangleTriangulated(
+                        corners,
+                        scene=self.scene,
+                        add_to_scene=False,
+                        **face_style,
+                    )
+                )
+            face_groups.append(
+                Group(*triangles, scene=self.scene, add_to_scene=False)
+            )
+        self.faces = Group(
+            *face_groups, scene=self.scene, add_to_scene=False
+        )
 
         vertex_type = self.graph_config.get("vertex_type", Dot3D)
         vertex_config = dict(self.graph_config.get("vertex_config", {}))
-        vertices = [vertex_type(point=self.vertex_coords[i], add_to_scene=False, **vertex_config) for i in self.vertex_indices]
-        self.graph = _PolyhedronGraph(vertices, self.edges, add_to_scene=False)
+        vertices = [
+            vertex_type(
+                point=self.vertex_coords[i],
+                scene=self.scene,
+                add_to_scene=False,
+                **vertex_config,
+            )
+            for i in self.vertex_indices
+        ]
+        self.graph = _PolyhedronGraph(
+            vertices, self.edges, scene=self.scene, add_to_scene=False
+        )
         self.add_children(self.faces, self.graph)
 
     @staticmethod
@@ -604,11 +628,12 @@ class Polyhedron(Mob):
         new = Polyhedron(
             [self.graph[i].get_center() for i in self.vertex_indices],
             self.faces_list,
+            scene=self.scene,
             faces_config=self.faces_config,
             graph_config=self.graph_config,
             add_to_scene=False,
         )
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             self.faces.become(new.faces)
         return self
 

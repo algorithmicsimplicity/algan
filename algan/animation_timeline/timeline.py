@@ -6,7 +6,6 @@ from algan.animation_timeline.utils_taichi import (
     _query_selected_state_from_edits,
     _query_state_from_edits,
 )
-from algan.utils.singleton import Singleton
 from algan.utils.tensor_utils import cast_to_tensor
 
 
@@ -152,7 +151,7 @@ class RowRanges:
 
 
 class Lifespan:
-    """The [spawn, despawn) interval of one mob on the global timeline.
+    """The [spawn, despawn) interval of one mob on its Scene timeline.
 
     ``start`` and ``end`` are zero-argument callables returning the spawn /
     despawn timestamp in seconds, or -1 when the mob has not (yet) spawned /
@@ -289,7 +288,7 @@ def generate_array_states_taichi(times, N, edits, *, active_rows=None,
 
 class AttributeTimeline:
     """
-    A global timeline recording state and edit history of all Mobs for a particular attribute.
+    A Scene-owned timeline recording every Mob row for one attribute.
 
     Edits (:class:`EditRecord` s) are kept in execution order; materialization
     sets each row's base state at time ``t`` to the pre-modification value of
@@ -1156,7 +1155,11 @@ class AnimationTimeline:
 
 
 
-class TimelineManager(Singleton):
-    @classmethod
-    def _create(cls):
-        return AnimationTimeline()
+class TimelineManager(AnimationTimeline):
+    """Per-scene animation timeline.
+
+    Unlike the historical singleton accessor, this is an ordinary class. Each
+    :class:`~algan.scene.Scene` constructs and owns one instance.
+    """
+
+    pass

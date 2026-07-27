@@ -8,7 +8,7 @@ from algan.settings.renderer_settings import (
     RENDERER_SETTINGS, effective_triangle_primitive)
 from algan.utils.tensor_utils import broadcast_cross_product
 from algan.animation_timeline.animation_contexts import Sync
-from algan.animation_timeline.timeline import EditRecord, TimelineManager
+from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
 from algan.constants.spatial import OUT
 from algan.geometry.geometry import (
@@ -402,6 +402,7 @@ class Surface(Mob):
             raise ValueError("resolution_shrink_margin must be in [0, 1)")
         # triangle_normals = grid_to_triangle_vertices(F.normalize(normal_function(base_grid), p=2, dim=-1)) if not ignore_normals else None
         super().__init__(*args, **kwargs)
+        kwargs["scene"] = self.scene
         # Texture timelines are keyed by texel count. AttributeTimeline fixes
         # its channel width at first creation, so differently sized textures
         # must never share the generic ``color_texture`` key.
@@ -742,7 +743,7 @@ class Surface(Mob):
             return False
         if not hasattr(self, "grid"):
             return False
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         return not any(
             attr_timeline.active_state is not attr_timeline.current_state
             for attr_timeline in timeline.attr_to_timeline.values()
@@ -905,7 +906,7 @@ class Surface(Mob):
         to the replacement topology; moving it to the historical clone makes
         it invisible because that clone despawns at the same instant.
         """
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         detach_time = self.animation_manager.context.timespan.current_time
         descendants = self.get_descendants()
         descendant_ids = {mob.id for mob in descendants}
@@ -1037,7 +1038,7 @@ class Surface(Mob):
         old_height,
         new_surface_points,
     ):
-        timeline = TimelineManager.instance()
+        timeline = self.scene.timeline_manager
         id_to_mob = {mob.id: mob for mob in self.get_descendants()}
 
         for captured_event in captured:
@@ -1625,7 +1626,7 @@ class Surface(Mob):
             The surface from which to get coord_function.
 
         """
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             self.set_location_by_function(other_surface.coord_function)
             # TODO setting normals currently doesn't work, implement it.
             # self.set_normal_by_function(other_surface.normal_function)
@@ -1664,10 +1665,11 @@ class Surface(Mob):
         new_normals = grid_to_triangle_vertices(function(self.get_base_grid()))
         new_triangles = TriangleTriangulated(
             unsquish(self.triangles.corners.location, -2, 3),
+            scene=self.scene,
             normals=new_normals,
             add_to_scene=False,
         )
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             self.triangles.basis = new_triangles.basis
             self.triangles.corners.basis = new_triangles.corners.basis
         return self
@@ -1679,11 +1681,12 @@ class Surface(Mob):
         new_color = grid_to_triangle_vertices(function(self.get_base_grid()))
         new_triangles = TriangleTriangulated(
             unsquish(self.triangles.corners.location, -2, 3),
+            scene=self.scene,
             color=new_color,
             normals=None,
             add_to_scene=False,
         )
-        with Sync():
+        with Sync(animation_manager=self.animation_manager):
             self.triangles.color = new_triangles.color
             self.triangles.corners.color = new_triangles.corners.color
         return self

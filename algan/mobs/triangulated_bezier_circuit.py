@@ -959,6 +959,7 @@ class TriangulatedBezierCircuit(Mob):
             animate_creation = kwargs["animate_creation"]
             del kwargs["animate_creation"]
         super().__init__(*args, **kwargs)
+        kwargs["scene"] = self.scene
         self.border_width = 0.1
         self.debug = debug
         self.color = color

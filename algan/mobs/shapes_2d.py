@@ -2,7 +2,10 @@ import math
 
 import torch.nn.functional as F
 
-from algan.animation_timeline.animation_contexts import Off
+from algan.animation_timeline.animation_contexts import (
+    Off,
+    active_scene_for_new_mob,
+)
 from algan.constants.spatial import ORIGIN, RIGHT, LEFT, IN
 from algan.constants.color import *
 from algan.geometry.geometry import map_local_to_global_coords
@@ -159,7 +162,7 @@ class Line(BezierCircuitCubic):
         return self.get_vector().norm(p=2, dim=-1)
 
     def put_start_and_end_on(self, start, end):
-        target = Line(start, end, add_to_scene=False)
+        target = Line(start, end, scene=self.scene, add_to_scene=False)
         return self.become(target, detach_history=False)
 
 
@@ -203,7 +206,7 @@ class TriangleTriangulated(Mob):
             )
         self.corners = vertices(corner_locations, normals, **kwargs)
         if vertices != TriangleVertices:
-            with Off(record_attr_modifications=False):
+            with Off(record_attr_modifications=False, animation_manager=self.animation_manager):
                 self.location = self.corners.location.mean(-2, keepdim=True)
             self.add_children(self.corners)
             return
@@ -222,7 +225,7 @@ class TriangleTriangulated(Mob):
             .square()
             .clamp_min_(1e-10)
         )
-        with Off(record_attr_modifications=False):
+        with Off(record_attr_modifications=False, animation_manager=self.animation_manager):
             self.location = m  # .unsqueeze(-2)
             if self.corners.color.shape[-2] > 1:
                 corner_colors = self.corners.color.view(
@@ -298,6 +301,9 @@ class TriangleVertices(Mob):
 
 class QuadTriangulated(Mob):
     def __init__(self, corner_locations, **kwargs):
+        if kwargs.get("scene") is None:
+            kwargs["scene"] = active_scene_for_new_mob()
+
         def q(_):
             return torch.cat((_[..., 2:4, :], _[..., :1, :]), -2)
 

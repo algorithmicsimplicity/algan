@@ -1,25 +1,27 @@
 # from camera import Sequential, Synchronized, Off
 import torch
 
-from algan.animation_timeline.animation_contexts import Seq, Sync, Off, ComposeRateFunc
+from algan.animation_timeline.animation_contexts import (
+    Seq, Sync, Off, ComposeRateFunc, animation_manager_for,
+)
 from algan.utils.tensor_utils import dot_product
 
 
 def map_mob_over_inputs(mob, animation_func, inputs, percent_shown=0.1):
     num_shown = int(len(inputs) * percent_shown)
     d = mob.location - inputs[0].location
-    with Seq():
+    with Seq(animation_manager=animation_manager_for(mob, inputs)):
         for i in range(num_shown):
             inp = inputs[i]
             mob.location = inp.location + d
-            with Sync():
+            with Sync(animation_manager=animation_manager_for(mob, inputs)):
                 animation_func(mob, inp)
-        with Off():
+        with Off(animation_manager=animation_manager_for(mob, inputs)):
             mob.location = inputs[-num_shown]
         for i in range(-num_shown, -1):
             inp = inputs[i + 1]
             mob.location = inp.location + d
-            with Sync():
+            with Sync(animation_manager=animation_manager_for(mob, inputs)):
                 animation_func(mob, inp)
 
 
@@ -52,7 +54,7 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
         rf = lambda x, t=ts[i], r=run_time, l=(lag_duration): rfd(
             x, t, r, l
         )  # ((x - t).clamp_(min=0) / lag_duration).clamp_(max=1)
-        with ComposeRateFunc(rf, run_time=run_time + lag_duration):
+        with ComposeRateFunc(rf, run_time=run_time + lag_duration, animation_manager=animation_manager_for(mobs)):
             animation_func(mobs[i])
     amc.timespan.original_end_time = max(old_max_time, start_time + (run_time + lag_duration))
     amc.timespan.current_time = start_time + amc.lag_ratio * (run_time + lag_duration)

@@ -218,7 +218,17 @@ class OpenGLSurfaceMesh(Group):
         self.flat_stroke = flat_stroke
         add_to_scene = kwargs.pop("add_to_scene", True)
         color = kwargs.pop("color", WHITE)
-        lines = self._build_lines(stroke_width=stroke_width, color=color)
+        scene = kwargs.get("scene")
+        if scene is None:
+            from algan.animation_timeline.animation_contexts import (
+                active_scene_for_new_mob,
+            )
+
+            scene = active_scene_for_new_mob()
+            kwargs["scene"] = scene
+        lines = self._build_lines(
+            stroke_width=stroke_width, color=color, scene=scene
+        )
         super().__init__(*lines, add_to_scene=add_to_scene, **kwargs)
 
     def _sample(self, u, v):
@@ -229,20 +239,20 @@ class OpenGLSurfaceMesh(Group):
             point = self.uv_surface.coord_function(uv)
         return point.reshape(3)
 
-    def _build_lines(self, stroke_width, color):
+    def _build_lines(self, stroke_width, color, scene):
         nu, nv = self.resolution
         thickness = max(float(stroke_width), 0.1) / 2
         paths = []
         for fixed_u in torch.linspace(0, 1, nu):
             points = [self._sample(float(fixed_u), float(v)) for v in torch.linspace(0, 1, nv)]
             paths.extend(
-                Line(a, b, border_width=thickness, border_color=color, color=color, filled=False, add_to_scene=False)
+                Line(a, b, scene=scene, border_width=thickness, border_color=color, color=color, filled=False, add_to_scene=False)
                 for a, b in zip(points, points[1:])
             )
         for fixed_v in torch.linspace(0, 1, nv):
             points = [self._sample(float(u), float(fixed_v)) for u in torch.linspace(0, 1, nu)]
             paths.extend(
-                Line(a, b, border_width=thickness, border_color=color, color=color, filled=False, add_to_scene=False)
+                Line(a, b, scene=scene, border_width=thickness, border_color=color, color=color, filled=False, add_to_scene=False)
                 for a, b in zip(points, points[1:])
             )
         return paths
