@@ -5,7 +5,6 @@ import pytest
 import torch
 
 import algan
-from algan.animation_timeline.timeline import TimelineManager
 from algan.scene_manager import SceneManager
 
 
@@ -17,7 +16,7 @@ def reset_scene():
 
 
 def materialize(*times: float):
-    TimelineManager.instance().set_state_to_times(
+    SceneManager.instance().current_scene.timeline_manager.set_state_to_times(
         torch.tensor(times, dtype=torch.get_default_dtype())
     )
 
@@ -246,8 +245,15 @@ def test_recursive_replay_uses_rows_captured_before_descendant_rebatch():
     """A later descendant rebatch must not change an earlier edit's targets."""
     child = algan.Mob()
     group = algan.Group([child]).spawn(animate=False)
-    start = algan.AnimationManager.instance().context.timespan.current_time
-    opacity_timeline = TimelineManager.instance().attr_to_timeline["opacity"]
+    start = (
+        SceneManager.instance()
+        .current_scene.animation_manager.context.timespan.current_time
+    )
+    opacity_timeline = (
+        SceneManager.instance().current_scene.timeline_manager.attr_to_timeline[
+            "opacity"
+        ]
+    )
     old_child_rows = opacity_timeline.mob_id_to_inds[child.id].clone()
 
     with algan.Sync(rate_func=algan.rate_funcs.identity):
@@ -275,82 +281,77 @@ def test_replay_distinguishes_recursive_edits_from_nonrecursive_reads():
     assert cylinder.basis.shape == (1, 1, 9)
 
 
-def test_surface_resolution_change_preserves_concurrent_rotation():
+def test_surface_logical_pn_topology_is_fixed_during_animation():
     cylinder = algan.Cylinder(add_to_scene=False).spawn(animate=False)
     initial_basis = cylinder.basis.clone()
-    initial_width = cylinder.grid_width
+    initial_resolution = (cylinder.grid_width, cylinder.grid_height)
+    initial_grid_rows = cylinder.grid.location.shape[-2]
 
     with algan.Sync(run_time=1, rate_func=algan.rate_funcs.identity):
         cylinder.rotate(720, algan.OUT)
         cylinder.move_out_of_screen(algan.LEFT, despawn=False)
 
-    assert cylinder.grid_width > initial_width
+    assert (cylinder.grid_width, cylinder.grid_height) == initial_resolution
+    assert cylinder.grid.location.shape[-2] == initial_grid_rows
     rotate_event = next(
         event
-        for event in TimelineManager.instance().function_timeline.function_applications
+        for event in (
+            SceneManager.instance()
+            .current_scene.timeline_manager.function_timeline.function_applications
+        )
         if event.function.__name__ == "rotate"
     )
     assert rotate_event.caller is cylinder
 
     materialize(0.125)
     assert not torch.allclose(cylinder.basis, initial_basis)
+    assert (cylinder.grid_width, cylinder.grid_height) == initial_resolution
+    assert cylinder.grid.location.shape[-2] == initial_grid_rows
 
 
-def test_surface_auto_resolution_uses_asymmetric_shrink_hysteresis():
-    surface = object.__new__(algan.Surface)
-    object.__setattr__(surface, "grid_width", 100)
-    object.__setattr__(surface, "grid_height", 100)
-    object.__setattr__(surface, "_resolution_shrink_margin", 0.1)
-    object.__setattr__(surface, "_pending_auto_resolution", None)
-    object.__setattr__(surface, "_can_update_resolution", lambda: True)
-    object.__setattr__(
-        surface, "_current_surface_function", lambda: lambda uv: uv
-    )
+def test_surface_fixed_topology_preserves_parent_rotation_and_scale():
+    fixed_group = algan.Group(
+        [
+            algan.Square(),
+            algan.Circle(),
+            algan.Sphere(),
+            algan.Cylinder(),
+        ]
+    ).arrange_in_grid()
+    fixed_group.spawn(animate=False)
+    auto_group = algan.Group(
+        [
+            algan.Square(),
+            algan.Circle(),
+            algan.Sphere(),
+            algan.Cylinder(),
+        ]
+    ).arrange_in_grid().spawn(animate=False)
+    initial_resolutions = [
+        (mob.grid_width, mob.grid_height)
+        for mob in auto_group
+        if isinstance(mob, algan.Surface)
+    ]
 
-    required = [(95, 95)]
-    searches = []
+    with algan.Sync(run_time=1, rate_func=algan.rate_funcs.identity):
+        fixed_group.rotate(180, algan.UP).scale(0.75)
+        auto_group.rotate(180, algan.UP).scale(0.75)
 
-    def find_resolution(_surface_function):
-        searches.append(required[-1])
-        return required[-1]
+    materialize(0.25, 0.5, 0.75)
 
-    changes = []
-
-    def change_resolution(width, height, _surface_function):
-        changes.append((width, height))
-        object.__setattr__(surface, "grid_width", width)
-        object.__setattr__(surface, "grid_height", height)
-        return surface
-
-    object.__setattr__(
-        surface, "_find_screen_space_resolution", find_resolution
-    )
-    object.__setattr__(surface, "_change_resolution", change_resolution)
-
-    # A 95x95 grid saves less than 10% of the 99x99 cell work, so retain it.
-    assert surface._prepare_auto_resolution_translation(torch.zeros(3))
-    surface._finalize_auto_resolution_change()
-    assert changes == []
-    assert len(searches) == 1
-
-    # This reduction saves more than 10%, so one downsize is worthwhile.
-    required.append((94, 95))
-    assert surface._prepare_auto_resolution_translation(torch.zeros(3))
-    surface._finalize_auto_resolution_change()
-    assert changes == [(94, 95)]
-    assert len(searches) == 2
-
-    # Growth in either dimension is immediate, while an insignificant shrink
-    # in the other dimension is suppressed. The prepared target is reused, so
-    # finalization performs no second resolution search or resize.
-    object.__setattr__(surface, "grid_width", 100)
-    object.__setattr__(surface, "grid_height", 100)
-    required.append((101, 99))
-    assert surface._prepare_auto_resolution_translation(torch.zeros(3))
-    surface._finalize_auto_resolution_change()
-    assert changes[-1] == (101, 100)
-    assert len(searches) == 3
-    assert changes.count((101, 100)) == 1
+    for actual, expected in zip(auto_group, fixed_group):
+        torch.testing.assert_close(
+            actual.location,
+            expected.location,
+            atol=2e-5,
+            rtol=0,
+            msg=type(actual).__name__,
+        )
+    assert [
+        (mob.grid_width, mob.grid_height)
+        for mob in auto_group
+        if isinstance(mob, algan.Surface)
+    ] == initial_resolutions
 
 
 def test_animated_boundary_tracks_source_and_can_stop():
@@ -387,7 +388,10 @@ def test_animated_boundary_tracks_source_and_can_stop():
     source = algan.Circle(add_to_scene=False).spawn(False)
     boundary = algan.AnimatedBoundary(source, add_to_scene=False).spawn(False)
     assert boundary.stop() is boundary
-    updater = TimelineManager.instance().function_timeline.updaters[boundary.updater_id]
+    updater = (
+        SceneManager.instance()
+        .current_scene.timeline_manager.function_timeline.updaters[boundary.updater_id]
+    )
     assert updater.time.end_event is not None
 
 

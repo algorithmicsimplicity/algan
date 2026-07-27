@@ -452,20 +452,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             attr, include_descendants=False, default=value, copy=False
         )
         change = value - current_value
-        affected_mobs = (
-            self.get_descendants(include_self=True) if recursive else [self]
-        )
-        resolution_updates = []
-        for mob in affected_mobs:
-            prepare = getattr(
-                mob, "_prepare_auto_resolution_translation", None
-            )
-            if prepare is not None and prepare(change):
-                resolution_updates.append(mob)
-
         self._apply_change(attr, change, recursive=recursive)
-        for mob in resolution_updates:
-            mob._finalize_auto_resolution_change()
         return self
 
     @property
@@ -503,26 +490,6 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             "basis", include_descendants=False, default=value, copy=False
         )
         recursive = not self._prevent_recursive_sets
-        affected_mobs = (
-            self.get_descendants(include_self=True) if recursive else [self]
-        )
-        resolution_updates = []
-        if any(
-            hasattr(mob, "_prepare_auto_resolution_basis_change")
-            for mob in affected_mobs
-        ):
-            my_location = self.get_animated_attribute(
-                "location", include_descendants=False, copy=False
-            )
-            for mob in affected_mobs:
-                prepare = getattr(
-                    mob, "_prepare_auto_resolution_basis_change", None
-                )
-                if prepare is not None and prepare(
-                    my_location, my_basis, value
-                ):
-                    resolution_updates.append(mob)
-
         change = inverse_relation(my_basis, value)
         # recursive must be passed as an explicit kwarg (not read from
         # self._prevent_recursive_sets inside _apply_basis_change) so that it
@@ -531,8 +498,6 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         self._apply_basis_change(
             change, default_basis=value, recursive=recursive
         )
-        for mob in resolution_updates:
-            mob._finalize_auto_resolution_change()
 
     @animated_function(animated_args={'interpolation': 0.0})
     def _apply_basis_change(

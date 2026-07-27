@@ -1,12 +1,16 @@
-from algan.settings import SETTINGS
 import inspect
+import warnings
 
 import numpy as np
+import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
-from algan.settings.renderer_settings import (
-    RENDERER_REGISTRY, effective_triangle_primitive)
+from algan.settings.renderer_settings import RENDERER_REGISTRY
+from algan.rendering.logical_pn import (
+    evaluate_logical_pn,
+    logical_pn_control_points,
+)
 from algan.utils.tensor_utils import broadcast_cross_product
 from algan.animation_timeline.animation_contexts import Sync
 from algan.animation_timeline.timeline import EditRecord
@@ -238,16 +242,22 @@ class Surface(Mob):
         Width of the grid from which intrinsic coordinates are sampled.
     grid_aspect_ratio
         If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio.
+    geometry_tolerance
+        Maximum sampled world-space deviation between the analytic surface and
+        its logical PN-triangle approximation at construction time. This
+        guarantee is intentionally not maintained through later animation.
+    render_tolerance
+        Maximum sampled output-pixel deviation used when each logical PN
+        triangle is dynamically diced into ordinary flat render triangles.
+        Camera motion, surface animation, and output resolution are evaluated
+        independently for every render frame.
     tolerance
-        Maximum permitted screen-space deviation, in output pixels, between
-        the analytic surface and its triangle approximation. Used only when
-        neither grid dimension nor ``resolution`` is specified.
+        Deprecated compatibility alias for ``geometry_tolerance``.
     min_grid_resolution, max_grid_resolution
         Bounds for automatic grid sizing, measured in vertices per axis.
     resolution_shrink_margin
-        Fractional reduction in estimated triangle work required before an
-        automatic resolution update may make the grid smaller. Growth remains
-        immediate so the configured screen-space tolerance is never exceeded.
+        Deprecated compatibility argument. Logical PN topology is fixed at
+        construction and is never resized during animation.
     color_texture
         Optional color texture map ``[W, H, 5]`` (or ``[T, W, H, 5]`` for an
         animated map), sampled bilinearly in-kernel by the ray tracer.
@@ -293,7 +303,9 @@ class Surface(Mob):
         normal_texture=None,
         glow_texture=None,
         ignore_normals=False,
-        tolerance=1,
+        tolerance=None,
+        geometry_tolerance=None,
+        render_tolerance=0.5,
         min_grid_resolution=4,
         max_grid_resolution=200,
         resolution_shrink_margin=0.1,
@@ -382,16 +394,35 @@ class Surface(Mob):
         self.normal_function_active = normal_function
         self.ignore_normals = ignore_normals
         self._color_texture_attr = None
-        self._auto_resolution_enabled = grid_height is None and grid_width is None
-        self._resolution_tolerance = float(tolerance)
+        if geometry_tolerance is None:
+            geometry_tolerance = 0.01 if tolerance is None else tolerance
+        elif tolerance is not None:
+            raise ValueError(
+                "Specify geometry_tolerance or legacy tolerance, not both"
+            )
+        self._geometry_auto_resolution_enabled = (
+            grid_height is None and grid_width is None
+        )
+        # Compatibility flag retained for older introspection. Runtime
+        # topology changes are deliberately disabled by the logical PN system.
+        self._auto_resolution_enabled = False
+        self._geometry_tolerance = float(geometry_tolerance)
+        self._render_tolerance = float(render_tolerance)
+        self._resolution_tolerance = self._geometry_tolerance
         self._min_grid_resolution = int(min_grid_resolution)
         self._max_grid_resolution = int(max_grid_resolution)
         self._resolution_shrink_margin = float(resolution_shrink_margin)
         self._grid_aspect_ratio = grid_aspect_ratio
         self._pending_auto_resolution = None
         self._resolution_update_in_progress = True
-        if self._resolution_tolerance <= 0:
-            raise ValueError("tolerance must be a positive pixel deviation")
+        if not np.isfinite(self._geometry_tolerance):
+            raise ValueError("geometry_tolerance must be finite")
+        if self._geometry_tolerance <= 0:
+            raise ValueError("geometry_tolerance must be greater than zero")
+        if not np.isfinite(self._render_tolerance):
+            raise ValueError("render_tolerance must be finite")
+        if self._render_tolerance <= 0:
+            raise ValueError("render_tolerance must be greater than zero")
         if self._min_grid_resolution < 2:
             raise ValueError("min_grid_resolution must be at least 2")
         if self._max_grid_resolution < self._min_grid_resolution:
@@ -409,16 +440,16 @@ class Surface(Mob):
         # must never share the generic ``color_texture`` key.
         self.color_texture = color_texture
 
-        # Auto-tuning grid resolution. ``tolerance`` is measured in output
-        # pixels, so distant or very small surfaces naturally use fewer
-        # triangles than the same shape close to the camera.
-        if self._auto_resolution_enabled:
+        # Compile a stable logical PN topology once. Geometry tolerance is
+        # measured against the surface's construction-time world geometry;
+        # later transforms and deformations never rewrite this topology.
+        if self._geometry_auto_resolution_enabled:
             initial_location = self.location.clone()
 
             def initial_surface_function(uv):
                 return coord_function(uv.clone()) + initial_location
 
-            grid_width, grid_height = self._find_screen_space_resolution(
+            grid_width, grid_height = self._find_geometry_resolution(
                 initial_surface_function
             )
         else:
@@ -501,6 +532,16 @@ class Surface(Mob):
         self.is_primitive = True
         self.ignore_wave_animations = True
         self._resolution_update_in_progress = False
+
+    @property
+    def geometry_tolerance(self):
+        """Construction-time absolute world-space PN fitting tolerance."""
+        return self._geometry_tolerance
+
+    @property
+    def render_tolerance(self):
+        """Per-frame output-pixel flat-triangle tessellation tolerance."""
+        return self._render_tolerance
 
     def func(self, u, v):
         """Evaluate the original Manim-style parametric function."""
@@ -826,6 +867,139 @@ class Surface(Mob):
             approximated_pixels[visible] - exact_pixels[visible]
         ).norm(p=2, dim=-1).max()
 
+    def _compute_pn_geometry_error(self, coord_function, width, height):
+        """Sample construction-time world error of a logical PN grid."""
+        device = self.location.device
+        dtype = self.location.dtype
+        grid_u = torch.linspace(0, 1, width, device=device, dtype=dtype)
+        grid_v = torch.linspace(0, 1, height, device=device, dtype=dtype)
+        grid_uu, grid_vv = torch.meshgrid(grid_u, grid_v, indexing="ij")
+        base_grid = torch.stack((grid_uu, grid_vv), dim=-1)
+        grid_points = coord_function(base_grid.clone())
+        vertex_normals = compute_grid_vertex_normals(grid_points)
+
+        triangle_uvs = grid_to_triangle_vertices(base_grid).reshape(-1, 3, 2)
+        triangle_corners = grid_to_triangle_vertices(grid_points).reshape(
+            -1, 3, 3
+        )
+        triangle_normals = grid_to_triangle_vertices(vertex_normals).reshape(
+            -1, 3, 3
+        )
+        control_points = logical_pn_control_points(
+            triangle_corners, triangle_normals
+        )
+        sample_uv = torch.tensor(
+            [
+                [1 / 3, 1 / 3],
+                [1 / 2, 0.0],
+                [0.0, 1 / 2],
+                [1 / 2, 1 / 2],
+                [1 / 6, 1 / 6],
+                [1 / 6, 2 / 3],
+                [2 / 3, 1 / 6],
+                [1 / 4, 1 / 4],
+                [1 / 4, 1 / 2],
+                [1 / 2, 1 / 4],
+            ],
+            device=device,
+            dtype=dtype,
+        )
+        pn_points = evaluate_logical_pn(control_points, sample_uv)
+        barycentric = torch.stack(
+            (
+                1.0 - sample_uv[:, 0] - sample_uv[:, 1],
+                sample_uv[:, 0],
+                sample_uv[:, 1],
+            ),
+            dim=-1,
+        )
+        analytic_uv = torch.einsum(
+            "sk,pka->psa", barycentric, triangle_uvs
+        )
+        analytic_points = coord_function(analytic_uv.clone())
+        return (pn_points - analytic_points).norm(dim=-1).max()
+
+    def _find_geometry_resolution(self, surface_function):
+        """Choose the stable construction-time logical PN grid dimensions."""
+        minimum = self._min_grid_resolution
+        maximum = self._max_grid_resolution
+        tolerance = self._geometry_tolerance
+
+        def acceptable(width, height):
+            try:
+                error = self._compute_pn_geometry_error(
+                    surface_function, width, height
+                )
+            except Exception:
+                return False
+            return bool(
+                torch.isfinite(error).item() and error.item() <= tolerance
+            )
+
+        def first_acceptable(other, vary_width):
+            low, high = minimum, maximum
+            best = maximum
+            while low <= high:
+                middle = (low + high) // 2
+                width, height = (
+                    (middle, other)
+                    if vary_width
+                    else (other, middle)
+                )
+                if acceptable(width, height):
+                    best = middle
+                    high = middle - 1
+                else:
+                    low = middle + 1
+            return best
+
+        if self._grid_aspect_ratio is not None:
+            ratio = float(self._grid_aspect_ratio)
+            low, high = minimum, maximum
+            best_width = maximum
+            while low <= high:
+                width = (low + high) // 2
+                height = min(
+                    maximum,
+                    max(minimum, int(round(width * ratio))),
+                )
+                if acceptable(width, height):
+                    best_width = width
+                    high = width - 1
+                else:
+                    low = width + 1
+            result = (
+                best_width,
+                min(
+                    maximum,
+                    max(minimum, int(round(best_width * ratio))),
+                ),
+            )
+        else:
+            width = first_acceptable(maximum, vary_width=True)
+            height = first_acceptable(maximum, vary_width=False)
+            while not acceptable(width, height) and (
+                width < maximum or height < maximum
+            ):
+                if width < maximum:
+                    width = min(
+                        maximum, max(width + 1, int(width * 1.25))
+                    )
+                if height < maximum:
+                    height = min(
+                        maximum, max(height + 1, int(height * 1.25))
+                    )
+            result = width, height
+
+        if not acceptable(*result):
+            warnings.warn(
+                "Logical PN construction reached max_grid_resolution before "
+                "meeting geometry_tolerance.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+        return result
+
     def _find_screen_space_resolution(self, surface_function):
         minimum = self._min_grid_resolution
         maximum = self._max_grid_resolution
@@ -902,29 +1076,24 @@ class Surface(Mob):
     def _capture_resolution_boundary_events(self):
         """Capture transform events that begin at a topology split.
 
-        A sibling transform recorded earlier in the same ``Sync`` starts at
-        the instant ``detach_history`` replaces this surface.  It must migrate
-        to the replacement topology; moving it to the historical clone makes
-        it invisible because that clone despawns at the same instant.
+        A transform recorded earlier in the same ``Sync`` starts at the
+        instant ``detach_history`` replaces this surface. It must migrate to
+        the replacement topology; moving it to the historical clone makes it
+        invisible because that clone despawns at the same instant. The
+        transform may be owned by this surface or by an ancestor whose
+        recursive edit also contains rows belonging to other mobs.
         """
         timeline = self.scene.timeline_manager
         detach_time = self.animation_manager.context.timespan.current_time
         descendants = self.get_descendants()
-        descendant_ids = {mob.id for mob in descendants}
         captured = []
 
         for event in timeline.function_timeline.function_applications:
-            if event.caller not in descendants or event.time.start < detach_time:
-                continue
-            if any(
-                mob_id not in descendant_ids
-                for _, mob_id, _, _ in event.recorded_edits
-            ):
-                # A callback that also edits external mobs cannot be migrated
-                # atomically by a surface-only topology rewrite.
+            if event.time.start < detach_time:
                 continue
 
             edits = []
+            touches_surface = False
             for attr, mob_id, recursive, indexes in event.recorded_edits:
                 attr_timeline = timeline.attr_to_timeline[attr]
                 source = next(
@@ -938,18 +1107,29 @@ class Surface(Mob):
                 if source is None:
                     edits = None
                     break
+                touches_surface = touches_surface or any(
+                    mob.id in attr_timeline.mob_id_to_inds
+                    and torch.any(
+                        torch.isin(
+                            source.indexes,
+                            attr_timeline.mob_id_to_inds[mob.id],
+                        )
+                    )
+                    for mob in descendants
+                )
                 edits.append(
                     {
                         "attr": attr,
                         "mob_id": mob_id,
                         "recursive": recursive,
+                        "source": source,
                         "indexes": indexes.clone(),
                         "values": source.values.clone(),
                         "time": source.time,
                         "seq": source.seq,
                     }
                 )
-            if edits is not None:
+            if edits is not None and touches_surface:
                 captured.append(
                     {
                         "event": event,
@@ -1040,37 +1220,47 @@ class Surface(Mob):
         new_surface_points,
     ):
         timeline = self.scene.timeline_manager
-        id_to_mob = {mob.id: mob for mob in self.get_descendants()}
+        surface_owners = self.get_descendants()
 
         for captured_event in captured:
             event = captured_event["event"]
+            caller = captured_event["caller"]
+            caller_descendants = (
+                caller.get_descendants()
+                if hasattr(caller, "get_descendants")
+                else [caller]
+            )
+            id_to_target = {mob.id: mob for mob in caller_descendants}
             migrated_edits = []
             pending_records = []
             try:
                 for edit in captured_event["edits"]:
                     attr = edit["attr"]
-                    target = id_to_mob[edit["mob_id"]]
-                    owners = (
-                        target.get_descendants()
-                        if edit["recursive"]
-                        else [target]
-                    )
+                    target = id_to_target[edit["mob_id"]]
                     attr_timeline = timeline.attr_to_timeline[attr]
                     new_indexes = target._get_attr_ranges(
                         attr, include_descendants=edit["recursive"]
                     ).tensor()
                     index_blocks = []
                     value_blocks = []
+                    internal_old_mask = torch.zeros_like(
+                        edit["indexes"], dtype=torch.bool
+                    )
 
-                    for owner in owners:
+                    for owner in surface_owners:
                         old_owner_rows = owner_rows.get((attr, owner.id))
                         new_owner_rows = attr_timeline.mob_id_to_inds.get(owner.id)
                         if old_owner_rows is None or new_owner_rows is None:
                             continue
                         old_mask = torch.isin(edit["indexes"], old_owner_rows)
-                        new_mask = torch.isin(new_indexes, new_owner_rows)
-                        if not torch.any(old_mask) or not torch.any(new_mask):
+                        if not torch.any(old_mask):
                             continue
+                        internal_old_mask |= old_mask
+                        new_mask = torch.isin(new_indexes, new_owner_rows)
+                        if not torch.any(new_mask):
+                            raise ValueError(
+                                "could not find replacement animation rows"
+                            )
                         block = self._map_resolution_boundary_block(
                             attr,
                             owner,
@@ -1090,6 +1280,22 @@ class Surface(Mob):
                         index_blocks.append(owner_new_indexes)
                         value_blocks.append(block)
 
+                    if not torch.any(internal_old_mask):
+                        migrated_edits.append(
+                            (
+                                attr,
+                                edit["mob_id"],
+                                edit["recursive"],
+                                edit["source"].indexes,
+                            )
+                        )
+                        continue
+
+                    external_mask = ~internal_old_mask
+                    if torch.any(external_mask):
+                        index_blocks.append(edit["indexes"][external_mask])
+                        value_blocks.append(edit["values"][:, external_mask])
+
                     combined_indexes = torch.cat(index_blocks)
                     combined_values = torch.cat(value_blocks, dim=-2)
                     order = torch.argsort(combined_indexes)
@@ -1099,16 +1305,20 @@ class Surface(Mob):
                         raise ValueError(
                             "incomplete animation-row migration for surface resolution"
                         )
+                    record = EditRecord(
+                        new_indexes,
+                        combined_values,
+                        edit["time"],
+                        edit["seq"],
+                        event,
+                    )
                     pending_records.append(
                         (
                             attr_timeline,
-                            EditRecord(
-                                new_indexes,
-                                combined_values,
-                                edit["time"],
-                                edit["seq"],
-                                event,
-                            ),
+                            edit["source"],
+                            edit["indexes"][internal_old_mask],
+                            edit["values"][:, internal_old_mask],
+                            record,
                         )
                     )
                     migrated_edits.append(
@@ -1124,7 +1334,20 @@ class Surface(Mob):
                 # rather than partially migrating its row history.
                 continue
 
-            for attr_timeline, record in pending_records:
+            for (
+                attr_timeline,
+                source,
+                historical_indexes,
+                historical_values,
+                record,
+            ) in pending_records:
+                # The old surface remains visible before the topology split,
+                # so retain its portion of the original edit for that
+                # historical clone. External rows move exclusively into the
+                # replacement record to avoid duplicating an ancestor edit.
+                source.indexes = historical_indexes
+                source.values = historical_values
+                source.replay_end = None
                 attr_timeline.edits.append(record)
                 attr_timeline._is_ready_for_queries = False
                 attr_timeline._query_cache.clear()
@@ -1558,7 +1781,11 @@ class Surface(Mob):
         )
         normals = vertex_normals
 
-        return effective_triangle_primitive()(
+        from algan.rendering.raytracing.primitives import (
+            LogicalPNTrianglePrimitive,
+        )
+
+        return LogicalPNTrianglePrimitive(
             corners=corners,
             colors=colors,
             normals=normals,
@@ -1569,6 +1796,7 @@ class Surface(Mob):
             material_texture_map=material_texture_map,
             material_texture_flags=material_texture_flags,
             normal_texture_map=normal_texture_map,
+            render_tolerance=self._render_tolerance,
             **{
                 k: expand_grid_to_verts(v)
                 for k, v in self.grid.get_shader_params().items()
@@ -1633,33 +1861,14 @@ class Surface(Mob):
             # self.set_normal_by_function(other_surface.normal_function)
 
     def set_location_by_function(self, function):
-        current_function = (
-            self._current_surface_function() if self._can_update_resolution() else None
-        )
-        target_resolution = None
-
         def target_function(uv):
             return function(uv.clone()) + self.location
-
-        if current_function is not None:
-            target_width, target_height = self._find_screen_space_resolution(
-                target_function
-            )
-            target_resolution = (target_width, target_height)
-            pre_width = max(self.grid_width, target_width)
-            pre_height = max(self.grid_height, target_height)
-            if (pre_width, pre_height) != (self.grid_width, self.grid_height):
-                self._change_resolution(pre_width, pre_height, current_function)
 
         self.coord_function_active = function
         new_loc = target_function(
             squish(self.get_base_grid(), -3, -2).unsqueeze(0)
         )
         self.grid.location = new_loc
-        if target_resolution is not None:
-            width, height = self._select_auto_resolution(*target_resolution)
-            if (width, height) != (self.grid_width, self.grid_height):
-                self._change_resolution(width, height, target_function)
         return self
 
     def set_normal_by_function(self, function):

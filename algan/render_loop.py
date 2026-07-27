@@ -862,6 +862,8 @@ class RenderLoopMixin:
                 _projection_anti_alias_level(self, primitive_batch))
             camera.screen_width = self.num_pixels_screen_width * projection_aa
             camera.screen_height = self.num_pixels_screen_height * projection_aa
+            camera.output_screen_width = self.num_pixels_screen_width
+            camera.output_screen_height = self.num_pixels_screen_height
             camera.analytic_raster = projection_analytic
             for l, (origin, light_color, aux) in zip(
                 self.light_sources, render_state["lights"]
@@ -1631,6 +1633,8 @@ class RenderLoopMixin:
         camera.screen_basis = _to_device(render_state["screen_basis"])
         camera.screen_width = self.num_pixels_screen_width * aa
         camera.screen_height = self.num_pixels_screen_height * aa
+        camera.output_screen_width = self.num_pixels_screen_width
+        camera.output_screen_height = self.num_pixels_screen_height
         camera.analytic_raster = analytic_raster
 
         class _ShimLight:

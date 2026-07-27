@@ -1,10 +1,19 @@
 from algan.settings import SETTINGS
 import os
+import warnings
 
 import torch
 import torch.nn.functional as F
 
 from algan.constants.color import Color
+from algan.rendering.logical_pn import (
+    evaluate_logical_pn,
+    evaluate_logical_pn_normals,
+    interpolate_triangle_attribute,
+    logical_pn_control_points,
+    logical_pn_normal_control_points,
+    subdivision_triangle_uvs,
+)
 from algan.utils.memory_utils import empty_cache
 from algan.rendering.primitives.bezier_circuit_primitive import batch_arange, BezierCircuitPrimitive
 from algan.rendering.raytracing import pn_control_points, pn_patch_coefficients
@@ -496,7 +505,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
     def project_to_screen(self, camera, light_sources):
         self._shade_vertex_colors(camera, light_sources)
+        return self._pack_projected_flat_geometry(camera)
 
+    def _pack_projected_flat_geometry(self, camera):
         corners = self.corners.float()
         normals = self.normals.float()
         # Hot/cold split, each array with its own (independent) time
@@ -542,6 +553,349 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             primitives, scene, screen_width, screen_height, time_start,
             time_end, background_color, transparent_background, *args,
             **kwargs)
+
+
+class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
+    """Camera-diced logical PN patches rendered as ordinary flat triangles.
+
+    This class is deliberately unrelated to
+    :class:`RayTracedPNTrianglePrimitive`: the latter ray-intersects curved
+    patches directly and is retained only for legacy callers.  Logical PN
+    patches use their fixed construction-time topology as source geometry,
+    choose a flat subdivision independently for every materialized frame, and
+    pad every frame to the largest triangle count in that render batch.  The
+    packed result follows the normal flat-triangle/STBVH path.
+    """
+
+    max_subdivision_level = 8
+    _flatness_sample_weights = (
+        (0.75, 0.25, 0.0),
+        (0.5, 0.5, 0.0),
+        (0.25, 0.75, 0.0),
+        (0.0, 0.75, 0.25),
+        (0.0, 0.5, 0.5),
+        (0.0, 0.25, 0.75),
+        (0.25, 0.0, 0.75),
+        (0.5, 0.0, 0.5),
+        (0.75, 0.0, 0.25),
+        (0.5, 0.25, 0.25),
+        (0.25, 0.5, 0.25),
+        (0.25, 0.25, 0.5),
+        (1.0 / 3, 1.0 / 3, 1.0 / 3),
+    )
+    _flatness_safety_factor = 1.25
+
+    def __init__(self, *args, render_tolerance=0.5, **kwargs):
+        collection = kwargs.get("triangle_collection")
+        if collection is not None:
+            tolerances = [
+                float(getattr(p, "render_tolerance", render_tolerance))
+                for p in collection
+            ]
+            render_tolerance = min(tolerances)
+        super().__init__(*args, **kwargs)
+        self.render_tolerance = float(render_tolerance)
+        if not torch.isfinite(torch.tensor(self.render_tolerance)):
+            raise ValueError("render_tolerance must be finite")
+        if self.render_tolerance <= 0:
+            raise ValueError("render_tolerance must be greater than zero")
+
+    def get_batch_identifier(self):
+        return (
+            f"{super().get_batch_identifier()}"
+            f"_logical_pn_render_tolerance={self.render_tolerance}"
+        )
+
+    @staticmethod
+    def _project_to_output_pixels(points, cam_o, sp, sb, screen_height):
+        """Perspective-project ``[T, ... ,3]`` points into output pixels."""
+        extra = points.ndim - 2
+        camera_shape = (-1,) + (1,) * extra + (3,)
+        camera_origin = cam_o.view(camera_shape)
+        screen_point = sp.view(camera_shape)
+        screen_normal = sb[:, 2].view(camera_shape)
+        rays = points - camera_origin
+        depth = (rays * screen_normal).sum(-1, keepdim=True)
+        screen_distance = (
+            (screen_point - camera_origin) * screen_normal
+        ).sum(-1, keepdim=True)
+        projected = camera_origin + (screen_distance / depth) * rays
+        relative = projected - screen_point
+        screen_x = sb[:, 0].view(camera_shape)
+        screen_y = sb[:, 1].view(camera_shape)
+        pixels = torch.stack(
+            (
+                (relative * screen_x).sum(-1),
+                (relative * screen_y).sum(-1),
+            ),
+            dim=-1,
+        )
+        return pixels * (float(screen_height) / 2.0), depth.squeeze(-1)
+
+    def _required_subdivision_levels(
+        self,
+        control_points,
+        cam_o,
+        sp,
+        sb,
+        screen_height,
+    ):
+        """Choose one crack-free uniform logical-PN level per frame."""
+        device = control_points.device
+        dtype = control_points.dtype
+        num_frames = control_points.shape[0]
+        levels = torch.full(
+            (num_frames,),
+            self.max_subdivision_level,
+            dtype=torch.long,
+            device=device,
+        )
+        unresolved = torch.ones(num_frames, dtype=torch.bool, device=device)
+        sample_weights = torch.tensor(
+            self._flatness_sample_weights,
+            device=device,
+            dtype=dtype,
+        )
+
+        camera_shape = (-1, 1, 1, 3)
+        screen_normal = sb[:, 2].view(camera_shape)
+        control_depth = (
+            (control_points - cam_o.view(camera_shape)) * screen_normal
+        ).sum(-1)
+        wholly_behind = control_depth.amax(dim=(-1, -2)) < -1e-7
+        crosses_camera = ~(
+            (control_depth.amin(-1) > 1e-7)
+            | (control_depth.amax(-1) < -1e-7)
+        ).all(-1)
+
+        for level in range(self.max_subdivision_level + 1):
+            triangle_uv = subdivision_triangle_uvs(
+                level, device=device, dtype=dtype
+            )
+            patch_vertices = evaluate_logical_pn(
+                control_points, triangle_uv
+            )
+            sample_uv = torch.einsum(
+                "sk,mka->msa", sample_weights, triangle_uv
+            )
+            exact = evaluate_logical_pn(control_points, sample_uv)
+            approximated = torch.einsum(
+                "sk,tpmkc->tpmsc", sample_weights, patch_vertices
+            )
+            exact_pixels, exact_depth = self._project_to_output_pixels(
+                exact, cam_o, sp, sb, screen_height
+            )
+            approx_pixels, approx_depth = self._project_to_output_pixels(
+                approximated, cam_o, sp, sb, screen_height
+            )
+            error = (exact_pixels - approx_pixels).norm(dim=-1)
+            valid = (
+                torch.isfinite(error)
+                & torch.isfinite(exact_depth)
+                & torch.isfinite(approx_depth)
+                & (exact_depth.abs() > 1e-7)
+                & (approx_depth.abs() > 1e-7)
+            )
+            error = torch.where(
+                valid, error, torch.full_like(error, torch.inf)
+            )
+            frame_error = error.amax(dim=(1, 2, 3))
+            frame_error = torch.where(
+                wholly_behind,
+                torch.zeros_like(frame_error),
+                frame_error,
+            )
+            frame_error = torch.where(
+                crosses_camera,
+                torch.full_like(frame_error, torch.inf),
+                frame_error,
+            )
+            resolved = unresolved & (
+                frame_error * self._flatness_safety_factor
+                <= self.render_tolerance
+            )
+            levels[resolved] = level
+            unresolved &= ~resolved
+            if not bool(unresolved.any()):
+                break
+
+        if bool(unresolved.any()):
+            warnings.warn(
+                "Logical PN render tessellation reached its safety cap before "
+                "meeting render_tolerance for every frame.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+        return levels
+
+    @staticmethod
+    def _expanded_frames(value, num_frames, name):
+        if value is None:
+            return None
+        if value.shape[0] not in (1, num_frames):
+            raise ValueError(
+                f"{name} has {value.shape[0]} frames, expected 1 or "
+                f"{num_frames}"
+            )
+        return _expand_frames(value, num_frames)
+
+    def _dice_logical_pn(self, camera):
+        num_frames = int(camera.ray_origin.shape[0])
+        corners = self._expanded_frames(
+            self.corners.float(), num_frames, "logical PN corners"
+        )
+        normals = self._expanded_frames(
+            self.normals.float(), num_frames, "logical PN normals"
+        )
+        colors = self._expanded_frames(
+            self.colors.float(), num_frames, "logical PN colors"
+        )
+        device = corners.device
+        cam_o = _expand_frames(
+            _flat_frames(camera.ray_origin, (3,)), num_frames
+        ).to(device)
+        sp = _expand_frames(
+            _flat_frames(camera.screen_point, (3,)), num_frames
+        ).to(device)
+        sb = _expand_frames(
+            _flat_frames(camera.screen_basis, (3, 3)), num_frames
+        ).to(device)
+
+        control_points = logical_pn_control_points(corners, normals)
+        normal_control_points = logical_pn_normal_control_points(
+            corners, normals
+        )
+        output_height = getattr(
+            camera, "output_screen_height", camera.screen_height
+        )
+        levels = self._required_subdivision_levels(
+            control_points,
+            cam_o,
+            sp,
+            sb,
+            output_height,
+        )
+        max_level = int(levels.max().item())
+        num_patches = corners.shape[1]
+        # TODO: Explore ragged frame-major triangle tensors so frames can keep
+        # their exact diced counts. For now every frame is padded to the
+        # largest subdivision in this batch, preserving the regular
+        # [frames, triangles, ...] contract used by the triangle STBVH.
+        max_triangles = num_patches * (4 ** max_level)
+
+        def allocate(values):
+            return torch.zeros(
+                (
+                    num_frames,
+                    max_triangles,
+                    3,
+                    values.shape[-1],
+                ),
+                device=values.device,
+                dtype=values.dtype,
+            )
+
+        diced_corners = allocate(corners)
+        diced_normals = allocate(normals)
+        diced_colors = allocate(colors)
+        diced_surface_params = {
+            name: allocate(
+                self._expanded_frames(
+                    getattr(self, name),
+                    num_frames,
+                    f"logical PN {name}",
+                )
+            )
+            for name in self._surface_params
+        }
+        source_shader_params = [
+            self._expanded_frames(
+                value, num_frames, "logical PN shader parameter"
+            )
+            for value in self.shader_param_values
+        ]
+        diced_shader_params = [allocate(v) for v in source_shader_params]
+        source_uvs = self._expanded_frames(
+            self.uvs, num_frames, "logical PN UVs"
+        )
+        diced_uvs = allocate(source_uvs) if source_uvs is not None else None
+        padding = torch.ones(
+            (num_frames, max_triangles),
+            dtype=torch.bool,
+            device=device,
+        )
+
+        for level in levels.unique(sorted=True).tolist():
+            frame_indices = (levels == int(level)).nonzero().flatten()
+            triangle_uv = subdivision_triangle_uvs(
+                int(level), device=device, dtype=corners.dtype
+            )
+            count = num_patches * triangle_uv.shape[0]
+            frame_control_points = control_points.index_select(
+                0, frame_indices
+            )
+            positions = evaluate_logical_pn(
+                frame_control_points, triangle_uv
+            ).reshape(frame_indices.numel(), count, 3, 3)
+            diced_corners[frame_indices, :count] = positions
+
+            pn_normals = evaluate_logical_pn_normals(
+                normal_control_points.index_select(0, frame_indices),
+                triangle_uv,
+            ).reshape(frame_indices.numel(), count, 3, 3)
+            diced_normals[frame_indices, :count] = pn_normals
+            diced_colors[frame_indices, :count] = (
+                interpolate_triangle_attribute(
+                    colors.index_select(0, frame_indices), triangle_uv
+                )
+            )
+            for name, source in diced_surface_params.items():
+                coarse = self._expanded_frames(
+                    getattr(self, name),
+                    num_frames,
+                    f"logical PN {name}",
+                ).index_select(0, frame_indices)
+                source[frame_indices, :count] = (
+                    interpolate_triangle_attribute(coarse, triangle_uv)
+                )
+            for output, coarse in zip(
+                diced_shader_params, source_shader_params
+            ):
+                output[frame_indices, :count] = (
+                    interpolate_triangle_attribute(
+                        coarse.index_select(0, frame_indices), triangle_uv
+                    )
+                )
+            if diced_uvs is not None:
+                diced_uvs[frame_indices, :count] = (
+                    interpolate_triangle_attribute(
+                        source_uvs.index_select(0, frame_indices),
+                        triangle_uv,
+                    )
+                )
+            padding[frame_indices, :count] = False
+
+        self.corners = diced_corners
+        self.normals = diced_normals
+        self.colors = diced_colors
+        for name, values in diced_surface_params.items():
+            setattr(self, name, values)
+        self.shader_param_values = diced_shader_params
+        self.uvs = diced_uvs
+        self._logical_pn_padding = padding
+        self._logical_pn_subdivision_levels = levels
+
+    def project_to_screen(self, camera, light_sources):
+        self._dice_logical_pn(camera)
+        self._shade_vertex_colors(camera, light_sources)
+        padding = self._logical_pn_padding
+        if bool(padding.any()):
+            self.colors[..., -1] = torch.where(
+                padding.unsqueeze(-1),
+                torch.zeros_like(self.colors[..., -1]),
+                self.colors[..., -1],
+            )
+        return self._pack_projected_flat_geometry(camera)
 
 
 class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):

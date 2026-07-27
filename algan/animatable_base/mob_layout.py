@@ -311,7 +311,7 @@ class MobLayoutMixin:
         bottom_left=None,
         top_right=None,
         *,
-        preserve_aspect_ratio: bool = False,
+        preserve_aspect_ratio: bool = True,
     ) -> MobLayoutMixin:
         """Scale and move this Mob's bounding box into a screen rectangle.
 
