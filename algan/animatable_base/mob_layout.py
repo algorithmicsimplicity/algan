@@ -8,7 +8,10 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+from algan.animatable_base.animatable import animated_function
+from algan.animation_timeline.animation_contexts import Sync
 from algan.constants.spatial import *
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import project_point_onto_line
 from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, dot_product
@@ -136,6 +139,236 @@ class MobLayoutMixin:
 
         bbox = self.get_bounding_box()
         return get_median_location(bbox)
+
+    def get_axis_aligned_size(self) -> torch.Tensor:
+        """Return the width, height, and depth of the recursive bounding box."""
+        bbox = self.get_bounding_box()
+        return bbox.amax(-2, keepdim=True) - bbox.amin(-2, keepdim=True)
+
+    def get_width(self) -> torch.Tensor:
+        """Return the width of the recursive axis-aligned bounding box."""
+        return self.get_axis_aligned_size()[..., 0:1]
+
+    def get_height(self) -> torch.Tensor:
+        """Return the height of the recursive axis-aligned bounding box."""
+        return self.get_axis_aligned_size()[..., 1:2]
+
+    def get_depth(self) -> torch.Tensor:
+        """Return the depth of the recursive axis-aligned bounding box."""
+        return self.get_axis_aligned_size()[..., 2:3]
+
+    def move_center_to(self, point) -> MobLayoutMixin:
+        """Move the center of the recursive bounding box to ``point``.
+
+        Unlike :meth:`~.Mob.move_to`, this aligns the visible bounding-box
+        center rather than the Mob's anchor/location.
+        """
+        point = cast_to_tensor(point).to(
+            device=self.location.device, dtype=self.location.dtype
+        )
+        return self.move(point - self.get_center())
+
+    def _screen_point_at_depth(
+        self, screen_position: torch.Tensor, depth_point: torch.Tensor
+    ) -> torch.Tensor:
+        """Map a normalized screen position onto ``depth_point``'s screen-parallel plane."""
+        camera = self.scene.camera
+        if camera is None:
+            raise AlganConfigurationError(
+                "Screen-relative layout requires the Scene to have a Camera"
+            )
+
+        corners = camera.get_corner_pixels()
+        x, y = screen_position.unbind()
+        bottom = torch.lerp(corners[0], corners[3], x)
+        top = torch.lerp(corners[1], corners[2], x)
+        point_on_screen = torch.lerp(bottom, top, y)
+
+        camera_location = camera.location
+        ray = point_on_screen - camera_location
+        screen_normal = camera.get_forward_direction()
+        denominator = dot_product(ray, screen_normal)
+        if torch.any(denominator.abs() <= torch.finfo(ray.dtype).eps):
+            raise AlganConfigurationError(
+                "Cannot map screen coordinates at a depth parallel to the view ray"
+            )
+        distance = (
+            dot_product(depth_point - camera_location, screen_normal) / denominator
+        )
+        return camera_location + ray * distance
+
+    def _validate_screen_rectangle(self, bottom_left, top_right):
+        defaults = ((0.0, 0.0), (1.0, 1.0))
+        corners = []
+        for name, value, default in zip(
+            ("bottom_left", "top_right"),
+            (bottom_left, top_right),
+            defaults,
+        ):
+            if value is None:
+                value = default
+            try:
+                value = torch.as_tensor(
+                    value, device=self.location.device, dtype=self.location.dtype
+                ).reshape(-1)
+            except (TypeError, ValueError, RuntimeError) as exc:
+                raise AlganConfigurationError(
+                    f"screen rectangle {name} must be a pair of finite coordinates"
+                ) from exc
+            if value.numel() != 2 or not torch.isfinite(value).all():
+                raise AlganConfigurationError(
+                    f"screen rectangle {name} must be a pair of finite coordinates"
+                )
+            corners.append(value)
+
+        bottom_left, top_right = corners
+        if (
+            torch.any(bottom_left < 0)
+            or torch.any(top_right > 1)
+            or torch.any(bottom_left >= top_right)
+        ):
+            raise AlganConfigurationError(
+                "screen rectangle coordinates must satisfy "
+                "0 <= bottom_left < top_right <= 1"
+            )
+        return bottom_left, top_right
+
+    def move_center_to_screen_position(
+        self, screen_position=(0.5, 0.5)
+    ) -> MobLayoutMixin:
+        """Move the bounding-box center to a normalized 2-D screen position.
+
+        Screen coordinates range from ``(0, 0)`` at the bottom-left to
+        ``(1, 1)`` at the top-right. The Mob keeps its current view depth.
+        """
+        try:
+            position = torch.as_tensor(
+                screen_position,
+                device=self.location.device,
+                dtype=self.location.dtype,
+            ).reshape(-1)
+        except (TypeError, ValueError, RuntimeError) as exc:
+            raise AlganConfigurationError(
+                "screen_position must be a pair of finite screen coordinates"
+            ) from exc
+        if (
+            position.numel() != 2
+            or not torch.isfinite(position).all()
+            or torch.any(position < 0)
+            or torch.any(position > 1)
+        ):
+            raise AlganConfigurationError(
+                "screen_position must contain two coordinates in [0, 1]"
+            )
+        center = self.get_center()
+        return self.move_center_to(self._screen_point_at_depth(position, center))
+
+    def scale_to_width(self, width) -> MobLayoutMixin:
+        """Uniformly scale the Mob so its recursive bounding box has ``width``."""
+        width = cast_to_tensor(width).to(
+            device=self.location.device, dtype=self.location.dtype
+        )
+        current_width = self.get_width()
+        if torch.any(width <= 0):
+            raise AlganConfigurationError("width must be positive")
+        if torch.any(current_width <= torch.finfo(current_width.dtype).eps):
+            raise AlganConfigurationError("cannot scale a Mob with zero width")
+        return self.scale(width / current_width)
+
+    def scale_to_height(self, height) -> MobLayoutMixin:
+        """Uniformly scale the Mob so its recursive bounding box has ``height``."""
+        height = cast_to_tensor(height).to(
+            device=self.location.device, dtype=self.location.dtype
+        )
+        current_height = self.get_height()
+        if torch.any(height <= 0):
+            raise AlganConfigurationError("height must be positive")
+        if torch.any(current_height <= torch.finfo(current_height.dtype).eps):
+            raise AlganConfigurationError("cannot scale a Mob with zero height")
+        return self.scale(height / current_height)
+
+    @animated_function(animated_args={"interpolation": 0.0})
+    def _scale_about_point_along_world_axes(
+        self, scale, about_point, interpolation=1.0
+    ):
+        """Apply an axis-aligned scale without depending on the Mob's local basis."""
+        scale = torch.lerp(torch.ones_like(scale), scale, interpolation)
+        locations = self.get_animated_attribute(
+            "location", include_descendants=True, copy=False
+        )
+        bases = self.get_animated_attribute(
+            "basis", include_descendants=True, copy=False
+        )
+        new_locations = about_point + (locations - about_point) * scale
+        basis_matrices = bases.reshape(*bases.shape[:-1], 3, 3)
+        new_bases = (basis_matrices * scale.unsqueeze(-2)).reshape_as(bases)
+        self._apply_set("location", new_locations, recursive=True)
+        self._apply_set("basis", new_bases, recursive=True)
+        return self
+
+    def fit_to_screen_rectangle(
+        self,
+        bottom_left=None,
+        top_right=None,
+        *,
+        preserve_aspect_ratio: bool = False,
+    ) -> MobLayoutMixin:
+        """Scale and move this Mob's bounding box into a screen rectangle.
+
+        This operates recursively, so calling it on a :class:`~.Group` lays
+        out an entire collection while preserving the members' relative
+        positions.
+
+        Parameters
+        ----------
+        bottom_left
+            Normalized ``(x, y)`` screen coordinates for the rectangle's
+            bottom-left corner. Defaults to ``(0, 0)``.
+        top_right
+            Normalized ``(x, y)`` screen coordinates for the rectangle's
+            top-right corner. Defaults to ``(1, 1)``.
+        preserve_aspect_ratio
+            If False (the default), scale x and y independently so the
+            axis-aligned bounding box exactly occupies the rectangle. If True,
+            use the largest uniform scale that keeps the Mob inside it.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            The Mob instance itself, allowing for method chaining.
+        """
+        bottom_left, top_right = self._validate_screen_rectangle(
+            bottom_left, top_right
+        )
+        bbox = self.get_bounding_box()
+        source_lower = bbox.amin(-2, keepdim=True)
+        source_upper = bbox.amax(-2, keepdim=True)
+        source_size = source_upper - source_lower
+        source_xy = source_size[..., :2]
+        if torch.any(source_xy <= torch.finfo(source_xy.dtype).eps):
+            raise AlganConfigurationError(
+                "cannot fit a Mob whose bounding box has zero width or height"
+            )
+
+        source_center = (source_lower + source_upper) * 0.5
+        target_lower = self._screen_point_at_depth(bottom_left, source_center)
+        target_upper = self._screen_point_at_depth(top_right, source_center)
+        target_center = (target_lower + target_upper) * 0.5
+        target_xy = (target_upper - target_lower).abs()[..., :2]
+        xy_scale = target_xy / source_xy
+
+        if preserve_aspect_ratio:
+            scale = xy_scale.amin(-1, keepdim=True)
+        else:
+            scale = torch.cat((xy_scale, torch.ones_like(xy_scale[..., :1])), -1)
+
+        with Sync(animation_manager=self.animation_manager):
+            if preserve_aspect_ratio:
+                self.scale(scale)
+            else:
+                self._scale_about_point_along_world_axes(scale, source_center)
+            self.move_center_to(target_center)
+        return self
 
     def get_boundary_in_direction(self, direction: torch.Tensor) -> torch.Tensor:
         """Gets the point on the Mob's boundary (including children) that lies along
