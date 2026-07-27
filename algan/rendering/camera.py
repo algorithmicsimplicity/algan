@@ -212,9 +212,9 @@ class Camera(Mob):
 
     def set_euler_angles(self, angle_1, angle_2, angle_3):
         with Sync(animation_manager=self.animation_manager):
-            self.orbit_around_line(ORIGIN, RIGHT, num_degrees=angle_1)
-            self.orbit_around_line(ORIGIN, UP, num_degrees=angle_2)
-            self.orbit_around_line(ORIGIN, OUT, num_degrees=angle_3)
+            self.rotate(angle_1, RIGHT, about_point=ORIGIN)
+            self.rotate(angle_2, UP, about_point=ORIGIN)
+            self.rotate(angle_3, OUT, about_point=ORIGIN)
         return self
 
     def get_render_screen_basis(self):

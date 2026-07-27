@@ -37,13 +37,13 @@ Example: Animating Lights and Camera
 
     with Sync(run_time=r, rate_func=rate_funcs.identity):
         mobs.rotate(360, RIGHT)
-        camera.orbit_around_point(ORIGIN, 360, UP)
+        camera.rotate(360, UP, about_point=ORIGIN)
 
     # Get the only light source in the scene.
     light_source = Scene.get_light_sources()[0]
 
     with Seq(run_time=r):
-        light_source.rotate_around_point(ORIGIN, 360, OUT)
+        light_source.orbit(360, OUT, about_point=ORIGIN)
 
     # Add a new light source. This one shines BLUE light.
     # Make sure to spawn it!

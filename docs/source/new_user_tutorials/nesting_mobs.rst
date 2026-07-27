@@ -20,7 +20,7 @@ This is done by adding other mobs as children to one another with :meth:`~.Anima
     parent_mob.rotate(90, OUT)
     parent_mob.move(RIGHT*0.5)
     with Seq(run_time=5):
-        parent_mob.rotate_around_point(ORIGIN, 360, OUT)
+        parent_mob.rotate(360, OUT, about_point=ORIGIN)
 
     parent_mob.wait()
     # We can even apply animations to the parent and the children at the same time.

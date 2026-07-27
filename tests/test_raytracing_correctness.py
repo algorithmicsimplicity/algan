@@ -120,7 +120,7 @@ def test_sphere_circular_under_orbit():
     """
     _enable_renderer()
     sphere = Sphere(radius=0.8, color=PURE_GREEN).spawn(animate=False)
-    sphere.scene.camera.orbit_around_line(ORIGIN, UP, 45)
+    sphere.scene.camera.rotate(45, UP, about_point=ORIGIN)
     name = "orbit_sphere_raster" if USE_RASTERIZER else "orbit_sphere_rt"
     render_to_file(file_name=name, output_dir=OUT_DIR, output_path="",
                    render_settings=SETTINGS, file_extension="mp4")

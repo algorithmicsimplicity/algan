@@ -112,7 +112,7 @@ most of your common needs. Here are some examples:
     mob.move(RIGHT)
     mob.rotate(360, OUT)
     mob.rotate(360, UP)
-    mob.rotate_around_point(ORIGIN, 180, OUT)
+    mob.rotate(180, OUT, about_point=ORIGIN)
     mob = mob.become(Circle())
 
     render_to_file()
@@ -121,6 +121,6 @@ Here's a brief explanation of the methods shown in the example:
 
 * :meth:`.Mob.move`: This method is used to translate (move) the :class:`.Mob` by a specified vector. For example,
   `mob.move(RIGHT)` moves the object to the right one unit.
-* :meth:`.Mob.rotate`: This method rotates the :class:`.Mob` by a given angle around a specified axis. For instance, `mob.rotate(360, OUT)` rotates the object 360 degrees around the outward-pointing Z-axis.
-* :meth:`.Mob.rotate_around_point`: This method rotates the :class:`.Mob` around a specific point in space. `mob.rotate_around_point(ORIGIN, 180, OUT)` rotates the object 180 degrees around the origin (0,0,0) along the Z-axis.
+* :meth:`.Mob.rotate`: This method rotates the :class:`.Mob`'s basis around an axis. Passing ``about_point`` also moves its location around that point; for example, ``mob.rotate(180, OUT, about_point=ORIGIN)`` rotates the object 180 degrees around the origin.
+* :meth:`.Mob.orbit`: This method moves the :class:`.Mob` around ``about_point`` while leaving its basis unchanged.
 * :meth:`.Mob.become`: This method smoothly transforms the current :class:`.Mob` into another :class:`.Mob` provided as an argument. For example, `mob = mob.become(Circle())` transforms the existing mob into a circle.

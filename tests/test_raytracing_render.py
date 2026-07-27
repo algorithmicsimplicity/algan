@@ -75,7 +75,7 @@ def build_and_animate_scene():
         square.move(DOWN * 0.8)
     tri.rotate(360, OUT)
     # Animated camera: per-frame ray origins/bases must be honored.
-    tri.scene.camera.orbit_around_line(ORIGIN, UP, 30)
+    tri.scene.camera.rotate(30, UP, about_point=ORIGIN)
 
 
 def render(name, ray_traced):
