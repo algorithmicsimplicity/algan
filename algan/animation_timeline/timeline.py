@@ -39,9 +39,20 @@ STRUCTURE_VERSION = [0]
 #: so the row-index caches stay correct too.
 HIERARCHY_VERSION = [0]
 
+#: Global spawn version, bumped whenever any mob's spawn time is (re)assigned
+#: (:class:`Lifespan.start`). Together with :data:`HIERARCHY_VERSION` it keys
+#: the subtree-spawn cache of
+#: :meth:`~algan.animatable_base.animatable.Animatable.is_spawned_in_subtree`,
+#: whose answer can only change when the hierarchy changes or something spawns.
+SPAWN_VERSION = [0]
+
 
 def bump_structure_version():
     STRUCTURE_VERSION[0] += 1
+
+
+def bump_spawn_version():
+    SPAWN_VERSION[0] += 1
 
 
 def bump_hierarchy_version():
@@ -163,11 +174,24 @@ class Lifespan:
     (:meth:`AnimationTimeline.get_lifespan`), keyed by mob id.
     """
 
-    __slots__ = ("start", "end")
+    __slots__ = ("_start", "end")
 
     def __init__(self):
-        self.start = _never
+        self._start = _never
         self.end = _never
+
+    @property
+    def start(self):
+        return self._start
+
+    @start.setter
+    def start(self, value):
+        # Spawning (and un-spawning, see Mob.refresh_history) invalidates every
+        # cached "is anything in this subtree spawned?" answer, so every
+        # assignment -- not just the ones going through
+        # TimelineManager.register_spawn -- bumps the global spawn version.
+        self._start = value
+        bump_spawn_version()
 
 
 class EditRecord:

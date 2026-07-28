@@ -10,6 +10,8 @@ import torch
 # Re-exported for backwards compatibility (it used to be defined here).
 from algan.animation_timeline.timeline import TIME_PARAMETER_NAME, TimelineManager  # noqa: F401
 from algan.animation_timeline.timeline import (
+    HIERARCHY_VERSION,
+    SPAWN_VERSION,
     STRUCTURE_VERSION,
     RowRanges,
     _opt_disabled,
@@ -81,14 +83,14 @@ def animated_function(
         @wraps(func)
         def wrapper_func(self, *args, **kwargs):
             if not self.is_animating():
-                # Unspawned mobs record nothing: no function events (this
-                # branch), and attribute writes go through the un-recorded
-                # path of setattr_and_record_modification, which never touches
-                # the context. The throwaway context below is then pure
-                # overhead -- and mob construction performs thousands of
-                # these calls.
+                # Mobs with nothing spawned in their subtree record nothing:
+                # no function events (this branch), and attribute writes go
+                # through the un-recorded path of
+                # setattr_and_record_modification, which never touches the
+                # context. The throwaway context below is then pure overhead
+                # -- and mob construction performs thousands of these calls.
                 if not _opt_disabled("fastpath") and not (
-                        hasattr(self, "id") and self.is_spawned()):
+                        hasattr(self, "id") and self.is_spawned_in_subtree()):
                     return func(self, *args, **kwargs)
                 # Spawned but non-recording (e.g. inside Off(record_funcs=
                 # False)): attribute edits still record timestamps against
@@ -449,7 +451,8 @@ class Animatable:
         if not hasattr(self, "id"):
             # Not yet fully constructed (e.g. mid-clone).
             return False
-        return self.animation_manager.context.record_funcs and self.is_spawned()
+        return (self.animation_manager.context.record_funcs
+                and self.is_spawned_in_subtree())
 
     def generate_animatable_attr_set_get_methods(self):
         for attr in self.animatable_attrs:
@@ -500,6 +503,33 @@ class Animatable:
     def is_spawned(self):
         return self.lifespan.start() >= 0
 
+    def is_spawned_in_subtree(self):
+        """Whether this mob, or anything below it in the hierarchy, has spawned.
+
+        Containers are routinely left unspawned while their contents are
+        spawned individually (``for mob in group: mob.spawn()``), and Group
+        views (``group[1:3]``) never spawn at all. Such a container is on
+        screen through its children, so modifications made to it must animate
+        exactly as they do for a spawned mob: gating on :meth:`is_spawned`
+        alone applies them instantly *and* records no timeline event, so the
+        animation also contributes no time to the rendered video.
+
+        The answer only changes when the hierarchy changes or something
+        spawns, so it is cached against those two global versions.
+        """
+        if self.is_spawned():
+            return True
+        children = getattr(self, "children", None)
+        if not children:
+            return False
+        version = (HIERARCHY_VERSION[0], SPAWN_VERSION[0])
+        cache = getattr(self, "_subtree_spawn_cache", None)
+        if cache is not None and cache[0] == version:
+            return cache[1]
+        spawned = any(child.is_spawned_in_subtree() for child in children)
+        object.__setattr__(self, "_subtree_spawn_cache", (version, spawned))
+        return spawned
+
     def is_despawned(self):
         return self.lifespan.end() >= 0
 
@@ -511,7 +541,7 @@ class Animatable:
                 self._get_attr_ranges(key, include_descendants=include_descendants))
 
         context = self.animation_manager.context
-        if (replay_inds is not None or not self.is_spawned()
+        if (replay_inds is not None or not self.is_spawned_in_subtree()
                 or not context.record_attr_modifications):
             timeline.modify_attribute(key, inds, value)
             if replay_inds is not None:
@@ -519,7 +549,9 @@ class Animatable:
                     key, self.id, include_descendants, consume=True)
             return self
         ts = context.timespan
-        nt = ts.current_time + (context.run_time_unit if self.is_spawned() else 0)
+        # Reached only for mobs that are on screen (themselves or through a
+        # descendant), so the edit always spans the context's animation.
+        nt = ts.current_time + context.run_time_unit
         ts.original_end = max(ts.original_end, nt)
         timeline.modify_attribute_and_record(
             key, self.id, include_descendants, inds, value, ts.get_time(nt))
@@ -689,6 +721,7 @@ class Animatable:
                 # Version-checked caches; clones rebuild their own lazily.
                 "_attr_inds_cache",
                 "_descendants_cache",
+                "_subtree_spawn_cache",
             ]:
                 continue
             if k in ["parents"]:
