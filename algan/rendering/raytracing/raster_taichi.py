@@ -425,11 +425,15 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
     to exactly 1.
 
     The hit is then accepted whenever coverage is non-zero, so the pixel CENTRE
-    may lie outside the triangle and the barycentrics come out negative.  ``t``
-    keeps the exact (extrapolated) plane intersection, which is what makes two
-    coplanar neighbours agree on depth; the RETURNED barycentrics are projected
-    back onto the simplex, because they go on to index colours, normals and UVs
-    and must not sample outside the triangle.
+    may lie outside the triangle.  ``t`` and the barycentrics are therefore
+    evaluated at the CENTROID OF THE OWNED SAMPLES instead -- a point that is
+    inside the triangle by construction, so neither the depth nor the
+    barycentrics are ever extrapolations of the plane past its own edges (see
+    the comment at that step for the silhouette-ordering failure this exists to
+    prevent).  A fully covered fragment's centroid IS the pixel centre, so only
+    partially covering ones move.  The returned barycentrics are still projected
+    onto the simplex, because they go on to index colours, normals and UVs and
+    must not sample outside the triangle.
     """
     qx = ti.cast(px, ti.f32) + 0.5
     qy = ti.cast(py, ti.f32) + 0.5
@@ -564,6 +568,13 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                     m = 0
                     best_k = 0
                     best_q = ti.i64(-_AA_Q_INF)
+                    # Running centroid of the OWNED samples, in lattice units
+                    # from the pixel centre. It is what the fragment's depth and
+                    # barycentrics are evaluated at (see below); zero for a fully
+                    # covered pixel, because the sample pattern is centred.
+                    sox = 0.0
+                    soy = 0.0
+                    nsm = 0
                     for k in ti.static(range(len(_AA_SAMPLES))):  # noqa: B007
                         ox = ti.static(_AA_SAMPLES[k][0])
                         oy = ti.static(_AA_SAMPLES[k][1])
@@ -573,6 +584,9 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                         qq = ti.min(q0, ti.min(q1, q2))
                         if qq > 0:
                             m |= 1 << k
+                            sox += ti.static(float(ox))
+                            soy += ti.static(float(oy))
+                            nsm += 1
                     # Only the sliver policies need to know which sample the
                     # triangle came closest to.
                         if ti.static(_sliver_mode(aa) != _AA_SLIVER_DROP):
@@ -587,6 +601,9 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                     # default drops it -- an error bounded by one lattice unit
                     # (1/4096 px), not a hole.
                         m = 0
+                        sox = 0.0
+                        soy = 0.0
+                        nsm = 0
                     c = (ti.cast(_popcount_samples(m), ti.f32)
                          * _AA_SAMPLE_WEIGHT)
                 # A triangle thinner than the sample spacing contains no sample,
@@ -643,6 +660,51 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                     accept = ((m & _AA_MASK_ALL) != 0) and (c > 0.0)
                     if oi < 0:
                         m |= _AA_BACKFACE_BIT
+                # Re-evaluate the fragment AT THE CENTROID OF THE SAMPLES IT
+                # OWNS rather than at the pixel centre, which is the only point
+                # the fragment is known to be visible at.
+                #
+                # The pixel centre lies OUTSIDE a partially covering triangle
+                # roughly half the time, and there the plane intersection is an
+                # EXTRAPOLATION -- past the geometry, on the wrong side of every
+                # silhouette edge. Two faces meeting at a silhouette (any closed
+                # mesh: their near and far sheets share that edge exactly) then
+                # extrapolate in opposite directions, so beyond the edge the far
+                # sheet's extrapolated distance is the SMALLER one and the rim
+                # pixel sorts the two faces back to front. The far face won the
+                # per-sample transmittance, occluded the near one entirely, and
+                # the silhouette was drawn in the colour of the geometry behind
+                # it -- brighter than the surface it outlines whenever the far
+                # sheet is the better lit one. Whether a given rim pixel's centre
+                # falls inside or outside is pure sub-pixel phase, which is why
+                # it appeared on one edge of an octahedron at one size and not at
+                # another.
+                #
+                # The owned samples are inside the triangle by construction and a
+                # triangle is convex, so their centroid is too: no extrapolation,
+                # and two faces sharing a silhouette edge order by true depth.
+                # The sample pattern sums to zero, so a fully covered fragment
+                # re-evaluates at the pixel centre exactly and is unchanged --
+                # only rim fragments move, by less than half a pixel.
+                    if nsm > 0:
+                        inv_n = 1.0 / ti.cast(nsm, ti.f32)
+                        dqx = sox * inv_n * ti.static(1.0 / _AA_FIXED_SCALE)
+                        dqy = soy * inv_n * ti.static(1.0 / _AA_FIXED_SCALE)
+                        if (dqx != 0.0) or (dqy != 0.0):
+                            # Edge functions are affine in the sample point, so
+                            # the shift is an update rather than a re-derivation.
+                            ce0 = e0 + (sx2 - sx1) * dqy - (sy2 - sy1) * dqx
+                            ce1 = e1 + (sx0 - sx2) * dqy - (sy0 - sy2) * dqx
+                            ce2 = e2 + (sx1 - sx0) * dqy - (sy1 - sy0) * dqx
+                            cn0 = ce0 * sm[2, 0]
+                            cn1 = ce1 * sm[2, 1]
+                            cn2 = ce2 * sm[2, 2]
+                            cs = cn0 + cn1 + cn2
+                            if ti.abs(cs) > 1e-30:
+                                cinv = 1.0 / cs
+                                b0 = cn0 * cinv
+                                b1 = cn1 * cinv
+                                b2 = cn2 * cinv
         if accept:
             v0 = ti.math.vec3(vm[0, 0], vm[0, 1], vm[0, 2])
             v1 = ti.math.vec3(vm[1, 0], vm[1, 1], vm[1, 2])
@@ -724,6 +786,9 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
         th = e2.dot(qv) * inv_det
         if ti.static(aa):
             m = 0
+            sox = 0.0
+            soy = 0.0
+            nsm = 0
             for k in ti.static(range(_AA_NUM_SAMPLES)):
                 jx = ti.static(0.5 + _AA_SAMPLES[k][0] / _AA_FIXED_SCALE)
                 jy = ti.static(0.5 + _AA_SAMPLES[k][1] / _AA_FIXED_SCALE)
@@ -743,6 +808,32 @@ def _raycast_pixel(px, py, f, vm, half_w, half_h,
                             and (c1 + c2 <= 1.0 + BARYCENTRIC_EPSILON)
                             and (e2.dot(qvs) * ivs > MIN_HIT_DISTANCE)):
                         m |= 1 << k
+                        sox += ti.static(float(_AA_SAMPLES[k][0]))
+                        soy += ti.static(float(_AA_SAMPLES[k][1]))
+                        nsm += 1
+            # Same rule as the projected path: a partially covering fragment is
+            # re-cast through the CENTROID OF THE SAMPLES IT OWNS, so its depth
+            # is a real intersection with the triangle rather than the centre
+            # ray's extrapolation past its edges (which sorts the two sheets of
+            # a closed mesh backwards along every silhouette). A fully covered
+            # fragment's centroid is the pixel centre, so it keeps the centre
+            # ray untouched.
+            if (m != 0) and (m != _AA_MASK_ALL):
+                inv_n = 1.0 / ti.cast(nsm, ti.f32)
+                jxc = 0.5 + sox * inv_n * ti.static(1.0 / _AA_FIXED_SCALE)
+                jyc = 0.5 + soy * inv_n * ti.static(1.0 / _AA_FIXED_SCALE)
+                roc, rdc = _generate_ray(f, px, py, jxc, jyc, half_w, half_h,
+                                         cam_origin, screen_point,
+                                         pixel_basis_x, pixel_basis_y)
+                pvc = rdc.cross(e2)
+                detc = e1.dot(pvc)
+                if ti.abs(detc) > 1e-12:
+                    ivc = 1.0 / detc
+                    tvc = roc - v0
+                    qvc = tvc.cross(e1)
+                    b1 = tvc.dot(pvc) * ivc
+                    b2 = rdc.dot(qvc) * ivc
+                    th = e2.dot(qvc) * ivc
             if (m != 0) and (th > MIN_HIT_DISTANCE):
                 ok = 1
                 t = th
