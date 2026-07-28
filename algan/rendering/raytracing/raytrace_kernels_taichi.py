@@ -2918,7 +2918,7 @@ def path_trace_scene_stbvh(
             step += 1
             (found, t_hit, hit_layer, prim, hit_type, a, b, border,
              edge_hit) = _nearest_surface(
-                ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+                refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
                 pixel_size_per_t, base_dist, layer_offset_triangles,
                 layer_offset_pn,
                 t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,

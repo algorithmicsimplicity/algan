@@ -417,7 +417,7 @@ def render_all_funcs(
         for index, (scene_name, function) in list(enumerate(scene_funcs))[start:end]:
             with Scene(video_settings=video_settings) as active_scene:
                 if "background_color" in kwargs:
-                    active_scene.set_background_color(kwargs["background_color"])
+                    active_scene.set_background_color(kwargs["background_color"], overwrite=False)
                 function()
                 if not smoke_test:
                     results.append(

@@ -398,12 +398,13 @@ def ApplyWave(
 
     def wave_homotopy(points, t):
         x = points[..., 0]
+        t = t.reshape(points.shape[0], -1)[:, :1]
         upper = (1.0 + time_width) * t
         lower = upper - time_width
         relative_x = (x - x_min) / (x_max - x_min + 1e-8)
         wave_phase = (relative_x - lower) / (time_width + 1e-8)
         w = wave(wave_phase)
-        nudge = w.unsqueeze(-1) * vect.unsqueeze(0).unsqueeze(0)
+        nudge = w.unsqueeze(-1) * vect.to(points)
         return points + nudge
 
     return Homotopy(mobject, wave_homotopy, run_time=run_time)

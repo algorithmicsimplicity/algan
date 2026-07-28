@@ -210,12 +210,15 @@ class Scene(RenderLoopMixin):
         """Alias for instance."""
         return Scene.instance()
 
+    @active_scene_method
     def get_camera(self):
         return self.camera
 
+    @active_scene_method
     def get_light_sources(self):
         return self.light_sources
 
+    @active_scene_method
     def add_light_source(self, light_source):
         if not hasattr(self, "light_sources"):
             self.light_sources = []
@@ -223,6 +226,7 @@ class Scene(RenderLoopMixin):
             self.light_sources.append(light_source)
         return light_source
 
+    @active_scene_method
     def remove_light_source(self, light_source):
         """Remove a light from this scene and return the light."""
         self.light_sources[:] = [
@@ -230,6 +234,7 @@ class Scene(RenderLoopMixin):
         ]
         return light_source
 
+    @active_scene_method
     def clear_light_sources(self):
         """Remove every registered light and return this scene."""
         self.light_sources.clear()
@@ -238,6 +243,7 @@ class Scene(RenderLoopMixin):
     add_light = add_light_source
     remove_light = remove_light_source
 
+    @active_scene_method
     def set_environment_map(self, source, intensity=1.0, ambient=True):
         """Set an equirectangular environment map for this scene."""
         if source is None:
@@ -535,7 +541,8 @@ class Scene(RenderLoopMixin):
             for time_stamp in time_stamps
         ]
 
-    def set_background_color(self, background_color, overwrite=False):
+    @active_scene_method
+    def set_background_color(self, background_color, overwrite=True):
         if (background_color is None) or (self.background_is_set and not overwrite):
             return self
         if isinstance(background_color, str):
@@ -546,6 +553,7 @@ class Scene(RenderLoopMixin):
         self.background_is_set = True
         return self
 
+    @active_scene_method
     def get_background_color(self):
         return self.background_color
 

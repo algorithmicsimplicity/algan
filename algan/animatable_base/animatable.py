@@ -792,7 +792,10 @@ class Animatable:
     def _destroy_recursive(self, animate=True):
         with Sync(animation_manager=self.animation_manager):
             lifespan = self.lifespan
-            if lifespan.end() < 0:
+            # An unspawned container may still own independently spawned
+            # children. Do not let its direct opacity write erase their
+            # recorded pre-despawn state; recurse and destroy those children.
+            if lifespan.start() >= 0 and lifespan.end() < 0:
                 if animate:
                     self.on_destroy()
                 lifespan.end = self.animation_manager.context.get_end_time()

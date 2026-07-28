@@ -115,8 +115,7 @@ exclude = [
 
 [tool.pytest.ini_options]
 markers = "slow: Mark the test as slow. Can be skipped with --skip_slow"
-testpaths = ["tests"]
-norecursedirs = ["tests/test_files"]
+testpaths = ["tests/unit_tests", "tests/full_renders"]
 
 [tool.isort]
 profile = "black"

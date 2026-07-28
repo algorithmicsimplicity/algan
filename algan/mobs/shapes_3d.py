@@ -357,6 +357,22 @@ class Arrow3D(Mob):
         self.length = length
         self.add_children(self.tail, self.head)
 
+    def get_memory_used_per_timestep(self):
+        return sum(
+            child.get_memory_used_per_timestep() for child in self.children
+        )
+
+    def get_render_primitives(self):
+        primitives = []
+        for child in self.children:
+            primitive = child.get_render_primitives()
+            if primitive is None:
+                continue
+            primitives.extend(
+                primitive if isinstance(primitive, list) else [primitive]
+            )
+        return primitives or None
+
     def get_start(self):
         return self.start_point
 
@@ -606,6 +622,30 @@ class Polyhedron(Mob):
             vertices, self.edges, scene=self.scene, add_to_scene=False
         )
         self.add_children(self.faces, self.graph)
+
+    def _face_primitive_mobs(self):
+        return [
+            descendant
+            for descendant in self.faces.get_descendants()
+            if hasattr(descendant, "get_render_primitives")
+        ]
+
+    def get_memory_used_per_timestep(self):
+        return sum(
+            mob.get_memory_used_per_timestep()
+            for mob in self._face_primitive_mobs()
+        )
+
+    def get_render_primitives(self):
+        primitives = []
+        for mob in self._face_primitive_mobs():
+            primitive = mob.get_render_primitives()
+            if primitive is None:
+                continue
+            primitives.extend(
+                primitive if isinstance(primitive, list) else [primitive]
+            )
+        return primitives or None
 
     @staticmethod
     def get_edges(faces_list):

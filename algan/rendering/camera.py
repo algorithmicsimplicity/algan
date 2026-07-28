@@ -31,9 +31,9 @@ class Camera(Mob):
             fov = self._validated_fov(fov)
             screen_distance = screen_scale / math.tan(
                 math.radians(fov) * 0.5)
-        self.near = self._validated_clip("near", near)
-        self.far = self._validated_clip("far", far)
-        self._validate_clip_order(self.near, self.far)
+        self._near = self._validated_clip("near", near)
+        self._far = self._validated_clip("far", far)
+        self._validate_clip_order(self._near, self._far)
         # Camera ownership is managed by Scene; tolerate the common generic
         # Mob kwargs without passing duplicates into the base constructor.
         kwargs.pop("add_to_scene", None)
@@ -169,27 +169,31 @@ class Camera(Mob):
     def get_near(self):
         """Near clip distance (world units from the camera along its forward
         axis); geometry closer than this is not rendered. 0 = disabled."""
-        return getattr(self, "near", 0.0)
+        return getattr(self, "_near", 0.0)
 
     def set_near(self, near):
         """Set the near clip plane distance (0 disables near clipping)."""
         near = self._validated_clip("near", near)
         self._validate_clip_order(near, self.far)
-        self.near = near
+        self._near = near
         return self
+
+    near = property(get_near, set_near)
 
     def get_far(self):
         """Far clip distance (world units of ray travel from the camera);
         geometry farther than this shows the background/environment instead.
         0 = disabled."""
-        return getattr(self, "far", 0.0)
+        return getattr(self, "_far", 0.0)
 
     def set_far(self, far):
         """Set the far clip distance (0 disables far clipping)."""
         far = self._validated_clip("far", far)
         self._validate_clip_order(self.near, far)
-        self.far = far
+        self._far = far
         return self
+
+    far = property(get_far, set_far)
 
     def set_distance_to_screen(self, distance):
         """Moves the camera focus to be the given distance away from its screen, thereby changing the perspective.

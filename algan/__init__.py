@@ -231,5 +231,7 @@ __all__ = tuple([
         for name, value in globals().items()
         if _is_root_export(name, value)
     ),
-    'rate_funcs']
+    "cosine_color",
+    "rate_funcs",
+]
 )

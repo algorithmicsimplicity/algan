@@ -497,19 +497,40 @@ class BezierCircuitCubic(Mob):
 
     def set_control_points_to_partial(self, full_control_points, start_t, end_t):
         full_control_points = cast_to_tensor(full_control_points)
-        start_t = cast_to_tensor(start_t).to(full_control_points.device)
-        end_t = cast_to_tensor(end_t).to(full_control_points.device)
+        start_t = cast_to_tensor(start_t).to(full_control_points)
+        end_t = cast_to_tensor(end_t).to(full_control_points)
 
-        num_frames = full_control_points.shape[0]
+        def frame_values(value, name):
+            if value.numel() == 1:
+                return value.reshape(1)
+            values = value.reshape(value.shape[0], -1)
+            if values.shape[1] != 1:
+                raise ValueError(f"{name} must contain one value per frame")
+            return values[:, 0]
+
+        start_t = frame_values(start_t, "start_t")
+        end_t = frame_values(end_t, "end_t")
+        num_frames = max(
+            full_control_points.shape[0], start_t.numel(), end_t.numel()
+        )
+        if full_control_points.shape[0] == 1:
+            full_control_points = full_control_points.expand(
+                num_frames, -1, -1
+            )
+        elif full_control_points.shape[0] != num_frames:
+            raise ValueError(
+                "full_control_points must have one row or one row per frame"
+            )
+        if start_t.numel() == 1:
+            start_t = start_t.expand(num_frames)
+        elif start_t.numel() != num_frames:
+            raise ValueError("start_t must have one value per frame")
+        if end_t.numel() == 1:
+            end_t = end_t.expand(num_frames)
+        elif end_t.numel() != num_frames:
+            raise ValueError("end_t must have one value per frame")
+
         total_control_points = full_control_points.shape[-2]
-
-        if start_t.dim() == 0:
-            start_t = start_t.view(1).expand(num_frames)
-
-        if end_t.dim() == 0:
-            end_t = end_t.view(1).expand(num_frames)
-        else:
-            end_t = end_t.view(num_frames)
 
         if self.control_points.parent_batch_sizes is not None:
             num_mobs = len(self.control_points.parent_batch_sizes)

@@ -14,7 +14,6 @@ import numpy as np
 import torch
 
 from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
-from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.color import BLACK, WHITE, YELLOW, Color
 from algan.constants.spatial import ORIGIN
 from algan.mobs.group import Group
@@ -128,9 +127,7 @@ class PMobject(Group):
 
     def _rebuild_geometry(self):
         geometry = self._build_geometry()
-        self.mobs = [] if geometry is None else [geometry]
-        self.children = list(self.components) + self.mobs
-        bump_hierarchy_version()
+        self.replace_children([] if geometry is None else [geometry])
         return self
 
     def reset_points(self):
@@ -345,9 +342,7 @@ class PGroup(PMobject):
         if not all(isinstance(mob, PMobject) for mob in pmobs):
             raise ValueError("All submobjects must be of type PMobject")
         super().__init__(points=None, **kwargs)
-        self.mobs = list(pmobs)
-        self.children = list(self.components) + self.mobs
-        bump_hierarchy_version()
+        self.replace_children(pmobs)
 
     def fade_to(self, color, alpha, family=True):
         if family:
