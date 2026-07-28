@@ -1,4 +1,5 @@
 # Algan videos
+**/output_errors/
 **/algan_outputs/
 algan_outputs/
 algan_outputs
@@ -136,6 +137,7 @@ dmypy.json
 *.xml
 *.iml
 media
+**/media/
 .eggs/
 build/
 dist/
@@ -149,3 +151,4 @@ third_party/*
 /debug/
 /tests/output_errors/
 /scratch/
+/tests/full_renders/output_errors/

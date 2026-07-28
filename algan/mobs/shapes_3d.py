@@ -65,11 +65,11 @@ class Sphere(Surface):
         **kwargs,
     ):
         self.radius = radius
-        self.u_range = u_range
-        self.v_range = v_range
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
         kwargs.setdefault("location", center)
-        super().__init__(*args, **kwargs)
+        # Surface owns u_range/v_range: assigning them before this call would be
+        # overwritten by Surface.__init__'s own (0, 1) defaults.
+        super().__init__(*args, u_range=u_range, v_range=v_range, **kwargs)
 
     def coord_function(self, coords_2d):
         # Keep the original Algan sampling orientation.  Although a sphere is
@@ -120,14 +120,13 @@ class Cone(Surface):
         self.base_radius = base_radius
         self.height = height
         self.direction = cast_to_tensor(direction)
-        self.v_range = v_range
         self.u_min = u_min
         kwargs["checkerboard_colors"] = checkerboard_colors
         if resolution is None:
             resolution = 32
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
         kwargs.setdefault("grid_aspect_ratio", 1 / PI)
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, v_range=v_range, **kwargs)
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         with Off(animation_manager=self.animation_manager):
@@ -196,11 +195,10 @@ class Cylinder(Surface):
         self.height = height
         self._height = height
         self.direction = cast_to_tensor(direction)
-        self.v_range = v_range
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
         if "grid_aspect_ratio" not in kwargs and "grid_height" not in kwargs:
             kwargs["grid_aspect_ratio"] = 1 / PI
-        super().__init__(*args, **kwargs)
+        super().__init__(*args, v_range=v_range, **kwargs)
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         if not torch.allclose(direction_t, UP.to(direction_t)):
@@ -490,15 +488,18 @@ class Torus(Surface):
     ):
         self.major_radius = self.R = major_radius
         self.minor_radius = self.r = minor_radius
-        self.u_range = u_range
-        self.v_range = v_range
         if resolution is None:
             resolution = (24, 24)
         if isinstance(resolution, int):
             resolution = (resolution, resolution)
         kwargs.setdefault("grid_width", int(resolution[0]))
         kwargs.setdefault("grid_height", int(resolution[1]))
-        super().__init__(coord_function=self.coord_function, **kwargs)
+        super().__init__(
+            coord_function=self.coord_function,
+            u_range=u_range,
+            v_range=v_range,
+            **kwargs,
+        )
 
     def coord_function(self, uv):
         u = self.u_range[0] + uv[..., :1] * (self.u_range[1] - self.u_range[0])
