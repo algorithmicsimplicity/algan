@@ -168,33 +168,64 @@ def compute_grid_vertex_normals(grid):
     unnormalized_normals[..., :, 0, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, 0, :])
     unnormalized_normals[..., :, -1, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, -1, :])
 
-    # Merge unnormalized normals at singular poles (e.g. Sphere poles, Cone tip).
-    # The fan of triangles around a collapsed pole column can sum to a
-    # normal pointing *inward* (the degenerate pole faces carry the
-    # opposite winding sign from the rest of the grid). An inverted pole
-    # normal makes the patches touching the pole interpolate from an
+    # Rebuild the normals at singular poles (e.g. Sphere poles, Cone tip).
+    # A collapsed pole column accumulates nothing usable of its own: every
+    # triangle side along the grid's x axis is degenerate there, so the
+    # accumulated pole normals are built entirely from sub-epsilon
+    # differences between coincident points. On the raw parametrization
+    # those differences still carry the pole's direction, but once the mob
+    # has been transformed the O(1) world coordinates round them away
+    # completely, and summing them yields a direction that is tens of
+    # degrees off and that swings as the mob moves -- a bright blob that
+    # slides over the pole while the surface animates.
+    #
+    # Instead take the pole normal from the fan of faces that actually meet
+    # it: pole vertex to each edge of the adjacent ring (column 1 / -2).
+    # That is the same area-weighted vertex normal the accumulation is meant
+    # to produce, but computed from non-degenerate geometry. The fan winding
+    # follows the grid's own, which reverses between the two poles, hence
+    # the swapped cross-product order. As a backstop the result is still
+    # oriented into the ring's hemisphere: a pole normal from the wrong
+    # hemisphere makes the patches touching the pole interpolate from an
     # inward normal at the pole to the (correct) outward normals on the
-    # neighbouring ring, sweeping the shading normal through the lit
-    # hemisphere on the way -- a bright ring around an otherwise unlit
-    # pole. Orient each pole normal into the same hemisphere as its
-    # adjacent ring (column 1 / -2), which is reliably outward.
+    # ring, sweeping the shading normal through the lit hemisphere on the
+    # way -- a bright ring around an otherwise unlit pole.
     def _orient_to_ring(pole_normal, ring_normal):
         dot = (pole_normal * ring_normal).sum(-1, keepdim=True)
         return torch.where(dot < 0, -pole_normal, pole_normal)
 
-    is_south_pole = torch.all((grid[..., :, 0, :] - grid[..., :1, 0, :]).abs() < 1e-4, dim=(-1, -2))
-    mask_sp = is_south_pole.view(*is_south_pole.shape, 1, 1)
-    pole_normal_sp = unnormalized_normals[..., :, 0, :].sum(-2, keepdim=True)
-    ring_normal_sp = unnormalized_normals[..., :, 1, :].sum(-2, keepdim=True)
-    pole_normal_sp = _orient_to_ring(pole_normal_sp, ring_normal_sp)
-    unnormalized_normals[..., :, 0, :] = torch.where(mask_sp, pole_normal_sp, unnormalized_normals[..., :, 0, :])
+    def _merged_pole_normal(pole_index, ring_index, reverse):
+        pole = grid[..., :1, pole_index, :]
+        ring = grid[..., :, ring_index, :]
+        first = ring[..., :-1, :] - pole
+        second = ring[..., 1:, :] - pole
+        if reverse:
+            first, second = second, first
+        pole_normal = broadcast_cross_product(first, second).sum(-2, keepdim=True)
+        accumulated = unnormalized_normals[..., :, pole_index, :]
+        is_pole = torch.all(
+            (grid[..., :, pole_index, :] - pole).abs() < 1e-4, dim=(-1, -2)
+        )
+        # A fan too thin to trust (single-column grid, or a ring collapsed
+        # onto the pole itself) leaves the accumulated normals alone.
+        usable = pole_normal.norm(p=2, dim=-1, keepdim=True) > 1e-12
+        replace = is_pole.view(*is_pole.shape, 1, 1) & usable
+        ring_normal = unnormalized_normals[..., :, ring_index, :].sum(-2, keepdim=True)
+        return torch.where(
+            replace,
+            _orient_to_ring(pole_normal, ring_normal),
+            accumulated,
+        )
 
-    is_north_pole = torch.all((grid[..., :, -1, :] - grid[..., :1, -1, :]).abs() < 1e-4, dim=(-1, -2))
-    mask_np = is_north_pole.view(*is_north_pole.shape, 1, 1)
-    pole_normal_np = unnormalized_normals[..., :, -1, :].sum(-2, keepdim=True)
-    ring_normal_np = unnormalized_normals[..., :, -2, :].sum(-2, keepdim=True)
-    pole_normal_np = _orient_to_ring(pole_normal_np, ring_normal_np)
-    unnormalized_normals[..., :, -1, :] = torch.where(mask_np, pole_normal_np, unnormalized_normals[..., :, -1, :])
+    if grid.shape[-2] > 1:
+        # Both poles read the untouched accumulation, so a two-row grid
+        # cannot have the first merge feed the second.
+        merged_poles = [
+            (pole_index, _merged_pole_normal(pole_index, ring_index, reverse))
+            for pole_index, ring_index, reverse in ((0, 1, True), (-1, -2, False))
+        ]
+        for pole_index, merged in merged_poles:
+            unnormalized_normals[..., :, pole_index, :] = merged
 
     return -F.normalize(unnormalized_normals, p=2, dim=-1)
 
@@ -1532,71 +1563,10 @@ class Surface(Mob):
 
         grid_points = coord_function(base_grid.clone())
 
-        grid_x_plus_1 = grid_points.roll(-1, -3)
-        grid_x_minus_1 = grid_points.roll(1, -3)
-        grid_y_plus_1 = grid_points.roll(-1, -2)
-        grid_y_minus_1 = grid_points.roll(1, -2)
-        triangle_sides = unsquish(
-            torch.stack(
-                (
-                    grid_x_minus_1,
-                    grid_y_minus_1,
-                    grid_y_minus_1,
-                    grid_x_plus_1,
-                    grid_x_plus_1,
-                    grid_y_plus_1,
-                    grid_y_plus_1,
-                    grid_x_minus_1,
-                ),
-                -2,
-            )
-            - grid_points.unsqueeze(-2),
-            -2,
-            2,
-        )
-        triangle_normals = broadcast_cross_product(
-            triangle_sides[..., 0, :], triangle_sides[..., 1, :]
-        )
-        triangle_normals[..., 0, :, [0, 3], :] = 0
-        triangle_normals[..., -1, :, [1, 2], :] = 0
-        triangle_normals[..., :, 0, [0, 1], :] = 0
-        triangle_normals[..., :, -1, [2, 3], :] = 0
-        unnormalized_normals = triangle_normals.sum(-2)
-
-        # Merge unnormalized normals along closed seams
-        is_closed_x = torch.allclose(grid_points[..., 0, :, :], grid_points[..., -1, :, :], atol=1e-4, rtol=1e-4)
-        if is_closed_x:
-            closed_normals = unnormalized_normals[..., 0, :, :] + unnormalized_normals[..., -1, :, :]
-            unnormalized_normals[..., 0, :, :] = closed_normals
-            unnormalized_normals[..., -1, :, :] = closed_normals
-
-        is_closed_y = torch.allclose(grid_points[..., :, 0, :], grid_points[..., :, -1, :], atol=1e-4, rtol=1e-4)
-        if is_closed_y:
-            closed_normals = unnormalized_normals[..., :, 0, :] + unnormalized_normals[..., :, -1, :]
-            unnormalized_normals[..., :, 0, :] = closed_normals
-            unnormalized_normals[..., :, -1, :] = closed_normals
-
-        def _orient_to_ring(pole_normal, ring_normal):
-            dot = (pole_normal * ring_normal).sum(-1, keepdim=True)
-            return torch.where(dot < 0, -pole_normal, pole_normal)
-
-        is_south_pole = torch.allclose(grid_points[..., :, 0, :], grid_points[..., :1, 0, :], atol=1e-4, rtol=1e-4)
-        if is_south_pole:
-            pole_normal = unnormalized_normals[..., :, 0, :].sum(-2, keepdim=True)
-            ring_normal = unnormalized_normals[..., :, 1, :].sum(-2, keepdim=True)
-            pole_normal = _orient_to_ring(pole_normal, ring_normal)
-            unnormalized_normals[..., :, 0, :] = pole_normal
-
-        is_north_pole = torch.allclose(grid_points[..., :, -1, :], grid_points[..., :1, -1, :], atol=1e-4, rtol=1e-4)
-        if is_north_pole:
-            pole_normal = unnormalized_normals[..., :, -1, :].sum(-2, keepdim=True)
-            ring_normal = unnormalized_normals[..., :, -2, :].sum(-2, keepdim=True)
-            pole_normal = _orient_to_ring(pole_normal, ring_normal)
-            unnormalized_normals[..., :, -1, :] = pole_normal
-
-        vertex_normals = -F.normalize(unnormalized_normals, p=2, dim=-1)
-
-
+        # Same normals the renderer will build for this grid -- including the
+        # seam and pole merges -- so the tessellation error this estimates is
+        # the error of the patches actually rendered.
+        vertex_normals = compute_grid_vertex_normals(grid_points)
 
         triangle_uvs = grid_to_triangle_vertices(base_grid)
         triangle_corners = grid_to_triangle_vertices(grid_points)

@@ -202,8 +202,7 @@ class Cylinder(Surface):
 
         direction_t = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
         if not torch.allclose(direction_t, UP.to(direction_t)):
-            with Off(animation_manager=self.animation_manager):
-                self.look(direction_t, axis=1)
+            self.look(direction_t, axis=1)
         if show_ends:
             self.add_bases(direction_t)
 
@@ -216,11 +215,10 @@ class Cylinder(Surface):
         self.top_cap = Circle(
             scene=self.scene, radius=self.radius, color=self.color, add_to_scene=False
         )
-        with Off(animation_manager=self.animation_manager):
-            self.bottom_cap.look(-direction, axis=2)
-            self.top_cap.look(direction, axis=2)
-            self.bottom_cap.move_to(-direction * self.height * 0.5)
-            self.top_cap.move_to(direction * self.height * 0.5)
+        self.bottom_cap.look(-direction, axis=2)
+        self.top_cap.look(direction, axis=2)
+        self.bottom_cap.move_to(-direction * self.height * 0.5)
+        self.top_cap.move_to(direction * self.height * 0.5)
         self.base_bottom = self.bottom_cap
         self.base_top = self.top_cap
         self.add_children(self.bottom_cap, self.top_cap)
@@ -335,8 +333,7 @@ class Arrow3D(Mob):
             color=color,
             add_to_scene=False,
         )
-        with Off(animation_manager=self.animation_manager):
-            self.tail.move_to((start + shaft_end) * 0.5)
+        self.tail.move_to((start + shaft_end) * 0.5)
         self.head = Cone(
             scene=self.scene,
             base_radius=base_radius,
@@ -347,11 +344,10 @@ class Arrow3D(Mob):
             color=color,
             add_to_scene=False,
         )
-        with Off(animation_manager=self.animation_manager):
-            self.head.move_to(end - direction * height * 0.5)
+        self.head.move_to(end - direction * height * 0.5)
         self.cone = self.head
-        self.start_point = start
-        self.end_point = end
+        self.start_point = Mob(location=start, opacity=0)
+        self.end_point = Mob(location=end, opacity=0)
         self.length = length
         self.add_children(self.tail, self.head)
 
@@ -372,13 +368,13 @@ class Arrow3D(Mob):
         return primitives or None
 
     def get_start(self):
-        return self.start_point
+        return self.start_point.location
 
     def get_end(self):
-        return self.end_point
+        return self.end_point.location
 
     def get_vector(self):
-        return self.end_point - self.start_point
+        return self.get_end() - self.get_start()
 
     def get_unit_vector(self):
         return F.normalize(self.get_vector(), p=2, dim=-1)
@@ -403,8 +399,7 @@ class Dot3D(Sphere):
             kwargs.setdefault("grid_width", int(resolution[0]))
             kwargs.setdefault("grid_height", int(resolution[1]))
         super().__init__(radius=radius, **kwargs)
-        with Off(animation_manager=self.animation_manager):
-            self.move_to(point)
+        self.move_to(point)
 
 
 class Line3D(Cylinder):
@@ -433,8 +428,7 @@ class Line3D(Cylinder):
         self.end = cast_to_tensor(end)
         self.thickness = thickness
         super().__init__(radius=thickness, height=1, closed=True, **kwargs)
-        with Off(animation_manager=self.animation_manager):
-            self.move_between_points(self.start, self.end)
+        self.move_between_points(self.start, self.end)
 
     def get_start(self):
         return self.start.clone()
