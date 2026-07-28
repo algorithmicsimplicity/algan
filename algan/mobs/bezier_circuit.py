@@ -87,27 +87,6 @@ class BezierCircuitCubic(Mob):
     ):
         self.num_bezier_parameters = 4
         control_points = control_points.view(-1, control_points.shape[-1])
-        """ucp = unsquish(control_points, -2, self.num_bezier_parameters)
-        start_points = ucp[...,:1,:]
-        end_points = ucp[...,-1:,:]
-        circuit_start_mask = ((start_points - end_points.roll(1, -3)).norm(p=2, dim=-1, keepdim=True) > 1e-5)
-        circuit_end_mask = ((end_points - start_points.roll(-1, -3)).norm(p=2, dim=-1, keepdim=True) > 1e-5)
-
-        circuit_start_inds = circuit_start_mask.view(-1).nonzero()
-        circuit_end_inds = circuit_end_mask.view(-1).nonzero()
-        out = []
-
-        def get_connecting_bezier(start, end):
-            return torch.stack([start * (1-a) + a * end for a in torch.linspace(0,1, self.num_bezier_parameters)]), -2
-
-        for s, e in zip(circuit_start_inds, circuit_end_inds):
-            out.append(ucp[..., :e, :, :])
-            n = (e+1) % ucp.shape[-3]
-            out.append(get_connecting_bezier(ucp[..., e:e+1, -1,:], ucp[..., n:n+1, 0,:]))
-        if len(out) > 0:
-            out.append(ucp[..., e+1:,:,:])
-            ucp = torch.cat(out, dim=-3)
-        control_points = squish(ucp, -3, -2)"""
 
         kwargs2 = {k: v for k, v in kwargs.items()}
 
@@ -164,17 +143,16 @@ class BezierCircuitCubic(Mob):
             border_color if not self.empty else border_color.set_opacity(0)
         )
         kwargs["color"] = self.color if self.filled else self.border_color
-        with Off(animation_manager=self.animation_manager):
-            self.texture_points = Mob(texture_triangle_vertices, **kwargs)
-            self.texture_points.exclude_from_boundary = True
-            self.texture_points.is_primitive = True
-            self.add_children(self.texture_points)
+        self.texture_points = Mob(texture_triangle_vertices, **kwargs)
+        self.texture_points.exclude_from_boundary = True
+        self.texture_points.is_primitive = True
+        self.add_children(self.texture_points)
 
-            self.control_points = Mob(control_points, **kwargs)
-            self.control_points.is_primitive = True
-            self.add_children(self.control_points)
-            self.control_points.num_points_per_object = 4
-            self.components = [self.texture_points, self.control_points]
+        self.control_points = Mob(control_points, **kwargs)
+        self.control_points.is_primitive = True
+        self.add_children(self.control_points)
+        self.control_points.num_points_per_object = 4
+        self.components = [self.texture_points, self.control_points]
 
         self.normals = normals
         self.is_primitive = True
@@ -307,8 +285,7 @@ class BezierCircuitCubic(Mob):
                 self.basis,
                 self.glow,
                 self.border_width
-                * self.scene.video_settings.resolution[1] * self.scene.video_settings.anti_alias_level
-                / (PREVIEW.resolution[1] * 2),
+                * self.scene.video_settings.resolution[1] / (PREVIEW.resolution[1] * 2),
                 self.border_color,
                 metalness,
                 roughness,

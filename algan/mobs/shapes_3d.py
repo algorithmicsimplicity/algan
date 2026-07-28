@@ -231,7 +231,7 @@ class Cylinder(Surface):
         return (
             (u * torch.pi * 2).sin() * self.radius * self.get_right_basis()
             + (v - 0.5) * self.height * self.get_upwards_basis()
-            + (u * torch.pi * 2).cos() * -self.get_forward_basis()
+            + (u * torch.pi * 2).cos() * self.radius * self.get_forward_basis()
         )
 
     def normal_function(self, uv):

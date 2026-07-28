@@ -154,21 +154,21 @@ from algan.animations.indication import *
 from algan.animation_timeline.timeline import TimelineManager
 
 
-def clear_cache(include_taichi_kernels=False):
+def clear_cache(taichi_kernels=False):
     """Delete Algan's content caches (tessellations, manim Tex/Text, audio).
 
     The Taichi offline kernel cache lives inside the cache directory too
     (the environment-selected Taichi cache directory) but is spared by default:
     it holds compiled kernels (minutes to rebuild), is version-keyed, and is
     never invalidated by scene-content changes. Pass
-    ``include_taichi_kernels=True`` to wipe it as well (e.g. before
+    ``taichi_kernels=True`` to wipe it as well (e.g. before
     A/B-benchmarking kernel edits -- the offline cache does not invalidate on
     ``@ti.func`` changes).
     """
     f = SETTINGS.paths.cache_directory
     if not os.path.exists(f):
         return
-    if include_taichi_kernels:
+    if taichi_kernels:
         shutil.rmtree(f)
         return
     from algan.settings._startup import _TAICHI_CACHE_DIRECTORY

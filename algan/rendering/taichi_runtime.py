@@ -247,7 +247,7 @@ def taichi_init_kwargs():
     kwargs = dict(arch=_taichi_arch(), fast_math=True,
                   # advanced_optimization defaults off (it raised register
                   # pressure on the big megakernels); env ALGAN_ADV_OPT=1 to A/B.
-                  advanced_optimization=os.environ.get("ALGAN_ADV_OPT", "0") == "1",
+                  advanced_optimization=os.environ.get("ALGAN_ADV_OPT", "1") == "1",
                   # debug=True inserts a bounds-check on *every* ndarray access;
                   # the ray-trace megakernels do millions of array reads per ray
                   # (BVH nodes, packed geometry), so it ran them ~11x slower with
