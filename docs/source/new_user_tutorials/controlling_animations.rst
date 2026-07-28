@@ -2,7 +2,10 @@
 Controlling Animations
 ======================
 
-So far we've seen how to create basic animations by modifying animatable attributes and using :func:`.animated_function` s. But in all of these examples, the animations play for 1 second each, and take place one after the other. What if we want more control over how the animations should happen? Not to worry, Algan is specifically designed to make orchestrating complex animations easy, and to this end it provides :class:`.AnimationContext` s.
+So far we've seen how to create basic animations. But in all of these examples, the animations play for 1 second each,
+and take place one after the other. What if we want more control over how the animations should happen?
+Not to worry, Algan is specifically designed to make orchestrating complex animation sequences easy,
+and to this end it provides :class:`.AnimationContext` s.
 
 Animation Contexts
 ------------------
@@ -19,12 +22,12 @@ Let's dive in with an example.
         mob.move(RIGHT)
         mob.rotate(90, OUT)
 
-    render_to_file()
+    Scene.save_video()
 
 Here we use the :class:`.Sync` context (read as "with animations synchronized") to specify
 the animations should be synchronized. All animations that take place within the ``with Sync():`` clause will be
-played at the same time. In addition to Sync, Algan also provides the :class:`.Seq` ("with animations sequenced"), :class:`.Lag` ("with animations lagged"),
-and :class:`.Off` ("with animations off") contexts.
+played at the same time. In addition to Sync, Algan also provides the :class:`.Seq` ("with animations sequenced"),
+:class:`.Lag` ("with animations lagged"), and :class:`.Off` ("with animations off") contexts.
 
 .. algan:: CombiningContextExamples
 
@@ -49,7 +52,7 @@ and :class:`.Off` ("with animations off") contexts.
         mob1.move(LEFT)
         mob2.move(RIGHT)
 
-    render_to_file()
+    Scene.save_video()
 
 Seq() will play animations sequentially one after the other (note that this is the default behaviour when not in any context),
 Lag(lag_ratio=r) will play animations sequentially lagged by a factor of r.
@@ -64,6 +67,10 @@ Finally Off() disables animations that take place within its context, all change
 :class:`~.AnimationContext` s can also be given a number of parameters to change their
 behaviour. Most notably, the length of animations that take place within a context can be
 controlled with ``run_time`` and ``run_time_unit``.
+
+.. important::
+
+    Before a Mob is spawned, it will have animations turned Off, regardless of the current context.
 
 .. algan:: CombiningContextExamples
 
@@ -81,10 +88,10 @@ controlled with ``run_time`` and ``run_time_unit``.
         mob1.rotate(360, UP)
         mob1.move_to(ORIGIN)
 
-    render_to_file()
+    Scene.save_video()
 
-The ``run_time`` parameter specifies the total amount of time that the context should take place over, individual animations
-will be rescaled (sped up or slowed down) so that their total time is equal ``run_time``.
+The ``run_time`` parameter specifies the total amount of time that the context should take place over,
+individual animations will be rescaled (sped up or slowed down) so that their total time equals ``run_time``.
 The ``run_time_unit`` parameter specifies how long each individual animation should be played for.
 
 .. note::
@@ -129,4 +136,4 @@ This makes specifying complex animations and designing modular animation code a 
                 mob2.move(LEFT*3)
                 mob2.glow = 0.5
 
-    render_to_file()
+    Scene.save_video()

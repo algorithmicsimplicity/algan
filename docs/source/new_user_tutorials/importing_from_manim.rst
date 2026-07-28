@@ -35,7 +35,7 @@ Importing is straightforward, just create a :class:`~.ManimMob` object and pass 
         mob.scale(0.5)
         mob.rotate(90, OUT)
 
-    render_to_file()
+    Scene.save_video()
 
 .. important::
 

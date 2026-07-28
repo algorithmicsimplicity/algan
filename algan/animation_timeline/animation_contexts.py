@@ -263,6 +263,22 @@ class AnimationContext:
         self._manager_override_token = _ANIMATION_MANAGER_OVERRIDE.set(am)
         return self
 
+    @property
+    def current_time(self):
+        return self.timespan.current_time
+
+    @current_time.setter
+    def current_time(self, value):
+        self.timespan.current_time = value
+
+    @property
+    def end_time(self):
+        return self.timespan.original_end
+
+    @end_time.setter
+    def end_time(self, value):
+        self.timespan.original_end = value
+
     def add_child_context(self, c):
         self.child_contexts.append(c)
 

@@ -7,4 +7,4 @@ Scenes
    :toctree: ../reference
 
    ~scene
-
+   ~scene_manager

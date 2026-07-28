@@ -38,7 +38,7 @@ Usage::
     )
     mirror.spawn()
     ...
-    algan.render_to_file()
+    algan.Scene.save_video()
 """
 from __future__ import annotations
 

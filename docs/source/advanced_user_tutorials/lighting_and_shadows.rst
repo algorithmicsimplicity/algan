@@ -123,7 +123,7 @@ Shadows are **off by default**. Turn them on with
     set_ray_traced_shadows(True)
 
     # ... build your scene ...
-    render_to_file()
+    Scene.save_video()
 
 With shadows on, each lit surface point fires shadow rays toward every light; a
 light that is blocked by another object does not contribute to that point.
@@ -156,7 +156,7 @@ non-zero emitter size:
     Sphere().move(UP).spawn()          # caster
     # ... a ground plane to catch the shadow ...
 
-    render_to_file()
+    Scene.save_video()
 
 Algan traces a fixed fan of shadow rays across the emitter to build the
 penumbra; the number of rays is controlled by the environment variable
@@ -208,7 +208,7 @@ as the top-level ``set_environment_map``):
 
     Sphere().move(RIGHT * 1.5).spawn()
 
-    render_to_file()
+    Scene.save_video()
 
 - ``intensity`` scales the map's brightness.
 - ``ambient=True`` (the default) also lights surfaces from the map (image-based
@@ -244,7 +244,7 @@ Because ``set_fov`` moves the camera's screen, it animates like any other camera
 change when the camera has been spawned.
 
 Near and Far Clipping
---------------------
+---------------------
 
 ``near`` and ``far`` are clip distances measured from the camera. Geometry closer
 than ``near`` or farther than ``far`` is not drawn (past ``far``, the background
@@ -257,7 +257,7 @@ or environment map shows through). ``0`` disables each (the default).
     camera.set_far(50)          # hide anything beyond 50 units
 
 Putting It Together
-==================
+===================
 
 A small three-point-light studio with soft shadows and a fill from an ambient
 light:
@@ -285,7 +285,7 @@ light:
     Sphere().spawn()
     # ... a ground plane to catch the shadows ...
 
-    render_to_file()
+    Scene.save_video()
 
 See Also
 ========

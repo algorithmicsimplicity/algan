@@ -1,9 +1,9 @@
 ============
-Nesting Mobs
+Child Mobs
 ============
 
-So far we have been using simple :class:`.Mob` s. To make more complex :class:`.Mob` s we can combine together multiple mobs into one.
-This is done by adding other mobs as children to one another with :meth:`~.Animatable.add_children` .
+So far we have been using simple :class:`.Mob` s. To make more complex objects we can combine multiple mobs
+together into one. This is done by adding mobs as children to a parent using :meth:`~.Animatable.add_children` .
 
 .. algan:: NMBasic
 
@@ -28,7 +28,7 @@ This is done by adding other mobs as children to one another with :meth:`~.Anima
         parent_mob.rotate(90, OUT)
         children_mobs[0].rotate(180, UP)
 
-    render_to_file()
+    Scene.save_video()
 
 Once mobs are added as a child to another, any changes applied to the parent will be propagated
 to the child mobs. The way that the change is propagated depends on the attribute changed.
@@ -44,7 +44,8 @@ Changes made directly to a child will ignore the parent relation.
 
     You can get a list of all of a mob's children with :attr:`~.Mob.children` , but this variable
     is read only! You should always use :meth:`~.Animatable.add_children` for adding children.
-    You can also get a list of all descendent mobs (children, and grand-children, and so-on) with :meth:`~.Mob.get_descendants`
+    You can also get a list of all descendant mobs (children, and grand-children, and so-on)
+    with :meth:`~.Mob.get_descendants`
 
 Grouping Mobs
 =============
@@ -67,7 +68,7 @@ which are useful for arranging Mobs.
         group.arrange_in_grid(3)
     group.wait()
 
-    render_to_file()
+    Scene.save_video()
 
 
 .. note::

@@ -42,7 +42,7 @@ and another to make the outer square follow its rotation.
     square2.remove_updater(updater_id_2)
     square.wait(2)
 
-    render_to_file()
+    Scene.save_video()
 
 The :meth:`~.Animatable.add_updater` function takes as input a function, and applies
 that function at every subsequent frame. The function must take a Mob as its first argument

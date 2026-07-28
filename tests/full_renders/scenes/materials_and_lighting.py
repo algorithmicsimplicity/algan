@@ -35,7 +35,7 @@ with Off():
         Text("Standard", font_size=24, color=GRAY_A),
     )
     for mob, label in zip(first_row, first_labels):
-        label.move_to(mob.location + DOWN * 0.72)
+        label.move_next_to(mob, DOWN)
 
 with Seq():
     title.spawn()

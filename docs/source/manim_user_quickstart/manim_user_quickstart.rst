@@ -2,7 +2,7 @@ Manim User Quickstart
 =====================
 
 This guide is meant for users who are already familiar with Manim, and only explains the key
-differences between Manim and Algam so you can get started as quickly as possible.
+differences between Manim and Algan so you can get started as quickly as possible.
 
 Algan Basics
 ------------
@@ -37,7 +37,7 @@ Basic Mobs
 
     text = Text("I am a Text Mob.").spawn()
 
-    render_to_file()
+    Scene.save_video()
 
 
 Animation Contexts
@@ -99,7 +99,7 @@ AnimationContexts control how all changes made within its contexts should be ani
 
     square.wait(1) # wait one second without any changes.
 
-    render_to_file()
+    Scene.save_video()
 
 
 Nested Animation Contexts
@@ -148,4 +148,4 @@ is treated as a single animation for rules of the parent context.
                 circle.move(UP)
                 circle.rotate(-180, UP)
 
-    render_to_file()
+    Scene.save_video()

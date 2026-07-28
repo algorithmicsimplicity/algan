@@ -1,9 +1,7 @@
-Utils
-=====
+Utilities
+=========
 
 .. currentmodule:: algan
-
-.. autofunction:: algan.utils.algan_utils.render_to_file
 
 .. autosummary::
    :toctree: ../reference
@@ -12,3 +10,4 @@ Utils
    ~utils.animation_utils
    ~utils.tensor_utils
    ~utils.python_utils
+   ~sound.audio_effect

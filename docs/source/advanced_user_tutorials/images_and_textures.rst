@@ -31,4 +31,4 @@ based on a provided image file path.
             mob.rotate(360, UP)
             mob.rotate(360, RIGHT)
 
-    render_to_file()
+    Scene.save_video()

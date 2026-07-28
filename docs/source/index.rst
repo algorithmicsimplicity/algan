@@ -1,62 +1,58 @@
 About Algan
 ===========
 
-Algan (ALGorithmic ANimation) is a 3-D graphics and animation library inspired by `Manim <https://docs.manim.community/en/stable/>`_.
-Manim is a popular Python library for animating mathematical concepts, featuring
-a simple and intuitive interface and an expansive collection of built in functionality.
-However, Manim has some key design flaws that make it unsuited for orchestrating
-complex animations involving many moving parts, and unsuited for developing modular animation software.
-Algan seeks to improve upon Manim by providing a similarly simple interface, but a much
-more robust and scalable animation framework.
+Algan (ALGorithmic ANimation) is a Python library for building 2-D and 3-D
+explanatory animations. It is inspired by `Manim
+<https://docs.manim.community/en/stable/>`_, but uses a Scene-contained lazy
+animation system and a GPU-oriented renderer designed for complex moving 3-D
+scenes.
 
-To this end, Algan features a fully complete animation and rendering backend, built from
-the ground up in `PyTorch <https://pytorch.org/>`_. Because the entire pipeline is purpose-built
-for algorithmic animating, Algan enjoys several key benefits over Manim:
+Authoring code records animations instead of rendering them immediately. Each
+:class:`~algan.scene.Scene` owns its mobs, camera, lights, animation timeline,
+animation contexts, audio state, and render loop. At output time Algan
+materializes the Scene in batches of frame times and renders the resulting
+triangles and cubic-Bezier circuits.
 
-- Algan does not render animations as they are created in the program, but instead records
-  all defined animations until a command to render is given. This allows programs to define animations
-  out-of-order (i.e. not in the order they appear in the video timeline). This makes animating some complex scenes
-  far simpler.
-- Algan features a robust AnimationContext system to control animations. This system makes code written
-  in Algan automatically modular and reusable by default.
-- Because both the animation and rendering pipelines are built in PyTorch, Algan allows for the use of GPU
-  acceleration for both rendering AND animating. Note that while Manim does support GPU acceleration for rendering,
-  it does not for animating. This means that for scenes involving the animation of many thousands of actors, Algan will
-  be far quicker.
-- The Algan rendering pipeline is fully customizable. If you need to implement a new type of rendering operation,
-  or unique lighting and shading, you can do so by simply writing a PyTorch program to implement them. You don't need
-  to bother trying to learn how to use shader languages like OpenGL, just write your rendering pipeline in good old
-  familiar Python with numpy-like arrays.
+Key capabilities include:
 
-First Steps
------------
+* **Lazy animation recording.** Animations can be rescaled, nested, synchronized,
+  or written out of source order before any frame is computed.
+* **Independent Scenes.** Timeline, animation, and audio managers are regular
+  per-Scene objects; only active-Scene selection is process-global.
+* **Composable animation contexts.** ``Seq``, ``Sync``, ``Lag``, and ``Off``
+  provide structured timing without an imperative ``play`` loop.
+* **2-D and 3-D geometry.** Native cubic-Bezier shapes, text and TeX, triangle
+  surfaces, point clouds, imported models, and compatible Manim vector objects
+  share one scene model.
+* **Physically based rendering.** Materials, fragment stages, lighting,
+  shadows, reflection/refraction, hybrid rasterization, and ray-tracing paths
+  are implemented through Torch and Taichi.
+* **Unified output APIs.** ``Scene.save_frame`` and ``Scene.save_video`` share
+  path resolution and accept explicit video presets.
+* **Synchronized audio.** Audio and speech contexts are recorded on the same
+  Scene timeline as visual animation.
 
-Are you new to Algan and are looking for where to get started? Then you are
-in the right place!
+First steps
+===========
 
-- The :doc:`Installation <installation>` section has the latest and
-  up-to-date installation instructions for Windows, macOS, and Linux.
-- In our :doc:`Tutorials <new_user_tutorials/index>` section you will find a
-  collection of resources that will teach you how to use Algan.
+* Follow :doc:`installation` to install Algan and its system dependencies.
+* Build your first animation in :doc:`new_user_tutorials/getting_started`.
+* Learn Scene ownership and output behavior in
+  :doc:`new_user_tutorials/scenes_and_rendering`.
+* Configure quality, paths, memory, and ray tracing through
+  :doc:`new_user_tutorials/settings`.
+* Manim users can start with :doc:`manim_user_quickstart/index`.
 
+Finding help
+============
 
-Finding Help
-------------
+For API details, use the :doc:`reference manual <reference>` and documentation
+search. Installation and usage bugs can be reported on the Algan GitHub issue
+tracker. Include a minimal script, platform, Python version, Torch/Taichi device,
+and the complete traceback or renderer log.
 
-Are you struggling with installing or using Algan? Don't worry, we've all been
-there. Here are some good resources to help you out:
-
-- Perhaps your problem is one that occurs frequently, then chances are it is
-  addressed in our :doc:`collection of FAQs <faq/index>`.
-- If you are looking for information on some specific class, look for it
-  in the :doc:`reference manual <reference>` and/or use the search feature
-  of the documentation.
-- Still no luck? Then you are welcome to ask the community for help, together
-  we usually manage to find a solution for your problem! Consult the
-  :doc:`FAQ page on getting help <faq/help>` for instructions.
-
-Index
------
+Documentation index
+===================
 
 .. toctree::
    :maxdepth: 3
@@ -64,8 +60,6 @@ Index
    installation
    tutorials_guides
    reference
-
-.. image:: _static/crowdin-badge.svg
-  :align: center
-  :alt: Localized with Crowdin
-  :target: https://translate.manim.community
+   faq/index
+   contributing
+   changelog

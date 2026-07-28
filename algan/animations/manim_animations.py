@@ -27,7 +27,7 @@ def write(bezier_mob, border_width: float = 1, run_time=None, lag_ratio=None):
         x = ManimMob(mn.Text('Hello'))
         write(x)
 
-        render_to_file()
+        Scene.save_video()
 
     """
     length = len(bezier_mob.children[2])

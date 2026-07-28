@@ -195,7 +195,7 @@ def default_scene_initializer(scene):
 
 # The SceneManager singleton is created lazily. Its default Scene is created
 # only when current_scene is first requested (e.g. by Mob construction or a
-# module-level render_to_file call).
+# module-level render call).
 SceneManager.set_scene_class(Scene, default_scene_initializer)
 
 # Re-exported for backwards compatibility; it now runs lazily on first Tex use.

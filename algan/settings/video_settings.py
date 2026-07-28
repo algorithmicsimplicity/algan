@@ -7,7 +7,7 @@ from algan.settings.abstract_settings import Settings
 
 @dataclass
 class VideoSettings(Settings):
-    """Video output settings used by :func:`algan.render_to_file`."""
+    """Video output settings used by :meth:`algan.scene.Scene.save_video`."""
 
     resolution: Tuple[int, int]
     frames_per_second: int = 30

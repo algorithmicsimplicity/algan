@@ -76,7 +76,7 @@ def get_file_writer(temp_file_path, video_settings_resolution, codec, fps, with_
 # @compiled
 @dataclass(frozen=True)
 class RenderResult:
-    """Outcome metadata returned by :func:`render_to_file`."""
+    """Outcome metadata returned by :meth:`algan.scene.Scene.save_video`."""
 
     status: Literal["rendered", "skipped"]
     output_path: Path
@@ -323,10 +323,10 @@ def _render_scene_to_file(
 def render_to_file(*args, **kwargs):
     """Render the current active scene.
 
-    This compatibility wrapper delegates to :meth:`Scene.render_to_file`; new
-    code that already has a scene reference should call the method directly.
+    This compatibility wrapper delegates to :meth:`algan.scene.Scene.save_video`;
+    new code should call the Scene method directly.
     """
-    return SceneManager.instance().current_scene.render_to_file(*args, **kwargs)
+    return SceneManager.instance().current_scene.save_video(*args, **kwargs)
 
 
 # Concise stable authoring alias.
@@ -421,7 +421,7 @@ def render_all_funcs(
                 function()
                 if not smoke_test:
                     results.append(
-                        active_scene.render_to_file(
+                        active_scene.save_video(
                             Path(output_path)
                             / output_dir
                             / f"{index}_{scene_name}.{file_extension}",

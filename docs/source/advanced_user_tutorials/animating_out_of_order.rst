@@ -5,16 +5,17 @@ Animating Out of Order
 In Algan, when you change an animatable attribute, or run an animated function, Algan
 does not actually perform that animation immediately. Instead, Algan makes a record
 of the fact that this animation took place, and the times at which the animation
-begins and ends. Algan stores this information on the global animation timeline
-(an :class:`.AnimationTimeline`, accessed through :class:`.TimelineManager`).
-The time at which the animation takes place is controlled by the AnimationContexts. For example,
+begins and ends. Algan stores this information on the owning Scene's
+:class:`~algan.animation_timeline.timeline.AnimationTimeline`, accessed through
+``mob.scene.timeline_manager``. Each Scene has a separate timeline. The time at
+which the animation takes place is controlled by that Scene's AnimationContexts. For example,
 in a Seq context, once an animation is done, the context will write the animation
 to the current time, then increment the current time by 1. So the next animation
 will be written to one second later on the timeline, and so on.
 
-Once a command to render is given, as in :func:`.render_to_file`, Algan reads through
-all of the Mob's animation timelines and actually performs the interpolations
-to compute animated states.
+Once a command to render is given, as in :meth:`~algan.scene.Scene.save_video`, Algan reads through
+the rendered Scene's timeline and performs the interpolations needed to compute
+animated states.
 
 Most of the time, you do not need to worry about this and you can just let the
 animation contexts handle the writing of animations to the timeline. But if you want to,
@@ -53,6 +54,7 @@ its animation. And we can use out of order animation to implement the animations
 .. algan:: AOOWave1
 
     from algan import *
+    import torch.nn.functional as F
 
     n = 10
     mobs = Group([Square(color=BLUE) for _ in range(n*n)]).arrange_in_grid(n).scale(0.25).spawn()
@@ -83,4 +85,4 @@ its animation. And we can use out of order animation to implement the animations
         # continue animating in order.
         context.current_time = context.end_time
 
-    render_to_file()
+    Scene.save_video()

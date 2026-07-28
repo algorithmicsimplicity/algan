@@ -1,91 +1,29 @@
-r"""
-A directive for including Manim videos in a Sphinx document
-===========================================================
+r"""Sphinx directive for rendering inline Algan examples.
 
-When rendering the HTML documentation, the ``.. manim::`` directive
-implemented here allows to include rendered videos.
+The directive executes its indented Python body in an isolated namespace while
+building HTML documentation. The example is rendered with a documentation
+quality preset and its output is embedded beside the source code::
 
-Its basic usage that allows processing **inline content**
-looks as follows::
+    .. algan:: MovingSquare
+        :quality: low
 
-    .. manim:: MyScene
+        from algan import *
 
-        class MyScene(Scene):
-            def construct(self):
-                ...
+        Square().spawn().move(RIGHT)
+        Scene.save_video()
 
-It is required to pass the name of the class representing the
-scene to be rendered to the directive.
-
-As a second application, the directive can also be used to
-render scenes that are defined within doctests, for example::
-
-    .. manim:: DirectiveDoctestExample
-        :ref_classes: Dot
-
-        >>> from manim import Create, Dot, RED, Scene
-        >>> dot = Dot(color=RED)
-        >>> dot.color
-        ManimColor('#FC6255')
-        >>> class DirectiveDoctestExample(Scene):
-        ...     def construct(self):
-        ...         self.play(Create(dot))
-
-
-Options
--------
-
-Options can be passed as follows::
-
-    .. manim:: <Class name>
-        :<option name>: <value>
-
-The following configuration options are supported by the
-directive:
-
-    hide_source
-        If this flag is present without argument,
-        the source code is not displayed above the rendered video.
-
-    no_autoplay
-        If this flag is present without argument,
-        the video will not autoplay.
-
-    quality : {'low', 'medium', 'high', 'fourk'}
-        Controls render quality of the video, in analogy to
-        the corresponding command line flags.
-
-    save_as_gif
-        If this flag is present without argument,
-        the scene is rendered as a gif.
-
-    save_last_frame
-        If this flag is present without argument,
-        an image representing the last frame of the scene will
-        be rendered and displayed, instead of a video.
-
-    ref_classes
-        A list of classes, separated by spaces, that is
-        rendered in a reference block after the source code.
-
-    ref_functions
-        A list of functions, separated by spaces,
-        that is rendered in a reference block after the source code.
-
-    ref_methods
-        A list of methods, separated by spaces,
-        that is rendered in a reference block after the source code.
-
+Use the ``skip-manim`` Sphinx tag to replace rendered examples with source-code
+placeholders. The historical tag name is retained for compatibility with the
+documentation toolchain.
 """
 
 from __future__ import annotations
-import os
 
 import csv
 import itertools as it
 import re
 import shutil
-import sys
+import subprocess
 import textwrap
 import traceback
 from pathlib import Path
@@ -97,19 +35,14 @@ from docutils import nodes
 from docutils.parsers.rst import Directive, directives
 from docutils.statemachine import StringList
 
+from algan import SceneManager, __version__ as algan_version
+from algan.settings import SETTINGS
 from algan.settings.video_settings import QUALITIES
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
 
-from algan import __version__ as algan_version
-
 __all__ = ["AlganDirective"]
-
-
-classnamedict: dict[str, int] = {}
-
-from algan import *
 
 
 class SetupMetadata(TypedDict):
@@ -117,51 +50,45 @@ class SetupMetadata(TypedDict):
     parallel_write_safe: bool
 
 
-class SkipManimNode(nodes.Admonition, nodes.Element):
-    """Auxiliary node class that is used when the ``skip-manim`` tag is present
-    or ``.pot`` files are being built.
-
-    Skips rendering the manim directive and outputs a placeholder instead.
-    """
-
-    pass
+class SkipAlganNode(nodes.Admonition, nodes.Element):
+    """Placeholder used when embedded example rendering is disabled."""
 
 
-def visit(self: SkipManimNode, node: nodes.Element, name: str = "") -> None:
-    # TODO: Parent classes don't have a visit_admonition() method.
+def visit(self: SkipAlganNode, node: nodes.Element, name: str = "") -> None:
     self.visit_admonition(node, name)  # type: ignore[attr-defined]
     if not isinstance(node[0], nodes.title):
-        node.insert(0, nodes.title("skip-manim", "Example Placeholder"))
+        node.insert(0, nodes.title("skip-algan", "Example Placeholder"))
 
 
-def depart(self: SkipManimNode, node: nodes.Element) -> None:
-    # TODO: Parent classes don't have a depart_admonition() method.
+def depart(self: SkipAlganNode, node: nodes.Element) -> None:
     self.depart_admonition(node)  # type: ignore[attr-defined]
 
 
 def process_name_list(option_input: str, reference_type: str) -> list[str]:
-    r"""Reformats a string of space separated class names
-    as a list of strings containing valid Sphinx references.
-
-    Tests
-    -----
-
-    ::
-
-        >>> process_name_list("Tex TexTemplate", "class")
-        [':class:`~.Tex`', ':class:`~.TexTemplate`']
-        >>> process_name_list("Scene.play Mobject.rotate", "func")
-        [':func:`~.Scene.play`', ':func:`~.Mobject.rotate`']
-    """
+    """Convert space-separated names to compact Sphinx references."""
     return [f":{reference_type}:`~.{name}`" for name in option_input.split()]
 
 
-class AlganDirective(Directive):
-    r"""The algan directive, rendering videos while building
-    the documentation.
+def _find_video(video_dir: Path, output_file: str) -> Path:
+    for suffix in (".mp4", ".mov", ".webm"):
+        candidate = video_dir / f"{output_file}{suffix}"
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        f"The Algan example did not create {output_file}.mp4/.mov/.webm in "
+        f"{video_dir}. End the directive body with Scene.save_video()."
+    )
 
-    See the module docstring for documentation.
-    """
+
+def _run_ffmpeg(*arguments: str) -> None:
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", *arguments],
+        check=True,
+    )
+
+
+class AlganDirective(Directive):
+    """Render an inline Algan script and embed its output."""
 
     has_content = True
     required_arguments = 1
@@ -183,54 +110,119 @@ class AlganDirective(Directive):
     final_argument_whitespace = True
 
     def run(self) -> list[nodes.Element]:
-        # Rendering is skipped if the tag skip-manim is present,
-        # or if we are making the pot-files
+        environment = self.state.document.settings.env
         should_skip = (
-            "skip-manim" in self.state.document.settings.env.app.builder.tags
-            or self.state.document.settings.env.app.builder.name == "gettext"
+            "skip-manim" in environment.app.builder.tags
+            or environment.app.builder.name == "gettext"
         )
-        # should_skip = True
         if should_skip:
-            clsname = self.arguments[0]
-            node = SkipManimNode()
+            node = SkipAlganNode()
+            name = self.arguments[0]
             self.state.nested_parse(
                 StringList(
                     [
-                        f"Placeholder block for ``{clsname}``.",
+                        f"Placeholder block for ``{name}``.",
                         "",
                         ".. code-block:: python",
                         "",
+                        *["    " + line for line in self.content],
                     ]
-                    + ["    " + line for line in self.content]
-                    + [
-                        "",
-                        ".. raw:: html",
-                        "",
-                        f'    <pre data-manim-binder data-manim-classname="{clsname}">',
-                    ]
-                    + ["    " + line for line in self.content]
-                    + ["    </pre>"],
                 ),
                 self.content_offset,
                 node,
             )
             return [node]
 
-        from manim import config, tempconfig
-
-        global classnamedict
+        if not self.content:
+            raise self.error("The algan directive requires a Python body.")
 
         clsname = self.arguments[0]
-        if clsname not in classnamedict:
-            classnamedict[clsname] = 1
-        else:
-            classnamedict[clsname] += 1
+        occurrence = _next_occurrence(clsname)
+        output_file = f"{clsname}-{occurrence}"
 
         hide_source = "hide_source" in self.options
         no_autoplay = "no_autoplay" in self.options
         save_as_gif = "save_as_gif" in self.options
         save_last_frame = "save_last_frame" in self.options
-        assert not (save_as_gif and save_last_frame)
+        if save_as_gif and save_last_frame:
+            raise self.error("save_as_gif and save_last_frame are mutually exclusive")
+
+        quality = f"{self.options.get('quality', 'example')}_quality"
+        video_settings = QUALITIES[quality]
+
+        document = self.state_machine.document
+        source_path = Path(document.attributes["source"])
+        source_rel_dir = source_path.relative_to(setup.confdir).parent  # type: ignore[attr-defined]
+        destination_dir = Path(
+            setup.app.builder.outdir, source_rel_dir  # type: ignore[attr-defined]
+        ).resolve()
+        destination_dir.mkdir(parents=True, exist_ok=True)
+
+        media_dir = Path(setup.confdir, "media").resolve()  # type: ignore[attr-defined]
+        video_dir = media_dir / "videos" / quality
+        image_dir = media_dir / "images"
+        video_dir.mkdir(parents=True, exist_ok=True)
+        image_dir.mkdir(parents=True, exist_ok=True)
+
+        user_code = list(self.content)
+        if user_code[0].startswith(">>> "):
+            user_code = [
+                line[4:] for line in user_code if line.startswith((">>> ", "... "))
+            ]
+        source = "\n".join(user_code)
+        namespace = {"__name__": f"_algan_docs_{output_file}"}
+
+        try:
+            with SETTINGS.override(
+                video=video_settings.to_dict(),
+                paths={
+                    "output_path": str(video_dir),
+                    "output_directory": "",
+                    "output_filename": output_file,
+                },
+            ):
+                SceneManager.reset()
+                try:
+                    run_time = timeit(
+                        lambda: exec(compile(source, str(source_path), "exec"), namespace),
+                        number=1,
+                    )
+                finally:
+                    SceneManager.reset()
+        except Exception as exc:
+            traceback.print_exc()
+            raise RuntimeError(f"Error while rendering example {clsname}") from exc
+
+        _write_rendering_stats(
+            clsname,
+            run_time,
+            environment.docname,
+        )
+
+        rendered_video = _find_video(video_dir, output_file)
+        filesrc = rendered_video
+        embedded_suffix = rendered_video.suffix
+
+        if save_as_gif:
+            filesrc = video_dir / f"{output_file}.gif"
+            _run_ffmpeg("-y", "-i", str(rendered_video), str(filesrc))
+            embedded_suffix = ".gif"
+        elif save_last_frame:
+            filesrc = image_dir / f"{output_file}.png"
+            _run_ffmpeg(
+                "-y",
+                "-sseof",
+                "-0.1",
+                "-i",
+                str(rendered_video),
+                "-frames:v",
+                "1",
+                str(filesrc),
+            )
+            embedded_suffix = ".png"
+        else:
+            destination = destination_dir / f"{output_file}{embedded_suffix}"
+            shutil.copyfile(rendered_video, destination)
 
         ref_content = (
             self.options.get("ref_modules", [])
@@ -240,185 +232,93 @@ class AlganDirective(Directive):
         )
         ref_block = "References: " + " ".join(ref_content) if ref_content else ""
 
-        if "quality" in self.options:
-            quality = f"{self.options['quality']}_quality"
-        else:
-            quality = "example_quality"
-        frame_rate = QUALITIES[quality].frames_per_second  # ["frame_rate"]
-        pixel_height = QUALITIES[quality].resolution[1]  # ["pixel_height"]
-        pixel_width = QUALITIES[quality].resolution[0]  # ["pixel_width"]
-
-        state_machine = self.state_machine
-        document = state_machine.document
-
-        source_file_name = Path(document.attributes["source"])
-        source_rel_name = source_file_name.relative_to(setup.confdir)  # type: ignore[attr-defined]
-        source_rel_dir = source_rel_name.parents[0]
-        dest_dir = Path(setup.app.builder.outdir, source_rel_dir).absolute()  # type: ignore[attr-defined]
-        if not dest_dir.exists():
-            dest_dir.mkdir(parents=True, exist_ok=True)
-
-        source_block_in = [
-            ".. code-block:: python",
-            "",
-            *("    " + line for line in self.content),
-            "",
-            ".. raw:: html",
-            "",
-            f'    <pre data-manim-binder data-manim-classname="{clsname}">',
-            *("    " + line for line in self.content),
-            "",
-            "    </pre>",
-        ]
-        source_block = "\n".join(source_block_in)
-
-        config.media_dir = (Path(setup.confdir) / "media").absolute()  # type: ignore[attr-defined,assignment]
-        config.images_dir = "{media_dir}/images"
-        config.video_dir = "{media_dir}/videos/{quality}"
-        output_file = f"{clsname}-{classnamedict[clsname]}"
-        config.assets_dir = Path("_static")  # type: ignore[assignment]
-        config.progress_bar = "none"
-        config.verbosity = "WARNING"
-
-        example_config = {
-            "frame_rate": frame_rate,
-            "no_autoplay": no_autoplay,
-            "pixel_height": pixel_height,
-            "pixel_width": pixel_width,
-            "save_last_frame": save_last_frame,
-            "write_to_movie": not save_last_frame,
-            "output_file": output_file,
-        }
-        if save_last_frame:
-            example_config["format"] = None
-        if save_as_gif:
-            example_config["format"] = "gif"
-
-        user_code = list(self.content)
-        if user_code[0].startswith(">>> "):  # check whether block comes from doctest
-            user_code = [
-                line[4:] for line in user_code if line.startswith((">>> ", "... "))
+        source_block = "\n".join(
+            [
+                ".. code-block:: python",
+                "",
+                *["    " + line for line in self.content],
             ]
-
-        code = [
-            *user_code,
-        ]
-        try:
-            with tempconfig(example_config):
-                video_dir = config.get_dir("video_dir")
-                algan.defaults.directory_defaults.DEFAULT_DIRECTORY = Path(
-                    __file__
-                ).parent.resolve()
-                algan.defaults.directory_defaults.DEFAULT_OUTPUT_FILENAME = (
-                    f"{output_file}"
-                )
-                algan.defaults.directory_defaults.DEFAULT_OUTPUT_DIRECTORY = video_dir
-                algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_FRAMES = 1
-                algan.defaults.batch_defaults.DEFAULT_BATCH_SIZE_ACTORS = 10
-                run_time = timeit(lambda: exec("\n".join(code), globals()), number=1)
-                images_dir = config.get_dir("images_dir")
-        except Exception as e:
-            # raise e
-            traceback.print_exc()
-            raise RuntimeError(f"Error while rendering example {clsname}") from e
-
-        _write_rendering_stats(
-            clsname,
-            run_time,
-            self.state.document.settings.env.docname,
         )
-
-        # copy video file to output directory
-        if not (save_as_gif or save_last_frame):
-            filename = f"{output_file}.mp4"
-            filesrc = video_dir / filename
-            destfile = Path(dest_dir, filename)
-            shutil.copyfile(filesrc, destfile)
-        elif save_as_gif:
-            filename = f"{output_file}.gif"
-            filesrc = video_dir / filename
-        elif save_last_frame:
-            filename = f"{output_file}.png"
-            filesrc = images_dir / filename
-        else:
-            raise ValueError("Invalid combination of render flags received.")
-        rendered_template = jinja2.Template(TEMPLATE).render(
+        filesrc_rel = filesrc.relative_to(setup.confdir).as_posix()  # type: ignore[attr-defined]
+        rendered = jinja2.Template(TEMPLATE).render(
             clsname=clsname,
             clsname_lowercase=clsname.lower(),
             hide_source=hide_source,
-            filesrc_rel=Path(filesrc).relative_to(setup.confdir).as_posix(),  # type: ignore[attr-defined]
             no_autoplay=no_autoplay,
             output_file=output_file,
+            embedded_suffix=embedded_suffix,
             save_last_frame=save_last_frame,
             save_as_gif=save_as_gif,
+            filesrc_rel=filesrc_rel,
             source_block=source_block,
             ref_block=ref_block,
         )
-        state_machine.insert_input(
-            rendered_template.split("\n"),
+        self.state_machine.insert_input(
+            rendered.split("\n"),
             source=document.attributes["source"],
         )
-
         return []
 
 
-rendering_times_file_path = Path("../rendering_times.csv")
+_class_occurrences: dict[str, int] = {}
+
+
+def _next_occurrence(name: str) -> int:
+    occurrence = _class_occurrences.get(name, 0) + 1
+    _class_occurrences[name] = occurrence
+    return occurrence
+
+
+rendering_times_file_path = Path(__file__).resolve().parents[3] / "docs" / "rendering_times.csv"
 
 
 def _write_rendering_stats(scene_name: str, run_time: float, file_name: str) -> None:
-    with rendering_times_file_path.open("a") as file:
+    with rendering_times_file_path.open("a", newline="", encoding="utf-8") as file:
         csv.writer(file).writerow(
             [
-                re.sub(r"^(reference\/)|(manim\.)", "", file_name),
+                re.sub(r"^(reference/)|(algan\.)", "", file_name),
                 scene_name,
                 f"{run_time:.3f}",
-            ],
+            ]
         )
 
 
-def _log_rendering_times(*args: tuple[Any]) -> None:
-    if rendering_times_file_path.exists():
-        with rendering_times_file_path.open() as file:
-            data = list(csv.reader(file))
-        if len(data) == 0:
-            sys.exit()
+def _log_rendering_times(*args: Any) -> None:
+    if not rendering_times_file_path.exists():
+        return
+    with rendering_times_file_path.open(encoding="utf-8") as file:
+        data = [row for row in csv.reader(file) if row]
+    if not data:
+        return
 
-        print("\nRendering Summary\n-----------------\n")
-
-        # filter out empty lists caused by csv reader
-        data = [row for row in data if row]
-
-        max_file_length = max(len(row[0]) for row in data)
-        for key, group_iter in it.groupby(data, key=lambda row: row[0]):
-            key = key.ljust(max_file_length + 1, ".")
-            group = list(group_iter)
-            if len(group) == 1:
-                row = group[0]
-                print(f"{key}{row[2].rjust(7, '.')}s {row[1]}")
-                continue
-            time_sum = sum(float(row[2]) for row in group)
-            print(
-                f"{key}{f'{time_sum:.3f}'.rjust(7, '.')}s  => {len(group)} EXAMPLES",
-            )
-            for row in group:
-                print(f"{' ' * max_file_length} {row[2].rjust(7)}s {row[1]}")
-        print("")
+    print("\nRendering Summary\n-----------------\n")
+    max_file_length = max(len(row[0]) for row in data)
+    for key, group_iter in it.groupby(data, key=lambda row: row[0]):
+        key = key.ljust(max_file_length + 1, ".")
+        group = list(group_iter)
+        if len(group) == 1:
+            row = group[0]
+            print(f"{key}{row[2].rjust(7, '.')}s {row[1]}")
+            continue
+        time_sum = sum(float(row[2]) for row in group)
+        print(f"{key}{f'{time_sum:.3f}'.rjust(7, '.')}s  => {len(group)} EXAMPLES")
+        for row in group:
+            print(f"{' ' * max_file_length} {row[2].rjust(7)}s {row[1]}")
+    print("")
 
 
-def _delete_rendering_times(*args: tuple[Any]) -> None:
-    if rendering_times_file_path.exists():
-        rendering_times_file_path.unlink()
+def _delete_rendering_times(*args: Any) -> None:
+    rendering_times_file_path.unlink(missing_ok=True)
+    _class_occurrences.clear()
 
 
 def setup(app: Sphinx) -> SetupMetadata:
-    app.add_node(SkipManimNode, html=(visit, depart))
+    app.add_node(SkipAlganNode, html=(visit, depart))
 
     setup.app = app  # type: ignore[attr-defined]
-    setup.config = app.config  # type: ignore[attr-defined]
     setup.confdir = app.confdir  # type: ignore[attr-defined]
 
     app.add_directive("algan", AlganDirective)
-
     app.connect("builder-inited", _delete_rendering_times)
     app.connect("build-finished", _log_rendering_times)
 
@@ -432,11 +332,10 @@ def setup(app: Sphinx) -> SetupMetadata:
         ).strip(),
     )
 
-    metadata: SetupMetadata = {
+    return {
         "parallel_read_safe": False,
-        "parallel_write_safe": True,
+        "parallel_write_safe": False,
     }
-    return metadata
 
 
 TEMPLATE = r"""
@@ -456,18 +355,14 @@ TEMPLATE = r"""
         controls
         loop
         {{ '' if no_autoplay else 'autoplay' }}
-        src="./{{ output_file }}.mp4">
+        src="./{{ output_file }}{{ embedded_suffix }}">
     </video>
 
-{% elif save_as_gif %}
+{% else %}
 .. image:: /{{ filesrc_rel }}
     :align: center
-
-{% elif save_last_frame %}
-.. image:: /{{ filesrc_rel }}
-    :align: center
-
 {% endif %}
+
 {% if not hide_source %}
 {{ source_block }}
 
@@ -476,6 +371,5 @@ TEMPLATE = r"""
 .. raw:: html
 
     </div>
-
 {% endif %}
 """

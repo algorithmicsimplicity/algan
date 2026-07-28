@@ -6,20 +6,17 @@
 
 from __future__ import annotations
 
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from algan.utils.docbuild.module_parsing import parse_module_attributes
-
 # -- Path setup --------------------------------------------------------------
-# If extensions (or modules to document with autodoc) are in another directory,
-# add these directories to sys.path here. If the directory is relative to the
-# documentation root, use os.path.abspath to make it absolute, like shown here.
+# Import the checkout being documented, regardless of the caller's cwd.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPOSITORY_ROOT))
 
-
-sys.path.insert(0, os.path.abspath("."))
+from algan import __version__ as algan_version
+from algan.utils.docbuild.module_parsing import parse_module_attributes
 
 
 # -- Project information -----------------------------------------------------
@@ -126,7 +123,7 @@ html_favicon = str(Path("_static/favicon.ico"))
 html_static_path = ["_static"]
 
 html_theme_options = {
-    "source_repository": "https://github.com/ManimCommunity/manim/",
+    "source_repository": "https://github.com/algorithmicsimplicity/algan/",
     "source_branch": "main",
     "source_directory": "docs/source/",
     "light_logo": "manim-logo-sidebar.svg",
@@ -156,7 +153,7 @@ html_theme_options = {
         "color-foreground-secondary": "#ffffffd9",
     },
 }
-html_title = f"Algan v0.1.0"
+html_title = f"Algan v{algan_version}"
 
 # This specifies any additional css files that will override the theme's
 html_css_files = ["custom.css"]
@@ -164,13 +161,13 @@ html_css_files = ["custom.css"]
 
 # external links
 extlinks = {
-    "issue": ("https://github.com/ManimCommunity/manim/issues/%s", "#%s"),
-    "pr": ("https://github.com/ManimCommunity/manim/pull/%s", "#%s"),
+    "issue": ("https://github.com/algorithmicsimplicity/algan/issues/%s", "#%s"),
+    "pr": ("https://github.com/algorithmicsimplicity/algan/pull/%s", "#%s"),
 }
 
 # opengraph settings
 ogp_site_name = "Algan | Documentation"
-ogp_site_url = "https://docs.manim.community/"
+ogp_site_url = "https://algorithmicsimplicity.github.io/algan/"
 ogp_social_cards = {
     "image": "_static/logo.png",
 }

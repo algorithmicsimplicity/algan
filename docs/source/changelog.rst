@@ -2,11 +2,9 @@
 Changelog
 #########
 
-This page contains a list of changes made between releases. Changes
-from versions that are not listed below (in particular patch-level
-releases since v0.18.0) are documented on our
-`GitHub release page <https://github.com/ManimCommunity/manim/releases/>`__.
+Release notes and migration information are published on the
+`Algan GitHub releases page <https://github.com/algorithmicsimplicity/algan/releases/>`__.
 
-.. toctree::
-
-
+When a release changes a public authoring API, the corresponding tutorial and
+reference pages should be updated in the same change. Compatibility aliases are
+not a substitute for documenting the canonical API.

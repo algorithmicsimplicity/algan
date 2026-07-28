@@ -1,5 +1,4 @@
 User-agent: *
-Disallow: /
-Allow: /en/stable/
+Allow: /
 
-Sitemap: https://docs.manim.community/sitemap.xml
+Sitemap: https://algorithmicsimplicity.github.io/algan/sitemap.xml

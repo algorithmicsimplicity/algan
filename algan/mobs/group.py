@@ -45,7 +45,7 @@ class Group(Mob):
         group = Group([Square() for _ in range(3)]).arrange_in_line(RIGHT).spawn()
         group.rotate(90, OUT)
 
-        render_to_file()
+        Scene.save_video()
 
     """
 
@@ -311,7 +311,7 @@ class Group(Mob):
             group = Group([Square() for _ in range(9)]).scale(1/3).arrange_in_grid(3, RIGHT+UP, RIGHT+DOWN).spawn()
             group.rotate(90, OUT)
 
-            render_to_file()
+            Scene.save_video()
 
         """
         if not self.children:

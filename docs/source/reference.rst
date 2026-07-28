@@ -1,64 +1,46 @@
 Reference Manual
 ================
 
-This reference manual details modules, functions, and variables included in
-Algan, describing what they are and what they do.  For learning how to use
-Algan, see :doc:`new_user_tutorials/index`.
+The reference manual documents Algan's public modules, classes, functions, and
+settings. For guided examples, start with :doc:`new_user_tutorials/index`.
 
-.. warning:: The pages linked to here are currently a work in progress.
+Core inheritance
+================
 
-Inheritance Graphs
-------------------
-
-Animation
-**********
-
-Animations
-**********
+Animatables and Mobs
+--------------------
 
 .. inheritance-diagram::
-   algan.animation.animatable
-   algan.mobs.mob
+   algan.animatable_base.animatable
+   algan.animatable_base.mob
    :parts: 1
-   :top-classes: algan.animation.animatable.Animatable
+   :top-classes: algan.animatable_base.animatable.Animatable
 
 Cameras
-*******
+-------
 
 .. inheritance-diagram::
    algan.rendering.camera
    :parts: 1
    :top-classes: algan.rendering.camera.Camera
 
-Mobs
-****
-
-.. inheritance-diagram::
-   algan.mobs.surfaces
-   algan.mobs.text
-   algan.mobs.shapes_2d
-   algan.mobs.bezier_circuit
-   :parts: 1
-   :top-classes: algan.mobs.mob.Mob
-
 Scenes
-******
+------
 
 .. inheritance-diagram::
    algan.scene
    :parts: 1
    :top-classes: algan.scene.Scene
 
-
-Module Index
-------------
+Module index
+============
 
 .. toctree::
    :maxdepth: 3
 
-   reference_index/mobs
-   reference_index/animation
-   reference_index/rendering
    reference_index/scenes
+   reference_index/animation
+   reference_index/mobs
+   reference_index/rendering
    reference_index/settings
    reference_index/utils

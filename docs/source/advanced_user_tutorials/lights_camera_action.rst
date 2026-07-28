@@ -4,7 +4,7 @@ Lights, Camera, Action!
 
 If you have been paying close attention to the video's output by Algan,
 then you may have noticed that 3-D objects actually have a sheen,
-as if being lit from a light source above.
+as if being lit from a light source above and to the right.
 
 By default, Algan spawns a light source (of class :class:`~.PointLight` ) above and to the the
 right of the :class:`~.Camera` . The :class:`~.Camera` itself is spawned at `ORIGIN+OUT*7` , and
@@ -14,8 +14,7 @@ at render time, change their color depending on the angle at which rays from the
 light source hit their surface. This gives the lighting effect you see.
 
 Both the :class:`~.Camera` and :class:`~.PointLight` are implemented as :class:`~.Mob` s,
-which means you can animate them just as you would any other :class:`~.Mob`. You can also
-add more light sources using :meth:`.Scene.add_light_sources` .
+which means you can animate them just as you would any other :class:`~.Mob`.
 
 Example: Animating Lights and Camera
 ------------------------------------
@@ -23,6 +22,7 @@ Example: Animating Lights and Camera
 .. algan:: LightsAndCameraExample
 
     from algan import *
+    import torch
 
     c1 = GREEN
     c2 = RED
@@ -47,9 +47,8 @@ Example: Animating Lights and Camera
 
     # Add a new light source. This one shines BLUE light.
     # Make sure to spawn it!
-    Scene.add_light_source(PointLight(location=ORIGIN + DOWN*10 + OUT * 20,
-                                      color=BLUE).spawn())
+    PointLight(location=ORIGIN + DOWN*10 + OUT * 20, color=BLUE).spawn()
 
     mobs.wait(r)
 
-    render_to_file()
+    Scene.save_video()

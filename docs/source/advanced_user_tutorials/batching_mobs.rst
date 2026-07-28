@@ -27,7 +27,7 @@ You can batch mobs by simply passing a list of locations to a Mob's constructor.
     mobs = Circle().spawn()#TriangleTriangulated(location=[LEFT*0.5, ORIGIN, RIGHT*0.5])
     mobs.move(UP*0.5)
 
-    render_to_file()
+    Scene.save_video()
 
 By providing a list of 3 different locations to the constructor, we create a batch of 3 different mobs,
 at the given locations. All of the mob's other attributes which we didn't specify, such as color, are equal for

@@ -2,70 +2,115 @@
 An Overview of Algan's Internals
 ================================
 
-Algan consists of two main systems: the animation system and the rendering system.
+Algan is a lazy animation system coupled to a batched 3-D raytrace renderer. Authoring
+code records changes rather than evaluating every frame immediately. Rendering
+later materializes the owning Scene's timeline at a batch of frame times,
+converts the resulting mob states into render primitives, and sends those
+primitives through the raytracer to be rendered.
 
-The animation system is responsible for creating intermediate states of Mobs by
-interpolating between the Mob state at the beginning and end of each animation. In
-Algan, animating is not done as animations are created, but rather Algan internally
-makes a record of each new animation as it is created. Once a command to render has been given,
-the animating system then reads through the recorded data and produces interpolated states.
-These interpolated states are then fed to the rendering system to produce the video.
+Scene containment
+=================
 
-The rendering system then uses the states of Mobs at each point in time, along
-with the camera location and orientation, light sources, and render settings,
-to produce the final output video.
+The central architectural unit is :class:`~algan.scene.Scene`. A Scene owns:
 
-The Animation System
-********************
+* its actor registry, camera, lights, effects, and environment map;
+* one :class:`~algan.animation_timeline.timeline.TimelineManager`;
+* one :class:`~algan.animation_timeline.animation_contexts.AnimationManager`;
+* one :class:`~algan.sound.audio_effect.AudioManager`;
+* video settings, render memory, and the frame/render loop.
 
-The basic workhorse of the animation system is the :func:`.animated_function` decorator.
-This decorator transforms a regular function into an animated function.
-The way it works is, whenever an animated_function is called, the decorator will
-make a record of the fact that the function was called, what time the function was
-called at, and with what parameters the function was called, and write this information
-to the global animation timeline (an :class:`.AnimationTimeline`, accessed through
-:class:`.TimelineManager`). The timeline stores, per animatable attribute, one shared
-buffer holding every Mob's current values (each Mob owns a set of rows, keyed by its
-id) together with the history of edits made to those rows, plus the record of all
-animated function applications and each Mob's spawn/despawn interval (its
-:class:`.Lifespan`, exposed as :attr:`.Animatable.lifespan`).
+These managers are regular instances. They are recreated when that Scene is
+reset. :class:`~algan.scene_manager.SceneManager` is the only singleton and has
+a narrower job: maintain the stack of active Scenes. Its ``current_scene`` is
+used only when authoring code omits an explicit owner.
 
-Note that all of the attribute modification animations are implemented as animated_functions
-under the hood, by decorating the attribute setters for animatable attributes.
+A new Animatable resolves its Scene once in
+``Animatable.__init__``. Its ID, timeline rows, lifespan, and animation manager
+all come from that Scene. Existing mobs never consult the global active Scene
+for subsequent animation operations.
 
-When the animated_function decorator records a function application, it uses
-the settings of the current animation context. Notably, the end of the animation
-is set as the context's current time + run_time_unit.
+The animation system
+====================
 
-After writing the animation data, the animated_function decorator then calls the original
-function, and finally it updates the current_time of the current context to the place
-on the timeline where the next animation should take place. Note that the update
-depends on the type of context, for Seq it will be one run_time_unit in the future,
-for Sync it will be the same time.
+Every Scene's :class:`~algan.animation_timeline.timeline.AnimationTimeline`
+contains shared attribute buffers. A mob owns rows in each relevant buffer,
+keyed by its Scene-local ID. Attribute modifications record edit history for
+those rows; animated-function calls record function-application events; spawn
+and despawn operations record the mob's lifespan.
 
-At animation time (:meth:`.AnimationTimeline.set_state_to_times`), Algan first
-materializes every attribute buffer at the requested frame times from the recorded
-edits, in one batched pass per attribute, and then re-applies the recorded functions
-with their animated parameters interpolated per frame. This is done in batches of
-time steps, sized to fit in the animation memory budget.
+:class:`~algan.animation_timeline.animation_contexts.AnimationContext` objects
+control event timing. ``Seq``, ``Sync``, ``Lag``, and ``Off`` are not global
+contexts: each belongs to one Scene's AnimationManager. Implicit contexts use
+the active Scene manager, while methods on initialized Animatables bind their
+owning manager through a context-variable override.
 
+A context cannot combine managers from multiple Scenes. Hierarchy and Group
+mutations enforce the same ownership boundary.
 
-The Rendering System
-********************
+At materialization time,
+``AnimationTimeline.set_state_to_times(times)`` reconstructs every attribute
+buffer for the requested frame times, replays animated functions with
+interpolated arguments, and runs active updaters. Materialization is batched
+according to the animation-memory budget in ``SETTINGS.computing``.
 
-The main logic for the rendering system is contained in :class:`.Primitive`.
-The rendering system takes as input a :class:`.Primitive` object (representing
-a batch of mob states), a camera, and render settings.
-One of the unique features of the Algan rendering system is that it renders
-frames in batches, instead of one at a time. The number of frames rendered
-in each batch is defined by DEFAULT_BATCH_SIZE_FRAMES.
-For example, if the rendering primitives are :class:`.TrianglePrimitive` s, the input to the
-rendering system would be a tensor of shape [T, N, 3, 3], where T is the number
-of time steps animated (aka the number of frames in the batch), N is the number
-of triangles in the scene, 3 is the number of corners per triangle, and 3 is the
-number of spatial dimensions (we are in 3D).
-:class:`.BezierCircuitWithBorderThenFill` batches are of size [T,N,S,4,3], where S is
-the number of segments per circuit, 4 is the number of control points per
-Bezier (Cubic).
+Rendering entry points
+======================
 
+The public APIs are :meth:`~algan.scene.Scene.save_frame` and
+:meth:`~algan.scene.Scene.save_video`.
 
+``save_frame`` resolves the output path, optionally installs temporary video
+settings, materializes one or more timestamps, writes PNG images, and restores
+all derived render state. It does not reset the Scene.
+
+``save_video`` temporarily activates the target Scene and binds its
+AnimationManager before delegating to ``_render_scene_to_file``. Finalization
+may append a fade-out or final despawn, render audio, stream video frames, and
+then reset only that Scene. Preflight failures and ``overwrite=False`` skips are
+observational and preserve authored state.
+
+The module-level ``render_to_file`` and the Scene ``render_to_file`` alias are
+compatibility surfaces; new code and documentation should use ``save_video``.
+
+Frame batches and scene assembly
+================================
+
+``RenderLoopMixin.get_frames`` divides the Scene timeline into windows sized by
+animation and rendering memory. For each window it materializes actors, builds
+render primitives, snapshots camera/light/environment state, and prepares the
+next batch concurrently unless prefetching is disabled.
+
+Scene assembly merges each geometry class into contiguous tensor arrays and
+builds acceleration structures spanning the batch's frame interval. Render
+out-of-memory errors reduce the frame window and retry rather than permanently
+changing public video settings.
+
+Renderer paths
+==============
+
+The primary entry point is ``render_batch_raytraced``. The renderer selects a
+path from the live ``SETTINGS.raytracing`` configuration and scene features:
+
+* the deterministic wavefront path for single-sample rendering and features
+  such as deterministic reflection/refraction;
+* the Monte Carlo path tracer for multi-sample stochastic rendering where its
+  capability set is sufficient;
+* the hybrid primary-raster path when enabled, with continuation rays handled
+  by the wavefront machinery.
+
+Renderer kernels and helper functions live in ``*_taichi.py`` modules. Keep
+those filenames because lint tooling excludes them from transformations that
+can break Taichi compilation.
+
+Settings lifecycle
+==================
+
+:data:`algan.SETTINGS` contains runtime-adjustable sections with stable object
+identity. Mutable sections update in place through ``set``; immutable presets
+return modified copies. Initialization-only device and kernel-layout choices
+live in ``algan.settings._startup`` and are selected through environment
+variables before importing Algan.
+
+Internal code should read settings through ``SETTINGS`` at use time. Do not
+capture mutable settings fields into module-level value imports unless the
+value is intentionally fixed for the process lifetime.

@@ -31,23 +31,6 @@ and specular lighting effects.
 You can make a mob use this shader with the :meth:`~.Mob.set_shader` method.
 Let's look at an example.
 
-.. algan:: SetShader
-
-    from algan import *
-    from algan.rendering.shaders.pbr_shaders import basic_pbr_shader
-
-    with Sync():
-        mob1 = Sphere().move(LEFT*2).spawn()
-        mob2 = Sphere().move(RIGHT*2).set_shader(basic_pbr_shader).spawn()
-
-    with Seq(run_time_unit=5):
-        mob2.smoothness = 0
-        mob2.metallicness = 1
-        mob2.smoothness = 1
-        mob2.metallicness = 0
-
-    render_to_file()
-
 .. important::
 
     You must use :meth:`~.Mob.set_shader` before spawning the mob! Once spawned,
@@ -84,7 +67,7 @@ it with :meth:`~.Mob.set_material`.
         mob1.roughness = 1.0
         mob1.metalness = 0.0
 
-    render_to_file()
+    Scene.save_video()
 
 As with :meth:`~.Mob.set_shader`, :meth:`~.Mob.set_material` **must** be called
 before the mob is spawned. Applying a material registers the material's
@@ -162,7 +145,7 @@ creating your mobs::
     enable_ray_tracing(physical_lighting=True, samples_per_pixel=64)
 
     Sphere().set_material(MeshStandardMaterial(metalness=1.0, roughness=0.2)).spawn()
-    render_to_file()
+    Scene.save_video()
 
 When physical lighting is active, :meth:`~.Mob.set_material` automatically routes
 each material's ``(metalness, roughness)`` into the path tracer's per-hit surface
@@ -255,5 +238,5 @@ example, and the scatter contract documentation in
     *sorted* material-dispatch pipeline (one GPU kernel per material, as in
     Blender Cycles) that renders identically; it is off by default because
     the regular kernel is faster on the built-in materials. Force it on with
-    ``algan.rendering.raytracing.settings.set_material_sorting(True)`` if you
+    ``SETTINGS.raytracing.set(wavefront_sort_materials=True)`` if you
     are experimenting with very many heavy material pipelines.

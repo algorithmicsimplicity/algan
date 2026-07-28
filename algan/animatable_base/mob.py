@@ -74,7 +74,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         square = Square().spawn()
         square.move(LEFT)
 
-        render_to_file()
+        Scene.save_video()
 
     Create a mob with a specific color and scale:
 
@@ -84,7 +84,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
 
         circle = Circle(color=BLUE).scale(2).spawn()
 
-        render_to_file()
+        Scene.save_video()
     """
 
     def __init__(
@@ -783,7 +783,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             mob = Square().spawn()
             mob.set(location=ORIGIN+RIGHT, color=BLUE)
 
-            render_to_file()
+            Scene.save_video()
 
         """
         self.check_properties_are_valid(kwargs.keys())
