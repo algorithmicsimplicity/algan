@@ -647,7 +647,7 @@ def build_render_primitives_batched(actors, scene):
     basis = read("basis", actors)
     g = read("glow", actors)
     bw = read("border_width", actors) * (
-        scene.video_settings.resolution[1] * scene.video_settings.anti_alias_level
+        scene.video_settings.resolution[1]
         / (PREVIEW.resolution[1] * 2))
     bc = read("border_color", actors)
     loc = read("location", actors)

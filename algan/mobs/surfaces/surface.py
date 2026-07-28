@@ -336,7 +336,7 @@ class Surface(Mob):
         ignore_normals=False,
         tolerance=None,
         geometry_tolerance=None,
-        render_tolerance=0.5,
+        render_tolerance=0.25,
         min_grid_resolution=4,
         max_grid_resolution=200,
         resolution_shrink_margin=0.1,
@@ -426,7 +426,7 @@ class Surface(Mob):
         self.ignore_normals = ignore_normals
         self._color_texture_attr = None
         if geometry_tolerance is None:
-            geometry_tolerance = 0.01 if tolerance is None else tolerance
+            geometry_tolerance = 0.001 if tolerance is None else tolerance
         elif tolerance is not None:
             raise ValueError(
                 "Specify geometry_tolerance or legacy tolerance, not both"
