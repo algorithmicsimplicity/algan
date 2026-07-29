@@ -280,7 +280,7 @@ class MobMovementMixin:
             This vector does not need to be normalized.
         buffer
             The minimum distance to maintain between
-            the closest edges of the two Mobs. Defaults to `DEFAULT_BUFFER`.
+            the closest edges of the two Mobs. Defaults to ``SETTINGS.style.buffer``.
         **kwargs
             Passed to :meth:`~.Mob.move_to` .
 
@@ -335,7 +335,7 @@ class MobMovementMixin:
             both. Defaults to None.
         buffer : float, optional
             The buffer distance to maintain between the edges. Defaults to
-            `DEFAULT_BUFFER`.
+            ``SETTINGS.style.buffer``.
         **kwargs
             Additional arguments for :meth:`~.Mob.move`.
 
@@ -381,7 +381,7 @@ class MobMovementMixin:
         buffer : float, optional
             Buffer distance (currently unused in this specific
             implementation, as it aligns centers, not edges). Defaults to
-            `DEFAULT_BUFFER`.
+            ``SETTINGS.style.buffer``.
 
         Returns
         -------
@@ -421,7 +421,7 @@ class MobMovementMixin:
             this Mob itself is used.
         buffer
             Buffer distance between aligned edges (only relevant
-            if `center` is False). Defaults to `DEFAULT_BUFFER`.
+            if `center` is False). Defaults to ``SETTINGS.style.buffer``.
 
         Returns
         -------
@@ -512,7 +512,7 @@ class MobMovementMixin:
         edge
             A 3-D vector indicating the screen edge direction (e.g., `RIGHT`, `LEFT`, `UP`, `DOWN`).
         buffer
-            Distance to maintain from the screen border after moving. Defaults to `DEFAULT_BUFFER`.
+            Distance to maintain from the screen border after moving. Defaults to ``SETTINGS.style.buffer``.
 
         Returns
         -------
@@ -550,7 +550,7 @@ class MobMovementMixin:
         edge2
             Vector for the second screen edge.
         buffer
-            Distance to maintain from both screen borders. Defaults to `DEFAULT_BUFFER`.
+            Distance to maintain from both screen borders. Defaults to ``SETTINGS.style.buffer``.
 
         Returns
         -------
@@ -573,7 +573,7 @@ class MobMovementMixin:
         edge
             Vector indicating the direction to move off-screen.
         buffer
-            Additional distance beyond the screen edge to move the Mob. Defaults to `DEFAULT_BUFFER`.
+            Additional distance beyond the screen edge to move the Mob. Defaults to ``SETTINGS.style.buffer``.
         despawn
             If True, the Mob is despawned immediately after moving off-screen.
 

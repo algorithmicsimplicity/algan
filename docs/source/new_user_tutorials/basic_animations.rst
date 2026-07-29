@@ -24,7 +24,7 @@ By default, new Mobs are created at the ORIGIN (0, 0, 0).
 
 .. note::
 
-    By default the camera is located at OUT*7 (0, 0, 7) and looks towards the ORIGIN.
+    By default the camera is located at OUT*7 (0, 0, -7) and looks towards the ORIGIN.
 
 :attr:`~.Mob.basis` is a vector of length 9 that specifies the orientation and scale of a Mob. It is not recommended to modify
 basis directly, instead you should use the helper methods like :meth:`~.Mob.rotate` and :meth:`~.Mob.scale`.
@@ -44,11 +44,11 @@ basis directly, instead you should use the helper methods like :meth:`~.Mob.rota
 
     circle = Circle().spawn()
 
-    circle.location = circle.location + UP
-    circle.opacity = 0.5
-    circle.location = circle.location + DOWN + RIGHT
-    circle.glow = 0.5
+    circle.location = circle.location + UP*2
     circle.color = GREEN
+    circle.location = circle.location + DOWN + RIGHT*2
+    circle.glow = 0.5
+    circle.opacity = 0.0
 
     Scene.save_video()
 
@@ -68,10 +68,10 @@ which perform common animations. Here are some examples:
     from algan import *
 
     mob = RegularPolygon(5).spawn()
-    mob.move(RIGHT)
+    mob.move(RIGHT*2)
     mob.rotate(360, OUT)
     mob.rotate(360, UP)
-    mob.rotate(180, OUT, about_point=ORIGIN)
+    mob.rotate(360, OUT, about_point=ORIGIN)
     mob = mob.become(Circle())
 
     Scene.save_video()

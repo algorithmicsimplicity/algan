@@ -46,6 +46,15 @@ class AlganSettings:
             )
         raise AttributeError(name)
 
+    def __dir__(self):
+        return sorted(self.__slots__) + ["snapshot", "restore", "override"]
+
+    def __repr__(self):
+        sections = "\n".join(
+            f"  {name}={getattr(self, name)!r}" for name in self.__slots__
+        )
+        return f"SETTINGS(\n{sections}\n)"
+
     def snapshot(self) -> SettingsSnapshot:
         return SettingsSnapshot(
             computing=self.computing.as_preset(),

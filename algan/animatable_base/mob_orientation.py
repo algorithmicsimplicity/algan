@@ -14,10 +14,7 @@ from algan.geometry.geometry import (
     get_rotation_between_3d_vectors,
     rotate_vector_around_axis,
 )
-from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.tensor_utils import cast_to_tensor, squish, unsquish
-
-DEFAULT_BUFFER = STYLE_DEFAULTS.buffer
 
 
 class MobOrientationMixin:

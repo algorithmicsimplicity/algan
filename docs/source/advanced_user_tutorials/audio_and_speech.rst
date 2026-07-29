@@ -138,5 +138,7 @@ Practical notes
 * Keep the source clip open until rendering finishes; Algan closes its composed
   output clip after writing.
 * Audio is rendered only when the Scene contains effects.
-* ``save_video`` resets that Scene's AudioManager and transcript after rendering.
-  ``save_frame`` does not render audio and does not reset the Scene.
+* Audio effects stay on the Scene after ``save_video`` returns, along with the
+  rest of the timeline. Pass ``reset=True`` to discard them together with the
+  Scene's other authored state.
+* ``save_frame`` does not render audio and never modifies the Scene.

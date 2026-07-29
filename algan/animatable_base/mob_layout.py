@@ -13,10 +13,7 @@ from algan.animation_timeline.animation_contexts import Sync
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import project_point_onto_line
-from algan.settings.style_defaults import STYLE_DEFAULTS
 from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, dot_product
-
-DEFAULT_BUFFER = STYLE_DEFAULTS.buffer
 
 
 class MobLayoutMixin:

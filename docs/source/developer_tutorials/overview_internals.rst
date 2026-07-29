@@ -64,13 +64,25 @@ settings, materializes one or more timestamps, writes PNG images, and restores
 all derived render state. It does not reset the Scene.
 
 ``save_video`` temporarily activates the target Scene and binds its
-AnimationManager before delegating to ``_render_scene_to_file``. Finalization
-may append a fade-out or final despawn, render audio, stream video frames, and
-then reset only that Scene. Preflight failures and ``overwrite=False`` skips are
+AnimationManager before delegating to ``_render_scene_to_file``, which carries
+the implementation while ``Scene.save_video`` carries the user-facing signature
+and documentation. It renders audio, streams video frames, and returns a
+``RenderResult``. Preflight failures and ``overwrite=False`` skips are
 observational and preserve authored state.
 
-The module-level ``render_to_file`` and the Scene ``render_to_file`` alias are
-compatibility surfaces; new code and documentation should use ``save_video``.
+By default (``reset=False``) the Scene is left exactly as authored, so mobs
+stay valid and the timeline can keep growing. Two pieces of finalization are
+therefore conditional:
+
+* the end-of-scene despawn of every actor runs when a fade-out was requested,
+  or when ``reset=True``;
+* ``render_to_video`` closes the camera and light lifespans only when the Scene
+  is being finalized (``despawn_camera_and_lights``).
+
+Both lifespans extend past the last rendered frame index either way, so output
+is unaffected by the choice. With ``reset=True`` the Scene's timeline,
+animation and audio managers are rebuilt in a ``finally`` block on both success
+and failure, and mobs created before the render must not be reused.
 
 Frame batches and scene assembly
 ================================

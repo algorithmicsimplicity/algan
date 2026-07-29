@@ -19,8 +19,12 @@ rendering_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 SETTINGS.style.fade_out_on_scene_end = True
 SETTINGS.video.set(PREVIEW)
-SETTINGS.computing.rendering_device = torch.device(rendering_device)
-SETTINGS.paths.base_directory = cd
+# The render device is chosen at import time from ALGAN_RENDER_DEVICE; there is
+# no runtime setting for it (the old assignment here silently did nothing).
+SETTINGS.paths.output_root = cd
+# Keep the historical name for no-argument renders so the checked-in baselines
+# in expected_outputs_* keep matching.
+SETTINGS.paths.output_filename = "algan_render_output"
 # Tests wipe the cache per-test (setUp) for hermetic renders. Point it at a
 # test-local directory so the user's shared home cache is never deleted.
 # ``taichi_cache_directory`` is deliberately NOT redirected: compiled kernels
@@ -30,8 +34,8 @@ SETTINGS.paths.cache_directory = os.path.join(cd, "algan_cache")
 
 class TestOverseer(TestCase):
     def setUp(self):
-        if os.path.exists(DIRECTORY_DEFAULTS.cache_directory):
-            shutil.rmtree(DIRECTORY_DEFAULTS.cache_directory)
+        if os.path.exists(SETTINGS.paths.cache_directory):
+            shutil.rmtree(SETTINGS.paths.cache_directory)
 
     @parameterized.expand(test_files)
     def test_algan_file(self, test_file):

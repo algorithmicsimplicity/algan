@@ -14,7 +14,6 @@ class VideoSettings(Settings):
     anti_alias_level: int = 2
     fxaa: bool = False
     audio_frames_per_second: int = 44100
-    save_image: bool = False
 
     def __post_init__(self):
         try:
@@ -46,8 +45,6 @@ class VideoSettings(Settings):
             )
         if not isinstance(self.fxaa, bool):
             raise AlganConfigurationError("fxaa must be a boolean")
-        if not isinstance(self.save_image, bool):
-            raise AlganConfigurationError("save_image must be a boolean")
 
 
 # Presets are immutable instances of the same class. Their ``set`` method
@@ -56,7 +53,7 @@ def _preset(*args, **kwargs):
     return VideoSettings(*args, **kwargs).as_preset()
 
 
-THUMBNAIL = _preset((1280, 720), 1, anti_alias_level=4, save_image=True)
+THUMBNAIL = _preset((1280, 720), 1, anti_alias_level=4)
 SMOKE_TEST = _preset((32, 32), 2, anti_alias_level=1)
 PREVIEW = _preset((704, 396), 10, anti_alias_level=1)
 LD = _preset((864, 486), 15)
@@ -65,7 +62,9 @@ HD = _preset((1920, 1080), 30)
 PRODUCTION = _preset((2560, 1440), 60)
 UHD = _preset((3840, 2160), 60)
 
-QUALITIES: dict[str, VideoSettings] = {
+# Name -> preset, used by the documentation directive's :quality: option.
+# Not part of the public API: user code names the presets directly.
+_QUALITIES: dict[str, VideoSettings] = {
     "fourk_quality": UHD,
     "production_quality": PRODUCTION,
     "high_quality": HD,
@@ -74,14 +73,8 @@ QUALITIES: dict[str, VideoSettings] = {
     "example_quality": LD,
 }
 
-DEFAULT_QUALITY = "high_quality"
-
-# Compatibility alias; new code should use VideoSettings/video_settings.
-RenderSettings = VideoSettings
-
 __all__ = [
     "VideoSettings",
-    "RenderSettings",
     "THUMBNAIL",
     "SMOKE_TEST",
     "PREVIEW",
@@ -90,6 +83,4 @@ __all__ = [
     "HD",
     "PRODUCTION",
     "UHD",
-    "QUALITIES",
-    "DEFAULT_QUALITY",
 ]

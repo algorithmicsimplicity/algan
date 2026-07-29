@@ -18,7 +18,7 @@ together into one. This is done by adding mobs as children to a parent using :me
     # children mobs (including spawning).
     parent_mob.scale(0.75).spawn()
     parent_mob.rotate(90, OUT)
-    parent_mob.move(RIGHT*0.5)
+    parent_mob.move(RIGHT*1)
     with Seq(run_time=5):
         parent_mob.rotate(360, OUT, about_point=ORIGIN)
 

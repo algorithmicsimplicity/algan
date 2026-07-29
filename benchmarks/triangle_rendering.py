@@ -10,7 +10,6 @@ def render_static_triangles():
 
 rs = HD
 rs.fxaa = False
-COMPUTING_DEFAULTS.portion_of_memory_used_for_animating = 0.4
-COMPUTING_DEFAULTS.portion_of_memory_used_for_rendering = 0.4
+SETTINGS.computing.set(animation_memory_fraction=0.4, rendering_memory_fraction=0.4)
 enable_ray_tracing()
 render_all_funcs(__name__, rs)

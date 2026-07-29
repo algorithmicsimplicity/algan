@@ -29,17 +29,17 @@ SCENE_FILES = sorted(
 
 @pytest.fixture
 def render_environment():
-    previous_base = SETTINGS.paths.base_directory
+    previous_base = SETTINGS.paths.output_root
     previous_output = SETTINGS.paths.output_directory
     previous_cache = SETTINGS.paths.cache_directory
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    SETTINGS.paths.base_directory = str(HERE)
+    SETTINGS.paths.output_root = str(HERE)
     SETTINGS.paths.output_directory = OUTPUT_DIR.name
     SETTINGS.paths.cache_directory = str(CACHE_DIR)
     try:
         yield
     finally:
-        SETTINGS.paths.base_directory = previous_base
+        SETTINGS.paths.output_root = previous_base
         SETTINGS.paths.output_directory = previous_output
         SETTINGS.paths.cache_directory = previous_cache
 

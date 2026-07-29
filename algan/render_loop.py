@@ -2154,6 +2154,7 @@ class RenderLoopMixin:
         file_path_out,
         post_processes=(bloom_filter,),
         background_color=None,
+        despawn_camera_and_lights=True,
     ):
         self.scene_times.append(
             [
@@ -2168,9 +2169,14 @@ class RenderLoopMixin:
         )
         self.initialize_frames()
 
-        self.camera.despawn(animate=False)
-        for l in self.light_sources:
-            l.despawn(animate=False)
+        # Closing the camera/light lifespans is only meaningful when the scene
+        # is being finalized; skipping it leaves the scene re-renderable after
+        # a save_video(reset=False). Both lifespans stay open past the last
+        # rendered frame index either way, so the output is unaffected.
+        if despawn_camera_and_lights:
+            self.camera.despawn(animate=False)
+            for l in self.light_sources:
+                l.despawn(animate=False)
 
         if not self._scene_has_renderable_actors(*self.scene_times[-1]):
             warnings.warn(

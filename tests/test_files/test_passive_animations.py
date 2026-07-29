@@ -28,4 +28,4 @@ def d():
     square.wait(2)
 
 
-render_all_funcs(__name__, render_settings=PREVIEW, start_index=0, max_rendered=1)
+render_all_funcs(__name__, video_settings=PREVIEW, start_index=0, max_rendered=1)

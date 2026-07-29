@@ -77,6 +77,27 @@ _FIELD_TO_LEGACY = {
 }
 _LEGACY_TO_FIELD = {value: key for key, value in _FIELD_TO_LEGACY.items()}
 
+# The settings that describe what the renderer *produces*. Everything else in
+# _FIELD_TO_LEGACY is a performance or capability switch whose meaning is tied
+# to the current kernel implementation; those live under ``.experimental`` so
+# that the supported surface is obvious from tab-completion and repr.
+_PUBLIC_FIELDS = frozenset({
+    "samples_per_pixel",
+    "max_bounces",
+    "shadows",
+    "ambient_light",
+    "light_intensity",
+    "indirect_bounce_strength",
+    "glossy_reflection",
+    "analytic_aa",
+    "tonemapping",
+    "tonemap_method",
+    "tonemap_exposure",
+    "unsupported_feature_policy",
+})
+
+_EXPERIMENTAL_FIELDS = frozenset(_FIELD_TO_LEGACY) - _PUBLIC_FIELDS
+
 _SETTER_OVERRIDES = {
     "unsupported_feature_policy": "set_unsupported_feature_policy",
     "wavefront_tile_auto": "set_wavefront_tile_auto",
@@ -175,25 +196,99 @@ class RayTracingPreset:
         return RayTracingPreset(self._values)
 
 
+class _ExperimentalRayTracingSettings:
+    """Performance and capability switches tied to the current kernels.
+
+    These are real settings, but they are not part of Algan's supported
+    surface: names, defaults and semantics follow the renderer implementation
+    and can change between releases. Reach for them when profiling or working
+    around a renderer limitation, not in ordinary scenes.
+    """
+
+    def __init__(self, parent):
+        object.__setattr__(self, "_parent", parent)
+
+    def __dir__(self):
+        return sorted(_EXPERIMENTAL_FIELDS)
+
+    def __repr__(self):
+        values = self._parent.to_dict()
+        shown = ", ".join(
+            f"{name}={values[name]!r}" for name in sorted(_EXPERIMENTAL_FIELDS)
+        )
+        return f"RayTracingSettings.experimental({shown})"
+
+    def __getattr__(self, name):
+        return getattr(self._parent, name)
+
+    def __setattr__(self, name, value):
+        self.set(**{name: value})
+
+    def set(self, source=None, **kwargs):
+        self._parent._set(source, kwargs, allow_experimental=True)
+        return self
+
+    replace = set
+
+    def to_dict(self):
+        values = self._parent.to_dict()
+        return {name: values[name] for name in sorted(_EXPERIMENTAL_FIELDS)}
+
+    @contextmanager
+    def override(self, **kwargs):
+        previous = self._parent.to_dict()
+        self.set(**kwargs)
+        try:
+            yield self
+        finally:
+            self._parent._restore(previous)
+
+
 class RayTracingSettings:
     """Stable mutable view over the ray-tracer's live configuration.
 
-    The legacy ``algan.rendering.raytracing.settings`` module remains as a
-    compatibility facade while internal code reads this section through the
-    global ``SETTINGS`` root.
+    The settings reachable directly on this object describe what the renderer
+    produces (sampling, bounces, shadows, lighting, tonemapping). Internal
+    performance switches live on :attr:`experimental`.
+
+    The legacy ``algan.rendering.raytracing.settings`` module remains the
+    storage behind both views; engine code reads it live so that public
+    setters take effect immediately.
     """
 
     @property
     def is_preset(self):
         return False
 
+    @property
+    def experimental(self):
+        view = self.__dict__.get("_experimental")
+        if view is None:
+            view = _ExperimentalRayTracingSettings(self)
+            object.__setattr__(self, "_experimental", view)
+        return view
+
     @classmethod
     def field_names(cls):
         return frozenset(_FIELD_TO_LEGACY)
 
+    @classmethod
+    def public_field_names(cls):
+        return _PUBLIC_FIELDS
+
+    def __dir__(self):
+        return sorted(_PUBLIC_FIELDS | {"experimental", "set", "override", "to_dict"})
+
+    def __repr__(self):
+        values = self.to_dict()
+        shown = ", ".join(f"{name}={values[name]!r}" for name in sorted(_PUBLIC_FIELDS))
+        return f"RayTracingSettings({shown}, experimental=<{len(_EXPERIMENTAL_FIELDS)} switches>)"
+
     def __getattr__(self, name):
+        # Reads stay unrestricted: engine modules bind this object once and
+        # read experimental switches off it on the hot path.
         if name.startswith("set_") and name[4:] in _FIELD_TO_LEGACY:
-            return lambda value: self.set(**{name[4:]: value})
+            return lambda value: self._set(None, {name[4:]: value}, True)
         module = _module()
         field = _LEGACY_TO_FIELD.get(name, name)
         legacy = _FIELD_TO_LEGACY.get(field)
@@ -212,6 +307,9 @@ class RayTracingSettings:
         self.set(**{field: value})
 
     def set(self, source=None, **kwargs):
+        return self._set(source, kwargs, allow_experimental=False)
+
+    def _set(self, source, kwargs, allow_experimental):
         values = {}
         if source is not None:
             if not isinstance(source, (RayTracingPreset, RayTracingSettings)):
@@ -220,6 +318,9 @@ class RayTracingSettings:
                     f"RayTracingSettings, got {type(source).__name__}"
                 )
             values.update(source.to_dict())
+            # A whole captured configuration necessarily carries the internal
+            # switches; restoring one is not a request to tune them by hand.
+            allow_experimental = True
         values.update(kwargs)
 
         normalized = []
@@ -227,6 +328,12 @@ class RayTracingSettings:
             field = _LEGACY_TO_FIELD.get(name, name)
             if field not in _FIELD_TO_LEGACY:
                 _unknown(field)
+            if not allow_experimental and field not in _PUBLIC_FIELDS:
+                raise AlganConfigurationError(
+                    f"'{field}' is an experimental renderer switch. Set it with "
+                    f"SETTINGS.raytracing.experimental.set({field}=...) if you "
+                    "accept that its name and behaviour can change."
+                )
             normalized.append((field, value))
 
         previous = self.to_dict()

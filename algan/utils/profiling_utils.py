@@ -74,7 +74,6 @@ import torch
 # ``import algan`` initializes the Taichi runtime (via the rasterizer modules)
 # and pulls in the mob / scene classes the pipeline hooks below wrap.
 import algan  # noqa: F401
-from algan.utils.algan_utils import render_to_file
 
 # Optional pipeline-hook targets. Imported defensively: a rename upstream must
 # degrade the hook, not break the whole profiler.
@@ -856,9 +855,11 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
     t0 = time.perf_counter()
     if profiler is not None:
         profiler.enable()
-    render_to_file(
+    Scene.save_video(
         os.path.join(OUT_DIR, f"profiling{tag}_run{run_index}.mp4"),
         video_settings=settings,
+        # Each profiling run re-authors the scene from scratch.
+        reset=True,
     )
     if profiler is not None:
         profiler.disable()
@@ -1062,7 +1063,7 @@ def profile_scene(scene_func, video_settings, tag="", runs=None,
         Builds the scene (spawns mobs, issues animations). Called after a fresh
         ``SceneManager.reset()`` each run.
     video_settings : VideoSettings
-        Passed straight to ``render_to_file`` (e.g. ``HD``).
+        Passed straight to ``Scene.save_video`` (e.g. ``HD``).
     tag : str
         Suffix for the output mp4 / report / cProfile files.
     runs : int

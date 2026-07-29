@@ -1,5 +1,6 @@
+import inspect
 import math
-from pathlib import Path
+import time
 
 from algan.settings import SETTINGS
 
@@ -32,22 +33,40 @@ from functools import wraps
 
 
 class active_scene_method:
-    """Bind to an instance, or resolve the active Scene when called on Scene."""
+    """Bind to an instance, or resolve the active Scene when called on Scene.
+
+    ``scene.save_video(...)`` renders ``scene``; ``Scene.save_video(...)``
+    renders whichever Scene is currently active.  Class-level access reports
+    the signature with ``self`` removed so ``help()``, IDE tooltips and Sphinx
+    autodoc show the real parameters instead of ``(*args, **kwargs)``.
+    """
 
     def __init__(self, function):
         self.function = function
         wraps(function)(self)
+        signature = inspect.signature(function)
+        self._unbound_signature = signature.replace(
+            parameters=list(signature.parameters.values())[1:]
+        )
+        self._class_accessor = None
 
     def __get__(self, instance, owner):
         if instance is not None:
             return self.function.__get__(instance, owner)
 
-        @wraps(self.function)
-        def call_on_active_scene(*args, **kwargs):
-            scene = SceneManager.instance().current_scene
-            return self.function(scene, *args, **kwargs)
+        if self._class_accessor is None:
+            function = self.function
 
-        return call_on_active_scene
+            @wraps(function)
+            def call_on_active_scene(*args, **kwargs):
+                scene = SceneManager.instance().current_scene
+                return function(scene, *args, **kwargs)
+
+            # ``wraps`` sets __wrapped__, which would otherwise make
+            # inspect.signature report the bound-method ``self`` parameter.
+            call_on_active_scene.__signature__ = self._unbound_signature
+            self._class_accessor = call_on_active_scene
+        return self._class_accessor
 
 
 class Scene(RenderLoopMixin):
@@ -77,8 +96,6 @@ class Scene(RenderLoopMixin):
         uses the scalar ``(x, y, time) -> color`` contract. Python callables
         passed through the render APIs receive broadcastable Torch tensors;
         the direct constructor retains its legacy coordinate-grid callback.
-    output_path
-        Base path for output files.
     memory
         Optional :class:`~algan.utils.memory_utils.ManualMemory` render arena.
     scene_initializer
@@ -90,18 +107,9 @@ class Scene(RenderLoopMixin):
         self,
         video_settings=None,
         background_frame=None,
-        output_path="output",
         memory=None,
         scene_initializer=None,
-        *,
-        render_settings=None,
     ):
-        if render_settings is not None:
-            if video_settings is not None:
-                raise AlganConfigurationError(
-                    "Specify video_settings or legacy render_settings, not both"
-                )
-            video_settings = render_settings
         if video_settings is None:
             video_settings = SETTINGS.video
         if background_frame is None:
@@ -151,7 +159,6 @@ class Scene(RenderLoopMixin):
         self.environment_map = None
         self.environment_intensity = 1.0
         self.environment_ambient = True
-        self.output_path = output_path
         self.priority = 0
         self.id_count = 0
         self.allow_new_actors = True
@@ -400,10 +407,22 @@ class Scene(RenderLoopMixin):
         self.reset_scene()
         return self
 
+    @active_scene_method
     def set_video_settings(self, video_settings):
+        """Set this Scene's resolution, frame rate and anti-aliasing.
+
+        ``video_settings`` is a :class:`~algan.settings.video_settings.VideoSettings`
+        instance, usually one of the built-in presets (``PREVIEW``, ``LD``,
+        ``MD``, ``HD``, ``PRODUCTION``, ``UHD``).
+
+        Most scripts do not need this: pass ``video_settings`` to
+        :meth:`save_video` / :meth:`save_frame` for a one-off render, or set
+        ``SETTINGS.video`` for a process-wide default.
+        """
         if not hasattr(video_settings, "resolution"):
             raise AlganConfigurationError(
-                "video_settings must be a VideoSettings instance or compatible preset"
+                "video_settings must be a VideoSettings instance or preset "
+                f"(for example HD or PREVIEW), got {type(video_settings).__name__}"
             )
         self.video_settings = (
             video_settings.as_preset()
@@ -421,17 +440,6 @@ class Scene(RenderLoopMixin):
         self.num_pixels = self.frame_size.prod()
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
         return self
-
-    # Backwards-compatible name retained for existing scene scripts.
-    set_render_settings = set_video_settings
-
-    @property
-    def render_settings(self):
-        return self.video_settings
-
-    @render_settings.setter
-    def render_settings(self, value):
-        self.set_video_settings(value)
 
     def background_is_transparent(self):
         if hasattr(self.background_frame, '__call__'):
@@ -462,84 +470,133 @@ class Scene(RenderLoopMixin):
         time_stamp = float(time_stamp)
         if not math.isfinite(time_stamp) or time_stamp < 0:
             raise AlganConfigurationError(
-                "time_stamp must be finite and non-negative"
+                f"Frame timestamp must be finite and non-negative, got {time_stamp}"
             )
         return round(time_stamp * self.video_settings.frames_per_second)
 
-    def _save_frame(self, file_path, video_settings=None, time_stamp=None):
-        if not SETTINGS.computing.allow_save_frame:
-            return None
+    def _render_still(self, destination, time_stamp):
+        """Render one frame at ``time_stamp`` and write it to ``destination``."""
+        if time_stamp is None:
+            time_stamp = (
+                self.animation_manager.context.timespan.current_time
+                + 1.5 / self.video_settings.frames_per_second
+            )
+        time_ind = self._frame_index_for_timestamp(time_stamp)
+        frames = []
+        with torch.inference_mode():
+            for frame in self.get_frames(time_ind, time_ind + 1):
+                frame = frame.float() / 255
+                frames.append(frame.squeeze(0).permute(-1, 0, 1))
+        if not frames:
+            raise RuntimeError("No frame was produced for the requested timestamp")
+        import torchvision.utils  # deferred: ~0.2 s of import algan
+
+        torchvision.utils.save_image(frames[-1], str(destination))
+        return destination
+
+    @active_scene_method
+    def save_frame(
+        self,
+        file_path=None,
+        video_settings=None,
+        at=None,
+        *,
+        overwrite=True,
+        background_color=None,
+    ):
+        """Render one or more still frames from this Scene.
+
+        Unlike :meth:`save_video` this never modifies the Scene: nothing is
+        despawned, the timeline is left as authored, and any temporary video
+        settings or background are restored before returning. Call it as often
+        as you like while building a scene.
+
+        Parameters
+        ----------
+        file_path
+            Where to write the image. A bare filename is placed in Algan's
+            output directory; a path with a parent directory is used as given.
+            A missing extension defaults to ``.png``.
+        video_settings
+            Resolution and anti-aliasing for this still only, normally a
+            preset such as ``HD``. Defaults to the Scene's current settings.
+        at
+            Timestamp in seconds to capture, or a sequence of timestamps to
+            capture several stills in one call. Each timestamp must be finite
+            and non-negative. When omitted, captures just after the current
+            authoring time.
+        overwrite
+            When False, existing files are left alone and reported as
+            ``"skipped"``.
+        background_color
+            A color, image, or procedural callable, applied to this still only.
+
+        Returns
+        -------
+        RenderResult or list of RenderResult
+            One result per still. A list is returned only when ``at`` is a
+            sequence, matching the shape of the input.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            Scene.save_frame("thumbnail", HD)
+            Scene.save_frame("shot.png", at=2.5)
+            Scene.save_frame("contact_sheet", at=[0, 1, 2])
+        """
+        # Import lazily to avoid the Scene/algan_utils import cycle during
+        # package initialization while sharing video output's exact resolver.
+        from algan.utils.algan_utils import RenderResult, _resolve_output_destination
+
+        destination = _resolve_output_destination(file_path, ".png")
+        if at is None or not hasattr(at, "__len__"):
+            targets = [(destination, at)]
+            returns_list = False
+        else:
+            suffix = destination.suffix
+            stem = destination.with_suffix("")
+            targets = [
+                (stem.with_name(f"{stem.name}_{time_stamp}{suffix}"), time_stamp)
+                for time_stamp in at
+            ]
+            returns_list = True
 
         previous_settings = self.video_settings
+        previous_background = (
+            self.background_frame,
+            self.background_color,
+            self.background_is_set,
+        )
+        results = []
         try:
             if video_settings is not None:
                 self.set_video_settings(video_settings)
-            if time_stamp is None:
-                time_stamp = (
-                    self.animation_manager.context.timespan.current_time
-                    + 1.5 / self.video_settings.frames_per_second
+            if background_color is not None:
+                self.set_background_color(background_color)
+            for target, time_stamp in targets:
+                if target.exists() and not overwrite:
+                    results.append(RenderResult("skipped", target))
+                    continue
+                started = time.perf_counter()
+                self._render_still(target, time_stamp)
+                results.append(
+                    RenderResult(
+                        "rendered", target, time.perf_counter() - started
+                    )
                 )
-            time_ind = self._frame_index_for_timestamp(time_stamp)
-            frames = []
-            with torch.inference_mode():
-                for frame in self.get_frames(time_ind, time_ind + 1):
-                    frame = frame.float() / 255
-                    frames.append(frame.squeeze(0).permute(-1, 0, 1))
-            if not frames:
-                raise RuntimeError("No frame was produced for the requested timestamp")
-            import torchvision.utils  # deferred: ~0.2 s of import algan
-
-            torchvision.utils.save_image(frames[-1], str(file_path))
-            return frames
         finally:
             # set_video_settings restores every derived cache (dimensions,
             # fps, frame size, pixel count), not merely the settings reference.
             if self.video_settings is not previous_settings:
                 self.set_video_settings(previous_settings)
+            (
+                self.background_frame,
+                self.background_color,
+                self.background_is_set,
+            ) = previous_background
 
-    @active_scene_method
-    def save_frame(
-        self,
-        file_path,
-        video_settings=None,
-        time_stamps=None,
-        *,
-        render_settings=None,
-    ):
-        """Render one or more still frames to ``file_path``.
-
-        A bare filename is placed in Algan's default output directory. A
-        relative or absolute path with a parent directory is used as supplied.
-        Missing extensions default to ``.png``. When ``time_stamps`` is a
-        sequence, each timestamp is appended to the resolved filename stem.
-        """
-        # Import lazily to avoid the Scene/algan_utils import cycle during
-        # package initialization while sharing video output's exact resolver.
-        from algan.utils.algan_utils import _resolve_output_destination
-
-        if render_settings is not None:
-            if video_settings is not None:
-                raise AlganConfigurationError(
-                    "Specify video_settings or legacy render_settings, not both"
-                )
-            video_settings = render_settings
-        output_path = _resolve_output_destination(file_path, ".png")
-        if not hasattr(time_stamps, "__len__"):
-            return self._save_frame(
-                output_path,
-                video_settings,
-                time_stamps,
-            )
-        suffix = output_path.suffix
-        stem_path = output_path.with_suffix("")
-        return [
-            self._save_frame(
-                stem_path.with_name(f"{stem_path.name}_{time_stamp}{suffix}"),
-                video_settings,
-                time_stamp,
-            )
-            for time_stamp in time_stamps
-        ]
+        return results if returns_list else results[0]
 
     @active_scene_method
     def set_background_color(self, background_color, overwrite=True):
@@ -562,22 +619,99 @@ class Scene(RenderLoopMixin):
         return self.id_count - 1
 
     @active_scene_method
-    def save_video(self, *args, **kwargs):
-        """Render this scene to a file.
+    def save_video(
+        self,
+        file_path=None,
+        video_settings=None,
+        *,
+        overwrite=True,
+        reset=False,
+        background_color=None,
+        animate_fade_out=None,
+        post_processes=None,
+        codec=None,
+        audio_codec=None,
+        ffmpeg_params=None,
+    ):
+        """Render everything recorded on this Scene to a video file.
 
-        The module-level :func:`algan.render_to_file` remains as a compatibility
-        wrapper that dispatches to the active scene.
+        Parameters
+        ----------
+        file_path
+            Where to write the video. A bare filename such as ``"my_video"``
+            is placed in Algan's output directory; a path with a parent
+            directory, relative or absolute, is used exactly as given. If the
+            name has no extension Algan appends ``.mp4``, or ``.mov`` when the
+            background is transparent. Defaults to
+            ``SETTINGS.paths.output_filename``.
+        video_settings
+            Resolution, frame rate and anti-aliasing for this render, normally
+            one of the presets (``PREVIEW``, ``LD``, ``MD``, ``HD``,
+            ``PRODUCTION``, ``UHD``). Applies to this render only; the Scene's
+            own settings are restored afterwards. Defaults to
+            ``SETTINGS.video``.
+        overwrite
+            When False and the destination already exists, skip rendering and
+            return a ``"skipped"`` result instead of replacing the file.
+        reset
+            When True, discard this Scene's recorded animation after
+            rendering, despawn its mobs and rebuild its timeline, animation
+            and audio managers. Mobs created before the render become unusable.
+            The default leaves the Scene exactly as authored, so you can keep
+            animating and render again.
+        background_color
+            A color, image, or procedural callable ``(x, y, time) -> color``.
+            Python callables receive broadcastable Torch tensors. A Taichi
+            ``@ti.func`` receives scalar normalized coordinates and time and
+            must return a color vector; it is evaluated for the whole render
+            batch by one Taichi kernel writing directly into the output buffer.
+        animate_fade_out
+            Whether to fade every spawned mob out at the end of the video.
+            Recorded on the timeline, so it persists even when ``reset`` is
+            False. Defaults to ``SETTINGS.style.fade_out_on_scene_end``.
+        post_processes
+            Post-processing passes to apply to each frame. Defaults to bloom.
+        codec, audio_codec, ffmpeg_params
+            Encoder overrides passed through to FFmpeg. Algan picks sensible
+            defaults from the background's transparency.
+
+        Returns
+        -------
+        RenderResult
+            Metadata with ``status`` (``"rendered"`` or ``"skipped"``),
+            ``output_path``, ``duration_seconds`` and the resolved
+            ``render_plan``.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            Scene.save_video("my_video")            # LD into algan_outputs/
+            Scene.save_video("my_video", HD)        # one-off quality override
+            Scene.save_video("renders/final.mov")   # explicit directory
         """
         from algan.utils.algan_utils import _render_scene_to_file
 
+        # render_to_video owns the post-processing default, so only forward an
+        # explicit choice rather than restating it here.
+        extra = {} if post_processes is None else {"post_processes": post_processes}
         with (
             SceneManager.instance().activating(self),
             animation_manager_context(self.animation_manager),
         ):
-            return _render_scene_to_file(self, *args, **kwargs)
-
-    render_to_file = save_video
-    render = render_to_file
+            return _render_scene_to_file(
+                self,
+                file_path=file_path,
+                video_settings=video_settings,
+                overwrite=overwrite,
+                reset=reset,
+                codec=codec,
+                audio_codec=audio_codec,
+                background_color=background_color,
+                ffmpeg_params=ffmpeg_params,
+                animate_fade_out=animate_fade_out,
+                **extra,
+            )
 
     @staticmethod
     def render_all_funcs(*args, **kwargs):

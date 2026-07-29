@@ -7,7 +7,5 @@ def render_static_text():
     mobs.wait(2)
 
 
-#COMPUTING_DEFAULTS.compiled = False
-COMPUTING_DEFAULTS.max_animate_batch_size = 1000
-#COMPUTING_DEFAULTS.render_device = torch.device('cpu')
+SETTINGS.computing.set(max_animation_batch_size=1000)
 render_all_funcs(__name__, HD)

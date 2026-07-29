@@ -26,7 +26,7 @@ from algan.rendering.raytracing.tracer import (
     _validate_render_capabilities,
 )
 from algan.scene_manager import SceneManager
-from algan.settings.render_settings import PREVIEW, RenderSettings
+from algan.settings.video_settings import PREVIEW, VideoSettings
 from algan.utils import algan_utils
 
 
@@ -78,9 +78,9 @@ def test_same_run_time_tolerates_zero_duration_children():
 
 def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
     scene = SceneManager.instance().current_scene
-    scene.set_render_settings(PREVIEW)
+    scene.set_video_settings(PREVIEW)
     before = {
-        "render_settings": scene.render_settings,
+        "video_settings": scene.video_settings,
         "size": scene.size.clone() if torch.is_tensor(scene.size) else scene.size,
         "frames_per_second": scene.frames_per_second,
         "frame_size": tuple(scene.frame_size),
@@ -88,7 +88,7 @@ def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
         "width": scene.num_pixels_screen_width,
         "height": scene.num_pixels_screen_height,
     }
-    temporary = RenderSettings((17, 13), 2, anti_alias_level=1)
+    temporary = VideoSettings((17, 13), 2, anti_alias_level=1)
 
     def fake_frames(*_args, **_kwargs):
         yield torch.zeros(
@@ -106,9 +106,9 @@ def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
         lambda frame, path: saved.append((tuple(frame.shape), path)),
     )
 
-    scene.save_frame(tmp_path / "still", render_settings=temporary)
+    scene.save_frame(tmp_path / "still", temporary)
 
-    assert scene.render_settings == before["render_settings"]
+    assert scene.video_settings == before["video_settings"]
     if torch.is_tensor(scene.size):
         assert torch.equal(scene.size, before["size"])
     else:
@@ -128,9 +128,9 @@ def test_overwrite_false_checks_final_suffixed_path_and_preserves_scene(tmp_path
     destination = tmp_path / "scene.mp4"
     destination.write_bytes(b"existing")
 
-    result = algan_utils.render_to_file(
+    result = algan.Scene.save_video(
         tmp_path / "scene",
-        video_settings=RenderSettings((8, 8), 1, anti_alias_level=1),
+        video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
         overwrite=False,
     )
 
@@ -142,16 +142,16 @@ def test_overwrite_false_checks_final_suffixed_path_and_preserves_scene(tmp_path
 
 def test_transparent_mp4_fails_before_render_and_preserves_scene(tmp_path):
     scene = SceneManager.instance().current_scene
-    before_settings = scene.render_settings
+    before_settings = scene.video_settings
     before_background = scene.background_frame
     with pytest.raises(AlganConfigurationError, match="MP4"):
-        algan_utils.render_to_file(
+        algan.Scene.save_video(
             tmp_path / "scene.mp4",
-            video_settings=RenderSettings((8, 8), 1, anti_alias_level=1),
+            video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
             background_color=algan.TRANSPARENT,
         )
     assert SceneManager.instance().current_scene is scene
-    assert scene.render_settings == before_settings
+    assert scene.video_settings == before_settings
     assert scene.background_frame is before_background
 
 
@@ -171,10 +171,11 @@ def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
     )
 
     with pytest.raises(RuntimeError, match="writer failed"):
-        algan_utils.render_to_file(
+        algan.Scene.save_video(
             tmp_path / "failure.mp4",
-            video_settings=RenderSettings((8, 8), 1, anti_alias_level=1),
+            video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
             animate_fade_out=False,
+            reset=True,
         )
 
     replacement_scene = SceneManager.instance().current_scene
@@ -184,6 +185,69 @@ def test_render_setup_failure_resets_scene_and_audio(monkeypatch, tmp_path):
     assert replacement_scene.audio_manager is not old_managers[2]
     assert replacement_scene.audio_manager.video_transcript == ""
     assert replacement_scene.camera.location.is_inference()
+
+
+def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
+    """save_video defaults to reset=False: mobs stay valid and spawned."""
+    scene = SceneManager.instance().current_scene
+    managers = (
+        scene.timeline_manager,
+        scene.animation_manager,
+        scene.audio_manager,
+    )
+    square = Square(add_to_scene=True).spawn(animate=False)
+
+    class Writer:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
+    monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
+
+    result = algan.Scene.save_video(
+        tmp_path / "keep.mp4",
+        video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
+        animate_fade_out=False,
+    )
+
+    assert result.status == "rendered"
+    # Same managers, so every mob reference from before the render still works.
+    assert scene.timeline_manager is managers[0]
+    assert scene.animation_manager is managers[1]
+    assert scene.audio_manager is managers[2]
+    assert square.is_spawned()
+    assert not square.is_despawned()
+    assert scene.camera.is_spawned() and not scene.camera.is_despawned()
+
+
+def test_reset_true_discards_the_authored_scene(monkeypatch, tmp_path):
+    scene = SceneManager.instance().current_scene
+    managers = (
+        scene.timeline_manager,
+        scene.animation_manager,
+        scene.audio_manager,
+    )
+    Square(add_to_scene=True).spawn(animate=False)
+
+    class Writer:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
+    monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
+
+    algan.Scene.save_video(
+        tmp_path / "discard.mp4",
+        video_settings=VideoSettings((8, 8), 1, anti_alias_level=1),
+        animate_fade_out=False,
+        reset=True,
+    )
+
+    assert scene.timeline_manager is not managers[0]
+    assert scene.animation_manager is not managers[1]
+    assert scene.audio_manager is not managers[2]
 
 
 def test_group_uses_one_member_store_and_repairs_parent_links():
@@ -243,7 +307,7 @@ def test_hierarchy_rejects_cycles_and_duplicates():
         group.replace_children([child, child])
 
 
-def test_render_settings_are_immutable_validated_and_typo_safe():
+def test_video_settings_are_immutable_validated_and_typo_safe():
     with pytest.raises(AlganConfigurationError, match="Did you mean 'resolution'"):
         PREVIEW.set(resoluton=(1, 1))
     with pytest.raises(AlganConfigurationError, match="positive"):
@@ -333,7 +397,7 @@ def test_scene_decorator_prevents_helpers_from_being_discovered(monkeypatch):
     def helper():
         calls.append("helper")
 
-    @algan_utils.scene(name="main")
+    @algan_utils.scene_function(name="main")
     def entry_point():
         calls.append("scene")
 
@@ -354,8 +418,39 @@ def test_root_star_exports_exclude_dependency_modules_and_typing_helpers():
     exec("from algan import *", namespace)
     for leaked in ("os", "sys", "torch", "np", "F", "Any", "Callable"):
         assert leaked not in namespace
-    for expected in ("Square", "Scene", "render", "render_to_file", "scene", "RED"):
+    for expected in ("Square", "Scene", "SETTINGS", "HD", "RED", "Sync", "rate_funcs"):
         assert expected in namespace
+
+
+def test_root_star_exports_exclude_internal_helpers():
+    """Generic tensor/plumbing helpers must not shadow user or stdlib names."""
+    namespace = {}
+    exec("from algan import *", namespace)
+    for leaked in (
+        "mean",
+        "interpolate",
+        "offset",
+        "shuffle",
+        "broadcast",
+        "traverse",
+        "squish",
+        "implements",
+        "pack_tensor",
+        "cast_to_tensor",
+        "get_image",
+        "midpoint",
+        "wiggle",
+        "scene",
+        "KERNEL_REGISTRY",
+        "RENDERER_REGISTRY",
+        "MobLayoutMixin",
+        "profile_func",
+        "concatenate_videos",
+    ):
+        assert leaked not in namespace, f"{leaked} leaked into the star namespace"
+    # Still importable from their real home.
+    from algan.utils.tensor_utils import mean  # noqa: F401
+    from algan.utils.algan_utils import scene_function  # noqa: F401
 
 
 def test_camera_validates_projection_and_clip_parameters():
@@ -377,9 +472,9 @@ def test_camera_validates_projection_and_clip_parameters():
     assert camera.orthographic is True
     assert camera.set_fov(45) is camera
     assert camera.orthographic is False
-    scene.set_render_settings(RenderSettings((20, 10), 1, anti_alias_level=1))
+    scene.set_video_settings(VideoSettings((20, 10), 1, anti_alias_level=1))
     assert camera.pixel_height == pytest.approx(0.2)
-    scene.set_render_settings(RenderSettings((40, 20), 1, anti_alias_level=1))
+    scene.set_video_settings(VideoSettings((40, 20), 1, anti_alias_level=1))
     assert camera.pixel_height == pytest.approx(0.1)
 
 
@@ -415,12 +510,55 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
         observed["background_override"] = render_kwargs.get("background_color")
 
     monkeypatch.setattr(scene, "render_to_video", fake_render_to_video)
-    result = algan_utils.render_to_file(
+    result = algan.Scene.save_video(
         tmp_path / "static.mp4",
-        video_settings=RenderSettings((8, 8), 4, anti_alias_level=1),
+        video_settings=VideoSettings((8, 8), 4, anti_alias_level=1),
         animate_fade_out=False,
     )
 
     assert observed["end"] >= 0.25
     assert observed["background_override"] is None
     assert result.status == "rendered"
+
+
+def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
+    """Mobs whose border_color is a plain tensor must animate too.
+
+    Color exposes set_opacity; a border color assigned as a raw tensor (as
+    Square does) does not, so the animation has to write the alpha channel
+    directly rather than assuming a Color.
+    """
+    from algan.animations.manim_animations import draw_border_then_fill
+
+    squares = [Square(add_to_scene=True).spawn(animate=False) for _ in range(3)]
+    assert not hasattr(squares[0].border_color, "set_opacity")
+
+    animated = draw_border_then_fill(squares)
+
+    assert animated == squares
+    # A generator is an iterable too, and must not be consumed twice.
+    assert draw_border_then_fill(mob for mob in squares) == squares
+
+
+def test_draw_border_then_fill_tolerates_an_empty_iterable():
+    from algan.animations.manim_animations import draw_border_then_fill
+
+    assert draw_border_then_fill([]) == []
+
+
+def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
+    import algan.animations.manim_animations as manim_animations
+
+    text = algan.Text("hi", add_to_scene=True)
+    seen = {}
+
+    def fake(mobs, border_width=1, run_time=None, lag_ratio=None):
+        seen["mobs"] = list(mobs)
+        seen["border_width"] = border_width
+        return seen["mobs"]
+
+    monkeypatch.setattr(manim_animations, "draw_border_then_fill", fake)
+
+    assert text.write(border_width=3) is text
+    assert seen["border_width"] == 3
+    assert len(seen["mobs"]) == len(text.character_mobs)

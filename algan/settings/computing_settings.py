@@ -6,6 +6,13 @@ from algan.errors import AlganConfigurationError
 from algan.settings.abstract_settings import Settings
 
 
+_INITIALIZATION_ONLY = {
+    "animation_device": "ALGAN_ANIMATION_DEVICE",
+    "render_device": "ALGAN_RENDER_DEVICE",
+    "render_on_cpu": "ALGAN_RENDER_DEVICE",
+}
+
+
 @dataclass
 class ComputingSettings(Settings):
     """Runtime-adjustable memory and authoring controls.
@@ -14,12 +21,24 @@ class ComputingSettings(Settings):
     and ``ALGAN_RENDER_DEVICE`` before importing Algan.
     """
 
+    @classmethod
+    def _check_keys(cls, kwargs):
+        # Devices are chosen while Torch/Taichi initialize, so answer the
+        # obvious attempt with the fix rather than "unknown setting".
+        for name in kwargs:
+            variable = _INITIALIZATION_ONLY.get(name)
+            if variable is not None:
+                raise AlganConfigurationError(
+                    f"{name} is initialization-only; set the {variable} "
+                    "environment variable before importing algan"
+                )
+        super()._check_keys(kwargs)
+
     animation_memory_fraction: float = 0.15
     rendering_memory_fraction: float = 0.4
     max_animation_batch_size: int = 10000
     max_cpu_memory_used: int = 2 * GIGABYTES
     use_torch_scatter: bool = True
-    allow_save_frame: bool = True
 
     def __post_init__(self):
         for name in ("animation_memory_fraction", "rendering_memory_fraction"):
@@ -37,30 +56,3 @@ class ComputingSettings(Settings):
             raise AlganConfigurationError("max_cpu_memory_used must be a positive integer")
         if not isinstance(self.use_torch_scatter, bool):
             raise AlganConfigurationError("use_torch_scatter must be a boolean")
-        if not isinstance(self.allow_save_frame, bool):
-            raise AlganConfigurationError("allow_save_frame must be a boolean")
-
-    # Compatibility names for the old public defaults object.
-    @property
-    def portion_of_memory_used_for_animating(self):
-        return self.animation_memory_fraction
-
-    @portion_of_memory_used_for_animating.setter
-    def portion_of_memory_used_for_animating(self, value):
-        self.set(animation_memory_fraction=value)
-
-    @property
-    def portion_of_memory_used_for_rendering(self):
-        return self.rendering_memory_fraction
-
-    @portion_of_memory_used_for_rendering.setter
-    def portion_of_memory_used_for_rendering(self, value):
-        self.set(rendering_memory_fraction=value)
-
-    @property
-    def max_animate_batch_size(self):
-        return self.max_animation_batch_size
-
-    @max_animate_batch_size.setter
-    def max_animate_batch_size(self, value):
-        self.set(max_animation_batch_size=value)

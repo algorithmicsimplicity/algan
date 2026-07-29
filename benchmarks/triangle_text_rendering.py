@@ -9,7 +9,6 @@ def render_static_triangulated_text():
 
 
 set_log_level('DEBUG')
-#COMPUTING_DEFAULTS.max_animate_batch_size = 1
 q = PREVIEW
 q.anti_alias_level = 1
 render_all_funcs(__name__, q)

@@ -152,7 +152,7 @@ def test_inactive_scene_render_temporarily_activates_it(monkeypatch):
         return "rendered"
 
     monkeypatch.setattr(algan_utils, "_render_scene_to_file", fake_render)
-    assert outer.render_to_file() == "rendered"
+    assert outer.save_video() == "rendered"
     assert observed == {
         "scene": outer,
         "active": outer,

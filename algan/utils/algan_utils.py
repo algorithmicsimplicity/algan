@@ -24,12 +24,15 @@ from algan.logging.logger import get_logger
 logger = get_logger()
 
 
-def scene(function=None, *, name=None):
+def scene_function(function=None, *, name=None):
     """Mark a zero-argument function as an Algan scene entry point.
 
     ``render_all_funcs`` prefers explicitly decorated functions and falls back
     to its historical zero-argument scan only when a module has no decorated
     scenes.
+
+    Named ``scene_function`` rather than ``scene`` so that the decorator does
+    not collide with the conventional variable name for a Scene instance.
     """
     def decorate(func):
         if not callable(func):
@@ -100,11 +103,8 @@ def _resolve_output_destination(file_path, default_extension: str) -> Path:
     # A bare filename uses Algan's standard output directory. Paths with an
     # explicit parent (including ``./``) are honoured exactly as supplied.
     if not requested.is_absolute() and os.path.dirname(raw_path) == "":
-        default_base = SETTINGS.paths.output_path
-        if default_base is None:
-            default_base = SETTINGS.paths.base_directory
         requested = (
-            Path(default_base)
+            Path(SETTINGS.paths.output_root)
             / SETTINGS.paths.output_directory
             / requested
         )
@@ -118,9 +118,9 @@ def _render_scene_to_file(
     file_path=None,
     video_settings=None,
     overwrite=True,
+    reset=False,
     codec=None,
     audio_codec=None,
-    audio_fps=44100,
     background_color=None,
     ffmpeg_params=None,
     animate_fade_out=None,
@@ -128,40 +128,9 @@ def _render_scene_to_file(
 ):
     """Render ``scene`` to a video file.
 
-    Parameters
-    ----------
-    file_path
-        Output file path. A bare filename is placed in
-        ``SETTINGS.paths.output_directory``; a relative or absolute path
-        with a parent directory is used as supplied. If no extension is given,
-        Algan selects ``.mp4`` for opaque output or ``.mov`` for transparent
-        output. If None, ``SETTINGS.paths.output_filename`` is used.
-    video_settings
-        The :class:`.VideoSettings` object to use to specify video properties. If omitted, uses ``SETTINGS.video``.
-    overwrite
-        Whether the existing file at the output destination should be overwritten if one exists.
-    codec
-        The codec to use to encode the video frames.
-    background_color
-        A color/image or procedural callable ``(x, y, time) -> color``.
-        Python callables receive broadcastable Torch tensors. A Taichi
-        ``@ti.func`` receives scalar normalized coordinates and time and must
-        return a color vector; it is evaluated for the whole render batch by
-        one Taichi kernel writing directly into the output buffer.
-
-    Returns
-    -------
-    RenderResult
-        Structured metadata indicating whether the file was rendered or
-        skipped because it already existed.
+    This is the implementation behind :meth:`algan.scene.Scene.save_video`,
+    which carries the user-facing signature and documentation.
     """
-    legacy_video_settings = kwargs.pop("render_settings", None)
-    if legacy_video_settings is not None:
-        if video_settings is not None:
-            raise AlganConfigurationError(
-                "Specify video_settings or legacy render_settings, not both"
-            )
-        video_settings = legacy_video_settings
     if video_settings is None:
         video_settings = SETTINGS.video
 
@@ -175,7 +144,8 @@ def _render_scene_to_file(
     temp_file_path = None
     audio_file_path = None
     file_writer = None
-    destructive_render_started = False
+    render_started = False
+    scene_finalized = False
 
     try:
         scene.set_video_settings(video_settings)
@@ -212,25 +182,34 @@ def _render_scene_to_file(
 
         if animate_fade_out is None:
             animate_fade_out = SETTINGS.style.fade_out_on_scene_end
-        # From this point onward the active timeline/scene may be intentionally
-        # modified for finalization. Preserve the historical contract by
-        # resetting managers on both success and failure.
-        destructive_render_started = True
+        render_started = True
+        # A scene authored entirely inside Off() otherwise has zero duration,
+        # which produces an empty video. Keep one frame alive. This is needed
+        # in every mode, because it decides how many frames get rendered.
+        timeline_context = scene.animation_manager.context
+        if (
+            timeline_context is not None
+            and timeline_context.timespan.original_end <= 0
+            and any(actor.is_spawned() for actor in scene.actors[-1])
+        ):
+            timeline_context.wait(1.0 / video_settings.frames_per_second)
+
+        # A fade-out is part of the requested output, so it is recorded on the
+        # timeline whether or not the scene is being reset afterwards.
         if animate_fade_out:
+            scene_finalized = True
             scene.clear_scene()
-        else:
-            # A scene authored entirely inside Off() otherwise has zero
-            # duration; despawning it at t=0 produces an empty video. Keep one
-            # frame alive before the instantaneous final despawn.
-            timeline_context = scene.animation_manager.context
-            if (
-                timeline_context is not None
-                and timeline_context.timespan.original_end <= 0
-                and any(actor.is_spawned() for actor in scene.actors[-1])
-            ):
-                timeline_context.wait(1.0 / video_settings.frames_per_second)
+        elif reset:
+            # The scene is about to be discarded: keep the historical
+            # instantaneous despawn so reset=True behaves exactly as before.
+            scene_finalized = True
             with Off(animation_manager=scene.animation_manager):
                 scene.clear_scene(animate=False)
+        else:
+            # Leave the authored scene re-renderable: no despawns, no actor
+            # filtering. Mobs stay spawned and the timeline stays as written,
+            # so authoring can continue after save_video returns.
+            scene_finalized = False
 
         if codec is None:
             codec = "png" if scene.background_is_transparent() else "libx264"
@@ -256,7 +235,10 @@ def _render_scene_to_file(
         logger.info(f"Began rendering {destination.name}")
         start_time = time.perf_counter()
         audiofile = scene.render_audio_to_file(
-            str(audio_file_path), audio_fps, nbytes=4, codec="pcm_s32le"
+            str(audio_file_path),
+            video_settings.audio_frames_per_second,
+            nbytes=4,
+            codec="pcm_s32le",
         )
         if audiofile is not None:
             script_file_path.write_text(
@@ -280,6 +262,7 @@ def _render_scene_to_file(
             str(temp_file_path),
             str(destination),
             background_color=frame_background_override,
+            despawn_camera_and_lights=scene_finalized,
             **kwargs,
         )
         duration = time.perf_counter() - start_time
@@ -304,33 +287,19 @@ def _render_scene_to_file(
                     exc_info=True,
                 )
 
-        if destructive_render_started:
+        scene.set_video_settings(previous_settings)
+        if render_started and reset:
             # Cleanup is unconditional, including failures during audio setup,
             # writer construction, rendering, or final file replacement.
-            scene.set_video_settings(previous_settings)
             scene.reset()
         else:
-            # Preflight failures and skipped renders are observational: leave
-            # the authored scene and audio timeline intact.
-            scene.set_video_settings(previous_settings)
+            # Preflight failures, skipped renders and ordinary reset=False
+            # renders all leave the authored scene and audio timeline intact.
             (
                 scene.background_frame,
                 scene.background_color,
                 scene.background_is_set,
             ) = previous_background
-
-
-def render_to_file(*args, **kwargs):
-    """Render the current active scene.
-
-    This compatibility wrapper delegates to :meth:`algan.scene.Scene.save_video`;
-    new code should call the Scene method directly.
-    """
-    return SceneManager.instance().current_scene.save_video(*args, **kwargs)
-
-
-# Concise stable authoring alias.
-render = render_to_file
 
 
 # @compiled
@@ -341,23 +310,15 @@ def render_all_funcs(
     overwrite=True,
     start_index=0,
     max_rendered=-1,
-    output_dir=None,
-    output_path=None,
+    output_directory=None,
+    output_root=None,
     file_extension="mp4",
     smoke_test=False,
     prefix=None,
     funcs=None,
     **kwargs,
 ):
-    legacy_video_settings = kwargs.pop("render_settings", None)
-    if legacy_video_settings is not None:
-        if video_settings is not None:
-            raise AlganConfigurationError(
-                "Specify video_settings or legacy render_settings, not both"
-            )
-        video_settings = legacy_video_settings
-
-    def run(output_dir=None, video_settings=None, output_path=None, prefix=None):
+    def run(output_directory=None, video_settings=None, output_root=None, prefix=None):
         if funcs is None:
             module = sys.modules[module_name] if isinstance(module_name, str) else module_name
             if prefix is None:
@@ -383,7 +344,7 @@ def render_all_funcs(
                 if scene_funcs:
                     warnings.warn(
                         "render_all_funcs is using legacy implicit zero-argument "
-                        "function discovery. Decorate scene entry points with @scene "
+                        "function discovery. Decorate scene entry points with @scene_function "
                         "to prevent helper functions from rendering accidentally.",
                         LegacySceneDiscoveryWarning,
                         stacklevel=2,
@@ -395,13 +356,11 @@ def render_all_funcs(
         if video_settings is None:
             video_settings = SETTINGS.video
 
-        if output_path is None:
-            output_path = SETTINGS.paths.output_path
-            if output_path is None:
-                output_path = SETTINGS.paths.base_directory
-        if output_dir is None:
-            output_dir = SETTINGS.paths.output_directory
-        output_dir = os.path.join(output_dir, module_name)
+        if output_root is None:
+            output_root = SETTINGS.paths.output_root
+        if output_directory is None:
+            output_directory = SETTINGS.paths.output_directory
+        output_directory = os.path.join(output_directory, module_name)
         if start_index < 0:
             start = start_index + len(scene_funcs)
         else:
@@ -422,8 +381,8 @@ def render_all_funcs(
                 if not smoke_test:
                     results.append(
                         active_scene.save_video(
-                            Path(output_path)
-                            / output_dir
+                            Path(output_root)
+                            / output_directory
                             / f"{index}_{scene_name}.{file_extension}",
                             video_settings=video_settings,
                             overwrite=overwrite,
@@ -437,7 +396,7 @@ def render_all_funcs(
         pr = cProfile.Profile()
         start = time.time()
         pr.enable()
-        out = run(output_dir, video_settings, output_path, prefix)
+        out = run(output_directory, video_settings, output_root, prefix)
         pr.disable()
         end = time.time()
 
@@ -449,7 +408,7 @@ def render_all_funcs(
         logger.info(f'took {end-start} seconds.')
         return out
     else:
-        return run(output_dir, video_settings, output_path, prefix)
+        return run(output_directory, video_settings, output_root, prefix)
 
 
 def profile_func(func):

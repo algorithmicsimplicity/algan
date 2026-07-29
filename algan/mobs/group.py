@@ -42,6 +42,8 @@ class Group(Mob):
 
     .. algan:: Example1Group
 
+        from algan import *
+
         group = Group([Square() for _ in range(3)]).arrange_in_line(RIGHT).spawn()
         group.rotate(90, OUT)
 
@@ -307,6 +309,8 @@ class Group(Mob):
         Arrange mobs in a 3x3 grid slanted at a 45 degrees angle.
 
         .. algan:: Example1ArrangeInGrid
+
+            from algan import *
 
             group = Group([Square() for _ in range(9)]).scale(1/3).arrange_in_grid(3, RIGHT+UP, RIGHT+DOWN).spawn()
             group.rotate(90, OUT)

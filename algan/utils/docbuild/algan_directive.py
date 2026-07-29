@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import csv
 import itertools as it
+import os
 import re
 import shutil
 import subprocess
 import textwrap
+import time
 import traceback
 from pathlib import Path
 from timeit import timeit
@@ -37,7 +39,7 @@ from docutils.statemachine import StringList
 
 from algan import SceneManager, __version__ as algan_version
 from algan.settings import SETTINGS
-from algan.settings.video_settings import QUALITIES
+from algan.settings.video_settings import _QUALITIES
 
 if TYPE_CHECKING:
     from sphinx.application import Sphinx
@@ -69,14 +71,40 @@ def process_name_list(option_input: str, reference_type: str) -> list[str]:
     return [f":{reference_type}:`~.{name}`" for name in option_input.split()]
 
 
-def _find_video(video_dir: Path, output_file: str) -> Path:
-    for suffix in (".mp4", ".mov", ".webm"):
+_VIDEO_SUFFIXES = (".mp4", ".mov", ".webm")
+
+
+def _find_video(video_dir: Path, output_file: str, since: float) -> Path:
+    """Locate the video an example produced.
+
+    Examples are free to name their own output -- ``Scene.save_video("my_video")``
+    is exactly what the tutorials teach -- so prefer the directive's own name
+    and otherwise take whatever video the example just wrote.
+    """
+    for suffix in _VIDEO_SUFFIXES:
         candidate = video_dir / f"{output_file}{suffix}"
         if candidate.exists():
             return candidate
+
+    produced = [
+        path
+        for path in video_dir.iterdir()
+        if path.is_file()
+        and path.suffix in _VIDEO_SUFFIXES
+        and path.stat().st_mtime >= since
+    ]
+    if len(produced) == 1:
+        return produced[0]
+    if len(produced) > 1:
+        names = ", ".join(sorted(path.name for path in produced))
+        raise FileNotFoundError(
+            f"The Algan example wrote several videos ({names}) in {video_dir}; "
+            "the directive cannot tell which one to embed. Have the example "
+            "render exactly one video."
+        )
     raise FileNotFoundError(
-        f"The Algan example did not create {output_file}.mp4/.mov/.webm in "
-        f"{video_dir}. End the directive body with Scene.save_video()."
+        f"The Algan example did not create a video in {video_dir}. Make sure "
+        "the directive body calls Scene.save_video()."
     )
 
 
@@ -148,7 +176,7 @@ class AlganDirective(Directive):
             raise self.error("save_as_gif and save_last_frame are mutually exclusive")
 
         quality = f"{self.options.get('quality', 'example')}_quality"
-        video_settings = QUALITIES[quality]
+        video_settings = _QUALITIES[quality]
 
         document = self.state_machine.document
         source_path = Path(document.attributes["source"])
@@ -172,11 +200,20 @@ class AlganDirective(Directive):
         source = "\n".join(user_code)
         namespace = {"__name__": f"_algan_docs_{output_file}"}
 
+        # Anything already in video_dir predates this example; _find_video uses
+        # the timestamp to identify what this run actually produced.
+        started_at = time.time()
+        # Examples name their assets relative to the documentation root
+        # (``ImageMob('world_map.jpg')``), but Sphinx runs from the project
+        # root. Output paths are absolute overrides below, so this only
+        # affects asset lookup.
+        previous_cwd = os.getcwd()
+        os.chdir(setup.confdir)  # type: ignore[attr-defined]
         try:
             with SETTINGS.override(
                 video=video_settings.to_dict(),
                 paths={
-                    "output_path": str(video_dir),
+                    "output_root": str(video_dir),
                     "output_directory": "",
                     "output_filename": output_file,
                 },
@@ -192,6 +229,8 @@ class AlganDirective(Directive):
         except Exception as exc:
             traceback.print_exc()
             raise RuntimeError(f"Error while rendering example {clsname}") from exc
+        finally:
+            os.chdir(previous_cwd)
 
         _write_rendering_stats(
             clsname,
@@ -199,7 +238,7 @@ class AlganDirective(Directive):
             environment.docname,
         )
 
-        rendered_video = _find_video(video_dir, output_file)
+        rendered_video = _find_video(video_dir, output_file, started_at)
         filesrc = rendered_video
         embedded_suffix = rendered_video.suffix
 

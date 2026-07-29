@@ -15,8 +15,8 @@ def neural_net():
         nn.move(DOWN)
 
 
-render_settings = HD#.set_anti_alias_level(2).set_frames_per_second(60)
-profile_scene(neural_net, render_settings, 'neural_net', runs=2, kernel_profiler=False)
+video_settings = HD#.set_anti_alias_level(2).set_frames_per_second(60)
+profile_scene(neural_net, video_settings, 'neural_net', runs=2, kernel_profiler=False)
 #neural_net()
-#render_to_file('nn_profile2', render_settings=render_settings)
-#render_all_funcs(__name__, render_settings=render_settings)
+#render_to_file('nn_profile2', video_settings=video_settings)
+#render_all_funcs(__name__, video_settings=video_settings)

@@ -52,7 +52,7 @@ def test_full_render_scene_set_is_deliberate_and_stable():
 
 
 def test_scene_files_use_only_the_public_star_import_and_do_not_render_themselves():
-    forbidden_calls = {"render", "render_all_funcs", "render_to_file", "save_video"}
+    forbidden_calls = {"render_all_funcs", "save_video"}
     for path in _scene_paths():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imports = [

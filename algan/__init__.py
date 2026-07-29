@@ -39,13 +39,11 @@ c.__enter__()
 
 from algan.settings import *
 from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
-from algan.settings.defaults import *
 
 if _ANIMATION_DEVICE.type != "cpu":
     torch.set_default_device(_ANIMATION_DEVICE)
 torch.set_default_dtype(torch.float32)
 from algan.errors import *
-from algan.settings.style_defaults import *
 from algan.logging.logger import get_logger, set_log_level
 get_logger().info(f"Rendering device set to {_RENDER_DEVICE}")
 
@@ -201,25 +199,97 @@ SceneManager.set_scene_class(Scene, default_scene_initializer)
 # Re-exported for backwards compatibility; it now runs lazily on first Tex use.
 from algan.mobs.text import make_manim_dir
 
-# Curate star imports without removing backwards-compatible attribute access.
-# Public Algan callables/classes and upper-case authoring constants remain
-# available, while dependency modules, typing helpers, and import machinery do
-# not leak into ``from algan import *``.
+# Curate star imports. ``from algan import *`` is the documented entry point,
+# so it is effectively the public API: it must expose mobs, animations,
+# contexts, materials, settings and authoring constants, and nothing else.
+# Internal helpers stay reachable at their real import path; they simply do not
+# land in the user's namespace, where names like ``mean``, ``interpolate`` and
+# ``offset`` would shadow whatever the user imported before Algan.
 from types import ModuleType as _ModuleType
 
-_ROOT_EXPORT_EXCLUSIONS = {
+# Whole modules whose public names are implementation detail.
+_INTERNAL_EXPORT_MODULES = (
+    "algan.animatable_base.mob_hierarchy",
+    "algan.animatable_base.mob_layout",
+    "algan.animatable_base.mob_materials",
+    "algan.animatable_base.mob_morph",
+    "algan.animatable_base.mob_movement",
+    "algan.animatable_base.mob_orientation",
+    "algan.animation_timeline.timeline",
+    "algan.rendering.logical_pn",
+    "algan.utils.file_utils",
+    "algan.utils.lazy_import",
+    "algan.utils.python_utils",
+    "algan.utils.tensor_utils",
+)
+
+# Individually internal names from modules that are otherwise public.
+_INTERNAL_EXPORT_NAMES = frozenset({
+    # authoring/session plumbing
     "default_scene_initializer",
     "get_logger",
     "install_opengl_aliases",
-}
+    "active_scene_for_new_mob",
+    "animation_manager_bound",
+    "animation_manager_context",
+    "animation_manager_for",
+    "prepare_kwargs",
+    # render-primitive construction
+    "build_render_primitives_batched",
+    "get_render_primitives_batched",
+    "compute_grid_vertex_normals",
+    "get_grid_to_triangle_indices",
+    "grid_to_triangle_vertices",
+    "effective_triangle_primitive",
+    "render_batch_raytraced",
+    "point_to_tensor2",
+    "color_to_texture_map",
+    "midpoint",
+    "mid_point",
+    # service registries: not user settings
+    "KERNEL_REGISTRY",
+    "RENDERER_REGISTRY",
+    # internal rate-func/animation steps
+    "draw_step",
+    "undraw_step",
+    "passing_flash_step",
+    "wiggle_step",
+    "wiggle",
+    "there_and_back",
+    # tooling and dev utilities
+    "make_manim_dir",
+    "missing_manim_mobjects",
+    "validate_manim_mobject_parity",
+    "combine_scenes",
+    "concatenate_videos",
+    "get_file_writer",
+    "profile_func",
+    "BatchedMobViewSequence",
+    # internal constants
+    "HANDLED_FUNCTIONS",
+    "TIME_PARAMETER_NAME",
+    "SPAWN_VERSION",
+    "STRUCTURE_VERSION",
+    "HIERARCHY_VERSION",
+    "MANIM_COMMUNITY_VERSION",
+    "MANIM_MOBJECT_NAMES",
+    "MANIM_OPENGL_MOBJECT_NAMES",
+    "MANIM_PRIVATE_MOBJECT_NAMES",
+    "MANIM_EXTERNAL_TOOL_MOBJECT_NAMES",
+})
+
+# Public names that the rules above would otherwise miss.
+_EXTRA_EXPORTS = ("cosine_color", "rate_funcs")
 
 
 def _is_root_export(name, value):
-    if name.startswith("_") or name in _ROOT_EXPORT_EXCLUSIONS:
+    if name.startswith("_") or name in _INTERNAL_EXPORT_NAMES:
         return False
     if isinstance(value, _ModuleType):
         return False
-    origin = getattr(value, "__module__", "")
+    origin = getattr(value, "__module__", "") or ""
+    if origin in _INTERNAL_EXPORT_MODULES:
+        return False
     if callable(value):
         return origin == "algan" or origin.startswith("algan.")
     return name.isupper()
@@ -231,7 +301,5 @@ __all__ = tuple([
         for name, value in globals().items()
         if _is_root_export(name, value)
     ),
-    "cosine_color",
-    "rate_funcs",
-]
-)
+    *_EXTRA_EXPORTS,
+])

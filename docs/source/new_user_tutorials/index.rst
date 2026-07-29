@@ -13,3 +13,4 @@ Everything a new user needs to know to get up and running with Algan!
    controlling_animations
    updaters
    child_mobs
+   importing_from_manim

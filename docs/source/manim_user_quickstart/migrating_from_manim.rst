@@ -157,8 +157,8 @@ Use the unified Scene APIs:
 
 .. code-block:: python
 
-    scene.save_video("preview.mp4", video_settings=PREVIEW)
-    scene.save_frame("thumbnail.png", video_settings=THUMBNAIL)
+    scene.save_video("preview.mp4", PREVIEW)
+    scene.save_frame("thumbnail.png", THUMBNAIL)
 
 A bare filename is placed in Algan's configured output directory. A relative or
 absolute path containing a parent directory is honored directly.

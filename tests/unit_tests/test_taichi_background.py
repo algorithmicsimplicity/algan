@@ -5,7 +5,7 @@ import torch
 from algan.render_loop import _prepare_background_for_chunk
 from algan.rendering.raytracing.scene_builder import _prefill_background
 from algan.scene import Scene
-from algan.settings.render_settings import SMOKE_TEST
+from algan.settings.video_settings import SMOKE_TEST
 
 
 @ti.func
@@ -53,7 +53,7 @@ def test_taichi_background_fills_the_whole_frame_batch():
 def test_scene_constructor_defers_taichi_background_until_render():
     scene = Scene(
         background_frame=_coordinate_background,
-        render_settings=SMOKE_TEST,
+        video_settings=SMOKE_TEST,
     )
 
     assert scene.background_frame is _coordinate_background

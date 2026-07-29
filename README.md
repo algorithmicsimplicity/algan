@@ -29,7 +29,7 @@ circle.set(border_color=PINK, border_opacity=0.5)
 square.spawn()
 square.become(circle)
 
-render_to_file()
+Scene.save_video("example")
 ```
 
 In order to view the output of this scene, save the code in a file called `example.py`. Then, run the following in a terminal window:
@@ -38,7 +38,7 @@ In order to view the output of this scene, save the code in a file called `examp
 python example.py
 ```
 
-You should see an algan_outputs directory in the same directory as your example.py file, which contains the rendered video.
+You should see an algan_outputs directory in the same directory as your example.py file, containing `example.mp4`.
 
 ## Documentation
 

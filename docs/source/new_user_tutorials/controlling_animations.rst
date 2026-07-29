@@ -19,7 +19,7 @@ Let's dive in with an example.
 
     mob = Square().spawn()
     with Sync():
-        mob.move(RIGHT)
+        mob.move(RIGHT*2)
         mob.rotate(90, OUT)
 
     Scene.save_video()
@@ -64,6 +64,8 @@ animation once the current one is 50% finished.
     Lag(0) is equivalent to Sync() and Lag(1) is equivalent to Seq().
 
 Finally Off() disables animations that take place within its context, all changes will be instant (1 frame).
+
+
 :class:`~.AnimationContext` s can also be given a number of parameters to change their
 behaviour. Most notably, the length of animations that take place within a context can be
 controlled with ``run_time`` and ``run_time_unit``.
@@ -135,5 +137,6 @@ This makes specifying complex animations and designing modular animation code a 
             with Sync():
                 mob2.move(LEFT*3)
                 mob2.glow = 0.5
+    Scene.wait()
 
     Scene.save_video()

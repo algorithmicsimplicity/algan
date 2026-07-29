@@ -12,4 +12,4 @@ def empty_scene():
             Triangle().scale(0.1).spawn()
     Scene.wait(10)
 
-profile_scene(empty_scene, render_settings=rs, runs=2, kernel_profiler=False)
+profile_scene(empty_scene, video_settings=rs, runs=2, kernel_profiler=False)

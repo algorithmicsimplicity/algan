@@ -9,7 +9,7 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
     BezierCircuitPrimitive,
 )
 from algan.rendering.raytracing.primitives import RayTracedTrianglePrimitive
-from algan.settings.defaults import COMPUTING_DEFAULTS
+from algan.settings import SETTINGS
 
 
 def test_grouped_triangle_stays_on_its_source_device():
@@ -73,9 +73,14 @@ def test_primitive_source_device_uses_primitive_tensor():
     assert _primitive_source_device(primitive).type == "cpu"
 
 
-def test_render_device_compatibility_setting_is_initialization_only():
+def test_render_device_setting_is_initialization_only():
     with pytest.raises(AlganConfigurationError, match="ALGAN_RENDER_DEVICE"):
-        COMPUTING_DEFAULTS.render_device = torch.device("meta")
+        SETTINGS.computing.set(render_device=torch.device("meta"))
+
+
+def test_animation_device_setting_is_initialization_only():
+    with pytest.raises(AlganConfigurationError, match="ALGAN_ANIMATION_DEVICE"):
+        SETTINGS.computing.set(animation_device=torch.device("meta"))
 
 
 def test_get_frames_releases_arena_and_restores_background_on_error():

@@ -272,6 +272,50 @@ class Tex(Mob):
     def __len__(self):
         return len(self.character_mobs)
 
+    def write(self, border_width: float = 1, run_time=None, lag_ratio=None):
+        """Animate this text appearing as if it were being hand-written.
+
+        Each glyph's outline is traced and then filled, one after another.
+        This is :func:`~algan.animations.manim_animations.draw_border_then_fill`
+        applied to this text's ``character_mobs``.
+
+        Parameters
+        ----------
+        border_width
+            Border width to trace each glyph with. None keeps the current one.
+        run_time
+            Total seconds for the whole sequence.
+        lag_ratio
+            Fraction of one glyph's animation that elapses before the next.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This text, allowing for method chaining.
+
+        Examples
+        --------
+
+        .. algan:: Example1TextWrite
+
+            from algan import *
+
+            Text('Hello World!').spawn().write()
+
+            Scene.save_video()
+        """
+        # Imported here rather than at module scope: the animations package is
+        # imported after the mobs package during algan's own initialization.
+        from algan.animations.manim_animations import draw_border_then_fill
+
+        draw_border_then_fill(
+            self.character_mobs,
+            border_width=border_width,
+            run_time=run_time,
+            lag_ratio=lag_ratio,
+        )
+        return self
+
     def default_color(self):
         return BLUE
 

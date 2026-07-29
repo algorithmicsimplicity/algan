@@ -60,14 +60,16 @@ class Settings:
                     setattr(cls, setter_name, make_setter(name))
 
     def __setattr__(self, name, value):
-        if (
-            getattr(self, "_is_preset", False)
-            and name in type(self)._declared_field_names()
-        ):
+        declared = type(self)._declared_field_names()
+        if getattr(self, "_is_preset", False) and name in declared:
             raise AlganConfigurationError(
                 f"{type(self).__name__} preset fields are immutable; use "
                 f"preset.set({name}=...) to create a modified copy"
             )
+        if not name.startswith("_") and name not in declared:
+            # Without this, ``SETTINGS.video.fps = 60`` would quietly attach a
+            # junk attribute and the real setting would keep its old value.
+            type(self)._check_keys({name: value})
         object.__setattr__(self, name, value)
 
     @classmethod

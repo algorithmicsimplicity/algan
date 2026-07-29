@@ -1,55 +1,94 @@
 from algan.animation_timeline.animation_contexts import *
 
 
-def write(bezier_mob, border_width: float = 1, run_time=None, lag_ratio=None):
-    """Plays an animation of the bezier_mob spawning as if being hand-drawn.
+def _with_opacity(color, opacity):
+    """Set a color's alpha whether it is a ``Color`` or a plain tensor.
+
+    ``Color`` keeps opacity in its last channel and exposes ``set_opacity``,
+    but a border color assigned as a raw tensor (as ``Square`` and friends do)
+    has no such method, so write that channel directly.
+    """
+    set_opacity = getattr(color, "set_opacity", None)
+    if set_opacity is not None:
+        return set_opacity(opacity)
+    color = color.clone()
+    color[..., -1:] = opacity
+    return color
+
+
+def draw_border_then_fill(mobs, border_width: float = 1, run_time=None, lag_ratio=None):
+    """Animate mobs appearing as if hand-drawn: outline first, then fill.
+
+    Each mob's border is traced out, then its fill fades in. Mobs are animated
+    in iteration order, each starting slightly before the previous one
+    finishes, which reads as a hand moving across the screen.
 
     Parameters
     ----------
-    bezier_mob
-        A mob created by ManimMob(mn.Text("some text")).
+    mobs
+        Any iterable of Mobs: the glyphs of a :class:`~.Text`, a
+        :class:`~.Group`'s children, or a list you assembled yourself. Drawn in
+        iteration order.
     border_width
-        The width to set the border to for the drawing animation. If set to None the mob's original
-        border_width will be used.
+        Border width to trace the outline with. Pass None to keep each mob's
+        own border width.
+    run_time
+        Total seconds for the whole sequence. Defaults to 1 second, or 2 for
+        more than 15 mobs.
+    lag_ratio
+        Fraction of one mob's animation that elapses before the next begins.
+        Defaults to a value that keeps the whole sequence legible.
 
     Returns
-    =======
-    :class:`~.Mob`
-        The Mob instance itself, allowing for method chaining.
+    -------
+    list of :class:`~.Mob`
+        The mobs that were animated, in the order they were drawn.
 
     Examples
-    ---------
+    --------
 
-    .. algan:: Example1MAnimationsWrite
+    .. algan:: Example1MAnimationsDrawBorderThenFill
 
         from algan import *
 
-        x = ManimMob(mn.Text('Hello'))
-        write(x)
+        squares = Group([Square() for _ in range(3)]).arrange_in_line(RIGHT).spawn()
+        draw_border_then_fill(squares.children)
 
         Scene.save_video()
 
+    See Also
+    --------
+    :meth:`~algan.mobs.text.Tex.write` : the same animation over a text's glyphs.
     """
-    length = len(bezier_mob.children[2])
+    mobs = list(mobs)
+    if not mobs:
+        return mobs
+
+    animation_manager = mobs[0].animation_manager
+    length = len(mobs)
     if run_time is None:
         run_time = 1 if length < 15 else 2
     if lag_ratio is None:
         lag_ratio = min(4.0 / max(1.0, length), 0.2)
 
-    with Off(animation_manager=bezier_mob.animation_manager):
-        bezier_mob.set_opacity_via_color(0)
-        for character in bezier_mob.children[2]:
+    with Off(animation_manager=animation_manager):
+        for mob in mobs:
+            mob.set_opacity_via_color(0)
             if border_width is not None:
-                character.border_width = border_width
-            character.border_color = character.border_color.set_opacity(0)
+                mob.border_width = border_width
+            mob.border_color = _with_opacity(mob.border_color, 0)
 
-    with Lag(lag_ratio, run_time=run_time, rate_func=rate_funcs.identity, animation_manager=bezier_mob.animation_manager):
-        for character in bezier_mob.children[2]:
-            with Seq(animation_manager=bezier_mob.animation_manager):
-                with Off(animation_manager=bezier_mob.animation_manager):
-                    character.border_color = character.border_color.set_opacity(1)
-                character.draw(1.0)
-                character.set_opacity_via_color(1)
+    with Lag(
+        lag_ratio,
+        run_time=run_time,
+        rate_func=rate_funcs.identity,
+        animation_manager=animation_manager,
+    ):
+        for mob in mobs:
+            with Seq(animation_manager=animation_manager):
+                with Off(animation_manager=animation_manager):
+                    mob.border_color = _with_opacity(mob.border_color, 1)
+                mob.draw(1.0)
+                mob.set_opacity_via_color(1)
 
-    return bezier_mob
-
+    return mobs

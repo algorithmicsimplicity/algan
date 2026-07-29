@@ -18,7 +18,9 @@ Its sections are grouped by lifecycle and responsibility:
     Runtime-adjustable memory budgets and authoring controls.
 
 ``SETTINGS.raytracing``
-    Live renderer and ray-tracing feature configuration.
+    What the renderer produces: sampling, bounces, shadows, lighting and
+    tonemapping. Internal performance switches live on
+    ``SETTINGS.raytracing.experimental``.
 
 Mutating live settings
 ======================
@@ -51,6 +53,32 @@ retains a reference to it:
 .. code-block:: python
 
     SETTINGS.video = HD  # raises AlganConfigurationError
+
+Supported settings versus experimental switches
+===============================================
+
+``SETTINGS.raytracing`` exposes the settings that change what a render *looks
+like*:
+
+.. code-block:: python
+
+    SETTINGS.raytracing.set(samples_per_pixel=4)   # path-traced quality
+    SETTINGS.raytracing.set(max_bounces=6)
+    SETTINGS.raytracing.set(shadows=True)
+    SETTINGS.raytracing.set(tonemap_exposure=1.2)
+
+The renderer also carries a large number of performance and capability
+switches — kernel fusion, rasterization gates, memory ratios, and so on. Those
+are real, but their names and behaviour follow the current kernels and can
+change between releases, so they live behind ``experimental``:
+
+.. code-block:: python
+
+    SETTINGS.raytracing.experimental.set(hybrid_raster=False)
+
+Setting one of them on ``SETTINGS.raytracing`` directly raises an error telling
+you where it lives. ``dir(SETTINGS.raytracing)`` lists only the supported
+settings, and ``dir(SETTINGS.raytracing.experimental)`` lists the rest.
 
 Immutable presets
 =================
@@ -102,11 +130,18 @@ also provide settings explicitly:
 
     with Scene(video_settings=PREVIEW) as scene:
         Square().spawn()
-        scene.save_video("preview.mp4", video_settings=HD)
+        scene.save_video("preview.mp4", HD)
 
-The ``save_video`` override applies to that render. After rendering, the Scene
-is reset to its previous settings. ``save_frame`` likewise restores every
-derived render value after the still has been written.
+The override applies to that render only; afterwards the Scene returns to its
+own settings. ``save_frame`` takes the same argument and likewise restores
+every derived render value after the still has been written.
+
+This per-render form is usually what you want, because it has no ordering
+constraints. ``SETTINGS.video`` is read when a Scene is *constructed*, and
+Algan creates its default Scene as soon as you build your first Mob, so a
+``SETTINGS.video.set(...)`` placed after that point will not affect the Scene
+that is already running. Either set it at the top of your script, or pass the
+settings to ``save_video``.
 
 Initialization-only configuration
 =================================

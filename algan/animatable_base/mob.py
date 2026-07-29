@@ -13,7 +13,7 @@ from algan.animation_timeline.animation_contexts import AnimationContext, NoExtr
 from algan.animatable_base.mob_hierarchy import MobHierarchyMixin
 from algan.animatable_base.mob_orientation import MobOrientationMixin
 from algan.animatable_base.mob_movement import MobMovementMixin
-from algan.animatable_base.mob_layout import MobLayoutMixin, DEFAULT_BUFFER  # noqa: F401 -- DEFAULT_BUFFER re-exported
+from algan.animatable_base.mob_layout import MobLayoutMixin
 from algan.animatable_base.mob_morph import MobMorphMixin
 from algan.animatable_base.mob_materials import (  # noqa: F401 -- exception re-exported
     MobMaterialsMixin,

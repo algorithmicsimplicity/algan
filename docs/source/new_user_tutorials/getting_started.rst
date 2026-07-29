@@ -76,53 +76,158 @@ when it is spawned. Without calling :meth:`~.Animatable.spawn`, your :class:`.Mo
 
 This final line instructs Algan to process all of the previously created animations and mobs you've defined
 in your script and render them into a video file.
-By default, the video will be saved in a `algan_outputs` directory under the same directory
-where you ran your Python script from, and will be saved as a .mp4 file. You can change
-this by providing a full path, or a file extension when you call :func:`~.save_video`.
+
+Where the file goes
+===================
+
+By default, the video is saved into an `algan_outputs` directory next to your
+script, as a .mp4 file. You control that by what you pass to
+:meth:`~algan.scene.Scene.save_video`:
 
 .. code-block:: python
 
-    # Save at path/to/my/video.mov
-    Scene.save_video('path/to/my/video.mov')
+    Scene.save_video("my_video")              # algan_outputs/my_video.mp4
+    Scene.save_video("my_video.mov")          # algan_outputs/my_video.mov
+    Scene.save_video("renders/final.mp4")     # renders/final.mp4
+    Scene.save_video("/tmp/absolute.mp4")     # exactly where you said
+
+A bare name goes to the output directory; anything with a directory in it is
+used exactly as written. If you leave the extension off, Algan picks ``.mp4``
+for you (or ``.mov`` if your background is transparent).
+
+:meth:`~algan.scene.Scene.save_video` returns a small result object describing
+what it did, which is handy in scripts:
+
+.. code-block:: python
+
+    result = Scene.save_video("my_video")
+    print(result.output_path, result.duration_seconds)
 
 Video Settings
 **************
 
-By default, videos are rendered at low quality (TODO insert actual fps and resolution of LQ here),
-To change this, you can use :func:`~.set_video_settings` .
+By default, videos are rendered at low quality: 864x486 at 15 frames per
+second. That keeps your edit-and-preview loop fast. When you want a
+better-looking render, pass a quality preset as the second argument:
 
 .. algan:: GettingStartedHelloWorldHD
 
     from algan import *
-    Scene.set_video_settings(HD)
 
     text = Text('Hello World!', font_size=100)
     text.spawn()
 
-    Scene.save_video("my_video")
+    Scene.save_video("my_video", HD)
 
-.. important::
+Algan provides the following built-in presets:
 
-    You should always set the video settings immediately after importing Algan and before creating any Mobs,
-    because some Mob behaviours depend on the video settings.
+.. list-table::
+   :header-rows: 1
+   :widths: 20 25 15
 
-See :func:`~.save_video` for a description of the available parameters, and see :class:`~.VideoSettings`
-for making custom video settings. Algan provides the following built in video
-settings: PREVIEW, LD, MD, HD, PRODUCTION, UHD.
+   * - Preset
+     - Resolution
+     - Frame rate
+   * - ``PREVIEW``
+     - 704 x 396
+     - 10
+   * - ``LD`` (the default)
+     - 864 x 486
+     - 15
+   * - ``MD``
+     - 1280 x 720
+     - 30
+   * - ``HD``
+     - 1920 x 1080
+     - 30
+   * - ``PRODUCTION``
+     - 2560 x 1440
+     - 60
+   * - ``UHD``
+     - 3840 x 2160
+     - 60
+
+The preset applies to that render only. If you want to change the default for
+every render in your script, set it once on the global :data:`~algan.SETTINGS`
+object instead:
+
+.. code-block:: python
+
+    from algan import *
+
+    SETTINGS.video.set(HD)
+
+Presets are immutable, so you can safely build variations from them without
+disturbing the original:
+
+.. code-block:: python
+
+    HD_60 = HD.set(frames_per_second=60)
+
+See :meth:`~algan.scene.Scene.save_video` for the full list of parameters,
+:class:`~.VideoSettings` for building custom settings from scratch, and
+:doc:`../advanced_user_tutorials/settings` for everything else you can
+configure.
 
 Saving Images
 *************
 
-If you want to save a screen-shot of the current Scene state to an image, you
-can use :func:`~.save_frame` . :func:`~.save_frame` accepts the same parameters as
-:func:`~.save_video`, and defaults to a .png file extension.
+To save a still image of the current scene, use
+:meth:`~algan.scene.Scene.save_frame`. It resolves paths exactly like
+:meth:`~algan.scene.Scene.save_video` does, but defaults to a ``.png``
+extension:
 
-.. algan:: GettingStartedHelloWorldFrame
+.. code-block:: python
 
     from algan import *
-    Scene.set_video_settings(HD)
 
     text = Text('Hello World!', font_size=100)
     text.spawn()
 
-    Scene.save_frame("my_screen_shot")
+    Scene.save_frame("my_screen_shot", HD)
+
+By default it captures the scene as it stands at the current point in your
+script. Pass ``at`` to capture a specific moment, or several at once:
+
+.. code-block:: python
+
+    Scene.save_frame("shot.png", at=2.5)             # shot.png at t=2.5s
+    Scene.save_frame("sheet.png", at=[0, 1, 2])      # sheet_0.png, sheet_1.png, ...
+
+.. note::
+
+    :meth:`~algan.scene.Scene.save_frame` never changes your scene, so you can
+    drop it in anywhere while you are building an animation to see what things
+    look like at that point.
+
+Rendering more than once
+************************
+
+Saving does not consume your scene. You can keep animating afterwards and
+render again:
+
+.. code-block:: python
+
+    from algan import *
+
+    square = Square().spawn()
+    Scene.save_video("part_one")
+
+    square.move(RIGHT)
+    Scene.save_video("part_one_and_two")
+
+Note that Algan records animations onto a single timeline, so the second video
+contains everything the first one did *plus* the new movement. To render
+genuinely independent clips, give each one its own :class:`~algan.scene.Scene`:
+
+.. code-block:: python
+
+    from algan import *
+
+    with Scene() as intro:
+        Text("Chapter 1", scene=intro).spawn()
+        intro.save_video("intro")
+
+    with Scene() as outro:
+        Text("The End", scene=outro).spawn()
+        outro.save_video("outro")

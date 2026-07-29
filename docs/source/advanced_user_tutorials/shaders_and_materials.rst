@@ -238,5 +238,5 @@ example, and the scatter contract documentation in
     *sorted* material-dispatch pipeline (one GPU kernel per material, as in
     Blender Cycles) that renders identically; it is off by default because
     the regular kernel is faster on the built-in materials. Force it on with
-    ``SETTINGS.raytracing.set(wavefront_sort_materials=True)`` if you
+    ``SETTINGS.raytracing.experimental.set(wavefront_sort_materials=True)`` if you
     are experimenting with very many heavy material pipelines.
