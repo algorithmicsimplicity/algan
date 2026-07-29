@@ -907,11 +907,16 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
     as the pass-through. Both split off the same Fresnel energy; only the
     transmitted direction differs.
 
-    ``roughness`` deliberately does not reach the bounce: the reflected ray is
-    always specular-perfect. Blurring it is a sampled effect and this tracer is
-    deterministic at one sample per pixel, so roughness drives only the direct
-    GGX lobe in the shading stage. The Monte Carlo megakernel does jitter the
-    bounce by roughness.
+    ``roughness`` does not reach the bounce HERE: this continuation is a single
+    ray, and one deterministic sample of a glossy lobe is not a blur -- it is a
+    mirror pointing the wrong way. Blurring needs several rays, so it lives
+    where several already exist: the raster resolve's primary hit spreads its
+    ``ANALYTIC_AA_SECONDARY_SAMPLES`` continuations over the material's GGX lobe
+    (``raster_taichi._glossy_reflect``, ``GLOSSY_REFLECTION``). The split happens
+    once, at that primary hit, so the deeper bounces this func drives stay
+    specular-perfect and the cost stays N x the secondary traversal rather than
+    N^depth. The Monte Carlo megakernel jitters every bounce, by a wider
+    normal-perturbation lobe rather than GGX.
 
     A partially covering reflective surface has two continuations: the mirror
     reflection (``alpha * R``) and whatever shows through behind it

@@ -1321,6 +1321,30 @@ about the cost of a splitting path.
     flat          0.289       0.271   0.486     1.07   SHORT
     glass         0.125       0.116   0.235     1.08   SHORT
 
+This table is only meaningful while every quantity in the scene has an apparent
+size INDEPENDENT of `anti_alias_level`. The reference is rendered by this same
+engine at aa=4, so anything sized in internal render pixels rather than output
+pixels differs between the reference and the arms, and the L1 it produces is a
+geometry mismatch wearing an antialiasing costume. It moves the reference and
+all three arms AT ONCE -- including `aliased`, which runs with analytic AA off
+and therefore looks immune -- so a whole config drifting in lockstep is the
+signature to look for, and the first thing to diff is the reference image, not
+the feature under test.
+
+This is not hypothetical: 255e67a dropped the `anti_alias_level` factor from the
+bezier border width, which is consumed as `circuit_meta[_M_BORDER_W] *
+pixel_size` with `pixel_size` built from `camera.screen_height` -- the INTERNAL
+height. Borders became 1/aa thin, the aa=4 reference drew them at a quarter
+width, and the four configs holding a bordered circuit read `flat` 1.263,
+`glass` 0.464, against 0.289 and 0.125 here. `mesh`/`spec`/`mirror` are
+triangle-only and never moved; the split between affected and unaffected configs
+was exactly "contains a bordered bezier circuit". Fixed by scaling the packed
+width by `_rt_projection_aa` (`camera.screen_height / output_screen_height`) --
+the AA actually in force, which is 1 on the analytic route whatever
+`anti_alias_level` was requested, and which is why the requested level is the
+wrong thing to read. The test suite cannot catch this class of bug: it renders
+at PREVIEW, where aa=1 makes internal and output pixels the same thing.
+
 Eight of eleven beat aa=2 outright; the three that fall short do so by 7-9% and
 are all the same class -- the CONTENT of a reflection, a refraction or a specular
 lobe, where four sub-samples of a strongly minified image are simply four
@@ -1372,3 +1396,227 @@ honest options are (a) `ANALYTIC_AA_SECONDARY_SAMPLES = 8`, which helped `flat`
 project (§7), or (c) accept a 7-9% shortfall on reflective, refractive and
 sharply specular content in exchange for beating aa=2 everywhere else and being
 faster overall.
+
+
+================================================================================
+20. ROUGHNESS-DRIVEN GLOSSY REFLECTIONS — 2026-07-29
+================================================================================
+
+§7's list of what coverage cannot antialias had "specular highlights will crawl"
+and "the image inside a reflection" on it. §17 closed the second by sampling the
+reflected image at N sub-pixel positions. This closes something adjacent and
+older: the reflected image was sampled N ways but always in the SAME direction,
+because `roughness` never reached the bounce. A
+`MeshStandardMaterial(roughness=0.18, metalness=0.75)` sphere showed a razor-thin
+mirror arc of the text above it — correctly positioned, correctly tinted (the
+metal lobe's F0 is the albedo), and hard as glass — while its direct highlight
+was already a broad GGX blob. One material, described two contradictory ways.
+
+The fix reuses the rays §17 already spawns: the N continuations that vary in
+sub-pixel POSITION now vary in LOBE DIRECTION too.
+
+20.1 What was actually wrong
+----------------------------
+`roughness` was authored, stored, read and discarded. `raster_first_shade` and
+`raster_shadow_event_build` both did `reflectivity, _rough = _tri_extra_g(...)`;
+`_scatter_impl` did not take it as an argument at all. Only `shading_taichi`'s
+direct lobe ever saw it. So a rough metal and a mirror produced BYTE-IDENTICAL
+reflections — measured, on the repro sphere: the reflected arc at roughness 0.18
+and at 0.60 differed by nothing but the direct shading underneath it.
+
+20.2 Which lobe — and why not the Monte Carlo one
+-------------------------------------------------
+There were two candidates and they are not close to each other.
+
+  * The Monte Carlo megakernel already jitters its bounce:
+    `rd_new = normalize(mirror + roughness * random_unit)`. Cheap, and the
+    obvious thing to copy.
+  * GGX / Trowbridge-Reitz half-vector sampling at `alpha = roughness^2`, which
+    is what `shading_taichi._ggx_distribution` evaluates for the DIRECT
+    highlight.
+
+The second, because the first disagrees with the direct highlight the reflection
+sits beside. At roughness 0.18 GGX puts the median microfacet 1.86° off the
+normal (reflected deflection ~3.7°); the normal-perturbation lobe puts it at
+~10°, a factor of 2.8, and the ratio is not even constant in roughness. A
+reflection blurred 3x wider than the highlight on the same surface is two
+materials in one shader. Scored against the closed-form GGX CDF (§20.5, Part A),
+the MC lobe lands at KS 0.31–0.86 — it is a different distribution, not an
+approximation of this one.
+
+Cost is not the reason either way: both are a handful of transcendentals per tap.
+
+20.3 Where the lobe lives, and where it deliberately does not
+-------------------------------------------------------------
+**Only at the primary hit, in `raster_first_shade`** — the same place, and the
+same rays, as §17's split. All three of its reflection spawns take it (the glass
+branch's reflected share, the pane / `split_refl` slot, and the mirror bounce);
+`_scatter_impl`'s deeper bounces stay specular-perfect. §17.1's reason carries
+over unchanged: the split happens ONCE, so the cost is N x the secondary
+traversal rather than N^depth.
+
+**A single continuation is never perturbed.** A fragment that takes the one-ray
+path — `sec_aa == 1`, energy below `ANALYTIC_AA_SECONDARY_MIN_ENERGY`, or only
+one covered sub-pixel position — keeps the exact mirror direction. This is the
+whole discipline of the feature: one deterministic sample of a lobe is not a
+blur, it is a mirror pointing the wrong way, and it would look worse than the
+sharp reflection it replaced. Blurring needs several rays, so it lives where
+several already exist.
+
+**Transmission is not blurred.** Frosted glass is a separate lobe on a separate
+branch, and the refracted spawn has no in-slot ray to keep coherent. Not built.
+
+20.4 Cost: zero extra rays, zero extra pool slots
+--------------------------------------------------
+The taps are the ones `_sec_positions` already hands the fragment, so the spawn
+count, the `1/sec_n` weights, the split flag and the pool sizing are all
+untouched — measured identical to the pre-glossy build (§20.6). This was the
+binding constraint: an analytic-AA reflective pixel already spawns up to
+`ANALYTIC_AA_SECONDARY_SAMPLES` continuations and a dense mesh measures 6.10 per
+covered pixel against a budget of 5, so there was no room for a lobe with a
+sample budget of its own. Raising `_split_pool_ratio` is the wrong lever anyway
+(§19.2a: the tile is `budget / ratio`, so the ratio scales the tile COUNT).
+
+Reusing the same taps also DECORRELATES the two error sources: each tap now
+differs from its neighbours in sub-pixel origin and in lobe direction at once.
+The pairing is fixed (sub-pixel position `s` always draws lobe stratum `jtap`,
+its ordinal among the positions this fragment covers), which is the desirable
+arrangement rather than an accident — it is a Latin-hypercube pairing of two 1-D
+stratifications, and it guarantees the four sub-pixels never share a lobe
+stratum. The positional term is ±0.25 px against an angular term that reaches
+tens of pixels, so the correlation cannot bias the result either way.
+
+20.5 The per-pixel rotation is not a cosmetic dither
+-----------------------------------------------------
+`GLOSSY_INTERLEAVE` rotates each pixel's fan by a 4x4 Bayer index: the radial
+stratum gets a Cranley-Patterson offset `(b + 0.5)/16` and the azimuth a
+golden-angle multiple of the same `b` (irrational, so the two dimensions do not
+correlate). It reads as an ordered dither, and it was expected to be a
+cosmetic trade — four ghost images against speckle.
+
+It is not. Without it every pixel samples the SAME four radial strata, so the
+whole image is a 4-point quadrature of the lobe: measured KS 0.125 against the
+analytic CDF, which is exactly the 1/(2*4) floor of a four-step empirical CDF,
+at every roughness and at K=8 as well (0.063 = 1/16). It also TRUNCATES the
+lobe: its outermost stratum sits at the 87.5th percentile where the rotated fan
+reaches the 99.2nd, and GGX's tail is heavy. (The plain fan does measure ~18%
+narrower, but do not read that as the truncation: the K=8 arm measures narrower
+by the same margin for the staircase reason in §20.6. The truncation is a
+provable property of the sampler; the measured indictment is the banding.)
+With the rotation the same four rays per
+pixel become a 64-point quadrature over a 4x4 block: KS 0.008, which IS the
+1/(2*64) = 0.0078 floor for 64 points, i.e. the taps are an optimally
+stratified quadrature of the analytic lobe rather than merely a close one.
+(K=8: 0.004 against a 1/256 = 0.0039 floor.)
+
+That is not luck, and it is the crisp reason to keep the rotation. The tap's
+radial coordinate is `u = (j + (b + 0.5)/16) / K` for stratum `j < K` and Bayer
+index `b < 16`, which is `(16j + b + 0.5) / 16K`; since `16j + b` runs over
+0..16K-1 exactly once, the block's taps ARE the 16K quantiles `(i + 0.5)/16K` of
+the lobe — the optimal stratified set, reached with no extra rays. The Bayer
+index is not decorating the fan, it is COMPLETING its stratification; dropping
+it throws away 15 of every 16 strata.
+
+Verified for K = 2, 3, 4 and 8 (exact to the last bit), which matters because K
+is `sec_n`, the number of sub-pixel positions the FRAGMENT covers, not the
+setting. A silhouette fragment owning two positions still gets a perfectly
+stratified 32-point sample of its lobe rather than an arbitrary pair.
+
+Fixed in SCREEN space, so it is a function of the pixel and nothing else: the
+same frame renders identically every time, and the pattern is stationary across
+an animation. It cannot twinkle.
+
+What it costs is visible as a texture in the transition band. With K taps a pixel
+resolves a step edge into K+1 levels, so at the default K=4 a glossy gradient
+is a 5-level ordered dither. That is inherent to four samples, not to the
+rotation; `ANALYTIC_AA_SECONDARY_SAMPLES = 8` buys 9 levels through the existing,
+already-sized mechanism.
+
+20.6 Measured
+-------------
+`benchmarks/_glossy_ggx_check.py` is the ground truth, in two parts, because the
+§19 gate cannot be one: every reflective config in `_aa_match_aa2.py` authors
+roughness 0.0–0.05, and its aa=4 reference is rendered by this same engine — a
+SHARP-reflection reference. It would have scored a correct glossy lobe as a
+regression and a missing one as perfect.
+
+**Part A — the tap set against the closed-form GGX CDF, no renderer involved.**
+Kolmogorov–Smirnov distance between the taps' half-angle distribution and
+`F(theta) = tan^2 / (a^2 + tan^2)`, over a 4x4 pixel block:
+
+    roughness   GGX taps   plain fan   MC normal-perturbation   median half-angle
+      0.05        0.008      0.125            0.861                  0.14°
+      0.18        0.008      0.125            0.533                  1.86°
+      0.35        0.008      0.125            0.315                  6.98°
+      0.60        0.008      0.125            0.538                 19.80°
+      1.00        0.008      0.125            0.562                 45.00°
+    (K=8: 0.004 / 0.063 in the first two columns)
+
+0.008 IS the 1/(2*64) floor for a 64-point set, so the taps are an optimally
+stratified quadrature of the analytic lobe, not merely a close one. The MC
+megakernel's lobe scores 0.32–0.86 — it is a different distribution, which is
+what makes this test discriminating rather than self-confirming.
+
+**Part B — rendered blur width, end to end.** A frame-filling flat mirror
+reflecting a straight bright half-plane placed behind the camera; the 10–90%
+rise of the reflected edge, swept over roughness.
+
+    arm               width exponent   px/rad   spread %   dither RMS   banded %
+    K=4 interleave         2.03          209       3.6        22.20       21.2
+    K=4 plain fan          2.03          175       1.2         2.18       74.2
+    K=8 interleave         2.02          173       2.4        14.53        9.7
+    glossy off              n/a           17      87.5          —           —
+
+    10-90% rise, px:  roughness  0.00   0.10   0.15   0.20   0.28   0.35
+                 K=4 interleave  2.40  10.70  26.37  43.80  84.75 138.91
+                     glossy off  2.40   2.40   2.40   2.40   2.40   2.40
+
+The exponent is the model discriminator: GGX at `alpha = roughness^2` predicts
+2.00 and a normal-perturbation lobe 1.00. All three glossy arms land at 2.02–2.03.
+`px/rad` is the rendered width over the ANALYTIC lobe's own 10–90% deflection —
+pure camera geometry, so it must not vary with roughness; it varies by 1–4%
+across a 12x range in alpha, against 87.5% for the arm that ignores roughness.
+The ~20% offset between the K=4 and K=8 columns is a measurement artifact (the
+10–90 crossings are read off a 16- vs 32-step staircase, and the coarser one
+biases them outward); Part A shows the two sample the identical distribution.
+
+Two absolute goodness-of-fit metrics were tried first and neither discriminated,
+so neither is reported: a fitted pixels-per-radian scale has a degenerate escape
+at scale → 0, where every predicted curve collapses to a step and the arm that
+ignores roughness scores BEST; and a width-normalised ESF shape L1 ends up
+dominated by the 4x4 rotation's residual block wobble, scoring all three arms
+equal to three decimals. The lobe's shape is established by Part A, exactly.
+
+**Pool** (`benchmarks/_glossy_pool_check.py`, the repro sphere at 864x486):
+2.587 continuation slots per covered pixel, BYTE-IDENTICAL with the lobe on and
+off at every roughness, overflow flag 0, `_WAVEFRONT_POOL_RETRIES` 0. The lobe
+redirects existing rays and spawns none, so §19.2a's failure mode is
+structurally out of reach.
+
+**Determinism** (`benchmarks/_glossy_determinism.py`): the same frame rendered
+twice in one process is byte-identical with the lobe on. On moving content the
+per-frame change is measured as max/median of the mean |delta| — a twinkling
+frame shows up as a spike out of line with its neighbours. A spinning glossy
+sphere scores 1.15 with the lobe against 1.56 sharp; an animated roughness ramp
+2.23 against 4.41. The lobe LOWERS temporal spikiness on both, because the
+quantity it blurs is one the sharp arm was resolving abruptly.
+
+**Byte-identity**: `roughness = 0` output is byte-identical to the pre-change
+build, and so is the whole repro sweep with `ALGAN_GLOSSY_REFLECTION=0`.
+
+20.7 What this does not do
+--------------------------
+  * **Refraction stays sharp.** Frosted glass is a separate lobe on the
+    transmitted branch. Not built.
+  * **Deeper bounces stay sharp** — see §20.3. A mirror reflecting a rough metal
+    shows that metal's reflection unblurred.
+  * **Four taps is four taps.** A glossy transition resolves into K+1 levels, so
+    at the default K=4 it is a 5-level ordered dither (RMS 22/255 measured on a
+    black-to-white reflected edge, the worst case there is). High-contrast
+    minified content — bright text reflected in a rough sphere — therefore
+    speckles. `ANALYTIC_AA_SECONDARY_SAMPLES = 8` halves it (14.5) through the
+    existing already-sized mechanism, and is the honest knob; there is no way to
+    make four samples of a wide lobe smooth, and this is the same wall §19.5
+    describes for the content of any minified secondary image.
+  * **The classic wavefront primary path** gets none of this, like §17 before
+    it: the lobe lives in `raster_first_shade`.

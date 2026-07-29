@@ -663,6 +663,60 @@ ANALYTIC_AA_SECONDARY_SAMPLES = int(
 ANALYTIC_AA_SECONDARY_MIN_ENERGY = float(
     os.environ.get("ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY", "0.12"))
 
+# Roughness-driven GLOSSY REFLECTION for the deterministic tracer: a rough
+# reflector's continuation rays spread over a GGX lobe instead of all taking the
+# one mirror direction, so a reflected image blurs as roughness rises. Without
+# it a MeshStandardMaterial(roughness=0.18) shows a razor-thin reflection
+# beside a broad direct highlight -- the same material described two ways.
+#
+# The lobe is sampled by the continuations the fragment ALREADY spawns
+# (ANALYTIC_AA_SECONDARY_SAMPLES): the taps that vary in sub-pixel position now
+# vary in lobe direction too, so this costs no extra rays and no extra pool
+# slots. It therefore only reaches a fragment that takes the secondary-sampling
+# branch; a fragment with one tap stays specular-perfect (blurring needs more
+# than one sample -- a single deterministic tap is not a blur, it is a mirror
+# pointing the wrong way).
+#
+# Deterministic by construction: the taps are a stratified GGX radial CDF plus a
+# golden-angle azimuth, indexed by tap number, with an optional per-pixel
+# Bayer rotation. No ti.random anywhere, so the same frame renders byte-identical
+# every time and an animation cannot hiss. Roughness below
+# ``_GLOSSY_MIN_ROUGHNESS`` (raster_taichi) takes the untouched mirror path, so
+# a true mirror is byte-identical to the pre-glossy build.
+#
+# See DESIGN_analytic_aa.md ss20.
+GLOSSY_REFLECTION = os.environ.get("ALGAN_GLOSSY_REFLECTION", "1") == "1"
+
+# Rotate each pixel's lobe fan by a 4x4 Bayer index (interleaved sampling), so
+# four taps read as a smear rather than four ghost copies of the reflected
+# image: neighbouring pixels sample different parts of the lobe and the eye
+# integrates across them. Fixed in SCREEN space, hence still frame-independent
+# -- the pattern does not swim, twinkle or depend on time. Off restores the
+# plain per-fragment fan (kept so the parity script can measure the difference).
+GLOSSY_INTERLEAVE = os.environ.get("ALGAN_GLOSSY_INTERLEAVE", "1") == "1"
+
+
+def set_glossy_reflection(enabled, *, interleave=None):
+    """Toggle roughness-driven glossy reflections (see ``GLOSSY_REFLECTION``)."""
+    global GLOSSY_REFLECTION, GLOSSY_INTERLEAVE
+    GLOSSY_REFLECTION = bool(enabled)
+    if interleave is not None:
+        GLOSSY_INTERLEAVE = bool(interleave)
+
+
+def glossy_reflection_mode():
+    """Live glossy-lobe mode: 0 off, 1 fan only, 2 fan + per-pixel rotation.
+
+    Read at call time (never imported by value) and returned as an int, because
+    it reaches the resolve as a TEMPLATE value: each mode compiles its own
+    kernel variant, so the offline cache -- which does not invalidate on
+    ``@ti.func`` edits, let alone on a Python constant -- cannot serve one
+    mode's kernel for another.
+    """
+    if not GLOSSY_REFLECTION:
+        return 0
+    return 2 if GLOSSY_INTERLEAVE else 1
+
 # Minimum half-width, in pixels, of a filled circuit's drawn region. This
 # replaces the classic ``outline_w = 0.6 * pixel_size`` fill dilation, whose
 # purpose is to keep sub-pixel features (hairlines, thin glyph stems, degenerate

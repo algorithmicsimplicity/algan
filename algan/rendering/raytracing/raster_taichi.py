@@ -55,6 +55,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _M_IOR,
     _M_NORMAL,
     _M_REFLECTIVITY,
+    _M_ROUGHNESS,
     _M_TRANSMISSION,
     BARYCENTRIC_EPSILON,
     DEPTH_TIE_EPSILON,
@@ -1472,6 +1473,125 @@ def _sec_positions(msk, n: ti.template()):
     return pm, cnt
 
 
+# Roughness below this leaves the reflection specular-perfect, so a mirror is
+# BYTE-IDENTICAL to the pre-glossy build (the test baselines depend on it) and
+# so does anything a user authored as a mirror. At this value the GGX width is
+# alpha = 1e-8, i.e. a deflection of ~1e-8 radians -- far below a pixel at any
+# resolution -- so nothing visible is being gated away.
+#
+# Deliberately a module constant rather than a setting: it is baked into the
+# compiled kernel and is NOT part of any template argument, so an env knob would
+# let the offline cache serve a kernel built for a different threshold (the same
+# trap ``_AA_SAMPLES`` carries).
+_GLOSSY_MIN_ROUGHNESS = 1e-4
+_GLOSSY_INV_16 = 1.0 / 16.0
+
+
+@ti.func
+def _bayer4(px, py):
+    """The canonical 4x4 ordered-dither index (0..15) of a pixel.
+
+    ``M4[y][x] = 4*m2(y&1, x&1) + m2(y>>1, x>>1)`` with the 2x2 base
+    ``[[0, 2], [3, 1]]`` written as ``m2(a, b) = 2*(a^b) + a``. A permutation of
+    0..15 over every 4x4 block, arranged so neighbours are maximally far apart
+    in index -- which is the property wanted here, since the index chooses which
+    part of the reflection lobe the pixel samples.
+    """
+    yl = py & 1
+    xl = px & 1
+    yh = (py >> 1) & 1
+    xh = (px >> 1) & 1
+    return 4 * (2 * (yl ^ xl) + yl) + (2 * (yh ^ xh) + yh)
+
+
+@ti.func
+def _glossy_rotation(px, py, interleave: ti.template()):
+    """Per-pixel offsets that rotate a fragment's lobe fan.
+
+    Returns ``(radial_offset in (0,1), azimuth_offset in radians)``. With
+    ``interleave`` off both are fixed, so every pixel samples the same few lobe
+    directions and a four-tap fan reads as four ghost copies of the reflected
+    image. With it on, a 4x4 Bayer index scatters the taps: the radial stratum
+    is offset by a Cranley-Patterson rotation (16 sub-strata inside each of the
+    fragment's own strata) and the azimuth by a golden-angle multiple of the
+    same index, which decorrelates the two dimensions from each other.
+
+    This is not decoration. The radial coordinate a tap ends up with is
+    ``(j + (b + 0.5)/16) / k``, i.e. ``(16j + b + 0.5) / 16k``, and ``16j + b``
+    runs over ``0 .. 16k-1`` exactly once -- so a 4x4 block's taps ARE the
+    ``16k`` quantiles of the lobe, the optimal stratified set, for no extra
+    rays. Verified bit-exact for k = 2, 3, 4 and 8, which matters because ``k``
+    is how many sub-pixel positions the FRAGMENT covers, not the setting: a
+    silhouette fragment owning two positions still samples its lobe at a perfect
+    32 quantiles. Without the rotation every pixel repeats the same ``k``
+    strata, so the whole image is a k-point quadrature -- measurably so
+    (``benchmarks/_glossy_ggx_check.py`` Part A: KS 0.125 against the analytic
+    CDF at k=4, exactly the 1/(2k) floor, against 0.008 with it).
+
+    Fixed in SCREEN space, so it is a function of the pixel and nothing else:
+    the same frame renders identically every time, and across an animation the
+    pattern is stationary -- it cannot twinkle, which a time- or object-varying
+    pattern would.
+    """
+    r_off = 0.5
+    ang_off = 0.0
+    if ti.static(interleave):
+        b = ti.cast(_bayer4(px, py), ti.f32)
+        r_off = (b + 0.5) * _GLOSSY_INV_16
+        ang_off = _GOLDEN_ANGLE * b
+    return r_off, ang_off
+
+
+@ti.func
+def _glossy_reflect(rd, n, roughness, j, k, r_off, ang_off):
+    """Tap ``j`` of ``k`` on the GGX reflection lobe about normal ``n``.
+
+    Samples the GGX / Trowbridge-Reitz normal distribution for a MICROFACET
+    NORMAL and reflects ``rd`` about it, which is the same lobe
+    ``shading_taichi._stage_standard`` uses for the direct highlight, at the
+    same ``alpha = roughness^2``. Matching it is the point: a reflection blurred
+    by a different width than the highlight beside it describes two different
+    materials. (The Monte Carlo megakernel's ``rd + roughness * random_unit``
+    is a NORMAL PERTURBATION, a visibly wider and differently shaped lobe --
+    ~2.8x the angular width at roughness 0.18 -- and is not what this follows.)
+
+    Deterministic: the radial coordinate is the stratum ``(j + r_off) / k`` of
+    the inverted GGX CDF and the azimuth is ``GOLDEN_ANGLE * j + ang_off``, the
+    same fixed low-discrepancy construction the soft-shadow fan uses. Nothing
+    here reads ``ti.random``, so an animation cannot hiss between frames.
+
+    Every tap carries an equal share of the reflected throughput and the caller
+    divides by ``k``, so this redistributes the mirror ray's energy over the
+    lobe without creating or destroying any: the NDF is sampled for DIRECTIONS
+    only, and the per-tap Fresnel/geometry reweighting a full importance-sampled
+    GGX estimator would apply is deliberately omitted (it would change the total
+    at grazing, and the surrounding four-way split has already spent the
+    Fresnel term).
+
+    A tap that lands below the horizon is reflected back across ``n`` -- the
+    same repair the Monte Carlo path makes -- so the returned direction always
+    agrees with the ``n``-facing origin offset the caller pairs it with.
+    """
+    a = roughness * roughness
+    u1 = (ti.cast(j, ti.f32) + r_off) / ti.cast(k, ti.f32)
+    # Inverted GGX radial CDF: tan^2(theta) = a^2 * u / (1 - u).
+    tan2 = (a * a) * u1 / ti.max(1.0 - u1, 1e-6)
+    cos_t = 1.0 / ti.sqrt(1.0 + tan2)
+    sin_t = ti.sqrt(ti.max(1.0 - cos_t * cos_t, 0.0))
+    ang = _GOLDEN_ANGLE * ti.cast(j, ti.f32) + ang_off
+    aref = ti.math.vec3(1.0, 0.0, 0.0)
+    if ti.abs(n[0]) > 0.9:
+        aref = ti.math.vec3(0.0, 1.0, 0.0)
+    t1 = n.cross(aref).normalized()
+    t2 = n.cross(t1)
+    h = (t1 * (ti.cos(ang) * sin_t) + t2 * (ti.sin(ang) * sin_t)
+         + n * cos_t).normalized()
+    out = (rd - 2.0 * rd.dot(h) * h).normalized()
+    if out.dot(n) <= 0.0:
+        out = (out - 2.0 * out.dot(n) * n).normalized()
+    return out
+
+
 @ti.func
 def _jittered_surface_sample(f, px, py, jx, jy, gen_meta: ti.template(),
                              is_bez, prim, hit_point, nrm,
@@ -2312,6 +2432,7 @@ def raster_first_shade(
         ss_enabled: ti.template(), has_bez: ti.template(),
         aa_bez: ti.template(), aa_tri: ti.template(), aa_grp: ti.template(),
         sec_aa: ti.template(), sec_min_energy: ti.f32,
+        glossy: ti.template(),
         shadows: ti.template(), prefill: ti.template(),
         covered: ti.template(),
         covered_idx: ti.types.ndarray(), num_covered: int,
@@ -2414,6 +2535,20 @@ def raster_first_shade(
     hit, so deeper bounces do not multiply. N == 1 compiles to exactly the
     single-ray code and is byte-identical.
 
+    ``glossy`` (compile-time, ``GLOSSY_REFLECTION``; 1 fan, 2 fan + per-pixel
+    rotation): those N continuations vary in LOBE DIRECTION as well as sub-pixel
+    position, spread over the material's GGX lobe (``_glossy_reflect``), so a
+    rough reflector's reflected image blurs with its roughness instead of
+    staying razor-sharp beside a broad direct highlight. It reuses the taps that
+    already exist, so it costs no extra rays and no extra pool slots -- and it
+    therefore reaches only a fragment taking the secondary-sampling branch; one
+    tap stays specular-perfect, because a single deterministic sample of a lobe
+    is not a blur. Roughness below ``_GLOSSY_MIN_ROUGHNESS`` takes the untouched
+    mirror expression, so a mirror is byte-identical. The blur applies to
+    REFLECTED continuations only; a refracted ray through rough glass stays
+    unbent-sharp (a separate lobe, and the transmitted branch has no `placed`
+    in-slot ray to keep coherent).
+
     ``layer_offsets`` is the tracer's 8-wide variant: [2..5] environment map
     placement, [6] far clip (0 = off), [7] max_bounces.
     """
@@ -2459,6 +2594,12 @@ def raster_first_shade(
                                gen_meta[2], gen_meta[3],
                                cam_origin, screen_point,
                                pixel_basis_x, pixel_basis_y)
+        # Which part of the reflection lobe this pixel's taps sample. Hoisted
+        # out of the fragment walk because it depends on the PIXEL alone.
+        g_roff = 0.5
+        g_aoff = 0.0
+        if ti.static(glossy != 0):
+            g_roff, g_aoff = _glossy_rotation(px, py, ti.static(glossy == 2))
 
         acc = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
         # Under analytic coverage ``weight`` carries only the CHROMATIC part of
@@ -2584,6 +2725,9 @@ def raster_first_shade(
             color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
             alpha = 0.0
             reflectivity = 0.0
+            # Surface roughness, which under ``glossy`` spreads the reflection
+            # over a GGX lobe instead of a single mirror direction.
+            rough = 0.0
             ior = 0.0
             T = 0.0
             albedo3 = ti.math.vec3(0.0, 0.0, 0.0)
@@ -2623,6 +2767,7 @@ def raster_first_shade(
                         circuit_colors, circuit_border_colors)
                     albedo3 = ti.math.vec3(color[0], color[1], color[2])
                     reflectivity = circuit_meta[cm, circuit, _M_REFLECTIVITY]
+                    rough = circuit_meta[cm, circuit, _M_ROUGHNESS]
                     ior = circuit_meta[cm, circuit, _M_IOR]
                     T = circuit_meta[cm, circuit, _M_TRANSMISSION]
             if not fetched_bez:
@@ -2637,7 +2782,7 @@ def raster_first_shade(
                 color, alpha = _tri_color_g(0, f, prim, w0, a, b, tri_colors,
                                             col_row, tri_uvs, tri_tex_meta,
                                             textures, num_colored_triangles)
-                reflectivity, _rough = _tri_extra_g(
+                reflectivity, rough = _tri_extra_g(
                     0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
                     tri_tex_meta, textures, num_colored_triangles)
                 # Raw albedo, saved before fragment shading replaces ``color``.
@@ -2834,6 +2979,7 @@ def raster_first_shade(
                         # what the single ray carried.
                         weight *= refl_energy * (1.0 / ti.cast(sec_n, ti.f32))
                         placed = False
+                        jtap = 0
                         for s in ti.static(range(sec_aa)):
                             if (sec_pm >> s) & 1:
                                 rdj, hpj, nj, _b1, _b2 = \
@@ -2851,6 +2997,12 @@ def raster_first_shade(
                                     nj = -nj
                                 rdr = (rdj - 2.0 * rdj.dot(nj)
                                        * nj).normalized()
+                                if ti.static(glossy != 0):
+                                    if rough > _GLOSSY_MIN_ROUGHNESS:
+                                        rdr = _glossy_reflect(
+                                            rdj, nj, rough, jtap, sec_n,
+                                            g_roff, g_aoff)
+                                jtap += 1
                                 org = hpj + nj * (10.0 * MIN_HIT_DISTANCE)
                                 if placed:
                                     _spawn_pool_ray(
@@ -2894,6 +3046,7 @@ def raster_first_shade(
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
                             and (sec_n > 1):
                         wsub = wt * (1.0 / ti.cast(sec_n, ti.f32))
+                        jtap = 0
                         for s in ti.static(range(sec_aa)):
                             if (sec_pm >> s) & 1:
                                 rdj, hpj, nj, _b1, _b2 = \
@@ -2909,12 +3062,19 @@ def raster_first_shade(
                                         pixel_basis_x, pixel_basis_y)
                                 if nj.dot(rdj) > 0.0:
                                     nj = -nj
+                                rdr = (rdj - 2.0 * rdj.dot(nj)
+                                       * nj).normalized()
+                                if ti.static(glossy != 0):
+                                    if rough > _GLOSSY_MIN_ROUGHNESS:
+                                        rdr = _glossy_reflect(
+                                            rdj, nj, rough, jtap, sec_n,
+                                            g_roff, g_aoff)
+                                jtap += 1
                                 _spawn_pool_ray(
                                     rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                                     rs_pix, rs_alloc,
                                     hpj + nj * (10.0 * MIN_HIT_DISTANCE),
-                                    (rdj - 2.0 * rdj.dot(nj)
-                                     * nj).normalized(),
+                                    rdr,
                                     wsub, base_dist + t_hit, bounces_left - 1,
                                     processed, pixel, r, compact)
                     else:
@@ -2961,6 +3121,7 @@ def raster_first_shade(
                     # for why that preserves the pixel's totals).
                     weight *= refl_energy * (1.0 / ti.cast(sec_n, ti.f32))
                     placed = False
+                    jtap = 0
                     for s in ti.static(range(sec_aa)):
                         if (sec_pm >> s) & 1:
                             rdj, hpj, nj, _b1, _b2 = _jittered_surface_sample(
@@ -2975,6 +3136,12 @@ def raster_first_shade(
                             if nj.dot(rdj) > 0.0:
                                 nj = -nj
                             rdr = (rdj - 2.0 * rdj.dot(nj) * nj).normalized()
+                            if ti.static(glossy != 0):
+                                if rough > _GLOSSY_MIN_ROUGHNESS:
+                                    rdr = _glossy_reflect(
+                                        rdj, nj, rough, jtap, sec_n,
+                                        g_roff, g_aoff)
+                            jtap += 1
                             org = hpj + nj * (10.0 * MIN_HIT_DISTANCE)
                             if placed:
                                 _spawn_pool_ray(

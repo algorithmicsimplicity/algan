@@ -1094,6 +1094,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
     max_samples_per_segment = 512
+    _rt_projection_aa = 1.0
 
     def project_to_screen(self, camera, light_sources):
         corners = self.corners.float().contiguous()  # [Tc, S, 4, 3]
@@ -1107,6 +1108,12 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                             num_frames).to(device)
         sb = _expand_frames(_flat_frames(camera.screen_basis, (3, 3)),
                             num_frames).to(device)
+
+        # Ratio of the internal render resolution to the output resolution: the
+        # supersampling factor actually in force for this batch, which is 1 on
+        # the analytic-AA route regardless of the requested anti_alias_level.
+        self._rt_projection_aa = float(camera.screen_height) / float(
+            getattr(camera, "output_screen_height", camera.screen_height))
 
         num_samples = self._compute_samples_per_segment(
             corners, cam_o, sp, sb, camera.screen_height,
@@ -1371,8 +1378,13 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             return basis / basis.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-12)
 
         basis1, basis2 = scaled(self.basis1), scaled(self.basis2)
+        # ``border_width`` is authored in OUTPUT pixels, but every consumer
+        # scales it by ``pixel_world_scale``, which is world-per-INTERNAL-pixel
+        # (built from ``camera.screen_height``).  Convert here, so a supersampled
+        # render draws the same apparent border as an analytic one instead of a
+        # 1/aa-thin sliver.
         border_width = self.border_width.float().reshape(
-            self.border_width.shape[0], C)
+            self.border_width.shape[0], C) * self._rt_projection_aa
         grid_w = self.grid_width.float().reshape(self.grid_width.shape[0], C)
         grid_h = self.grid_height.float().reshape(self.grid_height.shape[0], C)
         reflectivity = self.reflectivity.float()
