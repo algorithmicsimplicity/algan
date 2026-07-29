@@ -1399,8 +1399,14 @@ faster overall.
 
 
 ================================================================================
-20. ROUGHNESS-DRIVEN GLOSSY REFLECTIONS — 2026-07-29
+20. ROUGHNESS-DRIVEN GLOSSY REFLECTIONS — 2026-07-29 (DISABLED)
 ================================================================================
+
+Roughness-driven gloss is currently disabled by setting _GLOSSY_MIN_ROUGHNESS = 100
+because it caused extreme speckling across frames, in the future it may be revisited
+and enabled once it can be made stable across time.
+
+...........
 
 §7's list of what coverage cannot antialias had "specular highlights will crawl"
 and "the image inside a reflection" on it. §17 closed the second by sampling the
