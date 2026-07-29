@@ -2422,8 +2422,11 @@ def wavefront_shade(
                                 mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
                                 tri_pos, tri_uvs, tri_tex_meta, textures,
                                 num_colored_triangles)
+                        # A traversal hit IS the centre ray's intersection, so
+                        # the position it always used is passed through
+                        # unchanged (see _shade_tri_hit).
                         color = _shade_tri_hit(frag_pipelines, f, prim, a, b, rd,
-                                               t_hit, ro, tri_pos, sn,
+                                               ro + t_hit * rd, tri_pos, sn,
                                                tri_mat_id, tri_mat,
                                                light_pos, light_col, num_lights,
                                                color, shadows, vis)

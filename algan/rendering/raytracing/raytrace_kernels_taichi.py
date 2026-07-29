@@ -1866,7 +1866,7 @@ def _bezier_normal(f, circuit, circuit_meta: ti.template()):
 
 
 @ti.func
-def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
+def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, pos,
                    tri_pos: ti.template(), shade_normal,
                    tri_mat_id: ti.template(), tri_mat: ti.template(),
                    light_pos: ti.template(), light_col: ti.template(),
@@ -1881,7 +1881,15 @@ def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
     shading. ``albedo`` is the interpolated (raw) base RGB + glow;
     ``tri_mat_id``/``tri_mat`` carry the per-primitive pipeline id and parameter
     block; returns the shaded RGB + glow. ``vis`` holds the caller's per-light
-    shadow visibilities (used iff ``shadows``)."""
+    shadow visibilities (used iff ``shadows``).
+
+    ``pos`` is the WORLD HIT POSITION, passed in rather than rebuilt here as
+    ``ro + t_hit * rd``: under analytic coverage a partially covering raster
+    fragment's ``t_hit`` is measured along the sample-centroid ray, not the
+    pixel-centre one, so that expression does not name a point on the triangle
+    (see ``raster_taichi._tri_surface_point``). Ray-traced callers pass exactly
+    ``ro + t_hit * rd`` and are unchanged. ``rd`` is still the view ray and only
+    supplies the view DIRECTION, whose sub-pixel error is ~0.05 degrees."""
     tp = f % tri_pos.shape[0]
     v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
                       tri_pos[tp, prim, 2])
@@ -1890,7 +1898,6 @@ def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
     v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
                       tri_pos[tp, prim, 8])
     face_n = (v1 - v0).cross(v2 - v0)
-    pos = ro + t_hit * rd
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
     return _run_frag_pipeline(frag_pipelines, prim, f, pos, -rd, shade_normal,
                               face_n, rgb,

@@ -1620,6 +1620,39 @@ def _sub_pixel_origin(spos, dpx, dpy, s):
 
 
 @ti.func
+def _tri_surface_point(f, prim, w0, a, b, tri_pos: ti.template()):
+    """The fragment's hit point, rebuilt from its own barycentrics.
+
+    Under analytic coverage a PARTIALLY covering fragment's depth is evaluated
+    at the CENTROID OF THE SAMPLES IT OWNS, not at the pixel centre (see
+    ``_ss_pixel``) -- so ``ro + t_hit * rd`` along the CENTRE ray is a point
+    that lies on neither the triangle nor, in general, the surface: it is the
+    centre ray advanced to a distance measured along a different ray. On a
+    closed mesh that lands it up to a facet-depth INSIDE the geometry, past the
+    shared edge and below the neighbouring facet, and the fixed
+    ``10 * MIN_HIT_DISTANCE`` normal offset applied to every secondary origin is
+    far too small to escape. The continuation then re-hits the surface it just
+    left, at grazing incidence where Fresnel goes to one, and the pixel gets a
+    bright desaturated spike -- speckle scattered over every smooth-shaded mesh
+    with a reflective material.
+
+    ``w0/a/b`` are the barycentrics ``_ss_pixel`` already projected onto the
+    simplex, so this reproduces exactly the point whose distance became
+    ``t_hit`` and is inside the triangle by construction. Bezier circuits keep
+    the centre-ray form: their coverage is areal, with no sub-pixel position,
+    and their ``t`` is a centre-ray intersection to begin with.
+    """
+    tp = f % tri_pos.shape[0]
+    v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
+                      tri_pos[tp, prim, 2])
+    v1 = ti.math.vec3(tri_pos[tp, prim, 3], tri_pos[tp, prim, 4],
+                      tri_pos[tp, prim, 5])
+    v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
+                      tri_pos[tp, prim, 8])
+    return w0 * v0 + a * v1 + b * v2
+
+
+@ti.func
 def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
                     rs_acc: ti.template(), rs_sca: ti.template(),
                     rs_int: ti.template(), rs_pix: ti.template(),
@@ -1934,10 +1967,29 @@ def raster_shadow_event_build(
                     z_shadow_id[r] = eid
                 else:
                     frag_shadow_id[idx] = eid
-                snrm, fnrm = _tri_shadow_normals(
-                    f, ref, a, b, rd, tri_pos, tri_norm, tri_uvs,
-                    tri_tex_meta, textures, num_colored_triangles)
+                # Rebuilt from the fragment's own barycentrics, so a partially
+                # covering fragment's shadow origin sits on ITS triangle rather
+                # than wherever the centre ray reaches its centroid-measured
+                # depth (see _tri_surface_point). Off analytic coverage every
+                # fragment is a full centre hit and the two agree exactly, so
+                # that path stays byte-identical.
                 hp = ro + t_hit * rd
+                srd = rd
+                if ti.static(aa_tri):
+                    hp = _tri_surface_point(f, ref, w0, a, b, tri_pos)
+                    if cov < AA_FULL_COVERAGE:
+                        srd = (hp - ro).normalized()
+                # The facing test must use the SAME ray the resolve does
+                # (``surf_rd`` in raster_first_shade). Both kernels decide which
+                # side of this fragment the viewer is on -- the resolve to
+                # orient the shading and reflection normal, this one to pick the
+                # side the shadow origin is offset towards. Inside the ~0.04
+                # degree band where the two rays straddle the horizon they can
+                # disagree, and then the shadow origin is pushed THROUGH the
+                # surface and the ray self-shadows the pixel it came from.
+                snrm, fnrm = _tri_shadow_normals(
+                    f, ref, a, b, srd, tri_pos, tri_norm, tri_uvs,
+                    tri_tex_meta, textures, num_colored_triangles)
                 for k in ti.static(range(3)):
                     event_pos[eid, k] = hp[k]
                     event_snrm[eid, k] = snrm[k]
@@ -2538,6 +2590,28 @@ def raster_first_shade(
             prim = 0
             circuit = 0
             fetched_bez = False
+            # Where this fragment actually sits on the surface -- the point that
+            # shades and that its secondary rays leave from. A partially
+            # covering triangle measured its depth at the centroid of the
+            # samples it owns, so advancing the PIXEL-CENTRE ray to that depth
+            # names a point on neither the triangle nor the surface (see
+            # _tri_surface_point); rebuilding it from the fragment's own
+            # barycentrics puts it back on the triangle. Circuits and the
+            # non-analytic path keep the centre-ray form and stay
+            # byte-identical.
+            surf_pos = ro + t_hit * rd
+            # ...and the ray that REACHES it. A partially covering fragment is
+            # represented at its sample centroid, so the pixel-centre direction
+            # no longer points from the camera to the point being shaded: view
+            # vector, Fresnel, and the reflected/refracted continuation would
+            # all be evaluated for a ray that does not pass through the origin
+            # they start from. That is the same mismatch as the position bug
+            # above, one order smaller, and it is exactly recoverable -- the
+            # centroid ray is the one whose intersection produced surf_pos.
+            # Fully covered fragments and circuits keep the generated direction
+            # bit-for-bit: their centroid IS the pixel centre, so recomputing
+            # would only add rounding noise where nothing was wrong.
+            surf_rd = rd
             if ti.static(has_bez):
                 if is_bez:
                     fetched_bez = True
@@ -2556,6 +2630,10 @@ def raster_first_shade(
                 # excluded by the raster gate); port of the drain loop's
                 # htype == 1 branch.
                 prim = prim_raw
+                if ti.static(aa_tri):
+                    surf_pos = _tri_surface_point(f, prim, w0, a, b, tri_pos)
+                    if cov < AA_FULL_COVERAGE:
+                        surf_rd = (surf_pos - ro).normalized()
                 color, alpha = _tri_color_g(0, f, prim, w0, a, b, tri_colors,
                                             col_row, tri_uvs, tri_tex_meta,
                                             textures, num_colored_triangles)
@@ -2600,7 +2678,8 @@ def raster_first_shade(
                     # -- the residual it was aimed at turned out to be the
                     # un-antialiased ray-cast fallback instead (ss19).
                     color = _shade_tri_hit(frag_pipelines, f, prim, a, b,
-                                           rd, t_hit, ro, tri_pos, sn,
+                                           surf_rd, surf_pos,
+                                           tri_pos, sn,
                                            tri_mat_id, tri_mat,
                                            light_pos, light_col,
                                            num_lights, color, shadows, vis)
@@ -2636,7 +2715,8 @@ def raster_first_shade(
                         tri_tex_meta, textures, num_colored_triangles
                     ).normalized()
 
-            R, diel_pass = _material_reflectance(rd, normal, reflectivity,
+            R, diel_pass = _material_reflectance(surf_rd, normal,
+                                                 reflectivity,
                                                  ior, albedo3)
             if bounces_left <= 0:
                 R = ti.math.vec3(0.0, 0.0, 0.0)
@@ -2686,7 +2766,7 @@ def raster_first_shade(
                 wt = weight * trans_energy * tint
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
                 if wt_max > MIN_WEIGHT:
-                    hp = ro + t_hit * rd
+                    hp = surf_pos
                     tp = f % tri_pos.shape[0]
                     v0 = ti.math.vec3(tri_pos[tp, prim, 0],
                                       tri_pos[tp, prim, 1],
@@ -2729,7 +2809,7 @@ def raster_first_shade(
                                     bounces_left - 1, processed, pixel, r,
                                     compact)
                     else:
-                        rdt = _refract_ray(rd, normal, ior)
+                        rdt = _refract_ray(surf_rd, normal, ior)
                         _spawn_pool_ray(
                             rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                             rs_alloc,
@@ -2739,9 +2819,9 @@ def raster_first_shade(
                             bounces_left - 1, processed, pixel, r, compact)
                 if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
                     nref = normal
-                    if nref.dot(rd) > 0.0:
+                    if nref.dot(surf_rd) > 0.0:
                         nref = -nref
-                    hit_point = ro + t_hit * rd
+                    hit_point = surf_pos
                     if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
                             and (sec_n > 1):
                         # Supersample the reflected image: one ray per sub-pixel
@@ -2783,7 +2863,8 @@ def raster_first_shade(
                                     ro = org
                                     placed = True
                     else:
-                        rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                        rd = (surf_rd - 2.0 * surf_rd.dot(nref)
+                              * nref).normalized()
                         ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
                         weight *= refl_energy
                     base_dist += t_hit
@@ -2807,9 +2888,9 @@ def raster_first_shade(
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
                 if wt_max > MIN_WEIGHT:
                     nref = normal
-                    if nref.dot(rd) > 0.0:
+                    if nref.dot(surf_rd) > 0.0:
                         nref = -nref
-                    hp = ro + t_hit * rd
+                    hp = surf_pos
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
                             and (sec_n > 1):
                         wsub = wt * (1.0 / ti.cast(sec_n, ti.f32))
@@ -2841,7 +2922,8 @@ def raster_first_shade(
                             rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                             rs_alloc,
                             hp + nref * (10.0 * MIN_HIT_DISTANCE),
-                            (rd - 2.0 * rd.dot(nref) * nref).normalized(),
+                            (surf_rd - 2.0 * surf_rd.dot(nref)
+                             * nref).normalized(),
                             wt, base_dist + t_hit, bounces_left - 1,
                             processed, pixel, r, compact)
                 if ti.static(aa_grp):
@@ -2868,9 +2950,9 @@ def raster_first_shade(
                     weight *= cover3 + trans_energy * tint
             elif (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
                 nref = normal
-                if nref.dot(rd) > 0.0:
+                if nref.dot(surf_rd) > 0.0:
                     nref = -nref
-                hit_point = ro + t_hit * rd
+                hit_point = surf_pos
                 if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
                         and (sec_n > 1):
                     # Mirror: one reflected ray per sub-pixel position this
@@ -2905,7 +2987,8 @@ def raster_first_shade(
                                 ro = org
                                 placed = True
                 else:
-                    rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                    rd = (surf_rd - 2.0 * surf_rd.dot(nref)
+                          * nref).normalized()
                     ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
                     weight *= refl_energy
                 base_dist += t_hit

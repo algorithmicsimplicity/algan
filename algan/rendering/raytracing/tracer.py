@@ -252,6 +252,24 @@ def _split_pool_ratio(splitting, merged, analytic_raster=False,
     pass-through slot; allocating ``N + 1`` instead of the glass path's ``2N``
     admits larger primary tiles without weakening the overflow retry. A weak
     dielectric sheen emits only one reflection and needs two total slots.
+
+    **This is an ESTIMATE of the average, not a bound, and the overflow retry
+    is load-bearing.** ``N + 1`` is exact for ONE reflective fragment per
+    pixel, which is what a non-analytic raster pixel has; analytic triangle
+    coverage puts SEVERAL partially covering fragments of the same mesh in one
+    pixel by construction and each of them splits. Their masks partition the
+    pixel and a fragment spawns at most one continuation per sample it owns, so
+    the true per-pixel ceiling is ``_AA_NUM_SAMPLES`` (8), and a dense mesh sits
+    near it: measured 6.10 continuations per covered pixel on a smooth-shaded
+    metal sphere filling the covered set, against this budget of 5.
+
+    Sizing for that ceiling instead was measured and rejected. The pool is
+    ``primaries * ratio`` and the per-tile setup is O(pool) (the full-pool
+    ``rs_int[:, 2]`` DONE prefill, the compactor), so pool bytes stay flat while
+    the tile COUNT scales with the ratio -- ratio 9 cost 3.7% on a mixed scene
+    whose real demand was 1.86, to save 5% on the metal-dominated one. The
+    estimate stays where the common case is; ``_overflow_retry_primary`` makes
+    being wrong cost one resolve pass rather than a halving cascade.
     """
     physical_split = bool(
         merged.get("has_refractive")
@@ -280,6 +298,66 @@ def _split_pool_ratio(splitting, merged, analytic_raster=False,
             # silhouette, the original pass-through.
             ratio = max(ratio, 2)
     return ratio
+
+
+def _shared_pool_slots(primary_capacity, memory_primary, pool_ratio,
+                       analytic_raster):
+    """How many slots to allocate for the shared continuation pool.
+
+    ``pool_ratio`` is an ESTIMATE of the average continuations per primary (see
+    :func:`_split_pool_ratio`) and the tile is clamped to the WORK, so deriving
+    the pool from the clamped tile too leaves a covered set that fits in one
+    tile with exactly zero slack over that estimate. Any batch whose real
+    demand exceeds it then overflows its FIRST attempt and throws away a
+    finished resolve -- and analytic triangle coverage routinely exceeds it
+    (6.10 continuations per covered pixel measured on a metal sphere, against
+    an estimate of 5).
+
+    So a work-clamped tile gets the analytic CEILING instead: one continuation
+    per sub-pixel coverage sample plus the pass-through, which a coverage
+    partition cannot exceed on opaque geometry. It is capped by the slots the
+    memory budget actually granted, so a memory-clamped tile is unchanged --
+    there is no spare memory to take. The TILE is untouched either way, which
+    is what separates this from raising ``pool_ratio``: that divides the tile
+    size and pays for the headroom in extra tiles (measured 3.7% on a mixed
+    scene), while the only per-tile work that scales with the pool is the DONE
+    prefill and the compaction scan, ~3 ms at 5M slots.
+    """
+    budgeted = max(1, int(memory_primary)) * int(pool_ratio)
+    ratio = int(pool_ratio)
+    if analytic_raster and rt_settings.analytic_aa_tri_active():
+        from algan.rendering.raytracing.raster_taichi import _AA_NUM_SAMPLES
+        ratio = max(ratio, _AA_NUM_SAMPLES + 1)
+    return max(1, min(int(primary_capacity) * ratio, budgeted))
+
+
+# Fraction of the exactly-measured fit to actually retry with (see
+# ``_overflow_retry_primary``). A second overflow costs another discarded
+# resolve, so the margin is deliberately generous relative to the ~10% spread
+# in per-pixel demand that a coverage partition produces.
+_POOL_RETRY_SAFETY = 0.85
+
+
+def _overflow_retry_primary(attempt_primary, slots_wanted, pool):
+    """Primary count to retry an overflowing tile with.
+
+    ``rs_alloc[0]`` keeps counting past the capacity -- a failed reservation
+    still does its atomic increment -- so an overflowing tile reports EXACTLY
+    how many slots it wanted. Scaling the primaries by
+    ``pool / slots_wanted`` therefore lands on a tile that fits in one step,
+    instead of halving blindly: on the metal sphere the halving overshot to
+    1798 primaries where 2654 fit, and because ``learned_primary_cap`` only
+    ever shrinks, every later tile in the render inherited the overshoot.
+
+    A safety margin absorbs the fact that demand per pixel is not uniform
+    across a tile (the slice that survives the shrink may be denser than the
+    average that produced the measurement), and the result is always at least
+    one primary smaller than the failed attempt so the retry loop terminates.
+    """
+    if slots_wanted <= 0 or pool <= 0:
+        return max(1, attempt_primary // 2)
+    scaled = int(attempt_primary * pool * _POOL_RETRY_SAFETY / slots_wanted)
+    return max(1, min(scaled, attempt_primary - 1))
 
 
 def analytic_raster_route_active(
@@ -1209,7 +1287,8 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                          max_bounces, near_clip, run_tile,
                          auto_extra_slot_bytes=0, auto_extra_primary_bytes=0,
                          auto_fixed_bytes=0, gen_fused=False, raster=False,
-                         raster_prefill=False, global_hits=True):
+                         raster_prefill=False, global_hits=True,
+                         analytic_raster=False):
     """Run deterministic-wavefront screen tiles with a shared split pool.
 
     ``run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum,
@@ -1269,7 +1348,8 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
         auto_extra_slot_bytes, auto_extra_primary_bytes,
         auto_fixed_bytes + 2 * torch.int32.itemsize)
     primary_capacity = min(max(1, int(primary_per_tile)), max(1, int(n)))
-    shared_pool_capacity = primary_capacity * int(pool_ratio)
+    shared_pool_capacity = _shared_pool_slots(
+        primary_capacity, primary_per_tile, pool_ratio, analytic_raster)
 
     # Remember a successful reduced tile size after an overflow so every
     # subsequent tile does not repeat the same failed first attempt. The pool
@@ -1411,7 +1491,8 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                                 f"exceeded the shared wavefront pool of {pool} "
                                 "slots. Lower MAX_BOUNCES / transparency "
                                 "complexity, or increase WAVEFRONT_TILE_RAYS.")
-                        next_primary = max(1, attempt_primary // 2)
+                        next_primary = _overflow_retry_primary(
+                            attempt_primary, int(rs_alloc[0].item()), pool)
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         logger.warning(
                             "Wavefront continuation pool overflow for tile "
@@ -1849,7 +1930,8 @@ def raytrace_render_wavefront(
                 fixed_bytes=2 * torch.int32.itemsize)
             primary_capacity = min(
                 max(1, int(sparse_primary)), num_covered_total)
-            shared_pool_capacity = primary_capacity * pool_ratio
+            shared_pool_capacity = _shared_pool_slots(
+                primary_capacity, sparse_primary, pool_ratio, analytic_raster)
             learned_primary_cap = primary_capacity
             covered_start = 0
 
@@ -1924,7 +2006,8 @@ def raytrace_render_wavefront(
                                 "A single covered pixel's deterministic ray "
                                 f"tree exceeded the shared pool of {pool} "
                                 "slots.")
-                        next_primary = max(1, attempt_primary // 2)
+                        next_primary = _overflow_retry_primary(
+                            attempt_primary, int(rs_alloc[0].item()), pool)
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         learned_primary_cap = min(
                             learned_primary_cap, next_primary)
@@ -1973,7 +2056,8 @@ def raytrace_render_wavefront(
                                 "A single covered pixel's deterministic ray "
                                 f"tree exceeded the shared pool of {pool} "
                                 "slots.")
-                        next_primary = max(1, attempt_primary // 2)
+                        next_primary = _overflow_retry_primary(
+                            attempt_primary, int(rs_alloc[0].item()), pool)
                         _WAVEFRONT_POOL_RETRIES[0] += 1
                         learned_primary_cap = min(
                             learned_primary_cap, next_primary)
@@ -2168,7 +2252,8 @@ def raytrace_render_wavefront(
         # rs_vis placeholder + the compactor's output-count word.
         auto_fixed_bytes=2 * torch.int32.itemsize,
         gen_fused=gen_fused, raster=use_raster,
-        raster_prefill=raster_prefill, global_hits=False)
+        raster_prefill=raster_prefill, global_hits=False,
+        analytic_raster=analytic_raster)
 
 
 def _raytrace_render_wavefront_textured(

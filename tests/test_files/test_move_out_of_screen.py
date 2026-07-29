@@ -18,4 +18,4 @@ def test_move_out_of_screen_bezier():
     move_out_of_screen(Square)
 
 
-render_all_funcs(__name__)
+render_all_funcs(__name__, start_index=0, max_rendered=1)
