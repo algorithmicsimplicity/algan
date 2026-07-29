@@ -1817,7 +1817,9 @@ class Surface(Mob):
         return self._cached_base_grid
 
     def set_shape_to(self, other_surface: "Surface"):
-        """Changes this surface's shape to the shape defined by another surface's :meth:`~.Surface.coord_function` .
+        """Changes this surface's shape to the shape defined by another surface's
+        :meth:`~.Surface.coord_function`. Any lower-resolution grid axis is
+        refined to match ``other_surface`` before the shape change.
 
         Parameters
         ----------
@@ -1825,6 +1827,11 @@ class Surface(Mob):
             The surface from which to get coord_function.
 
         """
+        grid_width = max(self.grid_width, other_surface.grid_width)
+        grid_height = max(self.grid_height, other_surface.grid_height)
+        if (grid_width, grid_height) != (self.grid_width, self.grid_height):
+            self._change_resolution(grid_width, grid_height)
+
         with Sync(animation_manager=self.animation_manager):
             self.set_location_by_function(other_surface.coord_function)
             # TODO setting normals currently doesn't work, implement it.

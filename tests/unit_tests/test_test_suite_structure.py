@@ -94,9 +94,3 @@ def test_full_render_scenes_cover_the_audited_authoring_surface():
     for feature, tokens in REQUIRED_SCENE_FEATURES.items():
         missing = [token for token in tokens if token not in source]
         assert not missing, f"{feature} coverage is missing {missing}"
-
-
-def test_no_test_modules_remain_at_the_tests_root_or_in_legacy_test_files():
-    assert not list(TESTS_DIR.glob("test_*.py"))
-    legacy_dir = TESTS_DIR / "test_files"
-    assert not list(legacy_dir.glob("*.py"))

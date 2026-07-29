@@ -19,17 +19,24 @@ class ImageMob(Surface):
 
     Parameters
     ----------
-    rgba_arra_or_file_path
+    rgba_array_or_file_path
         An array of RGBA data, or a string containing the path to an image file from which
         RGBA data will be read, used to color the surface.
-    ignore_normals
-        If True the surface will have no normals (i.e. will not interact with lighting).
+    textured
+        If True, shade the four-vertex surface by sampling the image as a texture.
+        If False, create one mesh vertex per image pixel and assign the pixel
+        values directly as vertex colors.
     **kwargs
         Passed to :class:`~Surface` .
 
     """
 
-    def __init__(self, rgba_array_or_file_path: torch.Tensor | str, **kwargs):
+    def __init__(
+        self,
+        rgba_array_or_file_path: torch.Tensor | str,
+        textured: bool = True,
+        **kwargs,
+    ):
         submob = rgba_array_or_file_path
         if isinstance_if_loaded(rgba_array_or_file_path, _manim, "ImageMobject"):
             rgba_array = Color.add_defaults(torch.from_numpy(submob.pixel_array).float() / 255)
@@ -39,6 +46,7 @@ class ImageMob(Surface):
         h = rgba_array.shape[-3]
         w = rgba_array.shape[-2]
         aspect_ratio = w / h
+        surface_colors = rgba_array.transpose(-3, -2).flip(-2).contiguous()
 
         super().__init__(
             coord_function=lambda uv: torch.cat(
@@ -49,11 +57,15 @@ class ImageMob(Surface):
                 ),
                 -1,
             ),
-            grid_height=2,
-            grid_width=2,
-            color_texture=rgba_array.transpose(-3, -2).flip(-2),
+            grid_height=h if not textured else 2,
+            grid_width=w if not textured else 2,
+            color_texture=surface_colors if textured else None,
             **kwargs,
         )
+        if not textured:
+            self.grid.setattr_without_record(
+                "color", surface_colors.flatten(-3, -2)
+            )
         if isinstance_if_loaded(rgba_array_or_file_path, _manim, "ImageMobject"):
             self.scale(torch.tensor((submob.width / 2, submob.height / 2, 1)).float())
             self.move_to(submob.get_center())
