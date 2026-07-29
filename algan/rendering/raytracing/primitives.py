@@ -710,9 +710,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 torch.full_like(frame_error, torch.inf),
                 frame_error,
             )
-            resolved = unresolved & (
-                frame_error * self._flatness_safety_factor
-                <= self.render_tolerance
+            resolved = unresolved & ((
+                frame_error * self._flatness_safety_factor)
+                <= (self.render_tolerance * screen_height)
             )
             levels[resolved] = level
             unresolved &= ~resolved

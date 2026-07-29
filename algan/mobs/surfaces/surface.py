@@ -274,16 +274,11 @@ class Surface(Mob):
     grid_aspect_ratio
         If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio.
     geometry_tolerance
-        Maximum sampled world-space deviation between the analytic surface and
-        its logical PN-triangle approximation at construction time. This
-        guarantee is intentionally not maintained through later animation.
+        Maximum sampled world-space deviation (as percentage of geometry height),
+        between the analytic surface and its PN-triangle approximation at construction time.
     render_tolerance
-        Maximum sampled output-pixel deviation used when each logical PN
-        triangle is dynamically diced into ordinary flat render triangles.
-        Camera motion, surface animation, and output resolution are evaluated
-        independently for every render frame.
-    tolerance
-        Deprecated compatibility alias for ``geometry_tolerance``.
+        Maximum sampled output-pixel deviation (as percentage of screen height) used
+        when each PN triangle is dynamically diced into ordinary flat render triangles.
     min_grid_resolution, max_grid_resolution
         Bounds for automatic grid sizing, measured in vertices per axis.
     resolution_shrink_margin
@@ -334,9 +329,8 @@ class Surface(Mob):
         normal_texture=None,
         glow_texture=None,
         ignore_normals=False,
-        tolerance=None,
-        geometry_tolerance=None,
-        render_tolerance=0.25,
+        geometry_tolerance=0.001,
+        render_tolerance=0.001,
         min_grid_resolution=4,
         max_grid_resolution=200,
         resolution_shrink_margin=0.1,
@@ -425,12 +419,7 @@ class Surface(Mob):
         self.normal_function_active = normal_function
         self.ignore_normals = ignore_normals
         self._color_texture_attr = None
-        if geometry_tolerance is None:
-            geometry_tolerance = 0.001 if tolerance is None else tolerance
-        elif tolerance is not None:
-            raise ValueError(
-                "Specify geometry_tolerance or legacy tolerance, not both"
-            )
+
         self._geometry_auto_resolution_enabled = (
             grid_height is None and grid_width is None
         )
