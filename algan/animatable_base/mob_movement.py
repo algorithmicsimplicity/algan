@@ -391,7 +391,7 @@ class MobMovementMixin:
         displacement_to_align_edges = (
             target_edge_point + normalized_direction * buffer - my_edge_point
         )
-        self.move_to(self.location + displacement_to_align_edges, **kwargs)
+        self.move(displacement_to_align_edges, **kwargs)
         if align_edge is not None:
             self.move_inline_with_boundary(target_mob, align_edge)
         return self
@@ -490,7 +490,7 @@ class MobMovementMixin:
         alignment_displacement = project_point_onto_line(
             displacement_to_target_center, direction
         )
-        self.location = self.location + alignment_displacement
+        self.move(alignment_displacement)
         return self
 
     def move_inline_with_mob(

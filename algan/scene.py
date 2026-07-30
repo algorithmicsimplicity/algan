@@ -147,7 +147,7 @@ class Scene(RenderLoopMixin):
         self.background_frame = background_frame
         self._initial_background_frame = background_frame
         self.background_color = background_frame
-        self.actors = [[]]
+        self.actors = []
         self.effects = []
         self.camera = None
         self.light_sources = []
@@ -536,7 +536,7 @@ class Scene(RenderLoopMixin):
             This Scene, so calls can be chained.
         """
         if self.allow_new_actors:
-            self.actors[-1].append(actor)
+            self.actors.append(actor)
         return self
 
     def add_effect(self, effect):
@@ -602,7 +602,7 @@ class Scene(RenderLoopMixin):
         """
         with Sync(animation_manager=self.animation_manager):
             for actor in list(
-                sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)
+                sorted(self.actors, key=lambda x: x.anchor_priority, reverse=True)
             ):
                 if actor.is_spawned():
                     actor.despawn(**kwargs)
@@ -626,8 +626,8 @@ class Scene(RenderLoopMixin):
         """
         with Seq(run_time=0.5, animation_manager=self.animation_manager):
             self.despawn_scene(**kwargs)
-        self.actors[-1] = [
-            _ for _ in self.actors[-1] if (_.is_spawned() and _.is_despawned())
+        self.actors = [
+            _ for _ in self.actors if (_.is_spawned() and _.is_despawned())
         ]
 
     def render_audio_to_file(
@@ -690,7 +690,7 @@ class Scene(RenderLoopMixin):
         Not animated: everything is discarded rather than despawned, so nothing fades
         out.
         """
-        self.actors = [[]]
+        self.actors = []
         self.effects = []
         self.camera = None
         self.light_sources = []

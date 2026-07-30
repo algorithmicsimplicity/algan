@@ -1,18 +1,24 @@
 Advanced User Tutorials
 =======================
 
-Tutorials for advanced techniques that you won't need for most use-cases.
+Techniques you will not need for most scenes, but which unlock the renderer's
+full capabilities: lighting rigs, materials, reflections, imported assets,
+narration, and control over how Algan renders.
 
 .. toctree::
    :caption: Table of Contents
    :maxdepth: 2
 
-   images_and_textures
-   lights_camera_action
+   cameras
    lighting_and_shadows
    shaders_and_materials
+   reflections_and_glass
+   images_and_textures
+   three_d_models
+   backgrounds_and_post_processing
+   transparent_backgrounds
    audio_and_speech
    animating_out_of_order
-   extending_algan
-   transparent_backgrounds
+   performance_and_quality
    settings
+   extending_algan

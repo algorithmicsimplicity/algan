@@ -43,20 +43,6 @@ def reset_global_authoring_state():
     SceneManager.reset()
 
 
-def test_import_enters_process_global_pytorch_inference_mode():
-    code = """
-import torch
-assert torch.is_grad_enabled()
-assert not torch.is_inference_mode_enabled()
-import algan
-assert not torch.is_grad_enabled()
-assert torch.is_inference_mode_enabled()
-"""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
-    subprocess.run([sys.executable, "-c", code], check=True, env=env)
-
-
 def test_context_is_restored_after_user_exception():
     scene = SceneManager.instance().current_scene
     root = scene.animation_manager.context

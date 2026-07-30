@@ -26,6 +26,17 @@ animation context with a sound file. Its duration is taken from the audio clip:
 
         scene.save_video("music_scene.mp4")
 
+This inverts the usual relationship between animation and timing. Ordinarily you
+say how long an animation takes; inside an ``Audio`` or ``Speech`` context the
+*sound* sets the duration and the animations inside are fitted to it, exactly as a
+``run_time`` would (see
+:doc:`../new_user_tutorials/controlling_animations`). That is what makes narrated
+video practical to author: write the narration, and the visuals follow it.
+
+Both contexts take ``wait_at_end``, a number of extra seconds to hold after the
+clip finishes -- useful for letting a point land before the next line starts.
+``Speech`` defaults it to 1 second; ``Audio`` defaults it to 0.
+
 ``Audio`` accepts either a path string or a MoviePy ``AudioFileClip``. You can
 therefore trim or otherwise prepare a clip before passing it to Algan:
 
@@ -142,3 +153,11 @@ Practical notes
   rest of the timeline. Pass ``reset=True`` to discard them together with the
   Scene's other authored state.
 * ``save_frame`` does not render audio and never modifies the Scene.
+
+See Also
+========
+
+* :doc:`../new_user_tutorials/controlling_animations` -- the animation contexts
+  ``Audio`` and ``Speech`` extend.
+* :doc:`../new_user_tutorials/text_and_math` -- putting on screen what the
+  narration is saying.

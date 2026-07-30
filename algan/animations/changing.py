@@ -131,8 +131,12 @@ class AnimatedBoundary(Group):
         self.fade_rate_func = fade_rate_func
 
         with Off(animation_manager=vmobject.animation_manager):
-            growing_copy = vmobject.clone(add_to_scene=False, spawn=False)
-            fading_copy = vmobject.clone(add_to_scene=False, spawn=False)
+            # The two layers ARE the boundary's visible geometry, so they have to
+            # be Scene actors: Algan builds render primitives from the Scene's
+            # actor list, not by walking this Group's hierarchy. They are cloned
+            # unspawned so that spawning the Group is what puts them on screen.
+            growing_copy = vmobject.clone(spawn=False)
+            fading_copy = vmobject.clone(spawn=False)
             growing_paths = _bezier_family(growing_copy)
             fading_paths = _bezier_family(fading_copy)
             if not (

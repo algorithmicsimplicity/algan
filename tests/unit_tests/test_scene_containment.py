@@ -170,6 +170,6 @@ def test_empty_group_slice_keeps_owning_scene():
         group = Group(scene=outer, add_to_scene=False)
         empty_view = group[:]
         assert empty_view.scene is outer
-        assert empty_view not in outer.actors[-1]
+        assert empty_view not in outer.actors
 
     outer.terminate()

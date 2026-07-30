@@ -29,8 +29,11 @@ First steps
 * Build your first animation in :doc:`new_user_tutorials/getting_started`.
 * Learn how animations are composed in
   :doc:`new_user_tutorials/controlling_animations`.
+* Browse what you can put on screen in :doc:`new_user_tutorials/mob_gallery`.
+* Move into three dimensions with :doc:`new_user_tutorials/three_d_basics`.
 * Configure quality, paths, memory, and ray tracing through
-  :doc:`advanced_user_tutorials/settings`.
+  :doc:`advanced_user_tutorials/settings`, and keep renders fast with
+  :doc:`advanced_user_tutorials/performance_and_quality`.
 * Manim users can start with :doc:`manim_user_quickstart/index`.
 
 Finding help

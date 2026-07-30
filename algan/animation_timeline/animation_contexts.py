@@ -246,7 +246,7 @@ class AnimationContext:
         ``run_time``. Defaults to ``None``, meaning inherit (``0`` at the top level).
     rate_func
         Easing function mapping progress in ``[0, 1]`` to adjusted progress, e.g.
-        ``rate_funcs.linear``. Replaces the parent's. Defaults to ``None``, meaning
+        ``rate_funcs.identity``. Replaces the parent's. Defaults to ``None``, meaning
         inherit (``rate_funcs.smooth`` at the top level).
     rate_func_compose
         Easing function to compose *with* the parent's rather than replace it. Defaults

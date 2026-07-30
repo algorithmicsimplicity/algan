@@ -1,66 +1,108 @@
-============
-Child Mobs
-============
+==========================
+Child Mobs and Groups
+==========================
 
-So far we have been using simple :class:`.Mob` s. To make more complex objects we can combine multiple mobs
-together into one. This is done by adding mobs as children to a parent using :meth:`~.Animatable.add_children` .
+Complex objects are built by combining simple ones. Algan gives you two ways to
+do that, and they are the same mechanism underneath:
 
-.. algan:: NMBasic
+* :meth:`~.Animatable.add_children` attaches Mobs to a **parent** Mob, so
+  changes to the parent propagate to them.
+* :class:`~.Group` collects Mobs into a new, invisible parent, and adds layout
+  helpers.
+
+Use ``add_children`` when one of your Mobs is naturally the main body of the
+thing; use ``Group`` when they are peers.
+
+Parents and Children
+====================
+
+.. algan:: ChildMobsBasic
 
     from algan import *
 
     parent_mob = Square(color=BLUE)
-    children_mobs = [Square(location=loc) for loc in [LEFT*2.5, UP*2.5, RIGHT*2.5, DOWN*2.5]]
+    children_mobs = [Square(location=loc) for loc in [LEFT * 2.5, UP * 2.5, RIGHT * 2.5, DOWN * 2.5]]
 
-    parent_mob.add_children(children_mobs) # this is the crucial step
+    parent_mob.add_children(children_mobs)  # this is the crucial step
 
-    # Now, any change that we make to the parent mob will be propagated to the
-    # children mobs (including spawning).
+    # Now any change to the parent propagates to the children,
+    # including spawning.
     parent_mob.scale(0.75).spawn()
     parent_mob.rotate(90, OUT)
-    parent_mob.move(RIGHT*1)
+    parent_mob.move(RIGHT * 1)
     with Seq(run_time=5):
         parent_mob.rotate(360, OUT, about_point=ORIGIN)
 
     parent_mob.wait()
-    # We can even apply animations to the parent and the children at the same time.
+    # You can even animate the parent and a child at the same time.
     with Sync(run_time=5):
         parent_mob.rotate(90, OUT)
         children_mobs[0].rotate(180, UP)
 
     Scene.save_video()
 
-Once mobs are added as a child to another, any changes applied to the parent will be propagated
-to the child mobs. The way that the change is propagated depends on the attribute changed.
-When a parent's location is changed, the child mob's location is moved by the same amount.
-When a parent's basis is rotated, the child's basis is rotated by the same amount and the child's
-relative location to the parent is preserved. Specifically, the child's location expressed in coordinates
-of the parent's basis is unchanged.
-The result of this is that the child behaves as if it is attached to the parent by a solid pole.
+How changes propagate
+=====================
 
-Changes made directly to a child will ignore the parent relation.
+What "propagate" means depends on the attribute:
 
-.. note::
+.. list-table::
+   :header-rows: 1
+   :widths: 26 74
 
-    You can get a list of all of a mob's children with :attr:`~.Mob.children` , but this variable
-    is read only! You should always use :meth:`~.Animatable.add_children` for adding children.
-    You can also get a list of all descendant mobs (children, and grand-children, and so-on)
-    with :meth:`~.Mob.get_descendants`
+   * - Change to the parent
+     - Effect on each child
+   * - :attr:`~.Mob.location`
+     - The child moves by the same displacement.
+   * - :attr:`~.Mob.basis` (via :meth:`~.Mob.rotate` / :meth:`~.Mob.scale`)
+     - The child's basis is rotated or scaled the same way, *and* its position
+       relative to the parent is preserved -- expressed in the parent's basis,
+       the child's location does not change.
+   * - :attr:`~.Mob.color`, :attr:`~.Mob.opacity`, :attr:`~.Mob.glow`
+     - The child gets the same change.
+   * - :meth:`~.Animatable.spawn` / :meth:`~.Animatable.despawn`
+     - The child spawns or despawns too.
 
-Grouping Mobs
-=============
+The upshot for geometry is that a child behaves as though bolted to the parent by
+a rigid pole: rotate the parent and the children swing around with it, keeping
+their orientation relative to it.
 
-Mobs can also be grouped together into one :class:`~.Mob` using :class:`~.Group` . The :class:`~.Group`
-class provides the :meth:`~.Group.arrange_in_line` and :meth:`~.Group.arrange_in_grid` methods
-which are useful for arranging Mobs.
+Changes made **directly to a child** ignore the parent relationship entirely, so
+you can animate a child independently, as in the last block of the example above.
 
-.. algan:: NMGroup
+Inspecting the hierarchy
+========================
+
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
+
+   * - Accessor
+     - Returns
+   * - :attr:`~.Mob.children`
+     - This Mob's direct children. **Read-only** -- always add through
+       :meth:`~.Animatable.add_children`.
+   * - :meth:`~.Mob.get_descendants`
+     - Children, grandchildren and so on, plus this Mob.
+   * - :meth:`~.Mob.remove_child`, :meth:`~.Mob.remove_parent`
+     - Detach a link.
+   * - :meth:`~.Mob.set_parent_to`, :meth:`~.Mob.replace_children`
+     - Re-parent, or swap the whole child list.
+
+Groups
+======
+
+:class:`~.Group` wraps a collection of Mobs so you can treat them as one. It
+creates an empty Mob at the centre of the collection and adds everything as its
+children, so all of the propagation rules above apply.
+
+.. algan:: ChildMobsGroup
 
     from algan import *
 
     mobs = [Square() for _ in range(9)]
     group = Group(mobs)
-    group.scale(1/3).spawn()
+    group.scale(1 / 3).spawn()
     group.arrange_in_line(RIGHT)
     group.wait()
     with Sync():
@@ -70,8 +112,66 @@ which are useful for arranging Mobs.
 
     Scene.save_video()
 
+Groups are indexable and iterable, so you can reach individual members without
+keeping a separate list:
+
+.. algan:: ChildMobsGroupIndexing
+
+    from algan import *
+
+    group = Group([Circle(color=BLUE).scale(0.4) for _ in range(6)])
+    group.arrange_in_line(RIGHT, buffer=0.3).spawn()
+
+    with Lag(0.4):
+        for mob in group:
+            mob.color = YELLOW
+
+    group[0].move(UP)
+
+    Scene.save_video()
+
+Arranging
+=========
+
+:meth:`~.Group.arrange_in_line` spreads the members along a direction;
+:meth:`~.Group.arrange_in_grid` lays them out in rows and columns. Both are
+ordinary animations, so members slide into place rather than jumping.
+
+.. code-block:: python
+
+    group.arrange_in_line(RIGHT)                    # a row
+    group.arrange_in_line(DOWN, buffer=0.2)         # a tight column
+    group.arrange_in_grid(3)                        # 3 rows
+    group.arrange_in_grid(3, buffer=1.0)            # 3 rows, generously spaced
+
+.. important::
+
+    Both arrangements use a uniform cell size, taken from the largest member. If
+    one Mob is much bigger than the rest -- or bigger than the frame -- the whole
+    layout inflates to match it and can end up off-screen. Give your Mobs
+    comparable sizes before arranging, or :meth:`~.Mob.scale` the group
+    afterwards.
+
+    A common trap: :class:`~.Torus` defaults to ``major_radius=3``, which is
+    wider than the visible frame.
+
+``arrange_in_line`` also takes ``alignment_direction`` to line the members up on
+an edge rather than their centres, and ``equal_displacement`` to space centres
+evenly instead of leaving equal gaps. ``arrange_in_grid`` takes
+``row_direction`` / ``column_direction`` to control which way the grid fills.
+
+To place a whole group on screen as a unit, :meth:`~.Mob.fit_to_screen_rectangle`
+scales and moves it in one call -- see :doc:`positioning_and_layout`.
+
+Sub-Mobs
+========
+
+Indexing a Mob that has internal structure gives you a view onto part of it.
+:attr:`Text.character_mobs` is the most useful case (see :doc:`text_and_math`),
+and multi-part :class:`~.Tex` exposes its pieces as ``children``.
 
 .. note::
 
-    Internally, the way that :class:`~.Group` works is by creating a new empty mob
-    at the center of the provided mobs, then adding all of the provided mobs as children to it.
+    A sub-Mob obtained by indexing shares its source's identity, and therefore
+    its lifespan: it is spawned and despawned with the whole. A
+    :meth:`~.Animatable.clone` is independent.

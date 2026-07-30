@@ -6,6 +6,7 @@ import torch
 def identity(t):
     return t
 
+linear = identity
 
 def smooth(t, inflection=10.0):
     inflection = torch.tensor((inflection,))
@@ -83,5 +84,3 @@ def ease_out_expo(t: float) -> float:
 def tan(t, scale=10):
     m = (t < 0.5).float()
     return m * ease_out_expo(t) * 0.5 + (1 - m) * (ease_in_expo(t) * 0.5 + 0.5)
-    # return eas
-    # return torch.tan((t-0.5)*2 * 2 / math.pi)

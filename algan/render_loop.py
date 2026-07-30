@@ -1369,7 +1369,7 @@ class RenderLoopMixin:
             and ((actor.lifespan.end() >= start_time)
                  or actor.lifespan.end() < 0)
             and hasattr(actor, "get_render_primitives")
-            for actor in self.actors[-1]
+            for actor in self.actors
         )
 
     def get_batch_of_primitives(
@@ -1771,7 +1771,7 @@ class RenderLoopMixin:
 
         for l in self.light_sources:
             l.is_primitive = True
-        actors = [self.camera, self.camera.screen, *self.light_sources, *self.actors[-1]]
+        actors = [self.camera, self.camera.screen, *self.light_sources, *self.actors]
         save_image = False
 
         self.memory = ManualMemory(

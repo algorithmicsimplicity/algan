@@ -72,7 +72,7 @@ def test_set_shape_to_keeps_textured_resolution_history_independent():
 
     historical = [
         actor
-        for actor in source.scene.actors[-1]
+        for actor in source.scene.actors
         if isinstance(actor, ImageMob) and actor is not source
     ]
     assert len(historical) == 1

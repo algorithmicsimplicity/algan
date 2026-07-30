@@ -23,6 +23,29 @@ you can take manual control of the animation writing, to write animations anywhe
 in the timeline, at any point in the code. And in some situations,
 this makes animation code much simpler.
 
+The two handles you need are on the context object itself, which you get by naming
+it with ``as``:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Attribute
+     - Meaning
+   * - ``context.current_time``
+     - The point on the timeline the context is writing to. Assign to it to move
+       where subsequent animations land.
+   * - ``context.end_time``
+     - Where the context finishes. Assign ``current_time = end_time`` when you are
+       done jumping around, so ordinary sequential animation resumes cleanly
+       afterwards.
+
+.. important::
+
+    Timeline events must be recorded against a context that is *entered* -- that is
+    what ``with ... as context:`` gives you. Times written outside any entered
+    context all collapse to zero.
+
 Animating a wave effect
 ***********************
 
@@ -86,3 +109,25 @@ its animation. And we can use out of order animation to implement the animations
         context.current_time = context.end_time
 
     Scene.save_video()
+
+When to reach for this
+**********************
+
+Out-of-order writing is the right tool when **each Mob's start time is a function
+of something about that Mob** -- its position, its value, its index in a sorted
+order. The wave above is the canonical case: the start time comes from a dot
+product, so computing it directly is far simpler than working out the lag ratios
+that would produce the same effect.
+
+For anything simpler, prefer the ordinary contexts:
+
+* A fixed stagger across a list is :class:`~.Lag` (see
+  :doc:`../new_user_tutorials/controlling_animations`).
+* A rule that holds continuously, rather than a set of scheduled animations, is an
+  updater (see :doc:`../new_user_tutorials/updaters`).
+
+See Also
+********
+
+* :doc:`../new_user_tutorials/controlling_animations` -- the contexts this bypasses.
+* :doc:`../developer_tutorials/index` -- how the timeline materializes state.

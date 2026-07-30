@@ -39,17 +39,23 @@ class ManimMob(BezierCircuitCubic):
         self.manim_mobject = manim_mob
         manim_scale_factor = 1
         children = []
-        orig_add_to_scene = _add_to_scene
+        # One Manim Mobject converts to a whole Algan sub-hierarchy, and Algan
+        # collects render primitives from the Scene's actor list rather than by
+        # walking the hierarchy, so every renderable part has to be registered
+        # in its own right: ``add_to_scene`` governs the entire converted
+        # subtree.  ``_add_to_scene`` carries that resolved decision down the
+        # recursion.  Batching is the one case where the children stay
+        # unregistered, because the single batched Mob renders in their place.
         if _add_to_scene is None:
-            _add_to_scene = not batch
-        else:
-            kwargs['add_to_scene'] = _add_to_scene
+            _add_to_scene = bool(kwargs.get("add_to_scene", True))
+        kwargs["add_to_scene"] = _add_to_scene
+        child_add_to_scene = _add_to_scene and not batch
         for submob in manim_mob.submobjects:
             if isinstance(submob, _manim.ImageMobject):
                 mob = ImageMob(
                     submob,
                     scene=kwargs["scene"],
-                    add_to_scene=_add_to_scene,
+                    add_to_scene=child_add_to_scene,
                 )
                 children.append(mob)
                 continue
@@ -59,7 +65,11 @@ class ManimMob(BezierCircuitCubic):
                 )
             # if isinstance(submob, VectorizedPoint):# or isinstance(submob, ThreeDVMobject):
             #    continue
-            children.append(ManimMob(submob, batch=False, _add_to_scene=_add_to_scene, **kwargs))
+            children.append(
+                ManimMob(
+                    submob, batch=False, _add_to_scene=child_add_to_scene, **kwargs
+                )
+            )
 
         empty = False
         if len(manim_mob.points) == 0:
@@ -84,9 +94,6 @@ class ManimMob(BezierCircuitCubic):
             if opacity is not None:
                 a = a * opacity
             return Color(rgb, glow=0, opacity=a)
-
-        if orig_add_to_scene is not None:
-            kwargs['add_to_scene'] = orig_add_to_scene
 
         fill_opacity = getattr(manim_mob, "fill_opacity", None)
         stroke_opacity = getattr(manim_mob, "stroke_opacity", None)
@@ -115,17 +122,13 @@ class ManimMob(BezierCircuitCubic):
         )
         self.singleton_batch_indexing = True
         if len(children) > 0:
-            if 'add_to_scene' not in kwargs:
-                add_to_scene = True
-            else:
-                add_to_scene = kwargs['add_to_scene']
             grouped = (
-                batch_mobs(children, add_to_scene=add_to_scene)
+                batch_mobs(children, add_to_scene=_add_to_scene)
                 if batch
                 else Group(
                     children,
                     scene=self.scene,
-                    add_to_scene=add_to_scene,
+                    add_to_scene=_add_to_scene,
                 )
             )
             self.add_children(grouped)

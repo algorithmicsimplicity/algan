@@ -26,7 +26,7 @@ from algan.mobs.image_mob import ImageMob
 from algan.mobs.manim_mob import ManimMob
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.timeline import bump_hierarchy_version
-
+from algan.utils.tensor_utils import cast_to_tensor
 
 # Public compatibility classes are registered by Manim class name so methods
 # such as Axes.plot can convert their returned Mobjects back to the most useful
@@ -38,6 +38,13 @@ def _tensor_to_manim(value: torch.Tensor):
     value = value.detach().cpu()
     if value.ndim == 0:
         return value.item()
+    # Algan carries a leading batch dimension that Manim's geometry does not:
+    # Manim points are ``(N, 3)`` and single vectors are ``(3,)``.  Drop the
+    # batch axes so that, for example, a ``(1, 1, 3)`` location arrives as the
+    # one point Manim expects.  Without this, Manim's in-place point arithmetic
+    # (``mob.points += vector``) raises a non-broadcastable operand error.
+    while value.ndim > 1 and value.shape[0] == 1:
+        value = value[0]
     return value.numpy()
 
 
@@ -143,8 +150,27 @@ def _wrapper_type_for(source) -> type["ManimCompatMob"]:
     return ManimCompatMob
 
 
-def from_manim(value: Any, *, scene=None, add_to_scene: bool = False):
-    """Recursively convert values returned by delegated Manim APIs."""
+def _manim_mobjects_in(value: Any):
+    """Yield every Manim Mobject reachable in a delegated call's return value."""
+    if isinstance(value, _manim.Mobject):
+        yield value
+    elif isinstance(value, Mapping):
+        for item in value.values():
+            yield from _manim_mobjects_in(item)
+    elif isinstance(value, (tuple, list, set)):
+        for item in value:
+            yield from _manim_mobjects_in(item)
+
+
+def from_manim(value: Any, *, scene=None, add_to_scene: bool = True):
+    """Recursively convert values returned by delegated Manim APIs.
+
+    Converted Mobs register themselves with ``scene`` by default, exactly as
+    directly constructed Mobs do, because Algan builds render primitives from
+    the Scene's actor list: a Mob that is not an actor never draws, no matter
+    how it is spawned or styled.  Pass ``add_to_scene=False`` only for
+    conversions that duplicate geometry some other Mob already renders.
+    """
     if isinstance(value, _manim.ImageMobject):
         return ImageMob(value, scene=scene, add_to_scene=add_to_scene)
     if isinstance(value, _manim.Mobject):
@@ -180,8 +206,10 @@ class ManimCompatMob(ManimMob):
     Subclasses define ``_manim_class``.  Constructor arguments use Manim's API;
     ``add_to_scene``, ``glow`` and ``glow_radius`` remain Algan-only options.
     Methods not implemented by Algan are delegated to the backing Manim object.
-    Returned Mobjects are converted to Algan Mobs, while mutations of the
-    backing object are immediately resynchronised into this Mob's geometry.
+    Returned Mobjects are converted to Algan Mobs -- newly built ones are
+    registered with the owning Scene, so ``axes.plot(...).spawn()`` renders --
+    while mutations of the backing object are immediately resynchronised into
+    this Mob's geometry.
     """
 
     _manim_class = _manim.VMobject
@@ -214,7 +242,7 @@ class ManimCompatMob(ManimMob):
         super().__init__(source, batch=batch, **kwargs)
 
     @classmethod
-    def _from_manim(cls, source, *, scene=None, add_to_scene=False):
+    def _from_manim(cls, source, *, scene=None, add_to_scene=True):
         obj = cls.__new__(cls)
         obj._initialize_from_manim(
             source, scene=scene, add_to_scene=add_to_scene
@@ -228,6 +256,9 @@ class ManimCompatMob(ManimMob):
     def _animate_to_manim(self, source):
         """Record an Algan morph to an edited copy of the backing Mobject."""
         self.manim_mobject = source
+        # Purely intermediate: ``become`` reads the target's state into this
+        # Mob's existing rows and nothing of the target survives the call, so
+        # none of it may be registered as an actor.
         target = ManimMob(source, scene=self.scene, add_to_scene=False)
         return self.become(target, detach_history=False)
 
@@ -240,6 +271,38 @@ class ManimCompatMob(ManimMob):
             aligned_edge=to_manim(aligned_edge),
             coor_mask=to_manim(coor_mask),
         )
+        return self._animate_to_manim(source)
+
+    def move(self, displacement, path_arc_angle=None, recursive=True, **kwargs):
+        """Move by a displacement, applying it as a Manim ``shift``.
+
+        Algan's generic implementation moves to ``self.location + displacement``,
+        but a compatibility Mob's location is the center of the backing
+        Mobject's *own* points, which is not the composite's center whenever it
+        also has submobjects (an :class:`Arrow`'s tip, for example).  Shifting
+        the backing geometry instead keeps the travelled displacement exact for
+        every Mob, and is what the relative-placement helpers
+        (:meth:`~.Mob.move_to_edge`, :meth:`~.Mob.move_next_to`, ...) are built
+        on.
+        """
+        displacement = cast_to_tensor(displacement)
+        if path_arc_angle is not None or not recursive or kwargs:
+            # Curved paths and non-recursive moves have no Manim equivalent.
+            # Let Algan record the motion, then bring the backing Mobject to
+            # the same final position so delegated queries stay accurate.
+            target = self.location + displacement
+            if path_arc_angle is None:
+                self.set_location(target, recursive=recursive, **kwargs)
+            else:
+                self.move_to_point_along_arc(
+                    target, path_arc_angle, recursive=recursive, **kwargs
+                )
+            self.manim_mobject = self.manim_mobject.copy().shift(
+                to_manim(displacement)
+            )
+            return self
+        source = self.manim_mobject.copy()
+        source.shift(to_manim(displacement))
         return self._animate_to_manim(source)
 
     def scale(self, scale_factor, **kwargs):
@@ -273,13 +336,21 @@ class ManimCompatMob(ManimMob):
         return self._animate_to_manim(source)
 
     def copy(self):
+        # Matches :meth:`~.Animatable.clone`, which registers the copy: a copy
+        # you cannot render is of no use to the caller.
         return _wrapper_type_for(self.manim_mobject)._from_manim(
-            self.manim_mobject.copy(), scene=self.scene, add_to_scene=False
+            self.manim_mobject.copy(), scene=self.scene, add_to_scene=True
         )
 
     def sync_from_manim(self):
         """Refresh converted geometry after directly editing the backing object."""
-        target = ManimMob(self.manim_mobject, scene=self.scene, add_to_scene=False)
+        # Unlike ``_animate_to_manim``'s morph target, part of this conversion is
+        # grafted into this Mob's hierarchy below and has to render, so it is
+        # built as a registered subtree.  Only the target's own root is
+        # discarded, and an unspawned actor never reaches the renderer.
+        target = ManimMob(self.manim_mobject, scene=self.scene, add_to_scene=True)
+        if self.is_spawned():
+            target = target.spawn(animate=False)
         with Off(animation_manager=self.animation_manager):
             self.become(target, detach_history=False)
 
@@ -294,6 +365,28 @@ class ManimCompatMob(ManimMob):
         bump_hierarchy_version()
         return self
 
+    def _is_backing_geometry(self, value):
+        """Whether ``value`` is (or contains) part of this Mob's own hierarchy."""
+        family = {id(mob) for mob in self.manim_mobject.get_family()}
+        return any(id(mob) in family for mob in _manim_mobjects_in(value))
+
+    def _convert_delegated_result(self, result):
+        """Convert a delegated Manim method's return value into Algan values.
+
+        A delegated method either builds something new (``Axes.plot``,
+        ``Brace.get_text``, ``Axes.get_axis_labels``) or hands back a piece of
+        this Mob's own backing hierarchy (``Axes.get_x_axis``,
+        ``Tex.get_part_by_tex``).  New geometry is registered with the owning
+        Scene so that spawning it is enough to make it render; own geometry is
+        not, because this Mob's converted children already draw it and a second
+        registration would draw it twice at the same place.
+        """
+        return from_manim(
+            result,
+            scene=self.scene,
+            add_to_scene=not self._is_backing_geometry(result),
+        )
+
     def __getattr__(self, name):
         # Normal Mob/Animatable attribute lookup gets first chance.  This method
         # is reached only for Manim-specific APIs.
@@ -301,6 +394,10 @@ class ManimCompatMob(ManimMob):
             raise AttributeError(name)
         attribute = getattr(self.manim_mobject, name)
         if not callable(attribute):
+            # Reading an attribute is a query, not construction: it must stay
+            # free of side effects on the Scene, and repeated reads must not
+            # accumulate actors.  Use the method that built the geometry (or
+            # ``Scene.add_actor``) to get a renderable Mob.
             return from_manim(attribute, scene=self.scene, add_to_scene=False)
 
         @wraps(attribute)
@@ -315,7 +412,7 @@ class ManimCompatMob(ManimMob):
             if result is None:
                 self.sync_from_manim()
                 return None
-            return from_manim(result, scene=self.scene, add_to_scene=False)
+            return self._convert_delegated_result(result)
 
         return delegated
 

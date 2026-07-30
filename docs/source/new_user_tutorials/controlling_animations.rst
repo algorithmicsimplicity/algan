@@ -2,34 +2,50 @@
 Controlling Animations
 ======================
 
-So far we've seen how to create basic animations. But in all of these examples, the animations play for 1 second each,
-and take place one after the other. What if we want more control over how the animations should happen?
-Not to worry, Algan is specifically designed to make orchestrating complex animation sequences easy,
-and to this end it provides :class:`.AnimationContext` s.
+So far every animation has taken exactly one second and happened strictly after
+the one before it. Real animations need more than that: things happening at the
+same time, overlapping, at different speeds, with different easing.
 
-Animation Contexts
-------------------
+Algan handles all of it with :class:`.AnimationContext` s -- ``with`` blocks that
+change *when* the animations inside them happen and *how long* they take. You
+never write a ``play`` call or pass a duration to an individual animation; you
+put the animations in the right block.
 
-In Algan, you can control how animations should be played by placing them within an appropriate context.
-Let's dive in with an example.
+The Four Contexts
+=================
 
-.. algan:: CombiningSync
+.. algan:: ControllingSync
 
     from algan import *
 
     mob = Square().spawn()
     with Sync():
-        mob.move(RIGHT*2)
+        mob.move(RIGHT * 2)
         mob.rotate(90, OUT)
 
     Scene.save_video()
 
-Here we use the :class:`.Sync` context (read as "with animations synchronized") to specify
-the animations should be synchronized. All animations that take place within the ``with Sync():`` clause will be
-played at the same time. In addition to Sync, Algan also provides the :class:`.Seq` ("with animations sequenced"),
-:class:`.Lag` ("with animations lagged"), and :class:`.Off` ("with animations off") contexts.
+Everything inside a :class:`.Sync` block plays *simultaneously*, so the square
+above slides and turns at once. The four basic contexts are:
 
-.. algan:: CombiningContextExamples
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Context
+     - Behaviour
+   * - :class:`.Seq`
+     - Sequential -- each animation starts when the previous one finishes. This
+       is what happens when you are not in any context.
+   * - :class:`.Sync`
+     - Simultaneous -- everything starts together.
+   * - :class:`.Lag`
+     - Overlapping -- ``Lag(r)`` starts the next animation when the current one
+       is a fraction ``r`` of the way through.
+   * - :class:`.Off`
+     - Instant -- changes apply in a single frame, taking no time at all.
+
+.. algan:: ControllingContexts
 
     from algan import *
 
@@ -54,27 +70,41 @@ played at the same time. In addition to Sync, Algan also provides the :class:`.S
 
     Scene.save_video()
 
-Seq() will play animations sequentially one after the other (note that this is the default behaviour when not in any context),
-Lag(lag_ratio=r) will play animations sequentially lagged by a factor of r.
-e.g. Lag(0.5) will begin the next
-animation once the current one is 50% finished.
+:class:`.Lag` interpolates between the other two: ``Lag(0)`` is
+:class:`.Sync` and ``Lag(1)`` is :class:`.Seq`. Anything in between staggers the
+animations, which is what makes a row of shapes ripple instead of moving as a
+block.
 
-.. note::
+:class:`.Off` is how you do setup. Positioning, spawning and configuring things
+inside ``with Off():`` costs no timeline, so your video starts where you want it
+to:
 
-    Lag(0) is equivalent to Sync() and Lag(1) is equivalent to Seq().
+.. code-block:: python
 
-Finally Off() disables animations that take place within its context, all changes will be instant (1 frame).
+    with Off():
+        # Build and place the whole scene instantly.
+        Scene.clear_light_sources()
+        DirectionalLight(location=UP * 8, target=ORIGIN).spawn()
+        diagram.scale(0.8).move_to_edge(LEFT).spawn()
 
-
-:class:`~.AnimationContext` s can also be given a number of parameters to change their
-behaviour. Most notably, the length of animations that take place within a context can be
-controlled with ``run_time`` and ``run_time_unit``.
+    # Now the video begins.
+    diagram.rotate(360, UP)
 
 .. important::
 
-    Before a Mob is spawned, it will have animations turned Off, regardless of the current context.
+    Before a Mob is spawned its animations are off regardless of the surrounding
+    context -- which is why ``Square().scale(0.5).move(LEFT).spawn()`` is instant.
 
-.. algan:: CombiningContextExamples
+Timing
+======
+
+Two arguments control how long a context takes:
+
+* ``run_time`` -- the total duration of the whole block, in seconds. The
+  animations inside are rescaled to fit.
+* ``run_time_unit`` -- the duration of each individual animation inside.
+
+.. algan:: ControllingTiming
 
     from algan import *
 
@@ -83,7 +113,7 @@ controlled with ``run_time`` and ``run_time_unit``.
     with Seq(run_time=1):
         mob1.move(LEFT)
         mob1.move(UP)
-        mob1.move(RIGHT*2)
+        mob1.move(RIGHT * 2)
         mob1.move(DOWN)
 
     with Seq(run_time_unit=5):
@@ -92,23 +122,95 @@ controlled with ``run_time`` and ``run_time_unit``.
 
     Scene.save_video()
 
-The ``run_time`` parameter specifies the total amount of time that the context should take place over,
-individual animations will be rescaled (sped up or slowed down) so that their total time equals ``run_time``.
-The ``run_time_unit`` parameter specifies how long each individual animation should be played for.
+The first block squeezes four moves into one second total; the second gives each
+of its two animations five seconds. If you set both, ``run_time`` wins.
+
+To leave a deliberate pause, use :meth:`~.Animatable.wait`:
+
+.. code-block:: python
+
+    mob.wait(2)        # two seconds of this mob doing nothing
+    Scene.wait(2)      # two seconds of nothing happening at all
+
+Easing With Rate Functions
+==========================
+
+A ``rate_func`` maps progress through an animation (``0`` to ``1``) to how far
+along the change should be at that moment. It is what makes motion feel like it
+accelerates and settles rather than snapping between states.
+
+Algan's default is ``rate_funcs.smooth`` -- a gentle ease in and out. Pass a
+different one to any context:
+
+.. algan:: ControllingRateFuncs
+
+    from algan import *
+
+    mobs = [Square(color=c).scale(0.4) for c in (BLUE, GREEN, YELLOW)]
+    group = Group(mobs)
+    group.arrange_in_line(DOWN, buffer=0.8).move(LEFT * 3).spawn()
+
+    funcs = (rate_funcs.identity, rate_funcs.smooth, rate_funcs.ease_out_quintic)
+    with Sync(run_time=2):
+        for mob, func in zip(mobs, funcs):
+            with Seq(rate_func=func):
+                mob.move(RIGHT * 6)
+
+    Scene.save_video()
+
+The three squares cover the same distance in the same time but arrive
+differently. The ones you will reach for most:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 32 68
+
+   * - Function
+     - Feel
+   * - ``rate_funcs.smooth``
+     - Ease in and out. The default, and the right choice most of the time.
+   * - ``rate_funcs.identity``
+     - Constant speed. Use it for anything that should look mechanical -- a
+       rotating turntable, a camera orbit, a clock hand.
+   * - ``rate_funcs.ease_out_quintic``
+     - Fast start, long settle. Good for things arriving on screen.
+   * - ``rate_funcs.ease_in_expo`` / ``rate_funcs.ease_out_expo``
+     - Sharp acceleration / deceleration.
+   * - ``rate_funcs.delay_fade``, ``rate_funcs.pulse_fade``
+     - Shaped fades, used by Algan's own spawn animations.
+
+A rate function is just a function from a tensor in ``[0, 1]`` to a tensor in
+``[0, 1]``, so you can write your own:
+
+.. code-block:: python
+
+    def bounce_out(t):
+        return 1 - (1 - t) ** 2
+
+    with Seq(rate_func=bounce_out):
+        mob.move(DOWN * 2)
+
+``rate_funcs.inversed(f)`` gives you the time-reversed version of any rate
+function, and passing ``rate_func_compose`` instead of ``rate_func`` composes
+with the parent context's easing rather than replacing it.
 
 .. note::
 
-    If both parameters are set, ``run_time`` overrides ``run_time_unit``.
+    A context that uses ``rate_func`` applies it across the *whole block*. If
+    you want a long orbit to run at constant speed, put ``rate_func`` on the
+    context that owns the orbit, not on an enclosing one that also holds other
+    animations.
 
 Nesting Contexts
-----------------
+================
 
-The real power of animation contexts is that they can be nested seamlessly.
-When one context is created within another, the sub-context will be treated as a single cohesive animation by the parent.
-This way, you can think of each context as combining the animations that take place within it into a single new animation.
-This makes specifying complex animations and designing modular animation code a breeze.
+Contexts nest, and this is where they get powerful. A nested context is treated
+by its parent as a *single* animation, so you can build up a complex piece of
+choreography out of small readable blocks. A nested context also inherits every
+parameter you did not set -- ``run_time_unit``, ``lag_ratio``, ``rate_func`` --
+so you can set a house style on the outside and only override the exceptions.
 
-.. algan:: CombiningContextExamples
+.. algan:: ControllingNesting
 
     from algan import *
 
@@ -118,25 +220,68 @@ This makes specifying complex animations and designing modular animation code a 
     with Sync():
         with Seq():
             with Sync():
-                mob1.move(LEFT*3)
+                mob1.move(LEFT * 3)
                 mob1.rotate(180, UP)
             with Sync():
                 mob1.move(UP)
                 mob1.color = YELLOW_A
             with Sync():
-                mob1.move(RIGHT*3)
+                mob1.move(RIGHT * 3)
                 mob1.glow = 0.5
 
         with Seq():
             with Sync():
-                mob2.move(RIGHT*3)
+                mob2.move(RIGHT * 3)
                 mob2.rotate(180, OUT)
             with Sync():
                 mob2.move(DOWN)
                 mob2.color = GREEN_E
             with Sync():
-                mob2.move(LEFT*3)
+                mob2.move(LEFT * 3)
                 mob2.glow = 0.5
     Scene.wait()
 
     Scene.save_video()
+
+The outer :class:`.Sync` sees two things -- the circle's three-step routine and
+the square's -- and plays them together, even though each is internally a
+sequence of pairs. Wrapping either routine in a function would let you reuse the
+whole choreography as one animation.
+
+Timing recipes
+==============
+
+.. list-table::
+   :header-rows: 1
+   :widths: 42 58
+
+   * - You want
+     - Write
+   * - Two things at once
+     - ``with Sync(): ...``
+   * - A block to last exactly 3 seconds
+     - ``with Seq(run_time=3): ...``
+   * - Each step to last 3 seconds
+     - ``with Seq(run_time_unit=3): ...``
+   * - A staggered ripple across a list
+     - ``with Lag(0.2): for m in mobs: ...``
+   * - Instant, untimed setup
+     - ``with Off(): ...``
+   * - Constant speed, no easing
+     - ``with Seq(rate_func=rate_funcs.identity): ...``
+   * - Every step stretched to the longest one
+     - ``with Sync(same_run_time=True): ...``
+   * - A pause
+     - ``Scene.wait(2)``
+
+Where to next
+-------------
+
+* :doc:`built_in_animations` -- ready-made animations to put inside these
+  contexts.
+* :doc:`updaters` -- animations that run indefinitely rather than for a fixed
+  time.
+* :doc:`../advanced_user_tutorials/animating_out_of_order` -- writing animations
+  to arbitrary points on the timeline.
+* :doc:`../advanced_user_tutorials/audio_and_speech` -- contexts whose duration
+  comes from a sound file or a line of narration.

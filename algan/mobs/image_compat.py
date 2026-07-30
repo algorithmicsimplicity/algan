@@ -238,8 +238,11 @@ class ImageMobjectFromCamera(ImageMobject):
             config["border_width"] = config.pop("stroke_width") / 2
         if "stroke_color" in config:
             config["border_color"] = config.pop("stroke_color")
+        # The frame is added as a child but Algan renders registered actors
+        # rather than walking the hierarchy, so it has to join the scene to be
+        # drawn at all.
         self.display_frame = SurroundingRectangle(
-            self, scene=self.scene, add_to_scene=False, **config
+            self, scene=self.scene, **config
         )
         self.add_children(self.display_frame)
         return self

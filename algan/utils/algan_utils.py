@@ -190,7 +190,7 @@ def _render_scene_to_file(
         if (
             timeline_context is not None
             and timeline_context.timespan.original_end <= 0
-            and any(actor.is_spawned() for actor in scene.actors[-1])
+            and any(actor.is_spawned() for actor in scene.actors)
         ):
             timeline_context.wait(1.0 / video_settings.frames_per_second)
 

@@ -180,3 +180,12 @@ Example:
 
 Changing these variables after ``import algan`` does not reinitialize the
 process.
+
+See Also
+========
+
+* :doc:`performance_and_quality` -- which of these settings to reach for, and what
+  each one costs.
+* :doc:`backgrounds_and_post_processing` -- the anti-aliasing and tonemapping
+  settings in context.
+* :doc:`lighting_and_shadows` -- ``SETTINGS.raytracing.shadows``.

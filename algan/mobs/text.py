@@ -202,9 +202,14 @@ class Tex(Mob):
             self.character_mobs = BatchedMobViewSequence(
                 self._character_batch, len(paths)
             )
+            # Image characters (emoji) are added as children below, and Algan
+            # renders registered actors rather than walking the hierarchy, so
+            # they have to join the scene along with the rest of this Text.
             self.image_mobs = [
                 ImageMob(
-                    char, scene=kwargs["scene"], add_to_scene=False
+                    char,
+                    scene=kwargs["scene"],
+                    add_to_scene=kwargs.get("add_to_scene", True),
                 )
                 for char in chars
                 if isinstance(char, mn.ImageMobject)
@@ -716,7 +721,9 @@ class Paragraph(Group):
             lines.extend(str(part).split("\n"))
         if not lines:
             lines = [""]
-        mobs = [Text(line, add_to_scene=False, **kwargs) for line in lines]
+        # The lines are this Paragraph's only geometry -- the Group itself has no
+        # render primitives -- so they must join the scene whenever it does.
+        mobs = [Text(line, add_to_scene=add_to_scene, **kwargs) for line in lines]
         super().__init__(*mobs, add_to_scene=add_to_scene)
         if mobs:
             buffer = 0.2 if line_spacing == -1 else line_spacing
@@ -801,10 +808,12 @@ class Code(Group):
         source_lines = str(code_string).expandtabs(tab_width).splitlines() or [""]
         paragraph_config = dict(paragraph_config or {})
         paragraph_config.update(kwargs)
+        # Every part below is this Code Mob's visible geometry, and only
+        # registered actors render, so each one joins the scene along with it.
         self.code = Paragraph(
             *source_lines,
             alignment="left",
-            add_to_scene=False,
+            add_to_scene=add_to_scene,
             **paragraph_config,
         )
         mobs = [self.code]
@@ -813,7 +822,7 @@ class Code(Group):
             self.line_numbers = Paragraph(
                 *(str(i) for i in range(line_numbers_from, line_numbers_from + len(source_lines))),
                 alignment="right",
-                add_to_scene=False,
+                add_to_scene=add_to_scene,
                 **paragraph_config,
             )
             with Off(animation_manager=kwargs["scene"].animation_manager):
@@ -827,31 +836,31 @@ class Code(Group):
             self.background_mobject = SurroundingRectangle(
                 self,
                 scene=self.scene,
-                add_to_scene=False,
+                add_to_scene=add_to_scene,
                 **background_config,
             )
         elif background == "window":
             frame = SurroundingRectangle(
                 self,
                 scene=self.scene,
-                add_to_scene=False,
+                add_to_scene=add_to_scene,
                 **background_config,
             )
             dots = Group(
                 *[
                     Circle(
-                        radius=0.04, scene=self.scene, add_to_scene=False
+                        radius=0.04, scene=self.scene, add_to_scene=add_to_scene
                     )
                     for _ in range(3)
                 ],
                 scene=self.scene,
-                add_to_scene=False,
+                add_to_scene=add_to_scene,
             )
             with Off(animation_manager=self.animation_manager):
                 dots.arrange_in_line(RIGHT, buffer=0.08)
                 dots.move_next_to(frame.get_boundary_in_direction(UP), DOWN, buffer=0.08)
             self.background_mobject = Group(
-                frame, dots, scene=self.scene, add_to_scene=False
+                frame, dots, scene=self.scene, add_to_scene=add_to_scene
             )
         elif background not in {None, False}:
             raise ValueError("background must be 'rectangle', 'window', or None")

@@ -2,41 +2,55 @@
 Basic Animations
 ================
 
-In Algan you create animations by controlling :class:`.Mob` s,
-which are objects that will appear on screen.
-Algan provides a range of :class:`.Mob` s covering basic 2-D and 3-D
-shapes such as :class:`.Circle`, :class:`.Rectangle` :class:`.Sphere`, :class:`.Cylinder`, as well as
-:class:`.Text` :class:`.Mob` s for displaying text and :class:`.Tex` for LaTex.
-You can see the complete list at (TODO link to Mobs reference).
+In Algan you build animations by creating :class:`.Mob` s -- the objects that
+appear on screen -- and then changing them. Every change you make is *recorded*
+as an animation rather than applied instantly, so a script reads like a
+description of what happens, in order, from top to bottom.
+
+There are three ways to change a Mob, in increasing order of how much work they
+ask of you:
+
+1. **Assign to an animatable attribute** (``mob.color = BLUE``). Best for
+   appearance.
+2. **Call a Mob method** (``mob.move(RIGHT)``, ``mob.rotate(90, OUT)``). Best for
+   motion and geometry -- these are the workhorses.
+3. **Write an animated function** (:func:`~.animated_function`). For the rare
+   animation Algan has no method for.
+
+This tutorial covers all three.
 
 Changing Animatable Attributes
 ------------------------------
 
-All :class:`.Mob` s have the following animatable attributes: :attr:`~.Mob.location`, :attr:`~.Mob.basis`,
-:attr:`~.Mob.color`, :attr:`~.Mob.glow`, :attr:`~.Mob.opacity`. These attributes
-are special in that any modifications made to them will automatically be animated.
-Specifically, when a new value is assigned to an animatable attribute,
-that modification will take place over a 1 second period,
-during which the attribute is linearly interpolated from the old value to the new value.
+Every :class:`.Mob` has these animatable attributes:
 
-:attr:`~.Mob.location` is a vector length 3 which specifies where in 3-D space a mob is located.
-By default, new Mobs are created at the ORIGIN (0, 0, 0).
+.. list-table::
+   :header-rows: 1
+   :widths: 18 14 68
 
-.. note::
+   * - Attribute
+     - Shape
+     - Meaning
+   * - :attr:`~.Mob.location`
+     - 3 floats
+     - Where the Mob sits in 3-D space. New Mobs start at ``ORIGIN``.
+   * - :attr:`~.Mob.basis`
+     - 9 floats
+     - Orientation *and* scale, as three basis vectors. Change it with
+       :meth:`~.Mob.rotate` / :meth:`~.Mob.scale`, not by hand.
+   * - :attr:`~.Mob.color`
+     - :class:`~.Color`
+     - The Mob's main colour.
+   * - :attr:`~.Mob.glow`
+     - float
+     - How much light the Mob bleeds into surrounding pixels. ``0`` is off.
+   * - :attr:`~.Mob.opacity`
+     - float
+     - ``1`` is solid, ``0`` is invisible.
 
-    By default the camera is located at OUT*7 (0, 0, -7) and looks towards the ORIGIN.
-
-:attr:`~.Mob.basis` is a vector of length 9 that specifies the orientation and scale of a Mob. It is not recommended to modify
-basis directly, instead you should use the helper methods like :meth:`~.Mob.rotate` and :meth:`~.Mob.scale`.
-
-:attr:`~.Mob.color` is a :class:`~.Color` object which specifies the main color of the Mob.
-
-.. note::
-
-    In Algan colors have red, green, blue components, as well as glow and opacity (and internally are stored
-    as a vector of 5 components in that order). Colors with a non-zero glow component will 'glow', emitting light
-    into nearby pixels.
-    :attr:`~.Mob.glow` and :attr:`~.Mob.opacity` can optionally be set in the :class:`~.constants.color.Color` object, or as properties of the Mob itself.
+These attributes are special: **assigning to one records a 1-second animation**
+that interpolates from the old value to the new one. Nothing else in your script
+has to change.
 
 .. algan:: BasicChangingAttributes
 
@@ -44,9 +58,9 @@ basis directly, instead you should use the helper methods like :meth:`~.Mob.rota
 
     circle = Circle().spawn()
 
-    circle.location = circle.location + UP*2
+    circle.location = circle.location + UP * 2
     circle.color = GREEN
-    circle.location = circle.location + DOWN + RIGHT*2
+    circle.location = circle.location + DOWN + RIGHT * 2
     circle.glow = 0.5
     circle.opacity = 0.0
 
@@ -54,21 +68,46 @@ basis directly, instead you should use the helper methods like :meth:`~.Mob.rota
 
 .. important::
 
-    Only out-of-place assignments are animated! That means that, for example, ``circle.location += UP * 0.5`` will
-    not be animated. You should NEVER assign animated attributes inplace!
+    **Only out-of-place assignment is animated.** ``circle.location += UP`` and
+    ``circle.location[0] = 1`` mutate the underlying tensor in place, which Algan
+    cannot see and cannot record. Always write
+    ``circle.location = circle.location + UP``.
+
+    In practice you will reach for :meth:`~.Mob.move` instead, which does the
+    arithmetic for you.
+
+A note on colours
+=================
+
+An Algan :class:`~.Color` carries five components: red, green, blue, glow and
+opacity, in that order. So glow and opacity can be set either on the Mob or baked
+into the colour you assign:
+
+.. code-block:: python
+
+    circle.color = BLUE            # leaves glow and opacity alone
+    circle.glow = 0.5              # ... or set them separately
+    circle.opacity = 0.5
+
+    circle.color = BLUE.set_opacity(0.5)   # ... or together, in one animation
+
+A colour with a non-zero glow component emits light into nearby pixels (see
+:doc:`../advanced_user_tutorials/backgrounds_and_post_processing`). Algan ships
+the full Manim colour palette -- ``RED``, ``BLUE_E``, ``TEAL_A``, ``GOLD`` and so
+on -- plus ``WHITE``, ``BLACK`` and ``TRANSPARENT``.
 
 Mob Methods
 -----------
 
-In addition to basic attribute animating, Algan also provides a collection of helpful Mob methods,
-which perform common animations. Here are some examples:
+Most animation is done with methods rather than raw attribute assignment,
+because they say what you mean:
 
 .. algan:: BasicMobMethods
 
     from algan import *
 
     mob = RegularPolygon(5).spawn()
-    mob.move(RIGHT*2)
+    mob.move(RIGHT * 2)
     mob.rotate(360, OUT)
     mob.rotate(360, UP)
     mob.rotate(360, OUT, about_point=ORIGIN)
@@ -76,20 +115,62 @@ which perform common animations. Here are some examples:
 
     Scene.save_video()
 
-Here's a brief explanation of the methods shown in the example:
+The methods used above:
 
-* :meth:`.Mob.move`: This method is used to translate (move) the :class:`.Mob` by a specified vector. For example,
-  `mob.move(RIGHT)` moves the object to the right one unit.
-* :meth:`.Mob.rotate`: This method rotates the :class:`.Mob`'s basis around an axis. Passing ``about_point`` also moves its location around that point; for example, ``mob.rotate(180, OUT, about_point=ORIGIN)`` rotates the object 180 degrees around the origin.
-* :meth:`.Mob.become`: This method smoothly transforms the current :class:`.Mob` into another :class:`.Mob` provided as an argument. For example, `mob = mob.become(Circle())` transforms the existing mob into a circle.
+* :meth:`.Mob.move` translates the Mob by a vector: ``mob.move(RIGHT)`` slides it
+  one unit right. To move to an absolute point instead, use
+  :meth:`~.Mob.move_to`.
+* :meth:`.Mob.rotate` turns the Mob about an axis through its own centre.
+  Passing ``about_point`` turns it about *that* point instead, which sweeps the
+  Mob around in an arc -- ``mob.rotate(180, OUT, about_point=ORIGIN)`` swings it
+  half way around the origin.
+* :meth:`.Mob.become` morphs the Mob into a different Mob. It returns the
+  resulting Mob, so assign it back: ``mob = mob.become(Circle())``.
 
-You can find a complete list of available Mob methods at (TODO: link to mob reference).
+Two more you will use constantly:
+
+* :meth:`.Mob.scale` grows or shrinks the Mob: ``mob.scale(2)`` doubles its size.
+* :meth:`.Animatable.wait` holds the Mob still: ``mob.wait(2)`` leaves two
+  seconds of nothing happening. ``Scene.wait(2)`` does the same for the whole
+  scene.
+
+:doc:`positioning_and_layout` covers the placement and sizing methods in full,
+and the :class:`~.Mob` reference lists every method.
+
+Spawning and despawning
+-----------------------
+
+A Mob does not appear -- and cannot be animated -- until it is *spawned*:
+
+.. code-block:: python
+
+    square = Square()        # created, but not on screen
+    square.spawn()           # fades in over 1 second, now animatable
+
+    square.despawn()         # fades out and stops being animatable
+
+:meth:`~.Animatable.spawn` returns the Mob, so it chains:
+``square = Square().spawn()``. Everything before ``spawn()`` happens instantly
+and costs no time on the timeline, which makes it the right place to do setup:
+
+.. code-block:: python
+
+    # Position and size it first, then bring it on screen.
+    square = Square(color=BLUE).scale(0.5).move(LEFT * 3).spawn()
+
+.. important::
+
+    Before a Mob is spawned, its animations are turned **off** regardless of
+    the surrounding animation context. That is why the chain above takes no time
+    at all.
+
+.. _animated-functions:
 
 Animated Functions
 ------------------
 
-Attribute changes and Mob methods should serve most of your animating needs, but in the rare case where you
-need to animate something completely new, you can create your own animations using the
+Attribute changes and Mob methods cover the overwhelming majority of what you
+will want. For an animation Algan has no method for, write your own with the
 :func:`~.animated_function` decorator.
 
 .. algan:: BasicAnimatedFunction
@@ -97,34 +178,43 @@ need to animate something completely new, you can create your own animations usi
     from algan import *
     import numpy as np
 
-    # Define a function mapping a scalar parameter t to a point in space.
+    # A function mapping a scalar parameter t to a point in space.
     def path_func(t):
-        return UP * np.sin(t) + RIGHT * (t-PI)
+        return UP * np.sin(t) + RIGHT * (t - PI)
 
-    # Create an animated_function which will move our mob along this path.
+    # An animated_function that moves our mob along that path.
     @animated_function(animated_args={'t': 0})
     def move_along_path(mob, t):
         mob.location = path_func(t)
 
     square = Square().spawn()
-    square.location = path_func(0) # Move to starting point.
-    move_along_path(square, 2*PI)
+    square.location = path_func(0)   # Jump to the starting point.
+    move_along_path(square, 2 * PI)
 
     Scene.save_video()
 
-The :func:`~.animated_function` decorator specifies that a function should be animated. This decorator accepts a parameter
-``animated_args``, which must be a dictionary mapping the names of animated arguments to their initial values when the animation
-begins. Like with attribute modification, the animation will take place over a 1 second period.
-The animation is created by linearly interpolating the ``animated_args`` from their initial values given in the dictionary,
-to the value the function is called with. In this example, we specify that parameter ``t`` has an initial value
-of 0, and we call the function with ``t=2*PI``, so the animation will range from ``t=0`` to ``t=2*PI``.
+``animated_args`` maps each animated parameter to its value at the *start* of the
+animation. Algan then interpolates from there to whatever you called the function
+with, evaluating the body at every frame. Above, ``t`` starts at ``0`` and the
+call passes ``2 * PI``, so the animation sweeps ``t`` from ``0`` to ``2 * PI``
+over one second.
 
 .. important::
 
-    An :func:`~.animated_function` must accept at least one argument, and the first argument must be a :class:`.Mob`. Any arguments
-    marked as ``animated_args`` must be floats.
+    An :func:`~.animated_function` must take a :class:`.Mob` as its first
+    argument, and every name listed in ``animated_args`` must be a float.
 
 .. note::
 
-    Inside of an :func:`~.animated_function`, the default animations created by modifying animatable attributes are disabled.
+    Inside an :func:`~.animated_function`, attribute assignment is *not*
+    separately animated -- the function body describes a single frame, and the
+    decorator does the animating. Write the body vectorized over torch tensors;
+    it is evaluated once per frame for the whole Mob.
 
+Where to next
+-------------
+
+* :doc:`mob_gallery` -- what Mobs are available.
+* :doc:`positioning_and_layout` -- putting Mobs exactly where you want them.
+* :doc:`controlling_animations` -- controlling *when* animations happen and how
+  long they take.

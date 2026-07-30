@@ -10,8 +10,9 @@ Getting Started
 .. important::
 
   If you installed Algan using the recommended Python management tool ``uv``,
-  it's crucial to either activate the corresponding virtual environment (by following the
-  instructions displayed when running ``uv venv``).
+  either activate its virtual environment (following the instructions ``uv venv``
+  prints) or run your scripts through ``uv run``, as below. Otherwise Python will
+  not find Algan.
 
 Your First Algan Program
 ************************
@@ -164,10 +165,14 @@ disturbing the original:
 
     HD_60 = HD.set(frames_per_second=60)
 
+There are two more presets for specialised uses: ``THUMBNAIL`` (a single
+1280 x 720 frame) and ``SMOKE_TEST`` (32 x 32, for checking a script runs at all).
+
 See :meth:`~algan.scene.Scene.save_video` for the full list of parameters,
-:class:`~.VideoSettings` for building custom settings from scratch, and
+:class:`~.VideoSettings` for building custom settings from scratch,
 :doc:`../advanced_user_tutorials/settings` for everything else you can
-configure.
+configure, and :doc:`../advanced_user_tutorials/performance_and_quality` for
+which of those settings is worth changing.
 
 Saving Images
 *************
@@ -231,3 +236,22 @@ genuinely independent clips, give each one its own :class:`~algan.scene.Scene`:
     with Scene() as outro:
         Text("The End", scene=outro).spawn()
         outro.save_video("outro")
+
+Where to next
+*************
+
+The remaining new-user tutorials build on each other in order:
+
+* :doc:`basic_animations` -- the three ways to change a Mob, and how Algan turns
+  them into animation.
+* :doc:`mob_gallery` -- everything you can put on screen.
+* :doc:`positioning_and_layout` -- getting Mobs exactly where you want them.
+* :doc:`text_and_math` -- labels, LaTeX and animated numbers.
+* :doc:`controlling_animations` -- controlling *when* things happen and how long
+  they take.
+* :doc:`built_in_animations` -- ready-made animations for drawing attention and
+  transforming diagrams.
+* :doc:`updaters` -- rules that hold continuously instead of for a fixed time.
+* :doc:`child_mobs` -- building complex objects out of simple ones.
+* :doc:`three_d_basics` -- your first 3-D scene.
+* :doc:`importing_from_manim` -- borrowing Manim's geometry library.

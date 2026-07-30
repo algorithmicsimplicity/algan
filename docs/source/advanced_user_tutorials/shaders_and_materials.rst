@@ -2,65 +2,39 @@
 Shaders and Materials
 =====================
 
-In rendering pipelines, the *shader* is responsible for determining
-how the brightness and color of objects changes when light is cast on them.
+A *shader* decides how an object's brightness and colour change when light falls
+on it. Algan gives you three levels of control:
+
+1. **Materials** (:meth:`~.Mob.set_material`) -- Three.js-style material objects.
+   Start here; this is the documented workflow.
+2. **Vertex shaders** (:meth:`~.Mob.set_shader`) -- a PyTorch function evaluated at
+   each vertex.
+3. **Fragment shaders** (:meth:`~.Mob.set_fragment_shader`) -- a Taichi pipeline
+   evaluated at each rendered fragment, in-kernel.
 
 .. important::
 
-    Currently shaders are only implemented for 3-D objects! 2-D objects
-    do not interact with lighting.
+    Shading applies to **3-D objects** only. Flat 2-D shapes and text are drawn
+    in their own colour and do not interact with lighting.
 
-By default, Algan will use the :func:`.default_shader` function to shade Mobs.
-This function implements a simplified diffusion shader, which does not depend
-on any material properties. This means that all objects will interact
-with light in the same way.
+    All three of ``set_material``, ``set_shader`` and ``set_fragment_shader`` must
+    be called **before** the Mob is spawned.
 
-If you want to get more realistic lighting, you can use more sophisticated
-shaders that take into consideration the material properties of the object.
+Materials
+=========
 
-Using a Physics-based Rendering Shader
-======================================
+A material bundles a lighting model with its parameter values, so
+``MeshStandardMaterial(metalness=1.0, roughness=0.2)`` gives you polished metal
+without your having to know which shader that is.
 
-Algan also provides a basic implementation of a physics-based shader
-in the :func:`.basic_pbr_shader` function. This function takes an additional
-2 parameters as input compared to the default shader: metallicness and
-smoothness. This function simulates how light interacts with a surface made
-of metal vs non-metal and smooth vs rough texture to compute diffuse
-and specular lighting effects.
-
-You can make a mob use this shader with the :meth:`~.Mob.set_shader` method.
-Let's look at an example.
-
-.. important::
-
-    You must use :meth:`~.Mob.set_shader` before spawning the mob! Once spawned,
-    the shader cannot be changed.
-
-In this example, the first mob (left) uses the default shader, and the second (right)
-uses the PBR shader,
-with a range of different material properties. Note that the `smoothness` and `metallicness`
-attributes are not properties of the :class:`.Mob` class. When we called the :meth:`~.Mob.set_shader`
-method, it read the the function signature of the shader and realised that there were
-2 additional arguments named smoothness and metallicness, so it automatically
-added those as animatable attributes to our mob.
-
-Materials (Three.js-style)
-==========================
-
-For a more comprehensive workflow, Algan provides a set of **material** classes
-that mirror the `Three.js <https://threejs.org/>`_ mesh materials -- the same
-material types, property names, and default settings. Instead of picking a shader
-function and animating loose parameters, you configure a material object and apply
-it with :meth:`~.Mob.set_material`.
-
-.. algan:: SetMaterial
+.. algan:: MaterialsSetMaterial
 
     from algan import *
 
     with Sync():
-        mob1 = Sphere().move(LEFT*2).set_material(
+        mob1 = Sphere().move(LEFT * 2).set_material(
             MeshStandardMaterial(color=RED, metalness=1.0, roughness=0.2)).spawn()
-        mob2 = Sphere().move(RIGHT*2).set_material(
+        mob2 = Sphere().move(RIGHT * 2).set_material(
             MeshPhongMaterial(color=BLUE, shininess=80)).spawn()
 
     with Seq(run_time_unit=5):
@@ -69,11 +43,10 @@ it with :meth:`~.Mob.set_material`.
 
     Scene.save_video()
 
-As with :meth:`~.Mob.set_shader`, :meth:`~.Mob.set_material` **must** be called
-before the mob is spawned. Applying a material registers the material's
-numeric/colour properties as animatable attributes on the mob, so you can animate
-them afterwards (``mob1.roughness = 1.0`` above), exactly like the built-in
-attributes.
+Applying a material registers its numeric and colour properties as **animatable
+attributes** on the Mob, so ``mob1.roughness = 1.0`` above animates exactly like
+``mob1.color`` or ``mob1.location`` would. That is the whole point of the material
+workflow: you configure once and then animate the properties by name.
 
 Available materials
 -------------------
@@ -99,7 +72,7 @@ All of the Three.js mesh materials are provided, with matching default settings:
       - PBR metalness/roughness
       - ``roughness`` (1), ``metalness`` (0), ``emissive``, ``envMapIntensity`` (1)
     * - :class:`MeshPhysicalMaterial`
-      - PBR + clearcoat/sheen
+      - PBR + clearcoat/sheen/transmission
       - adds ``clearcoat`` (0), ``ior`` (1.5), ``specularIntensity`` (1),
         ``sheen`` (0), ``transmission`` (0), ...
     * - :class:`MeshToonMaterial`
@@ -115,128 +88,179 @@ All of the Three.js mesh materials are provided, with matching default settings:
       - Camera-distance grayscale
       - ``near`` (0.1), ``far`` (100)
 
+Only :class:`MeshStandardMaterial` and :class:`MeshPhysicalMaterial` are true PBR
+materials, and they are the two that drive ray transport -- reflections come from
+``metalness`` / ``roughness``, and refraction from a transmissive
+:class:`MeshPhysicalMaterial`'s ``transmission`` and ``ior``. There are no separate
+Mob-level reflectivity or refractive-index setters; the material is the single
+source of these. See :doc:`reflections_and_glass`.
+
+Colours and naming
+------------------
+
 Colours accept hex ints (``0xff0000``), hex strings (``"#ff0000"``), Algan colour
-constants (``RED``), or RGB tuples. Following Three.js, a material's ``color``
-default is white and drives the mesh's base colour (overriding a shape's own
-default colour).
+constants (``RED``), or RGB tuples.
 
 .. note::
 
-    The animatable attribute names on the mob use Python ``snake_case`` (e.g.
-    ``mob.emissive_intensity``, ``mob.metalness``), while the material
-    constructors accept the Three.js ``camelCase`` names (e.g.
-    ``MeshStandardMaterial(emissiveIntensity=2)``).
+    Algan deliberately deviates from Three.js in one place: a material's ``color``
+    defaults to ``None``, meaning "leave the Mob's own colour alone", where Three.js
+    would default it to white and silently repaint the Mob. Pass ``color`` explicitly
+    when you want the material to set it.
 
-Vertex shading vs. physical shading
+.. note::
+
+    The animatable attribute names on the Mob use Python ``snake_case``
+    (``mob.emissive_intensity``, ``mob.metalness``), while the material
+    constructors accept the Three.js ``camelCase`` names
+    (``MeshStandardMaterial(emissiveIntensity=2)``).
+
+Vertex shading vs. fragment shading
 -----------------------------------
 
-By default, materials are evaluated **per vertex** (the lighting is computed at
-each triangle corner and the resulting colour is interpolated across the face).
-This is fast and looks great on the curved, finely-tessellated surfaces typical
-of Algan scenes.
+By default, materials are evaluated **per vertex**: lighting is computed at each
+triangle corner and the resulting colour interpolated across the face. That is fast
+and looks good on the finely-tessellated curved surfaces typical of Algan scenes.
 
-For more accurate, **per-hit** shading -- where the full PBR lighting is
-evaluated at every ray intersection -- enable the physical path tracer *before*
-creating your mobs::
+For lighting that varies smoothly *within* a face -- crisp specular highlights, or
+smooth shading on a coarse mesh -- use per-fragment shading, which the
+deterministic renderer evaluates in-kernel at every ray hit. It is on by default
+(``SETTINGS.raytracing.experimental.fragment_shading``), and
+:meth:`~.Mob.set_fragment_shader` forces it on for any scene the Mob appears in.
+
+For full physically-based light transport -- true global illumination rather than
+direct lighting plus deterministic bounces -- switch to the Monte Carlo path tracer
+by raising the sample count:
+
+.. code-block:: python
 
     from algan import *
-    from algan.rendering.raytracing import enable_ray_tracing
 
-    enable_ray_tracing(physical_lighting=True, samples_per_pixel=64)
+    SETTINGS.raytracing.set(samples_per_pixel=64)
 
     Sphere().set_material(MeshStandardMaterial(metalness=1.0, roughness=0.2)).spawn()
     Scene.save_video()
 
-When physical lighting is active, :meth:`~.Mob.set_material` automatically routes
-each material's ``(metalness, roughness)`` into the path tracer's per-hit surface
-shading, so ``MeshStandardMaterial`` / ``MeshPhysicalMaterial`` are rendered as
-true metalness/roughness PBR. Non-PBR materials fall back to a sensible
-``(metalness, roughness)`` (diffuse for Lambert/Toon, a roughness derived from
-``shininess`` for Phong).
+Under path tracing the Mob's colour is treated as raw *albedo* and all illumination
+comes from the scene's lights, emissive materials and the environment map, so the
+result differs from the default preview -- that is the point. It is also
+dramatically slower; see :doc:`performance_and_quality`.
+
+Texture maps
+------------
+
+The material classes accept Three.js's image-based property slots (``map``,
+``normalMap``, ``roughnessMap``, ``envMap``, ``matcap``, ``gradientMap``, ...) for
+API parity, but **do not sample them** -- a warning is emitted when one is set.
+``wireframe``, ``vertexColors`` and non-default ``side`` are likewise unsupported,
+and the matcap, normal and depth materials use documented approximations (matcap
+has no image; normals are world-space rather than view-space).
+
+Texturing in Algan goes through :class:`~.Surface` instead, which takes
+``color_texture``, ``roughness_texture``, ``reflectivity_texture``,
+``refractive_index_texture``, ``normal_texture`` and ``glow_texture`` and samples
+them bilinearly per fragment inside the ray tracing kernel. See
+:doc:`images_and_textures`.
+
+Vertex Shaders
+==============
+
+A shader is just a function, and :meth:`~.Mob.set_shader` installs one. Algan
+ships :func:`.default_shader` (a simplified diffuse model with no material
+properties, which is what an unconfigured Mob uses) and :func:`.basic_pbr_shader`,
+which adds ``smoothness`` and ``metallicness``.
+
+The interesting part is how parameters are handled. ``set_shader`` inspects the
+function's signature, sees which parameters come *after* the ones
+:func:`.default_shader` declares, and registers those as animatable attributes on
+the Mob. So installing :func:`.basic_pbr_shader` gives you ``mob.smoothness`` and
+``mob.metallicness`` to animate, without either being a predeclared Mob attribute.
+
+To write your own, match :func:`.default_shader`'s signature and append your own
+parameters:
+
+.. code-block:: python
+
+    def my_shader(memory, vertex_location, vertex_normal, albedo_color,
+                  camera_location, light_origin, light_color,
+                  light_intensity, ambient_light_intensity,
+                  banding=4.0):
+        # ... torch operations returning a colour per vertex ...
+        return color
+
+    mob.set_shader(my_shader)   # before spawning
+    mob.banding = 8.0           # now animatable
+
+Every parameter of :func:`.default_shader` must be declared even if you ignore it.
+Read the source of :func:`.default_shader` and :func:`.basic_pbr_shader` for
+working implementations.
 
 .. note::
 
-    Under physical lighting the mob colour is treated as raw *albedo* and all
-    illumination comes from the scene's lights, emission and the background
-    environment -- so the result differs from the vertex-shaded preview (that is
-    the point). Currently only ``metalness`` and ``roughness`` are routed to the
-    path tracer; emissive colour, clearcoat and sheen remain vertex-shading
-    features. Enable physical lighting *before* applying materials.
+    Mobs with different shaders are batched separately at render time. Reuse the
+    same function object where you can -- defining the shader once and applying it
+    to many Mobs batches much better than defining an equivalent function per Mob.
 
-.. important::
+Fragment Shaders
+================
 
-    **Limitations.** Algan shades *per vertex* and has no UV / image-sampling
-    pipeline, so every texture / image-based property (``map``, ``normalMap``,
-    ``roughnessMap``, ``envMap``, ``matcap``, ``gradientMap``, ...) is accepted
-    for API parity but **not sampled** -- a warning is emitted when one is set.
-    ``wireframe``, ``vertexColors`` and non-default ``side`` are likewise
-    unsupported. The matcap, normal and depth materials use approximations
-    (matcap has no image; normals are world-space rather than view-space). For
-    the best results, light the scene with a single point light.
+The PyTorch shaders above run per vertex, before upload. The deterministic ray
+tracer can instead shade **per fragment**, in-kernel: each ray hit evaluates a
+pipeline of Taichi stages, so specular highlights stay crisp and coarse meshes
+shade smoothly.
 
-Writing Custom Shaders
-======================
+:meth:`~.Mob.set_fragment_shader` accepts a built-in material shader, a
+:class:`~.FragmentStage`, or a **list** of these forming a pipeline run left to
+right -- each stage receives the previous stage's output colour:
 
-If you want to make your own shader, all you need to do is implement the function for it.
-Take a look at the source code for :func:`.default_shader` and :func:`.basic_pbr_shader` functions
-to see how this can be done in Pytorch. If you make your own shader function,
-it must have the same signature as the default shader, plus any additional shader
-parameters you require. Even if you don't use them, your function signature must
-still declare the default parameters. Any new parameters you introduce beyond those
-in the :func:`.default_shader` will be automatically added as animatable attributes to your mobs
-when you set this function as their shader.
+.. code-block:: python
 
-Once you've defined your shader function, simply use :meth:`~.Mob.set_shader` as in the above example.
-You can then animate any shader parameters just as you would any of the built in
-animatable attributes.
-
-.. note::
-
-    During rendering, mobs with different shaders will be batched separately.
-    This means you should reuse the same function definition where possible,
-    as it will allow mobs to be batched more effectively.
-
-Custom Fragment Shaders (Ray Tracer)
-====================================
-
-The PyTorch shaders above are evaluated *per vertex* before upload (Gouraud
-shading). The deterministic ray tracer can instead shade **per fragment**,
-in-kernel: each ray hit evaluates a pipeline of Taichi stages, so specular
-highlights stay crisp and coarse meshes shade smoothly. Use
-:meth:`~.Mob.set_fragment_shader` (before spawning) with a built-in material
-shader, a :class:`~.FragmentStage`, or a list of stages composed left to
-right::
-
+    from algan import *
     from algan.rendering.shaders.fragment_shaders import cosine_color
     from algan.rendering.shaders.material_shaders import phong_shader
 
     mob.set_fragment_shader([cosine_color, phong_shader])
 
-A custom stage is a Taichi ``@ti.func`` plus its (animatable) parameter
-specs -- see ``cosine_color`` in
-``algan/rendering/shaders/fragment_shaders.py`` for the template.
+That recolours each fragment with a cosine wave and then lights the result with
+Blinn-Phong. As with vertex shaders, each stage's parameters become animatable
+attributes on the Mob (duplicate names across stages are suffixed).
+
+A custom stage is a Taichi ``@ti.func`` plus its parameter specs -- see
+``cosine_color`` in ``algan/rendering/shaders/fragment_shaders.py`` for the
+template.
 
 Custom Ray Bouncing (Scatter Stages)
 ------------------------------------
 
-Each material pipeline also owns a **scatter function** deciding how a ray
-continues after shading a surface: pass through (transparency),
-mirror-bounce, or split into a reflected + refracted pair (glass). The
-default scatter implements the standard opacity / reflectivity /
-Fresnel-glass behaviour; attach your own to any stage to customise it::
+Each material pipeline also owns a **scatter function**, which decides how a ray
+continues after shading a surface: pass through (transparency), mirror-bounce, or
+split into a reflected and a refracted ray (glass). The default scatter implements
+the standard opacity / metalness / Fresnel-glass behaviour; attach your own to any
+stage to customise it:
+
+.. code-block:: python
 
     FragmentStage(my_stage_func, my_param_specs, scatter=my_scatter_func)
 
-See ``forced_mirror_scatter`` in ``fragment_shaders.py`` for a complete
-example, and the scatter contract documentation in
+See ``forced_mirror_scatter`` in ``fragment_shaders.py`` for a complete example, and
+the scatter contract documented in
 ``algan/rendering/raytracing/shading_taichi.py``.
 
 .. note::
 
-    Custom scatter (and normal-mapped lighting) run inside the deterministic
-    ray tracer's regular shade kernel. Algan also ships an alternative
-    *sorted* material-dispatch pipeline (one GPU kernel per material, as in
-    Blender Cycles) that renders identically; it is off by default because
-    the regular kernel is faster on the built-in materials. Force it on with
+    Custom scatter and normal-mapped lighting run inside the deterministic ray
+    tracer's regular shade kernel. Algan also ships an alternative *sorted*
+    material-dispatch pipeline (one GPU kernel per material, as in Blender Cycles)
+    that renders identically; it is off by default because the regular kernel is
+    faster on the built-in materials. Force it on with
     ``SETTINGS.raytracing.experimental.set(wavefront_sort_materials=True)`` if you
     are experimenting with very many heavy material pipelines.
+
+See Also
+========
+
+- :doc:`lighting_and_shadows` -- the lights these materials respond to.
+- :doc:`reflections_and_glass` -- what ``metalness``, ``roughness``,
+  ``transmission`` and ``ior`` actually do to rays.
+- :doc:`images_and_textures` -- per-texel material properties.
+- :doc:`extending_algan` -- adding new render primitives.
