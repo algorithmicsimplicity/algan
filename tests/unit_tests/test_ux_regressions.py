@@ -559,6 +559,5 @@ def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
 
     monkeypatch.setattr(manim_animations, "draw_border_then_fill", fake)
 
-    assert text.write(border_width=3) is text
-    assert seen["border_width"] == 3
+    assert text.write() is text
     assert len(seen["mobs"]) == len(text.character_mobs)

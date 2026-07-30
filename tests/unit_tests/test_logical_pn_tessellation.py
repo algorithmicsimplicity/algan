@@ -138,7 +138,7 @@ def test_adjacent_logical_pn_patches_share_their_curved_edge():
 
 def test_camera_distance_selects_per_frame_subdivision_and_batch_padding():
     corners, normals = _curved_patch_inputs()
-    primitive = _logical_patch(corners, normals, render_tolerance=0.5)
+    primitive = _logical_patch(corners, normals, render_tolerance=0.0005)
     camera = _camera([-30.0, -3.0], device=primitive.corners.device)
 
     primitive._dice_logical_pn(camera)
@@ -179,7 +179,7 @@ def test_batch_max_padding_does_not_change_per_frame_flat_mesh():
 
 
 def test_selected_flat_mesh_meets_dense_output_pixel_error_check():
-    tolerance = 0.5
+    tolerance = 0.0005
     corners, normals = _curved_patch_inputs()
     primitive = _logical_patch(corners, normals, render_tolerance=tolerance)
     camera = _camera([-3.0], device=primitive.corners.device)
@@ -229,7 +229,7 @@ def test_selected_flat_mesh_meets_dense_output_pixel_error_check():
         camera.output_screen_height,
     )
 
-    assert (exact_pixels - approximated_pixels).norm(dim=-1).max() <= tolerance
+    assert (exact_pixels - approximated_pixels).norm(dim=-1).max() <= (tolerance * camera.output_screen_height)
 
 
 def test_logical_pn_packs_only_regular_flat_triangle_geometry():

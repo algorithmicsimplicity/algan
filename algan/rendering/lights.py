@@ -166,20 +166,32 @@ class Light(Mob):
         return aux
 
     def build_aux(self, location):
-        """Aux columns 3..15 of the packed light row, ``[T, K, 13]``:
+        """Internal: pack this light's per-frame parameters for the renderer.
 
-        ==  =========================================================
-        0   light type id
-        1   decay exponent (0 = no distance falloff)
-        2   distance (range; 0 = infinite)
-        3-5 direction (unit; emission dir for directional/spot, up for
-            hemisphere, surface normal for area samples)
-        6   cos(outer cone angle) (spot)
-        7   cos(inner cone angle) (spot)
-        8   shadow softness (world radius; directional: tan(angle))
-        9-11 ground color RGB (hemisphere) / SH linear coeffs (env)
-        12  power fraction of this row (1/K for area samples, else 1)
-        ==  =========================================================
+        Subclasses override this to fill in the columns they use. The layout is:
+
+        ====  ==========================================================
+        0     light type id
+        1     decay exponent (0 = no distance falloff)
+        2     distance (range; 0 = infinite)
+        3-5   direction (unit; emission dir for directional/spot, up for
+              hemisphere, surface normal for area samples)
+        6     cos(outer cone angle) (spot)
+        7     cos(inner cone angle) (spot)
+        8     shadow softness (world radius; directional: tan(angle))
+        9-11  ground color RGB (hemisphere) / SH linear coeffs (env)
+        12    power fraction of this row (1/K for area samples, else 1)
+        ====  ==========================================================
+
+        Parameters
+        ----------
+        location
+            Per-frame light locations, shape ``[T, 3]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Aux columns 3..15 of the packed light row, shape ``[T, K, 13]``.
         """
         return self._blank_aux(location)
 
@@ -214,10 +226,31 @@ class PointLight(Light):
         super().__init__(*args, intensity=intensity, **kwargs)
 
     def is_extended(self):
+        """Whether this light needs the extended packed row.
+
+        Returns
+        -------
+        bool
+            True only when falloff, range or soft shadows are in use; a plain point
+            light keeps the compact packing, which keeps renders that use no new
+            features byte-identical.
+        """
         return (self.decay != 0.0 or self.distance != 0.0
                 or self.shadow_radius != 0.0)
 
     def build_aux(self, location):
+        """Internal: pack this light's falloff, range and shadow radius.
+
+        Parameters
+        ----------
+        location
+            Per-frame light locations, shape ``[T, 3]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Aux columns for the packed light row, shape ``[T, K, 13]``.
+        """
         aux = self._blank_aux(location)
         aux[..., 1] = self.decay
         aux[..., 2] = self.distance
@@ -235,6 +268,27 @@ class _TargetedLight(Light):
         super().__init__(*args, **kwargs)
 
     def set_target(self, target):
+        """Aim the light at a point, swinging its beam.
+
+        The emission direction is recomputed each frame as
+        ``normalize(target - location)``, so a light aimed at a point keeps pointing
+        there as it moves.
+
+        Animation
+        ---------
+        Not animated: the new target applies from this point in the timeline onwards.
+        Animate the light's :attr:`~.Mob.location` to swing the beam smoothly.
+
+        Parameters
+        ----------
+        target
+            Point to aim at, shape ``(*, 3)``, or a Mob whose position to aim at.
+
+        Returns
+        -------
+        :class:`~.Light`
+            This light, so calls can be chained.
+        """
         self.target = _as_direction_target(target)
         return self
 
@@ -267,6 +321,18 @@ class DirectionalLight(_TargetedLight):
         super().__init__(*args, target=target, **kwargs)
 
     def build_aux(self, location):
+        """Internal: pack this light's emission direction and shadow softness.
+
+        Parameters
+        ----------
+        location
+            Per-frame light locations, shape ``[T, 3]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Aux columns for the packed light row, shape ``[T, K, 13]``.
+        """
         aux = self._blank_aux(location)
         aux[..., 3:6] = self._directions(location).unsqueeze(-2)
         aux[..., 8] = math.tan(math.radians(self.shadow_angle) * 0.5)
@@ -306,6 +372,18 @@ class HemisphereLight(Light):
         super().__init__(*args, **kwargs)
 
     def build_aux(self, location):
+        """Internal: pack this light's up direction and ground colour.
+
+        Parameters
+        ----------
+        location
+            Per-frame light locations, shape ``[T, 3]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Aux columns for the packed light row, shape ``[T, K, 13]``.
+        """
         aux = self._blank_aux(location)
         aux[..., 3:6] = F.normalize(self.up, p=2, dim=-1)
         gc = self.ground_color
@@ -352,6 +430,18 @@ class SpotLight(_TargetedLight):
         super().__init__(*args, target=target, **kwargs)
 
     def build_aux(self, location):
+        """Internal: pack this light's cone angles, falloff and shadow radius.
+
+        Parameters
+        ----------
+        location
+            Per-frame light locations, shape ``[T, 3]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Aux columns for the packed light row, shape ``[T, K, 13]``.
+        """
         aux = self._blank_aux(location)
         aux[..., 1] = self.decay
         aux[..., 2] = self.distance
@@ -406,6 +496,14 @@ class RectAreaLight(_TargetedLight):
         super().__init__(*args, target=target, **kwargs)
 
     def num_samples(self):
+        """Number of emitter samples this area light packs to.
+
+        Returns
+        -------
+        int
+            ``samples`` rounded up to the next square number, since the emitters are
+            laid out on a square grid.
+        """
         k = int(math.ceil(math.sqrt(self.samples)))
         return k * k
 
@@ -423,6 +521,22 @@ class RectAreaLight(_TargetedLight):
         return right, up
 
     def get_sample_positions(self, location):
+        """Get the world positions of this area light's emitter samples.
+
+        The samples sit at the centres of a square grid covering the rectangle, which
+        is what gives the light smooth penumbras.
+
+        Parameters
+        ----------
+        location
+            Per-frame light locations, shape ``[T, 3]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Sample positions, shape ``[T, K, 3]`` where ``K`` is
+            :meth:`~.RectAreaLight.num_samples`.
+        """
         k = int(math.ceil(math.sqrt(self.samples)))
         right, up = self._rect_axes(location)
         # Cell-centered k x k grid over the rectangle.
@@ -435,6 +549,18 @@ class RectAreaLight(_TargetedLight):
                 + offs[..., 1:] * self.height * up.unsqueeze(-2))
 
     def build_aux(self, location):
+        """Internal: pack this light's falloff, range and surface normal.
+
+        Parameters
+        ----------
+        location
+            Per-frame light locations, shape ``[T, 3]``.
+
+        Returns
+        -------
+        torch.Tensor
+            Aux columns for the packed light row, shape ``[T, K, 13]``.
+        """
         aux = self._blank_aux(location)
         aux[..., 1] = self.decay
         aux[..., 2] = self.distance

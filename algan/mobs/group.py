@@ -13,6 +13,18 @@ from algan.utils.tensor_utils import dot_product, broadcast_gather
 
 
 def midpoint(x):
+    """Internal: get the center of the box enclosing several point sets.
+
+    Parameters
+    ----------
+    x
+        Iterable of point tensors, each ``[..., N, 3]``.
+
+    Returns
+    -------
+    torch.Tensor
+        The midpoint of their combined extent, ``[..., 1, 3]``.
+    """
     mn = torch.stack([_.amin(-2, keepdim=True) for _ in x], -1).amin(-1)
     mx = torch.stack([_.amax(-2, keepdim=True) for _ in x], -1).amax(-1)
     return (mn + mx) / 2
@@ -105,7 +117,12 @@ class Group(Mob):
 
     @property
     def mobs(self):
-        """Canonical group members (an alias of :attr:`children`)."""
+        """The Mobs in this Group -- an alias of :attr:`~.Mob.children`.
+
+        The live list, not a copy: mutating it changes the Group. Prefer
+        :meth:`~.Group.add` and :meth:`~.Mob.remove_child`, which keep the Group's
+        own location and parent links in step.
+        """
         return self.children
 
     @staticmethod
@@ -130,10 +147,43 @@ class Group(Mob):
         )
         return midpoint(locations) if locations else ORIGIN
 
-    def get_mob_midpoint(self):
+    def get_mob_midpoint(self) -> torch.Tensor:
+        """Get the middle of the Group's members' combined extent.
+
+        The center of the box enclosing every member, which is where the Group
+        places its own anchor. Internal helper geometry is excluded, so the answer
+        matches what the viewer sees.
+
+        Returns
+        -------
+        torch.Tensor
+            The midpoint, shape ``(*, 1, 3)``, or ``ORIGIN`` for an empty Group.
+        """
         return self._midpoint_for(self.children)
 
     def __getitem__(self, item):
+        """Get a member by index, or a sub-Group by slice.
+
+        ``group[0]`` is the member itself. A slice returns a **view**: a Group that
+        recurses over the selected members without becoming their parent, so
+        ``group[1:3].move(UP)`` moves those two members and nothing else. The view
+        is not added to the scene and never needs spawning.
+
+        Animation
+        ---------
+        Not animated: indexing only selects. Animate the result to move what it
+        covers.
+
+        Parameters
+        ----------
+        item
+            Index of a single member, or a slice selecting several.
+
+        Returns
+        -------
+        :class:`~.Mob` or :class:`~.Group`
+            The member at an integer index, otherwise a non-owning Group view.
+        """
         mobs = self.children[item]
         if isinstance(mobs, Mob):
             return mobs
@@ -147,6 +197,23 @@ class Group(Mob):
         )
 
     def __setitem__(self, item, value):
+        """Replace a member, or a slice of members, with other Mobs.
+
+        The replaced Mobs are detached from the Group but stay in the scene; they are
+        not despawned.
+
+        Animation
+        ---------
+        Not animated: the membership change is immediate and affects only animation
+        recorded from here on.
+
+        Parameters
+        ----------
+        item
+            Index or slice to replace.
+        value
+            Replacement Mob, or iterable of Mobs for a slice.
+        """
         replacement = list(self.children)
         if isinstance(item, slice):
             replacement[item] = list(traverse((value,)))
@@ -156,13 +223,55 @@ class Group(Mob):
         return self
 
     def __iter__(self):
+        """Iterate over the Group's members, so ``for mob in group`` works.
+
+        Returns
+        -------
+        Iterator[:class:`~.Mob`]
+            An iterator over the members, in order.
+        """
         return iter(self.children)
 
     def __len__(self):
+        """Get the number of members, so ``len(group)`` works.
+
+        Returns
+        -------
+        int
+            How many Mobs are in the Group.
+        """
         return len(self.children)
 
     def add(self, *mobs):
-        """Add one or more Mobs and return this group."""
+        """Add Mobs to the Group.
+
+        The added Mobs become children, so the Group's transforms carry them along,
+        and the Group's anchor moves to the middle of the enlarged collection.
+        Re-adding an existing member does nothing.
+
+        Animation
+        ---------
+        Not animated: membership and the Group's re-centering both happen instantly
+        (the re-centering is done inside ``Off()``, so it costs no video time and
+        does not drag the existing members around).
+
+        Parameters
+        ----------
+        *mobs
+            Mobs to add. Nested iterables are flattened, so ``group.add([a, b])`` and
+            ``group.add(a, b)`` are the same.
+
+        Returns
+        -------
+        :class:`~.Group`
+            This Group, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.HierarchyError`
+            If a Mob is added twice, belongs to another Scene, or the change would
+            create a cycle.
+        """
         mobs = list(traverse(mobs))
         if not mobs:
             return self
@@ -177,9 +286,29 @@ class Group(Mob):
         return self
 
     def get_parts_as_mobs(self):
+        """Get the Group's members as a list.
+
+        Returns
+        -------
+        list[:class:`~.Mob`]
+            The members. Unlike :meth:`~.Mob.get_parts_as_mobs`, the Group itself is
+            not included -- it carries no geometry of its own.
+        """
         return self.mobs
 
-    def get_boundary_edge_point2(self, direction):
+    def get_boundary_edge_point2(self, direction: torch.Tensor) -> torch.Tensor:
+        """Get the outermost point of any member along a direction.
+
+        Parameters
+        ----------
+        direction
+            Direction to search along, shape ``(*, 3)``.
+
+        Returns
+        -------
+        torch.Tensor
+            The extreme boundary point across all members, shape ``(*, 3)``.
+        """
         points = torch.stack(
             [(m.get_boundary_edge_point(direction)) for m in self.mobs]
         )
@@ -195,28 +324,45 @@ class Group(Mob):
         equal_displacement: bool = False,
         alignment_direction: torch.Tensor | None = None,
     ):
-        """Moves the grouped mobs so that they lie along a given line.
+        """Lay the members out in a line.
+
+        Members are placed edge to edge with ``buffer`` between them, so differently
+        sized Mobs still end up evenly gapped rather than evenly centred.
+
+        Animation
+        ---------
+        Recorded as an animation: every member moves at once inside a
+        :class:`~.Sync`, over the current context's duration (1 second by default).
+        Call it before spawning to lay a Group out for free.
 
         Parameters
         ----------
         direction
-            Vector in 3-D specifying the direction of the line. Defaults to RIGHT.
+            Direction the line runs in. Defaults to ``RIGHT``.
         buffer
-            The amount of extra space added between the mobs. If 0, the mobs will be arranged edge-to-edge.
+            Gap between neighbouring members, in world units; ``0`` puts them edge to
+            edge. Defaults to ``None``, meaning ``SETTINGS.style.buffer`` (``0.6``).
         start_at_first
-            if True, the first mob's position will be unchanged, and the subsequent mobs will
-            be arranged starting from the first mob's position.
-            If False, the mobs will be arranged so that their center is equal to this Group's location.
+            Whether to keep the first member where it is and build the line out from
+            it. Defaults to False, which centers the line on the Group's location.
         equal_displacement
-            If True, the mobs will be arranged at evenly spaced intervals.
+            Whether to space members by a constant pitch (that of the largest member)
+            rather than by their own sizes. Defaults to False. True gives evenly
+            spaced centers, which is what you want for a row of labelled cells.
         alignment_direction
-            If not None, the mobs will additionally be aligned on this direction.
+            Direction along which to additionally align members, e.g. ``DOWN`` to sit
+            them all on a shared baseline. Defaults to ``None``, meaning no secondary
+            alignment.
 
         Returns
         -------
         :class:`~.Group`
-            The Group instance itself, allowing for method chaining.
+            This Group, so calls can be chained.
 
+        See Also
+        --------
+        :meth:`~.Group.arrange_in_grid` : Lay members out in rows and columns.
+        :meth:`~.Group.arrange_between_points` : Space members evenly between two points.
         """
 
         if not self.children:
@@ -261,7 +407,32 @@ class Group(Mob):
                 start = start + direction * (mob_sizes[i] / 2 + buffer)
         return self
 
-    def arrange_between_points(self, start, end):
+    def arrange_between_points(
+        self, start: torch.Tensor, end: torch.Tensor
+    ):
+        """Space the members evenly along the segment between two points.
+
+        Members are placed at equal fractions of the way from ``start`` to ``end``,
+        both endpoints excluded, so ``n`` members divide the segment into ``n + 1``
+        equal steps. Sizes are ignored -- it is the centers that are evenly spaced.
+
+        Animation
+        ---------
+        Recorded as an animation: every member moves at once inside a
+        :class:`~.Sync`, over the current context's duration (1 second by default).
+
+        Parameters
+        ----------
+        start
+            Start of the segment, shape ``(*, 3)``.
+        end
+            End of the segment, shape ``(*, 3)``.
+
+        Returns
+        -------
+        :class:`~.Group`
+            This Group, so calls can be chained.
+        """
         if not self.children:
             return self
         dif = end - start
@@ -279,29 +450,51 @@ class Group(Mob):
         column_buffer=None,
         tight_axis=None,
     ):
-        """Moves the grouped mobs so that they in a given grid.
+        """Lay the members out in a grid, filling row by row.
+
+        Cells are sized to the largest member so the grid stays regular, and the whole
+        grid is centered on the Group's location. Members fill along
+        ``row_direction`` first, wrapping to the next line along ``column_direction``.
+
+        Animation
+        ---------
+        Recorded as an animation: every member moves at once inside a
+        :class:`~.Sync`, over the current context's duration (1 second by default).
+        Call it before spawning to lay a Group out for free.
 
         Parameters
         ----------
         num_rows
-            The number of rows in the grid. The number of columns id then derived as len(mobs) // num_rows.
-            Defaults to sqrt(len(mobs)).
+            Number of rows; columns follow from the member count. Defaults to
+            ``None``, meaning ``ceil(sqrt(len(mobs)))`` -- as square a grid as the
+            count allows.
         row_direction
-            Vector in 3-D specifying the direction along which rows are aligned.
-            Defaults to RIGHT.
+            Direction along which a row runs. Defaults to ``RIGHT``.
         column_direction
-            Vector in 3-D specifying the direction along which columns are aligned.
-            Defaults to DOWN.
+            Direction in which successive rows are stacked. Defaults to ``DOWN``.
         buffer
-            The amount of extra space added between the mobs in the row direction.
+            Gap between members within a row, in world units. Defaults to ``None``,
+            meaning ``SETTINGS.style.buffer`` (``0.6``).
         column_buffer
-            The amount of extra space added between the mobs in the column direction. If None then
-            it is set to `buffer`.
+            Gap between rows, in world units. Defaults to ``None``, meaning use
+            ``buffer``.
+        tight_axis
+            Which axis sizes its cells per row/column rather than uniformly across
+            the whole grid: ``0`` for columns, ``1`` for rows. Defaults to ``None``,
+            meaning every cell is the same size. Use it to close up the gaps when
+            members vary a lot in size.
 
         Returns
         -------
         :class:`~.Group`
-            The Group instance itself, allowing for method chaining.
+            This Group, so calls can be chained.
+
+        Raises
+        ------
+        :class:`.AlganConfigurationError`
+            If ``num_rows`` is not a positive integer.
+        ValueError
+            If ``tight_axis`` is not ``0``, ``1`` or ``None``.
 
         Examples
         --------

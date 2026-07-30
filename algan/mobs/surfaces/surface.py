@@ -91,7 +91,27 @@ def _surface_resolution_pair(resolution):
 
 _grid_triangle_indices_cache = {}
 
-def get_grid_to_triangle_indices(grid_width, grid_height, device):
+def get_grid_to_triangle_indices(grid_width: int, grid_height: int, device):
+    """Internal: get the vertex indices that split a grid into triangles.
+
+    Each grid cell becomes two triangles. The result is cached per grid shape and
+    device, since surfaces of the same resolution all share it.
+
+    Parameters
+    ----------
+    grid_width
+        Number of grid points across.
+    grid_height
+        Number of grid points down.
+    device
+        Torch device the indices should live on.
+
+    Returns
+    -------
+    torch.Tensor
+        Vertex indices into the flattened grid, shape
+        ``[(W-1) * (H-1) * 2, 3]``.
+    """
     cache_key = (grid_width, grid_height, device)
     if cache_key not in _grid_triangle_indices_cache:
         W, H = grid_width, grid_height
@@ -111,6 +131,21 @@ def get_grid_to_triangle_indices(grid_width, grid_height, device):
 
 
 def grid_to_triangle_vertices(grid):
+    """Internal: gather a per-grid-point quantity into per-triangle-vertex form.
+
+    Turns values laid out on the surface grid into the flat triangle-vertex layout the
+    renderer consumes. Works for positions, normals and colours alike.
+
+    Parameters
+    ----------
+    grid
+        Grid-shaped values, ``[..., W, H, C]``. A 1-D input is returned unchanged.
+
+    Returns
+    -------
+    torch.Tensor
+        The same values gathered per triangle vertex.
+    """
     if grid.dim() == 1:
         return grid
     W, H = grid.shape[-3], grid.shape[-2]
@@ -571,6 +606,16 @@ class Surface(Mob):
 
     @property
     def color_texture(self):
+        """An image painted across the surface, as an ``[W, H, 5]`` RGBA+glow tensor.
+
+        Assigning an image maps it over the surface's parameter domain, so it follows
+        the surface as it deforms. ``None`` means the surface is drawn from its
+        per-vertex colours instead. Assigning a texture whose resolution differs from
+        the current one detaches history, since the two cannot be interpolated.
+
+        A time dimension is allowed (``[T, W, H, 5]``) for a texture that changes
+        during the animation.
+        """
         attr = getattr(self, "_color_texture_attr", None)
         if attr is None:
             return None
@@ -1660,7 +1705,18 @@ class Surface(Mob):
                           ).permute(0, 2, 3, 1)
         return squish(t, -3, -2).squeeze(0)
 
-    def get_memory_used_per_timestep(self):
+    def get_memory_used_per_timestep(self) -> int:
+        """Get this surface's render memory cost for one frame, in bytes.
+
+        Grows with the surface's grid resolution, and is what the render loop uses to
+        decide how many frames fit in a batch -- a high-resolution surface therefore
+        renders in smaller batches.
+
+        Returns
+        -------
+        int
+            Estimated bytes needed per frame.
+        """
         # Called once per surface per render batch just to size batches; the
         # result only depends on grid size and shader-param widths (fixed per
         # material), so cache it. Reading the shader params goes through the
@@ -1691,6 +1747,17 @@ class Surface(Mob):
         return result
 
     def get_render_primitives(self):
+        """Build the triangles the renderer draws this surface from.
+
+        Called once per render batch. Vertex normals are computed from the grid unless
+        ``ignore_normals`` is set, which is what makes a deformed surface light
+        correctly without the author supplying normals.
+
+        Returns
+        -------
+        :class:`~algan.rendering.primitives.triangle_primitive.TrianglePrimitive`
+            The surface's triangles for every frame of the batch.
+        """
         grid = unsquish(self.grid.location, -2, self.grid_height)
         if not self.ignore_normals:
             vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grid))
@@ -1763,30 +1830,58 @@ class Surface(Mob):
         )
 
     def coord_function(self, uv: torch.Tensor):
-        """Default function used to map intrinsic coordinates to world space to define
-        manifold shape. This method is overwritten by subclasses to define new shapes.
+        """Map the surface's ``(u, v)`` parameters to positions in space.
+
+        This is what defines the surface's shape, and what each 3-D shape class
+        overrides: :class:`~.Sphere` maps the unit square onto a sphere,
+        :class:`~.Torus` onto a torus, and so on. The base implementation gives a flat
+        plane spanning ``[-1, 1]`` on both axes.
 
         Parameters
         ----------
-        uv : torch.Tensor[*, 2]
-            Collection of 2-D coordinates to be mapped.
+        uv
+            Parameter coordinates to map, shape ``(*, 2)``, with both components in
+            ``[0, 1]``.
 
+        Returns
+        -------
+        torch.Tensor
+            Positions relative to the surface's location, shape ``(*, 3)``.
         """
         return torch.cat(((uv - 0.5) * 2, torch.zeros_like(uv[..., :1])), -1)
 
     def normal_function(self, uv):
-        """Default function used to map intrinsic coordinates to world space normals to define
-        manifold normal directions. This method is overwritten by subclasses to define new shapes.
+        """Map the surface's ``(u, v)`` parameters to shading normals.
+
+        Overridden by the 3-D shape classes alongside
+        :meth:`~.Surface.coord_function`, so each shape lights correctly. The base
+        implementation returns ``OUT``, the normal of a flat plane facing the viewer.
 
         Parameters
         ----------
-        uv : torch.Tensor[*, 2]
-            Collection of 2-D coordinates to be mapped.
+        uv
+            Parameter coordinates to map, shape ``(*, 2)``, with both components in
+            ``[0, 1]``.
 
+        Returns
+        -------
+        torch.Tensor
+            Unit normals, shape ``(*, 3)``, or a single vector broadcast over the grid.
         """
         return OUT
 
-    def get_base_grid(self):
+    def get_base_grid(self) -> torch.Tensor:
+        """Get the surface's parameter grid, the ``(u, v)`` domain it is built from.
+
+        Values run from 0 to 1 along both axes. This is the input the
+        ``set_*_by_function`` methods evaluate their functions over, so it is what to
+        write those functions in terms of.
+
+        Returns
+        -------
+        torch.Tensor
+            The ``(u, v)`` coordinates, shape ``[W, H, 2]``.
+        """
         device = self.grid.location.device if hasattr(self, "grid") and hasattr(self.grid, "location") else None
         cache_key = (self.grid_width, self.grid_height, device)
         if getattr(self, "_cached_base_grid_key", None) != cache_key:
@@ -1827,6 +1922,32 @@ class Surface(Mob):
             # self.set_normal_by_function(other_surface.normal_function)
 
     def set_location_by_function(self, function):
+        """Shape the surface by a function of its ``(u, v)`` parameters.
+
+        The function maps each point of the parameter grid to a 3-D offset from the
+        surface's location, which is how a sphere, a torus or an arbitrary parametric
+        surface is defined. Animating between two such shapes is what makes a surface
+        morph.
+
+        Animation
+        ---------
+        Recorded as an animation: the grid points travel to their new positions over the
+        current context's duration (1 second by default), so calling this on a spawned
+        surface deforms it smoothly. Changing the grid *resolution* is a different
+        matter -- that needs :meth:`~.Mob.detach_history` first.
+
+        Parameters
+        ----------
+        function
+            Callable taking a ``(u, v)`` tensor of shape ``[..., 2]`` and returning
+            offsets of shape ``[..., 3]``. It must be vectorized -- it is called once
+            on the whole grid, not per point.
+
+        Returns
+        -------
+        :class:`~.Surface`
+            This surface, so calls can be chained.
+        """
         def target_function(uv):
             return function(uv.clone()) + self.location
 
@@ -1838,6 +1959,28 @@ class Surface(Mob):
         return self
 
     def set_normal_by_function(self, function):
+        """Set the surface's shading normals from a function of ``(u, v)``.
+
+        Overrides the normals computed from the geometry, which lets a flat surface
+        light as though it were curved, or a faceted one look smooth. The geometry
+        itself is unchanged.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default), so the shading shifts smoothly rather than snapping.
+
+        Parameters
+        ----------
+        function
+            Callable taking a ``(u, v)`` tensor of shape ``[..., 2]`` and returning
+            normals of shape ``[..., 3]``. Must be vectorized over the whole grid.
+
+        Returns
+        -------
+        :class:`~.Surface`
+            This surface, so calls can be chained.
+        """
         new_normals = grid_to_triangle_vertices(function(self.get_base_grid()))
         new_triangles = TriangleTriangulated(
             unsquish(self.triangles.corners.location, -2, 3),
@@ -1851,9 +1994,43 @@ class Surface(Mob):
         return self
 
     def get_default_color(self):
+        """Get the colour a Surface uses when none was given.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``GREEN``.
+        """
         return GREEN
 
     def set_color_by_function(self, function):
+        """Colour the surface by a function of its ``(u, v)`` parameters.
+
+        Gives each point of the grid its own colour, for gradients, heat maps or
+        anything where colour carries data. The colours travel with the surface as it
+        deforms.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default), so the colours cross-fade smoothly.
+
+        Parameters
+        ----------
+        function
+            Callable taking a ``(u, v)`` tensor of shape ``[..., 2]`` and returning
+            colours of shape ``[..., 4]`` or ``[..., 5]`` (RGBA, optionally with glow).
+            Must be vectorized over the whole grid.
+
+        Returns
+        -------
+        :class:`~.Surface`
+            This surface, so calls can be chained.
+
+        See Also
+        --------
+        :meth:`~.Surface.set_color_by_texture` : Paint an image on instead.
+        """
         new_color = grid_to_triangle_vertices(function(self.get_base_grid()))
         new_triangles = TriangleTriangulated(
             unsquish(self.triangles.corners.location, -2, 3),
@@ -1868,6 +2045,30 @@ class Surface(Mob):
         return self
 
     def set_color_by_texture(self, rgba_array_or_file_path):
+        """Paint an image across the surface.
+
+        The image is resampled to the surface's grid resolution and baked into its
+        per-vertex colours, so detail finer than the grid is lost -- raise the
+        surface's resolution, or use :attr:`~.Surface.color_texture`, if you need the
+        image sharp.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default): the colours cross-fade to the image.
+
+        Parameters
+        ----------
+        rgba_array_or_file_path
+            Path to an image file, or an RGBA array. Paths resolve relative to the
+            working directory and then the main script's directory, so an image beside
+            your script is found either way.
+
+        Returns
+        -------
+        :class:`~.Surface`
+            This surface, so calls can be chained.
+        """
         texture_image = get_image(rgba_array_or_file_path)
         texture_image = (
             F.interpolate(

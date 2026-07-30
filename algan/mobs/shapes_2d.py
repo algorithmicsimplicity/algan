@@ -363,7 +363,29 @@ class Polygon(BezierCircuitCubic):
 
 
 class RegularPolygon(Polygon):
-    """A regular polygon with Manim-compatible ``n``/``start_angle`` arguments."""
+    """A regular polygon: ``n`` equal sides on a circle.
+
+    Parameters
+    ----------
+    n
+        Number of sides. Defaults to ``6``; must be at least 3.
+    num_vertices
+        Alias of ``n``, for Manim compatibility. When given it overrides ``n``.
+        Defaults to ``None``.
+    radius
+        Distance from the center to each vertex, in world units. Defaults to ``1``.
+    start_angle
+        Angle of the first vertex, **in radians** (Manim's convention). Defaults to
+        ``None``, which puts the first vertex at the top and repeats the closing
+        vertex -- a topology that matters when morphing with :meth:`~.Mob.become`.
+    **kwargs
+        Passed to :class:`~.Polygon` and on to :class:`~.BezierCircuitCubic`.
+
+    Raises
+    ------
+    ValueError
+        If fewer than 3 sides are requested.
+    """
 
     def __init__(
         self,
@@ -397,26 +419,51 @@ class RegularPolygon(Polygon):
 
 
 class Quad(Polygon):
+    """A four-sided polygon, given its four corners.
+
+    The base class of :class:`~.Rectangle`; use it directly for a quadrilateral that is
+    not axis-aligned.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Passed to :class:`~.Polygon` -- the four corner points, plus
+        :class:`~.BezierCircuitCubic` styling.
+    """
+
     pass
 
 
 class Triangle(RegularPolygon):
+    """An equilateral triangle pointing up.
+
+    Parameters
+    ----------
+    **kwargs
+        Passed to :class:`~.RegularPolygon` with ``n=3`` -- notably ``radius``,
+        ``start_angle`` and ``color``.
+    """
+
     def __init__(self, **kwargs):
         super().__init__(n=3, **kwargs)
 
 
 class Rectangle(Quad):
-    """A rectangle.
+    """A rectangle, drawn as a cubic bezier circuit.
 
     Parameters
     ----------
-    height
-        Rectangle height.
     width
-        Rectangle width.
-    *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`
-
+        Width in world units. Defaults to ``2``.
+    height
+        Height in world units. Defaults to ``2`` -- so the default ``Rectangle()``
+        is a 2x2 square.
+    color
+        Fill colour. Defaults to ``None``, meaning the class default (see
+        :meth:`~.Animatable.get_default_color`).
+    **kwargs
+        Passed to :class:`~.BezierCircuitCubic` -- notably ``location``,
+        ``border_color``, ``border_width`` and ``filled``.
     """
 
     def __init__(self, width=2, height=2, color=None, **kwargs):
@@ -447,17 +494,38 @@ class Rectangle(Quad):
 
 
 class SurroundingRectangle(Quad):
-    """A rectangle.
+    """A rectangle sized to enclose one or more other Mobs.
+
+    The rectangle is built around the Mobs' combined bounding box at construction
+    time, so it does not track them afterwards -- rebuild it, or add an updater, if
+    the contents move.
 
     Parameters
     ----------
-    height
-        Rectangle height.
-    width
-        Rectangle width.
-    *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`
+    *mobjects
+        The Mobs to enclose. At least one is required.
+    color
+        Colour of the rectangle. Defaults to ``None``, meaning the class default.
+    buff
+        Gap between the contents and the rectangle, in world units. A ``(horizontal,
+        vertical)`` pair sets the two axes separately. Defaults to ``None``, meaning
+        half of ``SETTINGS.style.buffer`` (``0.3``).
+    corner_radius
+        Corner rounding in world units. Defaults to ``0.0``, i.e. square corners.
+    buffer
+        Alias of ``buff``, for consistency with Algan's other spacing parameters. When
+        both are given, this one wins. Defaults to ``None``.
+    bottom_buffer
+        Additional gap below the contents, in world units, for leaving room for a
+        caption. Defaults to ``None``, meaning none.
+    **kwargs
+        Passed to :class:`~.BezierCircuitCubic` -- notably ``border_color``,
+        ``border_width`` and ``filled=False`` for an outline-only frame.
 
+    Raises
+    ------
+    ValueError
+        If no Mobs are given.
     """
 
     def __init__(
@@ -526,15 +594,27 @@ class SurroundingRectangle(Quad):
 
 
 class Square(Rectangle):
-    """A square.
+    """A square, drawn as a cubic bezier circuit.
 
     Parameters
     ----------
     side_length
-        Length of each side of the square.
-    *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`
+        Length of each side, in world units. Defaults to ``2``.
+    **kwargs
+        Passed to :class:`~.Rectangle` and on to :class:`~.BezierCircuitCubic` --
+        notably ``color``, ``location``, ``border_color``, ``border_width`` and
+        ``filled``.
 
+    Examples
+    --------
+    .. algan:: Example1Square
+
+        from algan import *
+
+        square = Square(color=BLUE).spawn()
+        square.rotate(45)
+
+        Scene.save_video()
     """
 
     def __init__(self, side_length=2, **kwargs):
@@ -542,15 +622,17 @@ class Square(Rectangle):
 
 
 class Circle(BezierCircuitCubic):
-    """A circle.
+    """A circle, drawn as a cubic bezier circuit.
 
     Parameters
     ----------
     radius
-        Circle radius.
+        Radius in world units. Defaults to ``1``; ``None`` is also treated as ``1``.
+    color
+        Fill colour. Defaults to ``None``, meaning ``BLUE``.
     *args, **kwargs
-        Passed to :class:`~.BezierCircuitCubic`
-
+        Passed to :class:`~.BezierCircuitCubic` -- notably ``location``,
+        ``border_color``, ``border_width`` and ``filled``.
     """
 
     def __init__(self, radius=1, color=None, *args, **kwargs):

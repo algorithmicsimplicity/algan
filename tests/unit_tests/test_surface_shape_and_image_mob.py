@@ -58,6 +58,42 @@ def test_set_shape_to_does_not_reduce_either_resolution_axis():
     assert (source.grid_width, source.grid_height) == (8, 7)
 
 
+def test_set_shape_to_keeps_textured_resolution_history_independent():
+    pixels = torch.ones((3, 4, 4))
+    source = ImageMob(pixels).spawn(animate=False)
+    source.wait()
+    target = Cylinder(
+        grid_width=7,
+        grid_height=6,
+        add_to_scene=False,
+    )
+
+    source.set_shape_to(target)
+
+    historical = [
+        actor
+        for actor in source.scene.actors[-1]
+        if isinstance(actor, ImageMob) and actor is not source
+    ]
+    assert len(historical) == 1
+    historical = historical[0]
+    assert historical.id != source.id
+    assert historical.grid.id != source.grid.id
+    assert historical.grid.location.shape[-2:] == (4, 3)
+    assert source.grid.location.shape[-2:] == (42, 3)
+
+    # The renderer wraps each textured primitive in a singleton collection.
+    # Both the frozen 2x2 surface and the live 7x6 surface must therefore keep
+    # a matching number of triangle corners and UV coordinates.
+    for surface in (historical, source):
+        primitive = surface.get_render_primitives()
+        assert (
+            primitive.corners.shape[-2]
+            == primitive.uvs.shape[-3] * primitive.uvs.shape[-2]
+        )
+        type(primitive)(triangle_collection=[primitive])
+
+
 def test_image_mob_textured_false_uses_one_vertex_color_per_pixel():
     pixels = torch.tensor(
         [

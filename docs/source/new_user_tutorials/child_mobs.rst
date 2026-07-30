@@ -64,7 +64,7 @@ which are useful for arranging Mobs.
     group.arrange_in_line(RIGHT)
     group.wait()
     with Sync():
-        group.scale(3)
+        group.scale(2)
         group.arrange_in_grid(3)
     group.wait()
 

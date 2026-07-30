@@ -1,7 +1,7 @@
-"""Screen-relative layout and bounding-box queries for :class:`~algan.mobs.mob.Mob`.
+"""Rotation and orientation methods for :class:`~algan.animatable_base.mob.Mob`.
 
-Split out of ``mob.py`` for readability; :class:`MobLayoutMixin` is mixed into
-``Mob`` and is not useful standalone (``self`` is always a Mob).
+Split out of ``mob.py`` for readability; :class:`MobOrientationMixin` is mixed
+into ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
 from __future__ import annotations
 
@@ -18,10 +18,26 @@ from algan.utils.tensor_utils import cast_to_tensor, squish, unsquish
 
 
 class MobOrientationMixin:
-    """Rotations."""
+    """Methods for rotating and orienting Mobs, mixed into :class:`~.Mob`."""
 
-    def reset_basis(self):
-        """Reset the basis to identity and return ``self``."""
+    def reset_basis(self) -> Mob:
+        """Reset the Mob's orientation and scale to the default.
+
+        The basis is set back to the identity matrix, which undoes every
+        :meth:`~.Mob.rotate` **and** every :meth:`~.Mob.scale` applied so far.
+        The Mob's location is unaffected.
+
+        Animation
+        ---------
+        Recorded as an animation: the Mob rotates and scales back to its default
+        over the current context's duration (1 second by default). Applies to
+        this Mob and its descendants.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+        """
         self.basis = cast_to_tensor(squish(torch.eye(3)))
         return self
 
@@ -35,10 +51,53 @@ class MobOrientationMixin:
         axis: torch.Tensor = OUT,
         about_point: torch.Tensor | None = None,
     ) -> Mob:
-        """Rotate the Mob around an axis, optionally about a point in space.
+        """Rotate the Mob about an axis, optionally around a point in space.
 
-        When ``about_point`` is ``None``, only the basis changes. Otherwise,
-        the location also moves around the axis through ``about_point``.
+        With the default ``about_point=None`` only the Mob's orientation changes
+        and it stays where it is. Given an ``about_point``, the Mob also travels
+        around the axis through that point, like a planet spinning as it orbits.
+        To move around a point *without* re-orienting the Mob, use
+        :meth:`~.Mob.orbit`.
+
+        Animation
+        ---------
+        Recorded as an animation: the rotation sweeps from 0 to ``num_degrees``
+        over the current context's duration (1 second by default), so the Mob
+        turns rather than snapping. Retime it with
+        ``with Seq(run_time=3): mob.rotate(90)``, or apply it instantly with
+        ``with Off(): mob.rotate(90)``. Applies to this Mob and its descendants.
+
+        Parameters
+        ----------
+        num_degrees
+            How far to rotate, in degrees, counter-clockwise when looking
+            down ``axis``. Accepts a tensor of shape ``(*, 1)`` to give each Mob
+            of a batch its own angle.
+        axis
+            Axis to rotate around; need not be normalized. Defaults to ``OUT``
+            (the -z axis, pointing out of the screen), which spins a flat 2-D
+            shape in the screen plane.
+        about_point
+            Point to rotate around, shape ``(*, 3)``. Defaults to ``None``,
+            meaning rotate in place about the Mob's own center.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+
+        Examples
+        --------
+        .. algan:: Example1MobRotate
+
+            from algan import *
+
+            square = Square().spawn()
+            square.rotate(90)
+            square.rotate(180, axis=UP)
+            square.rotate(90, about_point=RIGHT * 2)
+
+            Scene.save_video()
         """
         axis = F.normalize(cast_to_tensor(axis), p=2, dim=-1)
         rotation_matrix = get_rotation_around_axis(num_degrees, axis, dim=-1)
@@ -46,16 +105,7 @@ class MobOrientationMixin:
             unsquish(self.basis, -1, 3) @ rotation_matrix, -2, -1
         )
         if about_point is not None:
-            about_point = cast_to_tensor(about_point)
-            self.location = (
-                rotate_vector_around_axis(
-                    self.location - about_point,
-                    num_degrees,
-                    axis,
-                    dim=-1,
-                )
-                + about_point
-            )
+            self.orbit(num_degrees, axis, about_point)
         return self
 
     @animated_function(
@@ -68,9 +118,36 @@ class MobOrientationMixin:
         axis: torch.Tensor = OUT,
         about_point: torch.Tensor | None = None,
     ) -> Mob:
-        """Move the Mob around a point without changing its basis.
+        """Move the Mob around a point without turning it.
 
-        When ``about_point`` is ``None``, the Mob is unchanged.
+        The Mob's location swings around the axis while its orientation is left
+        unchanged.
+        For an orbit that also turns the object as it moves, use :meth:`~.Mob.rotate` with an
+        ``about_point``.
+
+        Animation
+        ---------
+        Recorded as an animation: the orbit sweeps from 0 to ``num_degrees`` over
+        the current context's duration (1 second by default). Applies to this Mob
+        and its descendants.
+
+        Parameters
+        ----------
+        num_degrees
+            How far around to travel, in degrees, counter-clockwise when
+            looking down ``axis``.
+        axis
+            Axis to orbit around; need not be normalized. Defaults to ``OUT``
+            (the -z axis, out of the screen).
+        about_point
+            Point to orbit around, shape ``(*, 3)``. Defaults to ``None``, which
+            makes the call a **no-op** -- orbiting the Mob's own center would not
+            move it, since its orientation is held fixed.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
         """
         if about_point is None:
             return self
@@ -87,69 +164,119 @@ class MobOrientationMixin:
         )
         return self
 
-    def get_forward_basis(self):
-        return unsquish(self.basis, -1, 3)[..., 2, :]
+    def get_forward_basis(self) -> torch.Tensor:
+        """Get the Mob's forward basis vector, scale included.
 
-    def get_right_basis(self):
-        return unsquish(self.basis, -1, 3)[..., 0, :]
-
-    def get_upwards_basis(self):
-        return unsquish(self.basis, -1, 3)[..., 1, :]
-
-    def get_forward_direction(self) -> torch.Tensor:
-        """Gets the Mob's current forward direction vector (normalized).
-        This corresponds to the third column of its normalized basis matrix.
+        This is the third row of the Mob's basis matrix, so its length is the
+        Mob's scale along that axis rather than 1. For a unit-length direction,
+        use :meth:`~.Mob.get_forward_direction`.
 
         Returns
         -------
         torch.Tensor
-            A 3-D vector representing the forward direction.
+            The forward basis vector, shape ``(*, 3)``, not normalized.
+        """
+        return unsquish(self.basis, -1, 3)[..., 2, :]
 
+    def get_right_basis(self) -> torch.Tensor:
+        """Get the Mob's rightward basis vector, scale included.
+
+        This is the first row of the Mob's basis matrix, so its length is the
+        Mob's scale along that axis rather than 1. For a unit-length direction,
+        use :meth:`~.Mob.get_right_direction`.
+
+        Returns
+        -------
+        torch.Tensor
+            The rightward basis vector, shape ``(*, 3)``, not normalized.
+        """
+        return unsquish(self.basis, -1, 3)[..., 0, :]
+
+    def get_upwards_basis(self) -> torch.Tensor:
+        """Get the Mob's upward basis vector, scale included.
+
+        This is the second row of the Mob's basis matrix, so its length is the
+        Mob's scale along that axis rather than 1. For a unit-length direction,
+        use :meth:`~.Mob.get_upwards_direction`.
+
+        Returns
+        -------
+        torch.Tensor
+            The upward basis vector, shape ``(*, 3)``, not normalized.
+        """
+        return unsquish(self.basis, -1, 3)[..., 1, :]
+
+    def get_forward_direction(self) -> torch.Tensor:
+        """Get the direction the Mob is facing.
+
+        The normalized third row of the Mob's basis, i.e. its local -z axis in
+        world space. Scale is divided out, so this is always unit length.
+
+        Returns
+        -------
+        torch.Tensor
+            Unit forward direction, shape ``(*, 3)``.
         """
         return F.normalize(unsquish(self.basis, -1, 3)[..., 2, :], p=2, dim=-1)
 
     def get_right_direction(self) -> torch.Tensor:
-        """Gets the Mob's current right direction vector (normalized).
-        This corresponds to the first column of its normalized basis matrix.
+        """Get the Mob's own rightward direction.
+
+        The normalized first row of the Mob's basis, i.e. its local +x axis in
+        world space. Scale is divided out, so this is always unit length. Note
+        this is the Mob's right, which is only the screen's ``RIGHT`` while the
+        Mob is unrotated.
 
         Returns
         -------
         torch.Tensor
-            A 3-D vector representing the right direction.
-
+            Unit rightward direction, shape ``(*, 3)``.
         """
         return F.normalize(unsquish(self.basis, -1, 3)[..., 0, :], p=2, dim=-1)
 
     def get_upwards_direction(self) -> torch.Tensor:
-        """Gets the Mob's current upwards direction vector (normalized).
-        This corresponds to the second column of its normalized basis matrix.
+        """Get the Mob's own upward direction.
+
+        The normalized second row of the Mob's basis, i.e. its local +y axis in
+        world space. Scale is divided out, so this is always unit length.
 
         Returns
         -------
         torch.Tensor
-            A 3-D vector representing the upwards direction.
-
+            Unit upward direction, shape ``(*, 3)``.
         """
         return F.normalize(unsquish(self.basis, -1, 3)[..., 1, :], p=2, dim=-1)
 
     def look(self, direction: torch.Tensor, axis: int = 2) -> Mob:
-        """Rotates the Mob so that one of its local axes points in the given direction.
+        """Turn the Mob so one of its own axes points a given way.
+
+        The rotation taken is the shortest one that lines the chosen local axis
+        up with ``direction``; the Mob's spin about that axis is otherwise left
+        as it was.
+
+        Animation
+        ---------
+        Recorded as an animation: the turn is performed by
+        :meth:`~.Mob.rotate`, so it sweeps over the current context's duration
+        (1 second by default). Applies to this Mob and its descendants.
 
         Parameters
         ----------
         direction
-            The target 3-D direction vector that the specified
-            local axis should point towards. This vector does not need to be normalized.
+            World-space direction the chosen axis should point along, shape
+            ``(*, 3)``; need not be normalized.
         axis
-            The index of the local axis to align.
-            0 for right (X-axis), 1 for up (Y-axis), 2 for forward (Z-axis).
-            Defaults to 2 (forward vector).
+            Which of the Mob's local axes to aim: ``0`` for right, ``1`` for up,
+            ``2`` for forward. Defaults to ``2``, the forward axis.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
+            This Mob, so calls can be chained.
 
+        See Also
+        --------
+        :meth:`~.Mob.look_at` : Aim at a point rather than along a direction.
         """
         # Get the rotation parameters (angle and axis) needed to align the current local axis
         # with the target direction.
@@ -164,23 +291,31 @@ class MobOrientationMixin:
         return self.rotate(rotation_angle_degrees, rotation_axis)
 
     def look_at(self, point: torch.Tensor, axis: int = 2) -> Mob:
-        """Rotates the Mob to face a specific 3-D point.
-        The Mob's "forward" direction (or the specified `axis`) will be oriented towards the point.
+        """Turn the Mob to face a point in space.
+
+        Equivalent to :meth:`~.Mob.look` along the direction from the Mob to
+        ``point``, so the Mob's location is unchanged -- only where it is aimed.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default). The direction is resolved when the call is recorded, so a Mob
+        aimed at a moving target will not track it (use an updater for that).
+        Applies to this Mob and its descendants.
 
         Parameters
         ----------
         point
-            The 3-D point to look at.
+            World-space point to face, shape ``(*, 3)``.
         axis
-            The index of the local axis to align (0: right, 1: up, 2: forward).
-            Defaults to 2 (forward vector).
+            Which of the Mob's local axes to aim at ``point``: ``0`` for right,
+            ``1`` for up, ``2`` for forward. Defaults to ``2``, the forward axis.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
-
+            This Mob, so calls can be chained.
         """
         # Calculate the direction vector from the Mob's current location to the target point
-        direction_to_point = point - self.location
-        return self.look(direction_to_point, axis=axis)
+        direction_to_look = point - self.location
+        return self.look(direction_to_look, axis=axis)

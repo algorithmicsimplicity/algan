@@ -35,6 +35,7 @@ Always use the local venv: `.venv/Scripts/python.exe`. The default system Python
 ### Documentation
 - Build: `.venv/Scripts/python.exe docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
 - Source in `docs/source/`. API stubs in `docs/source/reference/` are autosummary-generated but checked in — when classes/methods are added or removed, the stubs must be updated too or the docs build breaks.
+- **Docstrings on user-facing API follow `DOCSTRINGS.md`** — read it before writing or editing a public docstring. It is prescriptive, not a description of current code: NumPy style with types in annotations only (never repeated in the docstring), every default stated in prose, units/shapes mandatory, an `Animation` section stating recorded-vs-immediate and spawn-order constraints, and `.. algan::` examples that call `Scene.save_video()` exactly once.
 
 ### Building / Publishing
 - `uv build` from the project root; `uv publish` after bumping the version in pyproject.toml.

@@ -27,7 +27,25 @@ class MobMorphMixin:
     """``become`` morphing plus the ``expand_n_*`` batch-expansion helpers it
     uses to match source and target sub-mob counts."""
 
-    def expand_n_list(self, lst, n: int):
+    def expand_n_list(self, lst, n: int) -> list:
+        """Internal: pad a list of point tensors by duplicating entries.
+
+        Used by :meth:`~.Mob.become` to give two Mobs the same number of paths
+        before morphing. Duplicates are degenerate (collapsed onto their last
+        point), so the padding is invisible.
+
+        Parameters
+        ----------
+        lst
+            Point tensors to pad.
+        n
+            How many entries to add.
+
+        Returns
+        -------
+        list
+            A list of ``len(lst) + n`` tensors.
+        """
         current_children_count = len(lst)
         target_children_count = current_children_count + n
         # Determine how many times each existing child needs to be repeated/cloned
@@ -56,15 +74,27 @@ class MobMorphMixin:
                 )
         return new_submobs
 
-    def expand_n_children(self, n: int):
-        """Expands the number of children by cloning existing ones to reach `n` additional children.
-        This is used internally by `become` for smooth transformations between Mobs with different
-        numbers of sub-parts.
+    def expand_n_children(self, n: int) -> Mob:
+        """Internal: add ``n`` children by cloning the existing ones.
+
+        Used by :meth:`~.Mob.become` so that a Mob with three parts can morph into
+        one with five: the shortfall is made up with clones, which then morph
+        into the extra target parts.
+
+        Animation
+        ---------
+        Not animated. Structural, and only meaningful on a Mob with fresh history
+        (see :meth:`~.Mob.detach_history`).
 
         Parameters
         ----------
-        n : int
-            The number of additional children to add.
+        n
+            How many children to add.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
         """
         current_children_count = len(self.get_non_component_children())
         target_children_count = current_children_count + n
@@ -85,7 +115,24 @@ class MobMorphMixin:
         bump_hierarchy_version()
         return self
 
-    def expand_n_tensor(self, value, n: int):
+    def expand_n_tensor(self, value: torch.Tensor, n: int) -> torch.Tensor:
+        """Internal: pad a batched point tensor by duplicating sub-objects.
+
+        Used by :meth:`~.Mob.become` to align the segment counts of two curves.
+        Added entries are degenerate (collapsed onto their last point).
+
+        Parameters
+        ----------
+        value
+            Batched point data to pad.
+        n
+            How many sub-objects to add.
+
+        Returns
+        -------
+        torch.Tensor
+            The padded tensor.
+        """
         current_batch_size = value.shape[-3]
         target_batch_size = current_batch_size + n
         if value.shape[-3] == 1:
@@ -118,15 +165,35 @@ class MobMorphMixin:
                 )
         return torch.stack(new_batched_values, -3)
 
-    def expand_n_batch(self, n: int):
-        """Expands the batch size of the Mob's attributes by cloning existing batch elements.
-        This is used internally by `become` to match the batch dimensions when transforming
-        between Mobs with different numbers of primitive points.
+    def expand_n_batch(self, n: int) -> Mob:
+        """Internal: grow this Mob's batch by ``n`` objects, cloning to fill.
+
+        Used by :meth:`~.Mob.become` to match the number of primitives on both
+        sides of a morph. Every animatable attribute is re-batched together, so
+        colour and opacity keep lining up with the new geometry.
+
+        Animation
+        ---------
+        Not animated, and **not recorded**: the writes go through
+        ``setattr_and_rebatch_without_record``, which re-allocates this Mob's
+        timeline rows. Recorded history stays with the old rows, so this is only
+        valid on a Mob with fresh history (see :meth:`~.Mob.detach_history`).
 
         Parameters
         ----------
-        n : int
-            The number of additional batch elements to add.
+        n
+            How many batch objects to add.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+
+        Raises
+        ------
+        RuntimeError
+            If the Mob's batch-boundary metadata does not describe its current
+            batch, which would leave views and render primitives disagreeing.
         """
         # Current number of logical objects in the batch (points / points_per_object)
         current_batch_size = self.location.shape[-2] // self.num_points_per_object
@@ -237,22 +304,34 @@ class MobMorphMixin:
                     ).to(parent_batch_sizes.dtype)
         return self
 
-    def reorder_batch_to_minimize_movement(self, target: Mob):
-        """Reorders the objects in this Mob's batch so that each is paired with the
-        closest object in ``target``, minimizing the total distance the objects travel.
+    def reorder_batch_to_minimize_movement(self, target: Mob) -> Mob:
+        """Re-pair this Mob's parts with the nearest parts of another Mob.
+
+        Objects are matched by optimal assignment on their centers, so each part
+        morphs into the *closest* target part rather than the one that happens to
+        share its index. For text and other heavily batched Mobs this is what turns
+        a morph from glyph fragments flying across the screen into a smooth local
+        deformation. The assignment is costly for Mobs with very many parts.
 
         This Mob and ``target`` must already have the same batch size (e.g. after
-        :meth:`expand_n_batch`). Used by :meth:`become` when ``minimize_movement`` is
-        True, so that the i-th object of the source morphs into the *nearest* object of
-        the target rather than the one that merely shares its batch index. For text and
-        other heavily-batched Mobs this is what turns the transformation from triangles
-        flying across the screen and reforming into a smooth, local deformation.
+        :meth:`~.Mob.expand_n_batch`); mismatched or single-object batches are left
+        untouched.
+
+        Animation
+        ---------
+        Not animated, and **not recorded** -- it re-batches attributes in place, so
+        it is only valid on a Mob with fresh history. :meth:`~.Mob.become` calls it
+        for you when ``minimize_movement=True``.
 
         Parameters
         ----------
-        target : Mob
-            The Mob whose objects this Mob is being matched against (i.e.
-            the Mob this one will morph towards).
+        target
+            The Mob whose parts this Mob's parts are matched against.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
         """
         num_points_per_object = self.num_points_per_object
         my_points = unsquish(
@@ -299,61 +378,87 @@ class MobMorphMixin:
             )
         return self
 
-    def get_non_component_children(self):
+    def get_non_component_children(self) -> list[Mob]:
+        """Get the children you added, excluding the Mob's own structural parts.
+
+        A shape's components are the pieces it builds itself from; this returns
+        only the Mobs added on top of them, which is the set :meth:`~.Mob.become`
+        pairs up when morphing.
+
+        Returns
+        -------
+        list[:class:`~.Mob`]
+            Direct children that are not components of this Mob.
+        """
         return [_ for _ in self.children if _ not in self.components]
 
     def become(
         self,
         other_mob: Mob,
-        move_to: bool = False,
         detach_history: bool = True,
         minimize_movement=False,
     ) -> Mob:
-        """Transforms this Mob into another Mob (`other_mob`).
+        """Morph this Mob into another one.
 
-        This involves animating changes in location, opacity, color, basis, etc.,
-        to match `other_mob`. It intelligently attempts to match parts of this Mob
-        to parts of `other_mob` for a smoother transition, especially for complex Mobs
-        with multiple children or batched primitive points.
+        Location, colour, opacity, orientation and geometry all animate across to
+        match ``other_mob``. Where the two Mobs are made of different numbers of
+        parts, the smaller side is padded with degenerate copies first, so a
+        three-letter word can morph smoothly into a five-letter one.
 
-        Behaves like Manim's ``Transform``: this Mob morphs into the appearance of
-        `other_mob` and is the single Mob left in the scene afterwards. `other_mob`
-        is only used as a source of target data and is never added to the scene.
+        Behaves like Manim's ``Transform``: this Mob ends up wearing
+        ``other_mob``'s appearance and is the single Mob left in the scene.
+        ``other_mob`` is only read for its target values -- it is never spawned, and
+        the caller's copy is not mutated.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default). The structural padding happens instantly inside ``Off()`` before
+        the morph, so the viewer sees only the transformation.
 
         Parameters
         ----------
         other_mob
-            The Mob to transform into. The type of this Mob must be
-            compatible with the current Mob (e.g., both should be `Mob` or derived
-            from it, and have the same `num_points_per_object` if applicable).
+            The Mob to morph into. It must be built from the same primitive type
+            as this Mob (same ``num_points_per_object`` and the same number of
+            components).
         detach_history
-            If True, the original Mob's animation
-            history is "detached" and this Mob starts a fresh animation history
-            from its transformed state. If False, the transformation is recorded
-            within the existing history.
+            Whether to start this Mob on a fresh animation history first, via
+            :meth:`~.Mob.detach_history`. Defaults to True, which is what allows a
+            morph that changes the number of parts. Pass False only for a morph
+            recorded inside another morph (``become`` uses it that way for
+            children).
         minimize_movement
-            If True, the sub-parts (children, and batched sub-objects such as the
-            individual triangles of text) are paired with the *closest* sub-part of
-            `other_mob`, via optimal assignment, so that the total distance travelled
-            during the transformation is minimized. This produces a smooth, local
-            deformation rather than sub-parts flying across the screen and reforming.
-            If False (the default), sub-parts are paired in the order they occur,
-            matching Manim's behaviour. Note the optimal assignment can be costly for
-            Mobs made of very many sub-objects.
+            Whether to pair each part with the *closest* part of ``other_mob`` by
+            optimal assignment, rather than in index order. Defaults to False,
+            matching Manim; True gives a smooth local deformation instead of parts
+            flying across the screen, at the cost of an assignment solve that is
+            expensive for Mobs with very many parts.
 
         Returns
         -------
         :class:`~.Mob`
-            The transformed Mob (now displaying `other_mob`'s appearance). Use this
-            returned Mob for any subsequent animations.
+            The morphed Mob, wearing ``other_mob``'s appearance. When
+            ``detach_history`` is True this is a **different object** from the one
+            you called the method on, so use the returned Mob for any later
+            animation.
 
         Raises
         ------
         NotImplementedError
-            If attempting to transform between mobs with
-            different underlying primitive types (e.g., changing a triangle-based
-            mob to a bezier-circuit-based mob).
+            If the two Mobs are built from different primitive types, e.g. morphing
+            a triangle mesh into a bezier circuit.
 
+        Examples
+        --------
+        .. algan:: Example1MobBecome
+
+            from algan import *
+
+            square = Square().spawn()
+            square = square.become(Circle(color=RED))
+
+            Scene.save_video()
         """
         if (other_mob.num_points_per_object != self.num_points_per_object) or (
             len(other_mob.components) != len(self.components)

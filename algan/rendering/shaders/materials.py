@@ -40,6 +40,11 @@ __all__ = [
     "BackSide",
     "DoubleSide",
     "Material",
+    "UnlitMaterial",
+    "DiffuseMaterial",
+    "SpecularMaterial",
+    "PBRMaterial",
+    "AdvancedPBRMaterial",
     "MeshBasicMaterial",
     "MeshLambertMaterial",
     "MeshPhongMaterial",
@@ -171,14 +176,13 @@ class Material:
     def __repr__(self):
         return f"{type(self).__name__}()"
 
-
-class MeshBasicMaterial(Material):
+class UnlitMaterial(Material):
     """Unlit material: renders the flat base colour, ignoring lights."""
 
     shader = staticmethod(ms.basic_material_shader)
+MeshBasicMaterial = UnlitMaterial
 
-
-class MeshLambertMaterial(Material):
+class DiffuseMaterial(Material):
     """Lambertian (diffuse-only) shading plus emissive."""
 
     shader = staticmethod(ms.lambert_shader)
@@ -204,9 +208,9 @@ class MeshLambertMaterial(Material):
             "flat_shading": self._flat(),
             "env_map_intensity": self.envMapIntensity,
         }
+MeshLambertMaterial = DiffuseMaterial
 
-
-class MeshPhongMaterial(Material):
+class SpecularMaterial(Material):
     """Blinn-Phong shading: diffuse + specular highlight + emissive."""
 
     shader = staticmethod(ms.phong_shader)
@@ -238,8 +242,9 @@ class MeshPhongMaterial(Material):
             "flat_shading": self._flat(),
             "env_map_intensity": self.envMapIntensity,
         }
+MeshPhongMaterial = SpecularMaterial
 
-class MeshStandardMaterial(Material):
+class PBRMaterial(Material):
     """Metalness/roughness physically-based (Cook-Torrance) material."""
 
     shader = staticmethod(ms.standard_shader)
@@ -271,8 +276,9 @@ class MeshStandardMaterial(Material):
             "env_map_intensity": self.envMapIntensity,
             "flat_shading": self._flat(),
         }
+MeshStandardMaterial = PBRMaterial
 
-class MeshPhysicalMaterial(MeshStandardMaterial):
+class AdvancedPBRMaterial(MeshStandardMaterial):
     """Extends :class:`MeshStandardMaterial` with clearcoat, sheen, ior-driven
     specular, ray-traced transmission, and approximate iridescence."""
 
@@ -346,6 +352,7 @@ class MeshPhysicalMaterial(MeshStandardMaterial):
             "transmission": self.transmission,
             "iridescence": self.iridescence,
         }
+MeshPhysicalMaterial = AdvancedPBRMaterial
 
 class MeshToonMaterial(Material):
     """Cel-shaded (banded diffuse) material plus emissive.

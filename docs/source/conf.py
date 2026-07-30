@@ -87,8 +87,11 @@ add_module_names = False
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 
-# Custom section headings in our documentation
-napoleon_custom_sections = ["Tests", ("Test", "Tests")]
+# Custom section headings in our documentation. "Animation" is the section every
+# user-facing scene-mutating method carries (see DOCSTRINGS.md); napoleon only
+# recognizes a NumPy-style heading that is registered here, and an unregistered
+# one passes through verbatim and breaks the build.
+napoleon_custom_sections = ["Animation", "Tests", ("Test", "Tests")]
 
 # List of patterns, relative to source directory, that match files and
 # directories to ignore when looking for source files.

@@ -1,8 +1,11 @@
 import inspect
 import math
 import time
+from pathlib import Path
+from typing import TYPE_CHECKING, Sequence
 
 from algan.settings import SETTINGS
+from algan.settings.video_settings import VideoSettings
 
 import torch.nn.functional as F
 
@@ -30,6 +33,9 @@ from algan.utils.file_utils import get_image
 from algan.scene_manager import SceneManager
 
 from functools import wraps
+
+if TYPE_CHECKING:  # algan_utils imports Scene, so only for annotations.
+    from algan.utils.algan_utils import RenderResult
 
 
 class active_scene_method:
@@ -203,30 +209,97 @@ class Scene(RenderLoopMixin):
         return self
 
     @active_scene_method
-    def wait(self, time=1):
+    def wait(self, time: float = 1):
+        """Hold the scene still for a while.
+
+        Advances time without changing anything, leaving a pause in the video --
+        room for narration, or a beat before the next animation.
+
+        Animation
+        ---------
+        Recorded on the timeline: it consumes video time and nothing else.
+
+        Parameters
+        ----------
+        time
+            How long to wait, in seconds. Defaults to ``1``.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         self.animation_manager.wait(time)
         return self
 
     @staticmethod
     def instance():
-        """Compatibility accessor for the current active scene."""
+        """Get the Scene currently being authored.
+
+        Creates the default Scene on first use, so this never returns ``None``.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            The active Scene.
+        """
         return SceneManager.instance().current_scene
 
     @staticmethod
     def current():
-        """Alias for instance."""
+        """Get the Scene currently being authored; an alias of :meth:`~.Scene.instance`.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            The active Scene.
+        """
         return Scene.instance()
 
     @active_scene_method
     def get_camera(self):
+        """Get this Scene's camera.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            The camera, or ``None`` if the Scene has not been initialized with one.
+        """
         return self.camera
 
     @active_scene_method
     def get_light_sources(self):
+        """Get this Scene's lights.
+
+        Returns
+        -------
+        list[:class:`~.Light`]
+            The live list of registered lights; mutating it changes the Scene.
+        """
         return self.light_sources
 
     @active_scene_method
     def add_light_source(self, light_source):
+        """Add a light to this Scene.
+
+        Lights only affect Mobs whose material responds to light -- a
+        :class:`~.MeshBasicMaterial` looks the same however the scene is lit.
+        Adding the same light twice does nothing.
+
+        Animation
+        ---------
+        Not animated: the light exists from this point in the timeline onwards.
+
+        Parameters
+        ----------
+        light_source
+            The light to add.
+
+        Returns
+        -------
+        :class:`~.Light`
+            The light that was added, so it can be kept and animated.
+        """
         if not hasattr(self, "light_sources"):
             self.light_sources = []
         if not any(light is light_source for light in self.light_sources):
@@ -235,7 +308,25 @@ class Scene(RenderLoopMixin):
 
     @active_scene_method
     def remove_light_source(self, light_source):
-        """Remove a light from this scene and return the light."""
+        """Remove a light from this Scene.
+
+        Removing a light that is not registered does nothing.
+
+        Animation
+        ---------
+        Not animated: the light stops contributing from this point in the timeline
+        onwards.
+
+        Parameters
+        ----------
+        light_source
+            The light to remove.
+
+        Returns
+        -------
+        :class:`~.Light`
+            The light that was passed in.
+        """
         self.light_sources[:] = [
             light for light in self.light_sources if light is not light_source
         ]
@@ -243,7 +334,21 @@ class Scene(RenderLoopMixin):
 
     @active_scene_method
     def clear_light_sources(self):
-        """Remove every registered light and return this scene."""
+        """Remove every light from this Scene.
+
+        Lit materials go black afterwards unless a new light or an environment map
+        is added.
+
+        Animation
+        ---------
+        Not animated: the lights stop contributing from this point in the timeline
+        onwards.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         self.light_sources.clear()
         return self
 
@@ -251,8 +356,43 @@ class Scene(RenderLoopMixin):
     remove_light = remove_light_source
 
     @active_scene_method
-    def set_environment_map(self, source, intensity=1.0, ambient=True):
-        """Set an equirectangular environment map for this scene."""
+    def set_environment_map(
+        self, source, intensity: float = 1.0, ambient: bool = True
+    ):
+        """Light the Scene with an environment map, and show it as a backdrop.
+
+        An equirectangular image surrounds the scene, so reflective and metallic
+        materials pick up their surroundings instead of reflecting a void -- the
+        cheapest way to make metal look like metal.
+
+        Animation
+        ---------
+        Not animated: the map applies from this point in the timeline onwards.
+
+        Parameters
+        ----------
+        source
+            Path to an image file, or an image tensor of shape
+            ``[height, width, >=3]``. Values above ``1.5`` are treated as 0-255 and
+            scaled down. ``None`` removes the current map.
+        intensity
+            Brightness multiplier for the map's contribution. Defaults to ``1.0``.
+        ambient
+            Whether the map also provides ambient light to non-reflective surfaces,
+            rather than only appearing in reflections. Defaults to True.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+
+        Raises
+        ------
+        FileNotFoundError
+            If ``source`` is a path that cannot be read.
+        ValueError
+            If the image is not shaped ``[height, width, >=3]``.
+        """
         if source is None:
             self.environment_map = None
             return self
@@ -281,48 +421,185 @@ class Scene(RenderLoopMixin):
         self.environment_ambient = bool(ambient)
         return self
 
-    def length_to_num_pixels(self, length):
+    def length_to_num_pixels(self, length: float) -> float:
+        """Convert a world-space length to a length in rendered pixels.
+
+        Parameters
+        ----------
+        length
+            Length in world units.
+
+        Returns
+        -------
+        float
+            The equivalent number of pixels at the Scene's current resolution.
+        """
         return length * 0.5 * self.num_pixels_screen_height
 
-    def num_pixels_to_length(self, length):
+    def num_pixels_to_length(self, length: float) -> float:
+        """Convert a length in rendered pixels to a world-space length.
+
+        Parameters
+        ----------
+        length
+            Length in pixels.
+
+        Returns
+        -------
+        float
+            The equivalent length in world units at the Scene's current resolution.
+        """
         return length / (0.5 * self.num_pixels_screen_height)
 
-    def set_current_time(self, t):
+    def set_current_time(self, t: float):
+        """Internal: move the authoring cursor to an absolute time.
+
+        Parameters
+        ----------
+        t
+            New authoring time, in seconds.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         self.current_time = t
         self.update_max_time(self.current_time)
         return self
 
-    def increment_current_time(self, t):
+    def increment_current_time(self, t: float):
+        """Internal: advance the authoring cursor by an interval.
+
+        Parameters
+        ----------
+        t
+            How far to advance, in seconds.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         self.set_current_time(self.current_time + t)
         return self
 
-    def update_max_time(self, t):
+    def update_max_time(self, t: float):
+        """Internal: extend the recorded end of the animation to include a time.
+
+        The video's length is the largest time any recording reached, which is what
+        this tracks.
+
+        Parameters
+        ----------
+        t
+            Time in seconds that must fall within the animation.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         self.context_max_time = max(self.context_max_time, t)
         self.max_time = max(self.max_time, t)
         return self
 
     def set_time_to_latest(self):
+        """Move the authoring cursor to the end of everything recorded so far.
+
+        Use it after animations that ran in parallel, to carry on from the end of the
+        longest one.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         self.current_time = self.max_time
         return self
 
     def add_actor(self, actor):
+        """Register a Mob with this Scene so it takes part in rendering.
+
+        Mob constructors call this for you; you only need it for a Mob built with
+        ``add_to_scene=False`` that you later decide to render.
+
+        Parameters
+        ----------
+        actor
+            The Mob to register. Ignored if the Scene is no longer accepting actors
+            (during a render).
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         if self.allow_new_actors:
             self.actors[-1].append(actor)
         return self
 
     def add_effect(self, effect):
+        """Register an audio effect with this Scene.
+
+        The :class:`~.Audio` and :class:`~.Speech` contexts use this; the effect's own
+        start time decides where it lands in the finished video.
+
+        Parameters
+        ----------
+        effect
+            The :class:`~.AudioEffect` to add.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         self.effects.append(effect)
         return self
 
     def initialize_frames(self):
+        """Internal: work out how many frames the recorded animation needs.
+
+        Derives the frame count from the recorded duration and the Scene's frame
+        rate. Called by the render loop before rendering.
+        """
         self.num_frames = int((self.max_time - self.min_time) * self.frames_per_second)
         return
 
     def clear(self):
+        """Despawn everything in the Scene; an alias of :meth:`~.Scene.clear_scene`.
+
+        Animation
+        ---------
+        Recorded as an animation: every spawned Mob fades out together over 0.5
+        seconds.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         self.clear_scene()
         return self
 
     def despawn_scene(self, **kwargs):
+        """Despawn every spawned Mob in the Scene.
+
+        Parents are despawned before their children, so composite Mobs disappear as a
+        unit rather than in pieces.
+
+        Animation
+        ---------
+        Recorded as an animation: all the despawns run together inside a
+        :class:`~.Sync`, over the current context's duration (1 second by default).
+
+        Parameters
+        ----------
+        **kwargs
+            Passed to each :meth:`~.Animatable.despawn` -- notably
+            ``animate=False`` to remove everything without fading.
+        """
         with Sync(animation_manager=self.animation_manager):
             for actor in list(
                 sorted(self.actors[-1], key=lambda x: x.anchor_priority, reverse=True)
@@ -331,13 +608,57 @@ class Scene(RenderLoopMixin):
                     actor.despawn(**kwargs)
 
     def clear_scene(self, **kwargs):
+        """Despawn everything and forget the Mobs that have finished.
+
+        Like :meth:`~.Scene.despawn_scene`, but also drops fully despawned Mobs from
+        the Scene's actor list so later renders do not carry them. Useful between the
+        sections of a long video.
+
+        Animation
+        ---------
+        Recorded as an animation: everything fades out together over **0.5 seconds**,
+        regardless of the current context's duration.
+
+        Parameters
+        ----------
+        **kwargs
+            Passed to each :meth:`~.Animatable.despawn` -- notably ``animate=False``.
+        """
         with Seq(run_time=0.5, animation_manager=self.animation_manager):
             self.despawn_scene(**kwargs)
         self.actors[-1] = [
             _ for _ in self.actors[-1] if (_.is_spawned() and _.is_despawned())
         ]
 
-    def render_audio_to_file(self, file_path, frames_per_second=44100, codec='pcm_s32le', nbytes=4):
+    def render_audio_to_file(
+        self,
+        file_path: str | Path,
+        frames_per_second: int = 44100,
+        codec: str = 'pcm_s32le',
+        nbytes: int = 4,
+    ):
+        """Mix this Scene's audio effects down to an audio file.
+
+        Every registered effect is placed at its recorded start time and the result is
+        written out. :meth:`~.Scene.save_video` does this for you; call it directly
+        only when you want the audio on its own.
+
+        Parameters
+        ----------
+        file_path
+            Where to write the audio.
+        frames_per_second
+            Sample rate in Hz. Defaults to ``44100``.
+        codec
+            FFmpeg audio codec. Defaults to ``'pcm_s32le'`` (uncompressed).
+        nbytes
+            Bytes per sample. Defaults to ``4``.
+
+        Returns
+        -------
+        str or pathlib.Path or None
+            The path written, or ``None`` if the Scene has no audio effects.
+        """
         if len(self.effects) == 0:
             return None
 
@@ -358,6 +679,17 @@ class Scene(RenderLoopMixin):
         return file_path
 
     def reset_scene(self):
+        """Rebuild the Scene's contents from its initializer.
+
+        Drops all actors, audio effects, the camera and the lights, then re-runs the
+        Scene initializer, which puts the default camera and lighting back. The
+        timeline is **not** cleared -- use :meth:`~.Scene.reset` for that.
+
+        Animation
+        ---------
+        Not animated: everything is discarded rather than despawned, so nothing fades
+        out.
+        """
         self.actors = [[]]
         self.effects = []
         self.camera = None
@@ -369,11 +701,22 @@ class Scene(RenderLoopMixin):
             self.scene_initializer(self)
 
     def reset(self):
-        """Reset only this scene's authoring state.
+        """Empty the Scene completely and start over.
 
-        Enclosing or sibling scenes on the SceneManager stack are untouched.
-        Existing mob references from the old timeline should be considered
-        invalid, matching the historical post-render reset contract.
+        Time returns to zero and the timeline, animation and audio managers are
+        rebuilt, so nothing recorded so far survives. **Mob references from before
+        the reset are invalid** and must not be reused. Other Scenes on the
+        SceneManager stack are untouched.
+
+        Animation
+        ---------
+        Not animated, and destructive: this discards the recording rather than
+        animating anything out.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
         """
         self.current_time = 0
         self.min_time = 0
@@ -441,15 +784,55 @@ class Scene(RenderLoopMixin):
         self.size = self.num_pixels_screen_width, self.num_pixels_screen_height
         return self
 
-    def background_is_transparent(self):
+    def background_is_transparent(self) -> bool:
+        """Whether the Scene's background has any transparency.
+
+        This decides the output format: a transparent background makes
+        :meth:`~.Scene.save_video` write ``.mov`` with an alpha channel instead of
+        ``.mp4``. A procedural background is always treated as opaque.
+
+        Returns
+        -------
+        bool
+            Whether any background pixel is less than fully opaque.
+        """
         if hasattr(self.background_frame, '__call__'):
             return False
         return (self.background_frame[..., -1].min() < (1-(0.5/255))).item()
 
-    def get_pixel_format(self):
+    def get_pixel_format(self) -> str:
+        """Get the pixel format the Scene's frames should be encoded in.
+
+        Returns
+        -------
+        str
+            ``"rgba"`` if the background is transparent, otherwise ``"rgb"``.
+        """
         return "rgba" if self.background_is_transparent() else "rgb"
 
-    def show_frame(self, time_stamp=None):
+    def show_frame(self, time_stamp: float | None = None):
+        """Render one frame and display it, for interactive work.
+
+        Meant for a notebook or REPL: it plots the frame rather than writing a file.
+        Use :meth:`~.Scene.save_frame` to save one instead.
+
+        Animation
+        ---------
+        Not animated and non-destructive: rendering a frame leaves the Scene as
+        authored.
+
+        Parameters
+        ----------
+        time_stamp
+            Time to render, in seconds. Defaults to ``None``, meaning just after the
+            current authoring time -- i.e. the scene as it stands.
+
+        Returns
+        -------
+        list[torch.Tensor]
+            The frame(s) that were plotted, as ``(channels, height, width)`` tensors
+            with values in ``[0, 1]``.
+        """
         from algan.utils.plotting_utils import plot_tensor
         if time_stamp is None:
             time_stamp = (
@@ -497,13 +880,13 @@ class Scene(RenderLoopMixin):
     @active_scene_method
     def save_frame(
         self,
-        file_path=None,
-        video_settings=None,
-        at=None,
+        file_path: str | Path | None = None,
+        video_settings: VideoSettings | None = None,
+        at: float | Sequence[float] | None = None,
         *,
-        overwrite=True,
+        overwrite: bool = True,
         background_color=None,
-    ):
+    ) -> "RenderResult | list[RenderResult]":
         """Render one or more still frames from this Scene.
 
         Unlike :meth:`save_video` this never modifies the Scene: nothing is
@@ -516,26 +899,31 @@ class Scene(RenderLoopMixin):
         file_path
             Where to write the image. A bare filename is placed in Algan's
             output directory; a path with a parent directory is used as given.
-            A missing extension defaults to ``.png``.
+            A missing extension defaults to ``.png``. Defaults to ``None``,
+            meaning ``SETTINGS.paths.output_filename``.
         video_settings
             Resolution and anti-aliasing for this still only, normally a
-            preset such as ``HD``. Defaults to the Scene's current settings.
+            preset such as ``HD``. Defaults to ``None``, meaning the Scene's
+            current settings.
         at
             Timestamp in seconds to capture, or a sequence of timestamps to
             capture several stills in one call. Each timestamp must be finite
-            and non-negative. When omitted, captures just after the current
-            authoring time.
+            and non-negative. Defaults to ``None``, capturing just after the
+            current authoring time -- i.e. the scene as it stands.
         overwrite
-            When False, existing files are left alone and reported as
-            ``"skipped"``.
+            Whether an existing file at the destination is replaced. Defaults to
+            True; False leaves it alone and reports ``"skipped"``.
         background_color
             A color, image, or procedural callable, applied to this still only.
+            Defaults to ``None``, meaning keep the Scene's background.
 
         Returns
         -------
         RenderResult or list of RenderResult
-            One result per still. A list is returned only when ``at`` is a
-            sequence, matching the shape of the input.
+            One result per still, with ``status`` (``"rendered"`` or
+            ``"skipped"``), ``output_path`` and ``duration_seconds``. A list is
+            returned only when ``at`` is a sequence, matching the shape of the
+            input.
 
         Examples
         --------
@@ -599,7 +987,31 @@ class Scene(RenderLoopMixin):
         return results if returns_list else results[0]
 
     @active_scene_method
-    def set_background_color(self, background_color, overwrite=True):
+    def set_background_color(self, background_color, overwrite: bool = True):
+        """Set what the Scene is drawn against.
+
+        Animation
+        ---------
+        Not animated: the background changes for the whole video, not from this point
+        onwards, since it is Scene state rather than timeline state. For a one-off
+        render, pass ``background_color`` to :meth:`~.Scene.save_video` instead.
+
+        Parameters
+        ----------
+        background_color
+            A colour, a path to an image (scaled to the frame), or a procedural
+            callable ``(x, y, time) -> color``. A colour with alpha below 1 makes the
+            output transparent. ``None`` leaves the background unchanged.
+        overwrite
+            Whether to replace a background that has already been set. Defaults to
+            True; False makes the call a no-op once a background exists, which is how
+            defaults are applied without stomping a user's choice.
+
+        Returns
+        -------
+        :class:`~.Scene`
+            This Scene, so calls can be chained.
+        """
         if (background_color is None) or (self.background_is_set and not overwrite):
             return self
         if isinstance(background_color, str):
@@ -612,27 +1024,44 @@ class Scene(RenderLoopMixin):
 
     @active_scene_method
     def get_background_color(self):
+        """Get the Scene's current background.
+
+        Returns
+        -------
+        :class:`~.Color` or torch.Tensor or Callable
+            Whatever the background was set to: a colour, an image tensor, or a
+            procedural callable.
+        """
         return self.background_color
 
-    def get_new_id(self):
+    def get_new_id(self) -> int:
+        """Internal: allocate the next Mob id for this Scene.
+
+        Ids key a Mob's rows on the Scene timeline. Called during Mob construction.
+
+        Returns
+        -------
+        int
+            A fresh id, unique within this Scene.
+        """
         self.id_count += 1
         return self.id_count - 1
 
     @active_scene_method
     def save_video(
         self,
-        file_path=None,
-        video_settings=None,
+        file_path: str | Path | None = None,
+        video_settings: VideoSettings | None = None,
         *,
-        overwrite=True,
-        reset=False,
+        overwrite: bool = True,
+        reset: bool = False,
         background_color=None,
-        animate_fade_out=None,
+        animate_fade_out: bool | None = None,
         post_processes=None,
-        codec=None,
-        audio_codec=None,
-        ffmpeg_params=None,
-    ):
+        codec: str | None = None,
+        audio_codec: str | None = None,
+        ffmpeg_params: list[str] | None = None,
+    ) -> "RenderResult":
         """Render everything recorded on this Scene to a video file.
 
         Parameters
@@ -642,38 +1071,41 @@ class Scene(RenderLoopMixin):
             is placed in Algan's output directory; a path with a parent
             directory, relative or absolute, is used exactly as given. If the
             name has no extension Algan appends ``.mp4``, or ``.mov`` when the
-            background is transparent. Defaults to
+            background is transparent. Defaults to ``None``, meaning
             ``SETTINGS.paths.output_filename``.
         video_settings
             Resolution, frame rate and anti-aliasing for this render, normally
             one of the presets (``PREVIEW``, ``LD``, ``MD``, ``HD``,
             ``PRODUCTION``, ``UHD``). Applies to this render only; the Scene's
-            own settings are restored afterwards. Defaults to
+            own settings are restored afterwards. Defaults to ``None``, meaning
             ``SETTINGS.video``.
         overwrite
-            When False and the destination already exists, skip rendering and
-            return a ``"skipped"`` result instead of replacing the file.
+            Whether an existing file at the destination is replaced. Defaults to
+            True; False skips rendering and returns a ``"skipped"`` result.
         reset
-            When True, discard this Scene's recorded animation after
-            rendering, despawn its mobs and rebuild its timeline, animation
-            and audio managers. Mobs created before the render become unusable.
-            The default leaves the Scene exactly as authored, so you can keep
-            animating and render again.
+            Whether to tear the Scene down after rendering: discard its recorded
+            animation, despawn its mobs and rebuild its timeline, animation and
+            audio managers. Mobs created before the render become unusable.
+            Defaults to False, which leaves the Scene exactly as authored, so you
+            can keep animating and render again.
         background_color
             A color, image, or procedural callable ``(x, y, time) -> color``.
             Python callables receive broadcastable Torch tensors. A Taichi
             ``@ti.func`` receives scalar normalized coordinates and time and
             must return a color vector; it is evaluated for the whole render
             batch by one Taichi kernel writing directly into the output buffer.
+            Defaults to ``None``, meaning keep the Scene's background.
         animate_fade_out
             Whether to fade every spawned mob out at the end of the video.
             Recorded on the timeline, so it persists even when ``reset`` is
-            False. Defaults to ``SETTINGS.style.fade_out_on_scene_end``.
+            False. Defaults to ``None``, meaning
+            ``SETTINGS.style.fade_out_on_scene_end`` (``False``).
         post_processes
-            Post-processing passes to apply to each frame. Defaults to bloom.
+            Post-processing passes to apply to each frame. Defaults to ``None``,
+            meaning bloom.
         codec, audio_codec, ffmpeg_params
-            Encoder overrides passed through to FFmpeg. Algan picks sensible
-            defaults from the background's transparency.
+            Encoder overrides passed through to FFmpeg. Each defaults to
+            ``None``, letting Algan pick from the background's transparency.
 
         Returns
         -------

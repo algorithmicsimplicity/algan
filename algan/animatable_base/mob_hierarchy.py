@@ -1,6 +1,6 @@
-"""Screen-relative layout and bounding-box queries for :class:`~algan.mobs.mob.Mob`.
+"""Parent/child hierarchy management for :class:`~algan.animatable_base.mob.Mob`.
 
-Split out of ``mob.py`` for readability; :class:`MobLayoutMixin` is mixed into
+Split out of ``mob.py`` for readability; :class:`MobHierarchyMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
 from __future__ import annotations
@@ -16,20 +16,82 @@ from algan.errors import HierarchyError
 
 
 class MobHierarchyMixin:
-    """All methods related to managing to mob hierarchy, i.e. parent/child/descendant relationships. """
+    """Parent, child and descendant management, mixed into :class:`~.Mob`.
 
-    def set_parent_to(self, other_mob):
+    A Mob's children follow its transforms: move, rotate, scale or recolour a
+    parent and the change propagates down. Use :meth:`~.Mob.add_children` to build
+    a hierarchy, or a :class:`~.Group` when you just want to handle several Mobs
+    as one.
+    """
+
+    def set_parent_to(self, other_mob: Mob) -> Mob:
+        """Record another Mob as this Mob's parent.
+
+        This registers the upward link only; it does **not** add this Mob to the
+        other's children, so transforms will not propagate. Use
+        :meth:`~.Mob.add_children` on the parent to build a working hierarchy.
+        Re-adding an existing parent does nothing.
+
+        Parameters
+        ----------
+        other_mob
+            The Mob to record as a parent.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+        """
         if not any(parent is other_mob for parent in self.parents):
             self.parents.append(other_mob)
         return self
 
-    def remove_parent(self, other_mob):
+    def remove_parent(self, other_mob: Mob) -> Mob:
+        """Drop a Mob from this Mob's list of parents.
+
+        The reverse of :meth:`~.Mob.set_parent_to`, and likewise one-directional.
+        Removing a Mob that is not a parent does nothing.
+
+        Parameters
+        ----------
+        other_mob
+            The Mob to stop treating as a parent.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+        """
         self.parents[:] = [
             parent for parent in self.parents if parent is not other_mob
         ]
         return self
 
-    def get_children(self, generation=0, include_components=True):
+    def get_children(
+        self, generation: int = 0, include_components: bool = True
+    ) -> list[Mob]:
+        """Get this Mob's children, optionally reaching further down the hierarchy.
+
+        Parameters
+        ----------
+        generation
+            How many levels down to collect: ``0`` for direct children, ``1`` for
+            grandchildren, and so on -- each level replaces the one above rather
+            than adding to it. Defaults to ``0``.
+        include_components
+            Whether to include children that are structural components of the Mob
+            (the parts a shape builds itself from) as opposed to Mobs you added.
+            Defaults to True.
+
+        Returns
+        -------
+        list[:class:`~.Mob`]
+            The children at that generation. The Mobs are live, not copies.
+
+        See Also
+        --------
+        :meth:`~.Mob.get_descendants` : Every level at once, flattened.
+        """
         children = self.children
         if not include_components:
             children = [_ for _ in children if _ not in self.components]
@@ -39,24 +101,18 @@ class MobHierarchyMixin:
         return [x for l in children for x in l]
 
     def get_descendants(self, include_self: bool = True) -> list[Mob]:
-        """Retrieves a list all descendant Mobs in the hierarchy, optionally including itself.
-
-        The traversal is cached against the global structure version (bumped
-        by any hierarchy change), because recorded-function replay re-reads it
-        for every event of every frame batch.
+        """Get every Mob at or below this one, flattened into one list.
 
         Parameters
         ----------
         include_self
-            If True, the current Mob instance
-            is included in the returned list.
+            Whether this Mob is the first element of the list. Defaults to True.
 
         Returns
         -------
-        list[Mob]
-            A flat list containing the Mob and all its children,
-            grandchildren, and so on.
-
+        list[:class:`~.Mob`]
+            This Mob (unless excluded) followed by its children, their children,
+            and so on. The Mobs are live, not copies.
         """
         cache = getattr(self, "_descendants_cache", None)
         if (cache is not None and cache[0] == HIERARCHY_VERSION[0]
@@ -113,8 +169,40 @@ class MobHierarchyMixin:
             if self._contains_in_hierarchy(mob, self):
                 raise HierarchyError("This hierarchy mutation would create a cycle")
 
-    def replace_children(self, mobs, *, link_parents=True):
-        """Replace the canonical child list while preserving hierarchy links."""
+    def replace_children(self, mobs, *, link_parents: bool = True) -> Mob:
+        """Swap out this Mob's children for a different set.
+
+        Children that are not in the new set have their link to this Mob dropped,
+        so they stop following its transforms; they are not despawned and remain
+        in the scene on their own.
+
+        Animation
+        ---------
+        Not animated: the hierarchy changes immediately, and only affects
+        animations recorded from here on. Already-recorded animation is unchanged.
+
+        Parameters
+        ----------
+        mobs
+            The new children. Nested iterables are flattened, so a list of Groups
+            is accepted.
+        link_parents
+            Whether to maintain the children's upward links to this Mob. Defaults
+            to True; pass False only when the caller manages those links itself.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+
+        Raises
+        ------
+        TypeError
+            If any item is not an :class:`~.Animatable`.
+        :class:`.HierarchyError`
+            If a Mob appears twice, is its own child, belongs to another Scene, or
+            the change would create a cycle.
+        """
         new_children = list(traverse(mobs))
         self._validate_new_children(new_children)
         old_children = list(self.children)
@@ -134,8 +222,38 @@ class MobHierarchyMixin:
         bump_hierarchy_version()
         return self
 
-    def add_children(self, *mobs):
-        """Add children while rejecting cycles and duplicate relationships."""
+    def add_children(self, *mobs) -> Mob:
+        """Attach Mobs as children, so they follow this Mob's transforms.
+
+        Once attached, moving, rotating, scaling or recolouring this Mob carries
+        the children along. Adding a Mob that is already a child does nothing.
+
+        Animation
+        ---------
+        Not animated: the hierarchy changes immediately, and only affects
+        animations recorded from here on. Children keep their own spawn state --
+        attaching an unspawned Mob does not spawn it.
+
+        Parameters
+        ----------
+        *mobs
+            Mobs to attach. Nested iterables are flattened, so
+            ``mob.add_children([a, b])`` and ``mob.add_children(a, b)`` are the
+            same.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+
+        Raises
+        ------
+        TypeError
+            If any item is not an :class:`~.Animatable`.
+        :class:`.HierarchyError`
+            If a Mob appears twice, is its own child, belongs to another Scene, or
+            the change would create a cycle.
+        """
         candidates = list(traverse(mobs))
         # Re-adding an existing child is idempotent, matching Group.add.
         candidates = [
@@ -155,7 +273,32 @@ class MobHierarchyMixin:
         bump_hierarchy_version()
         return self
 
-    def remove_child(self, mob):
+    def remove_child(self, mob: Mob) -> Mob:
+        """Detach a child so it stops following this Mob's transforms.
+
+        The child stays in the scene and keeps its own state; it is simply no
+        longer driven by this Mob.
+
+        Animation
+        ---------
+        Not animated: the hierarchy changes immediately, and only affects
+        animations recorded from here on.
+
+        Parameters
+        ----------
+        mob
+            The child to detach.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+
+        Raises
+        ------
+        ValueError
+            If ``mob`` is not a child of this Mob.
+        """
         for index, child in enumerate(self.children):
             if child is mob:
                 del self.children[index]

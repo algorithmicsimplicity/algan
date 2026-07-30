@@ -18,7 +18,18 @@ DEFAULT_RATE_FUNC = rate_funcs.smooth
 
 
 class AnimationManager:
-    """Per-scene owner of the active animation-context stack."""
+    """Per-Scene owner of the active animation-context stack.
+
+    Each Scene has one. It holds whichever :class:`~.AnimationContext` is currently
+    in effect, which is what decides how the next recorded animation is timed. The
+    outermost context is a :class:`~.Seq` with a one-second unit, which is why
+    top-level statements in a script play one after another for a second each.
+
+    Parameters
+    ----------
+    scene
+        The Scene that owns this manager. Defaults to ``None``.
+    """
 
     def __init__(self, scene=None):
         self.scene = scene
@@ -33,12 +44,39 @@ class AnimationManager:
         )
         self.execution_count = 0
 
-    def get_execution_count(self):
+    def get_execution_count(self) -> int:
+        """Get the next recording sequence number, and advance the counter.
+
+        Recorded events carry this so replay can reproduce the order they were
+        authored in, which is what makes overlapping edits resolve consistently.
+
+        Returns
+        -------
+        int
+            The count before incrementing.
+        """
         count = self.execution_count
         self.execution_count += 1
         return count
 
-    def wait(self, t=None):
+    def wait(self, t: float | None = None):
+        """Hold still in the current context, leaving a pause.
+
+        Animation
+        ---------
+        Recorded on the timeline: it consumes video time and nothing else.
+
+        Parameters
+        ----------
+        t
+            How long to wait, in seconds. Defaults to ``None``, meaning one
+            animation's duration (1 second by default).
+
+        Returns
+        -------
+        :class:`~.AnimationManager`
+            This manager, so calls can be chained.
+        """
         self.context.wait(t)
         return self
 
@@ -126,64 +164,113 @@ def animation_manager_for(*owners):
 
 
 class RateFuncWrapper:
+    """A rate function plus the timespan it is being applied over.
+
+    Contexts wrap their rate function in this so the function can be re-scaled when
+    a ``run_time`` retimes the animation. You do not normally construct one --
+    pass a plain callable as ``rate_func`` and the context wraps it.
+
+    Parameters
+    ----------
+    rf
+        Rate function mapping progress in ``[0, 1]`` to adjusted progress.
+    """
+
     def __init__(self, rf):
         self.rf = rf
         self.time_set = False
 
     def set_full_time(self, sf, ef):
+        """Record the full timespan this rate function is applied over.
+
+        Parameters
+        ----------
+        sf
+            Start time of the full span, in seconds.
+        ef
+            End time of the full span, in seconds.
+        """
         self.s_full = sf
         self.e_full = ef
 
     def __call__(self, t):
+        """Evaluate the wrapped rate function.
+
+        Parameters
+        ----------
+        t
+            Animation progress, ``0`` to ``1``.
+
+        Returns
+        -------
+        float
+            Adjusted progress.
+        """
         return self.rf(t)
 
 
 @dataclass(kw_only=True)
 class AnimationContext:
-    """An AnimationContext is a context manager that defines how animated_functions that occur within its context
-    should be combined and scaled when creating the final animation timeline. Roughly speaking, an AnimationContext
-    combines all of the :func:`~.animated_function` s that take place within its context into a single :func:`~.animated_function` that
-    plays all of the component animations one after the other.
+    """Base class for the ``with`` blocks that control animation timing.
 
-    AnimationContexts are designed to be nested, in order to make defining complex animation behaviours easy.
-    When creating a new AnimationContext inside of an existing one, any parameters which are None will inherit
-    their value from the parent context. Parameters with a non-None value will override the parent's value for the
-    new context.
+    A context decides *when* the animations recorded inside it happen -- together,
+    one after another, overlapping, or not at the time at all. Use the subclasses
+    rather than this class directly: :class:`~.Sync`, :class:`~.Seq`,
+    :class:`~.Lag`, :class:`~.Off`, :class:`~.Audio`, :class:`~.Speech`.
+
+    Contexts nest, and a nested context inherits every parameter left as ``None``
+    from its parent, overriding only what it sets. On exit, a context with a
+    ``run_time`` retroactively rescales all the timestamps recorded inside it, which
+    is how you give a whole block a fixed duration without timing its parts.
 
     Parameters
     ----------
     run_time
-        If not None, then this context will have its duration be rescaled to run_time, otherwise run_time
-        is defined by the component animations that take place in this context.
+        Total duration of this context, in seconds; the animations inside are
+        rescaled to fit. Defaults to ``None``, meaning the duration follows from the
+        animations themselves.
     run_time_unit
-        The duration that each component animation within this context will run for.
-        If `run_time` is not None, then `run_time` overrides `run_time_unit`.
+        Duration of each individual animation inside, in seconds. Defaults to
+        ``None``, meaning inherit from the parent context (``1.0`` at the top
+        level). ``run_time`` overrides this.
     same_run_time
-        If True, rescale all component animations to have the same run_time
-        (equal to the longest component run time).
+        Whether to stretch every animation inside to the duration of the longest one.
+        Defaults to ``None`` (inherited; effectively False).
     lag_ratio
-        The portion of `run_time_unit` that will be waited for before starting the next component animation.
-        When lag_ratio=0, all component animations are played at the same time, when lag_ratio=1, component animations
-        are played one after the other immediately after the previous finishes.
+        Fraction of one animation's duration to wait before starting the next: ``0``
+        plays them together, ``1`` strictly in sequence, in between overlaps them.
+        Defaults to ``None``, meaning inherit from the parent.
     priority_level
-        The priority level of this context. AnimationContexts can only be overridden by new AnimationContexts
-        of equal or higher priority.
+        Priority of this context. A context can only be overridden by one of equal or
+        higher priority, which is what lets :class:`~.Off` resist an enclosing
+        ``run_time``. Defaults to ``None``, meaning inherit (``0`` at the top level).
     rate_func
-        The rate function defines the rate at which time progresses for each component animation. Defaults to smooth.
-        Setting this parameter overrides the parent context's `rate_func` to be equal to this value.
+        Easing function mapping progress in ``[0, 1]`` to adjusted progress, e.g.
+        ``rate_funcs.linear``. Replaces the parent's. Defaults to ``None``, meaning
+        inherit (``rate_funcs.smooth`` at the top level).
     rate_func_compose
-        Setting this parameter sets the rate_func to be the composition of the parent context's `rate_func` with this
-        `rate_func_compose`.
+        Easing function to compose *with* the parent's rather than replace it. Defaults
+        to ``None``. See :class:`~.ComposeRateFunc`.
+    combine_rate_func
+        Whether component rate functions are combined into the context's own.
+        Defaults to False.
     record_funcs
-        Whether animated functions in this context are recorded on the owning Scene timeline.
+        Whether animated functions inside are recorded on the Scene timeline.
+        Defaults to ``None``, meaning inherit (True at the top level;
+        :class:`~.Off` sets it False).
     record_attr_modifications
-        Whether animatable-attribute changes are recorded on the owning Scene timeline.
-    prev_context : :class:`~.AnimationContext`
-        The parent context in which this AnimationContext was created.
+        Whether attribute changes inside are recorded on the Scene timeline. Defaults
+        to ``None``, meaning inherit (True at the top level).
+    prev_context
+        The context this one was created inside. Defaults to ``None``; it is filled in
+        on entry.
     spawn_at_end
-        If True, all new :class:`~.Mob` s created in this context will be prevented from spawning, until the end of this
-        context where they will all be spawned.
-
+        Whether Mobs created inside are held back and spawned together when the block
+        ends. Defaults to ``None``, meaning inherit (False at the top level).
+    animation_manager
+        The :class:`~.AnimationManager` to record against. Defaults to ``None``,
+        meaning the active Scene's -- pass one explicitly when authoring a Scene that
+        is not currently active.
     """
 
     run_time: float | None = None
@@ -265,6 +352,10 @@ class AnimationContext:
 
     @property
     def current_time(self):
+        """Where the authoring cursor sits within this context, in seconds.
+
+        The time the next animation recorded in this context will start at.
+        """
         return self.timespan.current_time
 
     @current_time.setter
@@ -273,6 +364,7 @@ class AnimationContext:
 
     @property
     def end_time(self):
+        """The furthest time anything recorded in this context reaches, in seconds."""
         return self.timespan.original_end
 
     @end_time.setter
@@ -280,27 +372,91 @@ class AnimationContext:
         self.timespan.original_end = value
 
     def add_child_context(self, c):
+        """Register a nested context, so this one's rescaling reaches it.
+
+        Called when a context is entered inside this one.
+
+        Parameters
+        ----------
+        c
+            The child :class:`~.AnimationContext`.
+        """
         self.child_contexts.append(c)
 
     def get_timespan(self):
+        """Get this context's timespan object.
+
+        Returns
+        -------
+        :class:`~algan.animation_timeline.timeline.TimelineSpan`
+            The span holding this context's start, cursor and end times.
+        """
         return self.timespan
 
     def get_end_time(self):
+        """Get the time this context ends, in seconds, after any rescaling.
+
+        Returns
+        -------
+        float
+            End time on the Scene timeline.
+        """
         return self.timespan.get_time(self.timespan.original_end)
 
     def get_current_time(self):
+        """Get the current authoring time, in seconds, after any rescaling.
+
+        Returns
+        -------
+        float
+            The time the next recorded animation starts at.
+        """
         return self.timespan.get_current_time()
 
     def get_current_end_time(self):
+        """Get the time an animation started now would finish, in seconds.
+
+        Returns
+        -------
+        float
+            The current time plus one animation's duration.
+        """
         return self.timespan.current_time + self.run_time_unit
 
     def add_mob(self, mob):
+        """Record that a Mob was created in this context.
+
+        Bubbles up to enclosing contexts too, which is how :class:`~.SlideShow` knows
+        what to clear at the end.
+
+        Parameters
+        ----------
+        mob
+            The Mob that was created.
+
+        Returns
+        -------
+        :class:`~.AnimationContext`
+            This context, so calls can be chained.
+        """
         self.new_mobs.append(mob)
         if self.prev_context is not None:
             self.prev_context.add_mob(mob)
         return self
 
-    def get_descendants(self, include_self=True):
+    def get_descendants(self, include_self: bool = True):
+        """Get this context and every context nested inside it, flattened.
+
+        Parameters
+        ----------
+        include_self
+            Whether this context is the first element. Defaults to True.
+
+        Returns
+        -------
+        list[:class:`~.AnimationContext`]
+            This context (unless excluded) followed by all nested contexts.
+        """
         return list(
             traverse(
                 [
@@ -310,7 +466,19 @@ class AnimationContext:
             )
         )
 
-    def rewind(self, num_frames):
+    def rewind(self, num_frames: float):
+        """Move the authoring cursor backwards, so what follows is recorded earlier.
+
+        Animation
+        ---------
+        Not animated: this moves the cursor, not any Mob. Animation recorded after
+        this call overlaps what was recorded before it.
+
+        Parameters
+        ----------
+        num_frames
+            How far back to move the cursor, in the context's own time units.
+        """
         self.timespan.current_time = self.timespan.current_time - num_frames
 
     def __exit__(self, exc_type, exc_value, exc_traceback):
@@ -423,53 +591,213 @@ class AnimationContext:
                 self._manager_override_token = None
 
     def increment_times(self):
+        """Advance the cursor after recording one animation.
+
+        How much it moves is what distinguishes the contexts: ``lag_ratio`` of one
+        animation's duration, so :class:`~.Sync` (0) leaves the cursor put and
+        :class:`~.Seq` (1) moves it past the whole animation. Called by the
+        ``animated_function`` machinery; you do not call it yourself.
+        """
         #self.end_time = max(self.end_time, self.current_time + self.run_time_unit)
         self.timespan.original_end = max(self.timespan.original_end, self.timespan.current_time + self.run_time_unit)
         self.timespan.current_time = self.timespan.current_time + self.run_time_unit * self.lag_ratio
 
-    def wait(self, t=None):
+    def wait(self, t: float | None = None):
+        """Hold still, leaving a pause before the next animation.
+
+        Animation
+        ---------
+        Recorded on the timeline: it consumes video time and nothing else. As with
+        any animation in this context, the cursor advances by ``lag_ratio`` of the
+        wait, so a wait inside a :class:`~.Sync` extends the block without pushing
+        later animations back.
+
+        Parameters
+        ----------
+        t
+            How long to wait, in seconds. Defaults to ``None``, meaning one
+            animation's duration (``run_time_unit``, 1 second by default).
+        """
         if t is None:
             t = self.run_time_unit
         self.timespan.original_end = max(self.timespan.original_end, self.timespan.current_time + t)
         self.timespan.current_time = self.timespan.current_time + t * self.lag_ratio
 
     def on_create_extra(self, animatable):
+        """Hook for behaviour to add whenever a Mob spawns in this context.
+
+        Does nothing by default. :class:`~.SlideShow` overrides it to pause after each
+        spawn; override it in your own context subclass for similar effects.
+
+        Parameters
+        ----------
+        animatable
+            The Mob being spawned.
+
+        Returns
+        -------
+        :class:`~.AnimationContext`
+            This context.
+        """
         return self
 
     def on_destroy_extra(self, animatable):
+        """Hook for behaviour to add whenever a Mob despawns in this context.
+
+        Does nothing by default.
+
+        Parameters
+        ----------
+        animatable
+            The Mob being despawned.
+
+        Returns
+        -------
+        :class:`~.AnimationContext`
+            This context.
+        """
         return self
 
     def on_init_extra(self, animatable):
+        """Hook for behaviour to add whenever a Mob is constructed in this context.
+
+        Does nothing by default; :class:`~.OnInit` overrides it to run a function of
+        your choosing.
+
+        Parameters
+        ----------
+        animatable
+            The Mob being constructed.
+
+        Returns
+        -------
+        :class:`~.AnimationContext`
+            This context.
+        """
         return self
 
     def on_init(self, animatable):
+        """Run construction hooks for this context and every enclosing one.
+
+        Parameters
+        ----------
+        animatable
+            The Mob being constructed.
+        """
         self.on_init_extra(animatable)
         if self.prev_context is not None:
             self.prev_context.on_init(animatable)
 
     def on_create(self, animatable):
+        """Run spawn hooks for this context and every enclosing one.
+
+        Parameters
+        ----------
+        animatable
+            The Mob being spawned.
+        """
         self.on_create_extra(animatable)
         if self.prev_context is not None:
             self.prev_context.on_create(animatable)
 
     def on_destroy(self, animatable):
+        """Run despawn hooks for this context and every enclosing one.
+
+        Parameters
+        ----------
+        animatable
+            The Mob being despawned.
+        """
         self.on_destroy_extra(animatable)
         if self.prev_context is not None:
             self.prev_context.on_destroy(animatable)
 
 
 class NoExtra(AnimationContext):
+    """Suppress enclosing contexts' spawn/despawn extras inside this block.
+
+    Some contexts add behaviour to every spawn or despawn -- :class:`~.SlideShow`
+    inserts a pause around each one, for instance. Wrapping code in ``NoExtra``
+    stops those additions from applying to spawns inside the block, while leaving
+    the timing behaviour of the enclosing context intact.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        with SlideShow():
+            title.spawn()                    # gets the slideshow pauses
+            with NoExtra(priority_level=1):
+                helper.spawn()               # does not
+    """
+
     def on_create(self, animatable):
+        """Do nothing, dropping enclosing contexts' spawn extras.
+
+        Parameters
+        ----------
+        animatable
+            The Mob being spawned.
+
+        Returns
+        -------
+        :class:`~.NoExtra`
+            This context.
+        """
         return self
 
     def on_destroy(self, animatable):
+        """Do nothing, dropping enclosing contexts' despawn extras.
+
+        Parameters
+        ----------
+        animatable
+            The Mob being despawned.
+
+        Returns
+        -------
+        :class:`~.NoExtra`
+            This context.
+        """
         return self
 
 
 class Off(AnimationContext):
-    """Disables animations within its context."""
+    """Apply changes instantly, with no animation and no video time.
 
-    def __init__(self, priority_level=1, **kwargs):
+    Everything inside the block takes effect at once: the scene jumps straight to
+    the new state, and the video is no longer for it. This is how you set a scene
+    up -- position, colour, materials -- without the viewer watching things slide
+    into place, and how you make a cut rather than a transition.
+
+    ``Off`` takes priority over enclosing contexts by default, so a ``run_time``
+    further out cannot stretch it back into an animation.
+
+    Parameters
+    ----------
+    priority_level
+        Priority of this context; contexts can only be overridden by ones of equal
+        or higher priority. Defaults to ``1``, above the ordinary default of ``0``,
+        which is what keeps enclosing timing from re-animating this block.
+    **kwargs
+        Passed to :class:`~.AnimationContext`. ``record_funcs`` defaults to False
+        here, so nothing inside is recorded as a timed event.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        with Off():
+            square.move(RIGHT * 3)     # teleports, takes no video time
+            square.color = BLUE
+
+    See Also
+    --------
+    :class:`~.Sync` : Play the block's animations simultaneously.
+    :class:`~.Seq` : Play them one after another.
+    """
+
+    def __init__(self, priority_level: float = 1, **kwargs):
         if "record_funcs" not in kwargs:
             kwargs["record_funcs"] = False
         super().__init__(
@@ -483,14 +811,36 @@ class Off(AnimationContext):
 
 
 class Lag(AnimationContext):
-    """Plays component animations sequentially lagged by a factor `lag_ratio`.
+    """Overlap the block's animations, each starting partway into the last.
+
+    The middle ground between :class:`~.Sync` (all at once) and :class:`~.Seq` (one
+    after another): each animation begins after a fraction of the previous one has
+    played, giving a cascade or ripple. Animating a list of Mobs inside
+    ``Lag(0.1)`` is the usual way to make them arrive in a wave rather than
+    together.
 
     Parameters
     ----------
     lag_ratio
-        The portion of run_time to wait before playing the next animation. For example, lag_ratio=0.1
-        would wait 10% of the `run_time_unit` for one animation before starting the next.
+        Fraction of one animation's duration to wait before starting the next.
+        ``0`` is fully simultaneous, ``1`` fully sequential, ``0.1`` starts each
+        animation when the previous one is a tenth done.
+    *args, **kwargs
+        Passed to :class:`~.AnimationContext` -- notably ``run_time`` to fix the
+        total duration of the whole cascade.
 
+    Examples
+    --------
+    .. code-block:: python
+
+        with Lag(0.2):
+            for square in squares:
+                square.move(UP)
+
+    See Also
+    --------
+    :class:`~.Sync` : ``lag_ratio=0``.
+    :class:`~.Seq` : ``lag_ratio=1``.
     """
 
     def __init__(self, lag_ratio: float, *args, **kwargs):
@@ -498,31 +848,91 @@ class Lag(AnimationContext):
 
 
 class Sync(Lag):
-    """Plays all component animations synchronously."""
+    """Play the block's animations all at the same time.
+
+    Everything inside starts together, so the block takes as long as one animation
+    rather than the sum of them -- the way to make a Mob move and change colour in
+    a single beat.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Passed to :class:`~.Lag` with ``lag_ratio=0``; notably ``run_time`` to set
+        how long the block lasts.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        with Sync():                   # both happen over one second
+            square.rotate(90, OUT)
+            square.color = BLUE
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(lag_ratio=0, *args, **kwargs)
 
 
 class Seq(Lag):
-    """Plays all component animations sequentially, with the next starting as soon as the current one finishes."""
+    """Play the block's animations one after another.
+
+    Each animation starts as the previous one finishes, so the block lasts as long
+    as all of them put together. This is what statements at the top level of a
+    script already do; reach for ``Seq`` when you need to give a run of animations a
+    combined duration, or to sequence inside a :class:`~.Sync`.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Passed to :class:`~.Lag` with ``lag_ratio=1``; notably ``run_time`` to fit
+        the whole sequence into a fixed time, which rescales its parts to match.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        with Seq(run_time=2):          # three moves squeezed into two seconds
+            square.move(RIGHT)
+            square.move(UP)
+            square.move(LEFT)
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(lag_ratio=1, *args, **kwargs)
 
 
 class Audio(AnimationContext):
-    """Plays audio sound from a file.
-    This context's run_time will automatically be set to the duration of the played audio.
+    """Play a sound, and fit the block's animations to its length.
+
+    The context's duration is taken from the audio, so whatever you animate inside
+    is stretched or squeezed to finish with the sound. That inversion is the point:
+    you describe what should happen while a clip plays, rather than timing the clip
+    against the animation.
 
     Parameters
     ----------
-    file_path
-        Path to the file which contains the audio.
+    file_path_or_clip
+        Path to an audio file, or an already-loaded moviepy audio clip.
+    wait_at_end
+        Extra seconds to hold after the audio finishes, before the block ends.
+        Defaults to ``0``.
+    **kwargs
+        Passed to :class:`~.AnimationContext`. Note ``run_time`` is set from the
+        audio and should not be passed.
 
+    Examples
+    --------
+    .. code-block:: python
+
+        with Audio("whoosh.wav"):
+            square.move(RIGHT * 5)     # takes exactly as long as the clip
+
+    See Also
+    --------
+    :class:`~.Speech` : The same, driven by a line of narration script.
     """
 
-    def __init__(self, file_path_or_clip: str, wait_at_end=0, **kwargs):
+    def __init__(self, file_path_or_clip: str, wait_at_end: float = 0, **kwargs):
         audio_clip = file_path_or_clip
         if isinstance(file_path_or_clip, str):
             from moviepy import AudioFileClip  # deferred: ~0.3 s of import algan
@@ -542,17 +952,33 @@ class Audio(AnimationContext):
 
 
 class Speech(Audio):
-    """Plays audio sound assosciated the given script over the course of this context.
-    This context's run_time will automatically be set to the duration of the played audio.
+    """Narrate a line, and fit the block's animations to how long it takes to say.
+
+    The script text is looked up in the Scene's audio manager, and the block runs
+    for exactly as long as that narration. Write the sentence, animate what should
+    happen while it is spoken, and the timing follows -- which is how a whole
+    explanatory video stays in sync with its voiceover.
 
     Parameters
     ----------
     script
-        The segment of script identifying which portion of the audio source to play during this context.
+        The line of narration to play. It is appended to the Scene's script and used
+        to select the matching audio.
+    wait_at_end
+        Extra seconds to hold after the line finishes. Defaults to ``1``, leaving a
+        beat between sentences. A further second is added when the block exits.
+    *args, **kwargs
+        Passed to :class:`~.Audio`.
 
+    Examples
+    --------
+    .. code-block:: python
+
+        with Speech("Now watch what happens when we double it."):
+            square.scale(2)
     """
 
-    def __init__(self, script, wait_at_end=1, *args, **kwargs):
+    def __init__(self, script, wait_at_end: float = 1, *args, **kwargs):
         animation_manager = kwargs.get("animation_manager") or _active_animation_manager()
         kwargs["animation_manager"] = animation_manager
         audio_manager = animation_manager.scene.audio_manager
@@ -565,13 +991,49 @@ class Speech(Audio):
 
 
 class SlideShow(Seq):
+    """Present Mobs one at a time, pausing on each, and clear up at the end.
+
+    A :class:`~.Seq` with presentation manners: every Mob spawned inside gets a
+    one-second pause after it appears, so the viewer has time to read it, and when
+    the block ends everything spawned inside is despawned together. Good for
+    stepping through a list of points.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        with SlideShow():
+            Tex("First point").spawn()
+            Tex("Second point").move_to(DOWN).spawn()
+        # both fade out here
+    """
+
     def on_create_extra(self, animatable):
+        """Pause for a second after a Mob spawns, so it can be read.
+
+        Parameters
+        ----------
+        animatable
+            The Mob that was just spawned.
+        """
         animatable.wait(1)
 
     def on_destroy_extra(self, animatable):
+        """Pause for a second after a Mob despawns.
+
+        Parameters
+        ----------
+        animatable
+            The Mob that was just despawned.
+        """
         animatable.wait(1)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        """Despawn everything spawned inside the block, then pause.
+
+        The despawns run together inside a :class:`~.Sync`, so the slide clears in one
+        beat rather than item by item.
+        """
         super().__exit__(exc_type, exc_val, exc_tb)
         with Sync(animation_manager=self.animation_manager):
             for mob in self.new_mobs:
@@ -580,15 +1042,66 @@ class SlideShow(Seq):
 
 
 class OnInit(AnimationContext):
+    """Run a function over every Mob constructed inside the block.
+
+    A hook for applying the same setup to a batch of Mobs without repeating it --
+    a shared material, a starting position, a shader.
+
+    Parameters
+    ----------
+    func
+        Callable taking one Mob, called as each Mob inside the block is
+        constructed.
+    **kwargs
+        Passed to :class:`~.AnimationContext`.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        with OnInit(lambda mob: mob.set_material(MeshStandardMaterial())):
+            shapes = [Sphere() for _ in range(3)]
+    """
+
     def __init__(self, func, **kwargs):
         super().__init__(**kwargs)
         self.func = func
 
     def on_init_extra(self, animatable):
+        """Apply this context's function to a newly constructed Mob.
+
+        Parameters
+        ----------
+        animatable
+            The Mob that was just constructed.
+        """
         self.func(animatable)
 
 
 class ComposeRateFunc(AnimationContext):
+    """Bend the timing of the block's animations through an extra rate function.
+
+    The given function is composed with whatever rate function is already in effect,
+    rather than replacing it, so an enclosing ease is kept and this one layers on
+    top. Use it to make a run of animations rush, dawdle or bounce without
+    restating the base easing.
+
+    Parameters
+    ----------
+    rfunc
+        Rate function mapping progress in ``[0, 1]`` to adjusted progress. Composed
+        with the enclosing context's rate function.
+    **kwargs
+        Passed to :class:`~.AnimationContext`.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        with ComposeRateFunc(rate_funcs.there_and_back):
+            square.move(RIGHT)     # goes out and comes back
+    """
+
     def __init__(self, rfunc, **kwargs):
         kwargs["rate_func_compose"] = rfunc
         super().__init__(**kwargs)

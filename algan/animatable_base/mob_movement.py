@@ -1,6 +1,6 @@
-"""Screen-relative layout and bounding-box queries for :class:`~algan.mobs.mob.Mob`.
+"""Translation and placement methods for :class:`~algan.animatable_base.mob.Mob`.
 
-Split out of ``mob.py`` for readability; :class:`MobLayoutMixin` is mixed into
+Split out of ``mob.py`` for readability; :class:`MobMovementMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
 from __future__ import annotations
@@ -25,9 +25,32 @@ def _resolve_buffer(buffer):
 
 
 class MobMovementMixin:
-    """Helpful methods for moving mobs around. """
+    """Methods for moving Mobs around, mixed into :class:`~.Mob`."""
 
-    def move_between(self, loc1, loc2):
+    def move_between(
+        self, loc1: Mob | torch.Tensor, loc2: Mob | torch.Tensor
+    ) -> Mob:
+        """Move the Mob to the midpoint between two locations.
+
+        Animation
+        ---------
+        Recorded as an animation: the Mob travels to the midpoint over the
+        current context's duration (1 second by default). Applies to this Mob
+        and its descendants.
+
+        Parameters
+        ----------
+        loc1
+            First endpoint: a 3-D point of shape ``(*, 3)``, or a Mob, in which
+            case its center is used.
+        loc2
+            Second endpoint, in the same forms as ``loc1``.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+        """
         loc1, loc2 = [_.get_center() if hasattr(_, 'get_center') else _ for _ in [loc1, loc2]]
         return self.move_to((loc1 + loc2) / 2)
 
@@ -50,25 +73,33 @@ class MobMovementMixin:
         endpoints are a no-op because the radius of a non-trivial closed arc
         cannot be inferred from the endpoint alone.
 
+        Animation
+        ---------
+        Recorded as an animation: the Mob sweeps along the arc over the current
+        context's duration (1 second by default). Wrap the call to retime it --
+        ``with Seq(run_time=3): mob.move_to_point_along_arc(RIGHT, 90)``.
+
         Parameters
         ----------
         point
-            The target 3-D location.
+            The target location, shape ``(*, 3)``.
         arc_angle_degrees
-            Signed arc sweep in degrees. Sweeps outside ``[-360, 360]`` are
+            Signed arc sweep **in degrees**. Sweeps outside ``[-360, 360]`` are
             supported, except exact non-zero multiples of 360 degrees when the
             endpoints differ; such a path would require an infinite radius.
         arc_normal
-            Normal vector of the arc plane. The chord from the current
-            location to ``point`` must be perpendicular to this vector.
+            Normal vector of the arc plane; the chord from the current location
+            to ``point`` must be perpendicular to it. Defaults to ``OUT`` (the
+            -z axis, out of the screen), which arcs in the screen plane.
         recursive
-            If True, propagate the location change to descendants, preserving
-            their offsets from this Mob. If False, move only this Mob.
+            Whether to propagate the location change to descendants, preserving
+            their offsets from this Mob. Defaults to True; False moves only this
+            Mob and leaves its children where they are.
 
         Returns
         -------
-        Mob
-            The Mob instance itself, allowing method chaining.
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
 
         Raises
         ------
@@ -217,45 +248,81 @@ class MobMovementMixin:
     def move_to(
         self, location: torch.Tensor, path_arc_angle: float | None = None, **kwargs
     ) -> Mob:
-        """Moves the Mob to a specified location.
+        """Move the Mob to an absolute location.
 
-        If `path_arc_angle` is provided, the Mob moves along a circular arc.
-        Otherwise, it moves in a straight line.
+        The path is a straight line unless ``path_arc_angle`` is given, in which
+        case the Mob swings to the target along a circular arc.
+
+        Animation
+        ---------
+        Recorded as an animation: the Mob travels from where it is to
+        ``location`` over the current context's duration (1 second by default).
+        Use ``with Off(): mob.move_to(...)`` to teleport it instead. Applies to
+        this Mob and its descendants.
 
         Parameters
         ----------
-        location : torch.Tensor
-            The target 3-D location.
-        path_arc_angle : float, optional
-            The angle of the arc in degrees for curved movement. If None,
-            movement is linear. Defaults to None.
+        location
+            The target location, shape ``(*, 3)``.
+        path_arc_angle
+            Signed sweep of the curved path, **in degrees**. Defaults to
+            ``None``, meaning travel in a straight line.
         **kwargs
-            Additional arguments passed to `set_location` or
-            `move_to_point_along_arc`.
+            Passed to :meth:`~.Mob.set_location` (notably ``recursive``), or to
+            :meth:`~.Mob.move_to_point_along_arc` when ``path_arc_angle`` is
+            given (notably ``arc_normal``).
 
         Returns
         -------
-        Mob
-            The Mob instance itself.
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+
+        See Also
+        --------
+        :meth:`~.Mob.move` : Move by a relative displacement instead.
+        :meth:`~.Mob.move_to_screen_position` : Place the Mob in screen space.
         """
         if path_arc_angle is None:
             return self.set_location(location, **kwargs)
         return self.move_to_point_along_arc(location, path_arc_angle, **kwargs)
 
     def move(self, displacement: torch.Tensor, **kwargs) -> Mob:
-        """Moves the Mob by a given displacement vector from its current location.
+        """Move the Mob by a displacement from wherever it currently is.
+
+        Animation
+        ---------
+        Recorded as an animation: the Mob travels the displacement over the
+        current context's duration (1 second by default). Retime it with
+        ``with Seq(run_time=2): mob.move(RIGHT)``, or apply it instantly with
+        ``with Off(): mob.move(RIGHT)``. Applies to this Mob and its descendants.
 
         Parameters
         ----------
-        displacement : torch.Tensor
-            The 3-D vector by which to move the Mob.
+        displacement
+            How far and in which direction to move, shape ``(*, 3)``, in world
+            units. The spatial constants (``RIGHT``, ``UP``, ``OUT``, ...) are
+            unit vectors, so ``mob.move(RIGHT * 3)`` moves three units right.
         **kwargs
-            Additional arguments passed to `move_to` (e.g., `path_arc_angle`).
+            Passed to :meth:`~.Mob.move_to` -- notably ``path_arc_angle`` to
+            travel along a curve rather than a straight line.
 
         Returns
         -------
-        Mob
-            The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+
+        Examples
+        --------
+        .. algan:: Example1MobMove
+
+            from algan import *
+
+            square = Square().spawn()
+            square.move(RIGHT)
+            square.move(UP * 2 + LEFT)
+            square.move(DOWN, path_arc_angle=120)
+
+            Scene.save_video()
         """
         self.move_to(self.location + cast_to_tensor(displacement), **kwargs)
         return self
@@ -268,27 +335,45 @@ class MobMovementMixin:
         align_edge=None,
         **kwargs,
     ) -> Mob:
-        """Moves this Mob to be adjacent to another Mob (or a point) in a given direction.
+        """Move this Mob so it sits just beside another Mob or point.
+
+        Placement is edge-to-edge, not center-to-center: this Mob's near
+        boundary is set ``buffer`` away from the target's boundary, so shapes of
+        different sizes end up with an even gap between them.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default). Applies to this Mob and its descendants.
 
         Parameters
         ----------
         target_mob
-            The target Mob or a 3-D point (torch.Tensor) to move next to.
+            The Mob to sit beside, or a point of shape ``(*, 3)`` to treat as
+            the target. A Mob contributes its boundary, a point only itself.
         direction
-            The 3-D vector indicating the direction
-            from `target_mob` towards where this Mob should be placed.
-            This vector does not need to be normalized.
+            Which side of ``target_mob`` to move to (e.g. ``RIGHT``, ``UP``);
+            need not be normalized.
         buffer
-            The minimum distance to maintain between
-            the closest edges of the two Mobs. Defaults to ``SETTINGS.style.buffer``.
+            Gap to leave between the two boundaries, in world units. Defaults to
+            ``SETTINGS.style.buffer`` (``0.6``).
+        align_edge
+            Direction along which to additionally align the two Mobs' boundaries
+            (see :meth:`~.Mob.move_inline_with_boundary`), so e.g. two Mobs
+            placed side by side can also share a bottom edge. Defaults to
+            ``None``, meaning no secondary alignment.
         **kwargs
-            Passed to :meth:`~.Mob.move_to` .
+            Passed to :meth:`~.Mob.move_to`.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
+            This Mob, so calls can be chained.
 
+        See Also
+        --------
+        :meth:`~.Mob.move_inline_with_center` : Align centers along one axis without changing the others.
+        :meth:`~.Mob.move_inline_with_edge` : Align edges along one axis without changing the others.
         """
         buffer = _resolve_buffer(buffer)
         normalized_direction = F.normalize(direction, p=2, dim=-1)
@@ -319,30 +404,37 @@ class MobMovementMixin:
         buffer: float | None = None,
         **kwargs,
     ) -> Mob:
-        """Moves this Mob so its specified edge is aligned with another Mob's edge
-        along a given direction, while maintaining a buffer.
+        """Line this Mob's edge up with another Mob's edge along one axis.
+
+        Only the component of the movement along ``direction`` is applied, so
+        this aligns the two Mobs on that axis and leaves their positions on the
+        other axes untouched.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default). Applies to this Mob and its descendants.
 
         Parameters
         ----------
-        mob : Mob
-            The target Mob to align with.
-        direction : torch.Tensor
-            The primary direction along which the alignment should occur
-            (e.g., `RIGHT`, `UP`).
-        edge : torch.Tensor, optional
-            If specified, this direction is used to determine "which side" of
-            *this* Mob to use for alignment. If None, `direction` is used for
-            both. Defaults to None.
-        buffer : float, optional
-            The buffer distance to maintain between the edges. Defaults to
-            ``SETTINGS.style.buffer``.
+        mob
+            The Mob to align with.
+        direction
+            Axis to align along, and which of ``mob``'s edges to use (e.g.
+            ``RIGHT``, ``UP``).
+        edge
+            Which of *this* Mob's edges to align. Defaults to ``None``, meaning
+            use ``direction`` for both.
+        buffer
+            Gap to leave between the aligned edges, in world units. Defaults to
+            ``SETTINGS.style.buffer`` (``0.6``).
         **kwargs
-            Additional arguments for :meth:`~.Mob.move`.
+            Passed to :meth:`~.Mob.move`.
 
         Returns
         -------
-        Mob
-            The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
         """
         from algan.animatable_base.mob import Mob
 
@@ -367,26 +459,30 @@ class MobMovementMixin:
         return self
 
     def move_inline_with_center(
-        self, mob: Mob, direction: torch.Tensor, buffer: float | None = None
+        self, mob: Mob, direction: torch.Tensor
     ) -> Mob:
-        """Moves this Mob so its center is aligned with another Mob's center
-        along a given direction.
+        """Line this Mob's center up with another Mob's center along one axis.
+
+        Only the component of the movement along ``direction`` is applied:
+        ``mob_a.move_inline_with_center(mob_b, UP)`` puts the two at the same
+        height without changing how far apart they are horizontally.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default). Applies to this Mob and its descendants.
 
         Parameters
         ----------
-        mob : Mob
-            The target Mob whose center will be aligned with.
-        direction : torch.Tensor
-            The 3-D vector specifying the alignment direction.
-        buffer : float, optional
-            Buffer distance (currently unused in this specific
-            implementation, as it aligns centers, not edges). Defaults to
-            ``SETTINGS.style.buffer``.
+        mob
+            The Mob whose center to align with.
+        direction
+            Axis to align along; need not be normalized.
 
         Returns
         -------
-        Mob
-            The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
         """
         # Calculate the displacement vector from this Mob's center to the target Mob's center.
         displacement_to_target_center = mob.location - self.location
@@ -405,28 +501,39 @@ class MobMovementMixin:
         from_mob: Mob | None = None,
         buffer: float | None = None,
     ) -> Mob:
-        """Moves this Mob to align with another Mob along a specific direction,
-        either by their edges or by their centers.
+        """Align this Mob with another along one axis, by edge or by center.
+
+        The general form of :meth:`~.Mob.move_inline_with_edge` and
+        :meth:`~.Mob.move_inline_with_center`: ``center`` picks which of the two
+        behaviours you get, and ``from_mob`` lets a third Mob supply the
+        reference point being moved into place.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default). Applies to this Mob and its descendants.
 
         Parameters
         ----------
         mob
-            The target Mob to align with.
+            The Mob to align with.
         align_direction
-            The 3-D vector defining the direction along which alignment should occur.
+            Axis to align along; only movement along this axis is applied.
         center
-            If True, aligns the centers of the Mobs. If False, aligns their edges.
+            Whether to align centers rather than edges. Defaults to False,
+            meaning this Mob's boundary is brought to ``mob``'s boundary.
         from_mob
-            The Mob whose edge/center is considered the starting point for calculating displacement. If None,
-            this Mob itself is used.
+            Mob supplying the reference point that is moved into alignment,
+            useful when aligning a group by one of its members. Defaults to
+            ``None``, meaning use this Mob.
         buffer
-            Buffer distance between aligned edges (only relevant
-            if `center` is False). Defaults to ``SETTINGS.style.buffer``.
+            Accepted for symmetry with the other alignment methods and **has no
+            effect** here. Defaults to ``None``.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
+            This Mob, so calls can be chained.
         """
         if center:
             # Align centers
@@ -454,40 +561,62 @@ class MobMovementMixin:
         )
 
     def move_inline_with_boundary(self, mob: Mob, direction: torch.Tensor) -> Mob:
-        """
-        Moves this Mob so its boundary aligns with another Mob's boundary
-        along a specific direction.
+        """Align this Mob's boundary flush with another Mob's boundary.
+
+        Unlike :meth:`~.Mob.move_next_to`, no gap is left: the two boundaries end
+        up coincident along ``direction``, which is what makes two Mobs share a
+        bottom edge or a left edge.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default). Applies to this Mob and its descendants.
 
         Parameters
         ----------
         mob
-            The target Mob whose boundary will be aligned with.
+            The Mob whose boundary to align with.
         direction
-            The direction along which to align the boundaries.
+            Which boundary to align (e.g. ``DOWN`` for bottom edges).
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
-
+            This Mob, so calls can be chained.
         """
         return self.move(self.get_displacement_to_boundary(mob, direction))
 
-    def move_to_screen_position(self, x, y):
-        """Moves the mob so that it appears at coordinate (x, y) on the screen.
+    def move_to_screen_position(
+        self, x: float | torch.Tensor, y: float | torch.Tensor
+    ) -> Mob:
+        """Move the Mob so it appears at a given position on the screen.
+
+        The world location is worked out from the current camera, so this places
+        the Mob where the viewer sees it rather than where it sits in 3-D space.
+        The Mob keeps its distance from the camera; only its apparent position
+        changes.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default). The screen position is resolved once, when the call is
+        recorded -- a later camera move will not keep the Mob pinned there (use
+        an updater for that). Applies to this Mob and its descendants.
 
         Parameters
         ----------
         x
-            Horizontal position given between 0 (left edge) and 1 (right edge).
+            Horizontal position in screen units: ``0`` is the left edge, ``1``
+            the right edge, ``0.5`` the middle. Values outside ``[0, 1]`` are
+            off-screen.
         y
-            Vertical position given between 0 (bottom edge) and 1 (top edge).
+            Vertical position in screen units: ``0`` is the bottom edge, ``1``
+            the top edge.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
-
+            This Mob, so calls can be chained.
         """
         with Off(animation_manager=self.animation_manager):
             clone = self.clone(add_to_scene=False)
@@ -505,19 +634,35 @@ class MobMovementMixin:
         return self.move_to(new_loc)
 
     def move_to_edge(self, edge: torch.Tensor, buffer: float | None = None) -> Mob:
-        """Moves the Mob to an edge of the screen.
+        """Move the Mob against one edge of the screen.
+
+        The Mob's own boundary is what comes to rest ``buffer`` from the border,
+        so a large and a small shape both end up looking equally inset.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second
+        by default). The edge position is resolved from the camera when the call
+        is recorded. Applies to this Mob and its descendants.
 
         Parameters
         ----------
         edge
-            A 3-D vector indicating the screen edge direction (e.g., `RIGHT`, `LEFT`, `UP`, `DOWN`).
+            Which screen edge to move to: ``RIGHT``, ``LEFT``, ``UP`` or
+            ``DOWN``.
         buffer
-            Distance to maintain from the screen border after moving. Defaults to ``SETTINGS.style.buffer``.
+            Gap to leave between the Mob's boundary and the screen border, in
+            world units. Defaults to ``SETTINGS.style.buffer`` (``0.6``).
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
+            This Mob, so calls can be chained.
+
+        See Also
+        --------
+        :meth:`~.Mob.move_to_corner` : Move against two edges at once.
+        :meth:`~.Mob.move_out_of_screen` : Move all the way off-screen.
         """
         buffer = _resolve_buffer(buffer)
         normalized_edge = F.normalize(edge, p=2, dim=-1)
@@ -541,21 +686,32 @@ class MobMovementMixin:
     def move_to_corner(
         self, edge1: torch.Tensor, edge2: torch.Tensor, buffer: float | None = None
     ) -> Mob:
-        """Moves the Mob to a corner of the screen, defined by two intersecting edge directions.
+        """Move the Mob into a corner of the screen.
+
+        The corner is named by the two edges that meet there, e.g.
+        ``mob.move_to_corner(UP, RIGHT)`` for the top-right.
+
+        Animation
+        ---------
+        Recorded as an animation. The two edge moves run inside a
+        :class:`~.Sync`, so they happen simultaneously and the whole call still
+        takes the current context's duration (1 second by default) rather than
+        two seconds. Applies to this Mob and its descendants.
 
         Parameters
         ----------
         edge1
-            Vector for the first screen edge.
+            First screen edge of the corner (e.g. ``UP``).
         edge2
-            Vector for the second screen edge.
+            Second screen edge of the corner (e.g. ``RIGHT``).
         buffer
-            Distance to maintain from both screen borders. Defaults to ``SETTINGS.style.buffer``.
+            Gap to leave from both screen borders, in world units. Defaults to
+            ``SETTINGS.style.buffer`` (``0.6``).
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
+            This Mob, so calls can be chained.
         """
         # Chain two calls to move_to_edge to reach the corner
         with Sync(animation_manager=self.animation_manager):
@@ -566,22 +722,34 @@ class MobMovementMixin:
     def move_out_of_screen(
         self, edge: torch.Tensor, buffer: float | None = None, despawn: bool = True
     ) -> Mob:
-        """Animates the Mob moving off-screen in a given edge direction and then optionally despawns it.
+        """Slide the Mob off the screen, and by default despawn it there.
+
+        The Mob travels far enough that its whole bounding box clears the border,
+        so nothing is left poking into frame.
+
+        Animation
+        ---------
+        Recorded as an animation: the slide takes the current context's duration
+        (1 second by default), and the despawn follows it in a :class:`~.Seq`
+        without an extra fade, so the Mob is simply gone once it is out of sight.
+        Applies to this Mob and its descendants.
 
         Parameters
         ----------
         edge
-            Vector indicating the direction to move off-screen.
+            Which way to leave: ``RIGHT``, ``LEFT``, ``UP`` or ``DOWN``.
         buffer
-            Additional distance beyond the screen edge to move the Mob. Defaults to ``SETTINGS.style.buffer``.
+            Extra distance to travel beyond the screen border, in world units.
+            Defaults to ``SETTINGS.style.buffer`` (``0.6``).
         despawn
-            If True, the Mob is despawned immediately after moving off-screen.
+            Whether to despawn the Mob once it is off-screen. Defaults to True;
+            pass False to keep it alive out of frame so it can slide back in
+            later.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
-
+            This Mob, so calls can be chained.
         """
         buffer = _resolve_buffer(buffer)
         bbox = self.get_bounding_box()
@@ -607,23 +775,31 @@ class MobMovementMixin:
     def move_to_point_along_square(
         self, destination: torch.Tensor, displacement: torch.Tensor
     ) -> Mob:
-        """Moves the Mob to a destination in a two-step "square" path.
-        First, it moves by the `displacement` vector. Then, it moves orthogonally
-        to align with the `destination` point, and finally reaches the `destination`.
-        This creates an [-shaped path.
+        """Move the Mob to a destination along a right-angled, three-leg path.
+
+        The Mob first travels along ``displacement``, then along the component of
+        the remaining distance orthogonal to it, then closes any remainder --
+        tracing a bracket-shaped route instead of a diagonal. Useful for routing
+        a Mob around something in the way.
+
+        Animation
+        ---------
+        Recorded as an animation. All three legs run inside a
+        ``Seq(run_time=1)``, so the whole path takes 1 second regardless of the
+        current context's duration. Applies to this Mob and its descendants.
 
         Parameters
         ----------
         destination
-            The final target 3-D location.
+            The final location, shape ``(*, 3)``.
         displacement
-            The initial 3-D displacement vector for the first segment of the path.
+            Direction and length of the first leg, shape ``(*, 3)``; this is what
+            decides which way the path bends.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
-
+            This Mob, so calls can be chained.
         """
         # Vector from current location to destination
         destination_displacement = destination - self.location

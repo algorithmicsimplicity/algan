@@ -251,6 +251,33 @@ class Tex(Mob):
             self.scale(font_size / base_font_size)
 
     def become(self, other_mob, *args, **kwargs):
+        """Morph this text into another Mob, keeping its glyph views usable.
+
+        As :meth:`~.Mob.become`, with one addition: because a morph can expand the
+        packed glyph batch, the per-character views are rebuilt against the result, so
+        indexing (``text[0]``) still works afterwards.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default).
+
+        Parameters
+        ----------
+        other_mob
+            The Mob to morph into. Text morphs best into other text or bezier shapes,
+            since the primitive type must match.
+        *args, **kwargs
+            Passed to :meth:`~.Mob.become` -- notably ``minimize_movement=True``,
+            which pairs each glyph fragment with its nearest counterpart and is
+            usually what you want for text.
+
+        Returns
+        -------
+        :class:`~.Tex`
+            The morphed text. This is a **different object** from the one you called
+            the method on, so use the return value afterwards.
+        """
         result = super().become(other_mob, *args, **kwargs)
         # ``detach_history`` returns a clone, and cubic morphing may expand the
         # packed glyph batch to match the target. Cached lightweight views from
@@ -263,35 +290,86 @@ class Tex(Mob):
             )
         return result
 
-    def get_segment(self, i):
-        return self[self.segment_starts[i]:self.segment_ends[i]]
+    def get_segment(self, i: int):
+        """Get one of the text's LaTeX segments as a Mob.
 
-    def __getitem__(self, item):
-        return Group([self.character_mobs[item]], scene=self.scene)
-
-    def __len__(self):
-        return len(self.character_mobs)
-
-    def write(self, border_width: float = 1, run_time=None, lag_ratio=None):
-        """Animate this text appearing as if it were being hand-written.
-
-        Each glyph's outline is traced and then filled, one after another.
-        This is :func:`~algan.animations.manim_animations.draw_border_then_fill`
-        applied to this text's ``character_mobs``.
+        Segments are the pieces the text was constructed from, so a ``Tex`` built from
+        several strings can have each one animated separately -- the usual way to
+        highlight one term of an equation.
 
         Parameters
         ----------
-        border_width
-            Border width to trace each glyph with. None keeps the current one.
+        i
+            Index of the segment.
+
+        Returns
+        -------
+        :class:`~.Group`
+            A Group of the glyphs in that segment, sharing data with this text.
+        """
+        return self[self.segment_starts[i]:self.segment_ends[i]]
+
+    def __getitem__(self, item):
+        """Get individual glyphs by index or slice, so ``text[0]`` works.
+
+        The result is a view sharing this text's data, so animating it animates those
+        glyphs of the original. It needs no spawning of its own.
+
+        Parameters
+        ----------
+        item
+            Index of a glyph, or a slice selecting several.
+
+        Returns
+        -------
+        :class:`~.Group`
+            A Group of the selected glyphs.
+        """
+        return Group([self.character_mobs[item]], scene=self.scene)
+
+    def __len__(self):
+        """Get the number of glyphs, so ``len(text)`` works.
+
+        Returns
+        -------
+        int
+            How many glyphs the text was rendered into. Note this counts glyphs, not
+            the characters of the source string -- LaTeX markup produces neither one
+            glyph per character nor a predictable ratio.
+        """
+        return len(self.character_mobs)
+
+    def write(
+        self,
+        run_time: float | None = None,
+        lag_ratio: float | None = None,
+    ):
+        """Animate this text appearing as if it were being hand-written.
+
+        Each glyph's outline is traced and then filled, one glyph after another. This
+        is :func:`~algan.animations.manim_animations.draw_border_then_fill` applied to
+        this text's glyphs.
+
+        Animation
+        ---------
+        Recorded as an animation. Its duration comes from ``run_time`` and
+        ``lag_ratio`` rather than the enclosing context, so a long string takes longer
+        to write unless you set ``run_time``.
+
+        Parameters
+        ----------
         run_time
-            Total seconds for the whole sequence.
+            Total seconds for the whole sequence. Defaults to ``None``, meaning it
+            follows from the glyph count and ``lag_ratio``.
         lag_ratio
-            Fraction of one glyph's animation that elapses before the next.
+            Fraction of one glyph's animation that elapses before the next begins.
+            Defaults to ``None``, meaning inherit from the enclosing context. ``0``
+            writes every glyph at once.
 
         Returns
         -------
         :class:`~.Mob`
-            This text, allowing for method chaining.
+            This text, so calls can be chained.
 
         Examples
         --------
@@ -310,37 +388,53 @@ class Tex(Mob):
 
         draw_border_then_fill(
             self.character_mobs,
-            border_width=border_width,
             run_time=run_time,
             lag_ratio=lag_ratio,
         )
         return self
 
-    def default_color(self):
-        return BLUE
-
     def on_create(self):
+        """Play the text's entrance: a fade that sweeps across the glyphs.
+
+        Instead of the plain fade a :class:`~.Mob` uses, text fades in as a diagonal
+        wave running down and to the right, so the words appear to arrive in reading
+        order.
+
+        Animation
+        ---------
+        Recorded as an animation lasting **1 second**, regardless of the enclosing
+        context's duration.
+
+        Returns
+        -------
+        :class:`~.Tex`
+            This text, so calls can be chained.
+        """
         with Seq(run_time=1, animation_manager=self.animation_manager):
             with Off(animation_manager=self.animation_manager):  # Ensure initial state setting is not recorded as an animation
                 opacity = self.opacity
                 self.opacity = 0
             self._create_recursive(animate=False)  # Mark as created without immediate animation
             self.wave_color( None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=opacity)
-            #self.opacity = 1
-        return self
-        tiles = list(traverse([c.children for c in self.children]))
-        with AnimationContext(run_time_unit=2, animation_manager=self.animation_manager):
-            animate_lagged_by_location(
-                tiles,
-                lambda m: m.spawn_from_random_direction(),
-                F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
-            )
         return self
 
     def on_destroy(self):
-        # tiles = list(traverse([c.children for c in self.children]))
-        # with AnimationContext(run_time_unit=2):
-        #    animate_lagged_by_location(tiles, lambda m: m.despawn_from_random_direction(), F.normalize(RIGHT*1.5+DOWN, p=2, dim=-1))
+        """Play the text's exit: a fade that sweeps across the glyphs.
+
+        The mirror of :meth:`~.Tex.on_create` -- the glyphs fade out as a diagonal wave
+        rather than all at once.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default). The despawn itself is recorded at the end of the wave, so no glyph
+        disappears before the wave reaches it.
+
+        Returns
+        -------
+        :class:`~.Tex`
+            This text, so calls can be chained.
+        """
         with Seq(animation_manager=self.animation_manager):
             self.wave_color(
                 None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=0
@@ -352,238 +446,6 @@ class Tex(Mob):
             self._destroy_recursive(animate=False)
             self.animation_manager.context.timespan.current_time = old_ct
         return self
-
-
-class OldTex(Mob):
-    """Mob for displaying tex.
-
-    Parameters
-    ----------
-    text
-        String containing the text to display.
-    font_size
-        Font size of the text.
-    **kwargs
-        Passed to :class:`~.Mob`.
-
-    """
-
-    def __init__(
-        self, text: str, font_size: float = 48, latex=True, debug=False, **kwargs
-    ):
-        if "preamble" in kwargs:
-            kwargs["tex_template"] = mn.TexTemplate(
-                preamble=_default_preamble() + "\n" + kwargs["preamble"]
-            )
-            del kwargs["preamble"]
-
-        if "color" not in kwargs:
-            kwargs["color"] = SETTINGS.style.text_color
-
-        kwargs2 = {k: v for k, v in kwargs.items()}
-        if "create" in kwargs2:
-            del kwargs2["create"]
-        if "init" in kwargs2:
-            del kwargs2["init"]
-        super().__init__(**kwargs2, init=False)
-
-        self.debug = debug
-        self.kwargs = kwargs
-        self.size = self.font_size = font_size
-        self.text = text
-        self.latex = latex
-        self.create_character_mobs(text, **kwargs2)
-        self.add_children(self.character_mobs)
-        with Off(animation_manager=self.animation_manager):
-            self.scale(self.convert_ratio)
-
-    def __getitem__(self, item):
-        return Group([self.character_mobs[item]], scene=self.scene)
-
-    def __len__(self):
-        return len(self.character_mobs)
-
-    def default_color(self):
-        return BLUE
-
-    def highlight(self):
-        self.orig_color = self.color
-        with Sync(animation_manager=self.animation_manager):
-            for _ in self.get_descendants():
-                _.color = RED_A
-        return self
-
-    def highlight_off(self):
-        with Sync(animation_manager=self.animation_manager):
-            for _ in self.get_descendants():
-                _.color = WHITE
-        return self
-
-    def on_create(self):
-        tiles = list(traverse([c.children for c in self.children]))
-        with AnimationContext(run_time_unit=2, animation_manager=self.animation_manager):
-            animate_lagged_by_location(
-                tiles,
-                lambda m: m.spawn_from_random_direction(),
-                F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
-            )
-        return self
-
-    def on_destroy(self):
-        tiles = list(traverse([c.children for c in self.children]))
-        with AnimationContext(run_time_unit=2, animation_manager=self.animation_manager):
-            animate_lagged_by_location(
-                tiles,
-                lambda m: m.despawn_from_random_direction(),
-                F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
-            )
-        return self
-
-    def set_fill_width(self, fill_portion):
-        with Lag(0.5, run_time=1.0, animation_manager=self.animation_manager):
-            for c in self.character_mobs:
-                c.fill_portion = fill_portion
-            self.fill_portion = fill_portion
-
-    def set_color(self, color):
-        with Sync(animation_manager=self.animation_manager):
-            for c in self.character_mobs:
-                c.color = color
-            self.color = color
-        return self
-
-    def set_size(self, size):
-        with Sync(animation_manager=self.animation_manager):
-            for c in self.character_mobs:
-                c.size = size
-            self.size = size
-        return self
-
-    def set_text(self, text):
-        self.children = set()
-        self.create_character_mobs(text, **self.kwargs)
-        self.add_children(self.character_mobs)
-        return self
-
-    def create_character_mobs(self, text, **kwargs):
-        make_manim_dir()
-        # s = 0.105 * self.size / 100
-        s = 0.04 * 45 / 100
-        self.convert_ratio = (0.105 * self.font_size / 100) / s
-        manim_kwargs = {k: v for k, v in kwargs.items()}
-        if "color" in manim_kwargs:
-            del manim_kwargs["color"]
-        if "scale" in manim_kwargs:
-            del manim_kwargs["scale"]
-        if "use_cache" in manim_kwargs:
-            del manim_kwargs["use_cache"]
-        if "add_to_scene" in manim_kwargs:
-            del manim_kwargs["add_to_scene"]
-        if "create" in manim_kwargs:
-            del manim_kwargs["create"]
-        text = (mn.MathTex if self.latex else mn.Tex)(text, **manim_kwargs)
-
-        def get_rect_as_path(ps):
-            ps = ps[..., :2].astype(numpy.float32)
-            ps = numpy.flip(ps, 0)
-            vmob = mn.VMobjectFromSVGPath(
-                Path(
-                    Move(ps[0]),
-                    Close(ps[0], ps[0]),
-                    *([(Line)(ps[i * 4], ps[(i + 1) * 4 - 1]) for i in range(4)]),
-                    Move(ps[0]),
-                )
-            )
-            vmob.needs_to_reverse = True
-            return vmob
-
-        svg_mobs = [
-            [
-                __
-                if isinstance(__, mn.VMobjectFromSVGPath)
-                else get_rect_as_path(_.original_points[i])
-                for i, __ in enumerate(_.submobjects)
-            ]
-            for _ in text.submobjects
-        ]
-        svg_mobs = [x for l in svg_mobs for x in l]
-
-        all_points = torch.cat(
-            [
-                torch.stack([point_to_tensor2(_.end) for _ in c.path_obj], 0)
-                for c in svg_mobs
-            ]
-        ).flip(-1)
-        mx_point = all_points.amax(0)
-        mn_point = all_points.amin(0)
-        mean = (mx_point + mn_point) / 2
-
-        def update_attr_mean(ele, m):
-            for attr in ["start", "end", "control1", "control2"]:
-                if hasattr(ele, attr) and ele.__getattribute__(attr) is not None:
-                    ele.__getattribute__(attr).x = float(
-                        (ele.__getattribute__(attr).x - m[1].item()) * s
-                    )
-                    ele.__getattribute__(attr).y = float(
-                        -(ele.__getattribute__(attr).y - m[0].item()) * s
-                    )
-
-        def normalize(_, m=mean):
-            _ = copy.deepcopy(_)
-            _[..., 0] = (_[..., 0] - m[1].item()) * s
-            _[..., 1] = -(_[..., 1] - m[0].item()) * s
-            return _
-
-        for c in svg_mobs:
-            for element in c.path_obj:
-                update_attr_mean(element, mean)
-
-        all_points = torch.cat(
-            [
-                torch.stack([point_to_tensor2(_.end) for _ in c.path_obj], 0).flip(-1)
-                for c in svg_mobs
-            ]
-        )
-        mx_point = all_points.amax(0)
-        mn_point = all_points.amin(0)
-        self.mn_point = torch.cat((torch.zeros_like(mn_point[..., :1]), mn_point), -1)
-        self.mx_point = torch.cat((torch.zeros_like(mx_point[..., :1]), mx_point), -1)
-
-        kwargs.setdefault("scene", self.scene)
-        with Off(animation_manager=self.animation_manager):
-            self.character_mobs = TriangulatedBezierCircuit(
-                [c.path_obj for c in svg_mobs],
-                invert=True,
-                hash_keys=None,
-                reverse_points=hasattr(svg_mobs[0], "needs_to_reverse"),
-                init=False,
-                **kwargs,
-            )
-
-    def get_boundary_points_test(self):
-        return torch.stack(
-            (
-                self.mn_point,
-                torch.stack(
-                    (
-                        torch.zeros_like(self.mn_point[..., 0]),
-                        self.mn_point[..., 1],
-                        self.mx_point[..., 2],
-                    ),
-                    -1,
-                ),
-                torch.stack(
-                    (
-                        torch.zeros_like(self.mn_point[..., 0]),
-                        self.mx_point[..., 1],
-                        self.mn_point[..., 2],
-                    ),
-                    -1,
-                ),
-                self.mx_point,
-            ),
-            -2,
-        ) + self.location.unsqueeze(-2)
 
 
 def _to_pango_hex(color, color_map):
@@ -624,29 +486,33 @@ def _default_preamble():
 
 
 class Text(Tex):
-    """Plain text rendered as one packed batch of cubic bezier glyphs.
+    """Plain (non-LaTeX) text, rendered as one packed batch of cubic bezier glyphs.
+
+    Use :class:`~.Tex` for mathematics and this for prose. Index it to get individual
+    glyphs (``text[0]``), and see :meth:`~.Tex.write` for the hand-written entrance.
+
+    When Pango is available (manim's optional ``Text`` support), the styling
+    arguments -- ``font``, ``weight``, ``slant``, ``line_spacing``,
+    ``disable_ligatures``, and the span-level ``t2c``/``t2f``/``t2s``/``t2w``/
+    ``t2g``/``gradient`` -- are forwarded to the Pango renderer and fully
+    affect the glyphs. Color values in ``t2c``/``t2g``/``gradient`` may be
+    algan colors (glow and opacity are preserved), hex strings, or named
+    manim colors. ``weight`` accepts Pango weight names (``"THIN"``, ``"LIGHT"``,
+    ``"MEDIUM"``, ``"SEMIBOLD"``, ``"BOLD"``, ``"HEAVY"``, ...), ``slant`` accepts
+    ``"NORMAL"``, ``"ITALIC"``, ``"OBLIQUE"``. Note a ``t2c`` value of pure white is
+    indistinguishable from unstyled text and falls back to the base color.
+
+    When Pango is unavailable, Algan renders the textual content through
+    LaTeX text mode. Font-family and span-level styling arguments are accepted
+    and retained as metadata, but cannot affect that fallback renderer.
 
     Parameters
     ----------
     text
         The text to display.
     **kwargs
-        Passed to :class:`~.Tex`.
-
-    When Pango is available (manim's optional ``Text`` support), the styling
-    arguments — ``font``, ``weight``, ``slant``, ``line_spacing``,
-    ``disable_ligatures``, and the span-level ``t2c``/``t2f``/``t2s``/``t2w``/
-    ``t2g``/``gradient`` — are forwarded to the Pango renderer and fully
-    affect the glyphs. Color values in ``t2c``/``t2g``/``gradient`` may be
-    algan colors (glow and opacity are preserved), hex strings, or named
-    manim colors. ``weight`` accepts Pango weight names ("THIN", "LIGHT",
-    "MEDIUM", "SEMIBOLD", "BOLD", "HEAVY", ...), ``slant`` accepts "NORMAL",
-    "ITALIC", "OBLIQUE". Note: a ``t2c`` value of pure white is
-    indistinguishable from unstyled text and falls back to the base color.
-
-    When Pango is unavailable, Algan renders the textual content through
-    LaTeX text mode. Font-family and span-level styling arguments are accepted
-    and retained as metadata, but cannot affect that fallback renderer.
+        Passed to :class:`~.Tex` -- notably ``font_size``, ``color``, ``location``, and
+        the Pango styling arguments described above.
     """
 
     def __init__(
@@ -870,7 +736,28 @@ class Paragraph(Group):
         self.lines_text = lines
         self.chars = self.mobs
 
-    def set_all_lines_alignments(self, alignment):
+    def set_all_lines_alignments(self, alignment: str):
+        """Re-align every line of the paragraph.
+
+        The paragraph is rebuilt with the new alignment and morphed into, so the lines
+        slide into their new positions.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default): the glyphs travel to their new positions.
+
+        Parameters
+        ----------
+        alignment
+            Alignment to apply to every line, e.g. ``"left"``, ``"center"``,
+            ``"right"``.
+
+        Returns
+        -------
+        :class:`~.Paragraph`
+            The re-aligned paragraph.
+        """
         replacement = Paragraph(
             *self.lines_text,
             scene=self.scene,

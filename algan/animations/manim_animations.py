@@ -16,7 +16,7 @@ def _with_opacity(color, opacity):
     return color
 
 
-def draw_border_then_fill(mobs, border_width: float = 1, run_time=None, lag_ratio=None):
+def draw_border_then_fill(mobs, run_time=None, lag_ratio=None):
     """Animate mobs appearing as if hand-drawn: outline first, then fill.
 
     Each mob's border is traced out, then its fill fades in. Mobs are animated
@@ -29,9 +29,6 @@ def draw_border_then_fill(mobs, border_width: float = 1, run_time=None, lag_rati
         Any iterable of Mobs: the glyphs of a :class:`~.Text`, a
         :class:`~.Group`'s children, or a list you assembled yourself. Drawn in
         iteration order.
-    border_width
-        Border width to trace the outline with. Pass None to keep each mob's
-        own border width.
     run_time
         Total seconds for the whole sequence. Defaults to 1 second, or 2 for
         more than 15 mobs.
@@ -74,8 +71,6 @@ def draw_border_then_fill(mobs, border_width: float = 1, run_time=None, lag_rati
     with Off(animation_manager=animation_manager):
         for mob in mobs:
             mob.set_opacity_via_color(0)
-            if border_width is not None:
-                mob.border_width = border_width
             mob.border_color = _with_opacity(mob.border_color, 0)
 
     with Lag(

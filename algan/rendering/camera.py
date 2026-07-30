@@ -214,7 +214,38 @@ class Camera(Mob):
         )
         return self
 
-    def set_euler_angles(self, angle_1, angle_2, angle_3):
+    def set_euler_angles(
+        self,
+        angle_1: float | torch.Tensor,
+        angle_2: float | torch.Tensor,
+        angle_3: float | torch.Tensor,
+    ):
+        """Point the camera using three Euler rotations about the origin.
+
+        The rotations are applied about the world x, y and z axes and are performed
+        together, so the camera swings around the origin rather than turning in place.
+        Note these are *added* to the camera's current orientation rather than
+        replacing it, despite the name.
+
+        Animation
+        ---------
+        Recorded as an animation: all three rotations run inside a :class:`~.Sync`,
+        over the current context's duration (1 second by default).
+
+        Parameters
+        ----------
+        angle_1
+            Rotation about the world x axis (``RIGHT``), **in degrees**.
+        angle_2
+            Rotation about the world y axis (``UP``), **in degrees**.
+        angle_3
+            Rotation about the world z axis (``OUT``), **in degrees**.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+        """
         with Sync(animation_manager=self.animation_manager):
             self.rotate(angle_1, RIGHT, about_point=ORIGIN)
             self.rotate(angle_2, UP, about_point=ORIGIN)
@@ -238,11 +269,61 @@ class Camera(Mob):
         return basis
 
     def retroactive_center(self, mob, **kwargs):
+        """Frame a Mob, with the camera move recorded earlier in the video.
+
+        The same framing as :meth:`~.Camera.move_to_make_mob_center_of_view`, but
+        recorded at the camera's retroactive timestamp -- so the camera has already
+        arrived by the time the Mob does its thing, instead of chasing it.
+
+        Animation
+        ---------
+        Recorded as an animation, inserted at the retroactive timestamp rather than the
+        current one.
+
+        Parameters
+        ----------
+        mob
+            The Mob to frame.
+        **kwargs
+            Passed to :meth:`~.Camera.move_to_make_mob_center_of_view` -- notably
+            ``buffer_portion``.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+        """
         with self.retroactive():
             self.move_to_make_mob_center_of_view(mob, **kwargs)
         return self
 
-    def move_to_make_mob_center_of_view(self, mob, buffer_portion=0.7):
+    def move_to_make_mob_center_of_view(self, mob, buffer_portion: float = 0.7):
+        """Move the camera so a Mob fills the frame, centred.
+
+        The camera slides sideways to centre the Mob and in or out until the Mob just
+        fits, leaving ``buffer_portion`` of margin. It does not rotate, so the viewing
+        angle you set is preserved.
+
+        Animation
+        ---------
+        Recorded as an animation: the moves run together inside a :class:`~.Sync`, over
+        the current context's duration (1 second by default). The Mob's extent is
+        measured when the call is recorded, so a Mob that changes size afterwards will
+        not stay framed.
+
+        Parameters
+        ----------
+        mob
+            The Mob to frame.
+        buffer_portion
+            Extra margin around the Mob, as a fraction of its size. Defaults to
+            ``0.7``, i.e. the framed area is 1.7 times the Mob's extent.
+
+        Returns
+        -------
+        :class:`~.Camera`
+            This camera, so calls can be chained.
+        """
         f = self.get_forward_direction()
         r = self.get_right_direction()
         u = self.get_upwards_direction()
@@ -278,7 +359,27 @@ class Camera(Mob):
                 else (mob_boundary_points[0] - horizontal_move)
             )
 
-    def project_point_onto_screen_border(self, point, direction):
+    def project_point_onto_screen_border(
+        self, point: torch.Tensor, direction: torch.Tensor
+    ) -> torch.Tensor:
+        """Find where a point would leave the frame travelling in a direction.
+
+        Casts from ``point`` along ``direction`` and returns the intersection with the
+        edge of the visible frustum. This is what the screen-edge placement methods use
+        to know where "against the edge" is.
+
+        Parameters
+        ----------
+        point
+            Starting point, shape ``(*, 3)``.
+        direction
+            Direction to travel, shape ``(*, 3)``, e.g. ``RIGHT`` or ``UP``.
+
+        Returns
+        -------
+        torch.Tensor
+            The point on the frame border, shape ``(*, 3)``.
+        """
         corner_rays = F.normalize(
             (self.get_corner_pixels()) - self.location, dim=-1, p=2
         )
@@ -321,7 +422,17 @@ class Camera(Mob):
         )
         return closest_point
 
-    def get_corner_pixels(self):
+    def get_corner_pixels(self) -> torch.Tensor:
+        """Get the four corners of the visible frame, in world space.
+
+        The corners of the camera's screen plane, accounting for the current aspect
+        ratio, ordered around the frame. Screen-relative layout is built on these.
+
+        Returns
+        -------
+        torch.Tensor
+            The four corner points, shape ``(4, *, 3)``.
+        """
         b = unsquish(self.screen.basis, -1, 3)
         b = b / b.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-6)
         aspect_ratio = (

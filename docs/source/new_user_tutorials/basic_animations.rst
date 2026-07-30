@@ -97,9 +97,9 @@ need to animate something completely new, you can create your own animations usi
     from algan import *
     import numpy as np
 
-    # Define a function mapping a scalar parameter t to a point on the circle.
+    # Define a function mapping a scalar parameter t to a point in space.
     def path_func(t):
-        return (UP * np.sin(t) + RIGHT * np.cos(t))
+        return UP * np.sin(t) + RIGHT * (t-PI)
 
     # Create an animated_function which will move our mob along this path.
     @animated_function(animated_args={'t': 0})
@@ -115,7 +115,7 @@ need to animate something completely new, you can create your own animations usi
 The :func:`~.animated_function` decorator specifies that a function should be animated. This decorator accepts a parameter
 ``animated_args``, which must be a dictionary mapping the names of animated arguments to their initial values when the animation
 begins. Like with attribute modification, the animation will take place over a 1 second period.
-The animation is created by linearly interpolating the ``animated_args`` from their initial values given in the dict,
+The animation is created by linearly interpolating the ``animated_args`` from their initial values given in the dictionary,
 to the value the function is called with. In this example, we specify that parameter ``t`` has an initial value
 of 0, and we call the function with ``t=2*PI``, so the animation will range from ``t=0`` to ``t=2*PI``.
 

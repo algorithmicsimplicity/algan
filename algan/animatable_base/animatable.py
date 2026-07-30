@@ -215,24 +215,26 @@ class Animatable:
             self.init()
 
     def register_attrs_as_animatable(self, attrs: list[str], my_class=None):
-        """
-        Registers attributes as animatable, meaning their changes can be tracked
-        and interpolated over time for animation.
+        """Make attributes animatable, so writing them animates.
 
-        This method dynamically creates property getters and setters for the
-        specified attributes if they don't already exist, allowing them to be
-        controlled by the animation system. When an animatable attribute is
-        modified, the change is recorded on this mob's Scene timeline
-        (:class:`~algan.animation.timeline.AnimationTimeline`).
+        Registered attributes get property getters and setters wired into the
+        animation system: assigning to one records an interpolated change instead of
+        overwriting a value. This is how a custom shader's parameters become things
+        you can animate, and how a subclass exposes its own animatable state.
+
+        Animation
+        ---------
+        Not animated: registration is setup. Call it in a subclass's ``__init__``
+        before assigning the attributes -- registering after the first write leaves
+        the value outside the animation system.
 
         Parameters
         ----------
-        attrs : set[str] or str
-            A collection of attribute names (or a single attribute name) to
-            register as animatable.
-        my_class : type, optional
-            The class to which the property getters and setters should be
-            attached. Defaults to the current Object's class.
+        attrs
+            Attribute name, or list of names, to register.
+        my_class
+            Class to attach the properties to. Defaults to ``None``, meaning this
+            object's own class.
         """
         if isinstance(attrs, str):
             attrs = {
@@ -293,68 +295,120 @@ class Animatable:
 
     @animated_function(animated_args={"t": 0}, unique_args=["function"])
     def animate_function(self, function, t=1, *args, **kwargs):
-        """Animates the application of function, interpolating its animated parameter from 0 to t.
+        """Animate an arbitrary function of your own over this Mob.
+
+        The function is called once per frame with a progress value that ramps up
+        over the animation, which lets you drive any state you like -- the escape
+        hatch for effects Algan has no built-in method for.
+
+        Animation
+        ---------
+        Recorded as an animation: the function's second argument sweeps from 0 to
+        ``t`` over the current context's duration (1 second by default). The
+        function body must be vectorized over the Mob's batch; it runs on tensors,
+        not on one part at a time.
 
         Parameters
         ----------
         function
-            The function to animate. It must accept a mob as its first parameter, and a float as its second parameter.
-            During the animation, the second parameter will be interpolated from 0 to t.
+            Callable taking ``(mob, t, *args, **kwargs)``. Its second argument is
+            the interpolated value.
         t
-            The final value that the animated parameter will have at the end of the animation.
+            Value the second argument reaches at the end of the animation.
+            Defaults to ``1``.
         *args, **kwargs
-            Passed to function.
+            Passed to ``function`` after the interpolated value.
 
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+
+        See Also
+        --------
+        :meth:`~.Animatable.animate_function_of_time` : Drive the function by elapsed seconds instead.
+        :meth:`~.Animatable.add_updater` : Keep running every frame indefinitely.
         """
         function(self, t, *args, **kwargs)
         return self
 
     @animated_function(unique_args=["function"])
     def animate_function_of_time(self, function, time_elapsed=0, *args, **kwargs):
-        """Same as :meth:`~.Animatable.animate_function` but the animation parameter is equal
-        to time elapsed since starting the animation, instead of interpolating 0 to t over the animation duration.
-        This formulation can be useful when you don't know how long an animation will play for,
-        and you want it to play indefinitely.
+        """Animate a function of your own, driven by elapsed seconds.
+
+        Like :meth:`~.Animatable.animate_function`, but the function receives the
+        seconds elapsed rather than a 0-to-1 progress value. Use it when the effect
+        is defined in real time -- a rotation of 90 degrees per second, say -- and
+        you would rather not know in advance how long the animation runs.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default). The function's second argument runs from 0 to that duration, in
+        seconds. The body must be vectorized over the Mob's batch.
 
         Parameters
         ----------
         function
-            The function to animate. It must accept a mob as its first parameter, and a float as its second parameter.
-            During the animation, the second parameter will range from 0 to the duration
-            of the animation (in seconds).
+            Callable taking ``(mob, time_elapsed, *args, **kwargs)``, where
+            ``time_elapsed`` is in seconds.
         time_elapsed
-            Dummy parameter. No matter what value you give it, it will be overwritten with
-            the time elapsed since the animation beginning (see
-            :meth:`~algan.animation.timeline.AnimationTimeline.set_state_to_times`).
+            Placeholder, overwritten per frame with the elapsed time. Defaults to
+            ``0``; whatever you pass is ignored.
         *args, **kwargs
-            Passed to function.
+            Passed to ``function`` after the elapsed time.
 
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
         """
         function(self, cast_to_tensor(time_elapsed), *args, **kwargs)
         return self
 
-    def add_updater(self, update_function, *args, **kwargs):
-        """Adds a function to this Mob's collection of updaters. During animation, at every
-        frame all of the Mob's updaters are executed, with the time elapsed since being added (in seconds)
-        passed as the second parameter to each updater. Useful for implementing permanent or 'idle' animations.
+    def add_updater(self, update_function, *args, **kwargs) -> int:
+        """Attach a function that runs every frame from now on.
+
+        Updaters are how you get behaviour that persists rather than a one-off
+        animation: a Mob that always faces the camera, a label that tracks a moving
+        dot, an idle bobbing motion. The function is called on every frame, with the
+        seconds elapsed since it was added, and keeps running until it is removed.
+
+        Animation
+        ---------
+        Runs every frame for as long as it is attached, so it is unaffected by the
+        current context's duration. It is applied once immediately at zero elapsed
+        time, so the scene reflects it right away. Updaters are applied after
+        recorded animations each frame, so an updater writing an attribute wins over
+        an animation of that attribute.
 
         Parameters
         ----------
         update_function
-            The function which will be called every frame. It must accept a Mob as its first parameter and
-            a float as its second parameter. During animation it will be called with this mob
-            as the first parameter and the time elapsed (in seconds) as the second parameter.
+            Callable taking ``(mob, time_elapsed, *args, **kwargs)``, where
+            ``time_elapsed`` is in seconds. It must be vectorized over the Mob's
+            batch.
         *args, **kwargs
-            Passed to update_function.
+            Passed to ``update_function`` after the elapsed time.
 
         Returns
         -------
         int
-            An ID identifying the updater that was added. This ID can be
-            used to remove the updater at a later time, using
-            :meth:`~.Animatable.remove_updater` . If it is never removed,
-            the updater will continue forever.
+            Id of the updater, for passing to
+            :meth:`~.Animatable.remove_updater`. An updater that is never removed
+            runs for the rest of the video.
 
+        Examples
+        --------
+        .. algan:: Example1AnimatableAddUpdater
+
+            from algan import *
+
+            square = Square().spawn()
+            square.add_updater(lambda mob, t: mob.set(location=RIGHT * t))
+            Scene.wait(2)
+
+            Scene.save_video()
         """
         timeline = self.scene.timeline_manager
         # The span must be recorded on an *entered* context: only contexts
@@ -376,15 +430,23 @@ class Animatable:
         return updater_id
 
     def remove_updater(self, updater_id):
-        """Removes the specified updater from this mob's updaters, leaving the mob with whatever state the updater left
-        it with at the time-stamp when it was removed.
+        """Stop an updater from running any further.
+
+        The Mob keeps whatever state the updater left it in at this moment, rather
+        than snapping back, so removing a "follow the dot" updater leaves the Mob
+        where the dot last was.
+
+        Animation
+        ---------
+        Not animated. Takes effect at the current timestamp: the updater runs on
+        frames before this point and not after. Removing an already-removed updater
+        does nothing.
 
         Parameters
         ----------
         updater_id
-            The identifier of the updater to be removed. Can be given a value of -1 to remove the most
-            recently added updater.
-
+            Id returned by :meth:`~.Animatable.add_updater`. ``-1`` removes the
+            most recently added updater.
         """
         timeline = self.scene.timeline_manager
         event = timeline.function_timeline.updaters[updater_id]
@@ -409,12 +471,38 @@ class Animatable:
                 timeline.end_updater_dependency_trace(previous_trace)
 
     def remove_all_updaters(self):
+        """Remove every updater attached to this Mob.
+
+        Each one is removed as by :meth:`~.Animatable.remove_updater`, so the Mob
+        keeps whatever state the updaters left it in.
+
+        Animation
+        ---------
+        Not animated. Takes effect at the current timestamp: frames before it keep
+        the updaters, frames after do not.
+        """
         timeline = self.scene.timeline_manager
         for i, event in enumerate(timeline.function_timeline.updaters):
             if event.caller is self:
                 self.remove_updater(i)
 
     def set_to_retroactive(self):
+        """Rewind authoring time to this Mob's retroactive timestamp.
+
+        Animation recorded after this call is inserted *earlier* in the video,
+        which is how you go back and add something you only realised was needed
+        later. Prefer the :meth:`~.Animatable.retroactive` context manager, which
+        restores the timestamp even if the block raises.
+
+        Animation
+        ---------
+        Not animated: this moves the authoring cursor, not the Mob.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         timespan = self.animation_manager.context.timespan
         previous_time = timespan.current_time
         timespan.current_time = self.previous_retroactive_time
@@ -422,13 +510,43 @@ class Animatable:
         return self
 
     def set_to_current(self):
+        """Return authoring time to where it was before rewinding.
+
+        The counterpart of :meth:`~.Animatable.set_to_retroactive`.
+
+        Animation
+        ---------
+        Not animated: this moves the authoring cursor, not the Mob.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         timespan = self.animation_manager.context.timespan
         timespan.current_time = self.previous_retroactive_time
         return self
 
     @contextmanager
     def retroactive(self):
-        """Temporarily author at this Mob's retroactive timestamp safely."""
+        """Record animation back at this Mob's retroactive timestamp.
+
+        Inside the ``with`` block, authoring time is rewound, so anything recorded
+        is inserted earlier in the video; the timestamp is restored on exit even if
+        the block raises.
+
+        Animation
+        ---------
+        The block's own animations are recorded normally -- only *when* they happen
+        changes.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            with mob.retroactive():
+                mob.color = BLUE      # happens earlier in the video
+        """
         self.set_to_retroactive()
         try:
             yield self
@@ -447,7 +565,19 @@ class Animatable:
                 "A Mob must use the AnimationManager owned by its Scene"
             )
 
-    def is_animating(self):
+    def is_animating(self) -> bool:
+        """Whether changes to this Mob would currently be recorded as animation.
+
+        True when the Mob is on screen (itself or through a child) *and* the current
+        context records functions -- so it is False inside :class:`~.Off`, and False
+        before the Mob has spawned, which is why setup done pre-spawn costs no video
+        time.
+
+        Returns
+        -------
+        bool
+            Whether edits are being recorded right now.
+        """
         if not hasattr(self, "id"):
             # Not yet fully constructed (e.g. mid-clone).
             return False
@@ -455,6 +585,13 @@ class Animatable:
                 and self.is_spawned_in_subtree())
 
     def generate_animatable_attr_set_get_methods(self):
+        """Internal: install ``set_<attr>`` / ``get_<attr>`` helpers on this object.
+
+        Gives every animatable attribute a matching pair of accessors, so a
+        registered ``roughness`` attribute also answers to ``mob.set_roughness(...)``
+        and ``mob.get_roughness()``. Called during construction; you do not call
+        this yourself.
+        """
         for attr in self.animatable_attrs:
 
             def setattr_general(value, attr=attr, self=self, recursive=True):
@@ -474,7 +611,27 @@ class Animatable:
         timeline.add_mob_attr(self, key, value)
         return self
 
-    def setattr_without_record(self, key, value, include_descendants=False):
+    def setattr_without_record(self, key, value, include_descendants: bool = False):
+        """Internal: write an animatable attribute without recording an animation.
+
+        The value changes for every frame, past and future, because nothing is
+        recorded on the timeline. For ordinary authoring use plain assignment, or
+        wrap it in :class:`~.Off` for an instant-but-recorded change.
+
+        Parameters
+        ----------
+        key
+            Name of the animatable attribute.
+        value
+            New value.
+        include_descendants
+            Whether descendants' rows are written too. Defaults to False.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         self._try_add_to_timeline(key, value)
         inds = self._get_attr_ranges(key, include_descendants=include_descendants)
         timeline = self.scene.timeline_manager
@@ -482,12 +639,26 @@ class Animatable:
         return self
 
     def setattr_and_rebatch_without_record(self, key, value):
-        """Overwrites this mob's current value for ``key`` without recording a
-        modification, re-allocating the mob's rows in the global attribute
-        timeline when the batch size of ``value`` differs from the current
-        rows. Past recorded modifications stay with the old rows, so this must
-        only be used for structural rewrites (e.g. the batch expansions in
-        :meth:`~.Mob.become`) on mobs whose history is fresh."""
+        """Internal: overwrite an attribute, re-allocating rows if the shape changed.
+
+        Unlike :meth:`~.Animatable.setattr_without_record`, this copes with a value
+        whose batch size differs from the current one. Recorded history stays with
+        the old rows, so it is only valid for structural rewrites (the batch
+        expansions in :meth:`~.Mob.become`) on a Mob whose history is fresh -- see
+        :meth:`~.Mob.detach_history`.
+
+        Parameters
+        ----------
+        key
+            Name of the animatable attribute.
+        value
+            New value; may have a different batch size from the current one.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         value = cast_to_tensor(value)
         timeline = self.scene.timeline_manager
         timeline.add_mob_attr(self, key, value)
@@ -500,11 +671,22 @@ class Animatable:
         self.batch_size = max(self.batch_size, value.shape[-2])
         return self
 
-    def is_spawned(self):
+    def is_spawned(self) -> bool:
+        """Whether this Mob has been spawned into the video.
+
+        Stays True after :meth:`~.Animatable.despawn` -- it reports that the Mob has
+        a spawn time, not that it is on screen right now. Pair it with
+        :meth:`~.Animatable.is_despawned` for that.
+
+        Returns
+        -------
+        bool
+            Whether the Mob has a recorded spawn time.
+        """
         return self.lifespan.start() >= 0
 
-    def is_spawned_in_subtree(self):
-        """Whether this mob, or anything below it in the hierarchy, has spawned.
+    def is_spawned_in_subtree(self) -> bool:
+        """Whether this Mob or anything below it in the hierarchy has spawned.
 
         Containers are routinely left unspawned while their contents are
         spawned individually (``for mob in group: mob.spawn()``), and Group
@@ -516,6 +698,11 @@ class Animatable:
 
         The answer only changes when the hierarchy changes or something
         spawns, so it is cached against those two global versions.
+
+        Returns
+        -------
+        bool
+            Whether this Mob or any descendant has a recorded spawn time.
         """
         if self.is_spawned():
             return True
@@ -530,10 +717,42 @@ class Animatable:
         object.__setattr__(self, "_subtree_spawn_cache", (version, spawned))
         return spawned
 
-    def is_despawned(self):
+    def is_despawned(self) -> bool:
+        """Whether this Mob has been despawned.
+
+        Returns
+        -------
+        bool
+            Whether the Mob has a recorded despawn time. A Mob that was never
+            spawned reports False here as well as from
+            :meth:`~.Animatable.is_spawned`.
+        """
         return self.lifespan.end() >= 0
 
-    def setattr_and_record_modification(self, key, value, include_descendants=False):
+    def setattr_and_record_modification(
+        self, key, value, include_descendants: bool = False
+    ):
+        """Internal: write an animatable attribute and record it on the timeline.
+
+        The write that ordinary attribute assignment goes through. Whether it
+        becomes an animation depends on context: a Mob that is on screen and inside
+        a recording context gets a timed edit, otherwise the value is written
+        directly with no video time spent.
+
+        Parameters
+        ----------
+        key
+            Name of the animatable attribute.
+        value
+            New value.
+        include_descendants
+            Whether descendants' rows are written too. Defaults to False.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         timeline = self.scene.timeline_manager
         replay_inds = timeline.replay_inds(
             key, self.id, include_descendants)
@@ -625,13 +844,56 @@ class Animatable:
         cache[key] = (STRUCTURE_VERSION[0], ranges)
         return ranges
 
-    def get_attr_inds(self, key, include_descendants=False, value=None):
+    def get_attr_inds(self, key, include_descendants: bool = False, value=None):
+        """Internal: get this Mob's row indices in an attribute's shared buffer.
+
+        Parameters
+        ----------
+        key
+            Name of the animatable attribute.
+        include_descendants
+            Whether to include descendants' rows. Defaults to False.
+        value
+            Value to size a first-time row allocation from. Defaults to ``None``,
+            meaning do not allocate.
+
+        Returns
+        -------
+        torch.Tensor or None
+            The row indices, or ``None`` if the Mob has no rows for this attribute.
+        """
         ranges = self._get_attr_ranges(
             key, include_descendants=include_descendants, value=value)
         return None if ranges is None else ranges.tensor()
 
-    def get_animated_attribute(self, key, include_descendants=False, default=None,
-                               copy=True):
+    def get_animated_attribute(self, key, include_descendants: bool = False,
+                               default=None, copy: bool = True):
+        """Get an animatable attribute's current authoring value.
+
+        This is the value as the scene is being authored -- the state the Mob has
+        reached at the current point in the timeline -- not the value at any
+        particular rendered frame. Plain attribute access
+        (``mob.location``) goes through this.
+
+        Parameters
+        ----------
+        key
+            Name of the animatable attribute.
+        include_descendants
+            Whether to return descendants' values as well, stacked into the batch
+            dimension. Defaults to False.
+        default
+            Value used to seed the attribute if the Mob has none yet. Defaults to
+            ``None``, meaning do not create one.
+        copy
+            Whether to return a copy. Defaults to True; pass False only for a
+            read you will not retain, since the underlying buffer is reused.
+
+        Returns
+        -------
+        torch.Tensor
+            The attribute's current value.
+        """
         timeline = self.scene.timeline_manager
         replay_inds = timeline.replay_inds(
             key, self.id, include_descendants)
@@ -643,23 +905,92 @@ class Animatable:
         return timeline.get_attr(key, inds, copy=copy)
 
     def wait(self, *args, **kwargs):
-        """Advance this Mob's active animation context and return ``self``."""
+        """Hold still for a while before the next animation.
+
+        Advances authoring time without changing anything, which leaves a pause in
+        the video. Same as :meth:`~.Scene.wait`, reachable from a Mob so it can be
+        chained between animations.
+
+        Animation
+        ---------
+        Recorded on the timeline: it consumes video time and nothing else.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Passed to the current context's ``wait`` -- notably the duration in
+            seconds, which defaults to 1.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         self.animation_manager.context.wait(*args, **kwargs)
         return self
 
     def get_default_color(self):
+        """Get the colour this Mob uses when none was given.
+
+        Override in a subclass to give a shape its own default; the built-in shapes
+        do exactly that.
+
+        Returns
+        -------
+        :class:`~.Color`
+            ``BLACK`` for the base class.
+        """
         return BLACK
 
     def on_init(self):
+        """Hook called once when the Mob is constructed.
+
+        Does nothing by default. Override it to run setup that must happen before
+        spawning, e.g. building child Mobs.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         return self
 
     def on_create(self):
+        """Hook called by :meth:`~.Animatable.spawn` to play an entrance animation.
+
+        Does nothing at this level; :class:`~.Mob` overrides it with a fade-in.
+        Override it to give a subclass its own entrance.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         return self
 
     def on_destroy(self):
+        """Hook called by :meth:`~.Animatable.despawn` to play an exit animation.
+
+        Does nothing at this level; :class:`~.Mob` overrides it with a fade-out.
+        Override it to give a subclass its own exit.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         return self
 
     def identity(self):
+        """Return this object unchanged.
+
+        A do-nothing placeholder for APIs that expect a transform function.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object.
+        """
         return self
 
     def __copy__(self):
@@ -749,21 +1080,69 @@ class Animatable:
 
     def clone(
         self,
-        add_to_scene=True,
-        spawn=True,
-        animate_creation=False,
-        recursive=True,
-        clone_data=True,
-        reset_history=True,
+        add_to_scene: bool = True,
+        spawn: bool = True,
+        animate_creation: bool = False,
+        recursive: bool = True,
+        clone_data: bool = True,
     ):
-        if reset_history is not True:
-            warnings.warn(
-                "clone(reset_history=...) is deprecated: a data clone always "
-                "has fresh history, while clone_data=False explicitly creates "
-                "a shared timeline view.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        """Make a copy of this Mob, by default spawned into the scene.
+
+        The copy starts out identical -- same position, colour, material, children --
+        but is independent from then on: animating one does not affect the other. Use
+        it to stamp out repeated shapes, or to get a second version of something you
+        are about to change.
+
+        The copy has its own animation history rather than inheriting this Mob's, so
+        it does not replay the original's past animations.
+
+        Animation
+        ---------
+        Not animated by default: the copy appears instantly, already in place. Pass
+        ``animate_creation=True`` for it to fade in over the current context's
+        duration (1 second by default).
+
+        Parameters
+        ----------
+        add_to_scene
+            Whether the copy is added to the scene. Defaults to True; False makes a
+            detached Mob, useful purely as a source of values (this is what
+            :meth:`~.Mob.become` does with its target).
+        spawn
+            Whether the copy is spawned, i.e. visible. Defaults to True; pass False
+            to configure it -- including anything that must happen before spawning,
+            such as :meth:`~.Mob.set_material` -- and spawn it yourself later.
+        animate_creation
+            Whether spawning the copy plays its entrance animation. Defaults to
+            False, so the copy simply appears.
+        recursive
+            Whether children are copied too. Defaults to True; False copies this Mob
+            alone, leaving it childless.
+        clone_data
+            Whether the copy gets its own animation data. Defaults to True. False
+            produces a **view** that shares this Mob's data and identity, so
+            animating the view animates the original -- what indexing (``mob[0]``)
+            uses.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            The new copy. When ``clone_data`` is False this is a view of this Mob
+            rather than an independent object.
+
+        Examples
+        --------
+        .. algan:: Example1AnimatableClone
+
+            from algan import *
+
+            square = Square(color=BLUE).spawn()
+            copy = square.clone()
+            copy.move(RIGHT * 2)
+            copy.color = RED
+
+            Scene.save_video()
+        """
         memo = {
             "___copy_add_to_scene___": bool(add_to_scene),
             "___copy_spawn___": bool(spawn),
@@ -785,16 +1164,37 @@ class Animatable:
         return c
 
     def spawn(self, animate: bool = True):
-        """Spawns the mob, introducing it into the video. Prior to spawning, a Mob will not appear on
-        screen and any changes made to its animatable attributes will not be animated. After spawning,
-        changes made to the Mob are animated by default.
+        """Bring the Mob into the video.
+
+        Nothing appears on screen until it is spawned, and changes made beforehand
+        cost no video time -- which is why construction, materials and initial
+        placement are all free. After spawning, changes to the Mob animate by
+        default.
+
+        Spawning is recursive: children spawn with their parent. Spawning a Mob that
+        is already spawned does nothing.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default): the Mob fades in. ``spawn(animate=False)`` makes it appear at full
+        opacity immediately, and still costs no time.
 
         Parameters
         ----------
         animate
-            Whether a spawn-in animation should be played. By default, the spawn-in animation is
-            a simple fade-in. Defaults to True.
+            Whether to play the entrance animation, by default a fade-in (see
+            :meth:`~.Mob.on_create`). Defaults to True.
 
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained -- which is what makes
+            ``Square().spawn()`` work.
+
+        See Also
+        --------
+        :meth:`~.Animatable.despawn` : Remove the Mob from the video again.
         """
         if self.is_spawned() or self.animation_manager.context.spawn_at_end:
             return self
@@ -814,7 +1214,34 @@ class Animatable:
                 c._create_recursive(animate)
         return self
 
-    def despawn(self, animate=True):
+    def despawn(self, animate: bool = True):
+        """Remove the Mob from the video.
+
+        The Mob stops being drawn from this point on, but the animation already
+        recorded for it is untouched -- everything it did before still plays. A
+        despawned Mob cannot be brought back; clone it before despawning if you need
+        it again later.
+
+        Despawning is recursive: children despawn with their parent. Despawning a Mob
+        that is already despawned does nothing.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default): the Mob fades out. ``despawn(animate=False)`` removes it instantly,
+        which is what you want for something already off-screen.
+
+        Parameters
+        ----------
+        animate
+            Whether to play the exit animation, by default a fade-out (see
+            :meth:`~.Mob.on_destroy`). Defaults to True.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         if self.is_despawned():
             return self
         self._destroy_recursive(animate)
@@ -838,11 +1265,34 @@ class Animatable:
         return self
 
     def init(self):
+        """Run this Mob's initialization hooks.
+
+        Calls :meth:`~.Animatable.on_init` and lets the current context do its own
+        setup. Constructors call this for you unless they were passed
+        ``init=False``.
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         self.on_init()
         self.animation_manager.context.on_init(self)
         return self
 
     def delete(self):
+        """Remove the Mob from the video; an alias for :meth:`~.Animatable.despawn`.
+
+        Animation
+        ---------
+        Recorded as an animation: the Mob fades out over the current context's
+        duration (1 second by default).
+
+        Returns
+        -------
+        :class:`~.Animatable`
+            This object, so calls can be chained.
+        """
         return self.despawn()
 
     @classmethod
@@ -856,5 +1306,15 @@ class Animatable:
             return func(*args, **kwargs)
         return HANDLED_FUNCTIONS[func](*args, **kwargs)
 
-    def get_memory_used_per_timestep(self):
+    def get_memory_used_per_timestep(self) -> int:
+        """Get this Mob's render memory cost for one frame, in bytes.
+
+        Used by the render loop to size frame batches. The base class holds no
+        render data and so reports ``0``; renderable Mobs override this.
+
+        Returns
+        -------
+        int
+            Bytes needed per frame, ``0`` for a Mob with no render primitives.
+        """
         return 0

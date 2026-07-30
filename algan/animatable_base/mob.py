@@ -196,36 +196,46 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         recursive: bool = True,
         relative: bool = False,
     ):
-        """Applies an animated change to an attribute, interpolating between two target values.
+        """Animate an attribute out to one value and then on to another.
 
-        The interpolation first moves from the current value towards `change1` from
-        t=0 to 0.5, then moves from `change1` to `change2` from t=0.5 to 1.
+        A two-stage keyframe animation: the attribute moves from its current
+        value to ``change1`` over the first half of the animation, then from
+        ``change1`` to ``change2`` over the second half. This is the machinery
+        behind :meth:`~.Mob.pulse_color`, and is the way to build any
+        there-and-back effect on an arbitrary attribute.
+
+        Animation
+        ---------
+        Recorded as an animation spanning the current context's duration
+        (1 second by default), with the turning point at the halfway mark.
+        Applies to descendants unless ``recursive`` is False.
 
         Parameters
         ----------
-        key : str
-            The name of the attribute to change (e.g., 'location', 'color').
-        change1 : Any
-            The first target value for the attribute.
-        change2 : Any, optional
-            The second target value for the attribute. If None, each affected
-            part returns to its own current (pre-animation) value — the right
-            choice for pulses on composite mobs, where a single target value
-            would overwrite per-descendant attributes.
-        interpolation : float, optional
-            The interpolation factor used for animation.
-        recursive : bool, optional
-            If True, applies the change recursively to all child Mobs.
-            Defaults to True.
-        relative : bool, optional
-            If True, `change1`/`change2` are multipliers of each part's current
-            value instead of absolute targets (e.g. a scale pulse to 1.2x).
+        key
+            Name of the animatable attribute to drive, e.g. ``"location"``,
+            ``"color"``, ``"opacity"``.
+        change1
+            Value to animate out to, reached at the halfway point.
+        change2
+            Value to animate on to by the end. Defaults to ``None``, meaning each
+            affected part returns to its own pre-animation value -- the right
+            choice for a pulse on a composite Mob, where one shared target value
+            would flatten per-descendant attributes.
+        interpolation
+            Animation progress, filled in per frame by the animation system.
+            Defaults to ``1.0``; you do not normally pass this yourself.
+        recursive
+            Whether to drive the attribute on descendants too. Defaults to True.
+        relative
+            Whether ``change1`` and ``change2`` are multipliers of each part's
+            current value rather than absolute targets, e.g. a scale pulse to
+            ``1.2`` times current size. Defaults to False.
 
         Returns
         -------
-        Mob
-            The Mob instance itself, allowing for method chaining.
-
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
         """
         # The allocation default seeds attribute rows for mobs that never had
         # this attribute set; it only sizes row allocation, the interpolation
@@ -266,7 +276,30 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         self.setattr_and_record_modification(key, interpolated_value, include_descendants=recursive)
         return self
 
-    def set_opacity_via_color(self, opacity):
+    def set_opacity_via_color(self, opacity: float | torch.Tensor) -> Mob:
+        """Fade the Mob by writing opacity into its color rather than its opacity.
+
+        Each descendant's own color gets the given alpha, which fades parts that
+        carry their own colors without a parent-level opacity write flattening
+        them. Prefer setting :attr:`~.Mob.opacity` for ordinary fades; this
+        exists for composites where per-part color must be preserved.
+
+        Animation
+        ---------
+        Recorded as an animation. All descendants fade together inside a
+        :class:`~.Sync`, over the current context's duration (1 second by
+        default).
+
+        Parameters
+        ----------
+        opacity
+            Target alpha, ``0`` for fully transparent to ``1`` for fully opaque.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+        """
         with Sync(animation_manager=self.animation_manager):
             for d in self.get_descendants():
                 d._original_color_set_opacity_via_color = d.color
@@ -274,28 +307,40 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         return self
 
     def pulse_color(self, color: torch.Tensor = None, opacity: bool = None, recursive=True, new_color=None) -> Mob:
-        """Animates a color pulse effect.
+        """Flash the Mob a different color and let it settle back.
 
-        The Mob's color changes to the target ``color`` and then animates to
-        ``new_color`` (its current color by default), as a two-stage keyframe
-        animation.
+        A two-stage animation: the color travels out to ``color`` by the halfway
+        point and back to ``new_color`` by the end. Good for drawing the eye to
+        one part of a diagram without leaving it recolored.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default), with the peak of the pulse at the halfway mark. Color and
+        opacity pulses run together inside a :class:`~.Sync`.
 
         Parameters
         ----------
         color
-            The color to pulse to. If None, only opacity is pulsed.
+            Color to pulse to. Defaults to ``None``, which pulses only the
+            opacity (so pass at least one of ``color`` and ``opacity``).
         opacity
-            If given, the opacity to pulse to (held for both stages).
+            Alpha to hold for both stages of the pulse, ``0`` to ``1``. Defaults
+            to ``None``, leaving opacity alone.
         recursive
-            Whether to apply the pulse to all descendants as well.
+            Whether descendants pulse too. Defaults to True.
         new_color
-            The color to end on after the pulse. Defaults to the current color.
+            Color to end on. Defaults to ``None``, meaning every affected part
+            returns to its own current color.
 
         Returns
         -------
-        Mob
-            The Mob instance itself, allowing for method chaining.
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
 
+        See Also
+        --------
+        :meth:`~.Mob.wave_color` : Run the same pulse across the Mob as a travelling wave.
         """
         with Sync(animation_manager=self.animation_manager):
             if color is not None:
@@ -324,34 +369,45 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         lag_duration=1,
         **kwargs,
     ) -> Mob:
-        """Applies a color wave effect across the Mob and its descendants.
+        """Send a colour pulse travelling across the Mob.
 
-        The color change propagates spatially across the mob's constituent parts.
+        Every renderable part of the Mob pulses, but each one starts a little
+        later than the part behind it, so the colour sweeps across the shape
+        instead of flashing all at once. Parts are ordered by their position
+        along ``direction``.
+
+        Animation
+        ---------
+        Recorded as an animation. The total duration is ``lag_duration`` plus one
+        part's pulse, so it is set by these parameters rather than by the current
+        context's duration.
 
         Parameters
         ----------
         color
-            The target color for the wave.
+            Colour for the wave to pulse to. Defaults to ``None``, which pulses
+            only opacity (pass one through ``**kwargs``).
         wave_length
-            Controls the spatial extent (length) of the wave. A smaller value
-            means a more compressed wave. Defaults to 2.
+            How spread out the wave is: each part's own pulse lasts
+            ``wave_length / lag_duration`` seconds, so smaller values give a
+            tighter, more sharply defined band. Defaults to ``2``.
         reverse
-            If True, the wave propagates in the opposite direction.
+            Whether the wave travels the opposite way along ``direction``.
+            Defaults to False.
         direction
-            The 3-D vector defining the direction of wave propagation.
-            If None, uses the Mob's upwards direction.
+            Direction the wave travels, shape ``(*, 3)``. Defaults to ``None``,
+            meaning the Mob's own upward direction (bottom to top).
         lag_duration
-            Time offset (seconds) between the first and last part starting
-            their pulse.
+            Seconds between the first part starting its pulse and the last one
+            starting theirs. Defaults to ``1``.
         **kwargs
-            Additional keyword arguments passed to :meth:`pulse_color` for
-            each individual part of the wave animation.
+            Passed to :meth:`~.Mob.pulse_color` for each part -- notably
+            ``opacity`` and ``new_color``.
 
         Returns
         -------
-        Mob
-            The Mob instance itself, allowing for method chaining.
-
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
         """
         if direction is None:
             direction = self.get_upwards_direction()
@@ -422,7 +478,37 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         new_value = value * interpolation
         return self.setattr_and_record_modification(attr, new_value, include_descendants=recursive)
 
-    def set_animated_attribute(self, attr, value, recursive=True):
+    def set_animated_attribute(
+        self, attr: str, value, recursive: bool = True
+    ) -> Mob:
+        """Animate one animatable attribute to a new value, by name.
+
+        The by-name equivalent of assigning to the attribute; useful when the
+        attribute is chosen at runtime. To set several at once, use
+        :meth:`~.Mob.set`.
+
+        Animation
+        ---------
+        Recorded as an animation: the attribute interpolates from its current
+        value to ``value`` over the current context's duration (1 second by
+        default).
+
+        Parameters
+        ----------
+        attr
+            Name of the animatable attribute, e.g. ``"location"``, ``"color"``,
+            ``"opacity"``.
+        value
+            Target value. Must be broadcastable against the attribute's current
+            shape.
+        recursive
+            Whether the change propagates to descendants. Defaults to True.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+        """
         if self._prevent_recursive_sets:
             recursive = False
         value = cast_to_tensor(value)
@@ -434,11 +520,12 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
 
     @property
     def location(self) -> torch.Tensor:
-        """The 3-D location of the Mob in world space.
+        """The Mob's position in world space, shape ``(*, 3)``.
 
-        When set, it triggers an animated change to the new location,
-        maintaining child Mob positions relative to the parent..
-
+        Assigning to this animates the Mob to the new position over the current
+        context's duration (1 second by default), carrying its children along so
+        their offsets from it are preserved. ``mob.location = ORIGIN`` and
+        ``mob.move_to(ORIGIN)`` are the same operation.
         """
         return self.get_animated_attribute("location")
 
@@ -457,23 +544,25 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
 
     @property
     def basis(self) -> torch.Tensor:
-        """The flattened 3x3 matrix representing the Mob's orientation and scale.
+        """The Mob's orientation and scale, as a flattened 3x3 matrix of shape ``(*, 9)``.
 
-        The rows of the unflattened matrix correspond to the right, upwards,
-        and forwards directions of the Mob's local coordinate system.
-        Their norms indicate the scaling along those axes.
-        When accessed,
-        When set, it triggers an animated interpolation to the new basis,
-        maintaining child Mob positions relative to the parent.
+        Unflattened, the three rows are the Mob's own right, upward and forward
+        directions in world space, and each row's norm is the Mob's scale along
+        that axis. The identity matrix therefore means unrotated at unit scale.
 
+        Assigning to this animates the Mob to the new basis over the current
+        context's duration (1 second by default), rotating and scaling its
+        children with it. Concurrent writes compose rather than overwrite, so a
+        rotate and a scale inside one :class:`~.Sync` both take effect.
         """
         return self.get_animated_attribute("basis")
 
     @property
     def normalized_basis(self) -> torch.Tensor:
-        """The Mob's basis matrix with all its row vectors normalized to unit length.
-        This represents only the orientation (rotation) without any scaling.
+        """The Mob's orientation with scale divided out, shape ``(*, 9)``.
 
+        The same matrix as :attr:`~.Mob.basis` with every row normalized to unit
+        length, so it carries the Mob's rotation and nothing else. Read-only.
         """
         return squish(
             unsquish(self.basis, -1, 3) / self.scale_coefficient.unsqueeze(-1), -2, -1
@@ -525,9 +614,13 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
 
     @property
     def scale_coefficient(self) -> torch.Tensor:
-        """The scaling factor of the Mob along its local axes, derived from the basis.
-        It is the norm of the basis vectors.
+        """The Mob's scale along its own right, up and forward axes, shape ``(*, 3)``.
 
+        Derived from :attr:`~.Mob.basis` as the norm of each of its rows, so
+        ``(1, 1, 1)`` is unscaled. Assigning to this resizes the Mob without
+        rotating it, animated over the current context's duration (1 second by
+        default); :meth:`~.Mob.scale` and :meth:`~.Mob.set_scale` are the usual
+        way to do that.
         """
         return unsquish(self.basis, -1, 3).norm(p=2, dim=-1, keepdim=False)
 
@@ -550,32 +643,42 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         return self
 
     def get_normal(self) -> torch.Tensor:
-        """Alias for :meth:`~.Mob.get_forward_direction()` .
+        """Get the Mob's surface normal, i.e. the way it faces.
+
+        An alias for :meth:`~.Mob.get_forward_direction`, named for the 2-D case:
+        a flat shape's normal is the direction it faces out of its own plane.
 
         Returns
         -------
         torch.Tensor
-            The normalized forward direction vector of the Mob.
-
+            Unit normal, shape ``(*, 3)``.
         """
         return self.get_forward_direction()
 
     def set_location(self, location: torch.Tensor, recursive: bool = True) -> Mob:
-        """Sets the location of the Mob.
+        """Set the Mob's location, with control over whether children follow.
+
+        Same as :meth:`~.Mob.move_to` without the arc option; the reason to reach
+        for this one is ``recursive=False``.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default).
 
         Parameters
         ----------
-        location : torch.Tensor
-            The target 3-D location.
-        recursive : bool, optional
-            If True, also affects the locations of child Mobs to maintain
-            their relative positions. Defaults to True.
+        location
+            The target location, shape ``(*, 3)``.
+        recursive
+            Whether children move along, keeping their offsets from this Mob.
+            Defaults to True; False moves only this Mob, leaving its children
+            behind.
 
         Returns
         -------
-        Mob
-            The Mob instance itself, allowing for method chaining.
-
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
         """
         if recursive:
             self.location = location
@@ -584,14 +687,13 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         return self
 
     def get_parts_as_mobs(self) -> list[Mob]:
-        """
-        Recursively flattens the Mob and its children into a list of individual Mobs.
+        """Flatten this Mob's hierarchy into a list.
 
         Returns
         -------
         list[:class:`~.Mob`]
-            A list containing this Mob and all its descendant Mobs.
-
+            This Mob followed by every descendant, depth-first. The Mobs are the
+            live objects, not copies, so changing one changes the scene.
         """
         parts = [self]
         for child in self.children:
@@ -601,21 +703,32 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
     def scale(
         self, scale_factor: float | torch.Tensor, recursive: bool = True
     ) -> Mob:
-        """Scales the Mob by a factor `scale_factor` relative to its current scale.
+        """Resize the Mob relative to its current size.
+
+        The factor multiplies the size the Mob has now, so two calls to
+        ``scale(2)`` leave it four times its original size. For an absolute
+        target, use :meth:`~.Mob.set_scale`.
+
+        Animation
+        ---------
+        Recorded as an animation: the Mob grows or shrinks over the current
+        context's duration (1 second by default).
 
         Parameters
         ----------
         scale_factor
-            The scaling factor. For example, `2` for double size,
-            `0.5` for half size.
+            Multiplier on the current size: ``2`` for twice as big, ``0.5`` for
+            half. A tensor of shape ``(*, 3)`` scales the Mob's right, up and
+            forward axes separately, which is how you stretch a shape.
         recursive
-            If True, applies scaling recursively to all descendant Mobs.
+            Whether descendants scale too, keeping the Mob's proportions.
+            Defaults to True; False scales this Mob alone, so a Group's children
+            keep their own sizes.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
-
+            This Mob, so calls can be chained.
         """
         # Calculate the new absolute scale coefficient
         scale_factor = cast_to_tensor(scale_factor)
@@ -628,20 +741,30 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         )
 
     def set_scale(self, scale: float | torch.Tensor, recursive: bool = True) -> Mob:
-        """Sets the absolute scale of the Mob to a specific value.
+        """Set the Mob's absolute scale, ignoring its current size.
+
+        ``set_scale(1)`` returns the Mob to the size it was built at, whatever
+        scaling has happened since. For a relative change, use
+        :meth:`~.Mob.scale`.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default).
 
         Parameters
         ----------
         scale
-            The target absolute scaling factor.
+            Target scale, where ``1`` is the Mob's construction size. A tensor of
+            shape ``(*, 3)`` sets the Mob's right, up and forward axes
+            separately.
         recursive
-            If True, applies scaling recursively to all descendant Mobs.
+            Whether descendants are scaled too. Defaults to True.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
-
+            This Mob, so calls can be chained.
         """
         return (
             self.set(scale_coefficient=scale)
@@ -650,24 +773,46 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         )
 
     def refresh_history(self):
-        """Resets the modification history and spawn time for this Mob and all its descendants.
-        This effectively clears all animation data and makes them behave as if newly created.
+        """Clear this Mob's recorded spawn so it counts as never spawned.
+
+        Resets the lifespan of this Mob and every descendant, which makes them
+        behave as if freshly constructed. Mostly useful as part of
+        :meth:`~.Mob.detach_history`; calling it on a live Mob leaves the Mob
+        visible in already-recorded animation while claiming it was never
+        spawned, so reach for it only if you know you want that.
+
+        Animation
+        ---------
+        Not animated and not recorded. Takes effect immediately on the timeline.
         """
         for mob in self.get_descendants():
             mob.lifespan.start = lambda: -1
 
-    def detach_history(self):
-        """Detaches the Mob's current animation history into a new, independent clone of this Mob.
+    def detach_history(self) -> Mob:
+        """Hand this Mob's recorded animation to a hidden clone and start fresh.
 
-        This is useful when you want to make a change to an animatable attribute that would not be
-        animatable (interpolable), for example changing the resolution of a Surface Mob with a simple
-        assignment would result in an error when the old resolution is attempted to be interpolated
-        with the new resolution (shapes mis-match), so you must detatch the history before changing
-        resolution.
+        The animation recorded so far keeps playing -- it now belongs to a clone
+        that despawns at this moment -- while this Mob continues with a clean
+        history from here. Use it before a change that cannot be interpolated
+        from the old value, because the two states have different shapes: for
+        example raising a :class:`~.Surface`'s resolution, or a ``become`` between
+        Mobs with different numbers of parts. Without detaching, the render-time
+        replay tries to interpolate mismatched shapes and raises.
+
+        Animation
+        ---------
+        Not animated: the swap happens instantly, inside ``Off()``, and the
+        viewer sees no discontinuity. Everything recorded afterwards animates
+        from the Mob's state at this moment.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
         """
         detach_time = self.animation_manager.context.timespan.current_time
         with Off(animation_manager=self.animation_manager), NoExtra(priority_level=1, animation_manager=self.animation_manager):
-            clone_mob = self.clone(reset_history=False, spawn=False)
+            clone_mob = self.clone(clone_data=True, spawn=False)
             descendant_map = dict(zip(self.get_descendants(), clone_mob.get_descendants()))
 
             # Hand this mob's recorded history over to the clone. All recorded
@@ -728,6 +873,23 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             return self
 
     def check_properties_are_valid(self, property_names):
+        """Raise if any of the given names is not an animatable attribute.
+
+        Called by :meth:`~.Mob.set` so that a typo such as
+        ``mob.set(colour=BLUE)`` fails immediately with the list of available
+        attributes, instead of silently animating nothing.
+
+        Parameters
+        ----------
+        property_names
+            Iterable of attribute names to check.
+
+        Raises
+        ------
+        AttributeError
+            If any name is neither an attribute of this Mob nor a registered
+            animatable attribute; the message lists what is available.
+        """
         # TODO: consider caching this union on the owning timeline.
         available_attrs = set([*self.animatable_attrs, *self.scene.timeline_manager.attr_to_timeline.keys()])
         for p in property_names:
@@ -736,20 +898,28 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
                                      f'Available properties are: {self.animatable_attrs}.')
 
     def set_non_recursive(self, **kwargs) -> Mob:
-        """Sets multiple attributes non-recursively (i.e., only for this Mob, not its children).
-        This is useful for applying changes that should not propagate down the hierarchy.
+        """Set attributes on this Mob only, leaving its children untouched.
+
+        The non-propagating counterpart of :meth:`~.Mob.set`. Use it when a
+        parent's own value should change while its children keep theirs -- for
+        instance recolouring a Group's frame without recolouring its contents.
+
+        Animation
+        ---------
+        Recorded as an animation: every attribute given moves to its new value
+        together inside a :class:`~.Sync`, over the current context's duration
+        (1 second by default).
 
         Parameters
         ----------
         **kwargs
-            Keyword arguments where keys are attribute names (e.g., 'color', 'opacity')
-            and values are the new values for those attributes.
+            Animatable attribute names and their target values, e.g.
+            ``mob.set_non_recursive(color=BLUE, opacity=0.5)``.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
-
+            This Mob, so calls can be chained.
         """
         prs = self._prevent_recursive_sets
         self._prevent_recursive_sets = True
@@ -758,22 +928,39 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         return self
 
     def set(self, **kwargs) -> Mob:
-        """Sets multiple attributes, applying changes recursively to descendants.
+        """Set several animatable attributes at once, as one animation.
+
+        The attributes change together rather than one after another, which is
+        what you want for a single visual beat: ``mob.set(location=RIGHT,
+        color=BLUE)`` slides and recolours in the same second, where two separate
+        statements would take two seconds inside a :class:`~.Seq`.
+
+        Animation
+        ---------
+        Recorded as an animation: all the writes go into one :class:`~.Sync`
+        spanning the current context's duration (1 second by default). Changes
+        propagate to descendants; use :meth:`~.Mob.set_non_recursive` if they
+        should not.
 
         Parameters
         ----------
         **kwargs
-            Keyword arguments where keys are attribute names (e.g., 'location', 'color')
-            and values are the new values for those attributes. These changes will
-            be animated and propagated to children.
+            Animatable attribute names and their target values, e.g. ``location``,
+            ``color``, ``opacity``, ``glow``, ``scale_coefficient``.
 
         Returns
         -------
         :class:`~.Mob`
-            The Mob instance itself, allowing for method chaining.
+            This Mob, so calls can be chained.
+
+        Raises
+        ------
+        AttributeError
+            If a name is not an animatable attribute of this Mob. The message
+            lists the ones that are.
 
         Examples
-        ---------
+        --------
         Move a square to the right and change its color to blue:
 
         .. algan:: Example1MobSet
@@ -795,6 +982,18 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         return self
 
     def on_create(self):
+        """Play this Mob's spawn-in animation: a fade from transparent.
+
+        Called by :meth:`~.Animatable.spawn` when ``animate=True``. Override it in
+        a subclass to give a Mob its own entrance; the override should record its
+        animation the same way, and is free to ignore opacity entirely.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default). The opacity write is non-recursive, so descendants run their own
+        ``on_create``.
+        """
         opacity = self.opacity
         with Seq(animation_manager=self.animation_manager):
             prs = self._prevent_recursive_sets
@@ -805,17 +1004,29 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             self._prevent_recursive_sets = prs
 
     def on_destroy(self):
+        """Play this Mob's despawn animation: a fade to transparent.
+
+        Called by :meth:`~.Animatable.despawn` when ``animate=True``. Override it
+        in a subclass to give a Mob its own exit.
+
+        Animation
+        ---------
+        Recorded as an animation over the current context's duration (1 second by
+        default).
+        """
         self.opacity = torch.tensor((0.0,)).view(1)
 
     def set_data_sub_inds(self, data_sub_inds: list[int] | slice):
-        """Sets the sub-indices that this Mob will use when reading and writing
-        its rows of the shared attribute timelines. This is used for implementing
-        indexing of batched mobs to retrieve sub-mobs that share the same
-        underlying data.
+        """Internal: restrict this Mob to a subset of a batched Mob's rows.
+
+        This is the machinery behind indexing (``mob[2]``, ``mob[1:4]``); prefer
+        :meth:`~.Mob.__getitem__`, which sets this up for you. The sub-indices
+        select which elements of the shared attribute data this Mob reads and
+        writes, and are applied to its children too.
 
         Parameters
         ----------
-        data_sub_inds : list[int] or slice
+        data_sub_inds
             The indices or slice to apply to the batch dimension of the
             shared data tensors.
 
@@ -843,24 +1054,28 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             c.set_data_sub_inds(data_sub_inds)
 
     def __getitem__(self, item: int | slice) -> Mob:
-        """Allows accessing a part of a batched Mob using slice notation (e.g., `my_mob[0]`, `my_mob[1:3]`).
+        """Get part of a batched Mob by index or slice, as a Mob.
 
-        Returns a new Mob instance that represents the specified sub-part(s).
-        This new Mob shares the underlying animation data with the original,
-        but its `data_sub_inds` are set appropriately to only operate on the
-        selected batch elements. This is efficient as it avoids data duplication.
+        ``text[0]`` is the first glyph, ``text[1:4]`` the next three -- animate
+        them and only those parts move. The result is a **view**: it shares the
+        original's animation data and identity, so animating the slice animates
+        the original's parts, and it shares the original's lifespan rather than
+        needing its own spawn.
+
+        Animation
+        ---------
+        Not animated: indexing only creates the view. Animate the returned Mob to
+        move the parts it covers.
 
         Parameters
         ----------
-        item : int or slice
-            The index or slice for selecting elements from the batch
-            dimension.
+        item
+            Index of a single part, or a slice selecting several.
 
         Returns
         -------
-        Mob
-            A new Mob instance representing the selected sub-part(s) of the
-            original Mob.
+        :class:`~.Mob`
+            A Mob covering the selected parts, sharing data with this one.
         """
         # Clone the mob without cloning its data, but recursively for children structure
         cloned_mob = self.clone(
