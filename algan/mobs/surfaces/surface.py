@@ -314,6 +314,9 @@ class Surface(Mob):
     render_tolerance
         Maximum sampled output-pixel deviation (as percentage of screen height) used
         when each PN triangle is dynamically diced into ordinary flat render triangles.
+        Every PN triangle is diced only as finely as it itself needs, in every frame,
+        so detail spent where the surface is close to the camera is not spent on the
+        rest of the mesh or on the frames where it is far away.
     min_grid_resolution, max_grid_resolution
         Bounds for automatic grid sizing, measured in vertices per axis.
     resolution_shrink_margin

@@ -7,12 +7,18 @@ import torch.nn.functional as F
 
 from algan.constants.color import Color
 from algan.rendering.logical_pn import (
+    evaluate_cubic_curve,
     evaluate_logical_pn,
     evaluate_logical_pn_normals,
-    interpolate_triangle_attribute,
+    interpolate_patch_attribute,
     logical_pn_control_points,
+    logical_pn_edge_control_points,
     logical_pn_normal_control_points,
+    snap_boundary_values,
+    subdivision_boundary_map,
+    subdivision_triangle_indices,
     subdivision_triangle_uvs,
+    subdivision_vertex_uvs,
 )
 from algan.utils.memory_utils import empty_cache
 from algan.rendering.primitives.bezier_circuit_primitive import batch_arange, BezierCircuitPrimitive
@@ -31,6 +37,24 @@ from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.settings import *  # noqa: F403 -- re-export for callers of this module
 from algan.settings.kernel_settings import KERNEL_REGISTRY
+
+
+_SAMPLE_TENSOR_CACHE = {}
+
+
+def _sample_tensor(values, device, dtype):
+    """Cached device tensor for a constant tuple of sample weights.
+
+    The level searches ask for these once per level per chunk; rebuilding them
+    with ``torch.tensor`` each time is a host-to-device copy (and a sync) per
+    call, which on a mesh that resolves immediately is most of the search.
+    """
+    key = (values, device.type, device.index, dtype)
+    cached = _SAMPLE_TENSOR_CACHE.get(key)
+    if cached is None:
+        cached = torch.tensor(values, device=device, dtype=dtype)
+        _SAMPLE_TENSOR_CACHE[key] = cached
+    return cached
 
 
 def _set_raytrace_memory_estimates(primitive, camera):
@@ -556,31 +580,71 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
 
 class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
-    """Camera-diced logical PN patches rendered as ordinary flat triangles.
+    """Adaptively diced logical PN patches rendered as ordinary flat triangles.
 
     This class is deliberately unrelated to
     :class:`RayTracedPNTrianglePrimitive`: the latter ray-intersects curved
     patches directly and is retained only for legacy callers.  Logical PN
-    patches use their fixed construction-time topology as source geometry,
-    choose a flat subdivision independently for every materialized frame, and
-    pad every frame to the largest triangle count in that render batch.  The
-    packed result follows the normal flat-triangle/STBVH path.
+    patches use their fixed construction-time topology as source geometry and
+    dice into flat triangles for each materialized camera frame.  The packed
+    result follows the normal flat-triangle/STBVH path.
+
+    **Every patch picks its own subdivision level, in every frame.**  A patch
+    that fills the screen costs what it needs and nothing else pays for it --
+    neither the other patches of the same mesh in that frame, nor the same patch
+    in the frames where it is small or off screen.  Only the padded width of the
+    output tensor is shared: each frame's patches are packed back to back, and
+    the batch is padded to the largest per-frame total (surplus rows are marked
+    invisible, exactly as before).
+
+    Independent per-patch levels would crack the mesh open along its seams, so
+    the level of a patch's three boundary curves is decided separately from its
+    interior:
+
+    * A boundary curve's level is a function of that curve alone -- its two
+      endpoints and their normals, which the two patches sharing it hold in
+      common -- evaluated on canonically ordered controls
+      (:func:`~algan.rendering.logical_pn.logical_pn_edge_control_points`) so
+      both neighbours reach a bit-identical answer without any adjacency
+      information.
+    * A patch's own level is at least the largest of its three boundary levels,
+      and is then raised until its interior is flat enough.
+    * Where the interior level exceeds a boundary level, the boundary vertices
+      of the finer grid are snapped back onto the coarser boundary polyline
+      (:func:`~algan.rendering.logical_pn.snap_boundary_values`).  Levels are
+      powers of two, so the coarse polyline's knots are always vertices of the
+      finer grid and the snapped boundary reproduces it exactly: the seam is
+      watertight whatever the two neighbours chose.
+
+    The tolerance guarantee is therefore stated per component: the diced
+    boundary lands within ``render_tolerance`` of the true boundary curve and
+    the diced interior within ``render_tolerance`` of the true patch, both in
+    output pixels.  In the band of microtriangles touching a snapped boundary
+    the two displacements can add, for a worst case of twice the tolerance.
     """
 
     max_subdivision_level = 8
-    # Hard ceiling on ``num_patches * 4 ** level`` -- the diced triangle count
-    # of a single frame.  The level search evaluates a complete trial
-    # tessellation at every level it tries, so an unbounded search costs 4x its
-    # predecessor per step in *scratch* (~350 B per diced triangle-frame) as
-    # well as in diced output: without a budget one pathological frame can ask
-    # for a tessellation that cannot be allocated at all, and the render dies
-    # inside the search instead of degrading.  Shrinking the frame window --
-    # the render loop's usual response to running out of memory -- cannot save
-    # it, so the ceiling has to hold at a single frame.  With the screen guard
-    # in ``_required_subdivision_levels`` it only binds on meshes that are
-    # already enormous, where it trades tessellation quality (with a warning)
-    # for finishing the render.
+    # Hard ceiling on a single frame's diced triangle count, ``sum over patches
+    # of 4 ** level``. Without a budget one pathological frame can ask for a
+    # tessellation that cannot be allocated at all, and the render dies inside
+    # the level search instead of degrading. Shrinking the frame window -- the
+    # render loop's usual response to running out of memory -- cannot save it,
+    # so the ceiling has to hold at a single frame.
+    #
+    # It is enforced *during* both level searches: a level is only promoted
+    # while the frame it belongs to still fits, which bounds the searches as
+    # well as their result. Deliberately independent of the frame window (a
+    # level that moved with how many frames a render batch happened to cover
+    # would make the mesh pop at batch boundaries) -- each frame is judged on
+    # its own contents alone. With the screen guard in
+    # ``_required_patch_levels`` it only binds on meshes that are already
+    # enormous, where it trades tessellation quality (with a warning) for
+    # finishing the render.
     max_diced_triangles = 2_000_000
+    # Peak microtriangles evaluated in one go. The level searches and the dice
+    # itself both stream through their work in chunks of this size, so scratch
+    # stays bounded no matter how much geometry a frame ends up asking for.
+    max_scratch_triangles = 1 << 18
     # Half-extent, in units of the output frame height, of the guard box that
     # projected samples are clamped into before their flatness error is
     # measured.  Comfortably contains the frame at any usual aspect ratio, plus
@@ -601,6 +665,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         (0.25, 0.25, 0.5),
         (1.0 / 3, 1.0 / 3, 1.0 / 3),
     )
+    # Parameters, within each chord of a boundary curve, at which that chord's
+    # deviation from the curve is measured. A cubic's deviation from its chord
+    # is ``3t(1-t)`` times a linear blend of two fixed vectors, so it has at
+    # most two humps and these three samples land within 3% of its true peak
+    # even in the worst (equal and opposite) case -- comfortably inside the
+    # safety factor below. Sampling more finely measurably slowed the search
+    # without moving a single level.
+    _edge_sample_parameters = (0.25, 0.5, 0.75)
     _flatness_safety_factor = 1.25
 
     def __init__(self, *args, render_tolerance=0.5, **kwargs):
@@ -650,143 +722,311 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         )
         return pixels * (float(screen_height) / 2.0), depth.squeeze(-1)
 
-    def _required_subdivision_levels(
-        self,
-        control_points,
-        cam_o,
-        sp,
-        sb,
-        screen_height,
-    ):
-        """Choose one crack-free uniform logical-PN level per frame.
+    def _guarded_pixel_error(self, exact, approximated, cam, front_sign,
+                             screen_height):
+        """Guarded projected pixel deviation between matching point sets.
 
-        The stopping criterion is a *primary visibility* one: keep subdividing
-        until the flat stand-in lands within ``render_tolerance`` of the true
-        surface, measured in output pixels.  Projected pixel coordinates are
-        unbounded, though -- a patch off to the side of the view axis, or one
-        approaching the camera plane, projects arbitrarily far outside the frame
-        -- so the raw error is not usable as a stopping criterion on its own.
-        A sample pair is therefore ignored unless at least one of its two
-        projections lands inside a guard box around the frame (see
-        ``screen_guard_factor``), and the pair is clamped into that box before
-        being compared.  Deviation that happens entirely off frame costs
-        nothing; anything in or near frame keeps its exact error, so on-screen
-        tessellation is unaffected.
+        ``exact`` and ``approximated`` are ``[K, ..., 3]``; ``cam`` and
+        ``front_sign`` carry one camera row per leading element.
+
+        The stopping criterion these errors feed is a *primary visibility* one:
+        keep subdividing until the flat stand-in lands within
+        ``render_tolerance`` of the true surface, measured in output pixels.
+        Projected pixel coordinates are unbounded, though -- geometry off to the
+        side of the view axis, or approaching the camera plane, projects
+        arbitrarily far outside the frame -- so the raw error is not usable as a
+        stopping criterion on its own.  A sample pair is therefore ignored
+        unless at least one of its two projections lands inside a guard box
+        around the frame (see ``screen_guard_factor``), and the pair is clamped
+        into that box before being compared.  Deviation that happens entirely
+        off frame costs nothing; anything in or near frame keeps its exact
+        error, so on-screen tessellation is unaffected.
 
         Without that guard, ``camera.orbit`` -- which swings the scene sideways
-        without turning the camera -- drove the level up frame after frame to
+        without turning the camera -- drove levels up frame after frame to
         resolve geometry that had long since left the frame, until the trial
         tessellations alone exhausted render memory.
-        """
-        device = control_points.device
-        dtype = control_points.dtype
-        num_frames = control_points.shape[0]
-        max_level = self._budget_capped_level(int(control_points.shape[1]))
-        levels = torch.full(
-            (num_frames,),
-            max_level,
-            dtype=torch.long,
-            device=device,
-        )
-        unresolved = torch.ones(num_frames, dtype=torch.bool, device=device)
-        sample_weights = torch.tensor(
-            self._flatness_sample_weights,
-            device=device,
-            dtype=dtype,
-        )
 
+        A sample at or behind the camera plane has no finite screen position, so
+        it cannot steer subdivision at all; it is dropped and the in-front
+        samples decide.  Geometry straddling the plane still refines on its
+        front half, whose near-plane projection is genuinely large.
+        """
+        guard = self.screen_guard_factor * float(screen_height)
+        exact_pixels, exact_depth = self._project_to_output_pixels(
+            exact, *cam, screen_height
+        )
+        approximated_pixels, approximated_depth = self._project_to_output_pixels(
+            approximated, *cam, screen_height
+        )
+        error = (
+            exact_pixels.clamp(-guard, guard)
+            - approximated_pixels.clamp(-guard, guard)
+        ).norm(dim=-1)
+        sign = front_sign.view(-1, *((1,) * (error.ndim - 1)))
+        usable = (
+            torch.isfinite(error)
+            & (exact_depth * sign > 1e-7)
+            & (approximated_depth * sign > 1e-7)
+            & ((exact_pixels.abs() <= guard).all(-1)
+               | (approximated_pixels.abs() <= guard).all(-1))
+        )
+        return torch.where(usable, error, torch.zeros_like(error))
+
+    @staticmethod
+    def _triangle_counts(levels):
+        """``4 ** levels``, the diced triangle count of each patch."""
+        return torch.bitwise_left_shift(torch.ones_like(levels), 2 * levels)
+
+    def _required_subdivision_levels(self, control_points, edge_controls,
+                                     cam_o, sp, sb, screen_height):
+        """Choose the crack-free logical PN levels of every patch and edge.
+
+        Returns per-patch interior levels ``[T, P]`` and per-edge boundary
+        levels ``[T, P, 3]``, both of which vary freely from patch to patch and
+        from frame to frame.
+        """
         # Which side of the camera plane is in front: the screen plane's own
         # side, exactly as the renderer's front test decides it.
         front_sign = torch.sign(((sp - cam_o) * sb[:, 2]).sum(-1))
-        screen_guard = self.screen_guard_factor * float(screen_height)
-
-        for level in range(max_level + 1):
-            # Only frames still looking for a level are evaluated. Every level
-            # costs 4x its predecessor, so carrying already-resolved frames
-            # along would make the peak trial tessellation -- the largest
-            # allocation in the whole dicing path -- scale with the frame
-            # window rather than with the frames that actually need the detail.
-            active = unresolved.nonzero().flatten()
-            frame_points = control_points.index_select(0, active)
-            triangle_uv = subdivision_triangle_uvs(
-                level, device=device, dtype=dtype
-            )
-            patch_vertices = evaluate_logical_pn(
-                frame_points, triangle_uv
-            )
-            sample_uv = torch.einsum(
-                "sk,mka->msa", sample_weights, triangle_uv
-            )
-            exact = evaluate_logical_pn(frame_points, sample_uv)
-            approximated = torch.einsum(
-                "sk,tpmkc->tpmsc", sample_weights, patch_vertices
-            )
-            camera = tuple(
-                value.index_select(0, active) for value in (cam_o, sp, sb)
-            )
-            exact_pixels, exact_depth = self._project_to_output_pixels(
-                exact, *camera, screen_height
-            )
-            approx_pixels, approx_depth = self._project_to_output_pixels(
-                approximated, *camera, screen_height
-            )
-            error = (
-                exact_pixels.clamp(-screen_guard, screen_guard)
-                - approx_pixels.clamp(-screen_guard, screen_guard)
-            ).norm(dim=-1)
-            sign = front_sign.index_select(0, active).view(-1, 1, 1, 1)
-            # A sample at or behind the camera plane has no finite screen
-            # position, so it cannot steer subdivision at all; drop it and let
-            # the patch's in-front samples decide. A patch straddling the plane
-            # still refines on its front half, whose near-plane projection is
-            # genuinely large -- unlike the old whole-frame "crosses the camera
-            # plane" override, which jumped straight to the safety cap and a
-            # 65536x triangle count.
-            usable = (
-                torch.isfinite(error)
-                & (exact_depth * sign > 1e-7)
-                & (approx_depth * sign > 1e-7)
-                & ((exact_pixels.abs() <= screen_guard).all(-1)
-                   | (approx_pixels.abs() <= screen_guard).all(-1))
-            )
-            error = torch.where(usable, error, torch.zeros_like(error))
-            frame_error = error.amax(dim=(1, 2, 3))
-            resolved = (
-                frame_error * self._flatness_safety_factor
-            ) <= (self.render_tolerance * screen_height)
-            levels[active.masked_select(resolved)] = level
-            unresolved[active.masked_select(resolved)] = False
-            if not bool(unresolved.any()):
-                break
-
-        if bool(unresolved.any()):
+        cam = (cam_o, sp, sb)
+        edge_levels, edge_capped = self._required_edge_levels(
+            edge_controls, cam, front_sign, screen_height
+        )
+        levels, patch_capped = self._required_patch_levels(
+            control_points, edge_levels.amax(-1), cam, front_sign,
+            screen_height,
+        )
+        if edge_capped or patch_capped:
             warnings.warn(
                 "Logical PN render tessellation reached its safety cap before "
-                "meeting render_tolerance for every frame.",
+                "meeting render_tolerance for every patch.",
                 RuntimeWarning,
                 stacklevel=3,
             )
-        return levels
+        return levels, edge_levels
 
-    def _budget_capped_level(self, num_patches):
-        """Highest subdivision level allowed by ``max_diced_triangles``.
+    def _required_edge_levels(self, edge_controls, cam, front_sign,
+                              screen_height):
+        """Per-boundary-curve subdivision levels, shape ``[T, P, 3]``.
 
-        Bounds the level *search* as well as its result: each trial level
-        materializes a complete tessellation, so an uncapped search can run out
-        of memory before it ever returns a level to dice at.
+        Each curve is judged on its canonically oriented cubic and nothing else
+        (see
+        :func:`~algan.rendering.logical_pn.logical_pn_edge_control_points`), so
+        the two patches sharing a curve reach the same answer by identical
+        arithmetic -- which is what lets them dice independently and still meet
+        along the seam.
 
-        Deliberately independent of the frame window.  A level that changed with
-        how many frames a render batch happened to cover would make the mesh pop
-        at batch boundaries; per-frame memory pressure is the frame window's job
-        to absorb, not the tessellation's.
+        A promotion is refused once it would break ``max_diced_triangles`` for
+        the frame it belongs to, using ``4 ** max(edge levels)`` per patch as
+        the lower bound on that frame's diced triangle count.  The refusal is
+        taken per frame, which keeps the two copies of a shared curve in step.
         """
+        device = edge_controls.device
+        dtype = edge_controls.dtype
+        num_frames, num_patches = edge_controls.shape[0], edge_controls.shape[1]
+        max_level = int(self.max_subdivision_level)
         budget = max(1, int(self.max_diced_triangles))
-        base = max(1, int(num_patches))
-        level = 0
-        while (level < self.max_subdivision_level
-               and base * (4 ** (level + 1)) <= budget):
-            level += 1
-        return level
+        threshold = self.render_tolerance * float(screen_height)
+
+        levels = torch.zeros(
+            (num_frames, num_patches, 3), dtype=torch.long, device=device
+        )
+        samples = _sample_tensor(self._edge_sample_parameters, device, dtype)
+        active = torch.arange(levels.numel(), device=device)
+        capped = False
+
+        for level in range(max_level + 1):
+            if active.numel() == 0:
+                break
+            error = self._edge_chord_error(
+                edge_controls, active, level, cam, front_sign, samples,
+                screen_height,
+            )
+            candidates = active[
+                (error * self._flatness_safety_factor) > threshold
+            ]
+            if candidates.numel() == 0:
+                break
+            if level == max_level:
+                capped = True
+                break
+            proposed = levels.clone()
+            proposed.view(-1)[candidates] = level + 1
+            blocked = self._triangle_counts(proposed.amax(-1)).sum(1) > budget
+            frames, _patches, _edges = self._unravel_edges(
+                candidates, num_patches
+            )
+            promoted = candidates[~blocked[frames]]
+            capped = capped or bool(promoted.numel() != candidates.numel())
+            levels.view(-1)[promoted] = level + 1
+            active = promoted
+        return levels, capped
+
+    @staticmethod
+    def _unravel_edges(flat_indices, num_patches):
+        """Split flat ``[T, P, 3]`` edge indices into frame/patch/edge."""
+        frames = torch.div(
+            flat_indices, num_patches * 3, rounding_mode="floor"
+        )
+        within = flat_indices - frames * (num_patches * 3)
+        patches = torch.div(within, 3, rounding_mode="floor")
+        return frames, patches, within - patches * 3
+
+    def _edge_chord_error(self, edge_controls, active, level, cam, front_sign,
+                          samples, screen_height):
+        """Peak pixel deviation of each active curve from its chord polyline.
+
+        The polyline has ``2 ** level`` chords; every chord is compared against
+        the curve at ``_edge_sample_parameters``.  Work is streamed in chunks so
+        scratch stays inside ``max_scratch_triangles`` however many curves are
+        still looking for a level.
+        """
+        device = edge_controls.device
+        dtype = edge_controls.dtype
+        num_patches = edge_controls.shape[1]
+        segments = 1 << level
+        num_samples = samples.numel()
+        chunk = max(
+            1,
+            int(self.max_scratch_triangles) // max(1, segments * num_samples),
+        )
+        # Knot and sample parameters are evaluated in one pass: at the low
+        # levels almost every mesh settles on, the launch overhead of a second
+        # pass over a few points per curve is the whole cost.
+        steps = torch.arange(segments, device=device, dtype=dtype).unsqueeze(-1)
+        parameters = torch.cat(
+            (
+                torch.arange(segments + 1, device=device, dtype=dtype)
+                / segments,
+                ((steps + samples.unsqueeze(0)) / segments).reshape(-1),
+            )
+        )
+        blend = samples.view(1, 1, num_samples, 1)
+
+        error = torch.empty(active.numel(), device=device, dtype=dtype)
+        for start in range(0, active.numel(), chunk):
+            selected = active[start:start + chunk]
+            frames, patches, edges = self._unravel_edges(selected, num_patches)
+            curve = evaluate_cubic_curve(
+                edge_controls[frames, patches, edges], parameters
+            )
+            knots = curve[:, :segments + 1]
+            exact = curve[:, segments + 1:].reshape(-1, segments, num_samples, 3)
+            chords = (
+                knots[:, :-1].unsqueeze(2) * (1.0 - blend)
+                + knots[:, 1:].unsqueeze(2) * blend
+            )
+            error[start:start + chunk] = self._guarded_pixel_error(
+                exact,
+                chords,
+                tuple(value.index_select(0, frames) for value in cam),
+                front_sign.index_select(0, frames),
+                screen_height,
+            ).amax(dim=(1, 2))
+        return error
+
+    def _required_patch_levels(self, control_points, start, cam, front_sign,
+                               screen_height):
+        """Per-patch interior subdivision levels, shape ``[T, P]``.
+
+        Every patch starts at the largest of its three boundary levels -- the
+        floor imposed by the snap in
+        :func:`~algan.rendering.logical_pn.snap_boundary_values` -- and climbs
+        only while its *own* dice misses ``render_tolerance``.  Because the
+        active set shrinks as patches resolve, the whole search costs about a
+        third more than the tessellation it settles on, rather than one full
+        trial tessellation of the entire mesh per level tried.
+
+        The criterion measures the *unsnapped* dice.  Folding the boundary snap
+        in instead would be measuring against a floor the interior cannot get
+        under -- the snap displacement is fixed by the boundary level, and is
+        itself allowed to reach the tolerance -- so patches whose boundary
+        resolved just inside the tolerance would climb to the safety cap
+        without ever passing.  The two approximations are held to the tolerance
+        separately (see the class docstring).
+        """
+        max_level = int(self.max_subdivision_level)
+        budget = max(1, int(self.max_diced_triangles))
+        threshold = self.render_tolerance * float(screen_height)
+        levels = start.clone()
+        if levels.numel() == 0:
+            return levels, False
+        unresolved = torch.ones_like(levels, dtype=torch.bool)
+        # Accumulated on the device and read back once: a per-iteration
+        # ``.any()`` would stall the queue at every level for a flag that only
+        # decides whether to warn.
+        capped = torch.zeros((), dtype=torch.bool, device=levels.device)
+
+        for level in range(int(levels.amin().item()), max_level + 1):
+            selected = (unresolved & (levels == level)).nonzero()
+            if not selected.shape[0]:
+                if not bool(unresolved.any()):
+                    break
+                continue
+            frames, patches = selected[:, 0], selected[:, 1]
+            error = self._patch_flatness_error(
+                control_points, selected, level, cam, front_sign, screen_height,
+            )
+            failed = (error * self._flatness_safety_factor) > threshold
+            if level == max_level:
+                capped = capped | failed.any()
+                break
+            # Promote only where the frame still fits its triangle budget. The
+            # whole step is written with masks rather than by splitting
+            # ``selected`` into resolved/failed/frozen subsets: each such split
+            # is a device synchronisation, and on a mesh that resolves at the
+            # first level they cost more than the criterion itself.
+            proposed = levels.clone()
+            proposed[frames, patches] = torch.where(
+                failed, level + 1, levels[frames, patches]
+            )
+            blocked = self._triangle_counts(proposed).sum(1) > budget
+            promoted = failed & ~blocked[frames]
+            capped = capped | (failed & ~promoted).any()
+            levels[frames, patches] = torch.where(
+                promoted, level + 1, levels[frames, patches]
+            )
+            unresolved[frames, patches] = promoted
+            if not bool(unresolved.any()):
+                break
+        return levels, bool(capped)
+
+    def _patch_flatness_error(self, control_points, selected, level, cam,
+                              front_sign, screen_height):
+        """Peak pixel deviation of each selected patch's level-``level`` dice,
+        sampled at ``_flatness_sample_weights`` within every microtriangle.
+        """
+        device = control_points.device
+        dtype = control_points.dtype
+        vertex_uv = subdivision_vertex_uvs(level, device=device, dtype=dtype)
+        triangle_indices = subdivision_triangle_indices(level, device=device)
+        corner_uv = subdivision_triangle_uvs(level, device=device, dtype=dtype)
+        weights = _sample_tensor(self._flatness_sample_weights, device, dtype)
+        sample_uv = torch.einsum("sk,mka->msa", weights, corner_uv)
+        chunk = max(
+            1,
+            int(self.max_scratch_triangles)
+            // max(1, triangle_indices.shape[0] * weights.shape[0]),
+        )
+
+        error = torch.empty(selected.shape[0], device=device, dtype=dtype)
+        for start in range(0, selected.shape[0], chunk):
+            rows = selected[start:start + chunk]
+            frames, patches = rows[:, 0], rows[:, 1]
+            controls = control_points[frames, patches].unsqueeze(0)
+            vertices = evaluate_logical_pn(controls, vertex_uv)[0]
+            approximated = torch.einsum(
+                "sk,pmkc->pmsc", weights, vertices[:, triangle_indices]
+            )
+            error[start:start + chunk] = self._guarded_pixel_error(
+                evaluate_logical_pn(controls, sample_uv)[0],
+                approximated,
+                tuple(value.index_select(0, frames) for value in cam),
+                front_sign.index_select(0, frames),
+                screen_height,
+            ).amax(dim=(1, 2))
+        return error
 
     @staticmethod
     def _expanded_frames(value, num_frames, name):
@@ -801,16 +1041,10 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
     def _dice_logical_pn(self, camera):
         num_frames = int(camera.ray_origin.shape[0])
-        corners = self._expanded_frames(
-            self.corners.float(), num_frames, "logical PN corners"
-        )
-        normals = self._expanded_frames(
-            self.normals.float(), num_frames, "logical PN normals"
-        )
-        colors = self._expanded_frames(
-            self.colors.float(), num_frames, "logical PN colors"
-        )
-        device = corners.device
+        source_corners = self.corners.float()
+        source_normals = self.normals.float()
+        device = source_corners.device
+        dtype = source_corners.dtype
         cam_o = _expand_frames(
             _flat_frames(camera.ray_origin, (3,)), num_frames
         ).to(device)
@@ -821,27 +1055,60 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             _flat_frames(camera.screen_basis, (3, 3)), num_frames
         ).to(device)
 
-        control_points = logical_pn_control_points(corners, normals)
-        normal_control_points = logical_pn_normal_control_points(
-            corners, normals
+        # Control nets are built on the source frames and only broadcast
+        # afterwards, so a static mesh keeps one copy however many frames the
+        # batch covers; the per-frame views below are indexed, never
+        # materialized.
+        control_points = self._expanded_frames(
+            logical_pn_control_points(source_corners, source_normals),
+            num_frames, "logical PN corners",
+        )
+        normal_control_points = self._expanded_frames(
+            logical_pn_normal_control_points(source_corners, source_normals),
+            num_frames, "logical PN normals",
+        )
+        edge_controls = self._expanded_frames(
+            logical_pn_edge_control_points(source_corners, source_normals),
+            num_frames, "logical PN edges",
         )
         output_height = getattr(
             camera, "output_screen_height", camera.screen_height
         )
-        levels = self._required_subdivision_levels(
+        levels, edge_levels = self._required_subdivision_levels(
             control_points,
+            edge_controls,
             cam_o,
             sp,
             sb,
             output_height,
         )
-        max_level = int(levels.max().item())
-        num_patches = corners.shape[1]
-        # TODO: Explore ragged frame-major triangle tensors so frames can keep
-        # their exact diced counts. For now every frame is padded to the
-        # largest subdivision in this batch, preserving the regular
-        # [frames, triangles, ...] contract used by the triangle STBVH.
-        max_triangles = num_patches * (4 ** max_level)
+
+        # Each frame packs its patches back to back at their own diced sizes;
+        # only the batch's widest frame sets the padded width. A frame that
+        # needs a fraction of the detail no longer pays for the frame that
+        # needs the most, and neither does a patch for its neighbours.
+        counts = self._triangle_counts(levels)
+        offsets = counts.cumsum(1) - counts
+        max_triangles = int(counts.sum(1).amax().item()) if counts.numel() else 0
+
+        colors = self._expanded_frames(
+            self.colors.float(), num_frames, "logical PN colors"
+        )
+        surface_sources = {
+            name: self._expanded_frames(
+                getattr(self, name), num_frames, f"logical PN {name}"
+            )
+            for name in self._surface_params
+        }
+        shader_sources = [
+            self._expanded_frames(
+                value, num_frames, "logical PN shader parameter"
+            )
+            for value in self.shader_param_values
+        ]
+        uv_source = self._expanded_frames(
+            self.uvs, num_frames, "logical PN UVs"
+        )
 
         def allocate(values):
             return torch.zeros(
@@ -855,30 +1122,15 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 dtype=values.dtype,
             )
 
-        diced_corners = allocate(corners)
-        diced_normals = allocate(normals)
+        diced_corners = allocate(source_corners)
+        diced_normals = allocate(source_normals)
         diced_colors = allocate(colors)
         diced_surface_params = {
-            name: allocate(
-                self._expanded_frames(
-                    getattr(self, name),
-                    num_frames,
-                    f"logical PN {name}",
-                )
-            )
-            for name in self._surface_params
+            name: allocate(source)
+            for name, source in surface_sources.items()
         }
-        source_shader_params = [
-            self._expanded_frames(
-                value, num_frames, "logical PN shader parameter"
-            )
-            for value in self.shader_param_values
-        ]
-        diced_shader_params = [allocate(v) for v in source_shader_params]
-        source_uvs = self._expanded_frames(
-            self.uvs, num_frames, "logical PN UVs"
-        )
-        diced_uvs = allocate(source_uvs) if source_uvs is not None else None
+        diced_shader_params = [allocate(v) for v in shader_sources]
+        diced_uvs = allocate(uv_source) if uv_source is not None else None
         padding = torch.ones(
             (num_frames, max_triangles),
             dtype=torch.bool,
@@ -886,54 +1138,82 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         )
 
         for level in levels.unique(sorted=True).tolist():
-            frame_indices = (levels == int(level)).nonzero().flatten()
-            triangle_uv = subdivision_triangle_uvs(
-                int(level), device=device, dtype=corners.dtype
+            level = int(level)
+            selected = (levels == level).nonzero()
+            vertex_uv = subdivision_vertex_uvs(
+                level, device=device, dtype=dtype
             )
-            count = num_patches * triangle_uv.shape[0]
-            frame_control_points = control_points.index_select(
-                0, frame_indices
+            triangle_indices = subdivision_triangle_indices(
+                level, device=device
             )
-            positions = evaluate_logical_pn(
-                frame_control_points, triangle_uv
-            ).reshape(frame_indices.numel(), count, 3, 3)
-            diced_corners[frame_indices, :count] = positions
+            corner_uv = subdivision_triangle_uvs(
+                level, device=device, dtype=dtype
+            )
+            boundary = subdivision_boundary_map(level, device=device)
+            num_triangles = triangle_indices.shape[0]
+            columns = torch.arange(num_triangles, device=device)
+            chunk = max(1, int(self.max_scratch_triangles) // num_triangles)
 
-            pn_normals = evaluate_logical_pn_normals(
-                normal_control_points.index_select(0, frame_indices),
-                triangle_uv,
-            ).reshape(frame_indices.numel(), count, 3, 3)
-            diced_normals[frame_indices, :count] = pn_normals
-            diced_colors[frame_indices, :count] = (
-                interpolate_triangle_attribute(
-                    colors.index_select(0, frame_indices), triangle_uv
+            for start in range(0, selected.shape[0], chunk):
+                rows = selected[start:start + chunk]
+                frames, patches = rows[:, 0], rows[:, 1]
+                edges = edge_levels[frames, patches]
+                # The patch is evaluated once per shared subdivision vertex
+                # (each is a corner of up to six microtriangles), snapped onto
+                # its boundary polylines, and only then expanded to the
+                # triangle-soup layout the packed geometry wants.
+                positions = snap_boundary_values(
+                    evaluate_logical_pn(
+                        control_points[frames, patches].unsqueeze(0),
+                        vertex_uv,
+                    )[0],
+                    level, edges, boundary,
                 )
-            )
-            for name, source in diced_surface_params.items():
-                coarse = self._expanded_frames(
-                    getattr(self, name),
-                    num_frames,
-                    f"logical PN {name}",
-                ).index_select(0, frame_indices)
-                source[frame_indices, :count] = (
-                    interpolate_triangle_attribute(coarse, triangle_uv)
+                vertex_normals = F.normalize(
+                    snap_boundary_values(
+                        evaluate_logical_pn_normals(
+                            normal_control_points[frames, patches].unsqueeze(0),
+                            vertex_uv,
+                        )[0],
+                        level, edges, boundary,
+                    ),
+                    p=2, dim=-1,
                 )
-            for output, coarse in zip(
-                diced_shader_params, source_shader_params
-            ):
-                output[frame_indices, :count] = (
-                    interpolate_triangle_attribute(
-                        coarse.index_select(0, frame_indices), triangle_uv
+                target_rows = frames.unsqueeze(1).expand(-1, num_triangles)
+                target_columns = (
+                    offsets[frames, patches].unsqueeze(1) + columns
+                )
+
+                diced_corners[target_rows, target_columns] = (
+                    positions[:, triangle_indices]
+                )
+                diced_normals[target_rows, target_columns] = (
+                    vertex_normals[:, triangle_indices]
+                )
+                diced_colors[target_rows, target_columns] = (
+                    interpolate_patch_attribute(
+                        colors[frames, patches], corner_uv
                     )
                 )
-            if diced_uvs is not None:
-                diced_uvs[frame_indices, :count] = (
-                    interpolate_triangle_attribute(
-                        source_uvs.index_select(0, frame_indices),
-                        triangle_uv,
+                for name, output in diced_surface_params.items():
+                    output[target_rows, target_columns] = (
+                        interpolate_patch_attribute(
+                            surface_sources[name][frames, patches], corner_uv
+                        )
                     )
-                )
-            padding[frame_indices, :count] = False
+                for output, source in zip(diced_shader_params, shader_sources):
+                    output[target_rows, target_columns] = (
+                        interpolate_patch_attribute(
+                            source[frames, patches], corner_uv
+                        )
+                    )
+                if diced_uvs is not None:
+                    diced_uvs[target_rows, target_columns] = (
+                        interpolate_patch_attribute(
+                            uv_source[frames, patches], corner_uv
+                        )
+                    )
+                padding[target_rows, target_columns] = False
 
         self.corners = diced_corners
         self.normals = diced_normals
@@ -944,6 +1224,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         self.uvs = diced_uvs
         self._logical_pn_padding = padding
         self._logical_pn_subdivision_levels = levels
+        self._logical_pn_edge_levels = edge_levels
 
     def project_to_screen(self, camera, light_sources):
         self._dice_logical_pn(camera)
