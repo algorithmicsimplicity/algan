@@ -1053,6 +1053,11 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         for c in self.children:
             c.set_data_sub_inds(data_sub_inds)
 
+    def __len__(self):
+        return (self.parent_batch_sizes.shape[-1] if
+                (hasattr(self, 'parent_batch_sizes') and self.parent_batch_sizes is not None)
+                else 0)
+
     def __getitem__(self, item: int | slice) -> Mob:
         """Get part of a batched Mob by index or slice, as a Mob.
 
@@ -1077,6 +1082,8 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         :class:`~.Mob`
             A Mob covering the selected parts, sharing data with this one.
         """
+        if len(self) == 0:
+            raise TypeError("Mob object is not iterable")
         # Clone the mob without cloning its data, but recursively for children structure
         cloned_mob = self.clone(
             add_to_scene=False, clone_data=False, recursive=True, animate_creation=False

@@ -1844,10 +1844,17 @@ def _prefill_deferred_background(out, background, frame_offset):
     empty_cache(force_gc=False)
 
 
-def _prefill_background(out, background_color, frame_offset, device):
+def _prefill_background(out, background_color, frame_offset, device,
+                        background_frames=None):
     """Fill the output buffer with the background. Solid colors arrive as a
     float [channels] tensor in [0, 1]; animated/image backgrounds arrive as a
     uint8 row tensor [1 + frames * pixels, channels] (leading padding row).
+
+    ``background_frames`` is how many frames that row tensor covers. Callers
+    that know it should pass it: it is the only way to tell an image
+    background's own resolution apart from the output's, and a mismatch there
+    scrolls a different slice of the background into every frame rather than
+    failing (the deferred path already raises for the same reason).
     """
     if isinstance(background_color, _DeferredBackground):
         _prefill_deferred_background(out, background_color, frame_offset)
@@ -1869,6 +1876,14 @@ def _prefill_background(out, background_color, frame_offset, device):
             out[..., k:].copy_(vals[-1])
     else:
         rows = bg.reshape(-1, bg.shape[-1])[1:]
+        if background_frames:
+            source_pixels = rows.shape[0] // int(background_frames)
+            if source_pixels != num_pixels:
+                raise RuntimeError(
+                    "background resolution does not match render output "
+                    f"({source_pixels} pixels per frame vs {num_pixels}); "
+                    "a super-sampled background must be averaged down with "
+                    "_downsample_background first")
         rows = rows[frame_offset * num_pixels:
                     (frame_offset + num_frames) * num_pixels]
         rows = rows.view(num_frames, num_pixels, -1)

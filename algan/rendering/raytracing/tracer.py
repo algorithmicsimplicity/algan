@@ -1022,12 +1022,19 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     pby = _arena_copy(memory, pby_host)
     pixel_world_scale = _arena_copy(memory, pixel_world_scale_host)
 
-    # In-place AA samples the background once per output pixel, so an
-    # animated/image background that arrived super-sampled must be averaged
-    # down to the output resolution first (solid colors are resolution-free).
-    if aa > 1 and inplace_aa:
+    # An animated/image background arrives super-sampled at the *requested*
+    # anti-alias level (Scene.set_background_color and
+    # _prepare_background_for_chunk both build it at screen * anti_alias_level).
+    # This batch's frame buffer is at output resolution whenever the route
+    # takes one sample per output pixel: in-place AA, and the analytic raster
+    # route, which forces ``aa == 1`` however many samples were requested.
+    # Average the background down to match -- a super-sampled background read
+    # at output stride silently scrolls a different slice of itself into every
+    # frame. (Solid colors are resolution-free and pass through untouched.)
+    background_aa = max(1, int(anti_alias_level))
+    if background_aa > 1 and width == screen_width and height == screen_height:
         background_color = _downsample_background(
-            background_color, aa, time_end - time_start,
+            background_color, background_aa, time_end - time_start,
             screen_height, screen_width)
 
     # A deferred-BVH batch (scene_builder._finalize_bvhs) holds placeholder
@@ -1170,7 +1177,8 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
             out = memory.get_tensor((end - start, width * height, C_out),
                                     out_dtype)
             _prefill_background(out, background_color, start - time_start,
-                                device)
+                                device,
+                                background_frames=time_end - time_start)
             accum = None
             if samples > 1:
                 # f32 per-pixel sample sums, averaged by finalize_samples.
@@ -1796,7 +1804,8 @@ def raytrace_render_wavefront(
         if (rt_settings.RASTER_TRI_PRECOMPUTE
                 and int(merged.get("num_triangles", 0)) > 0):
             tri_bounds = precompute_triangle_screen_bounds(
-                merged, tri_screen, width, memory)
+                merged, tri_screen, cam_origin, screen_point, pixel_basis_x,
+                pixel_basis_y, half_screen_w, half_screen_h, width, memory)
         if (rt_settings.RASTER_BEZ_PRECOMPUTE
                 and int(merged.get("num_circuits", 0)) > 0):
             bez_bounds = precompute_circuit_screen_bounds(

@@ -568,6 +568,24 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
     """
 
     max_subdivision_level = 8
+    # Hard ceiling on ``num_patches * 4 ** level`` -- the diced triangle count
+    # of a single frame.  The level search evaluates a complete trial
+    # tessellation at every level it tries, so an unbounded search costs 4x its
+    # predecessor per step in *scratch* (~350 B per diced triangle-frame) as
+    # well as in diced output: without a budget one pathological frame can ask
+    # for a tessellation that cannot be allocated at all, and the render dies
+    # inside the search instead of degrading.  Shrinking the frame window --
+    # the render loop's usual response to running out of memory -- cannot save
+    # it, so the ceiling has to hold at a single frame.  With the screen guard
+    # in ``_required_subdivision_levels`` it only binds on meshes that are
+    # already enormous, where it trades tessellation quality (with a warning)
+    # for finishing the render.
+    max_diced_triangles = 2_000_000
+    # Half-extent, in units of the output frame height, of the guard box that
+    # projected samples are clamped into before their flatness error is
+    # measured.  Comfortably contains the frame at any usual aspect ratio, plus
+    # a margin of near-frame geometry.
+    screen_guard_factor = 1.5
     _flatness_sample_weights = (
         (0.75, 0.25, 0.0),
         (0.5, 0.5, 0.0),
@@ -640,13 +658,33 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         sb,
         screen_height,
     ):
-        """Choose one crack-free uniform logical-PN level per frame."""
+        """Choose one crack-free uniform logical-PN level per frame.
+
+        The stopping criterion is a *primary visibility* one: keep subdividing
+        until the flat stand-in lands within ``render_tolerance`` of the true
+        surface, measured in output pixels.  Projected pixel coordinates are
+        unbounded, though -- a patch off to the side of the view axis, or one
+        approaching the camera plane, projects arbitrarily far outside the frame
+        -- so the raw error is not usable as a stopping criterion on its own.
+        A sample pair is therefore ignored unless at least one of its two
+        projections lands inside a guard box around the frame (see
+        ``screen_guard_factor``), and the pair is clamped into that box before
+        being compared.  Deviation that happens entirely off frame costs
+        nothing; anything in or near frame keeps its exact error, so on-screen
+        tessellation is unaffected.
+
+        Without that guard, ``camera.orbit`` -- which swings the scene sideways
+        without turning the camera -- drove the level up frame after frame to
+        resolve geometry that had long since left the frame, until the trial
+        tessellations alone exhausted render memory.
+        """
         device = control_points.device
         dtype = control_points.dtype
         num_frames = control_points.shape[0]
+        max_level = self._budget_capped_level(int(control_points.shape[1]))
         levels = torch.full(
             (num_frames,),
-            self.max_subdivision_level,
+            max_level,
             dtype=torch.long,
             device=device,
         )
@@ -657,65 +695,67 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             dtype=dtype,
         )
 
-        camera_shape = (-1, 1, 1, 3)
-        screen_normal = sb[:, 2].view(camera_shape)
-        control_depth = (
-            (control_points - cam_o.view(camera_shape)) * screen_normal
-        ).sum(-1)
-        wholly_behind = control_depth.amax(dim=(-1, -2)) < -1e-7
-        crosses_camera = ~(
-            (control_depth.amin(-1) > 1e-7)
-            | (control_depth.amax(-1) < -1e-7)
-        ).all(-1)
+        # Which side of the camera plane is in front: the screen plane's own
+        # side, exactly as the renderer's front test decides it.
+        front_sign = torch.sign(((sp - cam_o) * sb[:, 2]).sum(-1))
+        screen_guard = self.screen_guard_factor * float(screen_height)
 
-        for level in range(self.max_subdivision_level + 1):
+        for level in range(max_level + 1):
+            # Only frames still looking for a level are evaluated. Every level
+            # costs 4x its predecessor, so carrying already-resolved frames
+            # along would make the peak trial tessellation -- the largest
+            # allocation in the whole dicing path -- scale with the frame
+            # window rather than with the frames that actually need the detail.
+            active = unresolved.nonzero().flatten()
+            frame_points = control_points.index_select(0, active)
             triangle_uv = subdivision_triangle_uvs(
                 level, device=device, dtype=dtype
             )
             patch_vertices = evaluate_logical_pn(
-                control_points, triangle_uv
+                frame_points, triangle_uv
             )
             sample_uv = torch.einsum(
                 "sk,mka->msa", sample_weights, triangle_uv
             )
-            exact = evaluate_logical_pn(control_points, sample_uv)
+            exact = evaluate_logical_pn(frame_points, sample_uv)
             approximated = torch.einsum(
                 "sk,tpmkc->tpmsc", sample_weights, patch_vertices
             )
+            camera = tuple(
+                value.index_select(0, active) for value in (cam_o, sp, sb)
+            )
             exact_pixels, exact_depth = self._project_to_output_pixels(
-                exact, cam_o, sp, sb, screen_height
+                exact, *camera, screen_height
             )
             approx_pixels, approx_depth = self._project_to_output_pixels(
-                approximated, cam_o, sp, sb, screen_height
+                approximated, *camera, screen_height
             )
-            error = (exact_pixels - approx_pixels).norm(dim=-1)
-            valid = (
+            error = (
+                exact_pixels.clamp(-screen_guard, screen_guard)
+                - approx_pixels.clamp(-screen_guard, screen_guard)
+            ).norm(dim=-1)
+            sign = front_sign.index_select(0, active).view(-1, 1, 1, 1)
+            # A sample at or behind the camera plane has no finite screen
+            # position, so it cannot steer subdivision at all; drop it and let
+            # the patch's in-front samples decide. A patch straddling the plane
+            # still refines on its front half, whose near-plane projection is
+            # genuinely large -- unlike the old whole-frame "crosses the camera
+            # plane" override, which jumped straight to the safety cap and a
+            # 65536x triangle count.
+            usable = (
                 torch.isfinite(error)
-                & torch.isfinite(exact_depth)
-                & torch.isfinite(approx_depth)
-                & (exact_depth.abs() > 1e-7)
-                & (approx_depth.abs() > 1e-7)
+                & (exact_depth * sign > 1e-7)
+                & (approx_depth * sign > 1e-7)
+                & ((exact_pixels.abs() <= screen_guard).all(-1)
+                   | (approx_pixels.abs() <= screen_guard).all(-1))
             )
-            error = torch.where(
-                valid, error, torch.full_like(error, torch.inf)
-            )
+            error = torch.where(usable, error, torch.zeros_like(error))
             frame_error = error.amax(dim=(1, 2, 3))
-            frame_error = torch.where(
-                wholly_behind,
-                torch.zeros_like(frame_error),
-                frame_error,
-            )
-            frame_error = torch.where(
-                crosses_camera,
-                torch.full_like(frame_error, torch.inf),
-                frame_error,
-            )
-            resolved = unresolved & ((
-                frame_error * self._flatness_safety_factor)
-                <= (self.render_tolerance * screen_height)
-            )
-            levels[resolved] = level
-            unresolved &= ~resolved
+            resolved = (
+                frame_error * self._flatness_safety_factor
+            ) <= (self.render_tolerance * screen_height)
+            levels[active.masked_select(resolved)] = level
+            unresolved[active.masked_select(resolved)] = False
             if not bool(unresolved.any()):
                 break
 
@@ -727,6 +767,26 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 stacklevel=3,
             )
         return levels
+
+    def _budget_capped_level(self, num_patches):
+        """Highest subdivision level allowed by ``max_diced_triangles``.
+
+        Bounds the level *search* as well as its result: each trial level
+        materializes a complete tessellation, so an uncapped search can run out
+        of memory before it ever returns a level to dice at.
+
+        Deliberately independent of the frame window.  A level that changed with
+        how many frames a render batch happened to cover would make the mesh pop
+        at batch boundaries; per-frame memory pressure is the frame window's job
+        to absorb, not the tessellation's.
+        """
+        budget = max(1, int(self.max_diced_triangles))
+        base = max(1, int(num_patches))
+        level = 0
+        while (level < self.max_subdivision_level
+               and base * (4 ** (level + 1)) <= budget):
+            level += 1
+        return level
 
     @staticmethod
     def _expanded_frames(value, num_frames, name):

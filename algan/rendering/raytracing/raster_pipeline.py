@@ -165,31 +165,190 @@ def _class_pairs(mask, x0, x1, y0, y1, f, device):
     return rows.to(torch.int32).contiguous()
 
 
-def _screen_bbox(px, py, front, width, row_lo, row_hi):
+def _screen_bbox(px, py, front, width, row_lo, row_hi, clip=None):
     """Conservative clipped bbox from projected corners/vertices.
 
-    Camera-plane straddlers still fall back to the full current row band (the
-    callers cull provably-behind primitives before candidate emission).  A
-    future implementation could instead clip straddling triangles/polygons
-    against the camera or near plane before projection.
+    ``clip`` is the ``_clipped_screen_extents`` result for the same primitives.
+    Straddlers it could bound are treated exactly like all-front primitives --
+    real bbox, real on-screen test -- and only the rest fall back to the full
+    current row band.  (Callers cull provably-behind primitives separately,
+    before candidate emission.)
     """
     all_front = front.all(-1)
     xmin = px.amin(-1)
     xmax = px.amax(-1)
     ymin = py.amin(-1)
     ymax = py.amax(-1)
+    bounded = all_front
+    if clip is not None:
+        clip_x0, clip_x1, clip_y0, clip_y1, clip_ok = clip
+        # All-front rows keep the projected-vertex extents *expression*, not
+        # merely an equal value, so their bbox stays bit-for-bit what it was
+        # before straddler clipping existed.
+        bounded = all_front | clip_ok
+        xmin = torch.where(all_front, xmin, clip_x0)
+        xmax = torch.where(all_front, xmax, clip_x1)
+        ymin = torch.where(all_front, ymin, clip_y0)
+        ymax = torch.where(all_front, ymax, clip_y1)
     fx0 = (xmin - 1.0).floor().clamp_(0, width - 1).long()
     fx1 = (xmax + 1.0).ceil().clamp_(0, width - 1).long()
     fy0 = (ymin - 1.0).floor().clamp_(row_lo, row_hi).long()
     fy1 = (ymax + 1.0).ceil().clamp_(row_lo, row_hi).long()
-    x0 = torch.where(all_front, fx0, torch.zeros_like(fx0))
-    x1 = torch.where(all_front, fx1, torch.full_like(fx1, width - 1))
-    y0 = torch.where(all_front, fy0, torch.full_like(fy0, row_lo))
-    y1 = torch.where(all_front, fy1, torch.full_like(fy1, row_hi))
+    x0 = torch.where(bounded, fx0, torch.zeros_like(fx0))
+    x1 = torch.where(bounded, fx1, torch.full_like(fx1, width - 1))
+    y0 = torch.where(bounded, fy0, torch.full_like(fy0, row_lo))
+    y1 = torch.where(bounded, fy1, torch.full_like(fy1, row_hi))
     on_screen = ((xmax >= -1.0) & (xmin <= width + 1.0)
                  & (ymax >= row_lo - 1.0) & (ymin <= row_hi + 1.0))
-    reach = torch.where(all_front, on_screen, torch.ones_like(on_screen))
+    reach = torch.where(bounded, on_screen, torch.ones_like(on_screen))
     return x0, x1, y0, y1, reach
+
+
+# Hull edges as ``(from, to)`` vertex-index pairs, for the clip below.
+_TRI_EDGES = ((0, 1), (1, 2), (2, 0))
+# Matches ``_aabb_corners``' bit order: corner index is (x, y, z) hi-bits with
+# x most significant, so the three axis neighbours of a corner differ by 4/2/1.
+_BOX_EDGES = tuple(
+    (i, i ^ bit)
+    for bit in (4, 2, 1)
+    for i in range(8)
+    if not (i & bit)
+)
+_EDGE_CACHE = {}
+
+
+def _edge_index(edges, device):
+    key = (edges, device)
+    cached = _EDGE_CACHE.get(key)
+    if cached is None:
+        flat = torch.tensor(edges, dtype=torch.long, device=device)
+        cached = (flat[:, 0], flat[:, 1])
+        _EDGE_CACHE[key] = cached
+    return cached
+
+
+# Fraction of a primitive's own maximum depth that the straddler clip plane
+# sits in front of the camera plane.  Small enough that the sliver it discards
+# projects far outside any screen (see ``_clipped_screen_extents``), large
+# enough that every clipped projection stays comfortably inside float32.
+_CLIP_DEPTH_FRACTION = 1e-5
+
+
+def _straddle_clip_wanted(straddles):
+    """Whether to pay for the camera-plane clip at all.
+
+    ``straddles`` is the per-primitive straddler mask.  The clip is a saving
+    only when something actually straddles; on an ordinary scene where nothing
+    does it is pure overhead (~8% of a triangle-heavy render), so it is skipped
+    outright.  One host transfer per call, next to the one
+    ``_class_any_flags`` already makes.
+    """
+    return (rt_settings.RASTER_STRADDLE_CLIP
+            and bool(straddles.any().item()))
+
+
+def _clipped_screen_extents(verts, edges, ro, sp, pbx, pby, half_w, half_h):
+    """Screen extent of the part of a convex hull a primary ray can reach.
+
+    ``verts`` is ``[F, N, K, 3]`` world points whose convex hull bounds each
+    primitive and ``edges`` the ``(from, to)`` vertex-index pairs of that hull's
+    edges; the camera arguments are ``[F, 3]``.
+
+    A primitive straddling the camera plane has no bounded projection: its
+    vertices behind the plane project to the wrong side of the screen, and ones
+    on it project to infinity.  The front-end therefore used to hand every
+    straddler the entire window as its candidate bbox.  An orbiting camera --
+    one travelling around the scene without turning to follow it -- puts most of
+    the scene in exactly that state, and at HD one full-window primitive-frame
+    is ~65k candidate chunks, so a few hundred of them exhaust render memory
+    before a single ray is cast.
+
+    Perspective projection maps lines to lines, so the projection of the part of
+    a convex hull in front of the camera is the convex hull of the projections
+    of that hull clipped to the front half-space: its front vertices plus one
+    point per edge crossing the plane.  Clipping a hair *in front* of the plane
+    -- at ``_CLIP_DEPTH_FRACTION`` of the primitive's own maximum depth -- keeps
+    every projected point finite.  The sliver between that plane and the camera
+    plane is discarded, which is only unsafe for a primitive passing essentially
+    through the camera origin: everything else in it projects far outside any
+    screen.  ``bounded`` reports that case as False so callers keep the
+    full-window fallback for it.
+
+    Returns ``(xmin, xmax, ymin, ymax, bounded)``, all ``[F, N]``; the extents
+    are in the same continuous pixel space as
+    :func:`precompute_triangle_projection` and are meaningless where ``bounded``
+    is False.
+    """
+    ro_b = ro[:, None, None, :]
+    sp_b = sp[:, None, None, :]
+    pbx_b = pbx[:, None, None, :]
+    pby_b = pby[:, None, None, :]
+    nvec = torch.linalg.cross(pbx, pby)
+    nvec_b = nvec[:, None, None, :]
+    inv_n2 = (1.0 / (nvec * nvec).sum(-1).clamp_min(1e-30))[:, None, None]
+    big_d = ((sp - ro) * nvec).sum(-1)
+    # Depth measured so that "in front of the camera plane" is positive,
+    # matching precompute_triangle_projection's front test.
+    sign = torch.where(big_d >= 0, 1.0, -1.0)
+    front_d = big_d * sign                                   # [F]
+
+    rel_verts = verts - ro_b
+    depth = (rel_verts * nvec_b).sum(-1) * sign[:, None, None]
+    clip_depth = (_CLIP_DEPTH_FRACTION * depth.amax(-1)).clamp_min(1e-30)
+    keep = depth >= clip_depth.unsqueeze(-1)
+
+    lo_i, hi_i = _edge_index(edges, verts.device)
+    depth_a = depth.index_select(-1, lo_i)
+    depth_b = depth.index_select(-1, hi_i)
+    crosses = keep.index_select(-1, lo_i) ^ keep.index_select(-1, hi_i)
+    span = depth_b - depth_a
+    step = ((clip_depth.unsqueeze(-1) - depth_a)
+            / torch.where(span.abs() > 1e-30, span, torch.ones_like(span)))
+    vert_a = verts.index_select(-2, lo_i)
+    rel_edge = (vert_a + step.unsqueeze(-1)
+                * (verts.index_select(-2, hi_i) - vert_a)) - ro_b
+
+    # Vertices project through their own depth; edge points sit on the clip
+    # plane *by construction*, so they use that depth analytically rather than
+    # a recomputed one that floating point could push to the far side.
+    rel = torch.cat((rel_verts, rel_edge), -2)
+    scale = torch.cat(
+        (front_d[:, None, None] / depth.clamp_min(1e-30),
+         (front_d[:, None] / clip_depth).unsqueeze(-1).expand_as(step)), -1)
+    hit = ro_b + scale.unsqueeze(-1) * rel
+    offset = hit - sp_b
+    u = (torch.linalg.cross(offset, pby_b.expand_as(offset))
+         * nvec_b).sum(-1) * inv_n2
+    v = (torch.linalg.cross(pbx_b.expand_as(offset), offset)
+         * nvec_b).sum(-1) * inv_n2
+    sx = u * half_h + half_w
+    sy = v * half_h + half_h
+
+    usable = torch.cat((keep, crosses), -1) & torch.isfinite(sx) \
+        & torch.isfinite(sy)
+    big = torch.full_like(sx, torch.inf)
+    xmin = torch.where(usable, sx, big).amin(-1)
+    xmax = torch.where(usable, sx, -big).amax(-1)
+    ymin = torch.where(usable, sy, big).amin(-1)
+    ymax = torch.where(usable, sy, -big).amax(-1)
+
+    # The discarded sliver is only reachable on screen from within a ball about
+    # the camera origin of radius clip_depth * (1 + screen_radius / big_d):
+    # anything further off the view axis than that projects past the screen
+    # edge.  Test the primitive's world AABB, padded by that radius, against the
+    # camera origin -- cheap, and a superset of the primitive itself.
+    screen_radius = torch.sqrt(
+        (pbx.norm(dim=-1) * (float(half_w) / float(half_h))) ** 2
+        + pby.norm(dim=-1) ** 2)
+    pad = clip_depth * (
+        1.0 + screen_radius / big_d.abs().clamp_min(1e-30))[:, None]
+    pad = pad.unsqueeze(-1)
+    near_camera = (
+        (ro_b.squeeze(-2) >= verts.amin(-2) - pad)
+        & (ro_b.squeeze(-2) <= verts.amax(-2) + pad)
+    ).all(-1)
+    bounded = keep.any(-1) & ~near_camera
+    return xmin, xmax, ymin, ymax, bounded
 
 
 _AABB_SEL = None
@@ -223,7 +382,14 @@ def _project_points(verts, ro, sp, pbx, pby, half_w, half_h):
     return u * half_h + half_w, v * half_h + half_h, front
 
 
-def _frame_pairs(merged, tri_screen, f, width, row_lo, row_hi, device):
+def _frame_one(value, f):
+    """One frame of a possibly time-deduplicated input, keeping the axis."""
+    return value[f % value.shape[0]].unsqueeze(0)
+
+
+def _frame_pairs(merged, tri_screen, f, width, row_lo, row_hi,
+                 cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+                 half_w, half_h, device):
     valid_all = merged["tri_frame_valid"]
     opaque_all = merged["tri_frame_opaque"]
     valid = valid_all[f % valid_all.shape[0]].bool()
@@ -234,7 +400,18 @@ def _frame_pairs(merged, tri_screen, f, width, row_lo, row_hi, device):
     px = screen[:, 0:3]
     py = screen[:, 3:6]
     front = (screen[:, 9] > 0.5).unsqueeze(-1).expand(-1, 3)
-    x0, x1, y0, y1, reach = _screen_bbox(px, py, front, width, row_lo, row_hi)
+    tri_pos = merged["tri_pos"]
+    clip = None
+    if _straddle_clip_wanted((screen[:, 9] > -0.5) & ~front[:, 0]):
+        clip = [
+            bound[0] for bound in _clipped_screen_extents(
+                _frame_one(tri_pos, f).view(1, -1, 3, 3), _TRI_EDGES,
+                _frame_one(cam_origin, f), _frame_one(screen_point, f),
+                _frame_one(pixel_basis_x, f), _frame_one(pixel_basis_y, f),
+                half_w, half_h)
+        ]
+    x0, x1, y0, y1, reach = _screen_bbox(
+        px, py, front, width, row_lo, row_hi, clip)
     # Flag -1 marks a triangle with every vertex behind the camera plane --
     # provably unhittable by a primary ray, so drop it instead of emitting
     # full-window candidate pairs (see precompute_triangle_projection).
@@ -264,7 +441,17 @@ def _frame_bez_pairs(merged, f, width, row_lo, row_hi,
         pixel_basis_x[f % pixel_basis_x.shape[0]],
         pixel_basis_y[f % pixel_basis_y.shape[0]],
         half_w, half_h)
-    x0, x1, y0, y1, reach = _screen_bbox(px, py, front, width, row_lo, row_hi)
+    clip = None
+    if _straddle_clip_wanted(front.any(-1) & ~front.all(-1)):
+        clip = [
+            bound[0] for bound in _clipped_screen_extents(
+                corners.unsqueeze(0), _BOX_EDGES,
+                _frame_one(cam_origin, f), _frame_one(screen_point, f),
+                _frame_one(pixel_basis_x, f), _frame_one(pixel_basis_y, f),
+                half_w, half_h)
+        ]
+    x0, x1, y0, y1, reach = _screen_bbox(
+        px, py, front, width, row_lo, row_hi, clip)
     # An AABB with no corner in front of the camera plane cannot contain a
     # primary-ray hit (the box is convex, forward ray points project > 0);
     # cull it instead of emitting full-window candidate pairs.
@@ -351,10 +538,21 @@ def precompute_circuit_screen_bounds(
     xmax = px.amax(-1)
     ymin = py.amin(-1)
     ymax = py.amax(-1)
+    bounded = all_front
+    if _straddle_clip_wanted(front_any & ~all_front):
+        clip_x0, clip_x1, clip_y0, clip_y1, clip_ok = _clipped_screen_extents(
+            corners, _BOX_EDGES, ro, sp, pbx, pby, half_w, half_h)
+        # The behind-cull outranks the clip: a box with no corner in front
+        # stays dropped rather than becoming an emittable bounded candidate.
+        bounded = all_front | (clip_ok & front_any)
+        xmin = torch.where(all_front, xmin, clip_x0)
+        xmax = torch.where(all_front, xmax, clip_x1)
+        ymin = torch.where(all_front, ymin, clip_y0)
+        ymax = torch.where(all_front, ymax, clip_y1)
     fx0 = (xmin - 1.0).floor().clamp_(0, width - 1).long()
     fx1 = (xmax + 1.0).ceil().clamp_(0, width - 1).long()
-    x0 = torch.where(all_front, fx0, torch.zeros_like(fx0))
-    x1 = torch.where(all_front, fx1, torch.full_like(fx1, width - 1))
+    x0 = torch.where(bounded, fx0, torch.zeros_like(fx0))
+    x1 = torch.where(bounded, fx1, torch.full_like(fx1, width - 1))
     x_on = (xmax >= -1.0) & (xmin <= width + 1.0)
     valid = valid_all.index_select(0, frame_ids % valid_all.shape[0]).bool()
     opaque = valid & opaque_all.index_select(
@@ -366,16 +564,19 @@ def precompute_circuit_screen_bounds(
         ((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1))
     pre_x = memory.get_tensor((frames, ncirc, 2), torch.int64)
     pre_x.copy_(torch.stack((x0, x1), -1))
-    # all_front implies front_any (eight corners), so the all-front reach
-    # base omits the redundant ``& front_any``.
+    # all_front implies front_any (eight corners), so the bounded reach base
+    # omits the redundant ``& front_any``: a clipped straddler kept a front
+    # corner by construction.
     pre_m = memory.get_tensor((frames, ncirc, 5), torch.bool)
     pre_m.copy_(torch.stack(
-        (all_front, all_front & x_on, ~all_front & front_any,
+        (bounded, bounded & x_on, ~bounded & front_any,
          opaque, valid & ~opaque), -1))
     return pre_f, pre_x, pre_m, _class_any_flags(pre_m)
 
 
-def precompute_triangle_screen_bounds(merged, tri_screen, width, memory):
+def precompute_triangle_screen_bounds(
+        merged, tri_screen, cam_origin, screen_point, pixel_basis_x,
+        pixel_basis_y, half_w, half_h, width, memory):
     """Batched once-per-window candidate screen bounds for flat triangles.
 
     Companion of :func:`precompute_circuit_screen_bounds`, consuming the
@@ -388,10 +589,15 @@ def precompute_triangle_screen_bounds(merged, tri_screen, width, memory):
     ``all_front`` is the flag itself and the behind-cull folds into the
     straddler reach base.  Byte-identical to the per-frame path by
     construction.
+
+    Straddlers get the camera-plane clip of :func:`_clipped_screen_extents`
+    rather than the whole window; the camera arguments are needed for that and
+    for nothing else.
     """
     valid_all = merged["tri_frame_valid"]
     opaque_all = merged["tri_frame_opaque"]
     unc_all = merged["tri_alpha_uncertain"]
+    tri_pos = merged["tri_pos"]
     frames = max(
         int(tri_screen.shape[0]), int(valid_all.shape[0]),
         int(opaque_all.shape[0]), int(unc_all.shape[0]),
@@ -405,31 +611,49 @@ def precompute_triangle_screen_bounds(merged, tri_screen, width, memory):
     all_front = flag > 0.5
     not_behind = flag > -0.5
 
+    ntri = int(screen.shape[1])
     xmin = px.amin(-1)
     xmax = px.amax(-1)
     ymin = py.amin(-1)
     ymax = py.amax(-1)
+    bounded = all_front
+    if _straddle_clip_wanted(not_behind & ~all_front):
+        clip_x0, clip_x1, clip_y0, clip_y1, clip_ok = _clipped_screen_extents(
+            tri_pos.index_select(
+                0, frame_ids % tri_pos.shape[0]).view(frames, ntri, 3, 3),
+            _TRI_EDGES,
+            cam_origin.index_select(0, frame_ids % cam_origin.shape[0]),
+            screen_point.index_select(0, frame_ids % screen_point.shape[0]),
+            pixel_basis_x.index_select(0, frame_ids % pixel_basis_x.shape[0]),
+            pixel_basis_y.index_select(0, frame_ids % pixel_basis_y.shape[0]),
+            half_w, half_h)
+        # The behind-cull outranks the clip: a provably-behind triangle stays
+        # dropped rather than becoming an emittable bounded candidate.
+        bounded = all_front | (clip_ok & not_behind)
+        xmin = torch.where(all_front, xmin, clip_x0)
+        xmax = torch.where(all_front, xmax, clip_x1)
+        ymin = torch.where(all_front, ymin, clip_y0)
+        ymax = torch.where(all_front, ymax, clip_y1)
     fx0 = (xmin - 1.0).floor().clamp_(0, width - 1).long()
     fx1 = (xmax + 1.0).ceil().clamp_(0, width - 1).long()
-    x0 = torch.where(all_front, fx0, torch.zeros_like(fx0))
-    x1 = torch.where(all_front, fx1, torch.full_like(fx1, width - 1))
+    x0 = torch.where(bounded, fx0, torch.zeros_like(fx0))
+    x1 = torch.where(bounded, fx1, torch.full_like(fx1, width - 1))
     x_on = (xmax >= -1.0) & (xmin <= width + 1.0)
     valid = valid_all.index_select(0, frame_ids % valid_all.shape[0]).bool()
     unc = unc_all.index_select(0, frame_ids % unc_all.shape[0]).bool()
     opaque = valid & opaque_all.index_select(
         0, frame_ids % opaque_all.shape[0]).bool() & ~unc
 
-    ntri = int(screen.shape[1])
     pre_f = memory.get_tensor((frames, ntri, 4), torch.float32)
     pre_f.copy_(torch.stack(
         ((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1))
     pre_x = memory.get_tensor((frames, ntri, 2), torch.int64)
     pre_x.copy_(torch.stack((x0, x1), -1))
-    # all_front (flag == 1) implies not-behind, so the all-front reach base
-    # omits the redundant ``& not_behind``.
+    # ``bounded`` already implies not-behind, so its reach base omits the
+    # redundant ``& not_behind``.
     pre_m = memory.get_tensor((frames, ntri, 5), torch.bool)
     pre_m.copy_(torch.stack(
-        (all_front, all_front & x_on, ~all_front & not_behind,
+        (bounded, bounded & x_on, ~bounded & not_behind,
          opaque, valid & ~opaque), -1))
     return pre_f, pre_x, pre_m, _class_any_flags(pre_m)
 
@@ -636,7 +860,9 @@ def prepare_sparse_raster_coverage(
             row_hi = (hi_p - 1) // width
             if has_tri and not use_tri_pre:
                 po, pt = _frame_pairs(
-                    merged, tri_screen, f, width, row_lo, row_hi, device)
+                    merged, tri_screen, f, width, row_lo, row_hi, cam_origin,
+                    screen_point, pixel_basis_x, pixel_basis_y, half_w,
+                    half_h, device)
                 if po is not None:
                     tri_opaque.append(po)
                 if pt is not None:
@@ -1079,7 +1305,9 @@ def raster_iteration_zero(
             row_hi = (hi_p - 1) // width
             if has_tri and not use_tri_pre:
                 po, pt = _frame_pairs(
-                    merged, tri_screen, f, width, row_lo, row_hi, device)
+                    merged, tri_screen, f, width, row_lo, row_hi, cam_origin,
+                    screen_point, pixel_basis_x, pixel_basis_y, half_w,
+                    half_h, device)
                 if po is not None:
                     tri_opaque.append(po)
                 if pt is not None:

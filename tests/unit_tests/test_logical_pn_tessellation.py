@@ -232,6 +232,96 @@ def test_selected_flat_mesh_meets_dense_output_pixel_error_check():
     assert (exact_pixels - approximated_pixels).norm(dim=-1).max() <= (tolerance * camera.output_screen_height)
 
 
+def _levels_for(primitive, camera):
+    controls = logical_pn_control_points(primitive.corners, primitive.normals)
+    # _dice_logical_pn broadcasts the source geometry across the camera's
+    # frames before the level search sees it.
+    frames = camera.ray_origin.shape[0]
+    return primitive._required_subdivision_levels(
+        controls.expand(frames, *controls.shape[1:]),
+        camera.ray_origin.reshape(-1, 3),
+        camera.screen_point.reshape(-1, 3),
+        camera.screen_basis,
+        camera.output_screen_height,
+    )
+
+
+def _sideways_camera(offsets, *, screen_height=480):
+    """Cameras displaced sideways but still aimed down +z, as `orbit` leaves
+    them: the subject swings out of frame without the camera following."""
+    offsets = torch.as_tensor(offsets, dtype=torch.float32)
+    origins = torch.zeros((len(offsets), 1, 3))
+    origins[..., 0] = offsets.view(-1, 1)
+    origins[..., 2] = -3.0
+    screen_points = origins.clone()
+    screen_points[..., 2] += 1.0
+    return SimpleNamespace(
+        ray_origin=origins,
+        screen_point=screen_points,
+        screen_basis=torch.eye(3).unsqueeze(0).repeat(len(offsets), 1, 1),
+        screen_width=640,
+        screen_height=screen_height,
+        output_screen_width=640,
+        output_screen_height=screen_height,
+        analytic_raster=False,
+    )
+
+
+def test_off_frame_geometry_does_not_drive_subdivision():
+    corners, normals = _curved_patch_inputs()
+    primitive = _logical_patch(corners, normals, render_tolerance=0.0005)
+
+    # Framed, then swung progressively further out of frame. Screen-space
+    # error grows without bound as the patch approaches the camera plane, so
+    # without the guard box these levels would climb monotonically.
+    levels = _levels_for(
+        primitive, _sideways_camera([0.0, 20.0, 400.0])).tolist()
+
+    assert levels[0] > 0, "in-frame patch should still be subdivided"
+    assert levels[2] == 0, "wholly off-frame patch needs no subdivision"
+    assert levels[1] <= levels[0]
+
+
+def test_off_frame_camera_plane_straddler_needs_no_subdivision():
+    # A patch spanning the camera plane has no finite screen error, so it used
+    # to be forced to max_subdivision_level -- 4**8 triangles per patch, which
+    # is unallocatable for any real mesh -- however far off frame it was. Its
+    # in-front samples decide now, and here they all project way outside.
+    corners = torch.tensor(
+        [[299.0, -0.7, -6.0], [301.0, -0.7, 4.0], [300.0, 1.0, 4.0]])
+    normals = torch.nn.functional.normalize(
+        torch.tensor([[-0.8, 0.0, 1.0], [0.8, 0.0, 1.0], [0.0, 0.8, 1.0]]),
+        dim=-1)
+    primitive = _logical_patch(corners, normals, render_tolerance=0.0005)
+
+    assert int(_levels_for(primitive, _camera([-3.0])).item()) == 0
+
+
+def test_subdivision_level_is_capped_by_the_triangle_budget():
+    corners, normals = _curved_patch_inputs()
+    primitive = _logical_patch(corners, normals, render_tolerance=0.0005)
+    uncapped = int(_levels_for(primitive, _camera([-3.0])).item())
+    assert uncapped > 1
+
+    primitive.max_diced_triangles = 4  # one patch, so 4**1 triangles
+    capped = int(_levels_for(primitive, _camera([-3.0])).item())
+
+    assert capped == 1
+
+
+def test_budget_cap_does_not_depend_on_the_frame_window():
+    # A level that moved with the render batch's frame count would pop at
+    # batch boundaries.
+    corners, normals = _curved_patch_inputs()
+    primitive = _logical_patch(corners, normals, render_tolerance=0.0005)
+    primitive.max_diced_triangles = 16
+
+    alone = _levels_for(primitive, _camera([-3.0])).tolist()
+    batched = _levels_for(primitive, _camera([-30.0, -3.0, -3.0])).tolist()
+
+    assert batched[1:] == alone * 2
+
+
 def test_logical_pn_packs_only_regular_flat_triangle_geometry():
     corners, normals = _curved_patch_inputs()
     primitive = _logical_patch(corners, normals, render_tolerance=0.5)

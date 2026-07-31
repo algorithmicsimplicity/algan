@@ -462,6 +462,33 @@ def set_raster_tri_precompute(enabled):
     RASTER_TRI_PRECOMPUTE = bool(enabled)
 
 
+# Camera-plane clip for candidate bboxes (raster_pipeline._clipped_screen_
+# extents).  A primitive straddling the camera plane has no bounded projection,
+# so the front-end used to hand it the entire window as its candidate bbox --
+# at HD, ~65k candidate chunks for one primitive-frame.  A camera travelling
+# past or around the scene puts most of the geometry in that state at once,
+# which is how ``camera.orbit`` ran renders out of memory.  With this on, a
+# straddler is clipped to the front half-space and gets the real screen extent
+# of the part a primary ray can reach (and is culled outright when that lands
+# off screen); only primitives passing essentially through the camera origin
+# still fall back to the whole window.
+#
+# Output-neutral: candidate pixels are exact-tested either way, so a tighter
+# bbox only skips pixels that would have missed.  Off restores the old
+# full-window straddler bbox.  Parity: benchmarks/_raster_straddle_clip_parity.py;
+# the conservativeness proof is brute-forced by
+# benchmarks/_raster_clip_extents_check.py.
+RASTER_STRADDLE_CLIP = (
+    os.environ.get("ALGAN_RASTER_STRADDLE_CLIP", "1") == "1")
+
+
+def set_raster_straddle_clip(enabled):
+    """Toggle the camera-plane clip of hybrid-raster candidate bboxes (see
+    ``RASTER_STRADDLE_CLIP``)."""
+    global RASTER_STRADDLE_CLIP
+    RASTER_STRADDLE_CLIP = bool(enabled)
+
+
 # Empty-pixel fast path of the raster resolve: the host pre-fills every
 # primary's committed state with the retired-empty result (pix_accum row
 # [0,0,0,0, 1,1,1] -- zero colour, full leftover background weight -- with

@@ -1219,7 +1219,8 @@ class RenderLoopMixin:
             out = self.memory.get_tensor(
                 (duration, width * height, channels), frame_dtype
             )
-            _prefill_background(out, bgf, 0, device)
+            _prefill_background(out, bgf, 0, device,
+                                background_frames=duration)
             frames = post_process_frames(
                 self.memory,
                 out.view(duration, height, width, channels),

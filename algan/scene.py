@@ -1016,8 +1016,19 @@ class Scene(RenderLoopMixin):
             return self
         if isinstance(background_color, str):
             a = self.video_settings.anti_alias_level
-            background_color = F.interpolate(get_image(background_color).transpose(0,-1).unsqueeze(0), [_*a for _ in tuple(self.frame_size)],
-                                             mode='bilinear', antialias='bilinear').squeeze(0).permute(1,2,0).unsqueeze(0)
+            # get_image returns [height, width, channels]; interpolate wants
+            # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
+            # the image's rows and columns instead, rendering it transposed.)
+            image = get_image(background_color).permute(2, 0, 1).unsqueeze(0)
+            image = F.interpolate(
+                image, [_ * a for _ in tuple(self.frame_size)],
+                mode='bilinear', antialias='bilinear',
+            ).squeeze(0).permute(1, 2, 0)
+            # Frame buffers are bottom-up (post_process_frames flips them on
+            # the way out, matching the tracer's py = height-1-row), so the
+            # background rows have to be stored bottom-up too -- as the
+            # procedural background path already produces them.
+            background_color = image.flip(0).unsqueeze(0)
         self.background_frame = self.background_color = background_color
         self.background_is_set = True
         return self
