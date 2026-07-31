@@ -16,7 +16,7 @@ def _with_opacity(color, opacity):
     return color
 
 
-def draw_border_then_fill(mobs, run_time=None, lag_ratio=None):
+def draw_border_then_fill(mobs, run_time=None, lag_ratio=None, border_width=2):
     """Animate mobs appearing as if hand-drawn: outline first, then fill.
 
     Each mob's border is traced out, then its fill fades in. Mobs are animated
@@ -35,6 +35,9 @@ def draw_border_then_fill(mobs, run_time=None, lag_ratio=None):
     lag_ratio
         Fraction of one mob's animation that elapses before the next begins.
         Defaults to a value that keeps the whole sequence legible.
+    border_width
+        Sets the Mobs' border_widths to this value prior to animation.
+        If None, no change to border_widths is made. Defaults to 5.
 
     Returns
     -------
@@ -72,6 +75,8 @@ def draw_border_then_fill(mobs, run_time=None, lag_ratio=None):
         for mob in mobs:
             mob.set_opacity_via_color(0)
             mob.border_color = _with_opacity(mob.border_color, 0)
+            if border_width is not None:
+                mob.border_width = border_width
 
     with Lag(
         lag_ratio,

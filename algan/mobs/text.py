@@ -346,8 +346,8 @@ class Tex(Mob):
 
     def write(
         self,
-        run_time: float | None = None,
-        lag_ratio: float | None = None,
+        *args, **kwargs
+
     ):
         """Animate this text appearing as if it were being hand-written.
 
@@ -363,13 +363,8 @@ class Tex(Mob):
 
         Parameters
         ----------
-        run_time
-            Total seconds for the whole sequence. Defaults to ``None``, meaning it
-            follows from the glyph count and ``lag_ratio``.
-        lag_ratio
-            Fraction of one glyph's animation that elapses before the next begins.
-            Defaults to ``None``, meaning inherit from the enclosing context. ``0``
-            writes every glyph at once.
+        *args, **kwargs
+            Passed to :func:`~.draw_border_then_fill`
 
         Returns
         -------
@@ -391,11 +386,7 @@ class Tex(Mob):
         # imported after the mobs package during algan's own initialization.
         from algan.animations.manim_animations import draw_border_then_fill
 
-        draw_border_then_fill(
-            self.character_mobs,
-            run_time=run_time,
-            lag_ratio=lag_ratio,
-        )
+        draw_border_then_fill(self.character_mobs, *args, **kwargs)
         return self
 
     def on_create(self):

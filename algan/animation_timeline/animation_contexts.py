@@ -9,11 +9,11 @@ from algan.scene_manager import SceneManager
 from algan.animation_timeline.timeline import TimelineSpan
 from algan.sound.audio_effect import AudioEffect
 from algan.constants import rate_funcs
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from algan.utils.python_utils import traverse
 
-DEFAULT_RUN_TIME = 2
+DEFAULT_RUN_TIME = 1
 DEFAULT_RATE_FUNC = rate_funcs.smooth
 
 
@@ -163,58 +163,12 @@ def animation_manager_for(*owners):
     return managers[0] if managers else _active_animation_manager()
 
 
-class RateFuncWrapper:
-    """A rate function plus the timespan it is being applied over.
-
-    Contexts wrap their rate function in this so the function can be re-scaled when
-    a ``run_time`` retimes the animation. You do not normally construct one --
-    pass a plain callable as ``rate_func`` and the context wraps it.
-
-    Parameters
-    ----------
-    rf
-        Rate function mapping progress in ``[0, 1]`` to adjusted progress.
-    """
-
-    def __init__(self, rf):
-        self.rf = rf
-        self.time_set = False
-
-    def set_full_time(self, sf, ef):
-        """Record the full timespan this rate function is applied over.
-
-        Parameters
-        ----------
-        sf
-            Start time of the full span, in seconds.
-        ef
-            End time of the full span, in seconds.
-        """
-        self.s_full = sf
-        self.e_full = ef
-
-    def __call__(self, t):
-        """Evaluate the wrapped rate function.
-
-        Parameters
-        ----------
-        t
-            Animation progress, ``0`` to ``1``.
-
-        Returns
-        -------
-        float
-            Adjusted progress.
-        """
-        return self.rf(t)
-
-
 @dataclass(kw_only=True)
 class AnimationContext:
     """Base class for the ``with`` blocks that control animation timing.
 
-    A context decides *when* the animations recorded inside it happen -- together,
-    one after another, overlapping, or not at the time at all. Use the subclasses
+    A context decides *when* the animations recorded inside it happen: together,
+    one after another, overlapping, or not at all. Use the subclasses
     rather than this class directly: :class:`~.Sync`, :class:`~.Seq`,
     :class:`~.Lag`, :class:`~.Off`, :class:`~.Audio`, :class:`~.Speech`.
 
@@ -273,7 +227,7 @@ class AnimationContext:
         is not currently active.
     """
 
-    run_time: float | None = None
+    run_time: float | None = field(default=None, kw_only=False)
     run_time_unit: float | None = None
     same_run_time: bool | None = None
     lag_ratio: float | None = None
@@ -332,15 +286,7 @@ class AnimationContext:
         ]:
             inherit_missing_value(attr)
 
-        if self.rate_func is not None and not isinstance(
-            self.rate_func, RateFuncWrapper
-        ):
-            self.rate_func = RateFuncWrapper(self.rate_func)
         self.rate_func = copy.deepcopy(self.rate_func)
-        if self.rate_func_compose is not None and not isinstance(
-            self.rate_func_compose, RateFuncWrapper
-        ):
-            self.rate_func_compose = RateFuncWrapper(self.rate_func_compose)
         self.rate_func_compose = copy.deepcopy(self.rate_func_compose)
         new_kwargs = self.kwargs
         self.kwargs = self.prev_context.kwargs | new_kwargs
@@ -767,7 +713,7 @@ class Off(AnimationContext):
 
     Everything inside the block takes effect at once: the scene jumps straight to
     the new state, and the video is no longer for it. This is how you set a scene
-    up -- position, colour, materials -- without the viewer watching things slide
+    up (position, colour, materials, etc) without the viewer watching things slide
     into place, and how you make a cut rather than a transition.
 
     ``Off`` takes priority over enclosing contexts by default, so a ``run_time``
@@ -813,8 +759,7 @@ class Off(AnimationContext):
 class Lag(AnimationContext):
     """Overlap the block's animations, each starting partway into the last.
 
-    The middle ground between :class:`~.Sync` (all at once) and :class:`~.Seq` (one
-    after another): each animation begins after a fraction of the previous one has
+    Each animation begins after a fraction of the previous one has
     played, giving a cascade or ripple. Animating a list of Mobs inside
     ``Lag(0.1)`` is the usual way to make them arrive in a wave rather than
     together.
@@ -824,10 +769,12 @@ class Lag(AnimationContext):
     lag_ratio
         Fraction of one animation's duration to wait before starting the next.
         ``0`` is fully simultaneous, ``1`` fully sequential, ``0.1`` starts each
-        animation when the previous one is a tenth done.
-    *args, **kwargs
-        Passed to :class:`~.AnimationContext` -- notably ``run_time`` to fix the
-        total duration of the whole cascade.
+        animation when the previous one is a tenth done. Can be larger than 1,
+        in which case it introduces a pause (wait) after each animation finishes.
+    run_time
+        Passed to :class:`~.AnimationContext` .
+    **kwargs
+        Passed to :class:`~.AnimationContext` .
 
     Examples
     --------
@@ -843,22 +790,22 @@ class Lag(AnimationContext):
     :class:`~.Seq` : ``lag_ratio=1``.
     """
 
-    def __init__(self, lag_ratio: float, *args, **kwargs):
-        super().__init__(*args, lag_ratio=lag_ratio, new_animation=True, **kwargs)
+    def __init__(self, lag_ratio: float, run_time: float | None = None, **kwargs):
+        super().__init__(run_time, lag_ratio=lag_ratio, new_animation=True, **kwargs)
 
 
 class Sync(Lag):
     """Play the block's animations all at the same time.
 
-    Everything inside starts together, so the block takes as long as one animation
-    rather than the sum of them -- the way to make a Mob move and change colour in
-    a single beat.
+    Everything inside starts together, so the block takes as long as the longest
+    animation component animation rather than the sum of them.
 
     Parameters
     ----------
-    *args, **kwargs
-        Passed to :class:`~.Lag` with ``lag_ratio=0``; notably ``run_time`` to set
-        how long the block lasts.
+    run_time
+        Passed to :class:`~.AnimationContext` .
+    **kwargs
+        Passed to :class:`~.Lag` with ``lag_ratio=0`` .
 
     Examples
     --------
@@ -869,8 +816,8 @@ class Sync(Lag):
             square.color = BLUE
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(lag_ratio=0, *args, **kwargs)
+    def __init__(self, run_time: float | None = None, **kwargs):
+        super().__init__(lag_ratio=0, run_time=run_time, **kwargs)
 
 
 class Seq(Lag):
@@ -883,9 +830,10 @@ class Seq(Lag):
 
     Parameters
     ----------
-    *args, **kwargs
-        Passed to :class:`~.Lag` with ``lag_ratio=1``; notably ``run_time`` to fit
-        the whole sequence into a fixed time, which rescales its parts to match.
+    run_time
+        Passed to :class:`~.AnimationContext` .
+    **kwargs
+        Passed to :class:`~.Lag` with ``lag_ratio=1``.
 
     Examples
     --------
@@ -897,8 +845,8 @@ class Seq(Lag):
             square.move(LEFT)
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(lag_ratio=1, *args, **kwargs)
+    def __init__(self, run_time: float | None = None, **kwargs):
+        super().__init__(lag_ratio=1, run_time=run_time, **kwargs)
 
 
 class Audio(AnimationContext):
@@ -944,7 +892,7 @@ class Audio(AnimationContext):
 
     def __enter__(self):
         context = super().__enter__()
-        if self.prev_context.run_time_unit > 0:
+        if self.prev_context.run_time_unit > 0 and self.prev_context.run_time > 0:
             self.animation_manager.scene.add_effect(
                 AudioEffect(self.audio_clip, self.get_current_time())
             )
@@ -966,7 +914,7 @@ class Speech(Audio):
         to select the matching audio.
     wait_at_end
         Extra seconds to hold after the line finishes. Defaults to ``1``, leaving a
-        beat between sentences. A further second is added when the block exits.
+        beat between sentences.
     *args, **kwargs
         Passed to :class:`~.Audio`.
 
@@ -984,10 +932,6 @@ class Speech(Audio):
         audio_manager = animation_manager.scene.audio_manager
         audio_manager.append_script(script)
         super().__init__(audio_manager.get_speech(script), wait_at_end, *args, **kwargs)
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        super().__exit__(exc_type, exc_val, exc_tb)
-        self.wait(1)
 
 
 class SlideShow(Seq):

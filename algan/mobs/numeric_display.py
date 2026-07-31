@@ -83,6 +83,14 @@ class NumericDisplay(Mob):
             c.on_create = lambda c=c: c
         #self.components = [*self.digit_mobs, self.decimal, self.negative_sign]
 
+    @property
+    def value(self):
+        return self.get_animated_attribute("value")
+
+    @value.setter
+    def value(self, value):
+        return self.set_value(value)
+
     def on_create(self):
         with Sync(animation_manager=self.animation_manager):
             for c in self.get_descendants():
@@ -92,14 +100,11 @@ class NumericDisplay(Mob):
                         c.set_non_recursive(opacity = 0)
                     c.set_non_recursive(opacity = o)
 
-    def set_value(self, value):
-        return self.change_value(value)
-
     def get_value(self):
         return self.value
 
     @animated_function(animated_args={"interpolation": 0})
-    def change_value(self, value, interpolation=1):
+    def set_value(self, value, interpolation=1):
         value = cast_to_tensor(value)
         old_value = self.value
         interpolated_value = old_value * (1 - interpolation) + interpolation * value

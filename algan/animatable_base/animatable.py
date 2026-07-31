@@ -1166,10 +1166,10 @@ class Animatable:
     def spawn(self, animate: bool = True):
         """Bring the Mob into the video.
 
-        Nothing appears on screen until it is spawned, and changes made beforehand
-        cost no video time -- which is why construction, materials and initial
-        placement are all free. After spawning, changes to the Mob animate by
-        default.
+        The mob does not appear on screen until it is spawned.
+        Changes made before spawning are not animated.
+        After spawning, changes to the Mob animate by
+        default and are controlled by :class:`~.AnimationContexts` .
 
         Spawning is recursive: children spawn with their parent. Spawning a Mob that
         is already spawned does nothing.
@@ -1177,8 +1177,8 @@ class Animatable:
         Animation
         ---------
         Recorded as an animation over the current context's duration (1 second by
-        default): the Mob fades in. ``spawn(animate=False)`` makes it appear at full
-        opacity immediately, and still costs no time.
+        default): the Mob fades in. ``spawn(animate=False)`` makes it appear
+        immediately, no animation.
 
         Parameters
         ----------
@@ -1190,7 +1190,7 @@ class Animatable:
         -------
         :class:`~.Animatable`
             This object, so calls can be chained -- which is what makes
-            ``Square().spawn()`` work.
+            ``square = Square().spawn()`` work.
 
         See Also
         --------

@@ -9,6 +9,33 @@ import webbrowser
 from pathlib import Path
 
 
+def _sphinx_command(docs_dir: Path, *, skip_examples: bool) -> list[str]:
+    source_dir = docs_dir / "source"
+    build_dir = docs_dir / "build"
+    # The Algan directive resolves skip-manim while Sphinx reads sources, so a
+    # shared doctree cache would preserve placeholders when the tag is removed.
+    doctree_dir = build_dir / (
+        "doctrees-without-examples"
+        if skip_examples
+        else "doctrees-with-examples"
+    )
+
+    command = [
+        sys.executable,
+        "-m",
+        "sphinx",
+        "-M",
+        "html",
+        str(source_dir),
+        str(build_dir),
+        "-d",
+        str(doctree_dir),
+    ]
+    if skip_examples:
+        command.extend(["-t", "skip-manim"])
+    return command
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -28,21 +55,9 @@ def main() -> int:
     args = parser.parse_args()
 
     docs_dir = Path(__file__).resolve().parent
-    source_dir = docs_dir / "source"
     build_dir = docs_dir / "build"
 
-    command = [
-        sys.executable,
-        "-m",
-        "sphinx",
-        "-M",
-        "html",
-        str(source_dir),
-        str(build_dir),
-    ]
-    if args.skip_examples:
-        command.extend(["-t", "skip-manim"])
-
+    command = _sphinx_command(docs_dir, skip_examples=args.skip_examples)
     subprocess.run(command, cwd=docs_dir.parent, check=True)
 
     if not args.no_open:
