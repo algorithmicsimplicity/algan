@@ -59,29 +59,6 @@ def write_frames_from_queue(queue, file_writer):
         file_writer.write_frame(frame.numpy())
 
 
-def _max_render_duration(bytes_remaining, requested_frames, bytes_per_frame,
-                         fixed_bytes_for_frames):
-    """Largest frame count fitting ``fixed(n) + n * per_frame`` bytes.
-
-    ``fixed_bytes_for_frames`` models bounded wavefront tile state. It grows
-    only until a tile is full, unlike the output/post-process buffers that grow
-    for every frame. Returning one on an undersized arena preserves the
-    renderer's existing single-frame OOM diagnostic/retry path.
-    """
-    requested_frames = max(1, int(requested_frames))
-    bytes_per_frame = max(1, int(bytes_per_frame))
-    lo, hi, best = 1, requested_frames, 1
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        needed = bytes_per_frame * mid + int(fixed_bytes_for_frames(mid))
-        if needed <= bytes_remaining:
-            best = mid
-            lo = mid + 1
-        else:
-            hi = mid - 1
-    return best
-
-
 def _max_duration_that_fits(requested_frames, fits):
     """Largest positive duration for which the monotone ``fits`` predicate is
     true.

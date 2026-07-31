@@ -6,25 +6,12 @@ import algan.render_loop as render_loop_module
 from algan.render_loop import (
     RenderLoopMixin,
     _max_duration_that_fits,
-    _max_render_duration,
     _prepare_background_for_chunk,
     _raytrace_frame_buffers_end,
     _raytrace_persistent_input_end,
 )
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.scene_builder import _prefill_background
-
-
-def test_fixed_render_memory_is_paid_once_not_per_frame():
-    # 100 bytes/frame plus tile state that saturates at 400 bytes.
-    def fixed(n):
-        return min(n * 200, 400)
-
-    assert _max_render_duration(900, 20, 100, fixed) == 5
-
-
-def test_undersized_arena_preserves_single_frame_oom_path():
-    assert _max_render_duration(50, 20, 100, lambda _n: 400) == 1
 
 
 def test_animation_duration_search_uses_the_true_maximum():
@@ -137,10 +124,6 @@ def test_render_batch_sizes_postprocess_for_each_candidate(monkeypatch):
     class Primitive:
         _rt_projected = True
         memory = None
-
-        @staticmethod
-        def get_fixed_memory_used(_num_frames):
-            return 0
 
         def render(self, *args, **_kwargs):
             duration = args[6] - args[5]

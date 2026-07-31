@@ -416,8 +416,8 @@ float per fragment plus the union accumulator (cheap); sample masks add more.
 Hence the two-kernel split of §5(c) rather than one fatter resolve.
 
 **8.5 Memory and batch-size accounting shift.** At AA=1 the pixel count drops
-4x, so tiles, wavefront state (`_wavefront_state_bytes_per_primary`,
-`primitives._set_raytrace_memory_estimates`), the sparse discovery footprint
+4x, so tiles, wavefront state (`_wavefront_state_bytes_per_primary`), the
+sparse discovery footprint
 (`note_sparse_discovery_footprint`) and the HDR frame buffer all shrink, and
 frames-per-batch rises ~4x. Good for throughput, but batch sizing is a tuned
 system — expect surprises, especially the fragmentation the HDR float buffer

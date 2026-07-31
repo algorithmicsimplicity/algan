@@ -593,7 +593,6 @@ pixel tests pass on the default path post-change.
 
 Sizing: automatic tiling still charges the conservative worst case (every
 pool slot active ⇒ the same 96 B/slot as before, `(25 + 6*KBUF) * 4` in
-`primitives._set_raytrace_memory_estimates` and
 `tracer._wavefront_state_bytes_per_primary`), so the exact-size transient
 batch can never overrun the arena. In the hybrid renderer the primary pass
 never allocates a hit batch at all, and unused continuation reserve no longer

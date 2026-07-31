@@ -316,6 +316,7 @@ def render_all_funcs(
     smoke_test=False,
     prefix=None,
     funcs=None,
+    speech_source=None,
     **kwargs,
 ):
     def run(output_directory=None, video_settings=None, output_root=None, prefix=None):
@@ -377,6 +378,7 @@ def render_all_funcs(
             with Scene(video_settings=video_settings) as active_scene:
                 if "background_color" in kwargs:
                     active_scene.set_background_color(kwargs["background_color"], overwrite=False)
+                active_scene.audio_manager.set_speech_source(speech_source)
                 function()
                 if not smoke_test:
                     results.append(

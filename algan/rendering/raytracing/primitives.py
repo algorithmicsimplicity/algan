@@ -24,7 +24,7 @@ from algan.utils.memory_utils import empty_cache
 from algan.rendering.primitives.bezier_circuit_primitive import batch_arange, BezierCircuitPrimitive
 from algan.rendering.raytracing import pn_control_points, pn_patch_coefficients
 from algan.rendering.raytracing.pn_patch import pn_obb
-from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_ALPHA, KBUF
+from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_ALPHA
 from algan.rendering.raytracing.settings import _shader_is_core, _shader_material_id, _MAT_SLOTS, _MAT_DEFAULTS
 from algan.rendering.raytracing.shading_taichi import MAT_W
 from algan.rendering.raytracing.stbvh import EMPTY_LO, EMPTY_HI
@@ -55,89 +55,6 @@ def _sample_tensor(values, device, dtype):
         cached = torch.tensor(values, device=device, dtype=dtype)
         _SAMPLE_TENSOR_CACHE[key] = cached
     return cached
-
-
-def _set_raytrace_memory_estimates(primitive, camera):
-    """Split ray-trace memory into fixed tile and per-frame components.
-
-    Wavefront state is reused for every bounded ray tile; charging it once per
-    frame forced HD renders into one-frame chunks even though adding a frame
-    only grows the output/post-process buffers. Monte Carlo uses the megakernel
-    and has no wavefront tile state.
-    """
-    pixels = int(camera.screen_width * camera.screen_height)
-    mc = rt_settings.SAMPLES_PER_PIXEL > 1
-    scene = getattr(primitive, "scene", None)
-    transparent = bool(
-        scene is not None
-        and callable(getattr(scene, "background_is_transparent", None))
-        and scene.background_is_transparent()
-    )
-    channels = 5 if transparent else 4
-    output_itemsize = (
-        torch.float32.itemsize
-        if rt_settings.is_post_process_tonemap_enabled()
-        else torch.uint8.itemsize
-    )
-    # Exact renderer-owned per-frame buffers. Post-processing has its own peak
-    # estimator and shares the temporary arena after the wavefront releases.
-    primitive._rt_frame_bytes = pixels * channels * output_itemsize
-    if mc:
-        primitive._rt_frame_bytes += pixels * 5 * torch.float32.itemsize
-    if mc:
-        primitive._rt_fixed_bytes = 0
-        return
-
-    primitive._rt_pixels_per_frame = pixels
-    primitive._rt_max_tile_rays = max(
-        1, int(rt_settings.WAVEFRONT_TILE_RAYS))
-    # Peak general-wavefront layout: persistent ro(3), rd(3), acc(4), sca(7:
-    # colour transport), int(5), rs_pix(1), and two arena-backed active-index
-    # buffers, plus one transient six-word KBUF surface-event batch for every
-    # simultaneously active slot. Per-primary storage is pix_accum(7). The
-    # continuation allocator is a fixed two-word counter per tile, not one
-    # counter per pixel. All entries are four bytes. The transient event batch
-    # is charged conservatively at pool capacity even though runtime allocation
-    # is only ``num_active`` rows.
-    primitive._rt_pool_bytes_per_ray = (25 + 6 * KBUF) * 4
-    primitive._rt_primary_bytes_per_ray = 7 * 4
-
-
-def _fixed_wavefront_bytes(primitive, num_frames):
-    total_primary = (getattr(primitive, "_rt_pixels_per_frame", 0)
-                     * num_frames)
-    tile = getattr(primitive, "_rt_max_tile_rays", 0)
-    pool_b = getattr(primitive, "_rt_pool_bytes_per_ray", 0)
-    primary_b = getattr(primitive, "_rt_primary_bytes_per_ray", 0)
-    # Compatibility fallback for callers without the merged-scene-aware
-    # estimator in tracer.get_wavefront_memory_required. Take the maximum of
-    # the general and sorted route layouts, with and without a shared
-    # continuation pool.
-    plain_primary = min(tile, total_primary)
-    plain = plain_primary * (pool_b + primary_b)
-    pool_ratio = max(2, int(rt_settings.REFRACT_INITIAL_POOL_RATIO))
-    split_primary = min(max(1, tile // pool_ratio), total_primary)
-    split = split_primary * (pool_ratio * pool_b + primary_b)
-    # Legacy sorted-route event state (unsupported but still selectable):
-    # rs_hit(16 f32), key, primitive id and worst-case per-slot shadow bits.
-    # Runtime holds about 2/3 as many pool slots.
-    sorted_extra = (16 + 1 + 1 + 1) * 4
-    sorted_plain_primary = min(max(1, (tile * 2) // 3), total_primary)
-    sorted_plain = sorted_plain_primary * (
-        pool_b + sorted_extra + primary_b
-    )
-    sorted_split_primary = min(
-        max(1, (tile * 2) // (3 * pool_ratio)), total_primary
-    )
-    sorted_split = sorted_split_primary * (
-        pool_ratio * (pool_b + sorted_extra) + primary_b
-    )
-    # Worst general metadata (col_row, fused gen metadata, extended layer
-    # metadata, visibility/count words) plus initial alignment, rounded to a
-    # whole word. The route-aware estimator removes this tiny worst-case pad.
-    # Includes the shared allocator's two int32 words plus route metadata,
-    # initial alignment and conservative padding.
-    return max(plain, split, sorted_plain, sorted_split) + 64
 
 
 class RayTracedTrianglePrimitive(TrianglePrimitive):
@@ -482,13 +399,6 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             visible.unsqueeze(-1), hi,
             torch.tensor(EMPTY_HI, device=hi.device)).contiguous()
 
-    def _set_frame_buffer_bytes(self, camera):
-        """Per-frame buffer bytes: the u8 output, plus the f32 sample
-        accumulator in Monte Carlo mode, plus the wavefront's per-ray global
-        state.
-        """
-        _set_raytrace_memory_estimates(self, camera)
-
     def _stash_texture_maps(self):
         """Stash the raw texture maps (color / material / normal) for merge
         time and return the packed ``[T, N, 6]`` per-triangle uv tensor, or
@@ -521,8 +431,6 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self.colors = self.shader_param_values = None
         self.uvs = self.texture_map = None
         self.material_texture_map = self.normal_texture_map = None
-
-        self._set_frame_buffer_bytes(camera)
 
         # Ensure released geometry is actually freed before rendering.
         empty_cache(force_gc=False)
@@ -558,17 +466,6 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
         self._release_unpacked_geometry(camera)
         return self
-
-    def get_memory_used_per_timestep(self):
-        return self._rt_frame_bytes
-
-    def get_memory_used_for_blending(self, start_ind, end_ind):
-        return 0  # Blending happens in-register inside the trace kernel.
-
-    def get_fixed_memory_used(self, num_frames=1):
-        if rt_settings.SAMPLES_PER_PIXEL > 1:
-            return 0
-        return _fixed_wavefront_bytes(self, num_frames)
 
     def render(self, primitives, scene, save_image, screen_width,
                screen_height, time_start, time_end, background_color,
@@ -1467,8 +1364,6 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # release the control points to reduce resident GPU memory.
         self.corners = None
 
-        _set_raytrace_memory_estimates(self, camera)
-
         # Ensure released geometry is actually freed before rendering.
         empty_cache(force_gc=False)
         return self
@@ -1826,17 +1721,6 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         inflate = (0.5 * self._rt_border_width.amax(0) + 1.5) * world_per_px
         self._rt_frame_lo = (lo - inflate.view(1, -1, 1)).contiguous()
         self._rt_frame_hi = (hi + inflate.view(1, -1, 1)).contiguous()
-
-    def get_memory_used_per_timestep(self):
-        return self._rt_frame_bytes
-
-    def get_memory_used_for_blending(self, start_ind, end_ind):
-        return 0  # Blending happens in-register inside the trace kernel.
-
-    def get_fixed_memory_used(self, num_frames=1):
-        if rt_settings.SAMPLES_PER_PIXEL > 1:
-            return 0
-        return _fixed_wavefront_bytes(self, num_frames)
 
     def render(self, primitives, scene, save_image, screen_width,
                screen_height, time_start, time_end, background_color,

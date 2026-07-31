@@ -91,18 +91,5 @@ class RenderPrimitive:
         merged into one batched primitive of this class."""
         return f"{self.__class__}"
 
-    def get_memory_used_per_timestep(self):
-        raise NotImplementedError
-
-    def get_memory_used_for_blending(self, start_ind, end_ind):
-        raise NotImplementedError
-
-    def get_fixed_memory_used(self, num_frames=1):
-        """Render-arena bytes paid once per render chunk, not per frame."""
-        return 0
-
-    def get_memory_used(self, start_ind, end_ind):
-        return self.get_memory_used_per_timestep() * (end_ind - start_ind)
-
     def project_to_screen(self, camera, light_sources):
         raise NotImplementedError

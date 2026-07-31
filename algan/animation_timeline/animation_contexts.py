@@ -892,7 +892,9 @@ class Audio(AnimationContext):
 
     def __enter__(self):
         context = super().__enter__()
-        if self.prev_context.run_time_unit > 0 and self.prev_context.run_time > 0:
+        if self.prev_context.run_time_unit > 0 and (
+                self.prev_context.run_time is None or
+                self.prev_context.run_time > 0):
             self.animation_manager.scene.add_effect(
                 AudioEffect(self.audio_clip, self.get_current_time())
             )
