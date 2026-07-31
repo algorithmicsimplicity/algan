@@ -212,7 +212,7 @@ _M_CENTER = 0      # 0-2   plane origin
 _M_NORMAL = 3      # 3-5   unit plane normal
 _M_BASIS_U = 6     # 6-8   plane frame u axis (unit)
 _M_BASIS_V = 9     # 9-11  plane frame v axis (unit)
-_M_BORDER_W = 12   # border half-width in screen pixels
+_M_BORDER_W = 12   # border stroke width in screen pixels (see _circuit_point_region)
 _M_FILLED = 13     # > 0.5 if the circuit interior is filled
 _M_GRID_W = 14     # texture grid width  (1 for plain fills)
 _M_GRID_H = 15     # texture grid height (1 for plain fills)
@@ -236,6 +236,53 @@ def _safe_inverse(x: ti.f32) -> ti.f32:
     if ti.abs(x) > 1e-12:
         r = 1.0 / x
     return r
+
+
+@ti.func
+def _circuit_query_radius(border_w, outline_w, filled):
+    """Nearest-edge search radius that can classify one point of a circuit.
+
+    ``border_w`` is the circuit's full stroke width in plane units. A FILLED
+    circuit draws its border INWARD from the outline, so classification needs
+    distances out to the whole width -- or to the hairline dilation
+    ``outline_w``, whichever reaches further. An UNFILLED one centres the stroke
+    on the path and only needs half the width.
+    """
+    r = 0.5 * ti.abs(border_w)
+    if filled:
+        r = ti.max(ti.abs(border_w), outline_w)
+    return r
+
+
+@ti.func
+def _circuit_point_region(border_w, outline_w, filled, crossings, min_dist_sq):
+    """Classify one point of a circuit as ``(drawn, in_border)``.
+
+    ``border_w`` is the full stroke width and ``crossings``/``min_dist_sq`` come
+    from :func:`_bezier_point_metrics`, so the signed distance to the outline is
+    ``d = +/- sqrt(min_dist_sq)``, positive inside.
+
+    A FILLED circuit's border runs INWARD -- the drawn region is the fill itself
+    (dilated by ``outline_w`` so hairlines and degenerate fills survive) and the
+    border is the part of it within ``border_w`` of the outline, i.e. ``d <=
+    border_w``. Raising ``border_width`` therefore eats into the shape instead
+    of dilating it, which is what keeps neighbouring glyphs from fusing.
+
+    An UNFILLED circuit has no interior to eat into, so its stroke stays centred
+    on the path: the band ``|d| < border_w / 2``, the same total width.
+    """
+    drawn = False
+    in_border = False
+    if filled:
+        drawn = ((crossings % 2) == 1) or (min_dist_sq < outline_w * outline_w)
+        in_border = drawn and (ti.abs(border_w) > 0.0) and (
+            ((crossings % 2) == 0)
+            or (min_dist_sq < border_w * border_w))
+    else:
+        half = 0.5 * ti.abs(border_w)
+        drawn = min_dist_sq < half * half
+        in_border = drawn
+    return drawn, in_border
 
 
 @ti.func
@@ -1487,19 +1534,16 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                                             * pixel_size)
                                 outline_w = 0.6 * pixel_size
                                 filled = circuit_meta[tm, circuit, _M_FILLED] > 0.5
-                                query_radius = ti.abs(border_w)
-                                if filled:
-                                    query_radius = ti.max(query_radius, outline_w)
+                                query_radius = _circuit_query_radius(
+                                    border_w, outline_w, filled)
                                 te = f % num_edge_frames
                                 crossings, min_dist_sq = _bezier_point_metrics(
                                     circuit, te, u, v, query_radius,
                                     circuit_meta.shape[1], edges_2d, edge_accel)
-                                in_border = min_dist_sq < border_w * border_w
-                                inside = False
-                                if filled:
-                                    inside = ((crossings % 2) == 1) or (
-                                        min_dist_sq < outline_w * outline_w)
-                                if inside or in_border:
+                                inside, in_border = _circuit_point_region(
+                                    border_w, outline_w, filled, crossings,
+                                    min_dist_sq)
+                                if inside:
                                     best_t = t
                                     best_layer = layer
                                     best_circuit = circuit
@@ -1520,57 +1564,119 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
 
 
 @ti.func
+def _circuit_border_color(circuit, f, circuit_border_colors: ti.template()):
+    """A circuit's flat border color/alpha."""
+    tb = f % circuit_border_colors.shape[0]
+    return ti.math.vec4(circuit_border_colors[tb, circuit, 0],
+                        circuit_border_colors[tb, circuit, 1],
+                        circuit_border_colors[tb, circuit, 2],
+                        circuit_border_colors[tb, circuit, 3]), \
+        circuit_border_colors[tb, circuit, 4]
+
+
+@ti.func
+def _circuit_fill_color(circuit, f, u, v,
+                        circuit_meta: ti.template(),
+                        circuit_colors: ti.template()):
+    """A circuit's fill color/alpha, bilinearly sampled from its texture grid
+    (plain fills are 1x1 grids, which degenerate to the single fill color).
+    """
+    color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    alpha = 0.0
+    tm = f % circuit_meta.shape[0]
+    tc = f % circuit_colors.shape[0]
+    grid_w = circuit_meta[tm, circuit, _M_GRID_W]
+    grid_h = circuit_meta[tm, circuit, _M_GRID_H]
+    # Map plane (u, v) to texture-grid coordinates via the precomputed
+    # 2x2 transform (mirrors the rasterizer's texture lookup).
+    c1 = 0.5 * (u * circuit_meta[tm, circuit, _M_TEX]
+                + v * circuit_meta[tm, circuit, _M_TEX + 1]) + 0.5
+    c2 = 0.5 * (u * circuit_meta[tm, circuit, _M_TEX + 2]
+                + v * circuit_meta[tm, circuit, _M_TEX + 3]) + 0.5
+    x = ti.math.clamp(c2 * grid_h, 0.0, ti.max(grid_h - 1.0, 0.0))
+    y = ti.math.clamp(c1 * grid_w, 0.0, ti.max(grid_w - 1.0, 0.0))
+    num_points = circuit_colors.shape[2]
+    x_floor = ti.floor(x)
+    y_floor = ti.floor(y)
+    xr = x - x_floor
+    yr = y - y_floor
+    sum_w = 0.0
+    for corner in ti.static(range(4)):
+        cx = x_floor + (corner % 2)
+        cy = y_floor + (corner // 2)
+        w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
+            yr if (corner // 2) == 1 else 1.0 - yr)
+        p = ti.cast(cx + cy * grid_h, ti.i32)
+        p = ti.math.clamp(p, 0, num_points - 1)
+        color += w * ti.math.vec4(circuit_colors[tc, circuit, p, 0],
+                                  circuit_colors[tc, circuit, p, 1],
+                                  circuit_colors[tc, circuit, p, 2],
+                                  circuit_colors[tc, circuit, p, 3])
+        alpha += w * circuit_colors[tc, circuit, p, 4]
+        sum_w += w
+    color /= ti.max(sum_w, 1e-6)
+    alpha /= ti.max(sum_w, 1e-6)
+    return color, alpha
+
+
+@ti.func
 def _sample_circuit_color(circuit, f, u, v, in_border,
                           circuit_meta: ti.template(),
                           circuit_colors: ti.template(),
                           circuit_border_colors: ti.template()):
     """Color of a circuit at plane coordinates (u, v): the border color, or
-    the fill color bilinearly sampled from the circuit's texture grid (plain
-    fills are 1x1 grids, which degenerate to the single fill color).
+    the fill color sampled from the circuit's texture grid.
     """
     color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     alpha = 0.0
     if in_border == 1:
-        tb = f % circuit_border_colors.shape[0]
-        color = ti.math.vec4(circuit_border_colors[tb, circuit, 0],
-                             circuit_border_colors[tb, circuit, 1],
-                             circuit_border_colors[tb, circuit, 2],
-                             circuit_border_colors[tb, circuit, 3])
-        alpha = circuit_border_colors[tb, circuit, 4]
+        color, alpha = _circuit_border_color(
+            circuit, f, circuit_border_colors)
     else:
-        tm = f % circuit_meta.shape[0]
-        tc = f % circuit_colors.shape[0]
-        grid_w = circuit_meta[tm, circuit, _M_GRID_W]
-        grid_h = circuit_meta[tm, circuit, _M_GRID_H]
-        # Map plane (u, v) to texture-grid coordinates via the precomputed
-        # 2x2 transform (mirrors the rasterizer's texture lookup).
-        c1 = 0.5 * (u * circuit_meta[tm, circuit, _M_TEX]
-                    + v * circuit_meta[tm, circuit, _M_TEX + 1]) + 0.5
-        c2 = 0.5 * (u * circuit_meta[tm, circuit, _M_TEX + 2]
-                    + v * circuit_meta[tm, circuit, _M_TEX + 3]) + 0.5
-        x = ti.math.clamp(c2 * grid_h, 0.0, ti.max(grid_h - 1.0, 0.0))
-        y = ti.math.clamp(c1 * grid_w, 0.0, ti.max(grid_w - 1.0, 0.0))
-        num_points = circuit_colors.shape[2]
-        x_floor = ti.floor(x)
-        y_floor = ti.floor(y)
-        xr = x - x_floor
-        yr = y - y_floor
-        sum_w = 0.0
-        for corner in ti.static(range(4)):
-            cx = x_floor + (corner % 2)
-            cy = y_floor + (corner // 2)
-            w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
-                yr if (corner // 2) == 1 else 1.0 - yr)
-            p = ti.cast(cx + cy * grid_h, ti.i32)
-            p = ti.math.clamp(p, 0, num_points - 1)
-            color += w * ti.math.vec4(circuit_colors[tc, circuit, p, 0],
-                                      circuit_colors[tc, circuit, p, 1],
-                                      circuit_colors[tc, circuit, p, 2],
-                                      circuit_colors[tc, circuit, p, 3])
-            alpha += w * circuit_colors[tc, circuit, p, 4]
-            sum_w += w
-        color /= ti.max(sum_w, 1e-6)
-        alpha /= ti.max(sum_w, 1e-6)
+        color, alpha = _circuit_fill_color(
+            circuit, f, u, v, circuit_meta, circuit_colors)
+    return color, alpha
+
+
+@ti.func
+def _sample_circuit_color_blend(circuit, f, u, v, border_frac,
+                                circuit_meta: ti.template(),
+                                circuit_colors: ti.template(),
+                                circuit_border_colors: ti.template()):
+    """Colour of a circuit point whose pixel straddles the border's inner edge.
+
+    ``border_frac`` is the share of the pixel's COVERED area lying in the border
+    band. 0 and 1 reduce to :func:`_sample_circuit_color`'s fill and border
+    branches exactly (and skip the other branch's work); in between, the two
+    regions are composited by area-weighted alpha -- the premultiplied average a
+    supersampled render converges to -- so the border/fill boundary resolves
+    continuously instead of snapping at the pixel centre. Glow (channel 3) is a
+    separate additive channel and is weighted by area alone.
+    """
+    cb = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    ab = 0.0
+    cf = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    af = 0.0
+    if border_frac > 0.0:
+        cb, ab = _circuit_border_color(circuit, f, circuit_border_colors)
+    if border_frac < 1.0:
+        cf, af = _circuit_fill_color(
+            circuit, f, u, v, circuit_meta, circuit_colors)
+    color = cb
+    alpha = ab
+    if border_frac <= 0.0:
+        color = cf
+        alpha = af
+    elif border_frac < 1.0:
+        wb = border_frac * ab
+        wf = (1.0 - border_frac) * af
+        alpha = wb + wf
+        inv = 1.0 / ti.max(alpha, 1e-6)
+        color = ti.math.vec4(
+            (wb * cb[0] + wf * cf[0]) * inv,
+            (wb * cb[1] + wf * cf[1]) * inv,
+            (wb * cb[2] + wf * cf[2]) * inv,
+            border_frac * cb[3] + (1.0 - border_frac) * cf[3])
     return color, alpha
 
 
@@ -2679,19 +2785,16 @@ def _collect_hits(refit: ti.template(),
                                                 * pixel_size)
                                     outline_w = 0.6 * pixel_size
                                     filled = circuit_meta[tm, circuit, _M_FILLED] > 0.5
-                                    query_radius = ti.abs(border_w)
-                                    if filled:
-                                        query_radius = ti.max(query_radius, outline_w)
+                                    query_radius = _circuit_query_radius(
+                                        border_w, outline_w, filled)
                                     te = f % num_edge_frames
                                     crossings, min_dist_sq = _bezier_point_metrics(
                                         circuit, te, u, v, query_radius,
                                         circuit_meta.shape[1], edges_2d, edge_accel)
-                                    in_border = min_dist_sq < border_w * border_w
-                                    inside = False
-                                    if filled:
-                                        inside = ((crossings % 2) == 1) or (
-                                            min_dist_sq < outline_w * outline_w)
-                                    if inside or in_border:
+                                    inside, in_border = _circuit_point_region(
+                                        border_w, outline_w, filled, crossings,
+                                        min_dist_sq)
+                                    if inside:
                                         slot = worst_idx
                                         if count < KBUF:
                                             slot = count

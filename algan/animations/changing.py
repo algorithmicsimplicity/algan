@@ -123,7 +123,8 @@ class AnimatedBoundary(Group):
         self.vmobject = vmobject
         self.colors = tuple(colors)
         self.max_stroke_width = float(max_stroke_width)
-        # Algan stores half-widths, while Manim's public API uses full strokes.
+        # Manim's stroke_width unit is half an Algan border_width (the same
+        # calibration ManimMob and Text apply on import).
         self.max_border_width = self.max_stroke_width / 2.0
         self.cycle_rate = float(cycle_rate)
         self.back_and_forth = bool(back_and_forth)

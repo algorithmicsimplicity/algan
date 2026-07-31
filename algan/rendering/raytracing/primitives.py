@@ -1469,8 +1469,12 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         hi = torch.where(visible.unsqueeze(-1), hi,
                          torch.tensor(EMPTY_HI, device=device))
 
-        # Inflate by the border (+ anti-crack outline) width converted to
-        # world units at each circuit's distance from the camera, plus the glow radius.
+        # Inflate by however far outside the control-point hull the circuit can
+        # still draw, converted to world units at its distance from the camera.
+        # A filled circuit's border runs INWARD, so the only outward reach is the
+        # anti-crack outline dilation plus the analytic-coverage filter radius
+        # (0.3 + 0.707 = 1.008 px at worst); an unfilled circuit's stroke is
+        # centred on the path, so half its width reaches out as well.
         b1_norm = sb[:, 1].norm(p=2, dim=-1)
         screen_dist = (sp - cam_o).norm(p=2, dim=-1)
         pixel_world_scale = 2.0 / (screen_h * b1_norm * screen_dist).clamp_min(1e-12)
@@ -1478,7 +1482,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         dist = (centers - cam_o.view(-1, 1, 3)).norm(p=2, dim=-1)
         world_per_px = (pixel_world_scale.view(-1, 1) * dist).amax(0)
 
-        inflate = (self._rt_border_width.amax(0) + 1.0) * world_per_px
+        inflate = (0.5 * self._rt_border_width.amax(0) + 1.5) * world_per_px
         self._rt_frame_lo = (lo - inflate.view(1, -1, 1)).contiguous()
         self._rt_frame_hi = (hi + inflate.view(1, -1, 1)).contiguous()
 

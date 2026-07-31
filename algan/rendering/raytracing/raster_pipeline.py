@@ -25,6 +25,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 from algan.rendering.raytracing.raster_taichi import (
     AA_FULL_COVERAGE,
     _AA_MASK_ALL as AA_MASK_ALL,
+    _BEZ_BORDER_BITS,
     RASTER_CHUNK,
     Z_SENTINEL,
     raster_bez_count,
@@ -546,11 +547,34 @@ def _arena_tensor(memory, shape, dtype, fill=None, *, persist=False):
     return out
 
 
+def _check_circuit_ref_capacity(merged):
+    """Guard the circuit id room left in a packed fragment ref.
+
+    ``_pack_bez_ref`` shifts the circuit index up by ``_BEZ_BORDER_BITS`` to make
+    room for the border/fill blend weight, into a signed 32-bit lane. Overflow
+    would silently mis-address a circuit rather than fail, and the ceiling
+    (~8.4M circuits in one batch) is far beyond what fits in memory -- but a
+    silent wrap is worth one host-side comparison per batch.
+    """
+    meta = merged.get("circuit_meta", None)
+    if meta is None:
+        return
+    num_circuits = int(meta.shape[1])
+    limit = (1 << (31 - _BEZ_BORDER_BITS)) - 1
+    if num_circuits > limit:
+        raise OverflowError(
+            f"{num_circuits} bezier circuits in one render batch exceeds the "
+            f"{limit} a packed fragment ref can address; reduce the frame "
+            f"batch size (SETTINGS.computing) or split the scene.")
+
+
 def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     """Return one gather order matching classic depth-bin/layer semantics."""
     is_bez = frag_ref < 0
     bez_code = (-frag_ref - 1).clamp_min(0)
-    bez_layer = bez_code >> 1
+    # Mirrors ``raster_taichi._decode_bez_ref``: the low bits carry the
+    # fragment's border/fill blend weight, not part of the circuit id.
+    bez_layer = bez_code >> _BEZ_BORDER_BITS
     tri_layer = frag_ref + int(layer_offset_triangles)
     layer = torch.where(is_bez, bez_layer, tri_layer).to(torch.int64)
     layer_order = torch.argsort(layer, descending=True, stable=True)
@@ -688,6 +712,7 @@ def prepare_sparse_raster_coverage(
         merged["circuit_border_colors"], merged["edges_2d"],
         merged["edge_accel"],
     )
+    _check_circuit_ref_capacity(merged)
 
     # All forward allocations in this scope are discovery scratch.  Only the
     # final compact arrays use persist=True (reverse arena) and survive.

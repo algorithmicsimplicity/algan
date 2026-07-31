@@ -592,7 +592,9 @@ proportionally more; quote per-scene numbers, never a headline multiple.
     aa=2 and 0.6 at aa=1 — it was never AA-invariant).
   * Colour classification had to widen with the region: a pixel in the
     half-pixel band *outside* a bordered circuit is border-coloured. `|d| <
-    border_w` alone would have handed it the fill colour.
+    border_w` alone would have handed it the fill colour. (Superseded
+    2026-07-31, §13.4: a filled circuit's border no longer reaches outside the
+    outline at all.)
   * Triangles were left entirely alone rather than plumbed at coverage 1.0 in
     the kernels: the host pre-fills the `frag_cov` lane with 1.0, so
     `raster_tri_write` needs no change and a triangle-only scene is provably
@@ -633,6 +635,44 @@ Closed circuits — `Square`, `Circle`, every glyph contour — have continuous
 connections and are geometrically untouched. `_analytic_aa_bez_check.py` gained
 the `unfilled` config (a straight `Line`, an arced one, an `Arrow` and an
 unfilled `Circle`) now that there is something to measure.
+
+13.4 Known gap (circuits) — the border's INNER edge — FIXED 2026-07-31
+----------------------------------------------------------------------
+Coverage antialiased the drawn region's *outer* boundary and nothing else, so a
+bordered circuit resolved one edge continuously and the other by a hard
+per-pixel classification: `in_border` was a BIT. The failure is loud whenever
+the border is the only visible thing — an outlined glyph over a transparent
+fill has a smooth outer contour and a stair-stepped inner one. Supersampling
+never showed it, because there the classification runs at `aa`x resolution and
+the box filter down-samples it.
+
+Two coupled changes:
+
+  * **The border of a FILLED circuit now runs inward** (`_circuit_point_region`,
+    shared by the raster and classic paths). It was a band `|d| < border_w/2`
+    straddling the outline, so raising `border_width` dilated the shape:
+    neighbouring glyphs fused and bordered text went pudgy. The drawn region is
+    now the fill alone, and the border is the part of it with `d <= border_w`.
+    `_M_BORDER_W` became the FULL stroke width (the host dropped its `/2`), so
+    apparent stroke weight is unchanged for a given `border_width`. Unfilled
+    circuits have no interior to eat into and keep the centred band.
+  * **The inner boundary gets its own box filter.** The fill-only region's
+    coverage `clamp((d - border_w)/px + 0.5, 0, 1)` is subtracted from the total,
+    and the remainder over the total is the border's share of the covered area.
+    `_sample_circuit_color_blend` composites the two regions by area-weighted
+    alpha — the premultiplied average supersampling converges to.
+
+The share rides in the low 8 bits of the packed fragment ref
+(`_pack_bez_ref`/`_decode_bez_ref`, and `_exact_fragment_order` shifts by 8 to
+recover the layer) rather than in a per-fragment lane: it is a blend weight for
+an 8-bit framebuffer, and a lane would have cost an ndarray argument through
+five kernels plus every memory estimator. `_terminal_z_hit` needs it too —
+full OUTER coverage is exactly the condition for reaching the z-prepass and says
+nothing about the inner edge, so an opaque glyph's stroke straddles it there.
+
+Circuits with `border_width = 0` (plain `Text`/`Tex`, plain fills) are
+byte-identical: `outer_w = max(0, outline_w)` was already `outline_w`, and the
+border share is gated on a non-zero width.
 
 
 ================================================================================

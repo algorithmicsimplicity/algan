@@ -17,8 +17,8 @@ Important implementation properties:
   layer semantics are respected before transparent culling.
 * Transparent triangle/circuit COUNT and WRITE kernels fetch sampled alpha and
   discard alpha-zero texels before sorting.  Records contain only exact-distance
-  key, typed primitive reference (including the circuit-border bit), two
-  intersection parameters, and an analytic coverage lane.
+  key, typed primitive reference (including the circuit border/fill blend
+  weight), two intersection parameters, and an analytic coverage lane.
 * Analytic anti-aliasing (``ALGAN_ANALYTIC_AA``, see DESIGN_analytic_aa.md):
   each circuit fragment carries the fraction of the pixel square its drawn
   region covers -- a box filter of the outline signed-distance field that
@@ -69,8 +69,10 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     TRIANGLE_EDGE_EPSILON,
     _bezier_normal,
     _bezier_point_metrics,
+    _circuit_point_region,
+    _circuit_query_radius,
     _generate_ray,
-    _sample_circuit_color,
+    _sample_circuit_color_blend,
     _shade_tri_hit,
     _shadow_occluded,
 )
@@ -336,16 +338,29 @@ def _frag_t(key):
     return ti.bit_cast(ti.cast(ti.cast(key, ti.u64) & ti.u64(0xFFFFFFFF), ti.u32), ti.f32)
 
 
+# Quantization of a circuit fragment's border/fill blend weight, which rides in
+# the low bits of its packed ref rather than in a per-fragment lane of its own:
+# 8 bits resolve the blend finer than the framebuffer it lands in, and the
+# circuit id has 23 bits left over, far more than a batch can hold.
+_BEZ_BORDER_LEVELS = 255
+_BEZ_BORDER_BITS = 8
+
+
 @ti.func
-def _pack_bez_ref(circuit, in_border):
-    """Negative typed fragment ref with the border bit folded into the id."""
-    return -((circuit << 1) + (in_border & 1) + 1)
+def _pack_bez_ref(circuit, border_frac):
+    """Negative typed fragment ref with the border weight folded into the id."""
+    q = ti.cast(ti.round(ti.math.clamp(border_frac, 0.0, 1.0)
+                         * _BEZ_BORDER_LEVELS), ti.i32)
+    return -((circuit << _BEZ_BORDER_BITS) + q + 1)
 
 
 @ti.func
 def _decode_bez_ref(ref):
+    """Inverse of :func:`_pack_bez_ref`: ``(circuit, border_frac)``."""
     code = -ref - 1
-    return code >> 1, code & 1
+    return (code >> _BEZ_BORDER_BITS,
+            ti.cast(code & _BEZ_BORDER_LEVELS, ti.f32)
+            * (1.0 / _BEZ_BORDER_LEVELS))
 
 
 @ti.func
@@ -918,34 +933,46 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                    pixel_world_scale: ti.template(),
                    circuit_meta: ti.template(), circuit_colors: ti.template(),
                    edges_2d: ti.template(), edge_accel: ti.template(),
-                   aa: ti.template(), aa_min_half_width: ti.f32):
+                   aa: ti.template(), aa_min_half_width: ti.f32,
+                   border_aa: ti.template()):
     """Exact primary camera-ray/circuit hit for one known pixel.
 
-    Returns ``(ok, t, u, v, in_border, cov)``.  ``cov`` is 1.0 unless the
+    Returns ``(ok, t, u, v, border_frac, cov)``.  ``cov`` is 1.0 unless the
     compile-time ``aa`` template selects analytic coverage, in which case it is
     the fraction of the pixel square the circuit's drawn region covers, and the
     hit is accepted whenever that fraction is non-zero -- including pixels whose
-    CENTRE is outside the circuit but whose square is not.
+    CENTRE is outside the circuit but whose square is not.  ``border_frac`` is
+    the share of that covered area lying in the border band: 0 or 1 unless the
+    ``border_aa`` template is set, where it is continuous across the border's
+    inner edge.
 
     Analytic coverage (see DESIGN_analytic_aa.md ss4).  ``_bezier_point_metrics``
     returns the distance to the nearest outline segment plus a crossing parity,
     so ``d = +/- sqrt(min_dist_sq)`` is a signed distance (positive inside) in
     plane units, and ``pixel_size`` converts it to pixels.  The drawn region is
 
-        filled:    d > -max(|border_w|, min_half_width)
-        unfilled:  |d| < |border_w|                       (a band)
+        filled:    d > -min_half_width
+        unfilled:  |d| < border_w / 2                     (a band)
 
     and its coverage is the box filter ``clamp(distance_to_boundary + 0.5, 0, 1)``
     -- exact for a straight boundary crossing the pixel, which after flattening
     every boundary is.  The band form fades a sub-pixel-wide stroke by its width
     instead of dilating it, and both forms reach exactly 1 half a pixel inside,
     which is what lets the opaque z-prepass keep culling (``raster_bez_z``).
+
+    A filled circuit's border is an INNER boundary at ``d = border_w`` cutting
+    the same drawn region in two (:func:`_circuit_point_region`), so it needs its
+    own box filter: the coverage of the fill-only part is subtracted from the
+    total, and the remainder is the border's area share.  Without that the outer
+    silhouette resolves continuously while the border/fill edge -- which can be
+    the only visible edge, e.g. an outlined glyph over an invisible fill --
+    stays a hard per-pixel classification.
     """
     ok = 0
     t = 0.0
     u = 0.0
     v = 0.0
-    in_border = 0
+    border_frac = 0.0
     cov = 1.0
     ro, rd = _generate_ray(f, px, py, 0.5, 0.5, half_w, half_h,
                            cam_origin, screen_point,
@@ -971,16 +998,15 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
             uu = hit.dot(bu)
             vv = hit.dot(bv)
             pixel_size = pixel_world_scale[f] * th
-            border_w = circuit_meta[tm, circuit, _M_BORDER_W] * pixel_size
+            border_w = ti.abs(
+                circuit_meta[tm, circuit, _M_BORDER_W]) * pixel_size
             outline_w = 0.6 * pixel_size
             if ti.static(aa):
                 outline_w = aa_min_half_width * pixel_size
             filled = circuit_meta[tm, circuit, _M_FILLED] > 0.5
-            query_radius = ti.abs(border_w)
-            if filled:
-                query_radius = ti.max(query_radius, outline_w)
-            if ti.static(aa):
-                # The filter reaches half a pixel past the drawn boundary in
+            query_radius = _circuit_query_radius(border_w, outline_w, filled)
+            if ti.static(aa or border_aa):
+                # The filter reaches half a pixel past each drawn boundary in
                 # any direction, so the nearest-edge query must too -- a pixel
                 # whose centre is OUTSIDE now needs a real distance, where the
                 # classic path was content with "no edge within the radius".
@@ -989,19 +1015,11 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
             crossings, min_dist_sq = _bezier_point_metrics(
                 circuit, te, uu, vv, query_radius,
                 circuit_meta.shape[1], edges_2d, edge_accel)
-            is_border = min_dist_sq < border_w * border_w
-            inside = False
-            if filled:
-                inside = ((crossings % 2) == 1) or (
-                    min_dist_sq < outline_w * outline_w)
-            if ti.static(not aa):
-                if inside or is_border:
-                    ok = 1
-                    t = th
-                    u = uu
-                    v = vv
-                    in_border = 1 if is_border else 0
-            else:
+            inside, is_border = _circuit_point_region(
+                border_w, outline_w, filled, crossings, min_dist_sq)
+            bf = 1.0 if is_border else 0.0
+            c = 1.0
+            if ti.static(aa or border_aa):
                 inv_px = 1.0 / ti.max(pixel_size, 1e-30)
                 # Signed distance, positive inside the outline. min_dist_sq is
                 # left at 1e30 when no edge is within the query radius, which
@@ -1009,29 +1027,40 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                 d = ti.sqrt(ti.min(min_dist_sq, 1e30))
                 if (crossings % 2) == 0:
                     d = -d
-                outer_w = ti.abs(border_w)
-                if filled:
-                    outer_w = ti.max(outer_w, outline_w)
-                signed = d + outer_w
+                signed = d + outline_w
                 if not filled:
                     # Unfilled: the drawn band is bounded on the inside too, so
                     # a stroke thinner than a pixel fades instead of vanishing.
-                    signed = ti.min(signed, ti.abs(border_w) - d)
+                    half = 0.5 * border_w
+                    signed = ti.min(d + half, half - d)
                 c = ti.math.clamp(signed * inv_px + 0.5, 0.0, 1.0)
+                bf = 0.0
+                if border_w > 0.0:
+                    if filled:
+                        # Everything covered, minus the part deeper than the
+                        # stroke width, is border.
+                        fill_c = ti.math.clamp(
+                            (d - border_w) * inv_px + 0.5, 0.0, 1.0)
+                        bf = ti.math.clamp(
+                            (c - fill_c) / ti.max(c, 1e-6), 0.0, 1.0)
+                    else:
+                        bf = 1.0
+            if ti.static(not aa):
+                if inside:
+                    ok = 1
+                    t = th
+                    u = uu
+                    v = vv
+                    border_frac = bf
+            else:
                 if c > 0.0:
                     ok = 1
                     t = th
                     u = uu
                     v = vv
                     cov = c
-                    # Colour classification must widen with the region: a pixel
-                    # in the half-pixel band OUTSIDE a bordered circuit is
-                    # border-coloured, not fill-coloured (|d| < border_w alone
-                    # would hand it the fill).
-                    in_border = 1 if (is_border or (
-                        (ti.abs(border_w) > 0.0) and (d <= -ti.abs(border_w))
-                    )) else 0
-    return ok, t, u, v, in_border, cov
+                    border_frac = bf
+    return ok, t, u, v, border_frac, cov
 
 
 @ti.func
@@ -1050,7 +1079,7 @@ def _bez_pair_pixel(circuit, f, x0, y0, bw, bh, off, j,
     t = 0.0
     u = 0.0
     v = 0.0
-    in_border = 0
+    in_border = 0.0
     cov = 1.0
     o = off + j
     if o < bw * bh:
@@ -1062,7 +1091,8 @@ def _bez_pair_pixel(circuit, f, x0, y0, bw, bh, off, j,
             hit, th, uu, vv, ib, cv = _bez_pixel_hit(
                 circuit, f, px, py, half_w, half_h, cam_origin, screen_point,
                 pixel_basis_x, pixel_basis_y, pixel_world_scale, circuit_meta,
-                circuit_colors, edges_2d, edge_accel, aa, aa_min_half_width)
+                circuit_colors, edges_2d, edge_accel, aa, aa_min_half_width,
+                aa)
             if hit != 0:
                 ok = 1
                 lp = lpi
@@ -1335,7 +1365,7 @@ def raster_bez_count(
                 if ti.static(z_cull):
                     before_z = _order_key(t, circuit) < zbuf[lp]
                 if keep and before_z:
-                    _color, alpha = _sample_circuit_color(
+                    _color, alpha = _sample_circuit_color_blend(
                         circuit, f, u, v, ib, circuit_meta, circuit_colors,
                         circuit_border_colors)
                     if ti.static(aa):
@@ -1364,7 +1394,7 @@ def raster_bez_write(
         frag_key: ti.types.ndarray(),
         frag_ref: ti.types.ndarray(), frag_ab: ti.types.ndarray(),
         frag_cov: ti.types.ndarray()):
-    """Emit circuit records with the border flag packed into ``frag_ref``.
+    """Emit circuit records with the border weight packed into ``frag_ref``.
 
     Must mirror :func:`raster_bez_count`'s acceptance exactly -- the counts sized
     this pass's slots.  ``frag_cov`` is the analytic coverage lane, pre-filled
@@ -1395,7 +1425,7 @@ def raster_bez_write(
                 if ti.static(z_cull):
                     before_z = _order_key(t, circuit) < zbuf[lp]
                 if keep and before_z:
-                    _color, alpha = _sample_circuit_color(
+                    _color, alpha = _sample_circuit_color_blend(
                         circuit, f, u, v, ib, circuit_meta, circuit_colors,
                         circuit_border_colors)
                     if ti.static(aa):
@@ -1820,7 +1850,7 @@ def _terminal_z_hit(zkey, f, px, py, layer_offset_triangles,
                     pixel_world_scale: ti.template(),
                     circuit_meta: ti.template(), circuit_colors: ti.template(),
                     edges_2d: ti.template(), edge_accel: ti.template(),
-                    half_w, half_h):
+                    half_w, half_h, border_aa: ti.template()):
     """Recompute exact payload for the typed visibility-buffer winner.
 
     Always classic (non-analytic) acceptance, for both geometries: a primitive
@@ -1829,6 +1859,11 @@ def _terminal_z_hit(zkey, f, px, py, layer_offset_triangles,
     at least half a pixel away, i.e. strictly inside the classic drawn region.
     So the classic predicate accepts exactly the same winners, and the winner's
     coverage is 1 by construction -- no coverage needs to be returned.
+
+    Full OUTER coverage says nothing about the border's INNER edge, though: a
+    pixel straight through the middle of an opaque glyph's outline stroke is a
+    z-winner and still straddles the border/fill boundary.  So ``border_aa``
+    (the live circuit analytic-coverage setting) still applies there.
     """
     valid = 0
     is_bez = False
@@ -1836,14 +1871,14 @@ def _terminal_z_hit(zkey, f, px, py, layer_offset_triangles,
     t = 0.0
     a = 0.0
     b = 0.0
-    in_border = 0
+    in_border = 0.0
     if zkey != ti.i64(Z_SENTINEL):
         is_bez, prim = _decode_z_layer(zkey, layer_offset_triangles)
         if is_bez:
             valid, t, a, b, in_border, _cov = _bez_pixel_hit(
                 prim, f, px, py, half_w, half_h, cam_origin, screen_point,
                 pixel_basis_x, pixel_basis_y, pixel_world_scale, circuit_meta,
-                circuit_colors, edges_2d, edge_accel, 0, 0.0)
+                circuit_colors, edges_2d, edge_accel, 0, 0.0, border_aa)
         else:
             use_ss, sm, vm, cam_o, il = _ss_setup(
                 f, prim, ss_enabled, tri_pos, tri_screen, cam_origin, 0)
@@ -1986,7 +2021,7 @@ def raster_shadow_event_build(
             ref = 0
             a = 0.0
             b = 0.0
-            in_border = 0
+            in_border = 0.0
             is_bez = False
             valid = 1
             # The z-winner is a fully covering hit by construction, so it
@@ -2015,7 +2050,7 @@ def raster_shadow_event_build(
                     tri_pos, tri_screen, cam_origin, screen_point,
                     pixel_basis_x, pixel_basis_y, pixel_world_scale,
                     circuit_meta, circuit_colors, edges_2d, edge_accel,
-                    gen_meta[2], gen_meta[3])
+                    gen_meta[2], gen_meta[3], aa_bez)
             q += 1
             if valid == 0:
                 continue
@@ -2056,7 +2091,7 @@ def raster_shadow_event_build(
             albedo = ti.math.vec3(0.0, 0.0, 0.0)
             normal = ti.math.vec3(0.0, 0.0, 0.0)
             if is_bez:
-                color, alpha = _sample_circuit_color(
+                color, alpha = _sample_circuit_color_blend(
                     ref, f, a, b, in_border, circuit_meta, circuit_colors,
                     circuit_border_colors)
                 albedo = ti.math.vec3(color[0], color[1], color[2])
@@ -2625,7 +2660,7 @@ def raster_first_shade(
             prim_raw = 0
             a = 0.0
             b = 0.0
-            in_border = 0
+            in_border = 0.0
             from_z = q >= nrun
             idx = start + q
             valid = 1
@@ -2651,7 +2686,7 @@ def raster_first_shade(
                         tri_pos, tri_screen, cam_origin, screen_point,
                         pixel_basis_x, pixel_basis_y, pixel_world_scale,
                         circuit_meta, circuit_colors, edges_2d, edge_accel,
-                        gen_meta[2], gen_meta[3])
+                        gen_meta[2], gen_meta[3], aa_bez)
                 prim_raw = zprim
                 if is_z_bez:
                     prim_raw = _pack_bez_ref(zprim, in_border)
@@ -2762,7 +2797,7 @@ def raster_first_shade(
                     circuit = prim_raw
                     cm = f % circuit_meta.shape[0]
                     # Circuits keep their sampled colour (never material-shaded).
-                    color, alpha = _sample_circuit_color(
+                    color, alpha = _sample_circuit_color_blend(
                         circuit, f, a, b, in_border, circuit_meta,
                         circuit_colors, circuit_border_colors)
                     albedo3 = ti.math.vec3(color[0], color[1], color[2])

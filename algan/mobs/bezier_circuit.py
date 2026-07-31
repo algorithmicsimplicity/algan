@@ -19,6 +19,18 @@ from algan.rendering.raytracing.utils import _unify_time
 DIELECTRIC_IOR = 1.5
 
 
+def _border_width_in_render_pixels(border_width, video_settings):
+    """Convert an authored ``border_width`` to the renderer's stroke width.
+
+    ``border_width`` is authored against PREVIEW's frame height so a border keeps
+    its apparent weight at any resolution.  The renderer wants the FULL stroke
+    width in pixels: a filled circuit lays it inside the outline, an unfilled one
+    centres it on the path (``_circuit_point_region``).
+    """
+    return (border_width * video_settings.resolution[1]
+            / PREVIEW.resolution[1])
+
+
 def _circuit_ior(ior, metalness):
     """Pack a material's IOR into a circuit's transport channel.
 
@@ -284,8 +296,8 @@ class BezierCircuitCubic(Mob):
                 self.opacity,
                 self.basis,
                 self.glow,
-                self.border_width
-                * self.scene.video_settings.resolution[1] / (PREVIEW.resolution[1] * 2),
+                _border_width_in_render_pixels(
+                    self.border_width, self.scene.video_settings),
                 self.border_color,
                 metalness,
                 roughness,
@@ -646,9 +658,8 @@ def build_render_primitives_batched(actors, scene):
         read_optional_material("ior", DIELECTRIC_IOR), reflectivity)
     basis = read("basis", actors)
     g = read("glow", actors)
-    bw = read("border_width", actors) * (
-        scene.video_settings.resolution[1]
-        / (PREVIEW.resolution[1] * 2))
+    bw = _border_width_in_render_pixels(
+        read("border_width", actors), scene.video_settings)
     bc = read("border_color", actors)
     loc = read("location", actors)
     o, basis, g, bw, bc = broadcast_all([o, basis, g, bw, bc],
