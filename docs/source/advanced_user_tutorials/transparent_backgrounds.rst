@@ -66,10 +66,11 @@ the alpha of whatever colour the background resolves to.
     output, use a colour with alpha below one; do not try to return a low alpha from
     a background function.
 
-    Watch out for colour arithmetic too: an Algan :class:`~.Color` includes its
+    Watch out for colour arithmetic too: an Algan
+    :class:`~algan.constants.color.Color` includes its
     opacity, so ``BLUE * 0.5`` halves the alpha as well as the brightness and will
     silently give you transparent output. Use
-    :meth:`Color.set_opacity <.Color.set_opacity>` to say what you mean.
+    :ref:`Color.set_opacity <reference-color-set-opacity>` to say what you mean.
 
 See Also
 ========

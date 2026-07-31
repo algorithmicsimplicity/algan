@@ -86,7 +86,7 @@ controls the default duration of each child animation.
 Transforms
 ==========
 
-Use :meth:`~algan.animatable_base.mob.Mob.become` for geometry morphing:
+Use :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` for geometry morphing:
 
 .. code-block:: python
 

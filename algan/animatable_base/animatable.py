@@ -129,13 +129,14 @@ class Animatable:
     """Base class for anything that needs animation.
 
     All animation state lives on this mob's Scene-owned timeline
-    (:class:`~algan.animation.timeline.AnimationTimeline`, via
-    :class:`~algan.animation.timeline.TimelineManager`): each animatable
+    (:class:`~algan.animation_timeline.timeline.AnimationTimeline`, via
+    :class:`~algan.animation_timeline.timeline.TimelineManager`): each animatable
     attribute occupies rows of a per-attribute buffer keyed by this object's
     ``id``, attribute modifications and animated-function applications are
-    recorded as timeline events, and the mob's :class:`~.Lifespan` (spawn /
-    despawn interval) is likewise owned by the timeline
-    (:attr:`~.Animatable.lifespan`).
+    recorded as timeline events, and the mob's
+    :class:`~algan.animation_timeline.timeline.Lifespan` (spawn / despawn
+    interval) is likewise owned by the timeline
+    (:attr:`~algan.animatable_base.animatable.Animatable.lifespan`).
 
     Parameters
     ----------
@@ -289,7 +290,7 @@ class Animatable:
     @property
     def lifespan(self):
         """This mob's [spawn, despawn) interval on its Scene timeline (a
-        :class:`~algan.animation.timeline.Lifespan`). Sub-mobs created by
+        :class:`~algan.animation_timeline.timeline.Lifespan`). Sub-mobs created by
         indexing share their source's id, and therefore its lifespan."""
         return self.scene.timeline_manager.get_lifespan(self.id)
 
@@ -644,8 +645,10 @@ class Animatable:
         Unlike :meth:`~.Animatable.setattr_without_record`, this copes with a value
         whose batch size differs from the current one. Recorded history stays with
         the old rows, so it is only valid for structural rewrites (the batch
-        expansions in :meth:`~.Mob.become`) on a Mob whose history is fresh -- see
-        :meth:`~.Mob.detach_history`.
+        expansions in
+        :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become`) on a Mob
+        whose history is fresh -- see
+        :meth:`~algan.animatable_base.mob.Mob.detach_history`.
 
         Parameters
         ----------
@@ -778,7 +781,7 @@ class Animatable:
 
     def _get_attr_ranges(self, key, include_descendants=False, value=None):
         """This mob's rows of ``key``'s attribute buffer as a
-        :class:`~algan.animation.timeline.RowRanges` (compressed [begin, end)
+        :class:`~algan.animation_timeline.timeline.RowRanges` (compressed [begin, end)
         runs; usually a single run, which the buffer reads/writes as a slice).
 
         The descendant union is re-read for every recorded function replay of
@@ -1107,11 +1110,14 @@ class Animatable:
         add_to_scene
             Whether the copy is added to the scene. Defaults to True; False makes a
             detached Mob, useful purely as a source of values (this is what
-            :meth:`~.Mob.become` does with its target).
+            :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` does
+            with its target).
         spawn
             Whether the copy is spawned, i.e. visible. Defaults to True; pass False
             to configure it -- including anything that must happen before spawning,
-            such as :meth:`~.Mob.set_material` -- and spawn it yourself later.
+            such as
+            :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`
+            -- and spawn it yourself later.
         animate_creation
             Whether spawning the copy plays its entrance animation. Defaults to
             False, so the copy simply appears.
@@ -1169,7 +1175,8 @@ class Animatable:
         The mob does not appear on screen until it is spawned.
         Changes made before spawning are not animated.
         After spawning, changes to the Mob animate by
-        default and are controlled by :class:`~.AnimationContexts` .
+        default and are controlled by
+        :class:`~algan.animation_timeline.animation_contexts.AnimationContext`.
 
         Spawning is recursive: children spawn with their parent. Spawning a Mob that
         is already spawned does nothing.

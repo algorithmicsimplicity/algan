@@ -123,11 +123,15 @@ compatible.
 
 The currently active renderer can be queried by checking the value
 of ``manim.config.renderer``. All possible renderer types are given
-by :class:`.constants.RendererType`. The module :mod:`.manim.mobject.utils`
+by `manim.constants.RendererType <https://docs.manim.community/en/stable/reference/manim.constants.RendererType.html>`_. The module
+`manim.mobject.utils <https://docs.manim.community/en/stable/reference/manim.mobject.utils.html>`_
 contains utility functions that return the base class for the currently
 active renderer.
 
 A simple form of renderer compatibility (by hot-swapping the class
 inheritance chain) for Mobjects directly inheriting from
-:class:`.Mobject` or :class:`.VMobject` can be achieved by using the
-:class:`.mobject.opengl.opengl_compatibility.ConvertToOpenGL` metaclass.
+`Mobject <https://docs.manim.community/en/stable/reference/manim.mobject.mobject.Mobject.html>`_ or
+`VMobject <https://docs.manim.community/en/stable/reference/manim.mobject.types.vectorized_mobject.VMobject.html>`_
+can be achieved by using the
+`mobject.opengl.opengl_compatibility.ConvertToOpenGL <https://github.com/ManimCommunity/manim/blob/main/manim/mobject/opengl/opengl_compatibility.py>`_
+metaclass.

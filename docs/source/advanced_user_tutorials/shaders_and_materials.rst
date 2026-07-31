@@ -5,11 +5,11 @@ Shaders and Materials
 A *shader* decides how an object's brightness and colour change when light falls
 on it. Algan gives you three levels of control:
 
-1. **Materials** (:meth:`~.Mob.set_material`) -- Three.js-style material objects.
+1. **Materials** (:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`) -- Three.js-style material objects.
    Start here; this is the documented workflow.
-2. **Vertex shaders** (:meth:`~.Mob.set_shader`) -- a PyTorch function evaluated at
+2. **Vertex shaders** (:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`) -- a PyTorch function evaluated at
    each vertex.
-3. **Fragment shaders** (:meth:`~.Mob.set_fragment_shader`) -- a Taichi pipeline
+3. **Fragment shaders** (:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`) -- a Taichi pipeline
    evaluated at each rendered fragment, in-kernel.
 
 .. important::
@@ -59,39 +59,41 @@ All of the Three.js mesh materials are provided, with matching default settings:
     * - Material
       - Lighting
       - Key properties (defaults)
-    * - :class:`MeshBasicMaterial`
+    * - :class:`~algan.rendering.shaders.materials.MeshBasicMaterial`
       - Unlit (flat colour)
       - ``color``
-    * - :class:`MeshLambertMaterial`
+    * - :class:`~algan.rendering.shaders.materials.MeshLambertMaterial`
       - Diffuse (Lambert)
       - ``color``, ``emissive`` (0x000000), ``emissiveIntensity`` (1)
-    * - :class:`MeshPhongMaterial`
+    * - :class:`~algan.rendering.shaders.materials.MeshPhongMaterial`
       - Blinn-Phong specular
       - ``specular`` (0x111111), ``shininess`` (30), ``emissive``
-    * - :class:`MeshStandardMaterial`
+    * - :class:`~algan.rendering.shaders.materials.MeshStandardMaterial`
       - PBR metalness/roughness
       - ``roughness`` (1), ``metalness`` (0), ``emissive``, ``envMapIntensity`` (1)
-    * - :class:`MeshPhysicalMaterial`
+    * - :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`
       - PBR + clearcoat/sheen/transmission
       - adds ``clearcoat`` (0), ``ior`` (1.5), ``specularIntensity`` (1),
         ``sheen`` (0), ``transmission`` (0), ...
-    * - :class:`MeshToonMaterial`
+    * - :class:`~algan.rendering.shaders.materials.MeshToonMaterial`
       - Cel / banded diffuse
       - ``color``, ``bands`` (3), ``emissive``
-    * - :class:`MeshNormalMaterial`
+    * - :class:`~algan.rendering.shaders.materials.MeshNormalMaterial`
       - Normal-as-colour
       - ``flatShading`` (False)
-    * - :class:`MeshMatcapMaterial`
+    * - :class:`~algan.rendering.shaders.materials.MeshMatcapMaterial`
       - Material capture (approx.)
       - ``color``
-    * - :class:`MeshDepthMaterial`
+    * - :class:`~algan.rendering.shaders.materials.MeshDepthMaterial`
       - Camera-distance grayscale
       - ``near`` (0.1), ``far`` (100)
 
-Only :class:`MeshStandardMaterial` and :class:`MeshPhysicalMaterial` are true PBR
+Only :class:`~algan.rendering.shaders.materials.MeshStandardMaterial` and
+:class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial` are true PBR
 materials, and they are the two that drive ray transport -- reflections come from
 ``metalness`` / ``roughness``, and refraction from a transmissive
-:class:`MeshPhysicalMaterial`'s ``transmission`` and ``ior``. There are no separate
+:class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial`'s ``transmission``
+and ``ior``. There are no separate
 Mob-level reflectivity or refractive-index setters; the material is the single
 source of these. See :doc:`reflections_and_glass`.
 
@@ -126,7 +128,7 @@ For lighting that varies smoothly *within* a face -- crisp specular highlights, 
 smooth shading on a coarse mesh -- use per-fragment shading, which the
 deterministic renderer evaluates in-kernel at every ray hit. It is on by default
 (``SETTINGS.raytracing.experimental.fragment_shading``), and
-:meth:`~.Mob.set_fragment_shader` forces it on for any scene the Mob appears in.
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader` forces it on for any scene the Mob appears in.
 
 For full physically-based light transport -- true global illumination rather than
 direct lighting plus deterministic bounces -- switch to the Monte Carlo path tracer
@@ -165,18 +167,21 @@ them bilinearly per fragment inside the ray tracing kernel. See
 Vertex Shaders
 ==============
 
-A shader is just a function, and :meth:`~.Mob.set_shader` installs one. Algan
-ships :func:`.default_shader` (a simplified diffuse model with no material
-properties, which is what an unconfigured Mob uses) and :func:`.basic_pbr_shader`,
+A shader is just a function, and
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader` installs one.
+Algan ships
+:func:`~algan.rendering.shaders.pbr_shaders.default_shader` (a simplified diffuse
+model with no material properties, which is what an unconfigured Mob uses) and
+:func:`~algan.rendering.shaders.pbr_shaders.basic_pbr_shader`,
 which adds ``smoothness`` and ``metallicness``.
 
 The interesting part is how parameters are handled. ``set_shader`` inspects the
 function's signature, sees which parameters come *after* the ones
-:func:`.default_shader` declares, and registers those as animatable attributes on
-the Mob. So installing :func:`.basic_pbr_shader` gives you ``mob.smoothness`` and
+:func:`~algan.rendering.shaders.pbr_shaders.default_shader` declares, and registers those as animatable attributes on
+the Mob. So installing :func:`~algan.rendering.shaders.pbr_shaders.basic_pbr_shader` gives you ``mob.smoothness`` and
 ``mob.metallicness`` to animate, without either being a predeclared Mob attribute.
 
-To write your own, match :func:`.default_shader`'s signature and append your own
+To write your own, match :func:`~algan.rendering.shaders.pbr_shaders.default_shader`'s signature and append your own
 parameters:
 
 .. code-block:: python
@@ -191,8 +196,9 @@ parameters:
     mob.set_shader(my_shader)   # before spawning
     mob.banding = 8.0           # now animatable
 
-Every parameter of :func:`.default_shader` must be declared even if you ignore it.
-Read the source of :func:`.default_shader` and :func:`.basic_pbr_shader` for
+Every parameter of :func:`~algan.rendering.shaders.pbr_shaders.default_shader` must be declared even if you ignore it.
+Read the source of :func:`~algan.rendering.shaders.pbr_shaders.default_shader` and
+:func:`~algan.rendering.shaders.pbr_shaders.basic_pbr_shader` for
 working implementations.
 
 .. note::
@@ -209,8 +215,8 @@ tracer can instead shade **per fragment**, in-kernel: each ray hit evaluates a
 pipeline of Taichi stages, so specular highlights stay crisp and coarse meshes
 shade smoothly.
 
-:meth:`~.Mob.set_fragment_shader` accepts a built-in material shader, a
-:class:`~.FragmentStage`, or a **list** of these forming a pipeline run left to
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader` accepts a built-in material shader, a
+:class:`~algan.rendering.shaders.fragment_shaders.FragmentStage`, or a **list** of these forming a pipeline run left to
 right -- each stage receives the previous stage's output colour:
 
 .. code-block:: python

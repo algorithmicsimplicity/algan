@@ -16,11 +16,14 @@ from algan.errors import HierarchyError
 
 
 class MobHierarchyMixin:
-    """Parent, child and descendant management, mixed into :class:`~.Mob`.
+    """Parent, child and descendant management, mixed into
+    :class:`~algan.animatable_base.mob.Mob`.
 
     A Mob's children follow its transforms: move, rotate, scale or recolour a
-    parent and the change propagates down. Use :meth:`~.Mob.add_children` to build
-    a hierarchy, or a :class:`~.Group` when you just want to handle several Mobs
+    parent and the change propagates down. Use
+    :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children` to
+    build a hierarchy, or a :class:`~algan.mobs.group.Group` when you just want to
+    handle several Mobs
     as one.
     """
 
@@ -29,7 +32,8 @@ class MobHierarchyMixin:
 
         This registers the upward link only; it does **not** add this Mob to the
         other's children, so transforms will not propagate. Use
-        :meth:`~.Mob.add_children` on the parent to build a working hierarchy.
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children`
+        on the parent to build a working hierarchy.
         Re-adding an existing parent does nothing.
 
         Parameters
@@ -39,7 +43,7 @@ class MobHierarchyMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         if not any(parent is other_mob for parent in self.parents):
@@ -49,7 +53,9 @@ class MobHierarchyMixin:
     def remove_parent(self, other_mob: Mob) -> Mob:
         """Drop a Mob from this Mob's list of parents.
 
-        The reverse of :meth:`~.Mob.set_parent_to`, and likewise one-directional.
+        The reverse of
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.set_parent_to`,
+        and likewise one-directional.
         Removing a Mob that is not a parent does nothing.
 
         Parameters
@@ -59,7 +65,7 @@ class MobHierarchyMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         self.parents[:] = [
@@ -85,12 +91,13 @@ class MobHierarchyMixin:
 
         Returns
         -------
-        list[:class:`~.Mob`]
+        list[:class:`~algan.animatable_base.mob.Mob`]
             The children at that generation. The Mobs are live, not copies.
 
         See Also
         --------
-        :meth:`~.Mob.get_descendants` : Every level at once, flattened.
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.get_descendants`
+            Every level at once, flattened.
         """
         children = self.children
         if not include_components:
@@ -110,7 +117,7 @@ class MobHierarchyMixin:
 
         Returns
         -------
-        list[:class:`~.Mob`]
+        list[:class:`~algan.animatable_base.mob.Mob`]
             This Mob (unless excluded) followed by its children, their children,
             and so on. The Mobs are live, not copies.
         """
@@ -192,14 +199,15 @@ class MobHierarchyMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
         ------
         TypeError
-            If any item is not an :class:`~.Animatable`.
-        :class:`.HierarchyError`
+            If any item is not an
+            :class:`~algan.animatable_base.animatable.Animatable`.
+        :class:`~algan.errors.HierarchyError`
             If a Mob appears twice, is its own child, belongs to another Scene, or
             the change would create a cycle.
         """
@@ -243,14 +251,15 @@ class MobHierarchyMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
         ------
         TypeError
-            If any item is not an :class:`~.Animatable`.
-        :class:`.HierarchyError`
+            If any item is not an
+            :class:`~algan.animatable_base.animatable.Animatable`.
+        :class:`~algan.errors.HierarchyError`
             If a Mob appears twice, is its own child, belongs to another Scene, or
             the change would create a cycle.
         """
@@ -291,7 +300,7 @@ class MobHierarchyMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises

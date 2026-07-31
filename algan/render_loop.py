@@ -4,10 +4,12 @@
 useful standalone (``self`` is always the Scene). It owns everything between
 "the timeline has recorded animations" and "frames are streamed to the video
 writer": batch sizing by memory budget, timeline state materialization and
-primitive batching (:meth:`~RenderLoopMixin.get_batch_of_primitives`),
-the prefetch pipeline (:meth:`~RenderLoopMixin.get_frames`), per-batch
-rendering (:meth:`~RenderLoopMixin.render_primitive_batch`), and video file
-output (:meth:`~RenderLoopMixin.render_to_video`).
+primitive batching
+(:meth:`~algan.render_loop.RenderLoopMixin.get_batch_of_primitives`),
+the prefetch pipeline (:meth:`~algan.render_loop.RenderLoopMixin.get_frames`),
+per-batch rendering
+(:meth:`~algan.render_loop.RenderLoopMixin.render_primitive_batch`), and video
+file output (:meth:`~algan.render_loop.RenderLoopMixin.render_to_video`).
 """
 from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
 from algan.settings import SETTINGS
@@ -851,6 +853,7 @@ class RenderLoopMixin:
         background_color=None,
         render_state=None,
     ):
+        """Render one prepared primitive batch for a frame interval."""
         with torch.no_grad():
             camera = self.camera
             if render_state is None:
@@ -1376,6 +1379,7 @@ class RenderLoopMixin:
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
+        """Build the largest renderable primitive batch within the memory budget."""
         max_end_time = max_end_time_ind / self.frames_per_second
         start_time = start_time_ind / self.frames_per_second
         primitive_actors = [
@@ -2157,6 +2161,7 @@ class RenderLoopMixin:
         background_color=None,
         despawn_camera_and_lights=True,
     ):
+        """Stream rendered frame batches to the configured video writer."""
         self.scene_times.append(
             [
                 self.scene_times[-1][0],

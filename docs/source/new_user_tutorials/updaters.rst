@@ -94,7 +94,7 @@ moves -- an animation, another updater, a camera change:
 
     Scene.save_video()
 
-Compare this with :meth:`~.Mob.move_next_to`, which resolves the target's
+Compare this with :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_next_to`, which resolves the target's
 position *once*, when you call it. Use ``move_next_to`` for a one-off placement
 and an updater when the relationship has to hold over time.
 

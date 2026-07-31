@@ -83,7 +83,7 @@ class Scene(RenderLoopMixin):
     process-global :class:`~algan.scene_manager.SceneManager` stack, making it
     the destination for mobs constructed without an explicit ``scene``.
 
-    Rendering (:meth:`get_frames`, from
+    Rendering (:meth:`~algan.render_loop.RenderLoopMixin.get_frames`, from
     :class:`~algan.render_loop.RenderLoopMixin`) proceeds in batches of frames
     sized to the memory budget: for each batch this scene's timeline
     materializes every actor's animated state at the batch's frame times,
@@ -283,7 +283,8 @@ class Scene(RenderLoopMixin):
         """Add a light to this Scene.
 
         Lights only affect Mobs whose material responds to light -- a
-        :class:`~.MeshBasicMaterial` looks the same however the scene is lit.
+        :class:`~algan.rendering.shaders.materials.MeshBasicMaterial` looks the
+        same however the scene is lit.
         Adding the same light twice does nothing.
 
         Animation

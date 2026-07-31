@@ -149,8 +149,8 @@ Algan provides the following built-in presets:
      - 60
 
 The preset applies to that render only. If you want to change the default for
-every render in your script, set it once on the global :data:`~algan.SETTINGS`
-object instead:
+every render in your script, set it once on the global
+:doc:`SETTINGS <../reference_index/settings>` object instead:
 
 .. code-block:: python
 

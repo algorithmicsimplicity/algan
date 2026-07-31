@@ -5,7 +5,7 @@ Mirrors the Three.js light catalogue: :class:`PointLight`,
 :class:`SpotLight` and :class:`RectAreaLight`, each with an ``intensity``
 multiplier and (where physical) ``decay``/``distance`` falloff parameters.
 
-Lights are :class:`~.Renderable` mobs: their ``location``, ``color`` and
+Lights are renderable Mobs: their ``location``, ``color`` and
 ``opacity`` are animatable like any other mob. The extra parameters
 (``intensity``, ``decay``, cone angles, ...) are plain per-light constants.
 

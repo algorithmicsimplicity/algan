@@ -6,7 +6,8 @@ parameters are fixed (``memory``, ``vertex_location``, ``vertex_normal``,
 ``albedo_color``, ``camera_location``, ``light_origin``, ``light_color``,
 ``light_intensity``, ``ambient_light_intensity``) and any further parameters are
 the material's animatable properties. The renderer registers those extra
-parameters as animatable attributes on the mob (see :meth:`Mob.set_shader`).
+parameters as animatable attributes on the mob (see
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`).
 
 Channel layout
 --------------

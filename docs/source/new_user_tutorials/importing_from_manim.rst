@@ -49,7 +49,7 @@ Plotting on axes
 
 Graphing is the usual reason to reach for Manim's geometry, and it needs no
 wrapping at all: :class:`~.Axes` is available under its own name, and what
-:meth:`Axes.plot` hands back is an ordinary Algan Mob that you spawn and animate
+:ref:`Axes.plot <reference-manim-axes-plot>` hands back is an ordinary Algan Mob that you spawn and animate
 like any other.
 
 .. algan:: ImportingManimPlot
@@ -112,7 +112,7 @@ The two libraries use different conventions, and the boundary is the
   construction on one side of the line.
 * **Sizes.** Manim's default frame is 8 units tall; Algan's visible area at the
   origin plane is about 7. Imported diagrams usually want a modest
-  :meth:`~.Mob.scale` or :meth:`~.Mob.fit_to_screen_rectangle`.
+  :meth:`~algan.animatable_base.mob.Mob.scale` or :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle`.
 
 Native compatibility classes
 ============================

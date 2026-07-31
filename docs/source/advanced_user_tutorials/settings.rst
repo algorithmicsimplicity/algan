@@ -2,7 +2,8 @@
 Settings
 ========
 
-Algan exposes one process-global settings root named :data:`algan.SETTINGS`.
+Algan exposes one process-global settings root named
+:ref:`algan.SETTINGS <reference-settings>`.
 Its sections are grouped by lifecycle and responsibility:
 
 ``SETTINGS.video``

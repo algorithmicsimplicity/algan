@@ -2,7 +2,7 @@
 Basic Animations
 ================
 
-In Algan you build animations by creating :class:`.Mob` s -- the objects that
+In Algan you build animations by creating :class:`~algan.animatable_base.mob.Mob` s -- the objects that
 appear on screen -- and then changing them. Every change you make is *recorded*
 as an animation rather than applied instantly, so a script reads like a
 description of what happens, in order, from top to bottom.
@@ -22,7 +22,7 @@ This tutorial covers all three.
 Changing Animatable Attributes
 ------------------------------
 
-Every :class:`.Mob` has these animatable attributes:
+Every :class:`~algan.animatable_base.mob.Mob` has these animatable attributes:
 
 .. list-table::
    :header-rows: 1
@@ -31,20 +31,21 @@ Every :class:`.Mob` has these animatable attributes:
    * - Attribute
      - Shape
      - Meaning
-   * - :attr:`~.Mob.location`
+   * - :attr:`~algan.animatable_base.mob.Mob.location`
      - 3 floats
      - Where the Mob sits in 3-D space. New Mobs start at ``ORIGIN``.
-   * - :attr:`~.Mob.basis`
+   * - :attr:`~algan.animatable_base.mob.Mob.basis`
      - 9 floats
      - Orientation *and* scale, as three basis vectors. Change it with
-       :meth:`~.Mob.rotate` / :meth:`~.Mob.scale`, not by hand.
-   * - :attr:`~.Mob.color`
-     - :class:`~.Color`
+       :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` /
+       :meth:`~algan.animatable_base.mob.Mob.scale`, not by hand.
+   * - :ref:`color <reference-mob-color>`
+     - :class:`~algan.constants.color.Color`
      - The Mob's main colour.
-   * - :attr:`~.Mob.glow`
+   * - :ref:`glow <reference-mob-glow>`
      - float
      - How much light the Mob bleeds into surrounding pixels. ``0`` is off.
-   * - :attr:`~.Mob.opacity`
+   * - :ref:`opacity <reference-mob-opacity>`
      - float
      - ``1`` is solid, ``0`` is invisible.
 
@@ -73,13 +74,13 @@ has to change.
     cannot see and cannot record. Always write
     ``circle.location = circle.location + UP``.
 
-    In practice you will reach for :meth:`~.Mob.move` instead, which does the
+    In practice you will reach for :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move` instead, which does the
     arithmetic for you.
 
 A note on colours
 =================
 
-An Algan :class:`~.Color` carries five components: red, green, blue, glow and
+An Algan :class:`~algan.constants.color.Color` carries five components: red, green, blue, glow and
 opacity, in that order. So glow and opacity can be set either on the Mob or baked
 into the colour you assign:
 
@@ -117,25 +118,25 @@ because they say what you mean:
 
 The methods used above:
 
-* :meth:`.Mob.move` translates the Mob by a vector: ``mob.move(RIGHT)`` slides it
+* :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move` translates the Mob by a vector: ``mob.move(RIGHT)`` slides it
   one unit right. To move to an absolute point instead, use
-  :meth:`~.Mob.move_to`.
-* :meth:`.Mob.rotate` turns the Mob about an axis through its own centre.
+  :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`.
+* :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` turns the Mob about an axis through its own centre.
   Passing ``about_point`` turns it about *that* point instead, which sweeps the
   Mob around in an arc -- ``mob.rotate(180, OUT, about_point=ORIGIN)`` swings it
   half way around the origin.
-* :meth:`.Mob.become` morphs the Mob into a different Mob. It returns the
+* :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` morphs the Mob into a different Mob. It returns the
   resulting Mob, so assign it back: ``mob = mob.become(Circle())``.
 
 Two more you will use constantly:
 
-* :meth:`.Mob.scale` grows or shrinks the Mob: ``mob.scale(2)`` doubles its size.
-* :meth:`.Animatable.wait` holds the Mob still: ``mob.wait(2)`` leaves two
+* :meth:`~algan.animatable_base.mob.Mob.scale` grows or shrinks the Mob: ``mob.scale(2)`` doubles its size.
+* :meth:`~algan.animatable_base.animatable.Animatable.wait` holds the Mob still: ``mob.wait(2)`` leaves two
   seconds of nothing happening. ``Scene.wait(2)`` does the same for the whole
   scene.
 
 :doc:`positioning_and_layout` covers the placement and sizing methods in full,
-and the :class:`~.Mob` reference lists every method.
+and the :class:`~algan.animatable_base.mob.Mob` reference lists every method.
 
 Spawning and despawning
 -----------------------
@@ -149,7 +150,7 @@ A Mob does not appear -- and cannot be animated -- until it is *spawned*:
 
     square.despawn()         # fades out and stops being animatable
 
-:meth:`~.Animatable.spawn` returns the Mob, so it chains:
+:meth:`~algan.animatable_base.animatable.Animatable.spawn` returns the Mob, so it chains:
 ``square = Square().spawn()``. Everything before ``spawn()`` happens instantly
 and costs no time on the timeline, which makes it the right place to do setup:
 
@@ -201,7 +202,7 @@ over one second.
 
 .. important::
 
-    An :func:`~.animated_function` must take a :class:`.Mob` as its first
+    An :func:`~.animated_function` must take a :class:`~algan.animatable_base.mob.Mob` as its first
     argument, and every name listed in ``animated_args`` must be a float.
 
 .. note::

@@ -270,7 +270,8 @@ def get_render_primitives_batched(surfaces):
     frame count, running the geometry pipeline (normal computation and
     triangle-vertex gathers) once on a ``[N, T, W, H, 3]`` stack instead of
     once per surface. Numerically identical to calling
-    :meth:`Surface.get_render_primitives` on each surface (all ops are
+    :meth:`~algan.mobs.surfaces.surface.Surface.get_render_primitives` on each
+    surface (all ops are
     elementwise or reduce over non-batch dims), but with N times fewer
     Python/torch dispatches. Callers must ensure every surface uses the stock
     ``Surface.get_render_primitives``, has no ``color_texture``, has
@@ -348,7 +349,7 @@ class Surface(Mob):
         baked to the surface grid resolution (raise ``grid_width``/
         ``grid_height`` for more detail). Static only (no time dimension).
     *args, **kwargs
-        Passed to :class:`~.Mob`
+        Passed to :class:`~algan.animatable_base.mob.Mob`
 
     """
 
@@ -1769,8 +1770,10 @@ class Surface(Mob):
         return self._build_render_primitive(grid, vertex_normals)
 
     def _build_render_primitive(self, grid, vertex_normals, precomputed_corners=None):
-        """Assemble the :class:`TrianglePrimitive` for this surface from an
-        already-materialized grid ``[T, W, H, 3]`` and (triangle-gathered)
+        """Assemble the
+        :class:`~algan.rendering.primitives.triangle_primitive.TrianglePrimitive`
+        for this surface from an already-materialized grid ``[T, W, H, 3]``
+        and (triangle-gathered)
         vertex normals. ``precomputed_corners`` lets the batched path pass in
         corners gathered on the whole surface stack at once."""
         def expand_grid_to_verts(x):
@@ -1857,7 +1860,8 @@ class Surface(Mob):
         """Map the surface's ``(u, v)`` parameters to shading normals.
 
         Overridden by the 3-D shape classes alongside
-        :meth:`~.Surface.coord_function`, so each shape lights correctly. The base
+        :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`, so each shape
+        lights correctly. The base
         implementation returns ``OUT``, the normal of a flat plane facing the viewer.
 
         Parameters
@@ -1905,7 +1909,8 @@ class Surface(Mob):
 
     def set_shape_to(self, other_surface: "Surface"):
         """Changes this surface's shape to the shape defined by another surface's
-        :meth:`~.Surface.coord_function`. Any lower-resolution grid axis is
+        :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`. Any lower-resolution
+        grid axis is
         refined to match ``other_surface`` before the shape change.
 
         Parameters
@@ -1937,7 +1942,8 @@ class Surface(Mob):
         Recorded as an animation: the grid points travel to their new positions over the
         current context's duration (1 second by default), so calling this on a spawned
         surface deforms it smoothly. Changing the grid *resolution* is a different
-        matter -- that needs :meth:`~.Mob.detach_history` first.
+        matter -- that needs
+        :meth:`~algan.animatable_base.mob.Mob.detach_history` first.
 
         Parameters
         ----------
@@ -1948,7 +1954,7 @@ class Surface(Mob):
 
         Returns
         -------
-        :class:`~.Surface`
+        :class:`~algan.mobs.surfaces.surface.Surface`
             This surface, so calls can be chained.
         """
         def target_function(uv):
@@ -1981,7 +1987,7 @@ class Surface(Mob):
 
         Returns
         -------
-        :class:`~.Surface`
+        :class:`~algan.mobs.surfaces.surface.Surface`
             This surface, so calls can be chained.
         """
         new_normals = grid_to_triangle_vertices(function(self.get_base_grid()))
@@ -2001,7 +2007,7 @@ class Surface(Mob):
 
         Returns
         -------
-        :class:`~.Color`
+        :class:`~algan.constants.color.Color`
             ``GREEN``.
         """
         return GREEN
@@ -2027,12 +2033,13 @@ class Surface(Mob):
 
         Returns
         -------
-        :class:`~.Surface`
+        :class:`~algan.mobs.surfaces.surface.Surface`
             This surface, so calls can be chained.
 
         See Also
         --------
-        :meth:`~.Surface.set_color_by_texture` : Paint an image on instead.
+        :meth:`~algan.mobs.surfaces.surface.Surface.set_color_by_texture`
+            Paint an image on instead.
         """
         new_color = grid_to_triangle_vertices(function(self.get_base_grid()))
         new_triangles = TriangleTriangulated(
@@ -2052,7 +2059,8 @@ class Surface(Mob):
 
         The image is resampled to the surface's grid resolution and baked into its
         per-vertex colours, so detail finer than the grid is lost -- raise the
-        surface's resolution, or use :attr:`~.Surface.color_texture`, if you need the
+        surface's resolution, or use
+        :attr:`~algan.mobs.surfaces.surface.Surface.color_texture`, if you need the
         image sharp.
 
         Animation
@@ -2069,7 +2077,7 @@ class Surface(Mob):
 
         Returns
         -------
-        :class:`~.Surface`
+        :class:`~algan.mobs.surfaces.surface.Surface`
             This surface, so calls can be chained.
         """
         texture_image = get_image(rgba_array_or_file_path)

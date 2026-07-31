@@ -25,7 +25,8 @@ def _resolve_buffer(buffer):
 
 
 class MobMovementMixin:
-    """Methods for moving Mobs around, mixed into :class:`~.Mob`."""
+    """Methods for moving Mobs around, mixed into
+    :class:`~algan.animatable_base.mob.Mob`."""
 
     def move_between(
         self, loc1: Mob | torch.Tensor, loc2: Mob | torch.Tensor
@@ -48,7 +49,7 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         loc1, loc2 = [_.get_center() if hasattr(_, 'get_center') else _ for _ in [loc1, loc2]]
@@ -66,7 +67,9 @@ class MobMovementMixin:
         The start and target points form the chord of the arc. ``arc_normal``
         fixes the plane of the circle, and ``arc_angle_degrees`` is the signed
         sweep from the start to the target. Its sign follows the same rotation
-        convention as :meth:`~.Mob.rotate`; angles whose magnitude exceeds
+        convention as
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate`;
+        angles whose magnitude exceeds
         180 degrees therefore trace the corresponding major arc.
 
         A zero sweep is treated as the limiting straight-line path. Coincident
@@ -98,7 +101,7 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
@@ -268,19 +271,23 @@ class MobMovementMixin:
             Signed sweep of the curved path, **in degrees**. Defaults to
             ``None``, meaning travel in a straight line.
         **kwargs
-            Passed to :meth:`~.Mob.set_location` (notably ``recursive``), or to
-            :meth:`~.Mob.move_to_point_along_arc` when ``path_arc_angle`` is
+            Passed to :meth:`~algan.animatable_base.mob.Mob.set_location` (notably
+            ``recursive``), or to
+            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_point_along_arc`
+            when ``path_arc_angle`` is
             given (notably ``arc_normal``).
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         See Also
         --------
-        :meth:`~.Mob.move` : Move by a relative displacement instead.
-        :meth:`~.Mob.move_to_screen_position` : Place the Mob in screen space.
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move`
+            Move by a relative displacement instead.
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_screen_position`
+            Place the Mob in screen space.
         """
         if path_arc_angle is None:
             return self.set_location(location, **kwargs)
@@ -303,12 +310,14 @@ class MobMovementMixin:
             units. The spatial constants (``RIGHT``, ``UP``, ``OUT``, ...) are
             unit vectors, so ``mob.move(RIGHT * 3)`` moves three units right.
         **kwargs
-            Passed to :meth:`~.Mob.move_to` -- notably ``path_arc_angle`` to
+            Passed to
+            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`
+            -- notably ``path_arc_angle`` to
             travel along a curve rather than a straight line.
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Examples
@@ -359,21 +368,26 @@ class MobMovementMixin:
             ``SETTINGS.style.buffer`` (``0.6``).
         align_edge
             Direction along which to additionally align the two Mobs' boundaries
-            (see :meth:`~.Mob.move_inline_with_boundary`), so e.g. two Mobs
+            (see
+            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_boundary`),
+            so e.g. two Mobs
             placed side by side can also share a bottom edge. Defaults to
             ``None``, meaning no secondary alignment.
         **kwargs
-            Passed to :meth:`~.Mob.move_to`.
+            Passed to
+            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`.
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         See Also
         --------
-        :meth:`~.Mob.move_inline_with_center` : Align centers along one axis without changing the others.
-        :meth:`~.Mob.move_inline_with_edge` : Align edges along one axis without changing the others.
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_center`
+            Align centers along one axis without changing the others.
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_edge`
+            Align edges along one axis without changing the others.
         """
         buffer = _resolve_buffer(buffer)
         normalized_direction = F.normalize(direction, p=2, dim=-1)
@@ -429,11 +443,12 @@ class MobMovementMixin:
             Gap to leave between the aligned edges, in world units. Defaults to
             ``SETTINGS.style.buffer`` (``0.6``).
         **kwargs
-            Passed to :meth:`~.Mob.move`.
+            Passed to
+            :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move`.
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         from algan.animatable_base.mob import Mob
@@ -481,7 +496,7 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         # Calculate the displacement vector from this Mob's center to the target Mob's center.
@@ -503,8 +518,11 @@ class MobMovementMixin:
     ) -> Mob:
         """Align this Mob with another along one axis, by edge or by center.
 
-        The general form of :meth:`~.Mob.move_inline_with_edge` and
-        :meth:`~.Mob.move_inline_with_center`: ``center`` picks which of the two
+        The general form of
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_edge`
+        and
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_center`:
+        ``center`` picks which of the two
         behaviours you get, and ``from_mob`` lets a third Mob supply the
         reference point being moved into place.
 
@@ -532,7 +550,7 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         if center:
@@ -563,7 +581,9 @@ class MobMovementMixin:
     def move_inline_with_boundary(self, mob: Mob, direction: torch.Tensor) -> Mob:
         """Align this Mob's boundary flush with another Mob's boundary.
 
-        Unlike :meth:`~.Mob.move_next_to`, no gap is left: the two boundaries end
+        Unlike
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_next_to`,
+        no gap is left: the two boundaries end
         up coincident along ``direction``, which is what makes two Mobs share a
         bottom edge or a left edge.
 
@@ -581,7 +601,7 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         return self.move(self.get_displacement_to_boundary(mob, direction))
@@ -615,7 +635,7 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         with Off(animation_manager=self.animation_manager):
@@ -656,13 +676,15 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         See Also
         --------
-        :meth:`~.Mob.move_to_corner` : Move against two edges at once.
-        :meth:`~.Mob.move_out_of_screen` : Move all the way off-screen.
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to_corner`
+            Move against two edges at once.
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_out_of_screen`
+            Move all the way off-screen.
         """
         buffer = _resolve_buffer(buffer)
         normalized_edge = F.normalize(edge, p=2, dim=-1)
@@ -694,7 +716,8 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation. The two edge moves run inside a
-        :class:`~.Sync`, so they happen simultaneously and the whole call still
+        :class:`~algan.animation_timeline.animation_contexts.Sync`, so they happen
+        simultaneously and the whole call still
         takes the current context's duration (1 second by default) rather than
         two seconds. Applies to this Mob and its descendants.
 
@@ -710,7 +733,7 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         # Chain two calls to move_to_edge to reach the corner
@@ -730,7 +753,8 @@ class MobMovementMixin:
         Animation
         ---------
         Recorded as an animation: the slide takes the current context's duration
-        (1 second by default), and the despawn follows it in a :class:`~.Seq`
+        (1 second by default), and the despawn follows it in a
+        :class:`~algan.animation_timeline.animation_contexts.Seq`
         without an extra fade, so the Mob is simply gone once it is out of sight.
         Applies to this Mob and its descendants.
 
@@ -748,7 +772,7 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         buffer = _resolve_buffer(buffer)
@@ -798,7 +822,7 @@ class MobMovementMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         # Vector from current location to destination

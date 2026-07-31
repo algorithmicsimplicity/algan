@@ -8,3 +8,4 @@ Scenes
 
    ~scene
    ~scene_manager
+   ~render_loop

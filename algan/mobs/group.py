@@ -38,14 +38,14 @@ class Group(Mob):
 
     Parameters
     ----------
-    mobs : Iterable[ :class:`~.Mob` ]
+    mobs : Iterable[ :class:`~algan.animatable_base.mob.Mob` ]
         The collection of mobs to group.
     *args, **kwargs
-        Passed to :class:`~.Mob` .
+        Passed to :class:`~algan.animatable_base.mob.Mob`.
 
     Returns
     -------
-    :class:`~.Group`
+    :class:`~algan.mobs.group.Group`
         The new mob which parents the provided mob collection.
 
     Examples
@@ -117,10 +117,13 @@ class Group(Mob):
 
     @property
     def mobs(self):
-        """The Mobs in this Group -- an alias of :attr:`~.Mob.children`.
+        """The Mobs in this Group -- an alias of
+        :attr:`~algan.animatable_base.mob.Mob.children`.
 
         The live list, not a copy: mutating it changes the Group. Prefer
-        :meth:`~.Group.add` and :meth:`~.Mob.remove_child`, which keep the Group's
+        :meth:`~algan.mobs.group.Group.add` and
+        :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_child`,
+        which keep the Group's
         own location and parent links in step.
         """
         return self.children
@@ -181,7 +184,8 @@ class Group(Mob):
 
         Returns
         -------
-        :class:`~.Mob` or :class:`~.Group`
+        :class:`~algan.animatable_base.mob.Mob` or
+        :class:`~algan.mobs.group.Group`
             The member at an integer index, otherwise a non-owning Group view.
         """
         mobs = self.children[item]
@@ -227,7 +231,7 @@ class Group(Mob):
 
         Returns
         -------
-        Iterator[:class:`~.Mob`]
+        Iterator[:class:`~algan.animatable_base.mob.Mob`]
             An iterator over the members, in order.
         """
         return iter(self.children)
@@ -263,7 +267,7 @@ class Group(Mob):
 
         Returns
         -------
-        :class:`~.Group`
+        :class:`~algan.mobs.group.Group`
             This Group, so calls can be chained.
 
         Raises
@@ -290,8 +294,10 @@ class Group(Mob):
 
         Returns
         -------
-        list[:class:`~.Mob`]
-            The members. Unlike :meth:`~.Mob.get_parts_as_mobs`, the Group itself is
+        list[:class:`~algan.animatable_base.mob.Mob`]
+            The members. Unlike
+            :meth:`~algan.animatable_base.mob.Mob.get_parts_as_mobs`,
+            the Group itself is
             not included -- it carries no geometry of its own.
         """
         return self.mobs
@@ -356,13 +362,15 @@ class Group(Mob):
 
         Returns
         -------
-        :class:`~.Group`
+        :class:`~algan.mobs.group.Group`
             This Group, so calls can be chained.
 
         See Also
         --------
-        :meth:`~.Group.arrange_in_grid` : Lay members out in rows and columns.
-        :meth:`~.Group.arrange_between_points` : Space members evenly between two points.
+        :meth:`~algan.mobs.group.Group.arrange_in_grid`
+            Lay members out in rows and columns.
+        :meth:`~algan.mobs.group.Group.arrange_between_points`
+            Space members evenly between two points.
         """
 
         if not self.children:
@@ -430,7 +438,7 @@ class Group(Mob):
 
         Returns
         -------
-        :class:`~.Group`
+        :class:`~algan.mobs.group.Group`
             This Group, so calls can be chained.
         """
         if not self.children:
@@ -486,7 +494,7 @@ class Group(Mob):
 
         Returns
         -------
-        :class:`~.Group`
+        :class:`~algan.mobs.group.Group`
             This Group, so calls can be chained.
 
         Raises

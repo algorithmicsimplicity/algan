@@ -24,7 +24,7 @@ UPDATER_FOREVER = 1e12
 #: Global structure version, bumped whenever the mob hierarchy or any
 #: attribute timeline's row allocation changes. Version-checked caches of
 #: concatenated descendant row indexes (see
-#: :meth:`~algan.animation.animatable.Animatable.get_attr_inds`) are
+#: :meth:`~algan.animatable_base.animatable.Animatable.get_attr_inds`) are
 #: invalidated by comparing against it, so they never have to be cleared
 #: explicitly.
 STRUCTURE_VERSION = [0]
@@ -394,7 +394,8 @@ class AttributeTimeline:
         """Point ``mob_id`` at ``inds``, invalidating the cached
         :class:`RowRanges` (:meth:`ranges_for`) so callers don't read stale
         rows. Use this for any direct row hand-over that bypasses :meth:`add`
-        (e.g. :meth:`Mob.detach_history`'s history swap). Bumps the structure
+        (e.g. :meth:`~algan.animatable_base.mob.Mob.detach_history`'s history
+        swap). Bumps the structure
         version so per-mob descendant-row caches (``Mob._attr_inds_cache``) that
         may reference the old ownership are rebuilt."""
         self.mob_id_to_inds[mob_id] = inds

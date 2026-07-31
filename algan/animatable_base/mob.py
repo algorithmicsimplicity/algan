@@ -55,7 +55,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         Shape: `(*, 9)` representing `(*, 3, 3)` flattened.
     color
         The color of the Mob. If None, it uses the default color defined
-        by :meth:`~.Mob.get_default_color()` .
+        by :meth:`~algan.animatable_base.animatable.Animatable.get_default_color`.
     opacity
         The opacity of the Mob (0.0 for fully transparent to 1.0 for fully opaque).
     glow
@@ -281,7 +281,8 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
 
         Each descendant's own color gets the given alpha, which fades parts that
         carry their own colors without a parent-level opacity write flattening
-        them. Prefer setting :attr:`~.Mob.opacity` for ordinary fades; this
+        them. Prefer setting
+        :attr:`~algan.animatable_base.mob.Mob.opacity` for ordinary fades; this
         exists for composites where per-part color must be preserved.
 
         Animation
@@ -645,7 +646,9 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
     def get_normal(self) -> torch.Tensor:
         """Get the Mob's surface normal, i.e. the way it faces.
 
-        An alias for :meth:`~.Mob.get_forward_direction`, named for the 2-D case:
+        An alias for
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_forward_direction`,
+        named for the 2-D case:
         a flat shape's normal is the direction it faces out of its own plane.
 
         Returns
@@ -658,7 +661,9 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
     def set_location(self, location: torch.Tensor, recursive: bool = True) -> Mob:
         """Set the Mob's location, with control over whether children follow.
 
-        Same as :meth:`~.Mob.move_to` without the arc option; the reason to reach
+        Same as
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`
+        without the arc option; the reason to reach
         for this one is ``recursive=False``.
 
         Animation
@@ -1020,7 +1025,8 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         """Internal: restrict this Mob to a subset of a batched Mob's rows.
 
         This is the machinery behind indexing (``mob[2]``, ``mob[1:4]``); prefer
-        :meth:`~.Mob.__getitem__`, which sets this up for you. The sub-indices
+        :meth:`~algan.animatable_base.mob.Mob.__getitem__`, which sets this up for
+        you. The sub-indices
         select which elements of the shared attribute data this Mob reads and
         writes, and are applied to its children too.
 

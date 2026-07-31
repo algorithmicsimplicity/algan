@@ -18,13 +18,15 @@ from algan.utils.tensor_utils import cast_to_tensor, squish, unsquish
 
 
 class MobOrientationMixin:
-    """Methods for rotating and orienting Mobs, mixed into :class:`~.Mob`."""
+    """Methods for rotating and orienting Mobs, mixed into
+    :class:`~algan.animatable_base.mob.Mob`."""
 
     def reset_basis(self) -> Mob:
         """Reset the Mob's orientation and scale to the default.
 
         The basis is set back to the identity matrix, which undoes every
-        :meth:`~.Mob.rotate` **and** every :meth:`~.Mob.scale` applied so far.
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate`
+        **and** every :meth:`~algan.animatable_base.mob.Mob.scale` applied so far.
         The Mob's location is unaffected.
 
         Animation
@@ -35,7 +37,7 @@ class MobOrientationMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         self.basis = cast_to_tensor(squish(torch.eye(3)))
@@ -57,7 +59,7 @@ class MobOrientationMixin:
         and it stays where it is. Given an ``about_point``, the Mob also travels
         around the axis through that point, like a planet spinning as it orbits.
         To move around a point *without* re-orienting the Mob, use
-        :meth:`~.Mob.orbit`.
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.orbit`.
 
         Animation
         ---------
@@ -83,7 +85,7 @@ class MobOrientationMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Examples
@@ -122,7 +124,8 @@ class MobOrientationMixin:
 
         The Mob's location swings around the axis while its orientation is left
         unchanged.
-        For an orbit that also turns the object as it moves, use :meth:`~.Mob.rotate` with an
+        For an orbit that also turns the object as it moves, use
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` with an
         ``about_point``.
 
         Animation
@@ -146,7 +149,7 @@ class MobOrientationMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         if about_point is None:
@@ -169,7 +172,8 @@ class MobOrientationMixin:
 
         This is the third row of the Mob's basis matrix, so its length is the
         Mob's scale along that axis rather than 1. For a unit-length direction,
-        use :meth:`~.Mob.get_forward_direction`.
+        use
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_forward_direction`.
 
         Returns
         -------
@@ -183,7 +187,8 @@ class MobOrientationMixin:
 
         This is the first row of the Mob's basis matrix, so its length is the
         Mob's scale along that axis rather than 1. For a unit-length direction,
-        use :meth:`~.Mob.get_right_direction`.
+        use
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_right_direction`.
 
         Returns
         -------
@@ -197,7 +202,8 @@ class MobOrientationMixin:
 
         This is the second row of the Mob's basis matrix, so its length is the
         Mob's scale along that axis rather than 1. For a unit-length direction,
-        use :meth:`~.Mob.get_upwards_direction`.
+        use
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.get_upwards_direction`.
 
         Returns
         -------
@@ -257,7 +263,8 @@ class MobOrientationMixin:
         Animation
         ---------
         Recorded as an animation: the turn is performed by
-        :meth:`~.Mob.rotate`, so it sweeps over the current context's duration
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate`,
+        so it sweeps over the current context's duration
         (1 second by default). Applies to this Mob and its descendants.
 
         Parameters
@@ -271,12 +278,13 @@ class MobOrientationMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         See Also
         --------
-        :meth:`~.Mob.look_at` : Aim at a point rather than along a direction.
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look_at`
+            Aim at a point rather than along a direction.
         """
         # Get the rotation parameters (angle and axis) needed to align the current local axis
         # with the target direction.
@@ -293,7 +301,9 @@ class MobOrientationMixin:
     def look_at(self, point: torch.Tensor, axis: int = 2) -> Mob:
         """Turn the Mob to face a point in space.
 
-        Equivalent to :meth:`~.Mob.look` along the direction from the Mob to
+        Equivalent to
+        :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.look`
+        along the direction from the Mob to
         ``point``, so the Mob's location is unchanged -- only where it is aimed.
 
         Animation
@@ -313,7 +323,7 @@ class MobOrientationMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         # Calculate the direction vector from the Mob's current location to the target point

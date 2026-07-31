@@ -258,7 +258,8 @@ class Tex(Mob):
     def become(self, other_mob, *args, **kwargs):
         """Morph this text into another Mob, keeping its glyph views usable.
 
-        As :meth:`~.Mob.become`, with one addition: because a morph can expand the
+        As :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become`, with one
+        addition: because a morph can expand the
         packed glyph batch, the per-character views are rebuilt against the result, so
         indexing (``text[0]``) still works afterwards.
 
@@ -273,7 +274,9 @@ class Tex(Mob):
             The Mob to morph into. Text morphs best into other text or bezier shapes,
             since the primitive type must match.
         *args, **kwargs
-            Passed to :meth:`~.Mob.become` -- notably ``minimize_movement=True``,
+            Passed to
+            :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` -- notably
+            ``minimize_movement=True``,
             which pairs each glyph fragment with its nearest counterpart and is
             usually what you want for text.
 
@@ -364,11 +367,12 @@ class Tex(Mob):
         Parameters
         ----------
         *args, **kwargs
-            Passed to :func:`~.draw_border_then_fill`
+            Passed to
+            :func:`~algan.animations.manim_animations.draw_border_then_fill`
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This text, so calls can be chained.
 
         Examples
@@ -392,7 +396,8 @@ class Tex(Mob):
     def on_create(self):
         """Play the text's entrance: a fade that sweeps across the glyphs.
 
-        Instead of the plain fade a :class:`~.Mob` uses, text fades in as a diagonal
+        Instead of the plain fade a :class:`~algan.animatable_base.mob.Mob` uses, text
+        fades in as a diagonal
         wave running down and to the right, so the words appear to arrive in reading
         order.
 
@@ -484,8 +489,9 @@ def _default_preamble():
 class Text(Tex):
     """Plain (non-LaTeX) text, rendered as one packed batch of cubic bezier glyphs.
 
-    Use :class:`~.Tex` for mathematics and this for prose. Index it to get individual
-    glyphs (``text[0]``), and see :meth:`~.Tex.write` for the hand-written entrance.
+    Use :class:`~algan.mobs.text.Tex` for mathematics and this for prose. Index it to
+    get individual glyphs (``text[0]``), and see
+    :meth:`~algan.mobs.text.Tex.write` for the hand-written entrance.
 
     When Pango is available (manim's optional ``Text`` support), the styling
     arguments -- ``font``, ``weight``, ``slant``, ``line_spacing``,
@@ -507,7 +513,8 @@ class Text(Tex):
     text
         The text to display.
     **kwargs
-        Passed to :class:`~.Tex` -- notably ``font_size``, ``color``, ``location``, and
+        Passed to :class:`~algan.mobs.text.Tex` -- notably ``font_size``, ``color``,
+        ``location``, and
         the Pango styling arguments described above.
     """
 

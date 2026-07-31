@@ -41,7 +41,8 @@ def image_to_texture_map(image):
     bottom-up. An image is stored ``[row, col]`` with ``row`` top-down, so we
     transpose ``[H, W] -> [W, H]`` (columns become the ``u`` axis) and flip the
     ``v`` axis. Channels are padded to the engine's 5-slot colour
-    ``(r, g, b, glow, opacity)`` by :meth:`Color.add_defaults`.
+    ``(r, g, b, glow, opacity)`` by
+    :ref:`Color.add_defaults <reference-color-add-defaults>`.
     """
     image = cast_to_tensor(image).float()
     if image.dim() != 3:
@@ -231,7 +232,8 @@ class TriangleMesh(Mob):
         transformed) corner positions ``[T, 3F, 3]``.
 
         Authored normals are rotated out of the mesh's local frame by the
-        child's materialized basis (exactly as :class:`TriangleVertices`
+        child's materialized basis (exactly as
+        :class:`~algan.mobs.shapes_2d.TriangleVertices`
         does). Without authored normals, flat per-face normals are derived from
         the corner geometry so shading stays correct under any deformation.
         """

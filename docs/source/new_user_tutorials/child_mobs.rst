@@ -5,7 +5,7 @@ Child Mobs and Groups
 Complex objects are built by combining simple ones. Algan gives you two ways to
 do that, and they are the same mechanism underneath:
 
-* :meth:`~.Animatable.add_children` attaches Mobs to a **parent** Mob, so
+* :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children` attaches Mobs to a **parent** Mob, so
   changes to the parent propagate to them.
 * :class:`~.Group` collects Mobs into a new, invisible parent, and adds layout
   helpers.
@@ -52,15 +52,15 @@ What "propagate" means depends on the attribute:
 
    * - Change to the parent
      - Effect on each child
-   * - :attr:`~.Mob.location`
+   * - :attr:`~algan.animatable_base.mob.Mob.location`
      - The child moves by the same displacement.
-   * - :attr:`~.Mob.basis` (via :meth:`~.Mob.rotate` / :meth:`~.Mob.scale`)
+   * - :attr:`~algan.animatable_base.mob.Mob.basis` (via :meth:`~algan.animatable_base.mob_orientation.MobOrientationMixin.rotate` / :meth:`~algan.animatable_base.mob.Mob.scale`)
      - The child's basis is rotated or scaled the same way, *and* its position
        relative to the parent is preserved -- expressed in the parent's basis,
        the child's location does not change.
-   * - :attr:`~.Mob.color`, :attr:`~.Mob.opacity`, :attr:`~.Mob.glow`
+   * - :ref:`color <reference-mob-color>`, :ref:`opacity <reference-mob-opacity>`, :ref:`glow <reference-mob-glow>`
      - The child gets the same change.
-   * - :meth:`~.Animatable.spawn` / :meth:`~.Animatable.despawn`
+   * - :meth:`~algan.animatable_base.animatable.Animatable.spawn` / :meth:`~algan.animatable_base.animatable.Animatable.despawn`
      - The child spawns or despawns too.
 
 The upshot for geometry is that a child behaves as though bolted to the parent by
@@ -79,20 +79,20 @@ Inspecting the hierarchy
 
    * - Accessor
      - Returns
-   * - :attr:`~.Mob.children`
+   * - :ref:`children <reference-mob-children>`
      - This Mob's direct children. **Read-only** -- always add through
-       :meth:`~.Animatable.add_children`.
-   * - :meth:`~.Mob.get_descendants`
+       :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.add_children`.
+   * - :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.get_descendants`
      - Children, grandchildren and so on, plus this Mob.
-   * - :meth:`~.Mob.remove_child`, :meth:`~.Mob.remove_parent`
+   * - :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_child`, :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.remove_parent`
      - Detach a link.
-   * - :meth:`~.Mob.set_parent_to`, :meth:`~.Mob.replace_children`
+   * - :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.set_parent_to`, :meth:`~algan.animatable_base.mob_hierarchy.MobHierarchyMixin.replace_children`
      - Re-parent, or swap the whole child list.
 
 Groups
 ======
 
-:class:`~.Group` wraps a collection of Mobs so you can treat them as one. It
+:class:`~algan.mobs.group.Group` wraps a collection of Mobs so you can treat them as one. It
 creates an empty Mob at the centre of the collection and adds everything as its
 children, so all of the propagation rules above apply.
 
@@ -133,8 +133,8 @@ keeping a separate list:
 Arranging
 =========
 
-:meth:`~.Group.arrange_in_line` spreads the members along a direction;
-:meth:`~.Group.arrange_in_grid` lays them out in rows and columns. Both are
+:meth:`~algan.mobs.group.Group.arrange_in_line` spreads the members along a direction;
+:meth:`~algan.mobs.group.Group.arrange_in_grid` lays them out in rows and columns. Both are
 ordinary animations, so members slide into place rather than jumping.
 
 .. code-block:: python
@@ -149,7 +149,7 @@ ordinary animations, so members slide into place rather than jumping.
     Both arrangements use a uniform cell size, taken from the largest member. If
     one Mob is much bigger than the rest -- or bigger than the frame -- the whole
     layout inflates to match it and can end up off-screen. Give your Mobs
-    comparable sizes before arranging, or :meth:`~.Mob.scale` the group
+    comparable sizes before arranging, or :meth:`~algan.animatable_base.mob.Mob.scale` the group
     afterwards.
 
     A common trap: :class:`~.Torus` defaults to ``major_radius=3``, which is
@@ -160,18 +160,18 @@ an edge rather than their centres, and ``equal_displacement`` to space centres
 evenly instead of leaving equal gaps. ``arrange_in_grid`` takes
 ``row_direction`` / ``column_direction`` to control which way the grid fills.
 
-To place a whole group on screen as a unit, :meth:`~.Mob.fit_to_screen_rectangle`
+To place a whole group on screen as a unit, :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.fit_to_screen_rectangle`
 scales and moves it in one call -- see :doc:`positioning_and_layout`.
 
 Sub-Mobs
 ========
 
 Indexing a Mob that has internal structure gives you a view onto part of it.
-:attr:`Text.character_mobs` is the most useful case (see :doc:`text_and_math`),
+:ref:`character_mobs <reference-text-character-mobs>` is the most useful case (see :doc:`text_and_math`),
 and multi-part :class:`~.Tex` exposes its pieces as ``children``.
 
 .. note::
 
     A sub-Mob obtained by indexing shares its source's identity, and therefore
     its lifespan: it is spawned and despawned with the whole. A
-    :meth:`~.Animatable.clone` is independent.
+    :meth:`~algan.animatable_base.animatable.Animatable.clone` is independent.

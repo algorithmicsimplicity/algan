@@ -377,7 +377,8 @@ class RegularPolygon(Polygon):
     start_angle
         Angle of the first vertex, **in radians** (Manim's convention). Defaults to
         ``None``, which puts the first vertex at the top and repeats the closing
-        vertex -- a topology that matters when morphing with :meth:`~.Mob.become`.
+        vertex -- a topology that matters when morphing with
+        :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become`.
     **kwargs
         Passed to :class:`~.Polygon` and on to :class:`~.BezierCircuitCubic`.
 
@@ -460,7 +461,7 @@ class Rectangle(Quad):
         is a 2x2 square.
     color
         Fill colour. Defaults to ``None``, meaning the class default (see
-        :meth:`~.Animatable.get_default_color`).
+        :meth:`~algan.animatable_base.animatable.Animatable.get_default_color`).
     **kwargs
         Passed to :class:`~.BezierCircuitCubic` -- notably ``location``,
         ``border_color``, ``border_width`` and ``filled``.

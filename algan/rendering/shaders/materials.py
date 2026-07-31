@@ -2,7 +2,9 @@
 
 These mirror the Three.js *mesh* materials -- the same material types, property
 names and default settings -- so a material can be configured the familiar way
-and applied to a mob with :meth:`Mob.set_material`. One deliberate deviation:
+and applied to a mob with
+:meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`.
+One deliberate deviation:
 ``color`` defaults to ``None``, meaning "keep the mob's existing colour",
 whereas Three.js defaults it to white (which would silently repaint any mob
 the material is applied to)::
@@ -11,10 +13,13 @@ the material is applied to)::
 
     Sphere().set_material(MeshStandardMaterial(metalness=1.0, roughness=0.2)).spawn()
 
-Each :class:`Material` is a thin configuration object: it knows its lighting
-:attr:`shader` (a function from :mod:`algan.rendering.shaders.material_shaders`)
-and, via :meth:`get_shader_param_values`, the per-vertex shader parameters that
-``set_material`` registers as animatable attributes on the mob. So after applying
+Each :class:`~algan.rendering.shaders.materials.Material` is a thin configuration
+object: it knows its lighting
+:attr:`~algan.rendering.shaders.materials.Material.shader` (a function from :mod:`algan.rendering.shaders.material_shaders`)
+and, via
+:meth:`~algan.rendering.shaders.materials.Material.get_shader_param_values`,
+the per-vertex shader parameters that ``set_material`` registers as animatable
+attributes on the mob. So after applying
 a material you can animate e.g. ``mob.roughness = 0.1`` or ``mob.emissive_intensity = 3``.
 
 Limitations
@@ -100,7 +105,8 @@ class Material:
     """Base class holding the Three.js shared material properties + defaults.
 
     Subclasses set :attr:`shader`, list their animatable shader parameters and
-    implement :meth:`get_shader_param_values`.
+    implement
+    :meth:`~algan.rendering.shaders.materials.Material.get_shader_param_values`.
     """
 
     #: Lighting shader backing this material (a plain function).

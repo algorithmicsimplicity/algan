@@ -1,4 +1,4 @@
-"""Morphing (``become``) and batch-expansion machinery for :class:`~algan.mobs.mob.Mob`.
+"""Morphing (``become``) and batch-expansion machinery for :class:`~algan.animatable_base.mob.Mob`.
 
 Split out of ``mob.py`` for readability; :class:`MobMorphMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
@@ -30,7 +30,9 @@ class MobMorphMixin:
     def expand_n_list(self, lst, n: int) -> list:
         """Internal: pad a list of point tensors by duplicating entries.
 
-        Used by :meth:`~.Mob.become` to give two Mobs the same number of paths
+        Used by
+        :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` to give two
+        Mobs the same number of paths
         before morphing. Duplicates are degenerate (collapsed onto their last
         point), so the padding is invisible.
 
@@ -77,14 +79,17 @@ class MobMorphMixin:
     def expand_n_children(self, n: int) -> Mob:
         """Internal: add ``n`` children by cloning the existing ones.
 
-        Used by :meth:`~.Mob.become` so that a Mob with three parts can morph into
+        Used by
+        :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` so that a Mob
+        with three parts can morph into
         one with five: the shortfall is made up with clones, which then morph
         into the extra target parts.
 
         Animation
         ---------
         Not animated. Structural, and only meaningful on a Mob with fresh history
-        (see :meth:`~.Mob.detach_history`).
+        (see
+        :meth:`~algan.animatable_base.mob.Mob.detach_history`).
 
         Parameters
         ----------
@@ -93,7 +98,7 @@ class MobMorphMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         current_children_count = len(self.get_non_component_children())
@@ -118,7 +123,9 @@ class MobMorphMixin:
     def expand_n_tensor(self, value: torch.Tensor, n: int) -> torch.Tensor:
         """Internal: pad a batched point tensor by duplicating sub-objects.
 
-        Used by :meth:`~.Mob.become` to align the segment counts of two curves.
+        Used by
+        :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` to align the
+        segment counts of two curves.
         Added entries are degenerate (collapsed onto their last point).
 
         Parameters
@@ -168,7 +175,9 @@ class MobMorphMixin:
     def expand_n_batch(self, n: int) -> Mob:
         """Internal: grow this Mob's batch by ``n`` objects, cloning to fill.
 
-        Used by :meth:`~.Mob.become` to match the number of primitives on both
+        Used by
+        :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` to match the
+        number of primitives on both
         sides of a morph. Every animatable attribute is re-batched together, so
         colour and opacity keep lining up with the new geometry.
 
@@ -177,7 +186,8 @@ class MobMorphMixin:
         Not animated, and **not recorded**: the writes go through
         ``setattr_and_rebatch_without_record``, which re-allocates this Mob's
         timeline rows. Recorded history stays with the old rows, so this is only
-        valid on a Mob with fresh history (see :meth:`~.Mob.detach_history`).
+        valid on a Mob with fresh history (see
+        :meth:`~algan.animatable_base.mob.Mob.detach_history`).
 
         Parameters
         ----------
@@ -186,7 +196,7 @@ class MobMorphMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
@@ -314,13 +324,15 @@ class MobMorphMixin:
         deformation. The assignment is costly for Mobs with very many parts.
 
         This Mob and ``target`` must already have the same batch size (e.g. after
-        :meth:`~.Mob.expand_n_batch`); mismatched or single-object batches are left
+        :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.expand_n_batch`);
+        mismatched or single-object batches are left
         untouched.
 
         Animation
         ---------
         Not animated, and **not recorded** -- it re-batches attributes in place, so
-        it is only valid on a Mob with fresh history. :meth:`~.Mob.become` calls it
+        it is only valid on a Mob with fresh history.
+        :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` calls it
         for you when ``minimize_movement=True``.
 
         Parameters
@@ -330,7 +342,7 @@ class MobMorphMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         num_points_per_object = self.num_points_per_object
@@ -382,12 +394,13 @@ class MobMorphMixin:
         """Get the children you added, excluding the Mob's own structural parts.
 
         A shape's components are the pieces it builds itself from; this returns
-        only the Mobs added on top of them, which is the set :meth:`~.Mob.become`
+        only the Mobs added on top of them, which is the set
+        :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become`
         pairs up when morphing.
 
         Returns
         -------
-        list[:class:`~.Mob`]
+        list[:class:`~algan.animatable_base.mob.Mob`]
             Direct children that are not components of this Mob.
         """
         return [_ for _ in self.children if _ not in self.components]
@@ -424,7 +437,8 @@ class MobMorphMixin:
             components).
         detach_history
             Whether to start this Mob on a fresh animation history first, via
-            :meth:`~.Mob.detach_history`. Defaults to True, which is what allows a
+            :meth:`~algan.animatable_base.mob.Mob.detach_history`.
+            Defaults to True, which is what allows a
             morph that changes the number of parts. Pass False only for a morph
             recorded inside another morph (``become`` uses it that way for
             children).
@@ -437,7 +451,7 @@ class MobMorphMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             The morphed Mob, wearing ``other_mob``'s appearance. When
             ``detach_history`` is True this is a **different object** from the one
             you called the method on, so use the returned Mob for any later

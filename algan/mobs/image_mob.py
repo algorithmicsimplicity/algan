@@ -14,7 +14,8 @@ _manim = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 
 
 class ImageMob(Surface):
-    """A flat 2-D rectangular :class:`~.Surface` with color set according
+    """A flat 2-D rectangular
+    :class:`~algan.mobs.surfaces.surface.Surface` with color set according
     to a given image (or image file path).
 
     Parameters
@@ -27,7 +28,7 @@ class ImageMob(Surface):
         If False, create one mesh vertex per image pixel and assign the pixel
         values directly as vertex colors.
     **kwargs
-        Passed to :class:`~Surface` .
+        Passed to :class:`~algan.mobs.surfaces.surface.Surface`.
 
     """
 

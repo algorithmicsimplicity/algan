@@ -1,4 +1,5 @@
-"""pyassimp-backed importer: parse a model file into a :class:`SceneData`.
+"""pyassimp-backed importer: parse a model file into a
+:class:`~algan.mobs.three_d_models.scene_data.SceneData`.
 
 pyassimp is a thin ``ctypes`` wrapper around the native Open Asset Import
 Library (``assimp``). The Python package (``pip install pyassimp``) does **not**

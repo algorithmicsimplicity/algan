@@ -7,15 +7,17 @@ consumes them and builds the Algan mob tree. Keeping the IR separate from both
 the parser and the mob builder means:
 
 * the parsing backend is swappable (trimesh, FBX SDK, pyassimp, ...) without
-  touching :class:`ThreeDModelMob`;
+  touching :class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob`;
 * the IR can be hand-built in tests, so the mob builder is testable with no
   parser backend present.
 
 The IR is intentionally a superset of what the current (static-geometry) import
 phase consumes: ``SkinData``, morph targets and ``AnimationData`` are populated
 by the loader where available and are the hooks the skeletal / morph animation
-phases build on. Phase 1 reads only :attr:`SceneData.meshes`,
-:attr:`SceneData.materials` and the node transforms.
+phases build on. Phase 1 reads only
+:attr:`~algan.mobs.three_d_models.scene_data.SceneData.meshes`,
+:attr:`~algan.mobs.three_d_models.scene_data.SceneData.materials` and the node
+transforms.
 
 All arrays are plain :class:`torch.Tensor` (or ``None``); coordinates are in the
 model's own space (the loader applies assimp's post-process transforms, e.g.

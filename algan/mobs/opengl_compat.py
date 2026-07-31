@@ -2,7 +2,9 @@
 
 The ``OpenGL`` prefix selects a renderer in Manim.  Algan has one ray-traced
 surface representation, so these classes retain Manim's construction/query API
-while producing native :class:`algan.Surface` and :class:`algan.Group` objects.
+while producing native
+:class:`~algan.mobs.surfaces.surface.Surface` and
+:class:`~algan.mobs.group.Group` objects.
 """
 from __future__ import annotations
 

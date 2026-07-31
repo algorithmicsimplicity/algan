@@ -9,7 +9,9 @@ left-to-right, each fed the previous stage's output) via :func:`register_pipelin
 which bakes the pipeline into a single injected ``@ti.func`` (see
 ``taichi-func-injection``) and hands back a per-primitive pipeline id.
 
-Users reach this through :meth:`algan.mobs.mob.Mob.set_fragment_shader`. A stage
+Users reach this through
+:meth:`algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`.
+A stage
 may be a built-in material (the ``@ti.func`` ports of the core lit shaders,
 exposed here as :class:`FragmentStage` and also resolvable from their PyTorch
 shader functions, e.g. ``phong_shader``) or a custom :class:`FragmentStage`

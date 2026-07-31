@@ -1,6 +1,7 @@
 """High-value geometric animations that are not simple context composition.
 
-Algan's :class:`~algan.animation.animation_contexts.AnimationContext` system
+Algan's
+:class:`~algan.animation_timeline.animation_contexts.AnimationContext` system
 already replaces most of Manim's small Animation subclasses: fades, rotations,
 scales, method calls, and grouped/succession animations are ordinary Mob
 operations nested in ``Sync``, ``Seq``, and ``Lag``.  This module is reserved

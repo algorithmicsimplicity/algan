@@ -1,4 +1,4 @@
-"""Manim-compatible raster image Mobs backed by :class:`ImageMob`."""
+"""Manim-compatible raster image Mobs backed by :class:`~algan.mobs.image_mob.ImageMob`."""
 from __future__ import annotations
 
 import pathlib

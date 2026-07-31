@@ -117,7 +117,7 @@ can break Taichi compilation.
 Settings lifecycle
 ==================
 
-:data:`algan.SETTINGS` contains runtime-adjustable sections with stable object
+:doc:`SETTINGS <../reference_index/settings>` contains runtime-adjustable sections with stable object
 identity. Mutable sections update in place through ``set``; immutable presets
 return modified copies. Initialization-only device and kernel-layout choices
 live in ``algan.settings._startup`` and are selected through environment

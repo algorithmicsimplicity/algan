@@ -1,4 +1,5 @@
-"""Screen-relative layout and bounding-box queries for :class:`~algan.mobs.mob.Mob`.
+"""Screen-relative layout and bounding-box queries for
+:class:`~algan.animatable_base.mob.Mob`.
 
 Split out of ``mob.py`` for readability; :class:`MobLayoutMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
@@ -27,7 +28,8 @@ class MobLayoutMixin:
         -------
         torch.Tensor
             Per-axis minimum of this Mob's points, shape ``(*, 1, 3)``. For the
-            corner of the whole hierarchy, use :meth:`~.Mob.get_bounding_box`.
+            corner of the whole hierarchy, use
+            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_bounding_box`.
         """
         return self.location.amin(-2, keepdim=True)
 
@@ -38,7 +40,8 @@ class MobLayoutMixin:
         -------
         torch.Tensor
             Per-axis maximum of this Mob's points, shape ``(*, 1, 3)``. For the
-            corner of the whole hierarchy, use :meth:`~.Mob.get_bounding_box`.
+            corner of the whole hierarchy, use
+            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_bounding_box`.
         """
         return self.location.amax(-2, keepdim=True)
 
@@ -131,7 +134,9 @@ class MobLayoutMixin:
         """Get the outermost point of this Mob's hierarchy along a direction.
 
         Walks the hierarchy so a Group reports the extreme point of whichever
-        member reaches furthest. :meth:`~.Mob.get_boundary_edge_point` is the
+        member reaches furthest.
+        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_boundary_edge_point`
+        is the
         public spelling of this.
 
         Parameters
@@ -163,7 +168,7 @@ class MobLayoutMixin:
         The actual outermost point of the geometry, which for an irregular shape
         is off to one side rather than straight out from the center. For the
         point straight out from the center, use
-        :meth:`~.Mob.get_boundary_in_direction`.
+        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_boundary_in_direction`.
 
         Parameters
         ----------
@@ -181,7 +186,8 @@ class MobLayoutMixin:
         """Get the center of the box enclosing this Mob and its descendants.
 
         This is the midpoint of the bounding box, not the average of the Mob's
-        points and not necessarily its :attr:`~.Mob.location` -- the location is
+        points and not necessarily its
+        :attr:`~algan.animatable_base.mob.Mob.location` -- the location is
         an anchor that can sit anywhere, while this is the middle of what the
         viewer sees.
 
@@ -248,7 +254,9 @@ class MobLayoutMixin:
     def move_center_to(self, point: torch.Tensor) -> MobLayoutMixin:
         """Move the Mob so the middle of its bounding box lands on a point.
 
-        Unlike :meth:`~.Mob.move_to`, which places the Mob's anchor, this places
+        Unlike
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to`, which
+        places the Mob's anchor, this places
         what the viewer perceives as the middle -- the right choice for centering
         text or a Group whose anchor is off to one side.
 
@@ -264,7 +272,7 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         point = cast_to_tensor(point).to(
@@ -360,12 +368,12 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
         ------
-        :class:`.AlganConfigurationError`
+        :class:`~algan.errors.AlganConfigurationError`
             If ``screen_position`` is not two finite coordinates within
             ``[0, 1]``, or if the Scene has no camera.
         """
@@ -410,12 +418,12 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
         ------
-        :class:`.AlganConfigurationError`
+        :class:`~algan.errors.AlganConfigurationError`
             If ``width`` is not positive, or if the Mob's current width is zero
             and no scale factor could produce the target.
         """
@@ -448,12 +456,12 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
         ------
-        :class:`.AlganConfigurationError`
+        :class:`~algan.errors.AlganConfigurationError`
             If ``height`` is not positive, or if the Mob's current height is zero
             and no scale factor could produce the target.
         """
@@ -496,14 +504,14 @@ class MobLayoutMixin:
         """Scale and move the Mob to fill a rectangle of the screen.
 
         Works on the bounding box of the whole hierarchy, so calling it on a
-        :class:`~.Group` lays out the entire collection at once and keeps its
+        :class:`~algan.mobs.group.Group` lays out the entire collection at once and keeps its
         members' relative positions. Handy for "put this diagram in the left half
         of the frame" without hand-tuning coordinates.
 
         Animation
         ---------
         Recorded as an animation: the scale and the move run together inside a
-        :class:`~.Sync`, over the current context's duration (1 second by
+        :class:`~algan.animation_timeline.animation_contexts.Sync`, over the current context's duration (1 second by
         default). The rectangle is resolved from the camera when the call is
         recorded.
 
@@ -525,12 +533,12 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
         ------
-        :class:`.AlganConfigurationError`
+        :class:`~algan.errors.AlganConfigurationError`
             If the corners are not finite pairs satisfying
             ``0 <= bottom_left < top_right <= 1``, if the Mob's bounding box has
             zero width or height, or if the Scene has no camera.
@@ -589,7 +597,8 @@ class MobLayoutMixin:
 
         See Also
         --------
-        :meth:`~.Mob.get_boundary_edge_point` : The true extreme point, which may be off-axis.
+        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_boundary_edge_point`
+            The true extreme point, which may be off-axis.
         """
         direction = F.normalize(direction, p=2, dim=-1)
         edge_point = self.get_boundary_edge_point(direction)
@@ -618,7 +627,7 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         return self.set_individual_coords(target, 0)
@@ -638,7 +647,7 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         return self.set_individual_coords(target, 1)
@@ -661,7 +670,7 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         return self.set_individual_coords(target, 2)
@@ -671,7 +680,9 @@ class MobLayoutMixin:
     ) -> MobLayoutMixin:
         """Move the Mob along selected world axes, leaving the others alone.
 
-        The general form of :meth:`~.Mob.set_x_coord` and friends; pass a list to
+        The general form of
+        :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.set_x_coord` and
+        friends; pass a list to
         set several axes at once.
 
         Animation
@@ -691,7 +702,7 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         from algan.animatable_base.mob import Mob
@@ -714,7 +725,9 @@ class MobLayoutMixin:
         Parameters
         ----------
         *args, **kwargs
-            Passed to :meth:`~.Mob.get_individual_coords` -- notably
+            Passed to
+            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_individual_coords`
+            -- notably
             ``centered=True`` to measure the bounding-box center instead of the
             Mob's anchor.
 
@@ -731,7 +744,9 @@ class MobLayoutMixin:
         Parameters
         ----------
         *args, **kwargs
-            Passed to :meth:`~.Mob.get_individual_coords` -- notably
+            Passed to
+            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_individual_coords`
+            -- notably
             ``centered=True``.
 
         Returns
@@ -747,7 +762,9 @@ class MobLayoutMixin:
         Parameters
         ----------
         *args, **kwargs
-            Passed to :meth:`~.Mob.get_individual_coords` -- notably
+            Passed to
+            :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_individual_coords`
+            -- notably
             ``centered=True``.
 
         Returns
@@ -799,7 +816,7 @@ class MobLayoutMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
         new_location = self.location.clone()
@@ -863,7 +880,9 @@ class MobLayoutMixin:
     ) -> torch.Tensor:
         """Get the displacement that would align this Mob's boundary with another's.
 
-        The vector :meth:`~.Mob.move_inline_with_boundary` applies; useful when you
+        The vector
+        :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_inline_with_boundary`
+        applies; useful when you
         want the number rather than the movement.
 
         Parameters

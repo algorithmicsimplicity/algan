@@ -1,4 +1,5 @@
-"""Shader / material API for :class:`~algan.mobs.mob.Mob`.
+"""Shader / material API for
+:class:`~algan.animatable_base.mob.Mob`.
 
 Split out of ``mob.py`` for readability; :class:`MobMaterialsMixin` is mixed
 into ``Mob`` and is not useful standalone (``self`` is always a Mob).
@@ -25,7 +26,8 @@ class MobMaterialsMixin:
         The shader decides how the Mob responds to light. Its parameters become
         animatable attributes on the Mob, so a shader with a ``roughness``
         parameter gives you ``mob.roughness`` to animate. Most scenes should set a
-        :meth:`~.Mob.set_material` instead, which picks the matching shader and
+        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`
+        instead, which picks the matching shader and
         fills in its values.
 
         Animation
@@ -52,7 +54,7 @@ class MobMaterialsMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
@@ -62,8 +64,10 @@ class MobMaterialsMixin:
 
         See Also
         --------
-        :meth:`~.Mob.set_material` : Three.js-style materials, the usual entry point.
-        :meth:`~.Mob.set_fragment_shader` : Shade per fragment instead of per vertex.
+        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_material`
+            Three.js-style materials, the usual entry point.
+        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_fragment_shader`
+            Shade per fragment instead of per vertex.
         """
         if self.is_spawned():
             raise ModifiedProtectedAttributeError(
@@ -106,7 +110,9 @@ class MobMaterialsMixin:
         """Set a per-fragment shader for this Mob and its descendants.
 
         Shading runs once per rendered fragment rather than once per vertex as
-        with :meth:`~.Mob.set_shader`, so effects can vary smoothly across a
+        with
+        :meth:`~algan.animatable_base.mob_materials.MobMaterialsMixin.set_shader`,
+        so effects can vary smoothly across a
         surface instead of being interpolated between its corners -- at a higher
         render cost.
 
@@ -138,7 +144,7 @@ class MobMaterialsMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises
@@ -186,7 +192,9 @@ class MobMaterialsMixin:
 
         The material is also the sole public source of ray-transport
         properties. ``metalness`` and ``roughness`` drive reflections, while a
-        transmissive :class:`MeshPhysicalMaterial` supplies ``ior`` for
+        transmissive
+        :class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial` supplies
+        ``ior`` for
         refraction. This mirrors the Three.js material workflow; there are no
         separate mob-level reflectivity, roughness, or refractive-index setters.
 
@@ -205,7 +213,7 @@ class MobMaterialsMixin:
 
         Returns
         -------
-        :class:`~.Mob`
+        :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
 
         Raises

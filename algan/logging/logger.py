@@ -1,4 +1,4 @@
-"""Algan's library logger, backed by Python's standard :mod:`logging`.
+"""Algan's library logger, backed by Python's standard ``logging`` module.
 
 All of Algan's diagnostic and progress output goes through the ``"algan"``
 logger. By default it prints bare messages to stderr at ``INFO`` level (so
@@ -35,7 +35,7 @@ def set_log_level(level):
     Parameters
     ----------
     level
-        A standard :mod:`logging` level name or value, e.g. ``"WARNING"`` to
+        A standard ``logging`` level name or value, e.g. ``"WARNING"`` to
         silence progress messages or ``"DEBUG"`` for extra detail.
     """
     logger.setLevel(level.upper() if isinstance(level, str) else level)

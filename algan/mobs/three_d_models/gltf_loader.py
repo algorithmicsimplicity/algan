@@ -1,5 +1,6 @@
 """trimesh-backed importer for glTF / glB (and other trimesh-supported
-formats): parse a model file into a :class:`SceneData`.
+formats): parse a model file into a
+:class:`~algan.mobs.three_d_models.scene_data.SceneData`.
 
 trimesh is pure-Python (plus numpy) and needs no native library, so unlike the
 pyassimp/FBX path this works out of the box. It loads geometry, per-vertex

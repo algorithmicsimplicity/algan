@@ -40,6 +40,7 @@ Module index
 
    reference_index/scenes
    reference_index/animation
+   reference_index/core
    reference_index/mobs
    reference_index/rendering
    reference_index/settings

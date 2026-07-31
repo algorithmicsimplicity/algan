@@ -1,4 +1,5 @@
-"""Import a 3-D model file (glB/glTF, FBX, OBJ, ...) as an Algan :class:`~.Mob`.
+"""Import a 3-D model file (glB/glTF, FBX, OBJ, ...) as an Algan
+:class:`~algan.animatable_base.mob.Mob`.
 
 :class:`ThreeDModelMob` parses the file into the backend-independent
 :class:`~algan.mobs.three_d_models.scene_data.SceneData` IR and builds one
@@ -10,7 +11,7 @@ The parser backend is chosen from the file extension:
 * ``.glb`` / ``.gltf`` (and other trimesh formats) -> trimesh, which is
   pure-Python and needs no native library.
 * ``.fbx`` -> pyassimp, which needs the native ``assimp`` library installed
-  separately (see :mod:`algan.mobs.three_d_models.assimp_loader`).
+  separately (see :mod:`~algan.mobs.three_d_models.assimp_loader`).
 
 Baking the node hierarchy to world-space vertices (rather than reconstructing a
 live Algan transform hierarchy) keeps static import unambiguous and is also the
@@ -148,7 +149,8 @@ class ThreeDModelMob(Mob):
         (default True), so imported meshes shade with Cook-Torrance GGX. When
         False the default lit shader is kept.
     *args, **kwargs
-        Passed to :class:`~.Mob` (e.g. ``location`` to place the model).
+        Passed to :class:`~algan.animatable_base.mob.Mob` (e.g. ``location`` to
+        place the model).
     """
 
     def __init__(
@@ -408,7 +410,8 @@ class ThreeDModelMob(Mob):
     # --- Phase 3: rigid node-keyframe animation -----------------------------
     @property
     def animations(self):
-        """The animation clips (:class:`~.AnimationData`) parsed from the model
+        """The animation clips
+        (:class:`~algan.mobs.three_d_models.scene_data.AnimationData`) parsed from the model
         file, if any."""
         return self.scene_data.animations
 

@@ -12,7 +12,7 @@ There are three separate mechanisms, and it is worth knowing which is which:
    showing a picture.
 2. :class:`~.Surface` texture arguments -- per-texel colour and material properties
    on any 3-D surface, sampled in the ray tracing kernel.
-3. :meth:`Scene.set_background_color` -- an image behind the whole scene (see
+3. :meth:`~algan.scene.Scene.set_background_color` -- an image behind the whole scene (see
    :doc:`backgrounds_and_post_processing`).
 
 .. note::
@@ -41,7 +41,7 @@ textured surface:
 Image paths are resolved against the working directory and then against the
 directory holding your script, so an image sitting beside your ``.py`` file loads
 regardless of where you launch Python from. The same resolution applies to
-:meth:`Scene.set_background_color` and every texture argument below.
+:meth:`~algan.scene.Scene.set_background_color` and every texture argument below.
 
 Instead of a path you can pass a ``[H, W, 4]`` or ``[H, W, 5]`` tensor, which is how
 you texture something with data you computed rather than loaded.
