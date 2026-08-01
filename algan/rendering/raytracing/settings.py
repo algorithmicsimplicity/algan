@@ -297,34 +297,6 @@ def wf_gen_fused_active():
     return bool(WF_GEN_FUSED)
 
 
-def seed_sparse_discovery_density(pixels_per_frame):
-    """Seed the discovery reservation from the measured corpus density.
-
-    This used to start at zero, so the *first* chunk of every render job
-    reserved nothing for a pass that does allocate, over-committed, and relied
-    on the out-of-memory window-halving to recover. Seeding from a conservative
-    corpus percentile removes that guaranteed first stumble; the in-job running
-    maximum still raises it for a scene denser than the corpus.
-    """
-    global _SPARSE_DISCOVERY_BYTES_PER_FRAME
-    from algan.rendering.mem_usage_lookup import (
-        density_seed,
-        density_structural,
-    )
-
-    density = density_seed("sparse_discovery")
-    coefficients = density_structural("sparse_discovery")
-    if not density or not coefficients:
-        return
-    # Fragments per frame, times the measured bytes each fragment costs in the
-    # discovery scratch and in the compact result that coexists with it.
-    fragments = float(density) * max(1, int(pixels_per_frame))
-    per_fragment = (int(coefficients.get("discovery_frags", 0))
-                    + int(coefficients.get("num_fragments", 0)))
-    _SPARSE_DISCOVERY_BYTES_PER_FRAME = max(
-        _SPARSE_DISCOVERY_BYTES_PER_FRAME, fragments * per_fragment)
-
-
 def _begin_render_job():
     """Render-loop hook: a new render job starts (resets the per-job batch
     count; the fused decision itself stays sticky for the process)."""
@@ -911,38 +883,19 @@ MERGE_ON_GPU = os.environ.get("ALGAN_MERGE_ON_GPU", "1") == "1"
 # run ~3-6x the packed inputs; the default leaves margin so the proactive
 # headroom check rarely lets a batch through that the OOM retry then has to
 # shrink. Read live.
+# The merge and the projection build out of place in *pool headroom*, not in
+# the render arena, so the arena's high-water mark cannot see them and the
+# runtime chunk model does not cover them. They keep a multiplicative bound on
+# their packed inputs. It is deliberately generous: torch's allocator counters
+# cannot see Taichi's separate pool at all, and the out-of-memory handler is
+# the exact fallback when the estimate is low.
 MERGE_GPU_PEAK_FACTOR = float(
-    os.environ.get("ALGAN_MERGE_GPU_PEAK_FACTOR", "0") or 0.0)
-
-
-def _measured_nonarena_ratio(name, fallback):
-    """Corpus-measured peak/input ratio, or ``fallback`` before calibration.
-
-    The values here used to be guesses (6.0 for the merge, 8.0 for the
-    projection). The measured ratio is a bound over the corpus rounded up, not
-    a mean: it feeds the check standing between a large batch and a
-    driver-level out-of-memory error, and torch's counters cannot see Taichi's
-    separate pool at all, so the margin stays deliberate rather than tight.
-
-    Resolved lazily. Reading the generated tables while this module is being
-    imported would pull ``algan.rendering`` in half-initialised.
-    """
-    try:
-        from algan.rendering import mem_usage
-
-        entry = mem_usage.NONARENA.get(name)
-    except Exception:
-        entry = None
-    if not entry:
-        return fallback
-    return max(1.0, float(entry.get("ratio", fallback)))
+    os.environ.get("ALGAN_MERGE_GPU_PEAK_FACTOR", "6.0"))
 
 
 def merge_gpu_peak_factor():
     """Live multiplier bounding the GPU merge's transient out-of-arena peak."""
-    if MERGE_GPU_PEAK_FACTOR:
-        return MERGE_GPU_PEAK_FACTOR
-    return _measured_nonarena_ratio("merge", 6.0)
+    return MERGE_GPU_PEAK_FACTOR
 
 # Exact measurement of the GPU merge's transient peak, which calibrates
 # ``MERGE_GPU_PEAK_FACTOR``. This used to default off because it called
@@ -996,18 +949,12 @@ PROJECT_ON_GPU = os.environ.get("ALGAN_PROJECT_ON_GPU", "1") == "1"
 # projection against the pool headroom before it is attempted; the OOM retry is
 # the exact fallback. Read live.
 PROJECT_GPU_PEAK_FACTOR = float(
-    os.environ.get("ALGAN_PROJECT_GPU_PEAK_FACTOR", "0") or 0.0)
+    os.environ.get("ALGAN_PROJECT_GPU_PEAK_FACTOR", "8.0"))
 
 
 def project_gpu_peak_factor():
-    """Live multiplier bounding projection's transient out-of-arena peak.
-
-    Measured over the corpus (see ``_measured_nonarena_ratio``); the 8.0 that
-    used to sit here was a guess about bezier polyline expansion.
-    """
-    if PROJECT_GPU_PEAK_FACTOR:
-        return PROJECT_GPU_PEAK_FACTOR
-    return _measured_nonarena_ratio("project", 8.0)
+    """Live multiplier bounding projection's transient out-of-arena peak."""
+    return PROJECT_GPU_PEAK_FACTOR
 
 
 def set_project_on_gpu(enabled):

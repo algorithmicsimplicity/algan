@@ -124,14 +124,13 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `setattr_
 ### Memory
 
 - `ManualMemory` (`utils/memory_utils.py`): a bump-allocator arena for render-time GPU tensors; callers snapshot/restore pointers to free deterministically. Render out-of-memory retries by shrinking the frame window (`OutOfRenderMemory`).
-- **Batch sizing reads measured tables, not hand-written formulas.** `rendering/mem_usage.py` is generated; `mem_usage_runtime.py` replays its allocation traces and `mem_usage_lookup.py` resolves route keys (falling back to a one-frame probe of the real pipeline for anything the table misses, which is how a user's custom post-process gets sized). **After adding, removing or resizing an arena buffer, re-run the generator** — that is the whole update procedure:
-  ```
-  .venv/Scripts/python.exe -m algan.utils.calibrate_memory            # rewrite
-  .venv/Scripts/python.exe -m algan.utils.calibrate_memory --verify   # check
-  ```
-  `get_tensor` is the arena's only allocation entry point and the recorder hooks it there, so new buffers are captured with no annotation. You only touch `algan/utils/calibrate_memory.py` when adding a whole new **scope** (it must be given a model) or when the generator says the corpus cannot separate two drivers — it fails loudly and names them rather than fitting something plausible. Corpus scenes live in `algan/utils/calibration_corpus.py`.
-- Value-dependent sizes (sparse-coverage fragments, continuation-pool occupancy) are split into exact measured bytes-per-unit times a density seeded from the corpus and raised in-job. The OOM retry stays the hard backstop; the tables only make it rare.
-- `tests/unit_tests/test_mem_usage_tables.py` replays the shipped traces against the live pipeline, so a stale table fails the fast suite instead of surfacing as an OOM in someone's render. `benchmarks/_mem_usage_shadow.py` checks predictions against real renders end to end.
+- **Batch sizing is measured at runtime, not modelled.** `rendering/memory_model.py` fits `peak(n) = a + b*n` to the arena's own high-water mark over rendered chunks, and sizes the next chunk from it. **Nothing describes what gets allocated**, so a new primitive, a new tracer path or a user's own post-process is accounted for the moment it runs — there is nothing to annotate, register or regenerate. This replaced a set of hand-written byte formulas *and* a generated calibration table; do not add either back.
+- Consequences worth knowing when changing render code:
+  - The **first chunk of a job is ~30% cheaper per frame** than steady state (kernel/allocator warm-up), so the model grows chunks geometrically (`PROBE_GROWTH`) and fits from the two *largest* samples rather than extrapolating off the first.
+  - Batches land on different lines when the frame buffer or geometry scale changes; `chunk_signature` keys that, with geometry bucketed logarithmically so ordinary scene drift keeps a usable fit.
+  - The **OOM retry is the backstop and must stay** — the model measures the batch's first frames and cannot see a scene that densifies later.
+- The merge and projection build *outside* the arena in pool headroom, so the model cannot see them; they keep the deliberately generous `MERGE_GPU_PEAK_FACTOR` / `PROJECT_GPU_PEAK_FACTOR` bounds on their packed inputs.
+- `ManualMemory.scope()` / the allocation recorder are **diagnostics only** — they do not participate in batch sizing. Use them to attribute arena usage per stage when investigating; do not add scopes expecting them to affect a render's memory budget.
 - The whole package runs under a process-global `torch.inference_mode()` entered at import. **Importing algan disables autograd for the process** — never share a process with torch training.
 
 ## Development Notes
@@ -164,8 +163,7 @@ Core: torch, torchvision, taichi, numpy, opencv-python, moviepy, scipy, svgeleme
 - `algan/animations/` — built-in composable animations
 - `algan/mobs/` — all renderable object classes
 - `algan/rendering/` — camera, lights, ray tracer + Taichi kernels, shaders, post-processing
-- `algan/rendering/mem_usage.py` — **generated** measured memory tables (regenerate, never hand-edit); `mem_usage_runtime.py` replays them, `mem_usage_lookup.py` resolves keys and probes
-- `algan/utils/calibrate_memory.py` — the memory-table generator; `calibration_corpus.py` — the scenes and configurations it measures
+- `algan/rendering/memory_model.py` — runtime chunk-peak model that sizes render batches
 - `algan/constants/` — spatial (UP, RIGHT, ORIGIN...), colors, rate functions
 - `algan/settings/` — `SETTINGS` sections, presets, startup-only env configuration
 - `algan/utils/` — tensor helpers, memory arena, profiling, doc-build tooling

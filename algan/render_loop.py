@@ -29,6 +29,12 @@ from algan.animation_timeline.animation_contexts import Off
 from algan.logging.logger import get_logger
 from algan.rendering.post_processing.bloom import bloom_filter
 from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
+import algan.rendering.raytracing.settings as rt_settings_module
+from algan.rendering.memory_model import (
+    ChunkMemoryModel,
+    PeakRatioModel,
+    chunk_signature,
+)
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.taichi_runtime import sync_devices as _sync_devices
 from algan.utils.memory_utils import (
@@ -164,180 +170,6 @@ def _slice_render_state(render_state, start, end, total_frames):
             for origin, color, aux in render_state["lights"]
         ],
     )
-
-
-def _align_up(pointer, item_size):
-    """Forward-arena alignment, matching ``ManualMemory.get_tensor``.
-
-    Alignment is allocator semantics rather than a memory *estimate*, so it
-    stays in code while the byte figures come from the measured tables.
-    """
-    return int(pointer) + (-int(pointer)) % int(item_size)
-
-
-def _raytrace_persistent_input_end(
-    initial_pointer,
-    num_frames,
-    light_sources,
-    merged_scene,
-    environment_map,
-    environment_ambient,
-):
-    """Arena pointer after the tracer's camera and light input copies.
-
-    *Which* light rows get packed, and how wide their colour rows are, is route
-    policy and is decided here. Every byte figure comes from the measured
-    ``persistent_inputs`` table -- nothing below multiplies a hand-derived
-    width by an item size.
-
-    Camera and packed-light inputs cover the whole prepared primitive batch, so
-    they are paid once and do not shrink with an individual render chunk.
-    """
-    rt_settings = SETTINGS.raytracing
-    from algan.rendering.mem_usage_lookup import unit_bytes_or_bound
-    from algan.rendering.raytracing.settings import _scene_has_user_pipeline
-
-    num_frames = int(num_frames)
-    # All of these copies are float32, so one alignment at the start covers
-    # the whole run.
-    pointer = _align_up(int(initial_pointer), torch.float32.itemsize)
-
-    def _end(cam_frames=0, light_pos_cells=0, light_col_cells=0):
-        # _include_slack=False: this walks the arena pointer itself, so the
-        # measured padding would be charged twice.
-        return pointer + int(unit_bytes_or_bound(
-            "persistent_inputs", {}, _include_slack=False,
-            cam_frames=cam_frames,
-            light_pos_cells=light_pos_cells,
-            light_col_cells=light_col_cells) or 0)
-
-    samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
-    if samples > 1:
-        return _end(cam_frames=num_frames)
-
-    lights_extended = any(
-        getattr(light, "_render_aux", None) is not None
-        for light in (light_sources or ())
-    )
-    det_frag = (
-        bool(rt_settings.FRAGMENT_SHADING)
-        or bool(rt_settings.SHADOWS)
-        or _scene_has_user_pipeline(merged_scene)
-        or lights_extended
-        or environment_map is not None
-    )
-    if not det_frag:
-        # Two [1, 1, 3] float32 placeholders.
-        return _end(cam_frames=num_frames, light_pos_cells=3,
-                    light_col_cells=3)
-
-    if lights_extended:
-        num_light_rows = sum(
-            int(light.origin.shape[-2]) for light in (light_sources or ())
-        )
-        color_width = 16
-    else:
-        num_light_rows = len(light_sources or ())
-        color_width = 3
-
-    append_environment = (
-        environment_map is not None and bool(environment_ambient)
-    )
-    if append_environment:
-        # The SH environment row widens compact point-light colors to 16.
-        color_width = 16
-        if num_light_rows:
-            num_light_rows += 1
-            light_frames = num_frames
-        else:
-            # _pack_lights returns one placeholder frame when there are no
-            # explicit lights; _append_env_sh_light preserves that shape.
-            num_light_rows = 1
-            light_frames = 1
-    elif num_light_rows:
-        light_frames = num_frames
-    else:
-        # _pack_lights' empty-scene placeholders are copied even when fragment
-        # shading is enabled: two [1, 1, 3] float32 rows.
-        return _end(cam_frames=num_frames, light_pos_cells=3,
-                    light_col_cells=3)
-
-    return _end(
-        cam_frames=num_frames,
-        light_pos_cells=light_frames * num_light_rows * 3,
-        light_col_cells=light_frames * num_light_rows * color_width)
-
-
-def _raytrace_frame_buffers_end(
-    initial_pointer, num_frames, width, height, channels, frame_dtype, samples
-):
-    """Arena pointer after the output and optional Monte Carlo accumulator.
-
-    Element counts are structural; the bytes each element costs come from the
-    measured ``frame_buffers`` table, keyed on the buffer's dtype (the HDR
-    float path is four times the byte path).
-    """
-    from algan.rendering.mem_usage_lookup import unit_bytes_or_bound
-
-    pixels = int(width) * int(height)
-    out_cells = int(num_frames) * pixels * int(channels)
-    accum_cells = int(num_frames) * pixels * 5 if int(samples) > 1 else 0
-    pointer = _align_up(int(initial_pointer), frame_dtype.itemsize)
-    measured = unit_bytes_or_bound(
-        "frame_buffers", {"dtype": str(frame_dtype)}, _include_slack=False,
-        out_cells=out_cells)
-    if measured is None:
-        # No table at all (first run before generation): fall back to the
-        # dtype's own item size, which is what the table measures anyway.
-        measured = out_cells * frame_dtype.itemsize
-    pointer += int(measured)
-    if accum_cells:
-        pointer = _align_up(pointer, torch.float32.itemsize)
-        accum = unit_bytes_or_bound(
-            "frame_accum", {}, _include_slack=False, accum_cells=accum_cells)
-        pointer += int(accum if accum is not None
-                       else accum_cells * torch.float32.itemsize)
-    return pointer
-
-
-class PostProcessTooLarge(Exception):
-    """A post-process configuration could not be sized even for one frame.
-
-    Raised only when the on-demand probe itself does not fit, which means a
-    single frame cannot be post-processed in the arena at all. Callers treat it
-    as "does not fit" so the existing single-frame diagnostic still surfaces.
-    """
-
-
-def _postprocess_memory_used(
-    *, frame_shape, frame_dtype, anti_alias_level, post_processes, apply_fxaa,
-    initial_pointer, device, memory=None,
-):
-    """Additional arena peak of the post-processing pipeline.
-
-    Read from the measured tables, falling back to a one-frame probe of the
-    real pipeline for configurations the shipped table does not cover --
-    including any post-process the user supplied. Nothing here is hand-derived.
-    """
-    from algan.rendering.mem_usage_lookup import (
-        get_post_process_memory_required,
-    )
-
-    result = get_post_process_memory_required(
-        frame_shape,
-        frame_dtype,
-        anti_alias_level,
-        post_processes,
-        apply_fxaa,
-        initial_pointer=initial_pointer,
-        device=device,
-        memory=memory,
-    )
-    if result is None:
-        raise PostProcessTooLarge(
-            f"post-processing of a single {tuple(frame_shape)[1:]} frame does "
-            f"not fit in the render arena")
-    return int(result)
 
 
 def _prepare_background_for_chunk(
@@ -676,7 +508,6 @@ class RenderLoopMixin:
         )
         from algan.rendering.raytracing.tracer import (
             effective_anti_alias_level,
-            get_wavefront_memory_required,
         )
 
         # Prefetch defers projection to this render thread when it runs on the
@@ -686,26 +517,31 @@ class RenderLoopMixin:
         # the pool's non-arena headroom, so -- like the merge below -- estimate
         # its peak from the source-geometry bytes and shrink the window before
         # attempting it, with the OOM handler as the exact fallback.
+        project_inputs = 0
+        project_token = None
         if rt_settings.project_on_gpu_active():
-            # From the settings module, not the SETTINGS facade: the facade
-            # exposes each field under its lower-cased name and would shadow
-            # this helper with the raw float.
-            from algan.rendering.raytracing.settings import (
-                project_gpu_peak_factor,
-            )
-
+            # Read now: projecting releases the source geometry this sums.
+            project_inputs = gpu_project_input_bytes(primitive_batch)
             estimated_project_peak = int(
-                project_gpu_peak_factor()
-                * gpu_project_input_bytes(primitive_batch))
+                self._project_peak_ratio.factor() * project_inputs)
             if estimated_project_peak > self._gpu_merge_headroom_bytes():
                 logger.debug(
                     "GPU projection peak estimate %.1f MB exceeds pool "
-                    "headroom %.1f MB; shrinking frame window.",
+                    "headroom %.1f MB [%s]; shrinking frame window.",
                     estimated_project_peak / 1e6,
-                    self._gpu_merge_headroom_bytes() / 1e6)
+                    self._gpu_merge_headroom_bytes() / 1e6,
+                    self._project_peak_ratio.describe())
                 return False
+            project_token = begin_cuda_peak(self.memory.data.device)
         try:
             self._prewarm_render_batch(primitive_batch, render_state)
+            if project_token is not None:
+                # Projection ran on this thread (project-on-gpu defers it here
+                # precisely so no concurrent render pollutes the counter), so
+                # the peak it just reached bounds the next batch's estimate.
+                self._project_peak_ratio.observe(
+                    project_inputs, end_cuda_peak(project_token))
+                project_token = None
         except (InsufficientMemoryException, RuntimeError) as exc:
             # Device projection overran the pool headroom. Drop partial state
             # and report not-fitting so the caller shrinks the frame window.
@@ -733,17 +569,12 @@ class RenderLoopMixin:
         # merge; a low estimate is still caught by the OOM handling just below,
         # which routes to the outer window-shrink retry.
         gpu_merge = rt_settings.merge_on_gpu_active()
+        merge_inputs = 0
         if gpu_merge:
-            # From the settings *module*, not the SETTINGS facade: the facade
-            # exposes each field under its lower-cased name, which would
-            # shadow this helper with the raw float.
-            from algan.rendering.raytracing.settings import (
-                merge_gpu_peak_factor,
-            )
-
+            # Read now: merging nulls the packed _rt_* arrays this sums.
+            merge_inputs = gpu_merge_input_bytes(primitive_batch)
             estimated_merge_peak = int(
-                merge_gpu_peak_factor()
-                * gpu_merge_input_bytes(primitive_batch))
+                self._merge_peak_ratio.factor() * merge_inputs)
             if estimated_merge_peak > self._gpu_merge_headroom_bytes():
                 logger.debug(
                     "GPU merge peak estimate %.1f MB exceeds pool headroom "
@@ -768,17 +599,21 @@ class RenderLoopMixin:
             return False
         scene_bytes = get_merged_scene_arena_nbytes(
             merged_host, self.memory, persist=True)
-        if gpu_merge and logger.isEnabledFor(logging.DEBUG):
+        if gpu_merge:
+            # The build just ran and reported its own peak, so the multiplier
+            # that bounds the *next* one is measured rather than guessed.
             measured = int(merged_host.get("_gpu_merge_peak_bytes", -1))
-            measured_str = (f"{measured / 1e6:.1f}" if measured >= 0
-                            else "n/a")
-            logger.debug(
-                "GPU merge: est peak %.1f MB (measured %s MB), headroom "
-                "%.1f MB, arena scene %.1f MB.",
-                estimated_merge_peak / 1e6,
-                measured_str,
-                self._gpu_merge_headroom_bytes() / 1e6,
-                scene_bytes / 1e6)
+            if measured >= 0:
+                self._merge_peak_ratio.observe(merge_inputs, measured)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "GPU merge: est peak %.1f MB (measured %s MB) [%s], "
+                    "headroom %.1f MB, arena scene %.1f MB.",
+                    estimated_merge_peak / 1e6,
+                    f"{measured / 1e6:.1f}" if measured >= 0 else "n/a",
+                    self._merge_peak_ratio.describe(),
+                    self._gpu_merge_headroom_bytes() / 1e6,
+                    scene_bytes / 1e6)
         bytes_remaining = self.memory.get_num_bytes_remaining()
         if scene_bytes > bytes_remaining:
             return False
@@ -815,56 +650,19 @@ class RenderLoopMixin:
             else torch.uint8
         )
         samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
-        initial_pointer = self.memory.current_pointer
-        persistent_input_end = _raytrace_persistent_input_end(
-            initial_pointer,
-            merged_host["num_frames"],
-            lights,
-            merged_host,
-            env_map,
-            getattr(self, "environment_ambient", True),
+        # What one frame costs on top of the scene is *measured*, not modelled.
+        # Until this job has rendered a chunk there is nothing to measure, so
+        # the preflight arbitrates on the scene alone -- which is the exact
+        # part, and the part that decides whether a batch is renderable at all.
+        # An optimistic first batch is corrected by the render's own retry.
+        signature = chunk_signature(
+            width=render_width, height=render_height,
+            channels=render_channels, dtype=frame_dtype,
+            samples_per_pixel=samples,
+            num_triangles=merged_host.get("num_triangles", 0),
+            num_circuits=merged_host.get("num_circuits", 0),
         )
-        frame_buffers_end = _raytrace_frame_buffers_end(
-            persistent_input_end,
-            1,
-            render_width,
-            render_height,
-            render_channels,
-            frame_dtype,
-            samples,
-        )
-        try:
-            postprocess_bytes = _postprocess_memory_used(
-                frame_shape=(1, render_height, render_width, render_channels),
-                frame_dtype=frame_dtype,
-                anti_alias_level=aa,
-                post_processes=post_processes,
-                apply_fxaa=self.video_settings.fxaa,
-                initial_pointer=frame_buffers_end,
-                device=self.memory.data.device,
-                memory=self.memory,
-            )
-        except PostProcessTooLarge:
-            # The probe could not fit one frame, which is the answer this
-            # predicate exists to give.
-            return False
-        wavefront_bytes = get_wavefront_memory_required(
-            merged_host,
-            1,
-            render_width,
-            render_height,
-            light_sources=lights,
-            environment_map=env_map,
-            near_clip=float(getattr(self.camera, "near", 0.0) or 0.0),
-            far_clip=float(getattr(self.camera, "far", 0.0) or 0.0),
-        )
-        if wavefront_bytes:
-            wavefront_bytes += (-frame_buffers_end) % 4
-        forward_bytes = (
-            frame_buffers_end
-            - initial_pointer
-            + max(wavefront_bytes, postprocess_bytes)
-        )
+        forward_bytes = self._chunk_memory_model.predict(signature, 1) or 0
         need_bytes = scene_bytes + forward_bytes
         self._last_arena_preflight = (need_bytes, bytes_remaining)
         margin = int(getattr(self, "_arena_unmodeled_bytes", 0))
@@ -1039,8 +837,6 @@ class RenderLoopMixin:
             )
             from algan.rendering.raytracing.tracer import (
                 effective_anti_alias_level,
-                get_raster_precompute_memory_required,
-                get_wavefront_memory_required,
             )
 
             aa = effective_anti_alias_level(
@@ -1062,97 +858,29 @@ class RenderLoopMixin:
                 else torch.uint8
             )
             samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
-            persistent_input_end = _raytrace_persistent_input_end(
-                render_pointers[0],
-                merged_host["num_frames"],
-                self.light_sources,
-                merged_host,
-                env_map,
-                getattr(self, "environment_ambient", True),
+            # Batches whose peak lies on the same line share a fit. Nothing
+            # here describes *what* gets allocated -- only what would put a
+            # batch on a different line.
+            signature = chunk_signature(
+                width=render_width, height=render_height,
+                channels=render_channels, dtype=frame_dtype,
+                samples_per_pixel=samples,
+                num_triangles=merged_host.get("num_triangles", 0),
+                num_circuits=merged_host.get("num_circuits", 0),
             )
-            # Sized from the *batch* frame count, not the chunk's: these
-            # tables do not shrink when a chunk is split, so they are an
-            # additive constant of the search rather than part of it.
-            raster_precompute_bytes = get_raster_precompute_memory_required(
-                merged_host, merged_host["num_frames"])
-
-            def chunk_memory_required(num_frames):
-                """Exact forward-arena peak for one candidate render chunk."""
-                frame_buffers_end = _raytrace_frame_buffers_end(
-                    persistent_input_end,
-                    num_frames,
-                    render_width,
-                    render_height,
-                    render_channels,
-                    frame_dtype,
-                    samples,
-                )
-                postprocess_bytes = _postprocess_memory_used(
-                    frame_shape=(
-                        num_frames,
-                        render_height,
-                        render_width,
-                        render_channels,
-                    ),
-                    frame_dtype=frame_dtype,
-                    anti_alias_level=aa,
-                    post_processes=post_processes,
-                    apply_fxaa=self.video_settings.fxaa,
-                    initial_pointer=frame_buffers_end,
-                    device=self.memory.data.device,
-                    memory=self.memory,
-                )
-                wavefront_bytes = get_wavefront_memory_required(
-                    merged_host,
-                    num_frames,
-                    render_width,
-                    render_height,
-                    light_sources=self.light_sources,
-                    environment_map=env_map,
-                    near_clip=float(getattr(camera, "near", 0.0) or 0.0),
-                    far_clip=float(getattr(camera, "far", 0.0) or 0.0),
-                )
-                if wavefront_bytes:
-                    # Every wavefront state allocation is float32/int32.  The
-                    # output can end unaligned for a transparent uint8 frame.
-                    wavefront_bytes += (-frame_buffers_end) % 4
-                temporary_bytes = max(wavefront_bytes, postprocess_bytes)
-                # Sparse-coverage discovery (prepare_sparse_raster_coverage) is a
-                # whole-window arena allocation -- the exact hit stream plus the
-                # persistent compact result -- that the per-primary wavefront
-                # model above cannot predict (it scales with the covered-fragment
-                # count). Reserve its learned per-frame footprint additively so
-                # this chunk is sized to fit the discovery peak, instead of
-                # over-committing and relying on the OOM window-halving. Zero
-                # until the job's first discovery establishes a density, and zero
-                # whenever the sparse path is not taken (nothing records one).
-                sparse_bytes = rt_settings.sparse_discovery_bytes_for_frames(
-                    num_frames)
-                return (
-                    frame_buffers_end
-                    - render_pointers[0]
-                    + temporary_bytes
-                    + sparse_bytes
-                    + raster_precompute_bytes
-                )
-
+            model = self._chunk_memory_model
             bytes_remaining = self.memory.get_num_bytes_remaining()
-
-            def chunk_fits(num_frames):
-                try:
-                    return chunk_memory_required(num_frames) <= bytes_remaining
-                except PostProcessTooLarge:
-                    # Not sizable even for one frame; the caller's
-                    # single-frame path reports it.
-                    return False
 
             current_ind = start_ind
             while True:
                 if getattr(self.memory, "managed", False):
-                    duration = _max_duration_that_fits(
-                        end_ind - current_ind,
-                        chunk_fits,
-                    )
+                    duration = model.plan(
+                        signature, end_ind - current_ind, bytes_remaining)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "chunk %d frames from model [%s], %.1f MB free",
+                            duration, model.describe(signature),
+                            bytes_remaining / 1e6)
                 else:
                     # Unmanaged mode deliberately uses PyTorch's ordinary
                     # allocator.  There is no finite arena to size against,
@@ -1186,6 +914,12 @@ class RenderLoopMixin:
                 # buffers; empty_cache still collects cycles when the device
                 # is genuinely near capacity.
                 empty_cache(force_gc=False)
+                # Baseline the high-water mark at this chunk's starting level,
+                # so what it reaches afterwards is this chunk's own footprint
+                # rather than the whole job's.
+                chunk_base = (render_pointers[0]
+                              + len(self.memory) - render_pointers[1])
+                self.memory.max_pointer = chunk_base
                 yield primitive_batch[0].render(
                     primitive_batch,
                     self,
@@ -1204,6 +938,13 @@ class RenderLoopMixin:
                     memory=self.memory,
                     post_processes=post_processes,
                 )
+                # The chunk rendered, so its peak is now known exactly. This is
+                # the whole memory model: no allocation is described anywhere,
+                # only what the arena actually reached.
+                if getattr(self.memory, "managed", False):
+                    model.observe(
+                        signature, duration,
+                        max(0, self.memory.max_pointer - chunk_base))
 
                 self.memory.set_pointers(render_pointers)
                 current_ind = new_ind
@@ -1274,28 +1015,19 @@ class RenderLoopMixin:
 
         original_pointers = self.memory.get_pointers()
         bytes_remaining = self.memory.get_num_bytes_remaining()
-
-        def chunk_fits(num_frames):
-            frames_end = _raytrace_frame_buffers_end(
-                0, num_frames, width, height, channels, frame_dtype, 1
-            )
-            postprocess_bytes = _postprocess_memory_used(
-                frame_shape=(num_frames, height, width, channels),
-                frame_dtype=frame_dtype,
-                anti_alias_level=post_aa,
-                post_processes=post_processes,
-                apply_fxaa=self.video_settings.fxaa,
-                initial_pointer=frames_end,
-                device=device,
-            )
-            return frames_end + postprocess_bytes <= bytes_remaining
+        # Background-only windows are sized by the same measured model as the
+        # primitive path. Their own signature: no geometry, so their line is
+        # much shallower and must not be mixed with a rendered batch's.
+        signature = chunk_signature(
+            width=width, height=height, channels=channels, dtype=frame_dtype,
+            samples_per_pixel=1, num_triangles=0, num_circuits=0)
+        model = self._chunk_memory_model
 
         current_ind = start_ind
         while current_ind < end_ind:
             if getattr(self.memory, "managed", False):
-                duration = _max_duration_that_fits(
-                    end_ind - current_ind, chunk_fits
-                )
+                duration = model.plan(
+                    signature, end_ind - current_ind, bytes_remaining)
             else:
                 # Unmanaged mode uses PyTorch's ordinary allocator; there is
                 # no finite arena to size against (see render_primitive_batch).
@@ -1328,6 +1060,9 @@ class RenderLoopMixin:
             # nothing per window, so a forced full collection here was pure
             # fixed cost (see the render_primitive_batch call site).
             empty_cache(force_gc=False)
+            chunk_base = (original_pointers[0]
+                          + len(self.memory) - original_pointers[1])
+            self.memory.max_pointer = chunk_base
             out = self.memory.get_tensor(
                 (duration, width * height, channels), frame_dtype
             )
@@ -1340,6 +1075,10 @@ class RenderLoopMixin:
                 post_processes=list(post_processes),
                 apply_fxaa=self.video_settings.fxaa,
             )
+            if getattr(self.memory, "managed", False):
+                model.observe(
+                    signature, duration,
+                    max(0, self.memory.max_pointer - chunk_base))
             self.memory.set_pointers(original_pointers)
             yield frames
             current_ind = new_ind
@@ -1893,27 +1632,26 @@ class RenderLoopMixin:
         )
         # Safety margin learned from render failures this job: when a batch
         # that passed the arena preflight still fails to render, the preflight
-        # under-modeled some allocation, so subsequent preflights must leave at
-        # least this much slack (see _note_render_arena_underestimate).
+        # under-estimated some allocation, so subsequent preflights must leave
+        # at least this much slack (see _note_render_arena_underestimate).
         self._arena_unmodeled_bytes = 0
         self._last_arena_preflight = None
+        # Measured chunk-peak model, carried across every batch of this job so
+        # only the first one pays to probe.
+        self._chunk_memory_model = ChunkMemoryModel()
+        # The merge and the projection build outside the arena, so the chunk
+        # model cannot see them; their multipliers are measured from the builds
+        # themselves, seeded by the previous guesses until one has run.
+        self._merge_peak_ratio = PeakRatioModel(
+            rt_settings_module.MERGE_GPU_PEAK_FACTOR)
+        self._project_peak_ratio = PeakRatioModel(
+            rt_settings_module.PROJECT_GPU_PEAK_FACTOR)
 
         # Adaptive gen-fused forecast (settings.WF_GEN_FUSED == "auto") is fed
         # per-batch render timings below; a new job restarts its batch count.
         _rt_settings = SETTINGS.raytracing
 
         _rt_settings._begin_render_job()
-        # Start the sparse-coverage reservation from the measured corpus
-        # density rather than from zero, so the job's first chunk is not
-        # guaranteed to over-commit and pay an out-of-memory retry. Purely an
-        # optimisation, so it must never be the thing that breaks a render.
-        try:
-            _rt_settings.seed_sparse_discovery_density(
-                int(getattr(self, "num_pixels_screen_width", 0) or 0)
-                * int(getattr(self, "num_pixels_screen_height", 0) or 0))
-        except Exception:  # noqa: BLE001
-            logger.debug("Could not seed the sparse-coverage reservation.",
-                         exc_info=True)
 
         with Off(
             record_attr_modifications=False,

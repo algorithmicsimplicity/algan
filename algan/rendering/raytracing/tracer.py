@@ -468,216 +468,36 @@ def _wavefront_state_bytes_per_primary(pool_ratio, extra_bytes_per_slot=0,
     and is accounted separately by the callers. Orchestrator-specific extras
     (for example the sorted path's event record/key arrays) are passed in so
     adaptive tile sizing can account for them."""
-    # Both figures are measured (see algan/utils/calibrate_memory.py): the
-    # per-slot cost of the ray-state arrays and the per-primary cost of
-    # pix_accum. They are *not* hand-derived here any more -- the previous
-    # hand model charged 6*KBUF words per slot for K-buffers that this route
-    # does not allocate at all (they are (1,1) stubs, with a transient event
-    # batch sized to the live queue instead), which over-reserved by ~2x.
     coefficients = _wavefront_state_coefficients()
     per_slot = coefficients["pool"] + extra_bytes_per_slot
     per_primary = coefficients["primary"] + extra_bytes_per_primary
     return pool_ratio * per_slot + per_primary
 
 
+# Ray-state cost of one pool slot and one primary ray, in bytes. These are
+# *measured*, not derived: recording the arena while rendering gives 100 and 28
+# for the maintained route. An earlier hand-derived version charged 196 per
+# slot because it counted 6*KBUF words of K-buffers that this route does not
+# allocate at all -- they are (1,1) stubs, with a transient event batch sized
+# to the live queue instead -- which halved every tile for no reason.
+#
+# Only wavefront *tile* sizing reads these, and the arena bounds the result, so
+# an inaccuracy here costs tile efficiency and at worst an out-of-memory retry;
+# it is not what sizes a render batch. To re-measure, render with
+# ``ALGAN_WAVEFRONT_TILE_AUTO=0`` at two values of ``ALGAN_WAVEFRONT_TILE_RAYS``
+# and difference the arena's high-water mark.
+_WAVEFRONT_BYTES_PER_POOL_SLOT = 100
+_WAVEFRONT_BYTES_PER_PRIMARY = 28
+_WAVEFRONT_FIXED_BYTES = 24
+
+
 def _wavefront_state_coefficients():
     """Measured per-slot / per-primary / fixed bytes of the ray-state block."""
-    from algan.rendering.mem_usage_lookup import unit_coefficients
-
-    measured = unit_coefficients(
-        "wavefront_state", {"global_hits": 0, "sparse": 1})
-    if measured is None:
-        # Only before the tables have ever been generated. Deliberately the
-        # conservative side: the old hand model's per-slot figure.
-        return {"pool": 196, "primary": 28, "fixed": 24, "align_slack": 4}
-    return measured
-
-
-def get_wavefront_memory_required(
-    merged,
-    num_frames,
-    width,
-    height,
-    *,
-    light_sources=(),
-    environment_map=None,
-    near_clip=0.0,
-    far_clip=0.0,
-):
-    """Exact deterministic-wavefront temporary bytes for batch sizing.
-
-    This mirrors the selected route -- the general wavefront, or the legacy
-    textured / material-sorted variants (unsupported, but still selectable
-    via their settings toggles) -- including route metadata, event records,
-    shadow visibility, active-index ping-pong buffers, and fixed counter
-    words.  It excludes the possible
-    initial four-byte alignment; the caller knows the output buffer's actual
-    end pointer and adds that padding exactly.
-
-    With adaptive tiling enabled this returns the exact minimum viable
-    one-primary allocation; the runtime grows that tile into whatever remaining
-    arena space is available.  With adaptive tiling disabled this returns the
-    exact configured static-target allocation peak.
-    """
-    if int(rt_settings.SAMPLES_PER_PIXEL) > 1:
-        return 0
-
-    total_primary = max(
-        1, int(num_frames) * int(width) * int(height)
-    )
-    shadow = bool(rt_settings.SHADOWS)
-    lights_extended = any(
-        getattr(light, "_render_aux", None) is not None
-        for light in (light_sources or ())
-    )
-    has_environment = environment_map is not None
-    frag = (
-        bool(rt_settings.FRAGMENT_SHADING)
-        or shadow
-        or _scene_has_user_pipeline(merged)
-        or lights_extended
-        or has_environment
-    )
-    has_custom_scatter = bool(frag and _scene_has_custom_scatter(merged))
-    analytic_raster = analytic_raster_route_active(
-        merged,
-        light_sources=light_sources,
-        environment_map=environment_map,
-        near_clip=near_clip,
-        far_clip=far_clip,
-    )
-    # Must stay in step with ``refraction_flag`` in render_batch_raytraced (it
-    # sizes the split pool the kernel then writes into).
-    refraction = bool(merged.get("has_refractive") or has_custom_scatter
-                      or merged.get("has_refl_transparent")
-                      or _secondary_split_needed(merged, analytic_raster))
-    pool_ratio = _split_pool_ratio(
-        refraction, merged, analytic_raster, has_custom_scatter)
-    target_slots = max(1, int(rt_settings.WAVEFRONT_TILE_RAYS))
-
-    def _route_primary(static_target):
-        if rt_settings.WAVEFRONT_TILE_AUTO:
-            return 1
-        return min(max(1, int(static_target)), total_primary)
-
-    # Remove the per-primary pix_accum tail to recover one pool slot's core
-    # state (including rs_pix and both compaction index arrays). The shared
-    # allocator is two int32 words per tile and is included in ``fixed`` below.
-    per_primary_tail = 7 * torch.float32.itemsize
-    base_slot = _wavefront_state_bytes_per_primary(1) - per_primary_tail
-
-    uses_extended_features = (
-        lights_extended
-        or has_environment
-        or float(near_clip) > 0.0
-        or float(far_clip) > 0.0
-    )
-    if merged.get("textured_active") and not uses_extended_features:
-        primary = _route_primary(target_slots // pool_ratio)
-        pool = primary * pool_ratio
-        # gen_meta + compactor output count + shared allocator words.
-        fixed = 4 * torch.int32.itemsize
-        return pool * base_slot + primary * per_primary_tail + fixed
-
-    if (frag and rt_settings.WAVEFRONT_SORT_MATERIALS is True
-            and not uses_extended_features):
-        primary = _route_primary((target_slots * 2) // (3 * pool_ratio))
-        pool = primary * pool_ratio
-        # rs_hit(16 f32), rs_key and rs_eprim, plus per-slot rs_vis when
-        # shadows are enabled.
-        event_slot = (
-            16 * torch.float32.itemsize
-            + 2 * torch.int32.itemsize
-            + (torch.int32.itemsize if shadow else 0)
-        )
-        # gen_meta + compactor count, the rs_vis placeholder when shadows
-        # compile out, and two shared allocator words.
-        fixed = torch.int32.itemsize * (4 if shadow else 5)
-        return (
-            pool * (base_slot + event_slot)
-            + primary * per_primary_tail
-            + fixed
-        )
-
-    primary = _route_primary(target_slots // pool_ratio)
-    pool = primary * pool_ratio
-    mem_trim = bool(
-        rt_settings.WF_MEM_TRIM
-        and merged.get("mem_trim_active")
-        and not shadow
-        and not has_custom_scatter
-        and not refraction
-    )
-    gen_fused = bool(
-        rt_settings.wf_gen_fused_active()
-        and pool_ratio == 1
-        and float(near_clip) <= 0.0
-    )
-    # Route-metadata words (col_row placeholder unless the scene-owned remap is
-    # used, gen_meta, layer_offsets) come from the measured ``batch_metadata``
-    # table; the route selection above still decides *which* entry applies.
-    from algan.rendering.mem_usage_lookup import unit_bytes_or_bound
-
-    metadata = unit_bytes_or_bound("batch_metadata", {
-        "col_row_placeholder": 1,
-        "gen_fused": int(gen_fused),
-        "raster": int(analytic_raster or bool(rt_settings.HYBRID_RASTER)),
-        "extended": int(has_environment or float(far_clip) > 0.0),
-    })
-    if metadata is None:
-        metadata = 0 if mem_trim else torch.int32.itemsize
-        metadata += (4 if gen_fused else 1) * torch.float32.itemsize
-        metadata += (
-            8 if (gen_fused or has_environment or float(far_clip) > 0.0) else 2
-        ) * torch.float32.itemsize
-    elif mem_trim:
-        # The scene owns the remap, so the placeholder word is not allocated.
-        metadata -= torch.int32.itemsize
-    # layer/route metadata above, plus rs_vis placeholder + compactor count +
-    # the shared allocator's next-slot and overflow words.
-    metadata += 4 * torch.int32.itemsize
-    return pool * base_slot + primary * per_primary_tail + metadata
-
-
-def get_raster_precompute_memory_required(merged, num_batch_frames):
-    """Measured arena bytes of the raster screen-projection/bounds tables.
-
-    These are ``[frames, primitives, columns]`` tables built once per prepared
-    batch. Two things make them worth their own term rather than folding into
-    the wavefront estimate:
-
-    * they are large -- tens of bytes per (frame, primitive), against the
-      handful of *words* the wavefront metadata model accounted for; and
-    * ``frames`` here is the whole prepared batch's frame count, not the render
-      chunk's, so shrinking a chunk does **not** shrink them. A model that
-      treats them as per-chunk would under-reserve exactly when the batcher is
-      trying to recover from being short.
-
-    Returns 0 when the raster front end is not in play.
-    """
-    from algan.rendering.mem_usage_lookup import unit_bytes_or_bound
-
-    if not rt_settings.HYBRID_RASTER or int(rt_settings.SAMPLES_PER_PIXEL) > 1:
-        return 0
-    frames = max(1, int(num_batch_frames))
-    num_tri = int(merged.get("num_triangles", 0) or 0)
-    num_bez = int(merged.get("num_circuits", 0) or 0)
-    if not num_tri and not num_bez:
-        return 0
-    aa_tri = int(rt_settings.analytic_aa_tri_active())
-    columns = 13 if aa_tri else 10
-    tri_screen_cells = frames * max(1, num_tri) * columns
-    tri_bounds_cells = (
-        frames * num_tri
-        if (rt_settings.RASTER_TRI_PRECOMPUTE and num_tri) else 0)
-    bez_bounds_cells = (
-        frames * num_bez
-        if (rt_settings.RASTER_BEZ_PRECOMPUTE and num_bez) else 0)
-    return int(unit_bytes_or_bound(
-        "raster_precompute", {"aa_tri": aa_tri},
-        tri_screen_cells=tri_screen_cells,
-        tri_bounds_cells=tri_bounds_cells,
-        bez_bounds_cells=bez_bounds_cells) or 0)
+    return {
+        "pool": _WAVEFRONT_BYTES_PER_POOL_SLOT,
+        "primary": _WAVEFRONT_BYTES_PER_PRIMARY,
+        "fixed": _WAVEFRONT_FIXED_BYTES,
+    }
 
 
 def _auto_primary_per_tile(memory, pool_ratio, static_primary,
