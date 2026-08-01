@@ -33,6 +33,7 @@ def scene_function(function=None, *, name=None):
     Named ``scene_function`` rather than ``scene`` so that the decorator does
     not collide with the conventional variable name for a Scene instance.
     """
+
     def decorate(func):
         if not callable(func):
             raise TypeError("@scene can only decorate callables")
@@ -43,10 +44,21 @@ def scene_function(function=None, *, name=None):
     if function is None:
         return decorate
     return decorate(function)
+
+
 from algan.utils.memory_utils import empty_cache
 
 
-def get_file_writer(temp_file_path, video_settings_resolution, codec, fps, with_mask, ffmpeg_params, audiofile, audio_codec):
+def get_file_writer(
+    temp_file_path,
+    video_settings_resolution,
+    codec,
+    fps,
+    with_mask,
+    ffmpeg_params,
+    audiofile,
+    audio_codec,
+):
     from moviepy.video.io.ffmpeg_writer import (
         FFMPEG_VideoWriter,  # deferred: ~0.3 s of import algan
     )
@@ -75,6 +87,7 @@ def get_file_writer(temp_file_path, video_settings_resolution, codec, fps, with_
             audio_codec=audio_codec,
         )
     return file_writer
+
 
 # ‘mpeg4’ > ‘libx264’
 # @compiled
@@ -162,9 +175,7 @@ def _render_scene_to_file(
         # and would reintroduce string image paths after they were decoded.
         frame_background_override = None
 
-        default_extension = (
-            ".mov" if scene.background_is_transparent() else ".mp4"
-        )
+        default_extension = ".mov" if scene.background_is_transparent() else ".mp4"
         destination = _resolve_output_destination(file_path, default_extension)
 
         if destination.exists() and not overwrite:
@@ -226,12 +237,8 @@ def _render_scene_to_file(
         temp_file_path = destination.with_name(
             f"{destination.stem}_temp{destination.suffix}"
         )
-        audio_file_path = destination.with_name(
-            f"{destination.stem}_temp.wav"
-        )
-        script_file_path = destination.with_name(
-            f"{destination.stem}_script.txt"
-        )
+        audio_file_path = destination.with_name(f"{destination.stem}_temp.wav")
+        script_file_path = destination.with_name(f"{destination.stem}_script.txt")
 
         logger.info(f"Began rendering {destination.name}")
         start_time = time.perf_counter()
@@ -322,13 +329,19 @@ def render_all_funcs(
 ):
     def run(output_directory=None, video_settings=None, output_root=None, prefix=None):
         if funcs is None:
-            module = sys.modules[module_name] if isinstance(module_name, str) else module_name
+            module = (
+                sys.modules[module_name]
+                if isinstance(module_name, str)
+                else module_name
+            )
             if prefix is None:
                 prefix = module.__name__
             defined_functions = [
                 (function_name, function)
-                for function_name, function in inspect.getmembers(module, inspect.isfunction)
-                if function.__module__[:len(prefix)] == prefix
+                for function_name, function in inspect.getmembers(
+                    module, inspect.isfunction
+                )
+                if function.__module__[: len(prefix)] == prefix
             ]
             registered = [
                 (getattr(function, "__algan_scene_name__", function_name), function)
@@ -372,7 +385,9 @@ def render_all_funcs(
         for index, (scene_name, function) in list(enumerate(scene_funcs))[start:end]:
             with Scene(video_settings=video_settings) as active_scene:
                 if "background_color" in kwargs:
-                    active_scene.set_background_color(kwargs["background_color"], overwrite=False)
+                    active_scene.set_background_color(
+                        kwargs["background_color"], overwrite=False
+                    )
                 active_scene.audio_manager.set_speech_source(speech_source)
                 function()
                 if not smoke_test:
@@ -388,7 +403,6 @@ def render_all_funcs(
                     )
         return results
 
-
     if profile:
         pr = cProfile.Profile()
         start = time.time()
@@ -397,12 +411,12 @@ def render_all_funcs(
         pr.disable()
         end = time.time()
 
-        with open('profiler_dump.txt', 'w') as f:
+        with open("profiler_dump.txt", "w") as f:
             ps = pstats.Stats(pr, stream=f).sort_stats(pstats.SortKey.CUMULATIVE)
             ps.print_stats()
         ps = pstats.Stats(pr).sort_stats(pstats.SortKey.CUMULATIVE)
         ps.print_stats()
-        logger.info(f'took {end-start} seconds.')
+        logger.info(f"took {end - start} seconds.")
         return out
     else:
         return run(output_directory, video_settings, output_root, prefix)
@@ -416,17 +430,21 @@ def profile_func(func):
     pr.disable()
     end = time.time()
 
-    with open('profiler_dump.txt', 'w') as f:
+    with open("profiler_dump.txt", "w") as f:
         ps = pstats.Stats(pr, stream=f).sort_stats(pstats.SortKey.CUMULATIVE)
         ps.print_stats()
     ps = pstats.Stats(pr).sort_stats(pstats.SortKey.CUMULATIVE)
     ps.print_stats()
-    logger.info(f'took {end - start} seconds.')
+    logger.info(f"took {end - start} seconds.")
     return out
 
 
-def concatenate_videos(directory: str, threads: int = None, reencode: bool = False,
-                       output_file='output.mp4'):
+def concatenate_videos(
+    directory: str,
+    threads: int = None,
+    reencode: bool = False,
+    output_file="output.mp4",
+):
     """
     Concatenate all .mp4 files in a directory into output.mp4.
 
@@ -457,51 +475,54 @@ def concatenate_videos(directory: str, threads: int = None, reencode: bool = Fal
 
     # Sort by numeric prefix
     def get_prefix_number(file_path):
-        match = re.match(r'(\d+)_', file_path.name)
+        match = re.match(r"(\d+)_", file_path.name)
         if match:
             return int(match.group(1))
         # Files without numeric prefix go to end, maintain alphabetical order
-        return (float('inf'))#, file_path.name)
+        return float("inf")  # , file_path.name)
 
     sorted_files = sorted(mp4_files, key=get_prefix_number)
 
     # Create concat list file for ffmpeg
     concat_file = dir_path / "ffmpeg_concat_list.txt"
     try:
-        with open(concat_file, 'w', encoding='utf-8') as f:
+        with open(concat_file, "w", encoding="utf-8") as f:
             for video_file in sorted_files:
                 # Use absolute path with proper escaping for ffmpeg
                 # Replace backslashes with forward slashes for ffmpeg on Windows
-                abs_path = str(video_file.resolve()).replace('\\', '/')
+                abs_path = str(video_file.resolve()).replace("\\", "/")
                 f.write(f"file '{abs_path}'\n")
 
         # Build ffmpeg command
         output_path = dir_path / output_file
 
-        cmd = [
-            'ffmpeg',
-            '-f', 'concat',
-            '-safe', '0',
-            '-i', str(concat_file)
-        ]
+        cmd = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", str(concat_file)]
 
         if reencode:
             # Re-encode with multithreading
-            cmd.extend([
-                '-c:v', 'libx264',
-                '-preset', 'medium',
-                '-crf', '23',
-                '-threads', str(threads),
-                '-c:a', 'aac',
-                '-b:a', '192k'
-            ])
+            cmd.extend(
+                [
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "medium",
+                    "-crf",
+                    "23",
+                    "-threads",
+                    str(threads),
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "192k",
+                ]
+            )
             logger.info(f"Re-encoding with {threads} threads...")
         else:
             # Stream copy (fast, no re-encoding, but limited multithreading benefit)
-            cmd.extend(['-c', 'copy'])
+            cmd.extend(["-c", "copy"])
             logger.info("Using stream copy (no re-encoding)...")
 
-        cmd.extend(['-y', str(output_path)])  # -y to overwrite without asking
+        cmd.extend(["-y", str(output_path)])  # -y to overwrite without asking
 
         logger.info(f"\nConcatenating {len(sorted_files)} videos:")
         for i, f in enumerate(sorted_files, 1):
@@ -510,16 +531,12 @@ def concatenate_videos(directory: str, threads: int = None, reencode: bool = Fal
 
         # Run ffmpeg
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace'
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
 
         if result.returncode == 0:
             logger.info(f"✓ Successfully created {output_path.name}")
-            logger.info(f"  Size: {output_path.stat().st_size / (1024*1024):.2f} MB")
+            logger.info(f"  Size: {output_path.stat().st_size / (1024 * 1024):.2f} MB")
             return output_path
         else:
             logger.error("✗ Error running ffmpeg:")
@@ -537,26 +554,27 @@ def combine_scenes(directory):
     output_text_file = os.path.join(directory, "transcript.txt")
     transcript = ""
     video_files = []
+
     def starts_with_int(s):
         try:
-            int(s.split('_')[0])
+            int(s.split("_")[0])
             return True
         except ValueError:
             return False
+
     for f in sorted(
         [_ for _ in os.listdir(directory) if starts_with_int(_)],
-        key=lambda x: int(x.split('_')[0]),
+        key=lambda x: int(x.split("_")[0]),
     ):
-        if f.endswith('.mp4'):
+        if f.endswith(".mp4"):
             video_files.append(os.path.join(directory, f))
             if ext is None:
-                ext = f.split('.')[-1]
-        elif f.endswith('.txt'):
+                ext = f.split(".")[-1]
+        elif f.endswith(".txt"):
             with open(os.path.join(directory, f)) as f:
                 transcript += f.read()
 
-    with open(output_text_file, 'w') as f:
+    with open(output_text_file, "w") as f:
         f.write(transcript)
 
     concatenate_videos(directory, output_file=f"video.{ext}")
-

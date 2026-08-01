@@ -15,6 +15,7 @@ from algan.utils.tensor_utils import cast_to_tensor
 #: elapsed time through (see :meth:`AnimationTimeline.set_state_to_times`).
 TIME_PARAMETER_NAME = "time_elapsed"
 
+
 #: Sentinel timestamp for "not yet spawned/despawned".
 def _never():
     return -1
@@ -77,8 +78,8 @@ def _opt_disabled(name):
     global _OPT_DISABLED
     if _OPT_DISABLED is None:
         import os
-        _OPT_DISABLED = frozenset(
-            os.environ.get("ALGAN_OPT_DISABLE", "").split(","))
+
+        _OPT_DISABLED = frozenset(os.environ.get("ALGAN_OPT_DISABLE", "").split(","))
     return name in _OPT_DISABLED
 
 
@@ -103,8 +104,9 @@ class RowRanges:
 
     def __init__(self, pairs, tensor=None):
         self.pairs = pairs
-        self.numel = (sum(e - b for b, e in pairs) if pairs is not None
-                      else tensor.numel())
+        self.numel = (
+            sum(e - b for b, e in pairs) if pairs is not None else tensor.numel()
+        )
         self._tensor = tensor
 
     def tensor(self):
@@ -113,8 +115,7 @@ class RowRanges:
                 b, e = self.pairs[0]
                 self._tensor = torch.arange(b, e)
             else:
-                self._tensor = torch.cat(
-                    [torch.arange(b, e) for b, e in self.pairs])
+                self._tensor = torch.cat([torch.arange(b, e) for b, e in self.pairs])
         return self._tensor
 
     @staticmethod
@@ -251,12 +252,13 @@ def _prepare_array_state_queries(times, N, edits):
     """
     device = times.device
     edit_timestamps = torch.tensor(
-        [edit['timestamp'] for edit in edits], dtype=times.dtype, device=device)
+        [edit["timestamp"] for edit in edits], dtype=times.dtype, device=device
+    )
     edit_sizes = torch.tensor(
-        [edit['indexes'].shape[0] for edit in edits],
-        dtype=torch.int64, device=device)
-    flat_indices = torch.cat([edit['indexes'].to(device) for edit in edits])
-    flat_values = torch.cat([edit['values'].to(device) for edit in edits])
+        [edit["indexes"].shape[0] for edit in edits], dtype=torch.int64, device=device
+    )
+    flat_indices = torch.cat([edit["indexes"].to(device) for edit in edits])
+    flat_values = torch.cat([edit["values"].to(device) for edit in edits])
     flat_edit_ids = torch.repeat_interleave(edit_sizes).to(torch.int32)
     perm = torch.argsort(flat_indices, stable=True)
     sorted_indices = flat_indices[perm]
@@ -267,8 +269,7 @@ def _prepare_array_state_queries(times, N, edits):
     return head, sorted_edit_ids, edit_timestamps, sorted_values
 
 
-def generate_array_states_taichi(times, N, edits, *, active_rows=None,
-                                 prepared=None):
+def generate_array_states_taichi(times, N, edits, *, active_rows=None, prepared=None):
     """
     Generates the state of an array given its history of edits.
 
@@ -302,7 +303,8 @@ def generate_array_states_taichi(times, N, edits, *, active_rows=None,
     if active_rows is None:
         out = torch.empty((T, N, D), dtype=dtype, device=device)
         _query_state_from_edits(
-            times, head, sorted_edit_ids, edit_timestamps, sorted_values, out)
+            times, head, sorted_edit_ids, edit_timestamps, sorted_values, out
+        )
     else:
         # Keep the full global row layout for animated-function replay. Rows
         # outside this window's working set stay zero and are never consumed by
@@ -311,8 +313,14 @@ def generate_array_states_taichi(times, N, edits, *, active_rows=None,
         active_rows = active_rows.to(device=device, dtype=torch.int64)
         if active_rows.numel():
             _query_selected_state_from_edits(
-                times, active_rows, head, sorted_edit_ids, edit_timestamps,
-                sorted_values, out)
+                times,
+                active_rows,
+                head,
+                sorted_edit_ids,
+                edit_timestamps,
+                sorted_values,
+                out,
+            )
 
     return out
 
@@ -331,11 +339,17 @@ class AttributeTimeline:
     recorded.
     """
 
-    def __init__(self, channels, buffer_size=256, attr_name=None, record_end_points=False):
+    def __init__(
+        self, channels, buffer_size=256, attr_name=None, record_end_points=False
+    ):
         self.attr_name = attr_name
         self.record_end_points = record_end_points
-        self.current_state = torch.empty((1, buffer_size, channels)) # latest state after all edits.
-        self.active_state = self.current_state # pointer to active state used to fulfil get requests.
+        self.current_state = torch.empty(
+            (1, buffer_size, channels)
+        )  # latest state after all edits.
+        self.active_state = (
+            self.current_state
+        )  # pointer to active state used to fulfil get requests.
         self.active_time_inds = slice(None, None, None)
         self.rematerialized_times = None
         self.pointer = 0
@@ -354,12 +368,15 @@ class AttributeTimeline:
         self.mob_id_to_ends[mob.id] = ends
 
     def get_current_values(self):
-        return self.current_state[:, :self.pointer]
+        return self.current_state[:, : self.pointer]
 
     def get(self, key, copy=True):
         if isinstance(key, RowRanges):
-            if (not _opt_disabled("ranges")
-                    and key.pairs is not None and len(key.pairs) == 1):
+            if (
+                not _opt_disabled("ranges")
+                and key.pairs is not None
+                and len(key.pairs) == 1
+            ):
                 # Contiguous rows: slice instead of index-gather. The clone
                 # keeps the copy semantics of advanced indexing (callers may
                 # mutate the result in place); read-only callers that only feed
@@ -383,8 +400,11 @@ class AttributeTimeline:
             self._is_ready_for_queries = False
             self._query_cache.clear()
         if isinstance(key, RowRanges):
-            if (not _opt_disabled("ranges")
-                    and key.pairs is not None and len(key.pairs) == 1):
+            if (
+                not _opt_disabled("ranges")
+                and key.pairs is not None
+                and len(key.pairs) == 1
+            ):
                 # Contiguous rows: slice-assign instead of index-scatter.
                 b, e = key.pairs[0]
                 t = self.active_time_inds
@@ -457,10 +477,10 @@ class AttributeTimeline:
             while new_pointer >= buffer_size:
                 buffer_size *= 2
             new_buffer = torch.empty((1, buffer_size, self.current_state.shape[-1]))
-            new_buffer[:, :self.pointer] = self.get_current_values()
+            new_buffer[:, : self.pointer] = self.get_current_values()
             self.current_state = new_buffer
             self.active_state = self.current_state
-        self.current_state[:, self.pointer:new_pointer] = values
+        self.current_state[:, self.pointer : new_pointer] = values
         inds = torch.arange(self.pointer, new_pointer)
         self.mob_id_to_inds[mob_id] = inds
         # The block is contiguous by construction, so cache its single-run
@@ -483,12 +503,21 @@ class AttributeTimeline:
         # same (extended) time, the search returns the earliest-executed one,
         # whose pre-modification value is the correct base for re-applying
         # all of them in execution order.
-        self._edits_sorted = [{'indexes': e.indexes.view(-1), 'values': e.values.squeeze(0),
-                               'timestamp': e.replay_end if e.replay_end is not None else e.time.end}
-                              for e in self.edits]
-        self._edits_sorted.append({'indexes': torch.arange(self.pointer),
-                                   'values': self.current_state[:, :self.pointer].squeeze(0),
-                                   'timestamp': math.inf})
+        self._edits_sorted = [
+            {
+                "indexes": e.indexes.view(-1),
+                "values": e.values.squeeze(0),
+                "timestamp": e.replay_end if e.replay_end is not None else e.time.end,
+            }
+            for e in self.edits
+        ]
+        self._edits_sorted.append(
+            {
+                "indexes": torch.arange(self.pointer),
+                "values": self.current_state[:, : self.pointer].squeeze(0),
+                "timestamp": math.inf,
+            }
+        )
         self._query_cache.clear()
 
         if not self.record_end_points:
@@ -496,10 +525,10 @@ class AttributeTimeline:
         self._end_points = torch.full((1, self.pointer + 1, 2), 1e12)
         for mob_id in self.mob_id_to_starts:
             inds = self.mob_id_to_inds[mob_id]
-            self._end_points[:,inds,0] = self.mob_id_to_starts[mob_id].start()
+            self._end_points[:, inds, 0] = self.mob_id_to_starts[mob_id].start()
         for mob_id in self.mob_id_to_ends:
             inds = self.mob_id_to_inds[mob_id]
-            self._end_points[:,inds,1] = self.mob_id_to_ends[mob_id].end()
+            self._end_points[:, inds, 1] = self.mob_id_to_ends[mob_id].end()
         return self
 
     def rows_for_mob_ids(self, mob_ids):
@@ -520,8 +549,11 @@ class AttributeTimeline:
                 runs.extend(ranges.pairs)
         if not runs and not loose:
             return torch.empty((0,), dtype=torch.long)
-        compressed = (RowRanges.from_runs(runs).tensor() if runs
-                      else torch.empty((0,), dtype=torch.long))
+        compressed = (
+            RowRanges.from_runs(runs).tensor()
+            if runs
+            else torch.empty((0,), dtype=torch.long)
+        )
         if loose:
             return torch.unique(torch.cat([compressed, *loose]), sorted=True)
         return compressed
@@ -531,37 +563,39 @@ class AttributeTimeline:
         prepared = self._query_cache.get(key)
         if prepared is None:
             prepared = _prepare_array_state_queries(
-                times, self.pointer + 1, self._edits_sorted)
+                times, self.pointer + 1, self._edits_sorted
+            )
             self._query_cache[key] = prepared
         return prepared
 
-    def rematerialize_state_at_times(self, times, active_mob_ids=None,
-                                     extra_rows=None):
+    def rematerialize_state_at_times(self, times, active_mob_ids=None, extra_rows=None):
         self.prepare_for_queries()
-        active_rows = (None if active_mob_ids is None
-                       else self.rows_for_mob_ids(active_mob_ids))
+        active_rows = (
+            None if active_mob_ids is None else self.rows_for_mob_ids(active_mob_ids)
+        )
         if active_rows is not None and extra_rows is not None:
             extra_rows = extra_rows.view(-1)
             if extra_rows.numel():
                 active_rows = torch.unique(
-                    torch.cat((active_rows, extra_rows)), sorted=True)
+                    torch.cat((active_rows, extra_rows)), sorted=True
+                )
         self.active_state = generate_array_states_taichi(
-            times, self.pointer + 1, self._edits_sorted,
+            times,
+            self.pointer + 1,
+            self._edits_sorted,
             active_rows=active_rows,
-            prepared=self._prepared_queries(times))
+            prepared=self._prepared_queries(times),
+        )
         if self.record_end_points:
-            t = times.view(-1,1)
+            t = times.view(-1, 1)
             if active_rows is None:
                 self.active_state *= (
-                    (self._end_points[..., 0] <= t)
-                    & (t < self._end_points[..., 1])
+                    (self._end_points[..., 0] <= t) & (t < self._end_points[..., 1])
                 ).unsqueeze(-1)
             elif active_rows.numel():
                 rows = active_rows.to(self.active_state.device)
-                endpoint = self._end_points[:, rows].to(
-                    self.active_state.device)
-                mask = ((endpoint[..., 0] <= t)
-                        & (t < endpoint[..., 1])).unsqueeze(-1)
+                endpoint = self._end_points[:, rows].to(self.active_state.device)
+                mask = ((endpoint[..., 0] <= t) & (t < endpoint[..., 1])).unsqueeze(-1)
                 self.active_state[:, rows] *= mask
         self.rematerialized_times = times
         self.active_time_inds = slice(None, None, None)
@@ -606,6 +640,7 @@ class AttributeTimeline:
         self._query_cache.clear()
         return self
 
+
 class TimelineEvent:
     def __init__(self, time, span):
         self.span = span
@@ -643,7 +678,9 @@ class TimelineSpan:
         self.end = (self.end - new_start) * ratio + new_start
 
     def get_rescaled_time(self, t):
-        a = (t - self.original_start) / max(self.original_end - self.original_start, 1e-6)
+        a = (t - self.original_start) / max(
+            self.original_end - self.original_start, 1e-6
+        )
         return self.start + (self.end - self.start) * a
 
     def get_time(self, time):
@@ -668,8 +705,17 @@ class TimelineSpan:
     def end(self, value):
         self._rescaled_end = value
 
+
 class FunctionApplicationEvent:
-    def __init__(self, function, caller, animated_args=None, kwargs=None, rate_func=None, time=None):
+    def __init__(
+        self,
+        function,
+        caller,
+        animated_args=None,
+        kwargs=None,
+        rate_func=None,
+        time=None,
+    ):
         self.function = function
         self.caller = caller
         self.animated_args = animated_args
@@ -759,31 +805,37 @@ class FunctionTimeline:
             # float32 to match the dtype the per-event scalar comparisons
             # used (python-float scalars compare in the tensor's dtype).
             starts = torch.tensor(
-                [f.time.start for f in self.function_applications],
-                dtype=torch.float32)
+                [f.time.start for f in self.function_applications], dtype=torch.float32
+            )
             ends = torch.tensor(
                 [_replay_window_end(f) for f in self.function_applications],
-                dtype=torch.float32)
-            cache = self._window_cache = (
-                len(self.function_applications), starts, ends)
+                dtype=torch.float32,
+            )
+            cache = self._window_cache = (len(self.function_applications), starts, ends)
         return cache[1], cache[2]
 
     def get_functions_for_times(self, times):
         if not self.function_applications:
             return []
         if _opt_disabled("windows"):
-            return [f for f in self.function_applications
-                    if ((f.time.start <= times)
-                        & (times < _replay_window_end(f))).any()]
+            return [
+                f
+                for f in self.function_applications
+                if ((f.time.start <= times) & (times < _replay_window_end(f))).any()
+            ]
         starts, ends = self._windows()
         t = times.view(1, -1)
         active = ((starts.view(-1, 1) <= t) & (t < ends.view(-1, 1))).any(1)
-        return [self.function_applications[i]
-                for i in active.nonzero().view(-1).tolist()]
+        return [
+            self.function_applications[i] for i in active.nonzero().view(-1).tolist()
+        ]
 
     def get_updaters_for_times(self, times):
-        return [f for f in self.updaters if ((f.time.start <= times) &
-                (times < f.time.end)).any()]
+        return [
+            f
+            for f in self.updaters
+            if ((f.time.start <= times) & (times < f.time.end)).any()
+        ]
 
 
 class AnimationTimeline:
@@ -859,20 +911,20 @@ class AnimationTimeline:
     def register_spawn(self, mob, lifespan):
         # Visibility masking: the opacity timeline zeroes a mob's opacity
         # outside its [spawn, despawn) interval when materializing state.
-        timeline = self.attr_to_timeline.get('opacity')
+        timeline = self.attr_to_timeline.get("opacity")
         if timeline is not None:
             timeline.set_start_point(mob, lifespan)
 
     def register_despawn(self, mob, lifespan):
-        timeline = self.attr_to_timeline.get('opacity')
+        timeline = self.attr_to_timeline.get("opacity")
         if timeline is not None:
             timeline.set_end_point(mob, lifespan)
 
     def add_mob_attr(self, mob, attr, value, add_mob=True):
         if attr not in self.attr_to_timeline:
-            self.attr_to_timeline[attr] = AttributeTimeline(value.shape[-1],
-                                                            attr_name=attr,
-                                                            record_end_points=attr=='opacity')
+            self.attr_to_timeline[attr] = AttributeTimeline(
+                value.shape[-1], attr_name=attr, record_end_points=attr == "opacity"
+            )
         if not add_mob:
             return
         timeline = self.attr_to_timeline[attr]
@@ -898,7 +950,9 @@ class AnimationTimeline:
         timeline = self.attr_to_timeline[attr]
         return timeline.get(inds, copy=copy)
 
-    def record_function(self, function, caller, animated_args, kwargs, animation_context):
+    def record_function(
+        self, function, caller, animated_args, kwargs, animation_context
+    ):
         c = animation_context
         self.last_recorded_event = None
         if c.run_time_unit <= 0 or not c.record_funcs:
@@ -907,10 +961,13 @@ class AnimationTimeline:
         rate_func_compose = c.rate_func_compose
         rf = rate_func
         if rate_func_compose is not None:
+
             def rf(x, rf=rate_func, rfc=rate_func_compose):
                 return rf(rfc(x))
+
         event = FunctionApplicationEvent(
-            function, caller, animated_args, kwargs, rf, c.timespan)
+            function, caller, animated_args, kwargs, rf, c.timespan
+        )
         self.function_timeline.add(event)
         self.last_recorded_event = event
         return kwargs
@@ -921,9 +978,7 @@ class AnimationTimeline:
         """
         span = UpdaterSpan(animation_context.timespan.get_current_time())
         event = UpdaterEvent(function, caller, args, kwargs, span)
-        event.dependency_mob_ids.update(
-            self._collect_mob_ids((caller, args, kwargs))
-        )
+        event.dependency_mob_ids.update(self._collect_mob_ids((caller, args, kwargs)))
         self.function_timeline.add_updater(event)
         return len(self.function_timeline.updaters) - 1
 
@@ -939,21 +994,21 @@ class AnimationTimeline:
             inds = timeline.add(mob, new_value)
         return timeline, inds
 
-    def modify_attribute_and_record(self, attr_name, mob_id,
-                                    include_descendants, mob_inds,
-                                    new_value, time):
+    def modify_attribute_and_record(
+        self, attr_name, mob_id, include_descendants, mob_inds, new_value, time
+    ):
         timeline = self.attr_to_timeline[attr_name]
         self._edit_seq += 1
         event = self._active_edit_event
         edit = timeline.record(mob_inds, new_value, time, self._edit_seq, event)
         if event is not None:
             event.recorded_edits.append(
-                (attr_name, mob_id, include_descendants, edit.indexes))
+                (attr_name, mob_id, include_descendants, edit.indexes)
+            )
         self._replay_windows_resolved = False
         return self
 
-    def replay_inds(self, attr_name, mob_id, include_descendants,
-                    consume=False):
+    def replay_inds(self, attr_name, mob_id, include_descendants, consume=False):
         """Return the next recorded row set while replaying one function."""
         event = self._active_replay_event
         if event is None:
@@ -962,8 +1017,11 @@ class AnimationTimeline:
         if index >= len(event.recorded_edits):
             return None
         edit_attr, edit_mob_id, edit_recursive, inds = event.recorded_edits[index]
-        if (edit_attr != attr_name or edit_mob_id != mob_id
-                or edit_recursive != include_descendants):
+        if (
+            edit_attr != attr_name
+            or edit_mob_id != mob_id
+            or edit_recursive != include_descendants
+        ):
             return None
         if consume:
             self._active_replay_edit_index += 1
@@ -1012,8 +1070,10 @@ class AnimationTimeline:
 
         # Latest replay-window end per buffer row, per attribute (float64 so
         # timestamps round-trip exactly).
-        row_ends = {attr: torch.full((timeline.pointer,), -math.inf, dtype=torch.float64)
-                    for attr, timeline in self.attr_to_timeline.items()}
+        row_ends = {
+            attr: torch.full((timeline.pointer,), -math.inf, dtype=torch.float64)
+            for attr, timeline in self.attr_to_timeline.items()
+        }
 
         i = 0
         while i < len(all_edits):
@@ -1021,7 +1081,11 @@ class AnimationTimeline:
             # execution order; group them so they share one window.
             event = all_edits[i][2].event
             j = i + 1
-            while event is not None and j < len(all_edits) and all_edits[j][2].event is event:
+            while (
+                event is not None
+                and j < len(all_edits)
+                and all_edits[j][2].event is event
+            ):
                 j += 1
             group = all_edits[i:j]
 
@@ -1080,8 +1144,9 @@ class AnimationTimeline:
         custom_entry_points = {"animate_function", "animate_function_of_time"}
         for event in functions:
             fn = event.function
-            if (getattr(fn, "__name__", "") in custom_entry_points
-                    or not getattr(fn, "__module__", "").startswith("algan.")):
+            if getattr(fn, "__name__", "") in custom_entry_points or not getattr(
+                fn, "__module__", ""
+            ).startswith("algan."):
                 return None
         roots = list(active_mobs)
         for event in functions:
@@ -1102,8 +1167,7 @@ class AnimationTimeline:
         self._resolve_replay_windows()
         functions = self.function_timeline.get_functions_for_times(times)
         updaters = self.function_timeline.get_updaters_for_times(times)
-        active_mob_ids = self._active_mob_ids(
-            active_mobs, functions, updaters)
+        active_mob_ids = self._active_mob_ids(active_mobs, functions, updaters)
         self._materialization_times = times
         self._materialized_mob_ids = (
             None if active_mob_ids is None else set(active_mob_ids)
@@ -1117,7 +1181,8 @@ class AnimationTimeline:
             rows = replay_rows.get(attr_name)
             extra_rows = torch.cat(rows) if rows else None
             timeline.rematerialize_state_at_times(
-                times, active_mob_ids, extra_rows=extra_rows)
+                times, active_mob_ids, extra_rows=extra_rows
+            )
 
         for f in functions:
             s = f.time.start
@@ -1137,13 +1202,17 @@ class AnimationTimeline:
                 # still running) replay it at its final parameters, keeping
                 # its finished contribution in the rebuilt state.
                 duration = e - s
-                a = torch.where(elapsed.view(-1, 1, 1) >= duration, torch.ones_like(a), a)
+                a = torch.where(
+                    elapsed.view(-1, 1, 1) >= duration, torch.ones_like(a), a
+                )
                 elapsed = elapsed.clamp(max=duration)
             a = f.rate_func(a)
 
             kwargs = dict(f.kwargs.items())
             for k in f.animated_args:
-                kwargs[k] = torch.lerp(cast_to_tensor(f.animated_args[k]), f.kwargs[k], a)
+                kwargs[k] = torch.lerp(
+                    cast_to_tensor(f.animated_args[k]), f.kwargs[k], a
+                )
             if TIME_PARAMETER_NAME in kwargs:
                 # Functions of time (animate_function_of_time) receive the
                 # per-frame elapsed seconds instead of an interpolated value.
@@ -1160,7 +1229,9 @@ class AnimationTimeline:
                 self._active_replay_edit_index = previous_edit_index
 
         for f in updaters:
-            active_time_inds = ((f.time.start <= times) & (times < f.time.end)).nonzero()
+            active_time_inds = (
+                (f.time.start <= times) & (times < f.time.end)
+            ).nonzero()
             if active_time_inds.numel() == 0:
                 continue
             for timeline in self.attr_to_timeline.values():
@@ -1186,7 +1257,6 @@ class AnimationTimeline:
     def clear_buffers(self):
         for t in self.attr_to_timeline.values():
             t.clear_buffers()
-
 
 
 class TimelineManager(AnimationTimeline):

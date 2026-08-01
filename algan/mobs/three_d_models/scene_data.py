@@ -23,6 +23,7 @@ All arrays are plain :class:`torch.Tensor` (or ``None``); coordinates are in the
 model's own space (the loader applies assimp's post-process transforms, e.g.
 triangulation and, when requested, axis conversion).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -79,11 +80,11 @@ class SkinData:
 class MeshData:
     """One triangulated mesh: per-vertex arrays plus triangle indices."""
 
-    vertices: torch.Tensor                      # [V, 3]
-    faces: torch.Tensor                         # [F, 3] int
-    normals: torch.Tensor | None = None         # [V, 3]
-    uvs: torch.Tensor | None = None             # [V, 2]
-    vertex_colors: torch.Tensor | None = None   # [V, 4] or [V, 5]
+    vertices: torch.Tensor  # [V, 3]
+    faces: torch.Tensor  # [F, 3] int
+    normals: torch.Tensor | None = None  # [V, 3]
+    uvs: torch.Tensor | None = None  # [V, 2]
+    vertex_colors: torch.Tensor | None = None  # [V, 4] or [V, 5]
     material_index: int = -1
     name: str = ""
     skin: SkinData | None = None
@@ -99,8 +100,8 @@ class NodeData:
     """
 
     name: str = ""
-    transform: torch.Tensor | None = None       # [4, 4], local to parent
-    parent: int = -1                            # index into SceneData.nodes
+    transform: torch.Tensor | None = None  # [4, 4], local to parent
+    parent: int = -1  # index into SceneData.nodes
     mesh_indices: list[int] = field(default_factory=list)
 
 
@@ -112,12 +113,12 @@ class NodeAnimation:
     """
 
     node_name: str = ""
-    position_times: torch.Tensor | None = None      # [Kp]
-    positions: torch.Tensor | None = None           # [Kp, 3]
-    rotation_times: torch.Tensor | None = None      # [Kr]
-    rotations: torch.Tensor | None = None           # [Kr, 4] quaternion (x,y,z,w)
-    scaling_times: torch.Tensor | None = None       # [Ks]
-    scalings: torch.Tensor | None = None            # [Ks, 3]
+    position_times: torch.Tensor | None = None  # [Kp]
+    positions: torch.Tensor | None = None  # [Kp, 3]
+    rotation_times: torch.Tensor | None = None  # [Kr]
+    rotations: torch.Tensor | None = None  # [Kr, 4] quaternion (x,y,z,w)
+    scaling_times: torch.Tensor | None = None  # [Ks]
+    scalings: torch.Tensor | None = None  # [Ks, 3]
 
 
 @dataclass
@@ -125,7 +126,7 @@ class AnimationData:
     """A named animation clip: a set of per-node keyframe tracks."""
 
     name: str = ""
-    duration: float = 0.0                       # seconds
+    duration: float = 0.0  # seconds
     channels: list[NodeAnimation] = field(default_factory=list)
 
 

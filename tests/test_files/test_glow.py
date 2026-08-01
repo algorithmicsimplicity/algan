@@ -6,7 +6,7 @@ from algan.utils.algan_utils import render_all_funcs
 
 
 def get_mob(r=0):
-    return (TriangleTriangulated(
+    return TriangleTriangulated(
         torch.stack(
             (
                 UP * 0.5,
@@ -15,12 +15,11 @@ def get_mob(r=0):
             )
         ),
         color=torch.stack([RED for _ in range(3)]),
-    )
-    .spawn())
+    ).spawn()
 
 
 def test_glow():
-    #enable_ray_tracing(samples_per_pixel=1, tonemapping=False)
+    # enable_ray_tracing(samples_per_pixel=1, tonemapping=False)
     x = get_mob()
     x.glow = 1.0
     x.wait()
@@ -30,7 +29,7 @@ def test_glow():
 
 
 def test_tonemapping():
-    #enable_ray_tracing(samples_per_pixel=1, tonemapping=True, tonemap_exposure=1.5)
+    # enable_ray_tracing(samples_per_pixel=1, tonemapping=True, tonemap_exposure=1.5)
     x = get_mob()
     x.glow = 10
     x.wait()
@@ -39,7 +38,7 @@ def test_tonemapping():
 
 
 def test_post_process_tonemapping():
-    #enable_ray_tracing(samples_per_pixel=1, tonemapping=True, tonemap_exposure=1.5, post_process_tonemap=True)
+    # enable_ray_tracing(samples_per_pixel=1, tonemapping=True, tonemap_exposure=1.5, post_process_tonemap=True)
     x = get_mob()
     x.glow = 10.0
     x.wait()
@@ -48,4 +47,3 @@ def test_post_process_tonemapping():
 
 
 render_all_funcs(__name__, start_index=0, max_rendered=-1)
-

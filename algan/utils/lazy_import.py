@@ -10,6 +10,7 @@ third-party boundary instead: modules bind a :class:`LazyModule` and use it
 exactly like the real module; the real import happens on first attribute
 access.
 """
+
 from __future__ import annotations
 
 import importlib

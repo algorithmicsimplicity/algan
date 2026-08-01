@@ -20,6 +20,7 @@ and blend-shape morphs all reduce to *per-frame vertex positions*, which the
 ray tracer's spatio-temporal BVH already consumes through ``TriangleMesh``'s
 animatable per-corner ``location``.
 """
+
 from __future__ import annotations
 
 import os
@@ -175,8 +176,7 @@ class ThreeDModelMob(Mob):
 
         if scene_data is None:
             if file_path is None:
-                raise ValueError(
-                    "ThreeDModelMob requires a file_path or scene_data")
+                raise ValueError("ThreeDModelMob requires a file_path or scene_data")
             scene_data = _load_scene_for(file_path)
         self.scene_data = scene_data
         self.source_path = scene_data.source_path or (file_path or "")
@@ -199,14 +199,21 @@ class ThreeDModelMob(Mob):
             for mesh_idx, mesh in enumerate(scene_data.meshes):
                 node_indices = mesh_nodes.get(mesh_idx, [-1])
                 for node_idx in node_indices:
-                    matrix = (world[node_idx] if 0 <= node_idx < len(world)
-                              else _eye4(device))
+                    matrix = (
+                        world[node_idx] if 0 <= node_idx < len(world) else _eye4(device)
+                    )
                     mob = self._build_mesh_mob(
-                        scene_data, mesh, matrix, device,
-                        load_textures, smooth_normals)
-                    node_name = (scene_data.nodes[node_idx].name
-                                 if 0 <= node_idx < len(scene_data.nodes)
-                                 else mesh.name) or mesh.name or f"mesh_{mesh_idx}"
+                        scene_data, mesh, matrix, device, load_textures, smooth_normals
+                    )
+                    node_name = (
+                        (
+                            scene_data.nodes[node_idx].name
+                            if 0 <= node_idx < len(scene_data.nodes)
+                            else mesh.name
+                        )
+                        or mesh.name
+                        or f"mesh_{mesh_idx}"
+                    )
                     mob.node_name = node_name
                     # Animation hooks: the node this instance came from, and the
                     # mesh's *local* (pre-world-bake) vertices, so per-frame
@@ -217,16 +224,16 @@ class ThreeDModelMob(Mob):
                     self.parts.setdefault(node_name, []).append(mob)
 
         if not self.mesh_mobs:
-            raise ValueError(
-                f"No renderable meshes found in {self.source_path!r}")
+            raise ValueError(f"No renderable meshes found in {self.source_path!r}")
 
         self.add_children(self.mesh_mobs)
 
         if normalize:
             self._normalize(normalize_size)
 
-    def _build_mesh_mob(self, scene_data, mesh, matrix, device,
-                        load_textures, smooth_normals):
+    def _build_mesh_mob(
+        self, scene_data, mesh, matrix, device, load_textures, smooth_normals
+    ):
         vertices = _transform_points(mesh.vertices.to(device), matrix)
         normals = None
         if smooth_normals and mesh.normals is not None:
@@ -242,9 +249,11 @@ class ThreeDModelMob(Mob):
                 texture = self._resolve_texture(material, device)
 
         uvs = mesh.uvs.to(device) if mesh.uvs is not None else None
-        vertex_colors = (mesh.vertex_colors.to(device)
-                         if (texture is None and mesh.vertex_colors is not None)
-                         else None)
+        vertex_colors = (
+            mesh.vertex_colors.to(device)
+            if (texture is None and mesh.vertex_colors is not None)
+            else None
+        )
         # A texture needs UVs; without them, fall back to the flat colour.
         if texture is not None and uvs is None:
             texture = None
@@ -276,7 +285,9 @@ class ThreeDModelMob(Mob):
         # per-vertex colour) still supplies albedo; the material colour is only
         # the flat fallback.
         if self.pbr_materials and material is not None:
-            self._apply_pbr_material(mob, material, color, has_texture=texture is not None)
+            self._apply_pbr_material(
+                mob, material, color, has_texture=texture is not None
+            )
 
         # Legacy model formats may expose reflectivity / IOR without a full
         # metallic-roughness material. Convert those values to the same public
@@ -286,13 +297,16 @@ class ThreeDModelMob(Mob):
             legacy_ior = float(material.refractive_index or 0.0)
             if legacy_metalness > 0.0 or legacy_ior > 1.0:
                 from algan.rendering.shaders.materials import MeshPhysicalMaterial
-                mob.set_material(MeshPhysicalMaterial(
-                    color=color,
-                    metalness=legacy_metalness,
-                    roughness=float(material.roughness_factor),
-                    ior=legacy_ior if legacy_ior > 1.0 else 1.5,
-                    transmission=1.0 if legacy_ior > 1.0 else 0.0,
-                ))
+
+                mob.set_material(
+                    MeshPhysicalMaterial(
+                        color=color,
+                        metalness=legacy_metalness,
+                        roughness=float(material.roughness_factor),
+                        ior=legacy_ior if legacy_ior > 1.0 else 1.5,
+                        transmission=1.0 if legacy_ior > 1.0 else 0.0,
+                    )
+                )
         return mob
 
     def _apply_pbr_material(self, mob, material, color, has_texture):
@@ -322,9 +336,11 @@ class ThreeDModelMob(Mob):
             emissive[1] *= float(ei[..., 1].mean())
             emissive[2] *= float(ei[..., 2].mean())
         emissive = tuple(emissive)
-        material_cls = (MeshPhysicalMaterial
-                        if float(material.refractive_index or 0.0) > 1.0
-                        else MeshStandardMaterial)
+        material_cls = (
+            MeshPhysicalMaterial
+            if float(material.refractive_index or 0.0) > 1.0
+            else MeshStandardMaterial
+        )
         material_kwargs = {
             "color": color,
             "metalness": metalness,
@@ -361,8 +377,7 @@ class ThreeDModelMob(Mob):
         ``diffuse_texture`` file path. Returns a ``[W, H, 5]`` map or ``None``.
         """
         if material.diffuse_image is not None:
-            return image_to_texture_map(
-                material.diffuse_image.to(device)).to(device)
+            return image_to_texture_map(material.diffuse_image.to(device)).to(device)
         if material.diffuse_texture:
             return self._load_texture(material.diffuse_texture, device)
         return None
@@ -411,8 +426,7 @@ class ThreeDModelMob(Mob):
         mesh, else a list. Raises ``KeyError`` for an unknown node.
         """
         if name not in self.parts:
-            raise KeyError(
-                f"no node named {name!r}; available: {self.node_names}")
+            raise KeyError(f"no node named {name!r}; available: {self.node_names}")
         mobs = self.parts[name]
         return mobs[0] if len(mobs) == 1 else list(mobs)
 
@@ -433,15 +447,15 @@ class ThreeDModelMob(Mob):
     def _resolve_clip(self, name):
         clips = self.scene_data.animations
         if not clips:
-            raise ValueError(
-                f"model {self.source_path!r} carries no animation clips")
+            raise ValueError(f"model {self.source_path!r} carries no animation clips")
         if name is None:
             return clips[0]
         for clip in clips:
             if clip.name == name:
                 return clip
         raise KeyError(
-            f"no animation named {name!r}; available: {self.animation_names}")
+            f"no animation named {name!r}; available: {self.animation_names}"
+        )
 
     def bake_animation(self, name=None, times=None, fps=30):
         """Bake an animation clip to per-frame world-space corner positions.
@@ -471,8 +485,7 @@ class ThreeDModelMob(Mob):
         clip = self._resolve_clip(name)
         device = self.location.device
         if times is None:
-            times = _anim.sample_times(
-                clip.duration, fps, _anim.clip_key_times(clip))
+            times = _anim.sample_times(clip.duration, fps, _anim.clip_key_times(clip))
         times = [float(t) for t in times]
 
         nodes = self.scene_data.nodes
@@ -489,16 +502,18 @@ class ThreeDModelMob(Mob):
             local_corners = mob._local_vertices[mob.corner_index]  # [3F, 3] local
             frames = []
             for w in worlds:
-                matrix = (w[mob._node_idx]
-                          if 0 <= mob._node_idx < len(w) else _eye4(device))
+                matrix = (
+                    w[mob._node_idx] if 0 <= mob._node_idx < len(w) else _eye4(device)
+                )
                 world_corners = _transform_points(local_corners, matrix)
                 # Fold in the same recenter/scale normalize() applied.
                 frames.append((world_corners - center) * scale)
             corners[mob] = torch.stack(frames, dim=0)  # [T, 3F, 3]
         return times, corners
 
-    def play_animation(self, name=None, run_time=None, fps=30, loop=1,
-                       rate_func=identity):
+    def play_animation(
+        self, name=None, run_time=None, fps=30, loop=1, rate_func=identity
+    ):
         """Play a baked node-keyframe animation on the timeline.
 
         The clip is baked to per-frame world corners (see
@@ -543,7 +558,11 @@ class ThreeDModelMob(Mob):
             for mob in self.mesh_mobs:
                 mob.grid.set_location(corners[mob][0])
         for _lap in range(max(1, int(loop))):
-            with Seq(run_time=run_time, rate_func=rate_func, animation_manager=self.animation_manager):
+            with Seq(
+                run_time=run_time,
+                rate_func=rate_func,
+                animation_manager=self.animation_manager,
+            ):
                 for k in range(1, len(times)):
                     with Sync(animation_manager=self.animation_manager):
                         for mob in self.mesh_mobs:

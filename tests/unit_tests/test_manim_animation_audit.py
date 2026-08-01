@@ -39,12 +39,15 @@ def test_apply_wave_materializes_vectorized_point_geometry():
     circle = algan.Circle(add_to_scene=False).spawn(False)
     initial = circle.control_points.location.clone()
 
-    assert algan.ApplyWave(
-        circle,
-        direction=algan.UP,
-        amplitude=0.2,
-        run_time=1,
-    ) is circle
+    assert (
+        algan.ApplyWave(
+            circle,
+            direction=algan.UP,
+            amplitude=0.2,
+            run_time=1,
+        )
+        is circle
+    )
 
     materialize(0.5)
     assert circle.control_points.location.shape == initial.shape
@@ -55,11 +58,14 @@ def test_show_passing_flash_broadcasts_static_curve_across_frames():
     square = algan.Square(add_to_scene=False)
     point_count = square.control_points.location.shape[-2]
 
-    assert algan.ShowPassingFlash(
-        square,
-        time_width=0.2,
-        run_time=1,
-    ) is square
+    assert (
+        algan.ShowPassingFlash(
+            square,
+            time_width=0.2,
+            run_time=1,
+        )
+        is square
+    )
 
     materialize(0.2, 0.5, 0.8)
     assert square.control_points.location.shape == (3, point_count, 3)
@@ -88,13 +94,9 @@ def test_move_along_path_uses_arc_length_and_materializes_batches():
     dot = algan.Dot(add_to_scene=False).spawn(False)
     with algan.Sync(run_time=1, rate_func=algan.rate_funcs.identity):
         path.move(algan.UP)
-        algan.MoveAlongPath(
-            dot, path, run_time=1, rate_func=algan.rate_funcs.identity
-        )
+        algan.MoveAlongPath(dot, path, run_time=1, rate_func=algan.rate_funcs.identity)
     materialize(0.5)
-    assert torch.allclose(
-        dot.location[0, 0], torch.tensor([0.0, 0.5, 0.0]), atol=2e-5
-    )
+    assert torch.allclose(dot.location[0, 0], torch.tensor([0.0, 0.5, 0.0]), atol=2e-5)
 
 
 def test_apply_matrix_supports_manim_argument_order_and_midpoint_state():
@@ -183,8 +185,9 @@ def test_homotopy_accepts_manim_scalar_api_and_surface_geometry():
     initial_grid = surface.grid.location.clone()
     algan.Homotopy(
         surface,
-        lambda points, t: points
-        + torch.cat((torch.zeros_like(t), torch.zeros_like(t), t), dim=-1),
+        lambda points, t: (
+            points + torch.cat((torch.zeros_like(t), torch.zeros_like(t), t), dim=-1)
+        ),
         run_time=1,
         rate_func=algan.rate_funcs.identity,
     )
@@ -226,7 +229,9 @@ def test_complex_transforms_preserve_z_and_accept_numpy_callbacks():
     expected = initial[..., 0] / np.sqrt(2)
     assert torch.allclose(line.control_points.location[..., 0], expected, atol=2e-5)
     assert torch.allclose(line.control_points.location[..., 1], expected, atol=2e-5)
-    assert torch.allclose(line.control_points.location[..., 2], initial[..., 2], atol=2e-5)
+    assert torch.allclose(
+        line.control_points.location[..., 2], initial[..., 2], atol=2e-5
+    )
 
 
 def test_phase_flow_is_deterministic_across_frame_batches():
@@ -275,10 +280,7 @@ def test_recursive_replay_uses_rows_captured_before_descendant_rebatch():
     """A later descendant rebatch must not change an earlier edit's targets."""
     child = algan.Mob()
     group = algan.Group([child]).spawn(animate=False)
-    start = (
-        SceneManager.instance()
-        .current_scene.animation_manager.context.timespan.current_time
-    )
+    start = SceneManager.instance().current_scene.animation_manager.context.timespan.current_time
     opacity_timeline = (
         SceneManager.instance().current_scene.timeline_manager.attr_to_timeline[
             "opacity"
@@ -300,9 +302,9 @@ def test_recursive_replay_uses_rows_captured_before_descendant_rebatch():
 
 
 def test_replay_distinguishes_recursive_edits_from_nonrecursive_reads():
-    cylinder = algan.Cylinder(
-        resolution=(4, 4), add_to_scene=False
-    ).spawn(animate=False)
+    cylinder = algan.Cylinder(resolution=(4, 4), add_to_scene=False).spawn(
+        animate=False
+    )
     cylinder.set_start_point(algan.LEFT)
 
     materialize(0.5)
@@ -326,8 +328,7 @@ def test_surface_logical_pn_topology_is_fixed_during_animation():
     rotate_event = next(
         event
         for event in (
-            SceneManager.instance()
-            .current_scene.timeline_manager.function_timeline.function_applications
+            SceneManager.instance().current_scene.timeline_manager.function_timeline.function_applications
         )
         if event.function.__name__ == "rotate"
     )
@@ -349,14 +350,18 @@ def test_surface_fixed_topology_preserves_parent_rotation_and_scale():
         ]
     ).arrange_in_grid()
     fixed_group.spawn(animate=False)
-    auto_group = algan.Group(
-        [
-            algan.Square(),
-            algan.Circle(),
-            algan.Sphere(),
-            algan.Cylinder(),
-        ]
-    ).arrange_in_grid().spawn(animate=False)
+    auto_group = (
+        algan.Group(
+            [
+                algan.Square(),
+                algan.Circle(),
+                algan.Sphere(),
+                algan.Cylinder(),
+            ]
+        )
+        .arrange_in_grid()
+        .spawn(animate=False)
+    )
     initial_resolutions = [
         (mob.grid_width, mob.grid_height)
         for mob in auto_group
@@ -418,10 +423,9 @@ def test_animated_boundary_tracks_source_and_can_stop():
     source = algan.Circle(add_to_scene=False).spawn(False)
     boundary = algan.AnimatedBoundary(source, add_to_scene=False).spawn(False)
     assert boundary.stop() is boundary
-    updater = (
-        SceneManager.instance()
-        .current_scene.timeline_manager.function_timeline.updaters[boundary.updater_id]
-    )
+    updater = SceneManager.instance().current_scene.timeline_manager.function_timeline.updaters[
+        boundary.updater_id
+    ]
     assert updater.time.end_event is not None
 
 

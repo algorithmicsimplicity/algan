@@ -7,17 +7,19 @@ from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.utils.algan_utils import render_all_funcs
 
 s = 0.1
+
+
 def get_mob(r=0):
     return TriangleTriangulated(
-    torch.stack(
-        (
-            UP * s,
-            F.normalize(RIGHT + DOWN, p=2, dim=-1) * s,
-            F.normalize(LEFT + DOWN, p=2, dim=-1) * s,
-        )
-    ),
-    color=torch.stack([PURE_RED, PURE_BLUE, PURE_GREEN]),
-).spawn()
+        torch.stack(
+            (
+                UP * s,
+                F.normalize(RIGHT + DOWN, p=2, dim=-1) * s,
+                F.normalize(LEFT + DOWN, p=2, dim=-1) * s,
+            )
+        ),
+        color=torch.stack([PURE_RED, PURE_BLUE, PURE_GREEN]),
+    ).spawn()
 
 
 def test_parents():

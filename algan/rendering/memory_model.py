@@ -149,8 +149,7 @@ class ChunkMemoryModel:
     # -- planning ----------------------------------------------------------
 
     def _safety_for(self, signature):
-        return (self.safety if len(self._samples(signature)) >= 2
-                else PROBE_SAFETY)
+        return self.safety if len(self._samples(signature)) >= 2 else PROBE_SAFETY
 
     def predict(self, signature, num_frames):
         """Bytes a chunk of ``num_frames`` is expected to need, with margin."""
@@ -185,8 +184,10 @@ class ChunkMemoryModel:
         if line is None:
             return "uncalibrated"
         intercept, slope = line
-        return (f"{intercept / 1e6:.2f} MB + {slope / 1e6:.2f} MB/frame "
-                f"from {sorted(self._samples(signature))}")
+        return (
+            f"{intercept / 1e6:.2f} MB + {slope / 1e6:.2f} MB/frame "
+            f"from {sorted(self._samples(signature))}"
+        )
 
 
 class PeakRatioModel:
@@ -234,12 +235,15 @@ class PeakRatioModel:
     def describe(self):
         if not self._ratios:
             return f"seed {self.seed:.1f}x (unmeasured)"
-        return (f"{self.factor():.2f}x from {len(self._ratios)} builds "
-                f"(worst {max(self._ratios):.2f}x)")
+        return (
+            f"{self.factor():.2f}x from {len(self._ratios)} builds "
+            f"(worst {max(self._ratios):.2f}x)"
+        )
 
 
-def chunk_signature(*, width, height, channels, dtype, samples_per_pixel,
-                    num_triangles, num_circuits):
+def chunk_signature(
+    *, width, height, channels, dtype, samples_per_pixel, num_triangles, num_circuits
+):
     """Key identifying batches whose peak lies on the same line.
 
     Resolution and buffer dtype change the per-frame cost; the primitive counts
@@ -248,10 +252,17 @@ def chunk_signature(*, width, height, channels, dtype, samples_per_pixel,
     does not discard a usable fit, while an order-of-magnitude change starts a
     fresh one.
     """
+
     def bucket(value):
         value = int(value or 0)
         return value.bit_length()
 
-    return (int(width), int(height), int(channels), str(dtype),
-            int(samples_per_pixel), bucket(num_triangles),
-            bucket(num_circuits))
+    return (
+        int(width),
+        int(height),
+        int(channels),
+        str(dtype),
+        int(samples_per_pixel),
+        bucket(num_triangles),
+        bucket(num_circuits),
+    )

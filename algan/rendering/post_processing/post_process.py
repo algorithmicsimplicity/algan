@@ -99,16 +99,26 @@ def _agx_tonemap(rgb, exposure, memory):
     b = memory.get_tensor(a.shape, a.dtype)
     scratch = memory.get_tensor((a.shape[0],), a.dtype)
 
-    _linear_rgb(a, b, (
-        (0.627409, 0.329282, 0.043309),
-        (0.069055, 0.919540, 0.011405),
-        (0.016390, 0.088013, 0.895597),
-    ), scratch)
-    _linear_rgb(b, a, (
-        (0.856627153315983, 0.0951212405381588, 0.0482516061458583),
-        (0.137318972929847, 0.761241990602591, 0.101439036467562),
-        (0.11189821299995, 0.0767994186031903, 0.811302368396859),
-    ), scratch)
+    _linear_rgb(
+        a,
+        b,
+        (
+            (0.627409, 0.329282, 0.043309),
+            (0.069055, 0.919540, 0.011405),
+            (0.016390, 0.088013, 0.895597),
+        ),
+        scratch,
+    )
+    _linear_rgb(
+        b,
+        a,
+        (
+            (0.856627153315983, 0.0951212405381588, 0.0482516061458583),
+            (0.137318972929847, 0.761241990602591, 0.101439036467562),
+            (0.11189821299995, 0.0767994186031903, 0.811302368396859),
+        ),
+        scratch,
+    )
 
     for channel in range(3):
         a[:, channel].clamp_(min=1e-10).log2_().clamp_(-12.47393, 4.026069)
@@ -119,16 +129,26 @@ def _agx_tonemap(rgb, exposure, memory):
     for channel in range(3):
         _agx_curve(a[:, channel], b[:, channel], x2, x4, scratch)
 
-    _linear_rgb(b, a, (
-        (1.1271005818144368, -0.11060664309660323, -0.016493938717834573),
-        (-0.1413297634984383, 1.157823702216272, -0.016493938717834257),
-        (-0.14132976349843826, -0.11060664309660294, 1.2519364065950405),
-    ), scratch)
-    _linear_rgb(a, b, (
-        (1.6605, -0.1246, -0.0182),
-        (-0.5876, 1.1329, -0.1006),
-        (-0.0728, -0.0083, 1.1187),
-    ), scratch)
+    _linear_rgb(
+        b,
+        a,
+        (
+            (1.1271005818144368, -0.11060664309660323, -0.016493938717834573),
+            (-0.1413297634984383, 1.157823702216272, -0.016493938717834257),
+            (-0.14132976349843826, -0.11060664309660294, 1.2519364065950405),
+        ),
+        scratch,
+    )
+    _linear_rgb(
+        a,
+        b,
+        (
+            (1.6605, -0.1246, -0.0182),
+            (-0.5876, 1.1329, -0.1006),
+            (-0.0728, -0.0083, 1.1187),
+        ),
+        scratch,
+    )
     b.clamp_(0.0, 1.0)
     return b.reshape(shape)
 
@@ -146,9 +166,16 @@ def _strip_aux_channel(frame, original_num_channels, memory):
     return frame[..., :-1]
 
 
-def _finalize_on_device(frame, original_num_channels, memory, *,
-                        tonemap_enabled, tonemapping, tonemap_method,
-                        exposure):
+def _finalize_on_device(
+    frame,
+    original_num_channels,
+    memory,
+    *,
+    tonemap_enabled,
+    tonemapping,
+    tonemap_method,
+    exposure,
+):
     """Strip render-only channels and return arena-owned uint8 frames."""
     # Fast path: the input is already byte output.  Only the transparent
     # five-channel layout needs a copied/reordered result.
@@ -156,13 +183,16 @@ def _finalize_on_device(frame, original_num_channels, memory, *,
         return _strip_aux_channel(frame, original_num_channels, memory)
 
     stripped_channels = (
-        4 if original_num_channels == frame.shape[-1] == 5
-        else (frame.shape[-1] - 1
-              if original_num_channels == frame.shape[-1] else frame.shape[-1])
+        4
+        if original_num_channels == frame.shape[-1] == 5
+        else (
+            frame.shape[-1] - 1
+            if original_num_channels == frame.shape[-1]
+            else frame.shape[-1]
+        )
     )
     output_channels = (
-        (4 if stripped_channels == 4 else 3)
-        if tonemap_enabled else stripped_channels
+        (4 if stripped_channels == 4 else 3) if tonemap_enabled else stripped_channels
     )
     output = memory.get_tensor((*frame.shape[:-1], output_channels), torch.uint8)
 
@@ -173,17 +203,21 @@ def _finalize_on_device(frame, original_num_channels, memory, *,
     # pipeline -- it reads RGB (0-2), drops the glow channel and picks up any
     # alpha (channel 4) itself, so it needs no torch strip.
     _rt = SETTINGS.raytracing
-    if (tonemap_enabled and frame.dtype != torch.uint8
-            and _rt.is_post_tonemap_kernel_enabled()):
+    if (
+        tonemap_enabled
+        and frame.dtype != torch.uint8
+        and _rt.is_post_tonemap_kernel_enabled()
+    ):
         from algan.rendering.post_processing.tonemap_kernels_taichi import (
             tonemap_to_u8,
         )
-        method_id = (0 if not tonemapping
-                     else (1 if tonemap_method == "neutral" else 2))
+
+        method_id = 0 if not tonemapping else (1 if tonemap_method == "neutral" else 2)
         if tonemapping and tonemap_method not in ("neutral", "agx"):
             raise ValueError(f"Unknown tonemapping method: {tonemap_method}")
-        tonemap_to_u8(frame, output, method_id, float(exposure),
-                      1 if frame.shape[-1] == 5 else 0)
+        tonemap_to_u8(
+            frame, output, method_id, float(exposure), 1 if frame.shape[-1] == 5 else 0
+        )
         return output
 
     with memory.temp():
@@ -227,8 +261,9 @@ def _finalize_on_device(frame, original_num_channels, memory, *,
     return output
 
 
-def post_process_frames(self, frames, anti_alias_level, post_processes=(),
-                        apply_fxaa=False):
+def post_process_frames(
+    self, frames, anti_alias_level, post_processes=(), apply_fxaa=False
+):
     """Downsample, anti-alias, run the post-process chain and tonemap.
 
     ``self`` is the render arena. Nothing here declares how much memory the
@@ -242,8 +277,7 @@ def post_process_frames(self, frames, anti_alias_level, post_processes=(),
     # hands over uint8 frames (or a scene rendered before the toggle flipped)
     # must keep the in-composite-tonemap behaviour -- _finalize_on_device makes
     # the same dtype check -- rather than dividing a byte tensor by 255.
-    hdr = (rt_settings.is_post_process_tonemap_enabled()
-           and frames.dtype != torch.uint8)
+    hdr = rt_settings.is_post_process_tonemap_enabled() and frames.dtype != torch.uint8
 
     self.pre_post_pointers = self.get_pointers()
     frame_out = frames
@@ -252,10 +286,15 @@ def post_process_frames(self, frames, anti_alias_level, post_processes=(),
         # tonemap mode (as before), but float16 under post-process tonemapping
         # so the supersample average stays in linear HDR instead of clamping
         # to 0-255 before bloom.
-        aa_frame_out = self.get_tensor([
-            frame_out.shape[0], frame_out.shape[1] // anti_alias_level,
-            frame_out.shape[2] // anti_alias_level, frame_out.shape[3]
-        ], dtype=frame_out.dtype)
+        aa_frame_out = self.get_tensor(
+            [
+                frame_out.shape[0],
+                frame_out.shape[1] // anti_alias_level,
+                frame_out.shape[2] // anti_alias_level,
+                frame_out.shape[3],
+            ],
+            dtype=frame_out.dtype,
+        )
         with self.temp():
             frame_temp = self.get_tensor(aa_frame_out.shape, torch.float32)
             frame_temp.copy_(frame_out[:, ::anti_alias_level, ::anti_alias_level])
@@ -263,7 +302,9 @@ def post_process_frames(self, frames, anti_alias_level, post_processes=(),
                 for j in range(anti_alias_level):
                     if i == j == 0:
                         continue
-                    frame_temp.add_(frame_out[:, i::anti_alias_level, j::anti_alias_level])
+                    frame_temp.add_(
+                        frame_out[:, i::anti_alias_level, j::anti_alias_level]
+                    )
             frame_temp.div_(anti_alias_level * anti_alias_level)
             aa_frame_out.copy_(frame_temp)
         frame_out = aa_frame_out
@@ -286,9 +327,9 @@ def post_process_frames(self, frames, anti_alias_level, post_processes=(),
         fxaa_out = self.get_tensor(frame_out.shape, frame_out.dtype)
         with self.temp():
             fxaa_input = self.cast(frame_out, torch.float32)
-            fxaa_float = fxaa(
-                fxaa_input.permute(0, 3, 1, 2), memory=self
-            ).permute(0, 2, 3, 1)
+            fxaa_float = fxaa(fxaa_input.permute(0, 3, 1, 2), memory=self).permute(
+                0, 2, 3, 1
+            )
             fxaa_out.copy_(fxaa_float)
         frame_out = fxaa_out
 
@@ -297,7 +338,9 @@ def post_process_frames(self, frames, anti_alias_level, post_processes=(),
         frame_out = process(frame_out, memory=self)
 
     frame_out = _finalize_on_device(
-        frame_out, num_channels, self,
+        frame_out,
+        num_channels,
+        self,
         tonemap_enabled=rt_settings.is_post_process_tonemap_enabled(),
         tonemapping=rt_settings.TONEMAPPING,
         tonemap_method=rt_settings.TONEMAP_METHOD,

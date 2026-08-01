@@ -3,6 +3,7 @@
 Split out of ``mob.py`` for readability; :class:`MobMorphMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -17,6 +18,7 @@ def linear_sum_assignment(*args, **kwargs):
     from scipy.optimize import linear_sum_assignment as _lsa
 
     return _lsa(*args, **kwargs)
+
 
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.animation_timeline.timeline import bump_hierarchy_version
@@ -158,9 +160,7 @@ class MobMorphMixin:
 
         new_batched_values = []
         for sub_object_data, factor in zip(value, split_factors):
-            new_batched_values.append(
-                sub_object_data
-            )  # Add original sub-object data
+            new_batched_values.append(sub_object_data)  # Add original sub-object data
             for _ in range(1, factor):
                 # Clone the last point of the sub-object data to expand
                 new_batched_values.append(
@@ -279,16 +279,15 @@ class MobMorphMixin:
                 )
             else:
                 objects_per_parent = parent_batch_sizes // points_per_object
-                if bool((parent_batch_sizes % points_per_object != 0).any()) or int(
-                    objects_per_parent.sum()
-                ) != current_batch_size:
+                if (
+                    bool((parent_batch_sizes % points_per_object != 0).any())
+                    or int(objects_per_parent.sum()) != current_batch_size
+                ):
                     raise RuntimeError(
                         "parent_batch_sizes does not describe the Mob's current batch"
                     )
 
-                repeat_indices_on_device = repeat_indices.to(
-                    parent_batch_sizes.device
-                )
+                repeat_indices_on_device = repeat_indices.to(parent_batch_sizes.device)
                 if bool((objects_per_parent == 1).all()):
                     # Every batch object is independently indexable. Repeating
                     # an object therefore repeats its parent entry as well.
@@ -381,9 +380,7 @@ class MobMorphMixin:
                 # Attr has no rows in the global attribute timeline yet.
                 continue
             value = cast_to_tensor(self.__getattribute__(attr))[0]
-            if (value.shape[-2] == 1) or (
-                value.shape[-2] % num_points_per_object != 0
-            ):
+            if (value.shape[-2] == 1) or (value.shape[-2] % num_points_per_object != 0):
                 continue
             value_per_object = unsquish(value, -2, num_points_per_object)
             if value_per_object.shape[-3] != num_objects:
@@ -558,9 +555,7 @@ class MobMorphMixin:
                         """Split a [segments, 4, xyz] tensor at path breaks."""
                         start_inds = (
                             (
-                                (x[..., 0, :] - x.roll(1, -3)[..., -1, :])
-                                .abs()
-                                .sum(-1)
+                                (x[..., 0, :] - x.roll(1, -3)[..., -1, :]).abs().sum(-1)
                                 > 1e-6
                             )
                             .nonzero(as_tuple=False)
@@ -583,16 +578,15 @@ class MobMorphMixin:
                         parent_batch_sizes = mob.parent_batch_sizes
                         if parent_batch_sizes is None:
                             return [segments]
-                        if bool((parent_batch_sizes % 4 != 0).any()) or int(
-                            parent_batch_sizes.sum()
-                        ) != mob.location.shape[-2]:
+                        if (
+                            bool((parent_batch_sizes % 4 != 0).any())
+                            or int(parent_batch_sizes.sum()) != mob.location.shape[-2]
+                        ):
                             raise RuntimeError(
                                 "parent_batch_sizes does not match cubic control points"
                             )
                         return list(
-                            segments.split(
-                                (parent_batch_sizes // 4).tolist(), dim=-3
-                            )
+                            segments.split((parent_batch_sizes // 4).tolist(), dim=-3)
                         )
 
                     had_parent_batches = (
@@ -686,7 +680,9 @@ class MobMorphMixin:
                     )
                     other_mob.setattr_and_rebatch_without_record(
                         "location",
-                        squish(torch.cat(other_parent_batches, -3), -3, -2).unsqueeze(0),
+                        squish(torch.cat(other_parent_batches, -3), -3, -2).unsqueeze(
+                            0
+                        ),
                     )
                     if had_parent_batches:
                         metadata_device = (
@@ -738,4 +734,3 @@ class MobMorphMixin:
             # added to the scene. We return the transformed mob so that it can be
             # further animated / transformed by the caller.
             return new_self
-

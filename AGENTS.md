@@ -51,15 +51,15 @@ name for each thing; if you find a second, it is a bug.
 ```python
 from algan import *
 
-square = Square().spawn()      # mobs must be spawned to appear / animate
-square.move(RIGHT)             # recorded as a 1-second animation
+square = Square().spawn()  # mobs must be spawned to appear / animate
+square.move(RIGHT)  # recorded as a 1-second animation
 
-with Sync():                   # play simultaneously
+with Sync():  # play simultaneously
     square.rotate(90, OUT)
     square.color = BLUE
 
-Scene.save_video("example")        # -> algan_outputs/example.mp4
-Scene.save_video("example", HD)    # one-off quality override
+Scene.save_video("example")  # -> algan_outputs/example.mp4
+Scene.save_video("example", HD)  # one-off quality override
 ```
 
 - **Output**: `Scene.save_video(file_path=None, video_settings=None, *, overwrite, reset, background_color, animate_fade_out, post_processes, codec, audio_codec, ffmpeg_params)` and `Scene.save_frame(file_path=None, video_settings=None, at=None, *, overwrite, background_color)`. Both return `RenderResult` (`status`, `output_path`, `duration_seconds`, `render_plan`); `save_frame` returns a list only when `at` is a sequence. There is no module-level `render_to_file`/`render`, no `render_settings` keyword, and no `RenderSettings` alias.

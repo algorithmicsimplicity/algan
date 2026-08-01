@@ -46,8 +46,7 @@ class BatchedMobViewSequence(Sequence):
             return [self[i] for i in range(*item.indices(self.size))]
         if not isinstance(item, int):
             raise TypeError(
-                "batch indices must be integers or slices, "
-                f"not {type(item).__name__}"
+                f"batch indices must be integers or slices, not {type(item).__name__}"
             )
         if item < 0:
             item += self.size
@@ -70,7 +69,9 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
         record_attr_modifications=False,
         animation_manager=scene.animation_manager,
     ):
-        batch_mob = mobs[0].clone(recursive=False, clone_data=True, add_to_scene=add_to_scene)
+        batch_mob = mobs[0].clone(
+            recursive=False, clone_data=True, add_to_scene=add_to_scene
+        )
         for attr in batch_mob.animatable_attrs:
             if not all(hasattr(mob, attr) for mob in mobs):
                 continue
@@ -78,7 +79,9 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
                 attr,
                 torch.cat(
                     [
-                        mob.__getattribute__(attr).expand(-1, mob.location.shape[-2], -1)
+                        mob.__getattribute__(attr).expand(
+                            -1, mob.location.shape[-2], -1
+                        )
                         for mob in mobs
                     ],
                     -2,
@@ -119,7 +122,11 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
                     batch_mob.__setattr__(attr, components[i])
 
         children = [m.get_children(0, include_components=False) for m in mobs]
-        child = batch_mobs(children, torch.tensor([len(_) for _ in children]), add_to_scene=add_to_scene)
+        child = batch_mobs(
+            children,
+            torch.tensor([len(_) for _ in children]),
+            add_to_scene=add_to_scene,
+        )
         if child is not None:
             components.append(child)
 

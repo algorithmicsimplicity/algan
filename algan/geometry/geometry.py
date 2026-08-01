@@ -20,7 +20,9 @@ from algan.utils.tensor_utils import (
 
 def distance(x, y, memory=None, *args, **kwargs):
     if memory is None:
-        return torch.cdist(x.unsqueeze(-2), y.unsqueeze(-2), *args, **kwargs).squeeze(-2)
+        return torch.cdist(x.unsqueeze(-2), y.unsqueeze(-2), *args, **kwargs).squeeze(
+            -2
+        )
     out = memory.get_tensor([*x.shape[:-1], 1])
     with memory.temp():
         dif = torch.sub(x, y, out=memory.get_tensor(x.shape))
@@ -52,14 +54,19 @@ def intersect_line_with_plane(
         intersection_points = line_point + line_direction * intersection_distances
         return intersection_points, intersection_distances
     with memory.temp():
-        lp = torch.sub(line_point, plane_point,  out=memory.get_tensor(line_point.shape))
+        lp = torch.sub(line_point, plane_point, out=memory.get_tensor(line_point.shape))
         plane_normal = F.normalize(plane_normal, p=2, dim=dim, out=plane_normal)
         dot1 = dot_product(lp, plane_normal, dim, out=memory)
         dot2 = dot_product(line_direction, plane_normal, dim, out=memory)
         intersection_distances = torch.divide(dot1, dot2, out=dot2)
-        intersection_points = torch.addcmul(line_point, line_direction, intersection_distances, value=-1, out=line_direction)
+        intersection_points = torch.addcmul(
+            line_point,
+            line_direction,
+            intersection_distances,
+            value=-1,
+            out=line_direction,
+        )
         return intersection_points, intersection_distances
-
 
 
 def intersect_line_with_plane_colinear(
@@ -168,8 +175,11 @@ def get_rotation_between_3d_vectors(vector1, vector2, dim=-1):
         .unsqueeze(dim)
     )
     degrees_to_rotate = radians_to_rotate * RADIANS_TO_DEGREES
-    normal_vector = torch.where((degrees_to_rotate.abs() <= 1e-4) | ((degrees_to_rotate - 180).abs() <= 1e-4),
-                                normal_vector_r, normal_vector)
+    normal_vector = torch.where(
+        (degrees_to_rotate.abs() <= 1e-4) | ((degrees_to_rotate - 180).abs() <= 1e-4),
+        normal_vector_r,
+        normal_vector,
+    )
     return degrees_to_rotate, normal_vector
 
 
@@ -186,8 +196,9 @@ def normalize(x, dim=-1, p=2, memory=None):
     if memory is None:
         return F.normalize(x, p=p, dim=dim)
     with memory.temp():
-        norm = torch.norm(x, p=2, dim=-1, keepdim=True,
-                                          out=memory.get_tensor([*x.shape[:-1], 1])).clamp_min_(1e-8)
+        norm = torch.norm(
+            x, p=2, dim=-1, keepdim=True, out=memory.get_tensor([*x.shape[:-1], 1])
+        ).clamp_min_(1e-8)
         x /= norm
     return x
 

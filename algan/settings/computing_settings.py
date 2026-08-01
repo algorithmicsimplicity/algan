@@ -47,13 +47,21 @@ class ComputingSettings(Settings):
             if not math.isfinite(value) or not 0 < value <= 1:
                 raise AlganConfigurationError(f"{name} must be in the interval (0, 1]")
             object.__setattr__(self, name, value)
-        if not isinstance(self.max_animation_batch_size, int) or isinstance(
-            self.max_animation_batch_size, bool
-        ) or self.max_animation_batch_size <= 0:
-            raise AlganConfigurationError("max_animation_batch_size must be a positive integer")
-        if not isinstance(self.max_cpu_memory_used, int) or isinstance(
-            self.max_cpu_memory_used, bool
-        ) or self.max_cpu_memory_used <= 0:
-            raise AlganConfigurationError("max_cpu_memory_used must be a positive integer")
+        if (
+            not isinstance(self.max_animation_batch_size, int)
+            or isinstance(self.max_animation_batch_size, bool)
+            or self.max_animation_batch_size <= 0
+        ):
+            raise AlganConfigurationError(
+                "max_animation_batch_size must be a positive integer"
+            )
+        if (
+            not isinstance(self.max_cpu_memory_used, int)
+            or isinstance(self.max_cpu_memory_used, bool)
+            or self.max_cpu_memory_used <= 0
+        ):
+            raise AlganConfigurationError(
+                "max_cpu_memory_used must be a positive integer"
+            )
         if not isinstance(self.use_torch_scatter, bool):
             raise AlganConfigurationError("use_torch_scatter must be a boolean")

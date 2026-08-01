@@ -9,6 +9,7 @@ reference frames.
 
     .venv/Scripts/python.exe -m pytest tests/test_files/test_fragment_shaders.py
 """
+
 import os
 import tempfile
 
@@ -49,12 +50,12 @@ def test_resolve_builtin_shader_to_stage():
 def test_registry_single_composed_and_dedup():
     m1, specs1 = build_fragment_pipeline(cosine_color)
     assert m1._frag_pipeline_id >= _USER_PIPELINE_BASE
-    assert m1._frag_total_width == 2          # frequency + phase
+    assert m1._frag_total_width == 2  # frequency + phase
     assert [n for n, _ in specs1] == ["frequency", "phase"]
 
     m2, specs2 = build_fragment_pipeline([cosine_color, phong_shader])
     assert m2._frag_pipeline_id != m1._frag_pipeline_id
-    assert m2._frag_total_width == 14         # 2 (cosine) + 12 (phong canonical)
+    assert m2._frag_total_width == 14  # 2 (cosine) + 12 (phong canonical)
 
     # Identical pipelines reuse the same id and composed func.
     m3, _ = build_fragment_pipeline(cosine_color)
@@ -99,7 +100,7 @@ def _render(kind):
     finally:
         if os.path.exists(out):
             os.remove(out)
-    return (frames[-1].permute(1, 2, 0).float().cpu().numpy() * 255.0)
+    return frames[-1].permute(1, 2, 0).float().cpu().numpy() * 255.0
 
 
 @pytest.mark.parametrize("wavefront", [False, True])
@@ -114,10 +115,8 @@ def test_render_custom_and_composed(wavefront):
             rtp.set_wavefront(False)
 
     # A single-stage user pipeline reproduces the built-in material stage.
-    assert np.abs(builtin.astype(np.float64)
-                  - user.astype(np.float64)).max() <= 2.0
+    assert np.abs(builtin.astype(np.float64) - user.astype(np.float64)).max() <= 2.0
     # Composition changes the image (the cosine recolour is visible), and the
     # sphere is still lit + non-empty (phong ran on the recoloured albedo).
-    assert np.abs(user.astype(np.float64)
-                  - cosine.astype(np.float64)).mean() > 2.0
+    assert np.abs(user.astype(np.float64) - cosine.astype(np.float64)).mean() > 2.0
     assert cosine[..., :3].max() > 40.0

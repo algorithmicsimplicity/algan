@@ -44,6 +44,7 @@ report when a scene never launches them).
 Usage from a benchmark script::
 
     from algan.utils.profiling_utils import profile_scene
+
     enable_ray_tracing(...)
     profile_scene(scene_func, video_settings, tag)
 
@@ -54,6 +55,7 @@ Env knobs (all optional):
     ALGAN_PROFILE_NVPROF=1       auto-run nvprof for registers/occupancy
     ALGAN_UNDER_NVPROF=1         (set by the nvprof child) run one lean render
 """
+
 from __future__ import annotations
 
 import cProfile
@@ -164,10 +166,10 @@ class StageTimers:
         try:
             yield
         finally:
-            #t1 = time.perf_counter()# - t0
-            #_sync_devices()
+            # t1 = time.perf_counter()# - t0
+            # _sync_devices()
             torch.cuda.synchronize()
-            #t2 = time.perf_counter()
+            # t2 = time.perf_counter()
             ti.sync()
             t3 = time.perf_counter()
             tls.stack_level -= 1
@@ -177,8 +179,8 @@ class StageTimers:
             self.exclusive_times[name] += t - tls.level_times[tls.stack_level + 1]
             tls.level_times[tls.stack_level + 1] = 0
             self.counts[name] += 1
-            #self.launch_times[name] += t1 - t0
-            #self.cuda_sync_times[name] += t2 - t0
+            # self.launch_times[name] += t1 - t0
+            # self.cuda_sync_times[name] += t2 - t0
             tls.active.discard(name)
 
     def wrap_function(self, obj, attr, name):
@@ -319,7 +321,7 @@ def _make_kernel_wrapper(orig, name):
         _sync_devices()
         t0 = time.perf_counter()
         result = orig(*args, **kwargs)
-        #_sync_devices()
+        # _sync_devices()
         t1 = time.perf_counter()
         torch.cuda.synchronize()
         t2 = time.perf_counter()
@@ -328,7 +330,7 @@ def _make_kernel_wrapper(orig, name):
         dt = t3 - t0
         TIMERS.times[label] += dt
         TIMERS.counts[label] += 1
-        TIMERS.launch_times[label] += t1-t0
+        TIMERS.launch_times[label] += t1 - t0
         TIMERS.cuda_sync_times[label] += t2 - t1
         if extractor is not None:
             try:
@@ -402,17 +404,20 @@ def _capture_scene_stats(scene):
                     inst = int((v.leaf_prim >= 0).sum())
                 except Exception:
                     inst = None
-            bvhs[k] = {"nodes": getattr(v, "num_nodes", None),
-                           "leaves": getattr(v, "num_leaves", None),
-                           "instances": inst,
-                           "mb": v.get_memory_used() / 2**20}
+            bvhs[k] = {
+                "nodes": getattr(v, "num_nodes", None),
+                "leaves": getattr(v, "num_leaves", None),
+                "instances": inst,
+                "mb": v.get_memory_used() / 2**20,
+            }
         elif isinstance(v, (int, float)) and not isinstance(v, bool):
             scalars[k] = v
     stats = {"tensors": tensors, "scalars": scalars, "bvhs": bvhs}
     stats["total_tensor_mb"] = sum(mb for _s, mb in tensors.values())
     stats["total_bvh_mb"] = sum(b["mb"] for b in bvhs.values())
     stats["cuda_allocated_after_merge_mb"] = (
-        torch.cuda.memory_allocated() / 2**20 if torch.cuda.is_available() else 0.0)
+        torch.cuda.memory_allocated() / 2**20 if torch.cuda.is_available() else 0.0
+    )
     SCENE_STATS.setdefault("batches", []).append(stats)
 
 
@@ -420,7 +425,7 @@ def _capture_scene_stats(scene):
 # Pipeline stage hooks (guarded: a missing target degrades, never breaks)
 # ---------------------------------------------------------------------------
 def _try_wrap(obj, attr, label):
-    #if obj is not None and hasattr(obj, attr):
+    # if obj is not None and hasattr(obj, attr):
     TIMERS.wrap_function(obj, attr, label)
 
 
@@ -428,36 +433,54 @@ def install_pipeline_hooks():
     """Wrap the (non-kernel) pipeline entry points with stage timers."""
     # Scene-side preparation (mob state evaluation + geometry generation).
     import algan.render_loop as rl
-    _try_wrap(bzc, 'build_render_primitives_batched', 'build_render_primitives_batched')
+
+    _try_wrap(bzc, "build_render_primitives_batched", "build_render_primitives_batched")
     _try_wrap(Scene, "get_batch_of_primitives", "Scene.get_batch_of_primitives")
     _try_wrap(Animatable, "get_attr_inds", "get_attr_inds")
     from algan.animation_timeline.timeline import AnimationTimeline, AttributeTimeline
-    _try_wrap(AttributeTimeline, "modify",
-              "AttributeTimeline.modify")
-    _try_wrap(AttributeTimeline, "get",
-              "AttributeTimeline.get")
-    _try_wrap(AttributeTimeline, "add",
-              "AttributeTimeline.add")
-    _try_wrap(AttributeTimeline, "rematerialize_state_at_times",
-              "AttributeTimeline.rematerialize_state_at_times")
-    _try_wrap(AnimationTimeline, "set_state_to_times",
-              "AnimationTimeline.set_state_to_times")
+
+    _try_wrap(AttributeTimeline, "modify", "AttributeTimeline.modify")
+    _try_wrap(AttributeTimeline, "get", "AttributeTimeline.get")
+    _try_wrap(AttributeTimeline, "add", "AttributeTimeline.add")
+    _try_wrap(
+        AttributeTimeline,
+        "rematerialize_state_at_times",
+        "AttributeTimeline.rematerialize_state_at_times",
+    )
+    _try_wrap(
+        AnimationTimeline, "set_state_to_times", "AnimationTimeline.set_state_to_times"
+    )
     _try_wrap(Surface, "get_render_primitives", "Surface.get_render_primitives")
-    _try_wrap(BezierCircuitCubic, "get_render_primitives",
-              "BezierCircuitCubic.get_render_primitives")
+    _try_wrap(
+        BezierCircuitCubic,
+        "get_render_primitives",
+        "BezierCircuitCubic.get_render_primitives",
+    )
     _try_wrap(rpl, "raster_iteration_zero", "rasterizing")
 
     # Geometry shading + packing.
-    _try_wrap(rtp.RayTracedTrianglePrimitive, "project_to_screen",
-              "triangles: shade + pack (project_to_screen)")
-    _try_wrap(rtp.RayTracedBezierCircuitPrimitive, "project_to_screen",
-              "beziers: sample + pack (project_to_screen)")
-    for sub in ("_compute_samples_per_segment", "_build_circuit_geometry",
-                "_build_frame_bounds"):
+    _try_wrap(
+        rtp.RayTracedTrianglePrimitive,
+        "project_to_screen",
+        "triangles: shade + pack (project_to_screen)",
+    )
+    _try_wrap(
+        rtp.RayTracedBezierCircuitPrimitive,
+        "project_to_screen",
+        "beziers: sample + pack (project_to_screen)",
+    )
+    for sub in (
+        "_compute_samples_per_segment",
+        "_build_circuit_geometry",
+        "_build_frame_bounds",
+    ):
         _try_wrap(rtp.RayTracedBezierCircuitPrimitive, sub, f"beziers:   - {sub}")
     if hasattr(rtp, "RayTracedPNTrianglePrimitive"):
-        _try_wrap(rtp.RayTracedPNTrianglePrimitive, "project_to_screen",
-                  "PN triangles: shade + pack (project_to_screen)")
+        _try_wrap(
+            rtp.RayTracedPNTrianglePrimitive,
+            "project_to_screen",
+            "PN triangles: shade + pack (project_to_screen)",
+        )
 
     # Scene merge + BVH builds. ``_merge_scene`` is timed by hand so the merged
     # scene can be captured on the batch's first (uncached) merge. NOTE:
@@ -469,9 +492,12 @@ def install_pipeline_hooks():
     # kernel hooks use). Wrapping only the defining module silently times
     # nothing and the cost hides in "ray traced render total excl".
     import algan.rendering.raytracing.scene_builder as scb
-    orig_merge = getattr(scb._merge_scene, "_profiling_original", None) \
-        or scb._merge_scene
+
+    orig_merge = (
+        getattr(scb._merge_scene, "_profiling_original", None) or scb._merge_scene
+    )
     if getattr(scb._merge_scene, "_profiling_original", None) is None:
+
         def merge_wrapper(primitives):
             had_cache = getattr(primitives[0], "_rt_merged_scene", None) is not None
             with TIMERS.stage("merge collections + build BVHs"):
@@ -490,15 +516,15 @@ def install_pipeline_hooks():
 
     _try_wrap(stbvh_mod, "build_stbvh", "  - STBVH build (in merge)")
     _try_wrap(scb, "build_stbvh", "  - STBVH build (in merge)")
-    _try_wrap(stbvh_mod, "segment_primitives_in_time",
-              "  - STBVH temporal segmentation")
+    _try_wrap(
+        stbvh_mod, "segment_primitives_in_time", "  - STBVH temporal segmentation"
+    )
 
     # Render-chunk internals (again: wrap the refs tracer actually calls).
     _try_wrap(rtr, "_prefill_background", "background prefill")
-    _try_wrap(rtr, "post_process_frames",
-              "post-process (downsample/FXAA/glow)")
+    _try_wrap(rtr, "post_process_frames", "post-process (downsample/FXAA/glow)")
     _try_wrap(rtr, "raytrace_render_wavefront", "wavefront_loop")
-    #_try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
+    # _try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
     _try_wrap(KERNEL_REGISTRY, "render_kernel", "ray traced render total")
 
     # Previously-unaccounted wall time: the per-batch memory reclaim
@@ -507,9 +533,11 @@ def install_pipeline_hooks():
     # Wrap the reference render_loop actually calls (by-value import), not just
     # the defining module, so the stage is not silently empty.
     from algan.render_loop import RenderLoopMixin
+
     _try_wrap(rl, "empty_cache", "memory reclaim (gc + cuda cache)")
-    _try_wrap(RenderLoopMixin, "_drain_video_writer",
-              "video encode tail (ffmpeg drain)")
+    _try_wrap(
+        RenderLoopMixin, "_drain_video_writer", "video encode tail (ffmpeg drain)"
+    )
 
 
 def install_instrumentation():
@@ -519,8 +547,10 @@ def install_instrumentation():
     """
     install_pipeline_hooks()
     names = install_kernel_hooks()
-    print(f"[profiling] hooked {len(names)} Taichi kernels "
-          f"({count_taichi_funcs()} ti.funcs are inlined and not separately timed)")
+    print(
+        f"[profiling] hooked {len(names)} Taichi kernels "
+        f"({count_taichi_funcs()} ti.funcs are inlined and not separately timed)"
+    )
     return names
 
 
@@ -543,19 +573,23 @@ def enable_taichi_kernel_profiler():
     global KERNEL_PROFILER
     try:
         from algan.rendering.taichi_runtime import taichi_init_kwargs
+
         ti.init(**taichi_init_kwargs(), kernel_profiler=True)
         # Drop the lazily-allocated global field(s) so they are rebuilt against
         # this fresh runtime on the first render rather than dangling.
         try:
             import algan.rendering.raytracing.ray_trace_taichi as _rtt
+
             if hasattr(_rtt, "_reset_globals"):
                 _rtt._reset_globals()
         except Exception:
             pass
         KERNEL_PROFILER = True
     except Exception as e:  # pragma: no cover
-        print(f"[profiling] Taichi kernel profiler unavailable ({e}); "
-              f"using wall-time only.")
+        print(
+            f"[profiling] Taichi kernel profiler unavailable ({e}); "
+            f"using wall-time only."
+        )
         KERNEL_PROFILER = False
     return KERNEL_PROFILER
 
@@ -576,6 +610,7 @@ def _collect_taichi_kernel_gpu():
         return []
     try:
         from taichi.profiler.kernel_profiler import get_default_kernel_profiler
+
         kp = get_default_kernel_profiler()
         kp._update_records()
         records = list(kp._traced_records)
@@ -594,9 +629,17 @@ def _collect_taichi_kernel_gpu():
         a[1] += rec.kernel_time
         a[2] = min(a[2], rec.kernel_time)
         a[3] = max(a[3], rec.kernel_time)
-    rows = [{"name": n, "records": c, "total_ms": t, "avg_ms": (t / c if c else 0.0),
-                 "min_ms": mn, "max_ms": mx}
-            for n, (c, t, mn, mx) in agg.items()]
+    rows = [
+        {
+            "name": n,
+            "records": c,
+            "total_ms": t,
+            "avg_ms": (t / c if c else 0.0),
+            "min_ms": mn,
+            "max_ms": mx,
+        }
+        for n, (c, t, mn, mx) in agg.items()
+    ]
     rows.sort(key=lambda r: -r["total_ms"])
     return rows
 
@@ -606,6 +649,7 @@ def _collect_taichi_kernel_gpu():
 # ---------------------------------------------------------------------------
 def _which(cmd):
     from shutil import which
+
     return which(cmd)
 
 
@@ -617,26 +661,44 @@ def query_gpu_static():
     """One-shot static GPU specs via nvidia-smi (None if unavailable)."""
     if not _which("nvidia-smi"):
         return None
-    fields = ("name,driver_version,compute_cap,memory.total,"
-              "clocks.max.sm,clocks.max.mem,pcie.link.gen.max,pcie.link.width.max")
+    fields = (
+        "name,driver_version,compute_cap,memory.total,"
+        "clocks.max.sm,clocks.max.mem,pcie.link.gen.max,pcie.link.width.max"
+    )
     try:
         out = subprocess.run(
-            ["nvidia-smi", f"--query-gpu={fields}",
-             "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10)
+            ["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         line = out.stdout.strip().splitlines()[0]
         vals = [v.strip() for v in line.split(",")]
-        keys = ("name", "driver", "compute_cap", "memory_total",
-                "max_sm_clock", "max_mem_clock", "pcie_gen_max", "pcie_width_max")
+        keys = (
+            "name",
+            "driver",
+            "compute_cap",
+            "memory_total",
+            "max_sm_clock",
+            "max_mem_clock",
+            "pcie_gen_max",
+            "pcie_width_max",
+        )
         return dict(zip(keys, vals))
     except Exception:
         return None
 
 
 _THROTTLE_BITS = {
-    0x1: "GpuIdle", 0x2: "AppClocks", 0x4: "SwPowerCap", 0x8: "HwSlowdown",
-    0x10: "SyncBoost", 0x20: "SwThermal", 0x40: "HwThermal",
-    0x80: "HwPowerBrake", 0x100: "DisplayClock",
+    0x1: "GpuIdle",
+    0x2: "AppClocks",
+    0x4: "SwPowerCap",
+    0x8: "HwSlowdown",
+    0x10: "SyncBoost",
+    0x20: "SwThermal",
+    0x40: "HwThermal",
+    0x80: "HwPowerBrake",
+    0x100: "DisplayClock",
 }
 
 
@@ -655,8 +717,10 @@ class GpuTelemetrySampler:
     variance on this project) is not silently missed.
     """
 
-    _FIELDS = ("utilization.gpu,utilization.memory,clocks.sm,clocks.mem,"
-               "temperature.gpu,power.draw,clocks_throttle_reasons.active")
+    _FIELDS = (
+        "utilization.gpu,utilization.memory,clocks.sm,clocks.mem,"
+        "temperature.gpu,power.draw,clocks_throttle_reasons.active"
+    )
 
     def __init__(self, interval_ms=100):
         self.interval_ms = interval_ms
@@ -681,7 +745,11 @@ class GpuTelemetrySampler:
             util, memutil, sm, mem, temp, power = (num(parts[i]) for i in range(6))
             mask = 0
             try:
-                mask = int(parts[6], 16) if parts[6].lower().startswith("0x") else int(parts[6])
+                mask = (
+                    int(parts[6], 16)
+                    if parts[6].lower().startswith("0x")
+                    else int(parts[6])
+                )
             except Exception:
                 mask = 0
             self.throttles |= _decode_throttle(mask)
@@ -692,9 +760,16 @@ class GpuTelemetrySampler:
             return self
         try:
             self.proc = subprocess.Popen(
-                ["nvidia-smi", f"--query-gpu={self._FIELDS}",
-                 "--format=csv,noheader,nounits", f"-lms={self.interval_ms}"],
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                [
+                    "nvidia-smi",
+                    f"--query-gpu={self._FIELDS}",
+                    "--format=csv,noheader,nounits",
+                    f"-lms={self.interval_ms}",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
             self.thread = threading.Thread(target=self._reader, daemon=True)
             self.thread.start()
         except Exception:
@@ -724,9 +799,12 @@ class GpuTelemetrySampler:
 
         return {
             "n": len(self.samples),
-            "util": stat(col(0)), "mem_util": stat(col(1)),
-            "sm_clock": stat(col(2)), "mem_clock": stat(col(3)),
-            "temp": stat(col(4)), "power": stat(col(5)),
+            "util": stat(col(0)),
+            "mem_util": stat(col(1)),
+            "sm_clock": stat(col(2)),
+            "mem_clock": stat(col(3)),
+            "temp": stat(col(4)),
+            "power": stat(col(5)),
             "throttles": sorted(t for t in self.throttles if t != "GpuIdle"),
         }
 
@@ -746,7 +824,8 @@ def nvprof_command_hint(script_argv):
         "  # registers per thread (no admin needed):\n"
         f"  ALGAN_UNDER_NVPROF=1 nvprof --print-gpu-trace --csv {py} {script}\n"
         "  # achieved occupancy (may need admin on Pascal):\n"
-        f"  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv {py} {script}")
+        f"  ALGAN_UNDER_NVPROF=1 nvprof --metrics achieved_occupancy --csv {py} {script}"
+    )
 
 
 def under_nvprof():
@@ -814,12 +893,18 @@ def run_nvprof_metrics(script_argv, timeout=1200):
     env = dict(os.environ, ALGAN_UNDER_NVPROF="1")
     py = sys.executable
     merged = {}
-    for extra in (["--print-gpu-trace", "--csv"],
-                  ["--metrics", "achieved_occupancy", "--csv"]):
+    for extra in (
+        ["--print-gpu-trace", "--csv"],
+        ["--metrics", "achieved_occupancy", "--csv"],
+    ):
         try:
-            res = subprocess.run(["nvprof", *extra, py, *script_argv],
-                                 capture_output=True, text=True, timeout=timeout,
-                                 env=env)
+            res = subprocess.run(
+                ["nvprof", *extra, py, *script_argv],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
         except Exception as e:
             print(f"[profiling] nvprof run failed: {e}")
             continue
@@ -871,33 +956,38 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
 
     dump_path = "disabled (set ALGAN_PROFILE_CPROFILE=1)"
     if profiler is not None:
-        dump_path = os.path.join(OUT_DIR,
-                                 f"raytracing_cprofile{tag}_run{run_index}.txt")
+        dump_path = os.path.join(
+            OUT_DIR, f"raytracing_cprofile{tag}_run{run_index}.txt"
+        )
         try:
             with open(dump_path, "w") as f:
                 pstats.Stats(profiler, stream=f).sort_stats(
-                    pstats.SortKey.CUMULATIVE).print_stats()
+                    pstats.SortKey.CUMULATIVE
+                ).print_stats()
         except Exception as e:
             print(f"[profiling] could not write cProfile dump: {e}")
 
     # Via peak_allocated, so a component that measured its own peak (the GPU
     # merge) cannot silently reset the whole-render number out from under us.
-    peak_alloc = (peak_allocated() / 2**20
-                  if torch.cuda.is_available() else 0.0)
-    peak_reserved = (torch.cuda.max_memory_reserved() / 2**20
-                     if torch.cuda.is_available() else 0.0)
-    return {"total": total, "peak_alloc_mb": peak_alloc,
-                "peak_reserved_mb": peak_reserved,
-                "times": dict(TIMERS.times), "counts": dict(TIMERS.counts),
-                "exclusive_times": dict(TIMERS.exclusive_times),
-                "launches": list(TIMERS.kernel_launches),
-                "scene_stats": [dict(b) for b in SCENE_STATS.get("batches", [])],
-                "kernel_gpu": _collect_taichi_kernel_gpu(),
-                "telemetry": sampler.summary() if sampler is not None else None,
-                "cprofile_path": dump_path,
-                "launch_times": dict(TIMERS.launch_times),
-                "cuda_sync_times": dict(TIMERS.cuda_sync_times),
-                }
+    peak_alloc = peak_allocated() / 2**20 if torch.cuda.is_available() else 0.0
+    peak_reserved = (
+        torch.cuda.max_memory_reserved() / 2**20 if torch.cuda.is_available() else 0.0
+    )
+    return {
+        "total": total,
+        "peak_alloc_mb": peak_alloc,
+        "peak_reserved_mb": peak_reserved,
+        "times": dict(TIMERS.times),
+        "counts": dict(TIMERS.counts),
+        "exclusive_times": dict(TIMERS.exclusive_times),
+        "launches": list(TIMERS.kernel_launches),
+        "scene_stats": [dict(b) for b in SCENE_STATS.get("batches", [])],
+        "kernel_gpu": _collect_taichi_kernel_gpu(),
+        "telemetry": sampler.summary() if sampler is not None else None,
+        "cprofile_path": dump_path,
+        "launch_times": dict(TIMERS.launch_times),
+        "cuda_sync_times": dict(TIMERS.cuda_sync_times),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -913,58 +1003,76 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
     w("=" * 78)
     w("Algan ray-tracing scene profile")
     w("=" * 78)
-    dev = (torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu")
+    dev = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
     w(f"device: {dev}")
     if static_specs:
-        w(f"  driver {static_specs.get('driver')}  "
-          f"compute cap {static_specs.get('compute_cap')}  "
-          f"{static_specs.get('memory_total')}  "
-          f"max SM {static_specs.get('max_sm_clock')} / "
-          f"mem {static_specs.get('max_mem_clock')}  "
-          f"PCIe gen{static_specs.get('pcie_gen_max')} x{static_specs.get('pcie_width_max')}")
+        w(
+            f"  driver {static_specs.get('driver')}  "
+            f"compute cap {static_specs.get('compute_cap')}  "
+            f"{static_specs.get('memory_total')}  "
+            f"max SM {static_specs.get('max_sm_clock')} / "
+            f"mem {static_specs.get('max_mem_clock')}  "
+            f"PCIe gen{static_specs.get('pcie_gen_max')} x{static_specs.get('pcie_width_max')}"
+        )
     if tools:
         avail = ", ".join(f"{k}={'yes' if v else 'no'}" for k, v in tools.items())
         w(f"  profiling tools: {avail}")
-    w(f"  Taichi kernel profiler: {'ON' if KERNEL_PROFILER else 'off (wall-time only)'}")
+    w(
+        f"  Taichi kernel profiler: {'ON' if KERNEL_PROFILER else 'off (wall-time only)'}"
+    )
     if DISCOVERED_KERNELS:
-        w(f"  hooked kernels ({len(DISCOVERED_KERNELS)}): "
-          + ", ".join(DISCOVERED_KERNELS))
+        w(
+            f"  hooked kernels ({len(DISCOVERED_KERNELS)}): "
+            + ", ".join(DISCOVERED_KERNELS)
+        )
 
     for i, res in enumerate(results, 1):
         w("")
         w("-" * 78)
-        label = "cold (includes Taichi JIT compile)" if i == 1 else "warm (steady state)"
+        label = (
+            "cold (includes Taichi JIT compile)" if i == 1 else "warm (steady state)"
+        )
         w(f"RUN {i} ({label}): end-to-end {res['total']:.2f}s")
         w("-" * 78)
-        w("incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage")
-        w(f"{'stage':<52}{'calls':>6}{'incl (s)':>10}{'incl (%)':>9}{'excl (s)':>10}{'excl (%)':>10}"
-          f"{'launch':10}{'sync':10}")
+        w(
+            "incl is wall time, excl is time spent in function excluding sub-processes of another tracked stage"
+        )
+        w(
+            f"{'stage':<52}{'calls':>6}{'incl (s)':>10}{'incl (%)':>9}{'excl (s)':>10}{'excl (%)':>10}"
+            f"{'launch':10}{'sync':10}"
+        )
         for k in res["times"]:
             if k not in res["exclusive_times"]:
                 res["exclusive_times"][k] = res["times"][k]
 
-        #res["exclusive_times"]["ray traced render total"]# -= sum([v for k, v in res["exclusive_times"].items()
-                                                         #         if (k[:len(kp)] == kp or
-                                                         #             k == 'wavefront_loop')])
+        # res["exclusive_times"]["ray traced render total"]# -= sum([v for k, v in res["exclusive_times"].items()
+        #         if (k[:len(kp)] == kp or
+        #             k == 'wavefront_loop')])
 
         for name, secs in sorted(res["times"].items(), key=lambda kv: -kv[1]):
-            lt = res['launch_times'].get(name, 0)
-            ct = res['cuda_sync_times'].get(name, 0)
+            lt = res["launch_times"].get(name, 0)
+            ct = res["cuda_sync_times"].get(name, 0)
             excl = res["exclusive_times"].get(name, secs)
-            w(f"{name:<52}{res['counts'][name]:>6}{secs:>10.3f}"
-              f"{100 * secs / res['total']:>8.1f}%{excl:>10.3f}"
-              f"{100 * excl / res['total']:>8.1f}%"
-              f"{lt:>10.3f}{ct:>10.3f}")
+            w(
+                f"{name:<52}{res['counts'][name]:>6}{secs:>10.3f}"
+                f"{100 * secs / res['total']:>8.1f}%{excl:>10.3f}"
+                f"{100 * excl / res['total']:>8.1f}%"
+                f"{lt:>10.3f}{ct:>10.3f}"
+            )
         # Sum *exclusive* times so nested stages aren't double-counted (e.g.
         # Surface.get_render_primitives runs inside Scene.get_batch_of_primitives;
         # kernels run inside "ray traced render total"). Kernels bypass the stack
         # machinery, so their time is already inside the render stage's exclusive
         # time -- give them 0 here (``.get(k, 0.0)``) to avoid double-counting.
 
-        accounted = sum(res["exclusive_times"].get(k, 0.0) for k in res["times"])# if k[:len(kp)] != kp)
+        accounted = sum(
+            res["exclusive_times"].get(k, 0.0) for k in res["times"]
+        )  # if k[:len(kp)] != kp)
         unaccounted = res["total"] - accounted
-        w(f"{'(unaccounted: video encode, scene mgmt, ...)':<52}{'':>6}"
-          f"{unaccounted:>10.3f}{100 * unaccounted / res['total']:>8.1f}%")
+        w(
+            f"{'(unaccounted: video encode, scene mgmt, ...)':<52}{'':>6}"
+            f"{unaccounted:>10.3f}{100 * unaccounted / res['total']:>8.1f}%"
+        )
 
         # Precise per-kernel GPU time from the Taichi profiler. ``% run`` is the
         # kernel's GPU time as a fraction of the end-to-end run wall time (not of
@@ -972,14 +1080,20 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
         if res.get("kernel_gpu"):
             run_ms = res["total"] * 1000.0
             w("")
-            w("Taichi kernel GPU time (profiler; launch overhead excluded; "
-              "'recs' = serial + range-for sub-kernels):")
-            w(f"  {'kernel':<40}{'recs':>6}{'total ms':>11}{'% run':>8}"
-              f"{'avg ms':>10}{'max ms':>10}")
+            w(
+                "Taichi kernel GPU time (profiler; launch overhead excluded; "
+                "'recs' = serial + range-for sub-kernels):"
+            )
+            w(
+                f"  {'kernel':<40}{'recs':>6}{'total ms':>11}{'% run':>8}"
+                f"{'avg ms':>10}{'max ms':>10}"
+            )
             for r in res["kernel_gpu"]:
                 pct = 100 * r["total_ms"] / run_ms if run_ms else 0.0
-                w(f"  {r['name']:<40}{r['records']:>6}{r['total_ms']:>11.3f}"
-                  f"{pct:>7.1f}%{r['avg_ms']:>10.4f}{r['max_ms']:>10.4f}")
+                w(
+                    f"  {r['name']:<40}{r['records']:>6}{r['total_ms']:>11.3f}"
+                    f"{pct:>7.1f}%{r['avg_ms']:>10.4f}{r['max_ms']:>10.4f}"
+                )
 
         # Ray throughput for the kernels we can size.
         if res["launches"]:
@@ -987,42 +1101,61 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
             w("trace kernel launches (wall time, incl. launch + sync overhead):")
             for j, (kname, frames, rays, dt) in enumerate(res["launches"]):
                 note = " (incl. JIT compile)" if (i == 1 and j == 0) else ""
-                w(f"  {kname}: {frames:>4} frames, {rays / 1e6:7.2f} M rays in "
-                  f"{dt:7.3f}s -> {rays / dt / 1e6:8.2f} M rays/s{note}")
+                w(
+                    f"  {kname}: {frames:>4} frames, {rays / 1e6:7.2f} M rays in "
+                    f"{dt:7.3f}s -> {rays / dt / 1e6:8.2f} M rays/s{note}"
+                )
 
         # Live GPU telemetry -> throttling visibility.
         tele = res.get("telemetry")
         if tele:
             w("")
             w(f"GPU telemetry over render ({tele['n']} samples @ ~10 Hz, min/avg/max):")
-            w(f"  utilization  {_fmt_clock_stat(tele['util'], '%')}   "
-              f"mem-util {_fmt_clock_stat(tele['mem_util'], '%')}")
-            w(f"  SM clock     {_fmt_clock_stat(tele['sm_clock'])}   "
-              f"mem clock {_fmt_clock_stat(tele['mem_clock'])}")
+            w(
+                f"  utilization  {_fmt_clock_stat(tele['util'], '%')}   "
+                f"mem-util {_fmt_clock_stat(tele['mem_util'], '%')}"
+            )
+            w(
+                f"  SM clock     {_fmt_clock_stat(tele['sm_clock'])}   "
+                f"mem clock {_fmt_clock_stat(tele['mem_clock'])}"
+            )
             if tele["temp"]:
-                w(f"  temperature  {_fmt_clock_stat(tele['temp'], 'C')}   "
-                  f"power {_fmt_clock_stat(tele['power'], 'W')}")
+                w(
+                    f"  temperature  {_fmt_clock_stat(tele['temp'], 'C')}   "
+                    f"power {_fmt_clock_stat(tele['power'], 'W')}"
+                )
             if tele["throttles"]:
-                w(f"  ** THROTTLING observed: {', '.join(tele['throttles'])} "
-                  f"(run-to-run timing is unreliable) **")
+                w(
+                    f"  ** THROTTLING observed: {', '.join(tele['throttles'])} "
+                    f"(run-to-run timing is unreliable) **"
+                )
             else:
                 w("  no clock throttling observed")
 
         # Memory + scene geometry.
         w("")
-        w(f"GPU memory: peak allocated {res['peak_alloc_mb']:.0f} MB, "
-          f"peak reserved {res['peak_reserved_mb']:.0f} MB")
+        w(
+            f"GPU memory: peak allocated {res['peak_alloc_mb']:.0f} MB, "
+            f"peak reserved {res['peak_reserved_mb']:.0f} MB"
+        )
         for k, st in enumerate(res["scene_stats"]):
-            w(f"  batch {k}: merged tensors {st['total_tensor_mb']:.1f} MB, "
-              f"BVHs {st['total_bvh_mb']:.1f} MB "
-              f"(cuda after merge {st['cuda_allocated_after_merge_mb']:.0f} MB)")
-            counts = ", ".join(f"{key}={val}" for key, val in st["scalars"].items()
-                               if key.startswith("num_"))
+            w(
+                f"  batch {k}: merged tensors {st['total_tensor_mb']:.1f} MB, "
+                f"BVHs {st['total_bvh_mb']:.1f} MB "
+                f"(cuda after merge {st['cuda_allocated_after_merge_mb']:.0f} MB)"
+            )
+            counts = ", ".join(
+                f"{key}={val}"
+                for key, val in st["scalars"].items()
+                if key.startswith("num_")
+            )
             if counts:
                 w(f"    counts: {counts}")
             for bname, b in st["bvhs"].items():
-                w(f"    {bname}: {b['instances']} instances, {b['nodes']} nodes, "
-                  f"{b['leaves']} leaves, {b['mb']:.1f} MB")
+                w(
+                    f"    {bname}: {b['instances']} instances, {b['nodes']} nodes, "
+                    f"{b['leaves']} leaves, {b['mb']:.1f} MB"
+                )
             # Largest few tensors.
             big = sorted(st["tensors"].items(), key=lambda kv: -kv[1][1])[:6]
             for tname, (shape, mb) in big:
@@ -1042,8 +1175,10 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
             occ_s = f"{occ:.3f}" if isinstance(occ, float) else "-"
             w(f"  {name[:48]:<48}{str(regs):>6}{occ_s:>12}")
     elif tools and tools.get("nvprof"):
-        w("Registers / occupancy not collected in-process (Taichi CUPTI toolkit "
-          "unavailable here).")
+        w(
+            "Registers / occupancy not collected in-process (Taichi CUPTI toolkit "
+            "unavailable here)."
+        )
         w("Run this to get them via nvprof:")
     w("")
     return "\n".join(lines)
@@ -1052,9 +1187,16 @@ def format_report(results, static_specs=None, tools=None, nvprof=None):
 # ---------------------------------------------------------------------------
 # The one universal entry point
 # ---------------------------------------------------------------------------
-def profile_scene(scene_func, video_settings, tag="", runs=None,
-                  kernel_profiler=None, telemetry=None, nvprof=None,
-                  samples_per_pixel=1):
+def profile_scene(
+    scene_func,
+    video_settings,
+    tag="",
+    runs=None,
+    kernel_profiler=None,
+    telemetry=None,
+    nvprof=None,
+    samples_per_pixel=1,
+):
     """Profile ``scene_func`` end-to-end and write a report.
 
     This is the single profiler to use when optimizing video-production time.
@@ -1115,24 +1257,30 @@ def profile_scene(scene_func, video_settings, tag="", runs=None,
 
     results = []
     for i in range(1, runs + 1):
-        print(f"\n===== profiling run {i}/{runs} ({'cold' if i == 1 else 'warm'}) =====")
-        results.append(run_once(scene_func, video_settings, tag, i,
-                                telemetry=telemetry))
+        print(
+            f"\n===== profiling run {i}/{runs} ({'cold' if i == 1 else 'warm'}) ====="
+        )
+        results.append(
+            run_once(scene_func, video_settings, tag, i, telemetry=telemetry)
+        )
 
     nvprof_results = None
     if nvprof:
         print("\n===== nvprof pass (registers / occupancy) =====")
         nvprof_results = run_nvprof_metrics(sys.argv)
 
-    report = format_report(results, static_specs=static_specs, tools=tools,
-                           nvprof=nvprof_results)
+    report = format_report(
+        results, static_specs=static_specs, tools=tools, nvprof=nvprof_results
+    )
     print("\n" + report)
     if not nvprof_results and tools.get("nvprof"):
         print(nvprof_command_hint(sys.argv))
     if KERNEL_PROFILER:
         try:
-            print("\n(Taichi's own table below; its % is of total GPU-kernel "
-                  "time, not of run wall time -- see '% run' above for that.)")
+            print(
+                "\n(Taichi's own table below; its % is of total GPU-kernel "
+                "time, not of run wall time -- see '% run' above for that.)"
+            )
             ti.profiler.print_kernel_profiler_info()  # full table incl. sub-kernels
         except Exception as e:
             print(f"(taichi kernel profiler info unavailable: {e})")

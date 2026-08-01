@@ -4,6 +4,7 @@
 Split out of ``mob.py`` for readability; :class:`MobMaterialsMixin` is mixed
 into ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
+
 from __future__ import annotations
 
 import inspect
@@ -102,10 +103,12 @@ class MobMaterialsMixin:
 
         for d in reversed(self.get_descendants()):
             d.register_attrs_as_animatable(shader_specific_param_names)
-            d.set_non_recursive(**dict(zip(shader_specific_param_names, shader_specific_param_defaults)))
-            #for n, v in zip(
+            d.set_non_recursive(
+                **dict(zip(shader_specific_param_names, shader_specific_param_defaults))
+            )
+            # for n, v in zip(
             #
-            #):
+            # ):
             #    d.__setattr__(n, v)
             d.shader = shader
             d.shader_specific_param_names = shader_specific_param_names
@@ -160,7 +163,8 @@ class MobMaterialsMixin:
         if self.is_spawned():
             raise ModifiedProtectedAttributeError(
                 "You are attempting to change the fragment shader of a mob that "
-                "is already spawned. This is not allowed. See docs for help.")
+                "is already spawned. This is not allowed. See docs for help."
+            )
 
         if shader is None:
             for d in reversed(self.get_descendants()):
@@ -254,12 +258,14 @@ class MobMaterialsMixin:
         params = material.get_shader_param_values()
         # ``color=None`` (the default) means the material does not repaint the
         # mob -- only an explicitly supplied material colour overrides it.
-        color5 = (_to_color5(material.color)
-                  if material.applies_color and material.color is not None
-                  else None)
+        color5 = (
+            _to_color5(material.color)
+            if material.applies_color and material.color is not None
+            else None
+        )
         for d in reversed(self.get_descendants()):
             d.set_non_recursive(**params)
-            #for name, value in params.items():
+            # for name, value in params.items():
             #    d.__setattr__(name, value)
             if color5 is not None:
                 d.color = color5
@@ -288,4 +294,3 @@ class MobMaterialsMixin:
                 _: self.__getattribute__(_) for _ in self.shader_specific_param_names
             }
         return {}
-

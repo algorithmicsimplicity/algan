@@ -63,10 +63,7 @@ def test_reverse_allocation_charges_alignment_padding():
     memory = _arena(num_bytes=15)
     values = memory.get_tensor((2,), torch.float32, persist=True)
 
-    assert (
-        values.untyped_storage()._cdata
-        == memory.data.untyped_storage()._cdata
-    )
+    assert values.untyped_storage()._cdata == memory.data.untyped_storage()._cdata
     # Reverse allocations align the end pointer down from 15 to 12, then use
     # eight payload bytes.
     assert memory.current_reverse_pointer == 4

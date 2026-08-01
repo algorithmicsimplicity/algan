@@ -39,8 +39,15 @@ from algan.utils.tensor_utils import (
 )
 
 
-class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
-        MobLayoutMixin, MobMorphMixin, MobMaterialsMixin, Animatable):
+class Mob(
+    MobHierarchyMixin,
+    MobOrientationMixin,
+    MobMovementMixin,
+    MobLayoutMixin,
+    MobMorphMixin,
+    MobMaterialsMixin,
+    Animatable,
+):
     """
     A Mob (Moveable Object) is an Animatable that exists at a point in 3-D
     space. Mobs posses the animatable attributes location, basis (orientation),
@@ -119,9 +126,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         super().__init__(*args, **kwargs)
         # Defines how attributes changes are inherited by children Mobs (e.g., additive for location, multiplicative for scale)
         self.attr_to_relations = defaultdict(lambda: (lambda x, y: y, lambda x, y: y))
-        additive_relation = (lambda x, y: x + y,
-                             lambda x, y: y - x
-                             )
+        additive_relation = (lambda x, y: x + y, lambda x, y: y - x)
         self.attr_to_relations.update(
             {
                 "location": additive_relation,
@@ -138,7 +143,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
                     ),
                 ),
                 "scale_coefficient": (
-                    lambda x, y: (x * y),
+                    lambda x, y: x * y,
                     lambda x, y: squish(
                         (
                             unsquish(y, -1, 3).norm(p=2, dim=-1, keepdim=True)
@@ -191,7 +196,8 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         return value
 
     @animated_function(
-        animated_args={"interpolation": 0.0}, unique_args=["key", "recursive", "relative"]
+        animated_args={"interpolation": 0.0},
+        unique_args=["key", "recursive", "relative"],
     )
     def apply_absolute_change_two(
         self,
@@ -252,7 +258,8 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         # singleton default would allocate one shared row and the batched
         # per-element write would no longer fit.
         default = (
-            change1 if (not relative and change1 is not None)
+            change1
+            if (not relative and change1 is not None)
             else cast_to_tensor(getattr(self, key))
         )
         default = cast_to_tensor(default)
@@ -260,10 +267,16 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             default = default.expand(
                 *([-1] * (default.dim() - 2)), self.location.shape[-2], -1
             )
-        current_value = self.get_animated_attribute(key, include_descendants=recursive, default=default)
+        current_value = self.get_animated_attribute(
+            key, include_descendants=recursive, default=default
+        )
         if relative:
             change1 = current_value * cast_to_tensor(change1)
-            change2 = current_value if change2 is None else current_value * cast_to_tensor(change2)
+            change2 = (
+                current_value
+                if change2 is None
+                else current_value * cast_to_tensor(change2)
+            )
         elif change2 is None:
             change2 = current_value
         interpolation = (
@@ -279,7 +292,9 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             change1 * (2 - interpolation) + (interpolation - 1) * change2
         )
 
-        self.setattr_and_record_modification(key, interpolated_value, include_descendants=recursive)
+        self.setattr_and_record_modification(
+            key, interpolated_value, include_descendants=recursive
+        )
         return self
 
     def set_opacity_via_color(self, opacity: float | torch.Tensor) -> Mob:
@@ -313,7 +328,13 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
                 d.set_non_recursive(color=d.color.set_opacity(opacity))
         return self
 
-    def pulse_color(self, color: torch.Tensor = None, opacity: bool = None, recursive=True, new_color=None) -> Mob:
+    def pulse_color(
+        self,
+        color: torch.Tensor = None,
+        opacity: bool = None,
+        recursive=True,
+        new_color=None,
+    ) -> Mob:
         """Flash the Mob a different color and let it settle back.
 
         A two-stage animation: the color travels out to ``color`` by the halfway
@@ -361,7 +382,8 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
                 # attribute rows the (recursive) write covers.
                 new_color = None if new_color is None else cast_to_tensor(new_color)
                 self.apply_absolute_change_two(
-                    "color", cast_to_tensor(color), new_color, recursive=recursive)
+                    "color", cast_to_tensor(color), new_color, recursive=recursive
+                )
             if opacity is not None:
                 o = cast_to_tensor(opacity)
                 self.apply_absolute_change_two("opacity", o, o, recursive=recursive)
@@ -418,7 +440,10 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         """
         if direction is None:
             direction = self.get_upwards_direction()
-        with AnimationContext(run_time_unit=wave_length / lag_duration, animation_manager=self.animation_manager):
+        with AnimationContext(
+            run_time_unit=wave_length / lag_duration,
+            animation_manager=self.animation_manager,
+        ):
             # Filters for primitive parts to ensure the wave animates on individual rendering elements
             # TODO change this to use non_recursive set
             primitive_mobs = [
@@ -426,7 +451,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
                 for _ in self.get_descendants()
                 if (_.is_primitive and not _.ignore_wave_animations)
             ]
-            kwargs['recursive'] = False
+            kwargs["recursive"] = False
             animate_lagged_by_location(
                 primitive_mobs,
                 lambda x: x.pulse_color(color, **kwargs),
@@ -445,8 +470,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         current_inds = tl.mob_id_to_inds[self.id]
         value = cast_to_tensor(value)
         shared_view_has_full_buffer = (
-            self.data_sub_inds is not None
-            and current_inds.shape[0] == self.batch_size
+            self.data_sub_inds is not None and current_inds.shape[0] == self.batch_size
         )
         if (
             shared_view_has_full_buffer
@@ -454,18 +478,20 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             or value.shape[-2] == 1
         ):
             return self
-        current_value = self.get_animated_attribute(key, default=None, include_descendants=False)
+        current_value = self.get_animated_attribute(
+            key, default=None, include_descendants=False
+        )
         if current_value.shape[-2] != 1:
-            raise ValueError(f"Attempting to set {key} which currently has value of shape {current_value.shape}"
-                             f"to new value with shape {value.shape}, which is not broadcastable.")
+            raise ValueError(
+                f"Attempting to set {key} which currently has value of shape {current_value.shape}"
+                f"to new value with shape {value.shape}, which is not broadcastable."
+            )
         # Indexed mobs share their source's timeline rows.  ``data_sub_inds``
         # is expressed in that full source index space, so expanding only to
         # the selected view's local row count would leave later indexing out
         # of bounds (for example a packed text glyph's control-point color).
         target_size = (
-            self.batch_size
-            if self.data_sub_inds is not None
-            else value.shape[-2]
+            self.batch_size if self.data_sub_inds is not None else value.shape[-2]
         )
         expanded = current_value.expand(
             *([-1] * (current_value.dim() - 2)), target_size, -1
@@ -476,18 +502,22 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
     @animated_function(animated_args={"interpolation": 0.0})
     def _apply_change(self, attr, change, recursive=True, interpolation=1.0):
         change = change * interpolation
-        current_value = self.get_animated_attribute(attr, include_descendants=recursive, copy=False)
+        current_value = self.get_animated_attribute(
+            attr, include_descendants=recursive, copy=False
+        )
         new_value = current_value + change
-        return self.setattr_and_record_modification(attr, new_value, include_descendants=recursive)
+        return self.setattr_and_record_modification(
+            attr, new_value, include_descendants=recursive
+        )
 
     @animated_function(animated_args={"interpolation": 0.0})
     def _apply_set(self, attr, value, recursive=True, interpolation=1.0):
         new_value = value * interpolation
-        return self.setattr_and_record_modification(attr, new_value, include_descendants=recursive)
+        return self.setattr_and_record_modification(
+            attr, new_value, include_descendants=recursive
+        )
 
-    def set_animated_attribute(
-        self, attr: str, value, recursive: bool = True
-    ) -> Mob:
+    def set_animated_attribute(self, attr: str, value, recursive: bool = True) -> Mob:
         """Animate one animatable attribute to a new value, by name.
 
         The by-name equivalent of assigning to the attribute; useful when the
@@ -520,7 +550,9 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             recursive = False
         value = cast_to_tensor(value)
 
-        current_value = self.get_animated_attribute(attr, include_descendants=recursive, default=value, copy=False)
+        current_value = self.get_animated_attribute(
+            attr, include_descendants=recursive, default=value, copy=False
+        )
         change = value - current_value
         self._apply_change(attr, change, recursive=recursive)
         return self
@@ -591,29 +623,35 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         # self._prevent_recursive_sets inside _apply_basis_change) so that it
         # is recorded with the function application and replays correctly at
         # render time, when _prevent_recursive_sets has been restored.
-        self._apply_basis_change(
-            change, default_basis=value, recursive=recursive
-        )
+        self._apply_basis_change(change, default_basis=value, recursive=recursive)
 
-    @animated_function(animated_args={'interpolation': 0.0})
+    @animated_function(animated_args={"interpolation": 0.0})
     def _apply_basis_change(
         self, change, default_basis=None, recursive=True, interpolation=1.0
     ):
         attr = "basis"
         relation, inverse_relation = self.attr_to_relations[attr]
 
-        my_basis = self.get_animated_attribute('basis', include_descendants=False, default=default_basis, copy=False)
-        my_loc = self.get_animated_attribute('location', include_descendants=False, copy=False)
+        my_basis = self.get_animated_attribute(
+            "basis", include_descendants=False, default=default_basis, copy=False
+        )
+        my_loc = self.get_animated_attribute(
+            "location", include_descendants=False, copy=False
+        )
 
         identity = inverse_relation(my_basis, my_basis)
         interpolated_change = torch.lerp(identity, change, interpolation)
         new_basis = relation(my_basis, interpolated_change)
 
-        child_loc = self.get_animated_attribute('location', include_descendants=recursive, copy=False)
+        child_loc = self.get_animated_attribute(
+            "location", include_descendants=recursive, copy=False
+        )
         local_coords = map_global_to_local_coords(my_loc, my_basis, child_loc)
         new_child_location = map_local_to_global_coords(my_loc, new_basis, local_coords)
 
-        child_basis = self.get_animated_attribute('basis', include_descendants=recursive, copy=False)
+        child_basis = self.get_animated_attribute(
+            "basis", include_descendants=recursive, copy=False
+        )
         new_child_basis = relation(child_basis, interpolated_change)
 
         self._apply_set("location", new_child_location, recursive=recursive)
@@ -711,9 +749,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             parts.extend(child.get_parts_as_mobs())
         return parts
 
-    def scale(
-        self, scale_factor: float | torch.Tensor, recursive: bool = True
-    ) -> Mob:
+    def scale(self, scale_factor: float | torch.Tensor, recursive: bool = True) -> Mob:
         """Resize the Mob relative to its current size.
 
         The factor multiplies the size the Mob has now, so two calls to
@@ -822,9 +858,14 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             This Mob, so calls can be chained.
         """
         detach_time = self.animation_manager.context.timespan.current_time
-        with Off(animation_manager=self.animation_manager), NoExtra(priority_level=1, animation_manager=self.animation_manager):
+        with (
+            Off(animation_manager=self.animation_manager),
+            NoExtra(priority_level=1, animation_manager=self.animation_manager),
+        ):
             clone_mob = self.clone(clone_data=True, spawn=False)
-            descendant_map = dict(zip(self.get_descendants(), clone_mob.get_descendants()))
+            descendant_map = dict(
+                zip(self.get_descendants(), clone_mob.get_descendants())
+            )
 
             # Hand this mob's recorded history over to the clone. All recorded
             # attribute edits reference this mob's current rows in the global
@@ -866,10 +907,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
                     # caller's current topology.  If such a function begins at
                     # the detach boundary, it belongs to the replacement mob,
                     # not the historical clone whose lifespan ends there.
-                    and not (
-                        not f.recorded_edits
-                        and f.time.start >= detach_time
-                    )
+                    and not (not f.recorded_edits and f.time.start >= detach_time)
                 ):
                     f.caller = descendant_map[f.caller]
 
@@ -902,11 +940,16 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             animatable attribute; the message lists what is available.
         """
         # TODO: consider caching this union on the owning timeline.
-        available_attrs = {*self.animatable_attrs, *self.scene.timeline_manager.attr_to_timeline.keys()}
+        available_attrs = {
+            *self.animatable_attrs,
+            *self.scene.timeline_manager.attr_to_timeline.keys(),
+        }
         for p in property_names:
             if not hasattr(self, p) and (p not in available_attrs):
-                raise AttributeError(f'"{p}" is not recognized as an animatable Mob property. '
-                                     f'Available properties are: {self.animatable_attrs}.')
+                raise AttributeError(
+                    f'"{p}" is not recognized as an animatable Mob property. '
+                    f"Available properties are: {self.animatable_attrs}."
+                )
 
     def set_non_recursive(self, **kwargs) -> Mob:
         """Set attributes on this Mob only, leaving its children untouched.
@@ -1066,9 +1109,14 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             c.set_data_sub_inds(data_sub_inds)
 
     def __len__(self):
-        return (self.parent_batch_sizes.shape[-1] if
-                (hasattr(self, 'parent_batch_sizes') and self.parent_batch_sizes is not None)
-                else 0)
+        return (
+            self.parent_batch_sizes.shape[-1]
+            if (
+                hasattr(self, "parent_batch_sizes")
+                and self.parent_batch_sizes is not None
+            )
+            else 0
+        )
 
     def __getitem__(self, item: int | slice) -> Mob:
         """Get part of a batched Mob by index or slice, as a Mob.

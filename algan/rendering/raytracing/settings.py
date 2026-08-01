@@ -17,9 +17,9 @@ SAMPLES_PER_PIXEL = 1
 # Policy for renderer/backend combinations that cannot honor authored scene
 # features. "error" is the safe public default; "warn" and "ignore" are
 # available for controlled migration and benchmarking.
-UNSUPPORTED_FEATURE_POLICY = os.environ.get(
-    "ALGAN_UNSUPPORTED_FEATURE_POLICY", "error"
-).strip().lower()
+UNSUPPORTED_FEATURE_POLICY = (
+    os.environ.get("ALGAN_UNSUPPORTED_FEATURE_POLICY", "error").strip().lower()
+)
 if UNSUPPORTED_FEATURE_POLICY not in {"error", "warn", "ignore"}:
     UNSUPPORTED_FEATURE_POLICY = "error"
 
@@ -42,6 +42,7 @@ def report_unsupported_features(message):
         return
     raise UnsupportedFeatureError(message)
 
+
 TONEMAPPING = True
 TONEMAP_EXPOSURE = 1.0
 TONEMAP_METHOD = "neutral"
@@ -53,8 +54,7 @@ TONEMAP_METHOD = "neutral"
 # that is identity for empty pixels (enabling the covered-pixel compaction).
 # Costs a float32 frame buffer (4x the uint8 one), so fewer frames per batch.
 # Env override for A/B and re-baselining.
-POST_PROCESS_TONEMAP = (
-    os.environ.get("ALGAN_POST_PROCESS_TONEMAP", "1") == "1")
+POST_PROCESS_TONEMAP = os.environ.get("ALGAN_POST_PROCESS_TONEMAP", "1") == "1"
 
 # Strength of diffuse indirect bounces in the Monte Carlo renderer: 0 keeps
 # surfaces purely (vertex-shader) lit, > 0 scatters paths on diffuse hits
@@ -107,21 +107,19 @@ WAVEFRONT_TILE_RAYS = int(os.environ.get("ALGAN_WAVEFRONT_TILE", str(1 << 21)))
 # window-halving OOM retry.
 WAVEFRONT_TILE_AUTO = (
     os.environ.get("ALGAN_WAVEFRONT_TILE_AUTO", "1") == "1"
-    and "ALGAN_WAVEFRONT_TILE" not in os.environ)
+    and "ALGAN_WAVEFRONT_TILE" not in os.environ
+)
 # Fraction of the pool's free bytes the per-tile ray state may claim.  Every
 # built-in per-slot/fixed allocation and ManualMemory's initial alignment are
 # now accounted exactly, so the default can use the whole allowance.  Keep the
 # override as an opt-in diagnostic/performance headroom control.
-WAVEFRONT_TILE_SAFETY = float(
-    os.environ.get("ALGAN_WAVEFRONT_TILE_SAFETY", "1.0"))
+WAVEFRONT_TILE_SAFETY = float(os.environ.get("ALGAN_WAVEFRONT_TILE_SAFETY", "1.0"))
 # Preferred lower bound and hard upper bound for auto tile size (rays). The
 # runtime honors the floor when it fits, but deliberately goes below it when
 # exact arena headroom requires a smaller tile; the cap bounds active-index
 # buffers and launch size on very large pools.
-WAVEFRONT_TILE_MIN = int(
-    os.environ.get("ALGAN_WAVEFRONT_TILE_MIN", str(1 << 18)))
-WAVEFRONT_TILE_MAX = int(
-    os.environ.get("ALGAN_WAVEFRONT_TILE_MAX", str(1 << 25)))
+WAVEFRONT_TILE_MIN = int(os.environ.get("ALGAN_WAVEFRONT_TILE_MIN", str(1 << 18)))
+WAVEFRONT_TILE_MAX = int(os.environ.get("ALGAN_WAVEFRONT_TILE_MAX", str(1 << 25)))
 
 
 def set_wavefront_tile_auto(enabled):
@@ -131,6 +129,8 @@ def set_wavefront_tile_auto(enabled):
     """
     global WAVEFRONT_TILE_AUTO
     WAVEFRONT_TILE_AUTO = bool(enabled)
+
+
 # On the common non-splitting wavefront path (no refraction/custom scatter), a
 # ray that leaves the active set can never become active again.  Compact the
 # next iteration from the previous active indexes rather than scanning the
@@ -139,8 +139,7 @@ def set_wavefront_tile_auto(enabled):
 # Splitting paths retain the full-pool scan because a shade pass may activate a
 # spare slot that was not in the previous active set.  Runtime-mutable for
 # in-process A/B checks; the env var selects the startup default.
-WF_COMPACT_ACTIVE_ONLY = os.environ.get(
-    "ALGAN_WF_COMPACT_ACTIVE_ONLY", "1") == "1"
+WF_COMPACT_ACTIVE_ONLY = os.environ.get("ALGAN_WF_COMPACT_ACTIVE_ONLY", "1") == "1"
 # Initial ratio of total shared ray-pool slots to primary rays for a tile that
 # may split. This is only a launch-efficiency heuristic, not a per-pixel or
 # per-path split limit: all pixels append continuations into one shared pool.
@@ -151,10 +150,15 @@ WF_COMPACT_ACTIVE_ONLY = os.environ.get(
 # old fixed eight-slots-per-pixel layout. The legacy environment variable is
 # accepted as an alias so existing tuning scripts remain valid; its value now
 # controls only the initial ratio, never a hard maximum number of splits.
-REFRACT_INITIAL_POOL_RATIO = max(2, int(os.environ.get(
-    "ALGAN_WAVEFRONT_INITIAL_POOL_RATIO",
-    os.environ.get("ALGAN_WAVEFRONT_SPLIT", "2"),
-)))
+REFRACT_INITIAL_POOL_RATIO = max(
+    2,
+    int(
+        os.environ.get(
+            "ALGAN_WAVEFRONT_INITIAL_POOL_RATIO",
+            os.environ.get("ALGAN_WAVEFRONT_SPLIT", "2"),
+        )
+    ),
+)
 # Backwards-compatible name for code that imported the old setting. It now
 # denotes the initial shared-pool ratio; it is no longer a per-pixel slot cap.
 REFRACT_SPLIT_SLOTS = REFRACT_INITIAL_POOL_RATIO
@@ -191,6 +195,7 @@ PROMOTE_CONSTANTS = os.environ.get("ALGAN_PROMOTE_CONSTANTS", "1") == "1"
 # ALGAN_WF_SKIP_UNLIT_NORMAL=0 disables it (for A/B and validation).
 WF_SKIP_UNLIT_NORMAL = os.environ.get("ALGAN_WF_SKIP_UNLIT_NORMAL", "1") == "1"
 
+
 # Fused primary-ray generation on the general wavefront. The classic pipeline
 # opens every tile with a standalone ``wavefront_generate_rays`` pass that
 # writes ~104 B of initial per-ray state (ro/rd/acc/sca/int/pix/accum) only
@@ -226,8 +231,7 @@ def _parse_gen_fused_mode(v):
     return "auto"
 
 
-WF_GEN_FUSED = _parse_gen_fused_mode(
-    os.environ.get("ALGAN_WF_GEN_FUSED", "auto"))
+WF_GEN_FUSED = _parse_gen_fused_mode(os.environ.get("ALGAN_WF_GEN_FUSED", "auto"))
 
 # Fraction of wavefront render time the fused generation saves (the measured
 # steady-state win; used only by the "auto" forecast).
@@ -237,8 +241,7 @@ WF_GEN_FUSED_GAIN = float(os.environ.get("ALGAN_WF_GEN_FUSED_GAIN", "0.082"))
 # worst case observed on this project's hardware -- a cold offline cache,
 # where the two extra instantiations cost ~25 s -- so a marginal render never
 # loses time to the switch.
-WF_GEN_FUSED_MIN_WIN = float(
-    os.environ.get("ALGAN_WF_GEN_FUSED_MIN_WIN", "30.0"))
+WF_GEN_FUSED_MIN_WIN = float(os.environ.get("ALGAN_WF_GEN_FUSED_MIN_WIN", "30.0"))
 
 # Adaptive state ("auto" mode only). The decision is process-sticky; the
 # batch counter restarts per render job so the forecast never uses the
@@ -260,8 +263,7 @@ _WF_GEN_FUSED_BATCHES = 0
 _SPARSE_DISCOVERY_BYTES_PER_FRAME = 0.0
 # Safety multiplier on the learned footprint: absorbs the small per-pair count
 # arrays, arena alignment, and modest coverage growth between adjacent chunks.
-SPARSE_DISCOVERY_SAFETY = float(
-    os.environ.get("ALGAN_SPARSE_DISCOVERY_SAFETY", "1.25"))
+SPARSE_DISCOVERY_SAFETY = float(os.environ.get("ALGAN_SPARSE_DISCOVERY_SAFETY", "1.25"))
 
 
 def note_sparse_discovery_footprint(arena_bytes, num_frames):
@@ -279,8 +281,11 @@ def sparse_discovery_bytes_for_frames(num_frames):
     """Reserved arena bytes for the sparse-coverage discovery over ``num_frames``
     frames (0 until the first discovery of the job establishes a density).
     """
-    return int(_SPARSE_DISCOVERY_BYTES_PER_FRAME * SPARSE_DISCOVERY_SAFETY
-               * max(1, int(num_frames)))
+    return int(
+        _SPARSE_DISCOVERY_BYTES_PER_FRAME
+        * SPARSE_DISCOVERY_SAFETY
+        * max(1, int(num_frames))
+    )
 
 
 def set_gen_fused(mode):
@@ -321,15 +326,21 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
     """
     global _WF_GEN_FUSED_ON, _WF_GEN_FUSED_BATCHES
     _WF_GEN_FUSED_BATCHES += 1
-    if (WF_GEN_FUSED != "auto" or _WF_GEN_FUSED_ON
-            or _WF_GEN_FUSED_BATCHES < 2
-            or frames <= 0 or seconds <= 0.0 or frames_remaining <= 0):
+    if (
+        WF_GEN_FUSED != "auto"
+        or _WF_GEN_FUSED_ON
+        or _WF_GEN_FUSED_BATCHES < 2
+        or frames <= 0
+        or seconds <= 0.0
+        or frames_remaining <= 0
+    ):
         return False
     projected_win = frames_remaining * (seconds / frames) * WF_GEN_FUSED_GAIN
     if projected_win <= WF_GEN_FUSED_MIN_WIN:
         return False
     _WF_GEN_FUSED_ON = True
     return True
+
 
 # "Family A+B" full material-field memory trim for the fragment-shading
 # wavefront. When on, triangles are reordered into material-class bands so
@@ -396,8 +407,7 @@ def refit_bvh_active():
     """Live effective value of the refit-BVH toggle: the legacy textured /
     sorted-material orchestrators walk the classic tree only.
     """
-    return (BVH_REFIT and not WF_TEXTURED
-            and WAVEFRONT_SORT_MATERIALS is not True)
+    return BVH_REFIT and not WF_TEXTURED and WAVEFRONT_SORT_MATERIALS is not True
 
 
 # Hybrid raster front-end for deterministic primary visibility.
@@ -449,8 +459,7 @@ def set_raster_screen_space(enabled):
 # Byte-identical by construction -- identical elementwise arithmetic, batched
 # over the frame dimension; validated by benchmarks/_raster_bez_pre_parity.py.
 # The toggle is a kill-switch / A-B hook.
-RASTER_BEZ_PRECOMPUTE = (
-    os.environ.get("ALGAN_RASTER_BEZ_PRECOMPUTE", "1") == "1")
+RASTER_BEZ_PRECOMPUTE = os.environ.get("ALGAN_RASTER_BEZ_PRECOMPUTE", "1") == "1"
 
 
 def set_raster_bez_precompute(enabled):
@@ -465,8 +474,7 @@ def set_raster_bez_precompute(enabled):
 # class-mask derivation and candidate pair emission that ``_frame_pairs``
 # performed per (tile, frame) on top of the per-batch projection table.
 # Byte-identical by construction; same parity script.
-RASTER_TRI_PRECOMPUTE = (
-    os.environ.get("ALGAN_RASTER_TRI_PRECOMPUTE", "1") == "1")
+RASTER_TRI_PRECOMPUTE = os.environ.get("ALGAN_RASTER_TRI_PRECOMPUTE", "1") == "1"
 
 
 def set_raster_tri_precompute(enabled):
@@ -493,8 +501,7 @@ def set_raster_tri_precompute(enabled):
 # full-window straddler bbox.  Parity: benchmarks/_raster_straddle_clip_parity.py;
 # the conservativeness proof is brute-forced by
 # benchmarks/_raster_clip_extents_check.py.
-RASTER_STRADDLE_CLIP = (
-    os.environ.get("ALGAN_RASTER_STRADDLE_CLIP", "1") == "1")
+RASTER_STRADDLE_CLIP = os.environ.get("ALGAN_RASTER_STRADDLE_CLIP", "1") == "1"
 
 
 def set_raster_straddle_clip(enabled):
@@ -518,8 +525,7 @@ def set_raster_straddle_clip(enabled):
 # validated by benchmarks/_raster_empty_skip_parity.py.  Kill-switch / A-B
 # hook; read once per render batch so the host fill and the kernel template
 # always agree.
-RASTER_EMPTY_SKIP = (
-    os.environ.get("ALGAN_RASTER_EMPTY_SKIP", "1") == "1")
+RASTER_EMPTY_SKIP = os.environ.get("ALGAN_RASTER_EMPTY_SKIP", "1") == "1"
 
 
 def set_raster_empty_skip(enabled):
@@ -539,8 +545,7 @@ def set_raster_empty_skip(enabled):
 # candidates.  Byte-identical: a skipped class is exactly one whose mask was
 # all-false, where ``_class_pairs_flat`` returned None anyway.  Same parity
 # script as RASTER_EMPTY_SKIP.
-RASTER_PAIR_FLAGS = (
-    os.environ.get("ALGAN_RASTER_PAIR_FLAGS", "1") == "1")
+RASTER_PAIR_FLAGS = os.environ.get("ALGAN_RASTER_PAIR_FLAGS", "1") == "1"
 
 
 def set_raster_pair_flags(enabled):
@@ -563,8 +568,7 @@ def set_raster_pair_flags(enabled):
 # the sky in the resolve).  Byte-identical: the covered list is the ascending
 # nonzero order, so covered pixels are shaded in their original relative order
 # and skipped pixels do exactly what their early-out did (nothing).
-RASTER_COVERED_SHADE = (
-    os.environ.get("ALGAN_RASTER_COVERED_SHADE", "1") == "1")
+RASTER_COVERED_SHADE = os.environ.get("ALGAN_RASTER_COVERED_SHADE", "1") == "1"
 
 
 def set_raster_covered_shade(enabled):
@@ -587,8 +591,7 @@ def set_raster_covered_shade(enabled):
 # and no environment map.  When an environment map is present every primary
 # pixel genuinely samples the sky, so full-screen state is coverage work rather
 # than empty overhead and the dense path remains correct.
-RASTER_SPARSE_COVERAGE = (
-    os.environ.get("ALGAN_RASTER_SPARSE_COVERAGE", "1") == "1")
+RASTER_SPARSE_COVERAGE = os.environ.get("ALGAN_RASTER_SPARSE_COVERAGE", "1") == "1"
 
 
 def set_raster_sparse_coverage(enabled):
@@ -695,8 +698,7 @@ ANALYTIC_AA_SLIVER = os.environ.get("ALGAN_ANALYTIC_AA_SLIVER", "drop")
 # The split happens ONCE, at the primary hit; deeper bounces continue as single
 # rays, so the cost is N times the secondary traversal, not N^depth. Only the
 # reflective/refractive pixels pay it. 1 disables it, and is byte-identical.
-ANALYTIC_AA_SECONDARY_SAMPLES = int(
-    os.environ.get("ALGAN_ANALYTIC_AA_SECONDARY", "4"))
+ANALYTIC_AA_SECONDARY_SAMPLES = int(os.environ.get("ALGAN_ANALYTIC_AA_SECONDARY", "4"))
 
 # Minimum share of a pixel a REFLECTED or REFRACTED branch must carry before it
 # is worth spending N sub-pixel continuations on instead of one.
@@ -707,7 +709,8 @@ ANALYTIC_AA_SECONDARY_SAMPLES = int(
 # slightly worse than plain supersampling. The whole value of coverage is that
 # the expensive fallbacks fire only on the pixels that need them.
 ANALYTIC_AA_SECONDARY_MIN_ENERGY = float(
-    os.environ.get("ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY", "0.12"))
+    os.environ.get("ALGAN_ANALYTIC_AA_SECONDARY_MIN_ENERGY", "0.12")
+)
 
 # Roughness-driven GLOSSY REFLECTION for the deterministic tracer: a rough
 # reflector's continuation rays spread over a GGX lobe instead of all taking the
@@ -763,6 +766,7 @@ def glossy_reflection_mode():
         return 0
     return 2 if GLOSSY_INTERLEAVE else 1
 
+
 # Minimum half-width, in pixels, of a filled circuit's drawn region. This
 # replaces the classic ``outline_w = 0.6 * pixel_size`` fill dilation, whose
 # purpose is to keep sub-pixel features (hairlines, thin glyph stems, degenerate
@@ -772,7 +776,8 @@ def glossy_reflection_mode():
 # runs at AA=1, so 0.3 reproduces the reference appearance rather than doubling
 # every stroke weight. Tune only against rendered Text/Tex.
 ANALYTIC_AA_BEZ_MIN_HALF_WIDTH = float(
-    os.environ.get("ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH", "0.3"))
+    os.environ.get("ALGAN_ANALYTIC_AA_BEZ_MIN_HALF_WIDTH", "0.3")
+)
 
 # Maximum curve-to-chord flattening error, in pixels, for Bezier circuits under
 # analytic AA (overrides the primitive's own ``num_pixels_per_sample`` only when
@@ -781,11 +786,13 @@ ANALYTIC_AA_BEZ_MIN_HALF_WIDTH = float(
 # and a continuous coverage function would expose the flattening facets that box
 # filtering currently hides. Costs edges (memory + _bezier_point_metrics work).
 ANALYTIC_AA_CHORD_TOLERANCE = float(
-    os.environ.get("ALGAN_ANALYTIC_AA_CHORD_TOLERANCE", "0.25"))
+    os.environ.get("ALGAN_ANALYTIC_AA_CHORD_TOLERANCE", "0.25")
+)
 
 
-def set_analytic_aa(enabled, *, bezier=None, triangles=None, seam=None,
-                    sliver=None, secondary=None):
+def set_analytic_aa(
+    enabled, *, bezier=None, triangles=None, seam=None, sliver=None, secondary=None
+):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES
@@ -800,8 +807,7 @@ def set_analytic_aa(enabled, *, bezier=None, triangles=None, seam=None,
         ANALYTIC_AA_SEAM = bool(seam)
     if sliver is not None:
         if sliver not in ANALYTIC_AA_SLIVER_MODES:
-            raise ValueError(
-                f"sliver must be one of {ANALYTIC_AA_SLIVER_MODES}")
+            raise ValueError(f"sliver must be one of {ANALYTIC_AA_SLIVER_MODES}")
         ANALYTIC_AA_SLIVER = sliver
 
 
@@ -908,13 +914,13 @@ MERGE_ON_GPU = os.environ.get("ALGAN_MERGE_ON_GPU", "1") == "1"
 # their packed inputs. It is deliberately generous: torch's allocator counters
 # cannot see Taichi's separate pool at all, and the out-of-memory handler is
 # the exact fallback when the estimate is low.
-MERGE_GPU_PEAK_FACTOR = float(
-    os.environ.get("ALGAN_MERGE_GPU_PEAK_FACTOR", "6.0"))
+MERGE_GPU_PEAK_FACTOR = float(os.environ.get("ALGAN_MERGE_GPU_PEAK_FACTOR", "6.0"))
 
 
 def merge_gpu_peak_factor():
     """Live multiplier bounding the GPU merge's transient out-of-arena peak."""
     return MERGE_GPU_PEAK_FACTOR
+
 
 # Exact measurement of the GPU merge's transient peak, which calibrates
 # ``MERGE_GPU_PEAK_FACTOR``. This used to default off because it called
@@ -967,8 +973,7 @@ PROJECT_ON_GPU = os.environ.get("ALGAN_PROJECT_ON_GPU", "1") == "1"
 # its control points, hence a larger default than the merge factor). Bounds the
 # projection against the pool headroom before it is attempted; the OOM retry is
 # the exact fallback. Read live.
-PROJECT_GPU_PEAK_FACTOR = float(
-    os.environ.get("ALGAN_PROJECT_GPU_PEAK_FACTOR", "8.0"))
+PROJECT_GPU_PEAK_FACTOR = float(os.environ.get("ALGAN_PROJECT_GPU_PEAK_FACTOR", "8.0"))
 
 
 def project_gpu_peak_factor():
@@ -1000,9 +1005,9 @@ def project_on_gpu_active():
 # performance cost of each could be measured one at a time (see
 # benchmarks/_wf_textured_features_ab.py). The features are added in the order
 # beziers -> custom scatter -> shadows -> normal maps.
-WF_TEX_BEZ = 1        # bezier-circuit traversal + shading
-WF_TEX_SCATTER = 2    # per-material custom scatter dispatch (ray bouncing)
-WF_TEX_SHADOWS = 4    # binary hard shadow rays (triangle occluders)
+WF_TEX_BEZ = 1  # bezier-circuit traversal + shading
+WF_TEX_SCATTER = 2  # per-material custom scatter dispatch (ray bouncing)
+WF_TEX_SHADOWS = 4  # binary hard shadow rays (triangle occluders)
 WF_TEX_NORMALMAP = 8  # tangent-space normal-map perturbation of the shading normal
 WF_TEXTURED_FEATURES = int(os.environ.get("ALGAN_WF_TEXTURED_FEATURES", "0"))
 
@@ -1116,6 +1121,7 @@ def set_ray_traced_shadows(enabled):
     global SHADOWS
     SHADOWS = bool(enabled)
 
+
 def set_light_intensity(intensity):
     """Radiance scale applied to explicit point lights in physical mode."""
     global LIGHT_INTENSITY
@@ -1184,13 +1190,13 @@ def hdr_frame_dtype():
     a clear win, so enable it there.
     """
     import torch
+
     if _HDR_BUFFER_F16:
         return torch.float16
     return torch.float32
 
 
-POST_TONEMAP_KERNEL = (
-    os.environ.get("ALGAN_POST_TONEMAP_KERNEL", "1") == "1")
+POST_TONEMAP_KERNEL = os.environ.get("ALGAN_POST_TONEMAP_KERNEL", "1") == "1"
 
 
 def set_post_tonemap_kernel(enabled):
@@ -1219,6 +1225,7 @@ def _get_tonemap_t_val():
     if not TONEMAPPING:
         return 0
     return 2 if TONEMAP_METHOD == "agx" else 1
+
 
 # --- Core lit material registry (shader function -> in-kernel material id) ----
 # Ids must match shading_taichi: 0 default diffuse, 1 basic/unlit/passthrough,
@@ -1249,10 +1256,34 @@ _CORE_SHADER_IDS = None
 # Slots 12+ are the MeshPhysicalMaterial extension, defaults matching the
 # physical_shader signature (ior 1.5, specular_intensity 1, specular_color
 # white, clearcoat/sheen off, sheen_roughness 1, transmission/iridescence 0).
-_MAT_DEFAULTS = [0.0, 0.0, 0.0, 1.0, 0.0666, 0.0666, 0.0666, 30.0, 1.0, 0.0,
-                 0.0, 1.0,
-                 1.5, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
-                 0.0, 0.0]
+_MAT_DEFAULTS = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0666,
+    0.0666,
+    0.0666,
+    30.0,
+    1.0,
+    0.0,
+    0.0,
+    1.0,
+    1.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+]
 # Material-property name -> (start slot, width) in the canonical block.
 _MAT_SLOTS = {
     "emissive": (0, 3),
@@ -1299,6 +1330,7 @@ def _shader_is_core(shader):
     """
     return shader is not None and shader in _core_shader_ids()
 
+
 def _constant_promotion_active():
     """True when constant-property -> 1x1-texture promotion applies to this
     render: it is enabled, and the batch will render through the deterministic
@@ -1308,6 +1340,7 @@ def _constant_promotion_active():
     Every deterministic (samples <= 1) batch renders through that kernel.
     """
     return PROMOTE_CONSTANTS and FRAGMENT_SHADING and SAMPLES_PER_PIXEL <= 1
+
 
 def _scene_has_user_pipeline(merged):
     """True if any merged primitive carries a custom fragment-pipeline id
@@ -1322,7 +1355,10 @@ def _scene_has_user_pipeline(merged):
         # cached flag.  Move tiny ids to the host before reducing so this
         # fallback cannot create a scalar/reduction workspace beside the
         # render arena.
-        if (arr is not None and arr.numel()
-                and int(arr.detach().cpu().max()) >= _USER_PIPELINE_BASE):
+        if (
+            arr is not None
+            and arr.numel()
+            and int(arr.detach().cpu().max()) >= _USER_PIPELINE_BASE
+        ):
             return True
     return False

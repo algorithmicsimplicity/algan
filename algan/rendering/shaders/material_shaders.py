@@ -24,6 +24,7 @@ matcap images and view-space depth packing are not sampled (Algan has no
 per-fragment UV pipeline); the corresponding approximations are noted per
 function.
 """
+
 from __future__ import annotations
 
 import torch
@@ -41,6 +42,7 @@ AMBIENT_STRENGTH = 0.1
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
 
 def _split_albedo(albedo_color):
     """Split ``[..., 4]`` albedo into ``(rgb[..., 3], glow_tail[..., 1])``."""
@@ -119,6 +121,7 @@ def _light_geometry(vertex_location, normal, camera_location, light_origin):
 # ---------------------------------------------------------------------------
 # Material shaders
 # ---------------------------------------------------------------------------
+
 
 def basic_material_shader(
     memory,
@@ -236,7 +239,7 @@ def standard_shader(
 
     k_d = (1.0 - fresnel) * (1.0 - metalness)
     diffuse = k_d * rgb * radiance * n_dot_l
-    direct = (diffuse + specular * radiance * n_dot_l)
+    direct = diffuse + specular * radiance * n_dot_l
 
     # Ambient/environment approximation (diffuse for dielectrics, tinted for metals).
     ambient = (rgb * (1.0 - metalness) + f0 * metalness) * (
@@ -290,7 +293,9 @@ def physical_shader(
     )
     radiance = light_color[..., :3] * light_intensity
 
-    dielectric_f0 = (((ior - 1.0) / (ior + 1.0)) ** 2) * specular_intensity * specular_color
+    dielectric_f0 = (
+        (((ior - 1.0) / (ior + 1.0)) ** 2) * specular_intensity * specular_color
+    )
     f0 = dielectric_f0 * (1.0 - metalness) + metalness * rgb
     fresnel = fresnel_schlick(v_dot_h, f0)
     ndf = ggx_distribution(n_dot_h, roughness)
@@ -305,9 +310,11 @@ def physical_shader(
     cc_ndf = ggx_distribution(n_dot_h, clearcoat_roughness)
     cc_geom = smith_geometry(n_dot_v, n_dot_l, clearcoat_roughness)
     cc_fresnel = fresnel_schlick(v_dot_h, 0.04)
-    clearcoat_spec = clearcoat * (cc_ndf * cc_geom * cc_fresnel) / (
-        4.0 * n_dot_v * n_dot_l
-    ).clamp_min(1e-4)
+    clearcoat_spec = (
+        clearcoat
+        * (cc_ndf * cc_geom * cc_fresnel)
+        / (4.0 * n_dot_v * n_dot_l).clamp_min(1e-4)
+    )
     direct = direct + clearcoat_spec * radiance * n_dot_l
 
     # Sheen: soft retro-reflective rim (Charlie-like, inverted Fresnel).
@@ -352,7 +359,9 @@ def toon_shader(
     light_dir = _normalize(light_origin - vertex_location)
     n_dot_l = dot_product(n, light_dir).clamp_min(0.0)
 
-    bands = num_bands.clamp_min(1.0) if torch.is_tensor(num_bands) else max(num_bands, 1.0)
+    bands = (
+        num_bands.clamp_min(1.0) if torch.is_tensor(num_bands) else max(num_bands, 1.0)
+    )
     stepped = torch.ceil(n_dot_l * bands) / bands
     ambient = rgb * (AMBIENT_STRENGTH * ambient_light_intensity)
     diffuse = rgb * light_color[..., :3] * light_intensity * stepped
@@ -427,7 +436,7 @@ def depth_shader(
     """
     _rgb, glow = _split_albedo(albedo_color)
     distance = (vertex_location - camera_location).norm(p=2, dim=-1, keepdim=True)
-    span = (far - near)
+    span = far - near
     span = span.clamp_min(1e-6) if torch.is_tensor(span) else max(span, 1e-6)
     normalized = ((distance - near) / span).clamp(0.0, 1.0)
     value = (1.0 - normalized).expand(*normalized.shape[:-1], 3)

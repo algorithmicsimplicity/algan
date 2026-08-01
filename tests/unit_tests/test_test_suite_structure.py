@@ -55,7 +55,9 @@ def test_scene_files_use_only_the_public_star_import_and_do_not_render_themselve
     for path in _scene_paths():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         imports = [
-            node for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
         ]
         assert len(imports) == 1, f"{path.name} must have exactly one import"
         import_node = imports[0]
@@ -63,19 +65,9 @@ def test_scene_files_use_only_the_public_star_import_and_do_not_render_themselve
         assert import_node.module == "algan"
         assert [alias.name for alias in import_node.names] == ["*"]
 
-        calls = [
-            node.func
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-        ]
-        call_names = {
-            func.id
-            for func in calls
-            if isinstance(func, ast.Name)
-        } | {
-            func.attr
-            for func in calls
-            if isinstance(func, ast.Attribute)
+        calls = [node.func for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        call_names = {func.id for func in calls if isinstance(func, ast.Name)} | {
+            func.attr for func in calls if isinstance(func, ast.Attribute)
         }
         assert forbidden_calls.isdisjoint(call_names), (
             f"{path.name} must define a scene, not invoke the render harness"
@@ -86,10 +78,7 @@ def test_scene_files_use_only_the_public_star_import_and_do_not_render_themselve
 
 
 def test_full_render_scenes_cover_the_audited_authoring_surface():
-    source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in _scene_paths()
-    )
+    source = "\n".join(path.read_text(encoding="utf-8") for path in _scene_paths())
     for feature, tokens in REQUIRED_SCENE_FEATURES.items():
         missing = [token for token in tokens if token not in source]
         assert not missing, f"{feature} coverage is missing {missing}"

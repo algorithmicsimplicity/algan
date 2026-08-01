@@ -15,9 +15,7 @@ def _sphinx_command(docs_dir: Path, *, skip_examples: bool) -> list[str]:
     # The Algan directive resolves skip-manim while Sphinx reads sources, so a
     # shared doctree cache would preserve placeholders when the tag is removed.
     doctree_dir = build_dir / (
-        "doctrees-without-examples"
-        if skip_examples
-        else "doctrees-with-examples"
+        "doctrees-without-examples" if skip_examples else "doctrees-with-examples"
     )
 
     command = [

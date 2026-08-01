@@ -112,12 +112,7 @@ def test_image_mob_textured_false_uses_one_vertex_color_per_pixel():
 
     image = ImageMob(pixels, textured=False, add_to_scene=False)
 
-    expected = (
-        Color.add_defaults(pixels)
-        .transpose(-3, -2)
-        .flip(-2)
-        .reshape(1, -1, 5)
-    )
+    expected = Color.add_defaults(pixels).transpose(-3, -2).flip(-2).reshape(1, -1, 5)
     assert (image.grid_width, image.grid_height) == (3, 2)
     assert image.color_texture is None
     assert torch.equal(image.grid.color, expected)

@@ -17,11 +17,17 @@ def batch_arange(lengths, memory=None):
 
     start_pointer = memory.current_pointer
     start_reverse_pointer = memory.current_reverse_pointer
-    offsets = torch.cumsum(lengths, 0, out=memory.get_tensor(lengths.shape, lengths.dtype))
+    offsets = torch.cumsum(
+        lengths, 0, out=memory.get_tensor(lengths.shape, lengths.dtype)
+    )
     n = offsets[-1].long()
     offsets -= lengths
     offsets = torch.repeat_interleave(offsets, lengths, output_size=n)
-    inds = torch.arange(n, device=lengths.device, out=memory.get_tensor((n,), dtype=torch.long, persist=True))
+    inds = torch.arange(
+        n,
+        device=lengths.device,
+        out=memory.get_tensor((n,), dtype=torch.long, persist=True),
+    )
     inds -= offsets
     memory.current_pointer = start_pointer
     inds = memory.cast(inds, torch.int)
@@ -49,7 +55,7 @@ class BezierCircuitPrimitive(RenderPrimitive):
         glow=0,
         num_texture_points=0,
         filled=True,
-            num_pixels_per_sample=0.5
+        num_pixels_per_sample=0.5,
     ):
         # Legacy name retained for compatibility.  The ray tracer uses this as
         # the maximum screen-space curve-to-chord error in pixels.
@@ -126,7 +132,7 @@ class BezierCircuitPrimitive(RenderPrimitive):
                 )
             )
             if self.num_texture_points > 0:
-                self.colors = self.colors[..., (-self.num_texture_points):, :]
+                self.colors = self.colors[..., (-self.num_texture_points) :, :]
             return
         self.corners = corners
         self.next_segment_inds = next_segment_inds
@@ -157,4 +163,5 @@ class BezierCircuitPrimitive(RenderPrimitive):
 
     def get_batch_identifier(self):
         return BezierCircuitPrimitive.batch_identifier_for(
-            self.num_texture_points, self.filled)
+            self.num_texture_points, self.filled
+        )

@@ -297,7 +297,7 @@ def test_video_settings_are_immutable_validated_and_typo_safe():
     with pytest.raises(AlganConfigurationError, match="immutable"):
         PREVIEW.frames_per_second = 99
 
-    changed = PREVIEW.replace(frames_per_second=12)
+    changed = PREVIEW.set(frames_per_second=12)
     assert changed.frames_per_second == 12
     assert PREVIEW.frames_per_second != 12
 
@@ -461,9 +461,7 @@ def test_camera_validates_projection_and_clip_parameters():
 
 
 def test_camera_clip_properties_survive_generic_material_parameter_names():
-    algan.Cone(add_to_scene=False).set_material(
-        algan.MeshDepthMaterial(near=2, far=12)
-    )
+    algan.Cone(add_to_scene=False).set_material(algan.MeshDepthMaterial(near=2, far=12))
 
     camera = Camera(near=0.5, far=20, add_to_scene=False)
 
@@ -486,9 +484,7 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
     monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
 
     def fake_render_to_video(*_args, **render_kwargs):
-        observed["end"] = (
-            scene.animation_manager.context.timespan.original_end
-        )
+        observed["end"] = scene.animation_manager.context.timespan.original_end
         observed["background_override"] = render_kwargs.get("background_color")
 
     monkeypatch.setattr(scene, "render_to_video", fake_render_to_video)

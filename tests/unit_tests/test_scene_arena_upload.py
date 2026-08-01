@@ -16,16 +16,14 @@ def _prebuilt_bvh():
     num_leaves = BVH_ARITY
     num_nodes = (BVH_ARITY * num_leaves - 1) // (BVH_ARITY - 1)
     first_leaf = num_nodes - num_leaves
-    nodes = torch.arange(num_nodes * 8, dtype=torch.float32).reshape(
-        num_nodes, 8)
-    blocks = torch.arange(
-        first_leaf * 8 * BVH_ARITY, dtype=torch.float16
-    ).reshape(first_leaf, 8, BVH_ARITY)
+    nodes = torch.arange(num_nodes * 8, dtype=torch.float32).reshape(num_nodes, 8)
+    blocks = torch.arange(first_leaf * 8 * BVH_ARITY, dtype=torch.float16).reshape(
+        first_leaf, 8, BVH_ARITY
+    )
     node_miss = torch.arange(num_nodes, dtype=torch.int32)
     leaf_prim = torch.arange(num_leaves, dtype=torch.int32)
     leaf_tspan = torch.arange(num_leaves, dtype=torch.int32) << 16
-    return STBVH.from_prebuilt(
-        nodes, node_miss, leaf_prim, leaf_tspan, blocks)
+    return STBVH.from_prebuilt(nodes, node_miss, leaf_prim, leaf_tspan, blocks)
 
 
 def _cpu_arena():
@@ -34,8 +32,7 @@ def _cpu_arena():
     return ManualMemory(0.001, device=torch.device("cpu"), managed=True)
 
 
-def test_scene_arena_upload_preserves_aliases_values_and_exact_bytes(
-        monkeypatch):
+def test_scene_arena_upload_preserves_aliases_values_and_exact_bytes(monkeypatch):
     bvh = _prebuilt_bvh()
     base = torch.arange(24, dtype=torch.float32)
     strided = base[2:18:2]
@@ -54,8 +51,14 @@ def test_scene_arena_upload_preserves_aliases_values_and_exact_bytes(
     # fields plus ``base`` (despite its two different views and aliases).
     expected_raw = sum(
         tensor.untyped_storage().nbytes()
-        for tensor in (bvh.nodes, bvh.blocks, bvh.node_miss,
-                       bvh.leaf_prim, bvh.leaf_tspan, base)
+        for tensor in (
+            bvh.nodes,
+            bvh.blocks,
+            bvh.node_miss,
+            bvh.leaf_prim,
+            bvh.leaf_tspan,
+            base,
+        )
     )
     assert get_merged_scene_tensor_nbytes(scene) == expected_raw
 
@@ -71,8 +74,7 @@ def test_scene_arena_upload_preserves_aliases_values_and_exact_bytes(
     def fail_build(*_args, **_kwargs):
         raise AssertionError("destination unexpectedly rebuilt BVH blocks")
 
-    monkeypatch.setattr(
-        "algan.rendering.raytracing.stbvh._build_blocks", fail_build)
+    monkeypatch.setattr("algan.rendering.raytracing.stbvh._build_blocks", fail_build)
     uploaded = copy_merged_scene_to_arena(scene, memory)
     after = memory.get_pointers()
 
@@ -83,10 +85,8 @@ def test_scene_arena_upload_preserves_aliases_values_and_exact_bytes(
     assert uploaded["strided"] is uploaded["strided_alias"]
     assert uploaded["metadata"] == scene["metadata"]
 
-    for field in ("nodes", "blocks", "node_miss", "leaf_prim",
-                  "leaf_tspan"):
-        assert torch.equal(
-            getattr(uploaded["tri_bvh"], field), getattr(bvh, field))
+    for field in ("nodes", "blocks", "node_miss", "leaf_prim", "leaf_tspan"):
+        assert torch.equal(getattr(uploaded["tri_bvh"], field), getattr(bvh, field))
     assert uploaded["tri_bvh"].first_leaf == bvh.first_leaf
     assert uploaded["tri_bvh"].num_leaves == bvh.num_leaves
     assert torch.equal(uploaded["strided"], strided)
@@ -94,16 +94,21 @@ def test_scene_arena_upload_preserves_aliases_values_and_exact_bytes(
 
     # The two views keep their offset relationship within their copied storage.
     source_delta = matrix_view.storage_offset() - strided.storage_offset()
-    uploaded_delta = (uploaded["matrix_view"].storage_offset()
-                      - uploaded["strided"].storage_offset())
+    uploaded_delta = (
+        uploaded["matrix_view"].storage_offset() - uploaded["strided"].storage_offset()
+    )
     assert uploaded_delta == source_delta
 
     arena_storage = memory.data.untyped_storage()._cdata
     for tensor in (
-            uploaded["tri_bvh"].nodes, uploaded["tri_bvh"].blocks,
-            uploaded["tri_bvh"].node_miss, uploaded["tri_bvh"].leaf_prim,
-            uploaded["tri_bvh"].leaf_tspan, uploaded["strided"],
-            uploaded["matrix_view"]):
+        uploaded["tri_bvh"].nodes,
+        uploaded["tri_bvh"].blocks,
+        uploaded["tri_bvh"].node_miss,
+        uploaded["tri_bvh"].leaf_prim,
+        uploaded["tri_bvh"].leaf_tspan,
+        uploaded["strided"],
+        uploaded["matrix_view"],
+    ):
         assert tensor.device.type == "cpu"
         assert tensor.untyped_storage()._cdata == arena_storage
 
@@ -147,28 +152,34 @@ def test_prefill_background_copies_and_casts_directly_into_arena():
 
     solid_out = memory.get_tensor((2, 3, 5), dtype=torch.uint8)
     _prefill_background(
-        solid_out, torch.tensor([0.0, 0.5, 1.0]), 0,
-        torch.device("cpu"))
-    expected_solid = torch.tensor([0, 128, 255, 255, 255],
-                                  dtype=torch.uint8)
+        solid_out, torch.tensor([0.0, 0.5, 1.0]), 0, torch.device("cpu")
+    )
+    expected_solid = torch.tensor([0, 128, 255, 255, 255], dtype=torch.uint8)
     assert torch.equal(solid_out, expected_solid.expand_as(solid_out))
 
     # Animated/image backgrounds carry one padding row followed by flattened
     # frame/pixel rows. Exercise a nonzero frame offset, uint8 -> float32 copy,
     # and missing-channel fill from the source's final channel.
-    rows = torch.tensor([
-        [99, 99, 99],  # leading padding row
-        [1, 2, 3], [4, 5, 6],
-        [7, 8, 9], [10, 11, 12],
-        [13, 14, 15], [16, 17, 18],
-    ], dtype=torch.uint8)
+    rows = torch.tensor(
+        [
+            [99, 99, 99],  # leading padding row
+            [1, 2, 3],
+            [4, 5, 6],
+            [7, 8, 9],
+            [10, 11, 12],
+            [13, 14, 15],
+            [16, 17, 18],
+        ],
+        dtype=torch.uint8,
+    )
     animated_out = memory.get_tensor((2, 2, 4), dtype=torch.float32)
-    _prefill_background(
-        animated_out, rows, 1, torch.device("cpu"))
-    expected_animated = torch.tensor([
-        [[7, 8, 9, 9], [10, 11, 12, 12]],
-        [[13, 14, 15, 15], [16, 17, 18, 18]],
-    ], dtype=torch.float32)
+    _prefill_background(animated_out, rows, 1, torch.device("cpu"))
+    expected_animated = torch.tensor(
+        [
+            [[7, 8, 9, 9], [10, 11, 12, 12]],
+            [[13, 14, 15, 15], [16, 17, 18, 18]],
+        ],
+        dtype=torch.float32,
+    )
     assert torch.equal(animated_out, expected_animated)
-    assert (animated_out.untyped_storage()._cdata
-            == memory.data.untyped_storage()._cdata)
+    assert animated_out.untyped_storage()._cdata == memory.data.untyped_storage()._cdata

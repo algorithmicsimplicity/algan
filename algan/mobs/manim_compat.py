@@ -7,6 +7,7 @@ lets Algan expose Manim's large collection of composite Mobjects without
 copying the geometry algorithms, while all animation, materials and rendering
 remain native to Algan.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -190,13 +191,11 @@ def from_manim(value: Any, *, scene=None, add_to_scene: bool = True):
         )
     if isinstance(value, tuple):
         return tuple(
-            from_manim(item, scene=scene, add_to_scene=add_to_scene)
-            for item in value
+            from_manim(item, scene=scene, add_to_scene=add_to_scene) for item in value
         )
     if isinstance(value, list):
         return [
-            from_manim(item, scene=scene, add_to_scene=add_to_scene)
-            for item in value
+            from_manim(item, scene=scene, add_to_scene=add_to_scene) for item in value
         ]
     return value
 
@@ -214,9 +213,7 @@ class ManimCompatMob(ManimMob):
     """
 
     _manim_class = _manim.VMobject
-    _ALGAN_ONLY_KWARGS = {
-        "add_to_scene", "glow", "glow_radius", "batch", "scene"
-    }
+    _ALGAN_ONLY_KWARGS = {"add_to_scene", "glow", "glow_radius", "batch", "scene"}
 
     def __init__(self, *args, **kwargs):
         algan_kwargs = {
@@ -245,9 +242,7 @@ class ManimCompatMob(ManimMob):
     @classmethod
     def _from_manim(cls, source, *, scene=None, add_to_scene=True):
         obj = cls.__new__(cls)
-        obj._initialize_from_manim(
-            source, scene=scene, add_to_scene=add_to_scene
-        )
+        obj._initialize_from_manim(source, scene=scene, add_to_scene=add_to_scene)
         return obj
 
     def get_manim_mobject(self):
@@ -265,7 +260,12 @@ class ManimCompatMob(ManimMob):
 
     # These names also exist on Algan's Mob.  Override them so compatibility
     # objects retain Manim's units, keyword arguments, and backing geometry.
-    def move_to(self, point_or_mobject, aligned_edge=_manim.ORIGIN, coor_mask=np.array([1, 1, 1])):
+    def move_to(
+        self,
+        point_or_mobject,
+        aligned_edge=_manim.ORIGIN,
+        coor_mask=np.array([1, 1, 1]),
+    ):
         source = self.manim_mobject.copy()
         source.move_to(
             to_manim(point_or_mobject),
@@ -298,9 +298,7 @@ class ManimCompatMob(ManimMob):
                 self.move_to_point_along_arc(
                     target, path_arc_angle, recursive=recursive, **kwargs
                 )
-            self.manim_mobject = self.manim_mobject.copy().shift(
-                to_manim(displacement)
-            )
+            self.manim_mobject = self.manim_mobject.copy().shift(to_manim(displacement))
             return self
         source = self.manim_mobject.copy()
         source.shift(to_manim(displacement))
@@ -331,9 +329,7 @@ class ManimCompatMob(ManimMob):
         if set(kwargs).issubset(set(self.animatable_attrs)):
             return Mob.set(self, **kwargs)
         source = self.manim_mobject.copy()
-        source.set(
-            **{key: to_manim(value) for key, value in kwargs.items()}
-        )
+        source.set(**{key: to_manim(value) for key, value in kwargs.items()})
         return self._animate_to_manim(source)
 
     def copy(self):
@@ -551,8 +547,6 @@ ArcBetweenPoints = _MANIM_WRAPPER_REGISTRY["ArcBetweenPoints"]
 SingleStringMathTex = _MANIM_WRAPPER_REGISTRY["SingleStringMathTex"]
 
 
-
-
 # Algan's Mob is the renderer-independent equivalent of Manim's Mobject.
 Mobject = Mob
 
@@ -671,7 +665,9 @@ class ValueTracker(Mob):
         return float(self.value.reshape(-1)[0])
 
     def set_value(self, value):
-        self.value = torch.as_tensor(value, dtype=torch.get_default_dtype()).reshape(1, 1)
+        self.value = torch.as_tensor(value, dtype=torch.get_default_dtype()).reshape(
+            1, 1
+        )
         return self
 
     def increment_value(self, d_value):
@@ -695,7 +691,9 @@ class ComplexValueTracker(Mob):
         super().__init__(**kwargs)
         self.register_attrs_as_animatable("complex_value", ComplexValueTracker)
         value = complex(value)
-        tensor = torch.tensor((value.real, value.imag), dtype=torch.get_default_dtype()).reshape(1, 2)
+        tensor = torch.tensor(
+            (value.real, value.imag), dtype=torch.get_default_dtype()
+        ).reshape(1, 2)
         self._init_default_attr("complex_value", tensor)
 
     def get_value(self):
@@ -724,6 +722,7 @@ _MANIM_WRAPPER_REGISTRY["ComplexValueTracker"] = ComplexValueTracker
 # no constructor of its own, so the vendored SingleStringMathTex behavior is the
 # closest meaningful compatibility type.
 if "SingleStringMathTex" in globals():
+
     class MathTexPart(SingleStringMathTex):
         pass
 

@@ -3,6 +3,7 @@
 Split out of ``mob.py`` for readability; :class:`MobMovementMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
+
 from __future__ import annotations
 
 import torch
@@ -30,9 +31,7 @@ class MobMovementMixin:
     :class:`~algan.animatable_base.mob.Mob`.
     """
 
-    def move_between(
-        self, loc1: Mob | torch.Tensor, loc2: Mob | torch.Tensor
-    ) -> Mob:
+    def move_between(self, loc1: Mob | torch.Tensor, loc2: Mob | torch.Tensor) -> Mob:
         """Move the Mob to the midpoint between two locations.
 
         Animation
@@ -54,7 +53,9 @@ class MobMovementMixin:
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
-        loc1, loc2 = [_.get_center() if hasattr(_, 'get_center') else _ for _ in [loc1, loc2]]
+        loc1, loc2 = [
+            _.get_center() if hasattr(_, "get_center") else _ for _ in [loc1, loc2]
+        ]
         return self.move_to((loc1 + loc2) / 2)
 
     def move_to_point_along_arc(
@@ -119,9 +120,7 @@ class MobMovementMixin:
 
         target = cast_to_tensor(point).to(device=device, dtype=dtype)
         normal = cast_to_tensor(arc_normal).to(device=device, dtype=dtype)
-        angle_degrees = cast_to_tensor(arc_angle_degrees).to(
-            device=device, dtype=dtype
-        )
+        angle_degrees = cast_to_tensor(arc_angle_degrees).to(device=device, dtype=dtype)
 
         if not torch.all(torch.isfinite(target)):
             raise ValueError("point must contain only finite values")
@@ -140,9 +139,9 @@ class MobMovementMixin:
         chord = target - start
         chord_length = chord.norm(p=2, dim=-1, keepdim=True)
         coplanar_error = dot_product(chord, normal).abs()
-        coplanar_tolerance = torch.maximum(
-            torch.ones_like(chord_length), chord_length
-        ) * 1e-5
+        coplanar_tolerance = (
+            torch.maximum(torch.ones_like(chord_length), chord_length) * 1e-5
+        )
         if torch.any(coplanar_error > coplanar_tolerance):
             raise ValueError(
                 "The start and target points must lie in a plane "
@@ -151,9 +150,8 @@ class MobMovementMixin:
 
         coincident = chord_length == 0
         whole_turn_count = torch.round(angle_degrees / 360)
-        exact_whole_turn = (
-            (whole_turn_count != 0)
-            & (angle_degrees == whole_turn_count * 360)
+        exact_whole_turn = (whole_turn_count != 0) & (
+            angle_degrees == whole_turn_count * 360
         )
         invalid_whole_turn = exact_whole_turn & ~coincident
         if torch.any(invalid_whole_turn):
@@ -169,9 +167,7 @@ class MobMovementMixin:
             recursive=recursive,
         )
 
-    @animated_function(
-        animated_args={"interpolation": 0.0}, unique_args=["recursive"]
-    )
+    @animated_function(animated_args={"interpolation": 0.0}, unique_args=["recursive"])
     def _move_along_arc_displacement(
         self,
         chord: torch.Tensor,
@@ -185,12 +181,8 @@ class MobMovementMixin:
         device = self.location.device
         chord = cast_to_tensor(chord).to(device=device, dtype=dtype)
         normal = cast_to_tensor(arc_normal).to(device=device, dtype=dtype)
-        angle_degrees = cast_to_tensor(arc_angle_degrees).to(
-            device=device, dtype=dtype
-        )
-        interpolation = cast_to_tensor(interpolation).to(
-            device=device, dtype=dtype
-        )
+        angle_degrees = cast_to_tensor(arc_angle_degrees).to(device=device, dtype=dtype)
+        interpolation = cast_to_tensor(interpolation).to(device=device, dtype=dtype)
 
         # Let h be half the total sweep. Direct circular interpolation can be
         # written using only the chord d and n x d:
@@ -464,7 +456,9 @@ class MobMovementMixin:
         # Calculate the target location for this Mob if it were moved next to the `mob`
         # using the primary `direction` and `buffer`.
         new_location_target = (
-            Mob(scene=self.scene, add_to_scene=False).move_next_to(mob, direction, buffer).location
+            Mob(scene=self.scene, add_to_scene=False)
+            .move_next_to(mob, direction, buffer)
+            .location
         )
         # Calculate the displacement needed to move from the reference point to the target point,
         # projected onto the `direction` to ensure alignment only along that axis.
@@ -474,9 +468,7 @@ class MobMovementMixin:
         self.move(displacement, **kwargs)
         return self
 
-    def move_inline_with_center(
-        self, mob: Mob, direction: torch.Tensor
-    ) -> Mob:
+    def move_inline_with_center(self, mob: Mob, direction: torch.Tensor) -> Mob:
         """Line this Mob's center up with another Mob's center along one axis.
 
         Only the component of the movement along ``direction`` is applied:
@@ -791,7 +783,9 @@ class MobMovementMixin:
             keepdim=True,
         )
 
-        with Seq(animation_manager=self.animation_manager):  # Ensure movement and despawn happen sequentially
+        with Seq(
+            animation_manager=self.animation_manager
+        ):  # Ensure movement and despawn happen sequentially
             self.move(largest_disp + buffer * F.normalize(edge, p=2, dim=-1))
             if despawn:
                 self.despawn(animate=False)

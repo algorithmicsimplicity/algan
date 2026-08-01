@@ -39,9 +39,7 @@ def test_synchronized_parent_child_rotations_preserve_descendant_bases(scene):
     group = algan.Group([algan.Square()]).arrange_in_grid().spawn(animate=False)
     square = group[0]
     descendants = square.get_descendants(include_self=True)
-    initial_bases = {
-        mob.id: mob.basis.clone().reshape(-1, 3, 3) for mob in descendants
-    }
+    initial_bases = {mob.id: mob.basis.clone().reshape(-1, 3, 3) for mob in descendants}
 
     with algan.Sync(run_time=1, rate_func=algan.rate_funcs.identity):
         group.rotate(180, algan.UP)

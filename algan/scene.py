@@ -126,9 +126,8 @@ class Scene(RenderLoopMixin):
         self.background_is_set = False
         # Preserve the legacy direct-Scene constructor callback while leaving
         # a Taichi func deferred: a @ti.func can only be called from a kernel.
-        if (
-            callable(background_frame)
-            and not getattr(background_frame, "_is_taichi_function", False)
+        if callable(background_frame) and not getattr(
+            background_frame, "_is_taichi_function", False
         ):
             background_frame = background_frame(
                 torch.stack(
@@ -178,8 +177,8 @@ class Scene(RenderLoopMixin):
 
         manager = SceneManager.instance()
         if scene_initializer is None:
-            scene_initializer = (
-                type(manager)._scene_initializer or (lambda scene: scene)
+            scene_initializer = type(manager)._scene_initializer or (
+                lambda scene: scene
             )
         self.scene_initializer = scene_initializer
         self._terminated = False
@@ -356,9 +355,7 @@ class Scene(RenderLoopMixin):
     remove_light = remove_light_source
 
     @active_scene_method
-    def set_environment_map(
-        self, source, intensity: float = 1.0, ambient: bool = True
-    ):
+    def set_environment_map(self, source, intensity: float = 1.0, ambient: bool = True):
         """Light the Scene with an environment map, and show it as a backdrop.
 
         An equirectangular image surrounds the scene, so reflective and metallic
@@ -402,9 +399,7 @@ class Scene(RenderLoopMixin):
 
             img = cv2.imread(env, cv2.IMREAD_COLOR)
             if img is None:
-                raise FileNotFoundError(
-                    f"Could not read environment map image: {env}"
-                )
+                raise FileNotFoundError(f"Could not read environment map image: {env}")
             env = torch.from_numpy(img[..., ::-1].copy())  # BGR -> RGB
         if not torch.is_tensor(env):
             env = torch.tensor(env)
@@ -601,7 +596,9 @@ class Scene(RenderLoopMixin):
             ``animate=False`` to remove everything without fading.
         """
         with Sync(animation_manager=self.animation_manager):
-            for actor in sorted(self.actors, key=lambda x: x.anchor_priority, reverse=True):
+            for actor in sorted(
+                self.actors, key=lambda x: x.anchor_priority, reverse=True
+            ):
                 if actor.is_spawned():
                     actor.despawn(**kwargs)
 
@@ -624,15 +621,13 @@ class Scene(RenderLoopMixin):
         """
         with Seq(run_time=0.5, animation_manager=self.animation_manager):
             self.despawn_scene(**kwargs)
-        self.actors = [
-            _ for _ in self.actors if (_.is_spawned() and _.is_despawned())
-        ]
+        self.actors = [_ for _ in self.actors if (_.is_spawned() and _.is_despawned())]
 
     def render_audio_to_file(
         self,
         file_path: str | Path,
         frames_per_second: int = 44100,
-        codec: str = 'pcm_s32le',
+        codec: str = "pcm_s32le",
         nbytes: int = 4,
     ):
         """Mix this Scene's audio effects down to an audio file.
@@ -672,7 +667,9 @@ class Scene(RenderLoopMixin):
 
         audio_clip = CompositeAudioClip(clips_to_compose)
         audio_clip.duration = self.animation_manager.context.timespan.original_end
-        audio_clip.write_audiofile(file_path, fps=frames_per_second, codec=codec, nbytes=nbytes)
+        audio_clip.write_audiofile(
+            file_path, fps=frames_per_second, codec=codec, nbytes=nbytes
+        )
         audio_clip.close()
         return file_path
 
@@ -796,7 +793,7 @@ class Scene(RenderLoopMixin):
         """
         if callable(self.background_frame):
             return False
-        return (self.background_frame[..., -1].min() < (1-(0.5/255))).item()
+        return (self.background_frame[..., -1].min() < (1 - (0.5 / 255))).item()
 
     def get_pixel_format(self) -> str:
         """Get the pixel format the Scene's frames should be encoded in.
@@ -832,6 +829,7 @@ class Scene(RenderLoopMixin):
             with values in ``[0, 1]``.
         """
         from algan.utils.plotting_utils import plot_tensor
+
         if time_stamp is None:
             time_stamp = (
                 self.animation_manager.context.current_time
@@ -841,7 +839,7 @@ class Scene(RenderLoopMixin):
         frames = []
         for frame in self.get_frames(time_ind, time_ind + 1):
             frame = frame.float() / 255
-            frames.append(frame.squeeze(0).permute(-1,0,1))
+            frames.append(frame.squeeze(0).permute(-1, 0, 1))
         for frame in frames:
             plot_tensor(frame)
 
@@ -967,9 +965,7 @@ class Scene(RenderLoopMixin):
                 started = time.perf_counter()
                 self._render_still(target, time_stamp)
                 results.append(
-                    RenderResult(
-                        "rendered", target, time.perf_counter() - started
-                    )
+                    RenderResult("rendered", target, time.perf_counter() - started)
                 )
         finally:
             # set_video_settings restores every derived cache (dimensions,
@@ -1018,10 +1014,16 @@ class Scene(RenderLoopMixin):
             # [1, channels, height, width]. (``transpose(0, -1)`` here swapped
             # the image's rows and columns instead, rendering it transposed.)
             image = get_image(background_color).permute(2, 0, 1).unsqueeze(0)
-            image = F.interpolate(
-                image, [_ * a for _ in tuple(self.frame_size)],
-                mode='bilinear', antialias='bilinear',
-            ).squeeze(0).permute(1, 2, 0)
+            image = (
+                F.interpolate(
+                    image,
+                    [_ * a for _ in tuple(self.frame_size)],
+                    mode="bilinear",
+                    antialias="bilinear",
+                )
+                .squeeze(0)
+                .permute(1, 2, 0)
+            )
             # Frame buffers are bottom-up (post_process_frames flips them on
             # the way out, matching the tracer's py = height-1-row), so the
             # background rows have to be stored bottom-up too -- as the
@@ -1127,9 +1129,9 @@ class Scene(RenderLoopMixin):
         --------
         .. code-block:: python
 
-            Scene.save_video("my_video")            # LD into algan_outputs/
-            Scene.save_video("my_video", HD)        # one-off quality override
-            Scene.save_video("renders/final.mov")   # explicit directory
+            Scene.save_video("my_video")  # LD into algan_outputs/
+            Scene.save_video("my_video", HD)  # one-off quality override
+            Scene.save_video("renders/final.mov")  # explicit directory
         """
         from algan.utils.algan_utils import _render_scene_to_file
 

@@ -6,6 +6,7 @@ than walking the Group hierarchy, that made the travelling highlight invisible
 at every stroke width -- and, over a borderless source, produced completely
 empty frames.  Rendering it here turns a regression into a pixel diff.
 """
+
 from algan.animation_timeline.animation_contexts import Off
 from algan.animations.changing import AnimatedBoundary
 from algan.constants.color import BLUE, TRANSPARENT

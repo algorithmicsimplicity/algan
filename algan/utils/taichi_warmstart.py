@@ -35,6 +35,7 @@ The patch replicates taichi 1.7 internals verbatim, so it applies only on
 taichi 1.7.x and degrades to a silent no-op anywhere else (or when
 ``ALGAN_TAICHI_WARMSTART=0``).
 """
+
 from __future__ import annotations
 
 import ast
@@ -64,9 +65,12 @@ def apply():
     if tuple(getattr(taichi, "__version__", ()))[:2] != (1, 7):
         return
     ctx_cls = getattr(_atu, "ASTTransformerContext", None)
-    if (ctx_cls is None or not hasattr(ctx_cls, "get_pos_info")
-            or not hasattr(_ki, "_get_tree_and_ctx")
-            or not hasattr(_ki, "_get_global_vars")):
+    if (
+        ctx_cls is None
+        or not hasattr(ctx_cls, "get_pos_info")
+        or not hasattr(_ki, "_get_tree_and_ctx")
+        or not hasattr(_ki, "_get_global_vars")
+    ):
         return
 
     # --- get_pos_info memo + fast first visit ---------------------------
@@ -102,8 +106,10 @@ def apply():
         return textwrap.TextWrapper(width=80).wrap(text)
 
     def _fast_get_pos_info(self, node):
-        msg = (f'File "{self.file}", line {node.lineno + self.lineno_offset},'
-               f" in {self.func.func.__name__}:\n")
+        msg = (
+            f'File "{self.file}", line {node.lineno + self.lineno_offset},'
+            f" in {self.func.func.__name__}:\n"
+        )
         col_offset = self.indent + node.col_offset
         end_col_offset = self.indent + node.end_col_offset
 
@@ -128,13 +134,14 @@ def apply():
 
             for i in range(node.lineno - 1, end_lineno):
                 last = len(self.src[i])
-                while last > 0 and (self.src[i][last - 1].isspace()
-                                    or not self.src[i][last - 1].isprintable()):
+                while last > 0 and (
+                    self.src[i][last - 1].isspace()
+                    or not self.src[i][last - 1].isprintable()
+                ):
                     last -= 1
                 first = 0
                 while first < len(self.src[i]) and (
-                    self.src[i][first].isspace()
-                    or not self.src[i][first].isprintable()
+                    self.src[i][first].isspace() or not self.src[i][first].isprintable()
                 ):
                     first += 1
                 if i == node.lineno - 1:
@@ -160,8 +167,10 @@ def apply():
             except AttributeError:
                 return _orig_get_pos_info(self, node)
         key = (
-            self.lineno_offset, self.indent,
-            node.lineno, node.col_offset,
+            self.lineno_offset,
+            self.indent,
+            node.lineno,
+            node.col_offset,
             getattr(node, "end_lineno", None),
             getattr(node, "end_col_offset", None),
             node.__class__.__name__,
@@ -175,7 +184,8 @@ def apply():
             if ref != hit:
                 raise RuntimeError(
                     "taichi_warmstart get_pos_info mismatch for "
-                    f"{key}:\nfast: {hit!r}\nref:  {ref!r}")
+                    f"{key}:\nfast: {hit!r}\nref:  {ref!r}"
+                )
         return hit
 
     ctx_cls.get_pos_info = _memoized_get_pos_info

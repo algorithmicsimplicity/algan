@@ -19,9 +19,7 @@ def _write_test_image(tmp_path, height, width):
     rows = torch.arange(height, dtype=torch.float32).view(-1, 1) * 7
     cols = torch.arange(width, dtype=torch.float32).view(1, -1)
     red = (rows + cols).clamp_max(255)
-    image = torch.stack(
-        (red, torch.zeros_like(red), 255 - red), dim=0
-    ).to(torch.uint8)
+    image = torch.stack((red, torch.zeros_like(red), 255 - red), dim=0).to(torch.uint8)
     path = tmp_path / "background.png"
     torchvision.io.write_png(image, str(path))
     return path, image.permute(1, 2, 0).float() / 255
@@ -73,16 +71,14 @@ def test_prefill_rejects_a_background_at_the_wrong_resolution():
         device=torch.device("cpu"),
     )
 
-    out = torch.empty((frames, screen_height * screen_width, 4),
-                      dtype=torch.uint8)
+    out = torch.empty((frames, screen_height * screen_width, 4), dtype=torch.uint8)
     with pytest.raises(RuntimeError, match="background resolution"):
-        _prefill_background(out, background, 0, out.device,
-                            background_frames=frames)
+        _prefill_background(out, background, 0, out.device, background_frames=frames)
 
     averaged = _downsample_background(
-        background, aa, frames, screen_height, screen_width)
-    _prefill_background(out, averaged, 0, out.device,
-                        background_frames=frames)
+        background, aa, frames, screen_height, screen_width
+    )
+    _prefill_background(out, averaged, 0, out.device, background_frames=frames)
 
     # Every frame gets the same still image back, not a different slice.
     assert torch.equal(out[0], out[1])

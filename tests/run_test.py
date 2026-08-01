@@ -66,9 +66,9 @@ class TestOverseer(TestCase):
                         if ret1 != ret2:
                             frame_count_mismatch = (ret1, ret2)
                         break
-                    diff = np.abs(
-                        yh_.astype(np.int16) - y_.astype(np.int16)
-                    ).astype(np.uint8)
+                    diff = np.abs(yh_.astype(np.int16) - y_.astype(np.int16)).astype(
+                        np.uint8
+                    )
                     diff_frames.append(diff)
                     overall_max_diff = max(overall_max_diff, int(diff.max()))
                 yh.release()
@@ -90,7 +90,11 @@ class TestOverseer(TestCase):
                     writer.release()
 
                 if frame_count_mismatch is not None:
-                    assert frame_count_mismatch[0] == frame_count_mismatch[1], f"{module_name} output does not have the expected number of frames."
-                assert overall_max_diff <= 2, f"{module_name} output does not match expectation. Max pixel difference: {overall_max_diff}"
+                    assert frame_count_mismatch[0] == frame_count_mismatch[1], (
+                        f"{module_name} output does not have the expected number of frames."
+                    )
+                assert overall_max_diff <= 2, (
+                    f"{module_name} output does not match expectation. Max pixel difference: {overall_max_diff}"
+                )
                 # with open(os.path.join(test_output_dir, f), 'r') as yh, open(os.path.getsize(), 'r') as y:
                 # self.assertEqual(os.path.getsize(os.path.join(test_output_dir, f)), os.path.getsize(os.path.join(expected_output_dir, f)))

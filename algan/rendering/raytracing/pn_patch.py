@@ -24,6 +24,7 @@ which is cheaper to evaluate and differentiate per ray. This module holds
 the (pure PyTorch, dependency-free) construction helpers shared by the
 production primitive and the unit tests.
 """
+
 from __future__ import annotations
 
 import torch
@@ -55,12 +56,14 @@ def pn_control_points(corners, normals):
 
     def edge(pi, pj, ni, nj):
         e = pj - pi
-        return ((pi + pj) * 0.5
-                - 0.25 * ((e * ni).sum(-1, keepdim=True) * ni
-                          - (e * nj).sum(-1, keepdim=True) * nj))
+        return (pi + pj) * 0.5 - 0.25 * (
+            (e * ni).sum(-1, keepdim=True) * ni - (e * nj).sum(-1, keepdim=True) * nj
+        )
 
-    return torch.stack((p0, p1, p2, edge(p0, p1, n0, n1),
-                        edge(p1, p2, n1, n2), edge(p0, p2, n0, n2)), -2)
+    return torch.stack(
+        (p0, p1, p2, edge(p0, p1, n0, n1), edge(p1, p2, n1, n2), edge(p0, p2, n0, n2)),
+        -2,
+    )
 
 
 def pn_patch_coefficients(control_points):
@@ -77,12 +80,17 @@ def pn_patch_coefficients(control_points):
     Tensor[..., 18]
     """
     p0, p1, p2, e01, e12, e02 = control_points.unbind(-2)
-    return torch.cat((p0,
-                      2.0 * (e01 - p0),
-                      2.0 * (e02 - p0),
-                      p0 + p1 - 2.0 * e01,
-                      p0 + p2 - 2.0 * e02,
-                      2.0 * (p0 + e12 - e01 - e02)), -1)
+    return torch.cat(
+        (
+            p0,
+            2.0 * (e01 - p0),
+            2.0 * (e02 - p0),
+            p0 + p1 - 2.0 * e01,
+            p0 + p2 - 2.0 * e02,
+            2.0 * (p0 + e12 - e01 - e02),
+        ),
+        -1,
+    )
 
 
 def pn_obb(control_points):
@@ -129,7 +137,7 @@ def pn_obb(control_points):
         lo = pc.amin(-1)
         hi = pc.amax(-1)
         c = (lo + hi) * 0.5
-        h = (hi - lo) * 0.5 * 1.01 + 1e-6   # hair of conservative slack
+        h = (hi - lo) * 0.5 * 1.01 + 1e-6  # hair of conservative slack
         return c.unsqueeze(-1), ax * h.unsqueeze(-1)
 
     cu, axu = axis(pu, u)
@@ -141,8 +149,8 @@ def pn_obb(control_points):
     if bool(degenerate.any()):
         big = torch.zeros_like(obb)
         big[..., 0:3] = p0
-        big[..., 3] = 1e18   # axu = (1e18, 0, 0)
-        big[..., 7] = 1e18   # axv = (0, 1e18, 0)
+        big[..., 3] = 1e18  # axu = (1e18, 0, 0)
+        big[..., 7] = 1e18  # axv = (0, 1e18, 0)
         big[..., 11] = 1e18  # axw = (0, 0, 1e18)
         obb = torch.where(degenerate.unsqueeze(-1), big, obb)
     return obb
@@ -155,6 +163,11 @@ def evaluate_pn_patch(coefficients, u, v):
     k = coefficients.unflatten(-1, (6, 3))
     u = u.unsqueeze(-1)
     v = v.unsqueeze(-1)
-    return (k[..., 0, :] + u * k[..., 1, :] + v * k[..., 2, :]
-            + (u * u) * k[..., 3, :] + (v * v) * k[..., 4, :]
-            + (u * v) * k[..., 5, :])
+    return (
+        k[..., 0, :]
+        + u * k[..., 1, :]
+        + v * k[..., 2, :]
+        + (u * u) * k[..., 3, :]
+        + (v * v) * k[..., 4, :]
+        + (u * v) * k[..., 5, :]
+    )

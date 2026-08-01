@@ -30,17 +30,25 @@ class VideoSettings(Settings):
         if width <= 0 or height <= 0:
             raise AlganConfigurationError("resolution dimensions must be positive")
         object.__setattr__(self, "resolution", (width, height))
-        if not isinstance(self.frames_per_second, int) or isinstance(
-            self.frames_per_second, bool
-        ) or self.frames_per_second <= 0:
-            raise AlganConfigurationError("frames_per_second must be a positive integer")
-        if not isinstance(self.anti_alias_level, int) or isinstance(
-            self.anti_alias_level, bool
-        ) or self.anti_alias_level <= 0:
+        if (
+            not isinstance(self.frames_per_second, int)
+            or isinstance(self.frames_per_second, bool)
+            or self.frames_per_second <= 0
+        ):
+            raise AlganConfigurationError(
+                "frames_per_second must be a positive integer"
+            )
+        if (
+            not isinstance(self.anti_alias_level, int)
+            or isinstance(self.anti_alias_level, bool)
+            or self.anti_alias_level <= 0
+        ):
             raise AlganConfigurationError("anti_alias_level must be a positive integer")
-        if not isinstance(self.audio_frames_per_second, int) or isinstance(
-            self.audio_frames_per_second, bool
-        ) or self.audio_frames_per_second <= 0:
+        if (
+            not isinstance(self.audio_frames_per_second, int)
+            or isinstance(self.audio_frames_per_second, bool)
+            or self.audio_frames_per_second <= 0
+        ):
             raise AlganConfigurationError(
                 "audio_frames_per_second must be a positive integer"
             )

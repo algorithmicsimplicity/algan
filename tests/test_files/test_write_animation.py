@@ -12,5 +12,6 @@ def test_write_animation():
     draw_border_then_fill(x.children[2])
     x.wait(0.5)
 
+
 if __name__ == "__main__":
     render_all_funcs(__name__)

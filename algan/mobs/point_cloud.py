@@ -5,6 +5,7 @@ point-sprite primitive. Visible point clouds are therefore represented by one
 batched collection of small native spheres while retaining Manim's point-array
 mutation and query API.
 """
+
 from __future__ import annotations
 
 import math
@@ -25,10 +26,14 @@ from algan.utils.tensor_utils import cast_to_tensor
 
 def _as_points(points) -> torch.Tensor:
     if points is None:
-        return torch.empty((0, 3), dtype=torch.get_default_dtype(), device=torch.get_default_device())
+        return torch.empty(
+            (0, 3), dtype=torch.get_default_dtype(), device=torch.get_default_device()
+        )
     if isinstance(points, torch.Tensor):
         value = points
-    elif isinstance(points, (list, tuple)) and any(isinstance(item, torch.Tensor) for item in points):
+    elif isinstance(points, (list, tuple)) and any(
+        isinstance(item, torch.Tensor) for item in points
+    ):
         value = torch.stack([cast_to_tensor(item).reshape(3) for item in points])
     else:
         value = torch.as_tensor(np.asarray(points), device=torch.get_default_device())
@@ -44,8 +49,12 @@ def _as_rgba(color, alpha=1.0) -> torch.Tensor:
     else:
         value = cast_to_tensor(color).to(dtype=torch.get_default_dtype()).reshape(-1)
         rgb = value[:3]
-        opacity = (value[3] if value.numel() == 4 else value[-1] if value.numel() >= 5 else 1.0) * alpha
-    return torch.cat((rgb[:3], torch.as_tensor([opacity], device=rgb.device, dtype=rgb.dtype)))
+        opacity = (
+            value[3] if value.numel() == 4 else value[-1] if value.numel() >= 5 else 1.0
+        ) * alpha
+    return torch.cat(
+        (rgb[:3], torch.as_tensor([opacity], device=rgb.device, dtype=rgb.dtype))
+    )
 
 
 def _rgba_to_color(rgba: torch.Tensor) -> Color:
@@ -55,7 +64,9 @@ def _rgba_to_color(rgba: torch.Tensor) -> Color:
 
 def _gradient(colors, length: int) -> torch.Tensor:
     if length <= 0:
-        return torch.empty((0, 4), dtype=torch.get_default_dtype(), device=torch.get_default_device())
+        return torch.empty(
+            (0, 4), dtype=torch.get_default_dtype(), device=torch.get_default_device()
+        )
     stops = torch.stack([_as_rgba(color) for color in colors])
     if len(stops) == 1:
         return stops.expand(length, -1).clone()
@@ -91,7 +102,9 @@ class PMobject(Group):
             rgba = _as_rgba(color)
             self.rgbas = rgba.expand(len(self.points), -1).clone()
         else:
-            self.rgbas = cast_to_tensor(rgbas).to(dtype=torch.get_default_dtype()).reshape(-1, 4)
+            self.rgbas = (
+                cast_to_tensor(rgbas).to(dtype=torch.get_default_dtype()).reshape(-1, 4)
+            )
             if len(self.rgbas) != len(self.points):
                 raise ValueError("points and rgbas must have same length")
         self.point_color = color
@@ -161,7 +174,9 @@ class PMobject(Group):
             rgba = _as_rgba(self.point_color if color is None else color, alpha)
             rgbas = rgba.expand(len(points), -1).clone()
         else:
-            rgbas = cast_to_tensor(rgbas).to(dtype=torch.get_default_dtype()).reshape(-1, 4)
+            rgbas = (
+                cast_to_tensor(rgbas).to(dtype=torch.get_default_dtype()).reshape(-1, 4)
+            )
             if len(rgbas) != len(points):
                 raise ValueError("points and rgbas must have same length")
         self.points = torch.cat((self.points, points), 0)
@@ -182,7 +197,9 @@ class PMobject(Group):
         return self._rebuild_geometry()
 
     def get_color(self):
-        return self.point_color if len(self.rgbas) == 0 else _rgba_to_color(self.rgbas[0])
+        return (
+            self.point_color if len(self.rgbas) == 0 else _rgba_to_color(self.rgbas[0])
+        )
 
     def get_stroke_width(self):
         return self.stroke_width
@@ -222,15 +239,29 @@ class PMobject(Group):
         if len(self.points) == 0:
             self.rgbas = self.rgbas.new_empty((0, 4))
         elif len(mobject.rgbas) == 0:
-            self.rgbas = _as_rgba(mobject.point_color).expand(len(self.points), -1).clone()
+            self.rgbas = (
+                _as_rgba(mobject.point_color).expand(len(self.points), -1).clone()
+            )
         else:
-            indices = torch.linspace(0, len(mobject.rgbas) - 1, len(self.points), device=mobject.rgbas.device).round().long()
+            indices = (
+                torch.linspace(
+                    0,
+                    len(mobject.rgbas) - 1,
+                    len(self.points),
+                    device=mobject.rgbas.device,
+                )
+                .round()
+                .long()
+            )
             self.rgbas = mobject.rgbas[indices].clone()
         return self._rebuild_geometry()
 
     def filter_out(self, condition: Callable):
         keep = torch.tensor(
-            [not bool(condition(point.detach().cpu().numpy())) for point in self.points],
+            [
+                not bool(condition(point.detach().cpu().numpy()))
+                for point in self.points
+            ],
             dtype=torch.bool,
             device=self.points.device,
         )
@@ -281,7 +312,16 @@ class PMobject(Group):
             self.points = torch.zeros_like(larger_mobject.points)
             self.rgbas = _as_rgba(self.point_color).expand(len(self.points), -1).clone()
         else:
-            indices = torch.linspace(0, len(self.points) - 1, len(larger_mobject.points), device=self.points.device).round().long()
+            indices = (
+                torch.linspace(
+                    0,
+                    len(self.points) - 1,
+                    len(larger_mobject.points),
+                    device=self.points.device,
+                )
+                .round()
+                .long()
+            )
             self.points = self.points[indices]
             self.rgbas = self.rgbas[indices]
         self._rebuild_geometry()

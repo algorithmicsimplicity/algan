@@ -13,13 +13,15 @@ def _should_bypass_bloom():
             is_ray_tracing_enabled,
             is_raytraced_glow_enabled,
         )
+
         return is_ray_tracing_enabled() and is_raytraced_glow_enabled()
     except ImportError:
         return False
 
 
-def fft_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
-               out=None, scratch=None):
+def fft_conv1d(
+    input_tensor, kernel, dim=-1, padding="same", memory=None, out=None, scratch=None
+):
     """Perform 1D convolution using FFT.
 
     Args:
@@ -63,7 +65,7 @@ def fft_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
     fft_l = L + L_k - 1
 
     fft_shape = list(input_tensor.shape)
-    fft_shape[dim] = (fft_l // 2 + 1)
+    fft_shape[dim] = fft_l // 2 + 1
 
     result_shape = list(input_tensor.shape)
     result_shape[dim] = fft_l
@@ -98,8 +100,9 @@ def fft_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
     return out
 
 
-def direct_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
-                  out=None, scratch=None):
+def direct_conv1d(
+    input_tensor, kernel, dim=-1, padding="same", memory=None, out=None, scratch=None
+):
     """Zero-padded 1D convolution with no backend workspace allocation.
 
     The default bloom path used to call cuFFT.  Even with an arena-owned
@@ -126,10 +129,13 @@ def direct_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
         bloom_conv1d_f32,
         can_use_bloom_taichi,
     )
-    if (input_tensor.dtype == torch.float32
-            and kernel.dtype == torch.float32
-            and out.dtype == torch.float32
-            and can_use_bloom_taichi(input_tensor.device)):
+
+    if (
+        input_tensor.dtype == torch.float32
+        and kernel.dtype == torch.float32
+        and out.dtype == torch.float32
+        and can_use_bloom_taichi(input_tensor.device)
+    ):
         bloom_conv1d_f32(input_tensor, kernel, out, dim)
         return out
 
@@ -157,9 +163,7 @@ def direct_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
             src_index[dim] = slice(src_start, src_end)
             dst_index = tuple(dst_index)
             src_index = tuple(src_index)
-            torch.mul(
-                input_tensor[src_index], kernel[tap], out=scratch[dst_index]
-            )
+            torch.mul(input_tensor[src_index], kernel[tap], out=scratch[dst_index])
             out[dst_index].add_(scratch[dst_index])
     finally:
         if scratch_context is not None:
@@ -169,10 +173,7 @@ def direct_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
 
 def _fill_gaussian_filter(filter_1d, radius, sigma):
     """Fill an arena filter without a render-device reduction workspace."""
-    values = [
-        math.exp(-0.5 * ((x / sigma) ** 2))
-        for x in range(-radius, radius + 1)
-    ]
+    values = [math.exp(-0.5 * ((x / sigma) ** 2)) for x in range(-radius, radius + 1)]
     total = sum(values)
     values = [value / total for value in values]
     if filter_1d.device.type == "cpu":
@@ -182,12 +183,13 @@ def _fill_gaussian_filter(filter_1d, radius, sigma):
     else:
         # The temporary is host-owned; only the destination storage lives on
         # the rendering device, and that destination belongs to ManualMemory.
-        host_filter = torch.tensor(values, dtype=filter_1d.dtype, device=filter_1d.device)
+        host_filter = torch.tensor(
+            values, dtype=filter_1d.dtype, device=filter_1d.device
+        )
         filter_1d.copy_(host_filter)
 
 
-def _axis_weights(
-        input_size, output_size, output_index, antialias, source_scale=None):
+def _axis_weights(input_size, output_size, output_index, antialias, source_scale=None):
     scale = input_size / output_size if source_scale is None else source_scale
     center = (output_index + 0.5) * scale - 0.5
     support = scale if antialias and scale > 1.0 else 1.0
@@ -202,39 +204,42 @@ def _axis_weights(
 
 
 def _downsample_bloom(input_hwc, output, memory, scale_factor):
-    if (input_hwc.shape[-3] == output.shape[-2]
-            and input_hwc.shape[-2] == output.shape[-1]):
+    if (
+        input_hwc.shape[-3] == output.shape[-2]
+        and input_hwc.shape[-2] == output.shape[-1]
+    ):
         output.copy_(input_hwc.permute(0, 3, 1, 2))
         return
     from algan.rendering.post_processing.bloom_kernels_taichi import (
         bloom_downsample_bilinear_aa_f32,
         can_use_bloom_taichi,
     )
-    if (input_hwc.dtype == output.dtype == torch.float32
-            and can_use_bloom_taichi(input_hwc.device)):
+
+    if input_hwc.dtype == output.dtype == torch.float32 and can_use_bloom_taichi(
+        input_hwc.device
+    ):
         if input_hwc.is_contiguous():
-            bloom_downsample_bilinear_aa_f32(
-                input_hwc, output, scale_factor
-            )
+            bloom_downsample_bilinear_aa_f32(input_hwc, output, scale_factor)
         else:
             # Taichi's ndarray interop rejects the RGB view of an RGBA input.
             # Pack that view into temporary arena storage instead of calling
             # ``contiguous()``, whose storage PyTorch would own externally.
             with memory.temp():
-                packed_input = memory.get_tensor(
-                    input_hwc.shape, input_hwc.dtype
-                )
+                packed_input = memory.get_tensor(input_hwc.shape, input_hwc.dtype)
                 packed_input.copy_(input_hwc)
-                bloom_downsample_bilinear_aa_f32(
-                    packed_input, output, scale_factor
-                )
+                bloom_downsample_bilinear_aa_f32(packed_input, output, scale_factor)
         return
 
     # Separable CPU fallback with the same widened triangular filter.
     with memory.temp():
         horizontal = memory.get_tensor(
-            (input_hwc.shape[0], input_hwc.shape[-1],
-             input_hwc.shape[-3], output.shape[-1]), input_hwc.dtype
+            (
+                input_hwc.shape[0],
+                input_hwc.shape[-1],
+                input_hwc.shape[-3],
+                output.shape[-1],
+            ),
+            input_hwc.dtype,
         )
         for x in range(output.shape[-1]):
             first, weights = _axis_weights(
@@ -252,9 +257,7 @@ def _downsample_bloom(input_hwc, output, memory, scale_factor):
             )
             output[..., y, :].zero_()
             for offset, weight in enumerate(weights):
-                output[..., y, :].add_(
-                    horizontal[..., first + offset, :], alpha=weight
-                )
+                output[..., y, :].add_(horizontal[..., first + offset, :], alpha=weight)
 
 
 def _upsample_bloom(input_tensor, output, memory):
@@ -265,8 +268,10 @@ def _upsample_bloom(input_tensor, output, memory):
         bloom_upsample_bilinear_f32,
         can_use_bloom_taichi,
     )
-    if (input_tensor.dtype == output.dtype == torch.float32
-            and can_use_bloom_taichi(input_tensor.device)):
+
+    if input_tensor.dtype == output.dtype == torch.float32 and can_use_bloom_taichi(
+        input_tensor.device
+    ):
         bloom_upsample_bilinear_f32(input_tensor, output)
         return
 
@@ -278,26 +283,28 @@ def _upsample_bloom(input_tensor, output, memory):
         scale_x = input_tensor.shape[-1] / output.shape[-1]
         for x in range(output.shape[-1]):
             source_x = max(
-                0.0, min((x + 0.5) * scale_x - 0.5,
-                         input_tensor.shape[-1] - 1.0)
+                0.0, min((x + 0.5) * scale_x - 0.5, input_tensor.shape[-1] - 1.0)
             )
             x0 = int(math.floor(source_x))
             x1 = min(x0 + 1, input_tensor.shape[-1] - 1)
             torch.lerp(
-                input_tensor[..., x0], input_tensor[..., x1], source_x - x0,
-                out=horizontal[..., x]
+                input_tensor[..., x0],
+                input_tensor[..., x1],
+                source_x - x0,
+                out=horizontal[..., x],
             )
         scale_y = input_tensor.shape[-2] / output.shape[-2]
         for y in range(output.shape[-2]):
             source_y = max(
-                0.0, min((y + 0.5) * scale_y - 0.5,
-                         input_tensor.shape[-2] - 1.0)
+                0.0, min((y + 0.5) * scale_y - 0.5, input_tensor.shape[-2] - 1.0)
             )
             y0 = int(math.floor(source_y))
             y1 = min(y0 + 1, input_tensor.shape[-2] - 1)
             torch.lerp(
-                horizontal[..., y0, :], horizontal[..., y1, :], source_y - y0,
-                out=output[..., y, :]
+                horizontal[..., y0, :],
+                horizontal[..., y1, :],
+                source_y - y0,
+                out=output[..., y, :],
             )
 
 
@@ -579,8 +586,8 @@ def bloom_filter_premultiply(
 def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_factor=8):
     if _should_bypass_bloom():
         return x
-    #return x
-    if x[...,3:4].amax() <= 1e-5:
+    # return x
+    if x[..., 3:4].amax() <= 1e-5:
         return x
     scale_factor = max(int(scale_factor * x.shape[-3] / 2160), 1)
 
@@ -658,8 +665,17 @@ def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_fa
     return (out * 255).clamp_(min=0, max=255).to(xdtype)
 
 
-def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor=8,
-                 glow_spread=0.10, rim_frac=0.004, tail_weight=0.6, memory=None):
+def bloom_filter(
+    x,
+    num_iterations=1,
+    kernel_size=256,
+    strength=30,
+    scale_factor=8,
+    glow_spread=0.10,
+    rim_frac=0.004,
+    tail_weight=0.6,
+    memory=None,
+):
     """FFT-based bloom filter producing a soft, natural glow.
 
     A single Gaussian (``exp(-r^2)`` tail) plummets and leaves a hard,
@@ -759,12 +775,20 @@ def bloom_filter(x, num_iterations=1, kernel_size=256, strength=30, scale_factor
                     vertical = memory.get_tensor(color.shape, work_dtype)
                     for _ in range(num_iterations):
                         fft_conv1d(
-                            blurred, filter_1d, padding="same", dim=-1,
-                            memory=memory, out=horizontal
+                            blurred,
+                            filter_1d,
+                            padding="same",
+                            dim=-1,
+                            memory=memory,
+                            out=horizontal,
                         )
                         fft_conv1d(
-                            horizontal, filter_1d, padding="same", dim=-2,
-                            memory=memory, out=vertical
+                            horizontal,
+                            filter_1d,
+                            padding="same",
+                            dim=-2,
+                            memory=memory,
+                            out=vertical,
                         )
                         blurred = vertical
                 acc.add_(blurred, alpha=weight)

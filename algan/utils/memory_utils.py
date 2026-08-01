@@ -300,9 +300,19 @@ class ScopeRecord:
     high-water marks relative to its entry pointers.
     """
 
-    __slots__ = ("name", "params", "entry_forward", "entry_reverse",
-                 "exit_forward", "exit_reverse", "events", "children",
-                 "alloc_count", "peak_forward", "peak_reverse")
+    __slots__ = (
+        "name",
+        "params",
+        "entry_forward",
+        "entry_reverse",
+        "exit_forward",
+        "exit_reverse",
+        "events",
+        "children",
+        "alloc_count",
+        "peak_forward",
+        "peak_reverse",
+    )
 
     def __init__(self, name, entry_forward, entry_reverse, params=None):
         self.name = name
@@ -323,14 +333,15 @@ class ScopeRecord:
 
     def total_bytes(self):
         """Alignment-free sum of this scope's own allocations."""
-        return sum(event[4] * event[5]
-                   for event in self.events if event[0] == "alloc")
+        return sum(event[4] * event[5] for event in self.events if event[0] == "alloc")
 
     def __repr__(self):
-        return (f"ScopeRecord({self.name!r}, params={self.params}, "
-                f"allocs={self.alloc_count}, "
-                f"peak_forward={self.peak_forward}, "
-                f"peak_reverse={self.peak_reverse})")
+        return (
+            f"ScopeRecord({self.name!r}, params={self.params}, "
+            f"allocs={self.alloc_count}, "
+            f"peak_forward={self.peak_forward}, "
+            f"peak_reverse={self.peak_reverse})"
+        )
 
 
 class AllocationRecorder:
@@ -385,19 +396,28 @@ class AllocationRecorder:
 
     def note_alloc(self, dtype, persist, numel, itemsize, forward, reverse):
         self.current.events.append(
-            ("alloc", _caller_qualname(), str(dtype), bool(persist),
-             int(numel), int(itemsize)))
+            (
+                "alloc",
+                _caller_qualname(),
+                str(dtype),
+                bool(persist),
+                int(numel),
+                int(itemsize),
+            )
+        )
         for record in self._stack:
             record.alloc_count += 1
             record.peak_forward = max(
-                record.peak_forward, forward - record.entry_forward)
+                record.peak_forward, forward - record.entry_forward
+            )
             record.peak_reverse = max(
-                record.peak_reverse, record.entry_reverse - reverse)
+                record.peak_reverse, record.entry_reverse - reverse
+            )
 
     def note_temp(self, kind, clear_persist=False):
         self.current.events.append(
-            ("temp_push", bool(clear_persist)) if kind == "push"
-            else ("temp_pop",))
+            ("temp_push", bool(clear_persist)) if kind == "push" else ("temp_pop",)
+        )
 
     def clear(self):
         """Drop scopes left open by an aborted render.
@@ -445,16 +465,21 @@ class _RecordingScope:
     def __enter__(self):
         recorder = self.memory._recorder
         self.record = recorder.push_scope(
-            self.name, self.memory.current_pointer,
-            self.memory.current_reverse_pointer, self.params)
+            self.name,
+            self.memory.current_pointer,
+            self.memory.current_reverse_pointer,
+            self.params,
+        )
         return self.record
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         recorder = self.memory._recorder
         if recorder is not None and self.record is not None:
             recorder.pop_scope(
-                self.record, self.memory.current_pointer,
-                self.memory.current_reverse_pointer)
+                self.record,
+                self.memory.current_pointer,
+                self.memory.current_reverse_pointer,
+            )
         # Never suppress: an OOM here must still reach the window-shrink retry.
         return False
 
@@ -512,9 +537,9 @@ class ManualMemory:
 
         if num_bytes is None:
             num_bytes = (
-                int(get_num_available_bytes(device)
-                    * portion_of_available_memory_used)
-                if managed else 1
+                int(get_num_available_bytes(device) * portion_of_available_memory_used)
+                if managed
+                else 1
             )
         num_bytes = max(0, int(num_bytes))
         self.data = torch.empty((num_bytes,), device=device, dtype=torch.uint8)
@@ -556,8 +581,7 @@ class ManualMemory:
         reverse = persist
 
         def get_shape(shape):
-            shape = [int(_.item()) if hasattr(_, "item") else int(_)
-                     for _ in shape]
+            shape = [int(_.item()) if hasattr(_, "item") else int(_) for _ in shape]
             # Scalars have no last dimension to widen into bytes. Represent
             # them as one element; callers still receive a scalar view below.
             scalar = not shape
@@ -596,7 +620,11 @@ class ManualMemory:
         new_pointer = pointer + numel
 
         def error_check():
-            if ((new_pointer < self.current_pointer) if reverse else (new_pointer > self.current_reverse_pointer)):
+            if (
+                (new_pointer < self.current_pointer)
+                if reverse
+                else (new_pointer > self.current_reverse_pointer)
+            ):
                 raise InsufficientMemoryException
 
         error_check()
@@ -614,9 +642,12 @@ class ManualMemory:
                 self.current_reverse_pointer = new_pointer
             else:
                 self.current_pointer = new_pointer
-            #old_max = self.max_pointer
-            self.max_pointer = max(self.max_pointer, self.current_pointer + (self.length - self.current_reverse_pointer))
-            #if self.max_pointer > old_max:
+            # old_max = self.max_pointer
+            self.max_pointer = max(
+                self.max_pointer,
+                self.current_pointer + (self.length - self.current_reverse_pointer),
+            )
+            # if self.max_pointer > old_max:
             #    LoggerManager.instance().log_message(f'Reached {self.max_pointer} bytes, {self.max_pointer / len(self)}%')
             recorder = self._recorder
             if recorder is not None:
@@ -624,8 +655,13 @@ class ManualMemory:
                 for extent in logical_shape:
                     numel *= extent
                 recorder.note_alloc(
-                    dtype, reverse, numel, num_bytes,
-                    self.current_pointer, self.current_reverse_pointer)
+                    dtype,
+                    reverse,
+                    numel,
+                    num_bytes,
+                    self.current_pointer,
+                    self.current_reverse_pointer,
+                )
             x = x.view(byte_shape).view(dtype).view(logical_shape)
             if scalar:
                 x = x.view(())

@@ -8,6 +8,7 @@ operations nested in ``Sync``, ``Seq``, and ``Lag``.  This module is reserved
 for animations which need reusable geometric algorithms rather than merely a
 convenience class.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -146,7 +147,9 @@ def _call_homotopy_function(
         )
         if isinstance(result, (tuple, list)) and len(result) == 3:
             result = np.stack(result, axis=-1)
-        return torch.as_tensor(result, device=points.device, dtype=points.dtype).reshape_as(points)
+        return torch.as_tensor(
+            result, device=points.device, dtype=points.dtype
+        ).reshape_as(points)
     except Exception:
         pass
 
@@ -202,7 +205,11 @@ def ApplyPointwiseFunction(
         mobject, function, function_name="ApplyPointwiseFunction"
     )
     about_point = cast_to_tensor(about_point)
-    with Sync(run_time=run_time, rate_func=rate_func, animation_manager=animation_manager_for(mobject)):
+    with Sync(
+        run_time=run_time,
+        rate_func=rate_func,
+        animation_manager=animation_manager_for(mobject),
+    ):
         for owner in _geometry_point_owners(mobject):
             initial = owner.location.clone()
             centered = initial - about_point.to(initial)
@@ -320,7 +327,11 @@ def Homotopy(
     mobject, homotopy_func = _resolve_mobject_and_callable(
         mobject, homotopy_func, function_name="Homotopy"
     )
-    with Sync(run_time=run_time, rate_func=rate_func, animation_manager=animation_manager_for(mobject)):
+    with Sync(
+        run_time=run_time,
+        rate_func=rate_func,
+        animation_manager=animation_manager_for(mobject),
+    ):
         for owner in _geometry_point_owners(mobject):
             owner.animate_function(
                 _homotopy_step,
@@ -356,7 +367,9 @@ def ComplexHomotopy(
             except Exception:
                 result = np.vectorize(complex_homotopy)(z_np, t_np)
             result = torch.as_tensor(result, device=z.device, dtype=z.dtype)
-        return torch.stack((result.real, result.imag, points[..., 2]), dim=-1).to(points)
+        return torch.stack((result.real, result.imag, points[..., 2]), dim=-1).to(
+            points
+        )
 
     return Homotopy(
         mobject,
@@ -412,7 +425,11 @@ def PhaseFlow(
     )
     if integration_steps < 1:
         raise ValueError("integration_steps must be at least 1")
-    with Sync(run_time=run_time, rate_func=rate_func, animation_manager=animation_manager_for(mobject)):
+    with Sync(
+        run_time=run_time,
+        rate_func=rate_func,
+        animation_manager=animation_manager_for(mobject),
+    ):
         for owner in _geometry_point_owners(mobject):
             owner.animate_function(
                 _phase_flow_step,
@@ -431,7 +448,9 @@ def _path_control_points(path: Mob) -> torch.Tensor:
         if isinstance(descendant, BezierCircuitCubic) and not descendant.empty
     ]
     if not paths:
-        raise TypeError("MoveAlongPath requires a path containing cubic Bezier geometry.")
+        raise TypeError(
+            "MoveAlongPath requires a path containing cubic Bezier geometry."
+        )
     frame_count = max(points.shape[0] for points in paths)
     expanded = [
         points if points.shape[0] == frame_count else points.expand(frame_count, -1, -1)
@@ -517,7 +536,9 @@ def _move_along_path_step(
         t.reshape(frame_count, -1)[:, 0],
         int(samples_per_curve),
     )
-    displacement = point.view(frame_count, 1, 3) - initial_center.to(point).view(1, 1, 3)
+    displacement = point.view(frame_count, 1, 3) - initial_center.to(point).view(
+        1, 1, 3
+    )
     mobject.location = initial_location.expand(frame_count, -1, -1) + displacement
     return mobject
 
@@ -542,7 +563,11 @@ def MoveAlongPath(
         raise ValueError("samples_per_curve must be at least 2")
     # Validate eagerly so a malformed path fails while defining the scene.
     _path_control_points(path)
-    with Sync(run_time=run_time, rate_func=rate_func, animation_manager=animation_manager_for(mobject, path)):
+    with Sync(
+        run_time=run_time,
+        rate_func=rate_func,
+        animation_manager=animation_manager_for(mobject, path),
+    ):
         mobject.animate_function(
             _move_along_path_step,
             path=path,

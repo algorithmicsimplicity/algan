@@ -1,4 +1,5 @@
 """Manim-compatible raster image Mobs backed by :class:`~algan.mobs.image_mob.ImageMob`."""
+
 from __future__ import annotations
 
 import pathlib
@@ -15,7 +16,11 @@ from algan.utils.file_utils import get_image
 
 
 def _load_rgba5(filename_or_array) -> torch.Tensor:
-    value = str(filename_or_array) if isinstance(filename_or_array, pathlib.PurePath) else filename_or_array
+    value = (
+        str(filename_or_array)
+        if isinstance(filename_or_array, pathlib.PurePath)
+        else filename_or_array
+    )
     if isinstance(value, np.ndarray):
         value = torch.from_numpy(value)
         if value.dtype == torch.uint8:
@@ -150,9 +155,12 @@ class ImageMobject(AbstractImageMobject):
                 self.scale(height)
 
     def _sync_texture(self):
-        rgba = torch.from_numpy(self.pixel_array).to(
-            device=torch.get_default_device(), dtype=torch.get_default_dtype()
-        ) / 255
+        rgba = (
+            torch.from_numpy(self.pixel_array).to(
+                device=torch.get_default_device(), dtype=torch.get_default_dtype()
+            )
+            / 255
+        )
         rgba5 = torch.cat(
             (rgba[..., :3], torch.zeros_like(rgba[..., :1]), rgba[..., 3:4]), -1
         )
@@ -185,7 +193,9 @@ class ImageMobject(AbstractImageMobject):
 
     def interpolate_color(self, mobject1, mobject2, alpha):
         if mobject1.pixel_array.shape != mobject2.pixel_array.shape:
-            raise AssertionError("Mobject pixel array shapes incompatible for interpolation")
+            raise AssertionError(
+                "Mobject pixel array shapes incompatible for interpolation"
+            )
         values = (
             mobject1.pixel_array.astype(np.float32) * (1 - alpha)
             + mobject2.pixel_array.astype(np.float32) * alpha
@@ -241,9 +251,7 @@ class ImageMobjectFromCamera(ImageMobject):
         # The frame is added as a child but Algan renders registered actors
         # rather than walking the hierarchy, so it has to join the scene to be
         # drawn at all.
-        self.display_frame = SurroundingRectangle(
-            self, scene=self.scene, **config
-        )
+        self.display_frame = SurroundingRectangle(self, scene=self.scene, **config)
         self.add_children(self.display_frame)
         return self
 

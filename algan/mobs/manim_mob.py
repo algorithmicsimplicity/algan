@@ -74,11 +74,17 @@ class ManimMob(BezierCircuitCubic):
 
         empty = False
         if len(manim_mob.points) == 0:
-            control_points = torch.from_numpy(manim_mob.get_center()).float().to(torch.get_default_device())
+            control_points = (
+                torch.from_numpy(manim_mob.get_center())
+                .float()
+                .to(torch.get_default_device())
+            )
             control_points = torch.stack([control_points for _ in range(4)], -2)
             empty = True
         else:
-            control_points = torch.from_numpy(manim_mob.points).to(torch.get_default_device())
+            control_points = torch.from_numpy(manim_mob.points).to(
+                torch.get_default_device()
+            )
             if len(control_points) == 1:
                 control_points = control_points.expand(
                     *([-1] * (control_points.dim() - 2)), 4, -1
@@ -108,16 +114,11 @@ class ManimMob(BezierCircuitCubic):
 
         super().__init__(
             control_points * manim_scale_factor,
-            color=convert_manim_color(
-                manim_mob.fill_color, opacity=fill_opacity
-            ),
+            color=convert_manim_color(manim_mob.fill_color, opacity=fill_opacity),
             opacity=1,
-            border_color=convert_manim_color(
-                manim_mob.stroke_color, stroke_opacity
-            ),
+            border_color=convert_manim_color(manim_mob.stroke_color, stroke_opacity),
             border_width=stroke_width / 2,
-            filled=(not hasattr(manim_mob, "end"))
-            and has_visible_fill,
+            filled=(not hasattr(manim_mob, "end")) and has_visible_fill,
             empty=empty,
             **kwargs,
         )

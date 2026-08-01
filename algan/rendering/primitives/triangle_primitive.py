@@ -60,7 +60,8 @@ class TrianglePrimitive(RenderPrimitive):
             # Names of the positional shader_param_values, in the same order
             # (kept so the ray tracer can map them to its material slots).
             self.shader_param_names = getattr(
-                triangle_collection[0], "shader_param_names", [])
+                triangle_collection[0], "shader_param_names", []
+            )
             self.corners, self.colors, self.normals, *self.shader_param_values = (
                 unsquish(torch.cat(_, 1), -2, 3)
                 for _ in zip(
@@ -80,13 +81,18 @@ class TrianglePrimitive(RenderPrimitive):
             )
 
             # Check if any triangle in the collection has uvs or texture_map
-            has_uvs = any(getattr(t, "uvs", None) is not None for t in triangle_collection)
+            has_uvs = any(
+                getattr(t, "uvs", None) is not None for t in triangle_collection
+            )
             if has_uvs:
                 uv_list = []
                 for triangle in triangle_collection:
                     uv = getattr(triangle, "uvs", None)
                     if uv is None:
-                        uv = torch.zeros((*triangle.corners.shape[:-1], 2), device=triangle.corners.device)
+                        uv = torch.zeros(
+                            (*triangle.corners.shape[:-1], 2),
+                            device=triangle.corners.device,
+                        )
                     else:
                         if uv.dim() == 4:
                             uv = squish(uv, -3, -2)
@@ -94,7 +100,9 @@ class TrianglePrimitive(RenderPrimitive):
                     uv_list.append(uv)
                 merged_uvs = []
                 for i, triangle in enumerate(triangle_collection):
-                    cor, uv = broadcast_all([triangle.corners, uv_list[i]], ignored_dims=[-1])
+                    cor, uv = broadcast_all(
+                        [triangle.corners, uv_list[i]], ignored_dims=[-1]
+                    )
                     merged_uvs.append(uv)
                 self.uvs = unsquish(torch.cat(merged_uvs, 1), -2, 3)
 
@@ -114,7 +122,8 @@ class TrianglePrimitive(RenderPrimitive):
                 if tex is not None:
                     self.material_texture_map = tex.to(self.corners.device)
                     self.material_texture_flags = getattr(
-                        triangle, "material_texture_flags", 0)
+                        triangle, "material_texture_flags", 0
+                    )
                     break
             for triangle in triangle_collection:
                 tex = getattr(triangle, "normal_texture_map", None)
@@ -143,12 +152,20 @@ class TrianglePrimitive(RenderPrimitive):
             if uvs.dim() == 3:
                 uvs = unsquish(uvs, -2, 3)
             self.uvs = uvs.to(self.corners.device)
-        self.texture_map = texture_map.to(self.corners.device) if texture_map is not None else None
-        self.material_texture_map = (material_texture_map.to(self.corners.device)
-                                     if material_texture_map is not None else None)
+        self.texture_map = (
+            texture_map.to(self.corners.device) if texture_map is not None else None
+        )
+        self.material_texture_map = (
+            material_texture_map.to(self.corners.device)
+            if material_texture_map is not None
+            else None
+        )
         self.material_texture_flags = material_texture_flags
-        self.normal_texture_map = (normal_texture_map.to(self.corners.device)
-                                   if normal_texture_map is not None else None)
+        self.normal_texture_map = (
+            normal_texture_map.to(self.corners.device)
+            if normal_texture_map is not None
+            else None
+        )
 
         if shader is None:
             shader = SETTINGS.style.default_shader

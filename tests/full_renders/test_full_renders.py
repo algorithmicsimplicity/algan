@@ -20,9 +20,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EXPECTED_DIR = HERE / f"expected_outputs_{DEVICE}"
 UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
 SCENE_FILES = sorted(
-    path
-    for path in SCENES_DIR.glob("*.py")
-    if not path.name.startswith("_")
+    path for path in SCENES_DIR.glob("*.py") if not path.name.startswith("_")
 )
 
 

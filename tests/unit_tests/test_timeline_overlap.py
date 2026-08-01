@@ -43,10 +43,7 @@ def _lin(t, s, e):
 
 
 def _now():
-    return (
-        SceneManager.instance()
-        .current_scene.animation_manager.context.timespan.current_time
-    )
+    return SceneManager.instance().current_scene.animation_manager.context.timespan.current_time
 
 
 def _materialize(times, mobs, attr="location"):
@@ -54,8 +51,9 @@ def _materialize(times, mobs, attr="location"):
     does, and return each mob's values there ([T, rows, channels]).
     """
     tm = mobs[0].scene.timeline_manager
-    with Off(record_attr_modifications=False, record_funcs=False,
-             priority_level=math.inf):
+    with Off(
+        record_attr_modifications=False, record_funcs=False, priority_level=math.inf
+    ):
         tm.set_state_to_times(torch.tensor(times, dtype=torch.float32))
         out = [m.get_animated_attribute(attr).clone() for m in mobs]
     tm.clear_buffers()
@@ -65,8 +63,8 @@ def _materialize(times, mobs, attr="location"):
 def _assert_matches(offsets, actual, expected, atol=1e-4):
     for i, dt in enumerate(offsets):
         assert torch.allclose(actual[i, 0], expected[i], atol=atol), (
-            f"at t=+{dt}: got {actual[i, 0].tolist()}, "
-            f"expected {expected[i].tolist()}")
+            f"at t=+{dt}: got {actual[i, 0].tolist()}, expected {expected[i].tolist()}"
+        )
 
 
 def test_sequential_edits():
@@ -74,8 +72,8 @@ def test_sequential_edits():
     m = Mob().spawn(animate=False)
     t0 = _now()
     with Seq(rate_func=rate_funcs.identity):
-        m.move(R * 2)   # [t0, t0+1]
-        m.move(U * 2)   # [t0+1, t0+2]
+        m.move(R * 2)  # [t0, t0+1]
+        m.move(U * 2)  # [t0+1, t0+2]
     offs = [0.25, 0.75, 1.0, 1.5, 2.0, 2.5]
     expected = [R * 2 * _lin(dt, 0, 1) + U * 2 * _lin(dt, 1, 2) for dt in offs]
     (actual,) = _materialize([t0 + dt for dt in offs], [m])
@@ -89,8 +87,8 @@ def test_edits_ending_at_same_time():
     m = Mob().spawn(animate=False)
     t0 = _now()
     with Sync(rate_func=rate_funcs.identity):
-        m.move(R * 2)   # [t0, t0+1]
-        m.move(U * 2)   # [t0, t0+1]
+        m.move(R * 2)  # [t0, t0+1]
+        m.move(U * 2)  # [t0, t0+1]
     offs = [0.25, 0.5, 0.9, 1.0, 1.5]
     expected = [(R * 2 + U * 2) * _lin(dt, 0, 1) for dt in offs]
     (actual,) = _materialize([t0 + dt for dt in offs], [m])
@@ -106,9 +104,9 @@ def test_nested_overlap():
     t0 = _now()
     with Sync(rate_func=rate_funcs.identity):
         with Seq(run_time=1):
-            m.move(R * 2)          # [t0, t0+1]
+            m.move(R * 2)  # [t0, t0+1]
         with Seq(run_time=0.5):
-            m.move(U * 2)          # [t0, t0+0.5]
+            m.move(U * 2)  # [t0, t0+0.5]
     offs = [0.25, 0.4999, 0.5, 0.75, 1.0, 1.5]
     expected = [R * 2 * _lin(dt, 0, 1) + U * 2 * _lin(dt, 0, 0.5) for dt in offs]
     (actual,) = _materialize([t0 + dt for dt in offs], [m])
@@ -121,13 +119,15 @@ def test_three_overlapping_intervals():
     t0 = _now()
     with Sync(rate_func=rate_funcs.identity):
         with Seq(run_time=1):
-            m.move(R * 2)          # [t0, t0+1]
+            m.move(R * 2)  # [t0, t0+1]
         with Seq(run_time=1):
-            m.move(U * 2)          # [t0, t0+0.5]
-            m.move(OUT * 2)          # [t0+0.5, t0+1]
+            m.move(U * 2)  # [t0, t0+0.5]
+            m.move(OUT * 2)  # [t0+0.5, t0+1]
     offs = [0.25, 0.4999, 0.5, 0.75, 0.9999, 1.0, 1.5]
-    expected = [R * 2 * _lin(dt, 0, 1) + U * 2 * _lin(dt, 0, 0.5)
-                + OUT * 2 * _lin(dt, 0.5, 1) for dt in offs]
+    expected = [
+        R * 2 * _lin(dt, 0, 1) + U * 2 * _lin(dt, 0, 0.5) + OUT * 2 * _lin(dt, 0.5, 1)
+        for dt in offs
+    ]
     (actual,) = _materialize([t0 + dt for dt in offs], [m])
     _assert_matches(offs, actual, expected)
 
@@ -144,9 +144,9 @@ def test_partial_row_overlap():
     t0 = _now()
     with Sync(rate_func=rate_funcs.identity):
         with Seq(run_time=2):
-            m1.move(R * 2)         # [t0, t0+2], m1 rows only
+            m1.move(R * 2)  # [t0, t0+2], m1 rows only
         with Seq(run_time=1):
-            g.move(U * 2)          # [t0, t0+1], m1+m2 rows
+            g.move(U * 2)  # [t0, t0+1], m1+m2 rows
     offs = [0.5, 0.9999, 1.0, 1.5, 2.0, 2.5]
     exp1 = [R * 2 * _lin(dt, 0, 2) + U * 2 * _lin(dt, 0, 1) for dt in offs]
     exp2 = [U * 2 * _lin(dt, 0, 1) for dt in offs]
@@ -165,9 +165,9 @@ def test_overlapping_rotations_continuity():
     t0 = _now()
     with Sync(rate_func=rate_funcs.identity):
         with Seq(run_time=1):
-            m.rotate(90, OUT)        # [t0, t0+1]
+            m.rotate(90, OUT)  # [t0, t0+1]
         with Seq(run_time=0.5):
-            m.rotate(90, U)        # [t0, t0+0.5]
+            m.rotate(90, U)  # [t0, t0+0.5]
     offs = [0.4999, 0.5, 0.9999, 1.0, 1.5]
     (basis,) = _materialize([t0 + dt for dt in offs], [m], attr="basis")
     # Continuity across the inner edit's end and the outer edit's end (the

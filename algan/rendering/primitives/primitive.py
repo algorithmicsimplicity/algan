@@ -6,6 +6,7 @@ the classes here for their *construction and batching* only (gathering
 per-mob tensors into one batched primitive per geometry type). The
 rasterization code itself is gone.
 """
+
 from __future__ import annotations
 
 import copy
@@ -24,14 +25,12 @@ def _slice_frame_value(value, start, end, total_frames):
     """
     if torch.is_tensor(value):
         if value.ndim > 0 and int(value.shape[0]) == int(total_frames):
-            return value[int(start):int(end)]
+            return value[int(start) : int(end)]
         return value
     if isinstance(value, list):
         return [_slice_frame_value(v, start, end, total_frames) for v in value]
     if isinstance(value, tuple):
-        return tuple(
-            _slice_frame_value(v, start, end, total_frames) for v in value
-        )
+        return tuple(_slice_frame_value(v, start, end, total_frames) for v in value)
     return value
 
 
@@ -78,10 +77,9 @@ class RenderPrimitive:
         for name in self.frame_dependent_source_attrs:
             if hasattr(self, name):
                 setattr(
-                    result, name,
-                    _slice_frame_value(
-                        getattr(self, name), start, end, total_frames
-                    ),
+                    result,
+                    name,
+                    _slice_frame_value(getattr(self, name), start, end, total_frames),
                 )
         for name in tuple(vars(result)):
             if name.startswith("_rt_"):

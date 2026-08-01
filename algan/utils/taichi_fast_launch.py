@@ -44,6 +44,7 @@ every fast hit and raises if it disagrees with the plan (used by
 ``benchmarks/_taichi_fast_launch_check.py``).  Applies on taichi 1.7.x
 only; silent no-op anywhere else (or when ``ALGAN_TAICHI_FAST_LAUNCH=0``).
 """
+
 from __future__ import annotations
 
 import os
@@ -67,6 +68,7 @@ def set_enabled(enabled):
     global ENABLED
     ENABLED = bool(enabled)
 
+
 _TEMPLATE, _INT_S, _INT_U, _FLOAT, _EXT = range(5)
 
 
@@ -88,12 +90,14 @@ def apply():
     if tuple(getattr(taichi, "__version__", ()))[:2] != (1, 7):
         return
     kernel_cls = getattr(_ki, "Kernel", None)
-    if (kernel_cls is None
-            or not hasattr(_ki, "template")
-            or not hasattr(_ki, "ndarray_type")
-            or not hasattr(_ki, "primitive_types")
-            or not hasattr(_ki, "is_signed")
-            or not hasattr(_ki, "cook_dtype")):
+    if (
+        kernel_cls is None
+        or not hasattr(_ki, "template")
+        or not hasattr(_ki, "ndarray_type")
+        or not hasattr(_ki, "primitive_types")
+        or not hasattr(_ki, "is_signed")
+        or not hasattr(_ki, "cook_dtype")
+    ):
         return
 
     _orig_call = kernel_cls.__call__
@@ -132,8 +136,7 @@ def apply():
             if id(anno) in _real_ids:
                 meta.append((_FLOAT, slot, i))
             elif id(anno) in _int_ids:
-                kind = (_INT_S if _ki.is_signed(_ki.cook_dtype(anno))
-                        else _INT_U)
+                kind = _INT_S if _ki.is_signed(_ki.cook_dtype(anno)) else _INT_U
                 meta.append((kind, slot, i))
             elif isinstance(anno, _ndarray_t):
                 if anno.dtype is not None and id(anno.dtype) not in _type_ids:
@@ -153,7 +156,8 @@ def apply():
         try:
             instance_id, _features = self.mapper.lookup(args)
             t_kernel = self.compiled_kernels.get(
-                (self.func, instance_id, self.autodiff_mode))
+                (self.func, instance_id, self.autodiff_mode)
+            )
             if t_kernel is None:
                 return
             fast["plans"][key] = t_kernel
@@ -170,10 +174,15 @@ def apply():
             meta = _build_meta(self)
             fast["meta"] = meta
         rt = self.runtime
-        if (not ENABLED or meta is None or kwargs or self.has_print
-                or len(args) != len(self.arguments)
-                or rt.target_tape is not None
-                or rt.fwd_mode_manager is not None):
+        if (
+            not ENABLED
+            or meta is None
+            or kwargs
+            or self.has_print
+            or len(args) != len(self.arguments)
+            or rt.target_tape is not None
+            or rt.fwd_mode_manager is not None
+        ):
             return _orig_call(self, *args, **kwargs)
 
         arch_cuda = _state["arch_cuda"]
@@ -181,8 +190,12 @@ def apply():
         for kind, _slot, i in meta:
             if kind == _EXT:
                 v = args[i]
-                if (type(v) is not _tensor_t or v.requires_grad
-                        or v.grad is not None or not v.is_contiguous()):
+                if (
+                    type(v) is not _tensor_t
+                    or v.requires_grad
+                    or v.grad is not None
+                    or not v.is_contiguous()
+                ):
                     return _orig_call(self, *args, **kwargs)
                 dev = v.device.type
                 if dev == "cuda":
@@ -190,8 +203,7 @@ def apply():
                         # Kernel launches imply an initialized runtime; the
                         # arch is fixed until ti.init (reset clears this).
                         prog = _impl.get_runtime().prog
-                        arch_cuda = (
-                            prog.config().arch == _ki._ti_core.Arch.cuda)
+                        arch_cuda = prog.config().arch == _ki._ti_core.Arch.cuda
                         _state["arch_cuda"] = arch_cuda
                     if not arch_cuda:
                         return _orig_call(self, *args, **kwargs)
@@ -206,9 +218,10 @@ def apply():
                     key_parts.append(v)
                 elif tv is tuple:
                     for item in v:
-                        if not (type(item) in _scalar_key_types
-                                or (callable(item)
-                                    and not hasattr(item, "_data_oriented"))):
+                        if not (
+                            type(item) in _scalar_key_types
+                            or (callable(item) and not hasattr(item, "_data_oriented"))
+                        ):
                             return _orig_call(self, *args, **kwargs)
                     key_parts.append(v)
                 elif callable(v) and not hasattr(v, "_data_oriented"):
@@ -234,19 +247,21 @@ def apply():
         if _verify:
             instance_id, _features = self.mapper.lookup(args)
             ref = self.compiled_kernels.get(
-                (self.func, instance_id, self.autodiff_mode))
+                (self.func, instance_id, self.autodiff_mode)
+            )
             if ref is not t_kernel:
                 raise RuntimeError(
                     "taichi_fast_launch: instantiation mismatch for kernel "
-                    f"{self.func.__name__}")
+                    f"{self.func.__name__}"
+                )
 
         launch_ctx = t_kernel.make_launch_context()
         for kind, slot, i in meta:
             if kind == _EXT:
                 v = args[i]
                 launch_ctx.set_arg_external_array_with_shape(
-                    (slot,), v.data_ptr(),
-                    v.element_size() * v.nelement(), v.shape, 0)
+                    (slot,), v.data_ptr(), v.element_size() * v.nelement(), v.shape, 0
+                )
             elif kind == _INT_S:
                 launch_ctx.set_arg_int((slot,), int(args[i]))
             elif kind == _FLOAT:
@@ -254,8 +269,7 @@ def apply():
             elif kind == _INT_U:
                 launch_ctx.set_arg_uint((slot,), int(args[i]))
         prog = _impl.get_runtime().prog
-        compiled = prog.compile_kernel(
-            prog.config(), prog.get_device_caps(), t_kernel)
+        compiled = prog.compile_kernel(prog.config(), prog.get_device_caps(), t_kernel)
         prog.launch_kernel(compiled, launch_ctx)
         return None
 

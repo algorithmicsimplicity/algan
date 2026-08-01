@@ -69,7 +69,7 @@ def _leaf_coverage(bvh, num_frames, num_prims):
     t1 = (tspan >> 16) & 0x7FFF
     for i in range(prim.shape[0]):
         if prim[i] >= 0:
-            covered[t0[i]:t1[i] + 1, prim[i]] += 1
+            covered[t0[i] : t1[i] + 1, prim[i]] += 1
     return covered
 
 
@@ -101,6 +101,7 @@ def test_stbvh_structure():
     # is BVH_ARITY-ary: the internal nodes are [0, first_leaf), and the
     # children of internal node i are BVH_ARITY*i + 1 .. BVH_ARITY*i + ARITY.
     from algan.rendering.raytracing.stbvh import BVH_ARITY
+
     for parent in range(bvh.first_leaf):
         for k in range(BVH_ARITY):
             child = BVH_ARITY * parent + 1 + k
@@ -110,6 +111,7 @@ def test_stbvh_structure():
             assert bvh.nodes[parent, 7] >= bvh.nodes[child, 7]
     # Leaf slots must lie within their leaf node's bounds/interval.
     from algan.rendering.raytracing.stbvh import LEAF_SIZE
+
     prim = bvh.leaf_prim.long().cpu()
     tspan = bvh.leaf_tspan.long().cpu()
     nodes_cpu = bvh.nodes.cpu()
@@ -119,31 +121,37 @@ def test_stbvh_structure():
             assert nodes_cpu[leaf_node, 6] <= (tspan[i] & 0xFFFF)
             assert nodes_cpu[leaf_node, 7] >= ((tspan[i] >> 16) & 0x7FFF)
     instances = int((bvh.leaf_prim >= 0).sum())
-    print(f"ok: stbvh structure ({instances} instances for "
-          f"{int(visible_cpu.sum())} visible (frame, prim) pairs)")
+    print(
+        f"ok: stbvh structure ({instances} instances for "
+        f"{int(visible_cpu.sum())} visible (frame, prim) pairs)"
+    )
 
 
 def _dummy_bezier_parts():
     lo = torch.full((1, 1, 3), EMPTY_LO, device=DEVICE)
     hi = torch.full((1, 1, 3), EMPTY_HI, device=DEVICE)
     bvh = build_stbvh(lo, hi, num_frames=1)
-    return (bvh,
-            torch.zeros((1, 1, 20), device=DEVICE),
-            torch.zeros((1, 1, 1, 5), device=DEVICE),
-            torch.zeros((1, 1, 5), device=DEVICE),
-            torch.zeros((1, 1, 4), device=DEVICE),
-            torch.zeros((2,), dtype=torch.int32, device=DEVICE))
+    return (
+        bvh,
+        torch.zeros((1, 1, 20), device=DEVICE),
+        torch.zeros((1, 1, 1, 5), device=DEVICE),
+        torch.zeros((1, 1, 5), device=DEVICE),
+        torch.zeros((1, 1, 4), device=DEVICE),
+        torch.zeros((2,), dtype=torch.int32, device=DEVICE),
+    )
 
 
 def _dummy_pn_parts():
     lo = torch.full((1, 1, 3), EMPTY_LO, device=DEVICE)
     hi = torch.full((1, 1, 3), EMPTY_HI, device=DEVICE)
     bvh = build_stbvh(lo, hi, num_frames=1)
-    return (bvh,
-            torch.zeros((1, 1, 18), device=DEVICE),
-            torch.zeros((1, 1, 9), device=DEVICE),
-            torch.zeros((1, 1, 6), device=DEVICE),
-            torch.zeros((1, 1, 3, 5), device=DEVICE))
+    return (
+        bvh,
+        torch.zeros((1, 1, 18), device=DEVICE),
+        torch.zeros((1, 1, 9), device=DEVICE),
+        torch.zeros((1, 1, 6), device=DEVICE),
+        torch.zeros((1, 1, 3, 5), device=DEVICE),
+    )
 
 
 def _dummy_triangle_parts():
@@ -151,8 +159,11 @@ def _dummy_triangle_parts():
     lo = torch.full((1, 1, 3), EMPTY_LO, device=DEVICE)
     hi = torch.full((1, 1, 3), EMPTY_HI, device=DEVICE)
     bvh = build_stbvh(lo, hi, num_frames=1)
-    return (bvh, torch.zeros((1, 1, 3, 8), device=DEVICE),
-            torch.zeros((1, 1, 3, 5), device=DEVICE))
+    return (
+        bvh,
+        torch.zeros((1, 1, 3, 8), device=DEVICE),
+        torch.zeros((1, 1, 3, 5), device=DEVICE),
+    )
 
 
 def _split_tri_verts(tri_verts):
@@ -168,11 +179,28 @@ def _split_tri_verts(tri_verts):
     return pos, norm, extra
 
 
-def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
-                bg=20, max_bounces=0, samples_per_pixel=0, indirect=0.0,
-                physical=False, light_pos=None, light_col=None,
-                light_intensity=3.141592653589793, ambient=0.0,
-                pn_parts=None):
+def _run_kernel(
+    tri_bvh,
+    tri_verts,
+    tri_colors,
+    cam,
+    sp,
+    pbx,
+    pby,
+    T,
+    W,
+    H,
+    bg=20,
+    max_bounces=0,
+    samples_per_pixel=0,
+    indirect=0.0,
+    physical=False,
+    light_pos=None,
+    light_col=None,
+    light_intensity=3.141592653589793,
+    ambient=0.0,
+    pn_parts=None,
+):
     """Launch the deterministic kernel, the Monte Carlo kernel
     (``samples_per_pixel > 0``), or the physical path tracer
     (``physical=True``). ``pn_parts`` optionally adds PN patch geometry as
@@ -194,20 +222,54 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
     # ``stbvh._build_blocks``), not the raw per-node ``BVH.nodes`` -- mirror the
     # real caller in ``tracer.py`` which passes ``*_bvh.blocks``.
     shared = (
-        tri_bvh.blocks, tri_bvh.node_miss, tri_bvh.leaf_prim,
-        tri_bvh.leaf_tspan, tri_bvh.first_leaf,
-        tri_pos, tri_norm, tri_extra, tri_colors.contiguous(),
-        dummy_tri_uvs, dummy_tri_tex_meta, dummy_textures, num_colored_triangles,
-        pn_bvh.blocks, pn_bvh.node_miss, pn_bvh.leaf_prim,
-        pn_bvh.leaf_tspan, pn_bvh.first_leaf,
-        pn_ctrl.contiguous(), pn_norm.contiguous(), pn_extra.contiguous(),
+        tri_bvh.blocks,
+        tri_bvh.node_miss,
+        tri_bvh.leaf_prim,
+        tri_bvh.leaf_tspan,
+        tri_bvh.first_leaf,
+        tri_pos,
+        tri_norm,
+        tri_extra,
+        tri_colors.contiguous(),
+        dummy_tri_uvs,
+        dummy_tri_tex_meta,
+        dummy_textures,
+        num_colored_triangles,
+        pn_bvh.blocks,
+        pn_bvh.node_miss,
+        pn_bvh.leaf_prim,
+        pn_bvh.leaf_tspan,
+        pn_bvh.first_leaf,
+        pn_ctrl.contiguous(),
+        pn_norm.contiguous(),
+        pn_extra.contiguous(),
         pn_colors.contiguous(),
-        bez_bvh.blocks, bez_bvh.node_miss, bez_bvh.leaf_prim,
-        bez_bvh.leaf_tspan, bez_bvh.first_leaf,
-        meta, ccolors, bcolors, edges, offsets,
-        cam.contiguous(), sp.contiguous(), pbx.contiguous(), pby.contiguous(),
-        scale, 0, T, W, H, float(W // 2), float(H // 2),
-        0.0, float(tri_verts.shape[1]), max_bounces, 0)
+        bez_bvh.blocks,
+        bez_bvh.node_miss,
+        bez_bvh.leaf_prim,
+        bez_bvh.leaf_tspan,
+        bez_bvh.first_leaf,
+        meta,
+        ccolors,
+        bcolors,
+        edges,
+        offsets,
+        cam.contiguous(),
+        sp.contiguous(),
+        pbx.contiguous(),
+        pby.contiguous(),
+        scale,
+        0,
+        T,
+        W,
+        H,
+        float(W // 2),
+        float(H // 2),
+        0.0,
+        float(tri_verts.shape[1]),
+        max_bounces,
+        0,
+    )
     dummy_pn_obb = torch.zeros((pn_ctrl.shape[0], pn_ctrl.shape[1], 12), device=DEVICE)
     if physical:
         if light_pos is None:
@@ -218,9 +280,18 @@ def _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H,
             num_lights = light_pos.shape[1]
         accum = torch.zeros((T, W * H, 5), device=DEVICE)
         path_trace_physical_stbvh(
-            0, *shared, samples_per_pixel, light_pos.contiguous(),
-            light_col.contiguous(), num_lights, light_intensity, ambient,
-            dummy_pn_obb, out, accum)
+            0,
+            *shared,
+            samples_per_pixel,
+            light_pos.contiguous(),
+            light_col.contiguous(),
+            num_lights,
+            light_intensity,
+            ambient,
+            dummy_pn_obb,
+            out,
+            accum,
+        )
         finalize_samples(samples_per_pixel, 0, 0, 1.0, accum, out)
     elif samples_per_pixel > 0:
         accum = torch.zeros((T, W * H, 5), device=DEVICE)
@@ -254,8 +325,9 @@ def _reference_blend(tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H, bg=20):
     Tc = tri_verts.shape[0]
     Tcol = tri_colors.shape[0]
     N = tri_verts.shape[1]
-    ys, xs = torch.meshgrid(torch.arange(H, device=DEVICE),
-                            torch.arange(W, device=DEVICE), indexing="ij")
+    ys, xs = torch.meshgrid(
+        torch.arange(H, device=DEVICE), torch.arange(W, device=DEVICE), indexing="ij"
+    )
     u = (xs.float() + 0.5 - W // 2) / (H // 2)
     v = (ys.float() + 0.5 - H // 2) / (H // 2)
     frames = []
@@ -273,24 +345,30 @@ def _reference_blend(tri_verts, tri_colors, cam, sp, pbx, pby, T, W, H, bg=20):
         qv = torch.cross(tv.expand(rd.shape[0], -1, -1), e1, dim=-1)
         w2 = (rd * qv).sum(-1) / det
         t_hit = (e2 * qv).sum(-1) / det
-        valid = ((det.abs() > 1e-12) & (w1 >= 0) & (w2 >= 0) & (w1 + w2 <= 1)
-                 & (t_hit > 1e-4))
+        valid = (
+            (det.abs() > 1e-12)
+            & (w1 >= 0)
+            & (w2 >= 0)
+            & (w1 + w2 <= 1)
+            & (t_hit > 1e-4)
+        )
         w0 = 1 - w1 - w2
         cols = tri_colors[f % Tcol]
-        col = (w0.unsqueeze(-1) * cols[:, 0] + w1.unsqueeze(-1) * cols[:, 1]
-               + w2.unsqueeze(-1) * cols[:, 2])  # [rays, N, 5]
+        col = (
+            w0.unsqueeze(-1) * cols[:, 0]
+            + w1.unsqueeze(-1) * cols[:, 1]
+            + w2.unsqueeze(-1) * cols[:, 2]
+        )  # [rays, N, 5]
         alpha = col[..., 4].clamp(0, 1) * valid
         # Order hits per ray by distance (ties by descending layer = index).
         # float64 keys: the tie-break perturbation must survive rounding at
         # any hit distance (in float32 it underflows for exactly coplanar
         # triangles, leaving the tie order to argsort's whim).
-        order_key = torch.where(valid, t_hit,
-                                torch.full_like(t_hit, 1e30)).double()
+        order_key = torch.where(valid, t_hit, torch.full_like(t_hit, 1e30)).double()
         order_key = order_key - torch.arange(N, device=DEVICE) * 1e-7
         order = order_key.argsort(dim=-1)
         alpha_sorted = alpha.gather(-1, order)
-        col_sorted = col[..., :4].gather(
-            -2, order.unsqueeze(-1).expand(-1, -1, 4))
+        col_sorted = col[..., :4].gather(-2, order.unsqueeze(-1).expand(-1, -1, 4))
         trans = torch.cumprod(1 - alpha_sorted, dim=-1)
         weight = torch.cat((torch.ones_like(trans[:, :1]), trans[:, :-1]), -1)
         acc = (weight * alpha_sorted).unsqueeze(-1) * col_sorted
@@ -310,11 +388,13 @@ def _random_triangle_scene(T=7, N=30):
     drift[:, ::3] = 0
     t = torch.arange(T, device=DEVICE).view(T, 1, 1, 1).float()
     corners = (base + spread + drift * t).contiguous()
-    tri_verts = torch.cat(
-        (corners, torch.zeros(T, N, 3, 5, device=DEVICE)), -1)
+    tri_verts = torch.cat((corners, torch.zeros(T, N, 3, 5, device=DEVICE)), -1)
     colors = torch.rand(1, N, 3, 5, device=DEVICE)
-    colors[..., 4] = (torch.rand(1, N, 1, 1, device=DEVICE) * 0.8 + 0.2
-                      ).expand(-1, -1, 3, -1).squeeze(-1)
+    colors[..., 4] = (
+        (torch.rand(1, N, 1, 1, device=DEVICE) * 0.8 + 0.2)
+        .expand(-1, -1, 3, -1)
+        .squeeze(-1)
+    )
     colors[:, 5::7, :, 4] = 0.0  # some invisible triangles
     colors[:, 3::5, :, 4] = 1.0  # some opaque (early termination path)
 
@@ -329,8 +409,7 @@ def _random_triangle_scene(T=7, N=30):
     lo = torch.where(vis.unsqueeze(-1), lo, torch.full_like(lo, EMPTY_LO))
     hi = torch.where(vis.unsqueeze(-1), hi, torch.full_like(hi, EMPTY_HI))
     opaque = colors[..., 4].amin(-1) >= 1.0 - 1e-6  # [1, N], as in production
-    bvh = build_stbvh(lo.contiguous(), hi.contiguous(), num_frames=T,
-                      opaque=opaque)
+    bvh = build_stbvh(lo.contiguous(), hi.contiguous(), num_frames=T, opaque=opaque)
     return bvh, tri_verts, colors, cam, sp, pbx, pby
 
 
@@ -344,8 +423,10 @@ def test_blended_render_vs_brute_force():
     err = (got - ref).abs()
     bad = (err > 2).float().mean()
     assert bad < 2e-3, f"blended output mismatch: {bad:.2%} of channels off by >2"
-    print(f"ok: blended render matches brute force "
-          f"(max err {err.max():.0f}, {bad:.3%} channels off by >2)")
+    print(
+        f"ok: blended render matches brute force "
+        f"(max err {err.max():.0f}, {bad:.3%} channels off by >2)"
+    )
 
 
 def test_deep_translucent_stack():
@@ -357,16 +438,16 @@ def test_deep_translucent_stack():
     pruning (the sheets behind it must not change the image).
     """
     T, W, H = 2, 48, 36
-    z = torch.tensor([3.0, 2.6, 2.6, 2.2, 1.8, 1.8, 1.4, 1.0, 0.6, 0.6,
-                      0.2, -0.2], device=DEVICE)
+    z = torch.tensor(
+        [3.0, 2.6, 2.6, 2.2, 1.8, 1.8, 1.4, 1.0, 0.6, 0.6, 0.2, -0.2], device=DEVICE
+    )
     N = z.shape[0]
     corners = torch.zeros(1, N, 3, 3, device=DEVICE)
     corners[0, :, 0] = torch.tensor([-9.0, -9.0, 0.0], device=DEVICE)
     corners[0, :, 1] = torch.tensor([9.0, -9.0, 0.0], device=DEVICE)
     corners[0, :, 2] = torch.tensor([0.0, 14.0, 0.0], device=DEVICE)
     corners[0, :, :, 2] = z.view(N, 1)
-    tri_verts = torch.cat(
-        (corners, torch.zeros(1, N, 3, 5, device=DEVICE)), -1)
+    tri_verts = torch.cat((corners, torch.zeros(1, N, 3, 5, device=DEVICE)), -1)
     torch.manual_seed(3)
     colors = torch.rand(1, N, 3, 5, device=DEVICE)
     colors[..., 4] = 0.3  # translucent layers stay above MIN_WEIGHT
@@ -379,20 +460,32 @@ def test_deep_translucent_stack():
     pbx = torch.tensor([1.0, 0.0, 0.0], device=DEVICE).repeat(T, 1)
     pby = torch.tensor([0.0, 1.0, 0.0], device=DEVICE).repeat(T, 1)
     opaque = colors[..., 4].amin(-1) >= 1.0 - 1e-6
-    bvh = build_stbvh(corners.amin(-2).contiguous(),
-                      corners.amax(-2).contiguous(), num_frames=T,
-                      opaque=opaque)
-    got = _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H
-                      ).view(T, H * W, 4).float()
-    ref = _reference_blend(tri_verts, colors, cam, sp, pbx, pby, T, W, H
-                           ).view(T, H * W, 4).float()
+    bvh = build_stbvh(
+        corners.amin(-2).contiguous(),
+        corners.amax(-2).contiguous(),
+        num_frames=T,
+        opaque=opaque,
+    )
+    got = (
+        _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H)
+        .view(T, H * W, 4)
+        .float()
+    )
+    ref = (
+        _reference_blend(tri_verts, colors, cam, sp, pbx, pby, T, W, H)
+        .view(T, H * W, 4)
+        .float()
+    )
     err = (got - ref).abs()
     bad = (err > 2).float().mean()
     assert bad < 1e-4, (
         f"deep stack mismatch: {bad:.2%} of channels off by >2 "
-        f"(max err {err.max():.0f})")
-    print(f"ok: 12-deep translucent stack (opaque sheet mid-stack) blends "
-          f"exactly (max err {err.max():.0f})")
+        f"(max err {err.max():.0f})"
+    )
+    print(
+        f"ok: 12-deep translucent stack (opaque sheet mid-stack) blends "
+        f"exactly (max err {err.max():.0f})"
+    )
 
 
 def test_monte_carlo_converges_to_blend():
@@ -404,33 +497,44 @@ def test_monte_carlo_converges_to_blend():
     """
     T, W, H = 7, 64, 48
     bvh, tri_verts, colors, cam, sp, pbx, pby = _random_triangle_scene(T)
-    det = _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H
-                      ).view(T, H, W, 4).float()
-    mc = _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H,
-                     samples_per_pixel=256).view(T, H, W, 4).float()
+    det = (
+        _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H)
+        .view(T, H, W, 4)
+        .float()
+    )
+    mc = (
+        _run_kernel(
+            bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H, samples_per_pixel=256
+        )
+        .view(T, H, W, 4)
+        .float()
+    )
     pooled_max = torch.nn.functional.max_pool2d(
-        det.permute(0, 3, 1, 2), 3, stride=1, padding=1)
+        det.permute(0, 3, 1, 2), 3, stride=1, padding=1
+    )
     pooled_min = -torch.nn.functional.max_pool2d(
-        -det.permute(0, 3, 1, 2), 3, stride=1, padding=1)
-    flat = ((pooled_max - pooled_min).amax(1) < 6)  # locally uniform pixels
+        -det.permute(0, 3, 1, 2), 3, stride=1, padding=1
+    )
+    flat = (pooled_max - pooled_min).amax(1) < 6  # locally uniform pixels
     err = (det - mc).abs().amax(-1)
     flat_err = err[flat].mean()
     assert flat_err < 3, (
         f"Monte Carlo did not converge to the blend (flat-region mean err "
-        f"{flat_err:.2f})")
-    print(f"ok: 256-spp Monte Carlo converges to exact blending "
-          f"(flat-region mean err {flat_err:.2f}/255 over "
-          f"{int(flat.sum())} pixels)")
+        f"{flat_err:.2f})"
+    )
+    print(
+        f"ok: 256-spp Monte Carlo converges to exact blending "
+        f"(flat-region mean err {flat_err:.2f}/255 over "
+        f"{int(flat.sum())} pixels)"
+    )
 
 
 def test_mirror_reflection():
     # A reflective floor (z=0, normal +z) seen from above; a red panel
     # *behind* the camera (z=9) is visible only via the reflection.
     T, W, H = 1, 48, 48
-    floor = torch.tensor([[[-20.0, -20, 0], [20, -20, 0], [0, 40, 0]]],
-                         device=DEVICE)
-    panel = torch.tensor([[[-30.0, -30, 9], [30, -30, 9], [0, 60, 9]]],
-                         device=DEVICE)
+    floor = torch.tensor([[[-20.0, -20, 0], [20, -20, 0], [0, 40, 0]]], device=DEVICE)
+    panel = torch.tensor([[[-30.0, -30, 9], [30, -30, 9], [0, 60, 9]]], device=DEVICE)
     corners = torch.stack((floor[0], panel[0])).unsqueeze(0)  # [1, 2, 3, 3]
     normals = torch.zeros(1, 2, 3, 3, device=DEVICE)
     normals[0, 0, :, 2] = 1.0
@@ -451,19 +555,21 @@ def test_mirror_reflection():
     hi = corners.amax(-2)
     bvh = build_stbvh(lo.contiguous(), hi.contiguous(), num_frames=T)
 
-    with_bounce = _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby,
-                              T, W, H, max_bounces=2)
-    no_bounce = _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby,
-                            T, W, H, max_bounces=0)
+    with_bounce = _run_kernel(
+        bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H, max_bounces=2
+    )
+    no_bounce = _run_kernel(
+        bvh, tri_verts, colors, cam, sp, pbx, pby, T, W, H, max_bounces=0
+    )
     center = with_bounce.view(T, H, W, 4)[0, H // 2, W // 2]
     assert center[0] > 200, f"mirror should reflect red, got {center.tolist()}"
     assert center[2] < 50, f"mirror should not show blue, got {center.tolist()}"
     center_flat = no_bounce.view(T, H, W, 4)[0, H // 2, W // 2]
     assert center_flat[2] > 200, (
         "with bounces disabled the mirror should show its own blue color, "
-        f"got {center_flat.tolist()}")
-    print("ok: mirror reflection (red panel behind the camera is visible "
-          "in the floor)")
+        f"got {center_flat.tolist()}"
+    )
+    print("ok: mirror reflection (red panel behind the camera is visible in the floor)")
 
 
 def _mirror_floor_scene(panel_half_width, floor_roughness):
@@ -471,10 +577,10 @@ def _mirror_floor_scene(panel_half_width, floor_roughness):
     (z=9) covers reflected directions with |x| < panel_half_width.
     """
     s = panel_half_width
-    floor = torch.tensor([[[-20.0, -20, 0], [20, -20, 0], [0, 40, 0]]],
-                         device=DEVICE)
-    panel = torch.tensor([[[-s, -30.0, 9], [s, -30.0, 9], [0.0, 60.0, 9]]],
-                         device=DEVICE)
+    floor = torch.tensor([[[-20.0, -20, 0], [20, -20, 0], [0, 40, 0]]], device=DEVICE)
+    panel = torch.tensor(
+        [[[-s, -30.0, 9], [s, -30.0, 9], [0.0, 60.0, 9]]], device=DEVICE
+    )
     corners = torch.stack((floor[0], panel[0])).unsqueeze(0)
     normals = torch.zeros(1, 2, 3, 3, device=DEVICE)
     normals[0, 0, :, 2] = 1.0
@@ -490,8 +596,9 @@ def _mirror_floor_scene(panel_half_width, floor_roughness):
     sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
     pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
     pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
-    bvh = build_stbvh(corners.amin(-2).contiguous(),
-                      corners.amax(-2).contiguous(), num_frames=1)
+    bvh = build_stbvh(
+        corners.amin(-2).contiguous(), corners.amax(-2).contiguous(), num_frames=1
+    )
     return bvh, tri_verts, colors, cam, sp, pbx, pby
 
 
@@ -505,9 +612,24 @@ def test_glossy_reflection_blurs():
 
     def intermediate_count(roughness):
         bvh, tv, tc, cam, sp, pbx, pby = _mirror_floor_scene(8.0, roughness)
-        img = _run_kernel(bvh, tv, tc, cam, sp, pbx, pby, 1, W, H,
-                          max_bounces=2, samples_per_pixel=128
-                          ).view(H, W, 4).float()
+        img = (
+            _run_kernel(
+                bvh,
+                tv,
+                tc,
+                cam,
+                sp,
+                pbx,
+                pby,
+                1,
+                W,
+                H,
+                max_bounces=2,
+                samples_per_pixel=128,
+            )
+            .view(H, W, 4)
+            .float()
+        )
         red = img[..., 0]
         return int(((red > 60) & (red < 195)).sum())
 
@@ -515,9 +637,12 @@ def test_glossy_reflection_blurs():
     rough = intermediate_count(0.5)
     assert rough > sharp * 2 + 20, (
         f"glossy mirror did not blur the reflection "
-        f"(intermediate pixels sharp={sharp} rough={rough})")
-    print(f"ok: glossy roughness blurs reflections "
-          f"(edge pixels sharp={sharp} -> rough={rough})")
+        f"(intermediate pixels sharp={sharp} rough={rough})"
+    )
+    print(
+        f"ok: glossy roughness blurs reflections "
+        f"(edge pixels sharp={sharp} -> rough={rough})"
+    )
 
 
 def test_indirect_color_bleed():
@@ -525,13 +650,12 @@ def test_indirect_color_bleed():
     directly invisible) red wall must pick up red near the wall.
     """
     W = H = 48
-    floor = torch.tensor([[[-3.0, -3, 0], [3, -3, 0], [0, 4, 0]]],
-                         device=DEVICE)
-    wall = torch.tensor([[[1.5, -3.0, 0.0], [1.5, 3.0, 0.0], [1.5, 0.0, 4.0]]],
-                        device=DEVICE)
+    floor = torch.tensor([[[-3.0, -3, 0], [3, -3, 0], [0, 4, 0]]], device=DEVICE)
+    wall = torch.tensor(
+        [[[1.5, -3.0, 0.0], [1.5, 3.0, 0.0], [1.5, 0.0, 4.0]]], device=DEVICE
+    )
     corners = torch.stack((floor[0], wall[0])).unsqueeze(0)
-    tri_verts = torch.cat(
-        (corners, torch.zeros(1, 2, 3, 5, device=DEVICE)), -1)
+    tri_verts = torch.cat((corners, torch.zeros(1, 2, 3, 5, device=DEVICE)), -1)
     colors = torch.zeros(1, 2, 3, 5, device=DEVICE)
     colors[0, 0] = torch.tensor([0.7, 0.7, 0.7, 0.0, 1.0], device=DEVICE)
     colors[0, 1] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0], device=DEVICE)
@@ -539,13 +663,30 @@ def test_indirect_color_bleed():
     sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
     pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
     pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
-    bvh = build_stbvh(corners.amin(-2).contiguous(),
-                      corners.amax(-2).contiguous(), num_frames=1)
+    bvh = build_stbvh(
+        corners.amin(-2).contiguous(), corners.amax(-2).contiguous(), num_frames=1
+    )
 
     def render(indirect):
-        return _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby,
-                           1, W, H, max_bounces=3, samples_per_pixel=512,
-                           indirect=indirect).view(H, W, 4).float()
+        return (
+            _run_kernel(
+                bvh,
+                tri_verts,
+                colors,
+                cam,
+                sp,
+                pbx,
+                pby,
+                1,
+                W,
+                H,
+                max_bounces=3,
+                samples_per_pixel=512,
+                indirect=indirect,
+            )
+            .view(H, W, 4)
+            .float()
+        )
 
     flat = render(0.0)
     lit = render(0.8)
@@ -556,9 +697,12 @@ def test_indirect_color_bleed():
     bleed_off = (flat[rows, near, 0] - flat[rows, near, 1]).mean()
     assert bleed_on > bleed_off + 8, (
         f"no red color bleed from indirect bounces "
-        f"(R-G near wall: off={bleed_off:.1f} on={bleed_on:.1f})")
-    print(f"ok: indirect bounces bleed red onto the white floor "
-          f"(R-G near wall {bleed_off:.1f} -> {bleed_on:.1f})")
+        f"(R-G near wall: off={bleed_off:.1f} on={bleed_on:.1f})"
+    )
+    print(
+        f"ok: indirect bounces bleed red onto the white floor "
+        f"(R-G near wall {bleed_off:.1f} -> {bleed_on:.1f})"
+    )
 
 
 def _floor_pixel(world_x, W, H):
@@ -575,13 +719,12 @@ def test_physical_direct_lighting_and_shadows():
     via the explicit shadow rays.
     """
     W, H = 64, 48
-    floor = torch.tensor([[[-8.0, -8, 0], [8, -8, 0], [0, 12, 0]]],
-                         device=DEVICE)
-    occluder = torch.tensor([[[1.8, -0.2, 2.0], [2.2, -0.2, 2.0],
-                              [2.0, 0.3, 2.0]]], device=DEVICE)
+    floor = torch.tensor([[[-8.0, -8, 0], [8, -8, 0], [0, 12, 0]]], device=DEVICE)
+    occluder = torch.tensor(
+        [[[1.8, -0.2, 2.0], [2.2, -0.2, 2.0], [2.0, 0.3, 2.0]]], device=DEVICE
+    )
     corners = torch.stack((floor[0], occluder[0])).unsqueeze(0)
-    tri_verts = torch.cat(
-        (corners, torch.zeros(1, 2, 3, 5, device=DEVICE)), -1)
+    tri_verts = torch.cat((corners, torch.zeros(1, 2, 3, 5, device=DEVICE)), -1)
     colors = torch.zeros(1, 2, 3, 5, device=DEVICE)
     colors[0, 0] = torch.tensor([0.8, 0.8, 0.8, 0.0, 1.0], device=DEVICE)
     colors[0, 1] = torch.tensor([0.3, 0.3, 0.3, 0.0, 1.0], device=DEVICE)
@@ -589,21 +732,42 @@ def test_physical_direct_lighting_and_shadows():
     sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
     pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
     pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
-    bvh = build_stbvh(corners.amin(-2).contiguous(),
-                      corners.amax(-2).contiguous(), num_frames=1)
+    bvh = build_stbvh(
+        corners.amin(-2).contiguous(), corners.amax(-2).contiguous(), num_frames=1
+    )
     light_pos = torch.tensor([[[2.0, 0.0, 4.0]]], device=DEVICE)
     light_col = torch.tensor([[[1.0, 1.0, 1.0]]], device=DEVICE)
 
-    img = _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, 1, W, H,
-                      bg=0, max_bounces=0, samples_per_pixel=256,
-                      physical=True, light_pos=light_pos,
-                      light_col=light_col).view(H, W, 4).float()
+    img = (
+        _run_kernel(
+            bvh,
+            tri_verts,
+            colors,
+            cam,
+            sp,
+            pbx,
+            pby,
+            1,
+            W,
+            H,
+            bg=0,
+            max_bounces=0,
+            samples_per_pixel=256,
+            physical=True,
+            light_pos=light_pos,
+            light_col=light_col,
+        )
+        .view(H, W, 4)
+        .float()
+    )
     row = H // 2
-    lit_near = img[row, _floor_pixel(0.8, W, H), 0]      # cos ~ 0.96
-    lit_far = img[row, _floor_pixel(-2.5, W, H), 0]      # cos ~ 0.66
-    shadowed = img[row, _floor_pixel(2.0, W, H), 0]      # under the occluder
-    print(f"physical floor brightness: near={lit_near:.0f} far={lit_far:.0f} "
-          f"shadow={shadowed:.0f}")
+    lit_near = img[row, _floor_pixel(0.8, W, H), 0]  # cos ~ 0.96
+    lit_far = img[row, _floor_pixel(-2.5, W, H), 0]  # cos ~ 0.66
+    shadowed = img[row, _floor_pixel(2.0, W, H), 0]  # under the occluder
+    print(
+        f"physical floor brightness: near={lit_near:.0f} far={lit_far:.0f} "
+        f"shadow={shadowed:.0f}"
+    )
     # Lambert: brightness ~ albedo * cos -> 0.8 * 0.96 * 255 ~ 196.
     assert 150 < lit_near < 240, f"direct lighting off: {lit_near}"
     assert lit_far < lit_near - 20, "no cosine falloff with light distance"
@@ -617,13 +781,12 @@ def test_physical_emissive_surface():
     through indirect bounces (emission picked up by scattered paths).
     """
     W, H = 64, 48
-    floor = torch.tensor([[[-8.0, -8, 0], [8, -8, 0], [0, 12, 0]]],
-                         device=DEVICE)
-    panel = torch.tensor([[[1.2, -0.8, 2.5], [2.4, -0.8, 2.5],
-                           [1.8, 0.8, 2.5]]], device=DEVICE)
+    floor = torch.tensor([[[-8.0, -8, 0], [8, -8, 0], [0, 12, 0]]], device=DEVICE)
+    panel = torch.tensor(
+        [[[1.2, -0.8, 2.5], [2.4, -0.8, 2.5], [1.8, 0.8, 2.5]]], device=DEVICE
+    )
     corners = torch.stack((floor[0], panel[0])).unsqueeze(0)
-    tri_verts = torch.cat(
-        (corners, torch.zeros(1, 2, 3, 5, device=DEVICE)), -1)
+    tri_verts = torch.cat((corners, torch.zeros(1, 2, 3, 5, device=DEVICE)), -1)
     colors = torch.zeros(1, 2, 3, 5, device=DEVICE)
     colors[0, 0] = torch.tensor([0.8, 0.8, 0.8, 0.0, 1.0], device=DEVICE)
     colors[0, 1] = torch.tensor([1.0, 0.15, 0.15, 6.0, 1.0], device=DEVICE)
@@ -631,17 +794,34 @@ def test_physical_emissive_surface():
     sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
     pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
     pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
-    bvh = build_stbvh(corners.amin(-2).contiguous(),
-                      corners.amax(-2).contiguous(), num_frames=1)
+    bvh = build_stbvh(
+        corners.amin(-2).contiguous(), corners.amax(-2).contiguous(), num_frames=1
+    )
 
-    img = _run_kernel(bvh, tri_verts, colors, cam, sp, pbx, pby, 1, W, H,
-                      bg=0, max_bounces=2, samples_per_pixel=512,
-                      physical=True).view(H, W, 4).float()
+    img = (
+        _run_kernel(
+            bvh,
+            tri_verts,
+            colors,
+            cam,
+            sp,
+            pbx,
+            pby,
+            1,
+            W,
+            H,
+            bg=0,
+            max_bounces=2,
+            samples_per_pixel=512,
+            physical=True,
+        )
+        .view(H, W, 4)
+        .float()
+    )
     row = H // 2
     near = img[row, _floor_pixel(0.9, W, H)]
     far = img[row, _floor_pixel(-3.0, W, H)]
-    print(f"emissive bleed: near R={near[0]:.0f} G={near[1]:.0f}, "
-          f"far R={far[0]:.0f}")
+    print(f"emissive bleed: near R={near[0]:.0f} G={near[1]:.0f}, far R={far[0]:.0f}")
     assert near[0] > far[0] + 8, "emissive panel did not light the floor"
     assert near[0] > near[1] + 4, "emissive lighting lost the panel's color"
     print("ok: emissive (glow) surfaces light their surroundings")
@@ -651,15 +831,24 @@ def test_physical_emissive_surface():
 # PN (quadratic Bezier / Steiner) triangle patches
 # ---------------------------------------------------------------------------
 
+
 def _pn_hull_points(coeffs):
     """Bezier control points recovered from monomial coefficient rows
     [..., 18]; the patch lies in their convex hull.
     """
     k = coeffs.unflatten(-1, (6, 3))
     k0, ku, kv, kuu, kvv, kuv = k.unbind(-2)
-    return torch.stack((k0, k0 + ku + kuu, k0 + kv + kvv,
-                        k0 + 0.5 * ku, k0 + 0.5 * (ku + kv + kuv),
-                        k0 + 0.5 * kv), -2)
+    return torch.stack(
+        (
+            k0,
+            k0 + ku + kuu,
+            k0 + kv + kvv,
+            k0 + 0.5 * ku,
+            k0 + 0.5 * (ku + kv + kuv),
+            k0 + 0.5 * kv,
+        ),
+        -2,
+    )
 
 
 def _bvh_from_hull(hull, colors, num_frames):
@@ -674,12 +863,12 @@ def _bvh_from_hull(hull, colors, num_frames):
     lo = torch.where(vis.unsqueeze(-1), lo, torch.full_like(lo, EMPTY_LO))
     hi = torch.where(vis.unsqueeze(-1), hi, torch.full_like(hi, EMPTY_HI))
     opaque = colors[..., 4].amin(-1) >= 1.0 - 1e-6
-    return build_stbvh(lo.contiguous(), hi.contiguous(),
-                       num_frames=num_frames, opaque=opaque)
+    return build_stbvh(
+        lo.contiguous(), hi.contiguous(), num_frames=num_frames, opaque=opaque
+    )
 
 
-def _pn_parts_from_coeffs(coeffs, colors, normals9=None, extra=None,
-                          num_frames=None):
+def _pn_parts_from_coeffs(coeffs, colors, normals9=None, extra=None, num_frames=None):
     """Packed PN arrays + STBVH for explicit patch coefficients [Tp, N, 18]
     and per-corner colors [Tc, N, 3, 5].
     """
@@ -691,8 +880,13 @@ def _pn_parts_from_coeffs(coeffs, colors, normals9=None, extra=None,
     if extra is None:
         extra = torch.zeros((1, n, 6), device=DEVICE)
     bvh = _bvh_from_hull(_pn_hull_points(coeffs), colors, num_frames)
-    return (bvh, coeffs.contiguous(), normals9.contiguous(),
-            extra.contiguous(), colors.contiguous())
+    return (
+        bvh,
+        coeffs.contiguous(),
+        normals9.contiguous(),
+        extra.contiguous(),
+        colors.contiguous(),
+    )
 
 
 def _pn_parts_from_mesh(corners, normals, colors):
@@ -704,10 +898,13 @@ def _pn_parts_from_mesh(corners, normals, colors):
     control = pn_control_points(corners, normals)
     coeffs = pn_patch_coefficients(control)
     bvh = _bvh_from_hull(control, colors, T)
-    return (bvh, coeffs.contiguous(),
-            normals.reshape(T, n, 9).contiguous(),
-            torch.zeros((1, n, 6), device=DEVICE),
-            colors.contiguous())
+    return (
+        bvh,
+        coeffs.contiguous(),
+        normals.reshape(T, n, 9).contiguous(),
+        torch.zeros((1, n, 6), device=DEVICE),
+        colors.contiguous(),
+    )
 
 
 def _camera_frame(position, target, T=1):
@@ -721,8 +918,7 @@ def _camera_frame(position, target, T=1):
     up = torch.tensor([0.0, 0.0, 1.0], device=DEVICE)
     if fwd[2].abs() > 0.99:
         up = torch.tensor([0.0, 1.0, 0.0], device=DEVICE)
-    right = torch.nn.functional.normalize(torch.linalg.cross(fwd, up),
-                                          dim=-1)
+    right = torch.nn.functional.normalize(torch.linalg.cross(fwd, up), dim=-1)
     down = torch.linalg.cross(fwd, right)
 
     def rep(x):
@@ -740,18 +936,35 @@ _PARABOLOID = {"x0": -1.0, "y0": -1.0, "su": 3.0, "sv": 3.0, "h": 2.0}
 def _paraboloid_coeffs():
     p = _PARABOLOID
     return torch.tensor(
-        [p["x0"], p["y0"], 0.0,
-         p["su"], 0.0, 0.0,
-         0.0, p["sv"], 0.0,
-         0.0, 0.0, p["h"],
-         0.0, 0.0, p["h"],
-         0.0, 0.0, 0.0], device=DEVICE).view(1, 1, 18)
+        [
+            p["x0"],
+            p["y0"],
+            0.0,
+            p["su"],
+            0.0,
+            0.0,
+            0.0,
+            p["sv"],
+            0.0,
+            0.0,
+            0.0,
+            p["h"],
+            0.0,
+            0.0,
+            p["h"],
+            0.0,
+            0.0,
+            0.0,
+        ],
+        device=DEVICE,
+    ).view(1, 1, 18)
 
 
 def _paraboloid_point(u, v):
     p = _PARABOLOID
-    return torch.stack((p["x0"] + p["su"] * u, p["y0"] + p["sv"] * v,
-                        p["h"] * (u * u + v * v)), -1)
+    return torch.stack(
+        (p["x0"] + p["su"] * u, p["y0"] + p["sv"] * v, p["h"] * (u * u + v * v)), -1
+    )
 
 
 def _uv_corner_colors(uvs, alpha):
@@ -781,13 +994,17 @@ def _reference_paraboloid(cam, sp, pbx, pby, W, H, alpha, bg):
     kernel may legitimately resolve differently.
     """
     p = _PARABOLOID
-    ys, xs = torch.meshgrid(torch.arange(H, device=DEVICE),
-                            torch.arange(W, device=DEVICE), indexing="ij")
+    ys, xs = torch.meshgrid(
+        torch.arange(H, device=DEVICE), torch.arange(W, device=DEVICE), indexing="ij"
+    )
     su_s = (xs.double() + 0.5 - W // 2) / (H // 2)
     sv_s = (ys.double() + 0.5 - H // 2) / (H // 2)
     ro = cam[0].double()
-    pix = (sp[0].double() + su_s.unsqueeze(-1) * pbx[0].double()
-           + sv_s.unsqueeze(-1) * pby[0].double())
+    pix = (
+        sp[0].double()
+        + su_s.unsqueeze(-1) * pbx[0].double()
+        + sv_s.unsqueeze(-1) * pby[0].double()
+    )
     rd = torch.nn.functional.normalize(pix - ro, dim=-1).view(-1, 3)
 
     u0 = (ro[0] - p["x0"]) / p["su"]
@@ -836,18 +1053,20 @@ def test_pn_flat_matches_triangle_reference():
     T, W, H = 7, 64, 48
     _, tri_verts, colors, cam, sp, pbx, pby = _random_triangle_scene(T)
     corners = tri_verts[..., :3].contiguous()
-    pn_parts = _pn_parts_from_mesh(corners, torch.zeros_like(corners),
-                                   colors)
-    got = _run_kernel(*_dummy_triangle_parts(), cam, sp, pbx, pby, T, W, H,
-                      pn_parts=pn_parts)
+    pn_parts = _pn_parts_from_mesh(corners, torch.zeros_like(corners), colors)
+    got = _run_kernel(
+        *_dummy_triangle_parts(), cam, sp, pbx, pby, T, W, H, pn_parts=pn_parts
+    )
     ref = _reference_blend(tri_verts, colors, cam, sp, pbx, pby, T, W, H)
     got = got.view(T, H * W, 4).float()
     ref = ref.view(T, H * W, 4).float()
     err = (got - ref).abs()
     bad = (err > 2).float().mean()
     assert bad < 2e-3, f"flat PN mismatch: {bad:.2%} of channels off by >2"
-    print(f"ok: flat PN patches match the triangle brute force "
-          f"(max err {err.max():.0f}, {bad:.3%} channels off by >2)")
+    print(
+        f"ok: flat PN patches match the triangle brute force "
+        f"(max err {err.max():.0f}, {bad:.3%} channels off by >2)"
+    )
 
 
 def test_pn_paraboloid_analytic():
@@ -859,27 +1078,37 @@ def test_pn_paraboloid_analytic():
     W = H = 96
     alpha = 0.5
     full_uvs = [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
-    parts = _pn_parts_from_coeffs(_paraboloid_coeffs(),
-                                  _uv_corner_colors(full_uvs, alpha))
+    parts = _pn_parts_from_coeffs(
+        _paraboloid_coeffs(), _uv_corner_colors(full_uvs, alpha)
+    )
     for name, pos, tgt, want_two in (
-            ("top", (0.4, 0.2, 9.0), (0.5, 0.5, 0.0), 0),
-            ("side", (2.6, -1.9, 1.3), (-1.9, 2.6, 0.6), 100)):
+        ("top", (0.4, 0.2, 9.0), (0.5, 0.5, 0.0), 0),
+        ("side", (2.6, -1.9, 1.3), (-1.9, 2.6, 0.6), 100),
+    ):
         cam, sp, pbx, pby = _camera_frame(pos, tgt)
-        got = _run_kernel(*_dummy_triangle_parts(), cam, sp, pbx, pby,
-                          1, W, H, pn_parts=parts).view(W * H, 4).float()
-        ref, reliable, two = _reference_paraboloid(cam, sp, pbx, pby, W, H,
-                                                   alpha, 20.0)
+        got = (
+            _run_kernel(
+                *_dummy_triangle_parts(), cam, sp, pbx, pby, 1, W, H, pn_parts=parts
+            )
+            .view(W * H, 4)
+            .float()
+        )
+        ref, reliable, two = _reference_paraboloid(cam, sp, pbx, pby, W, H, alpha, 20.0)
         cover = reliable.float().mean()
         err = (got - ref.float()).abs()[reliable]
         bad = (err > 3).float().mean()
         assert cover > 0.9, f"{name}: only {cover:.0%} of pixels reliable"
         assert two >= want_two, (
-            f"{name}: expected >= {want_two} two-hit pixels, got {two}")
+            f"{name}: expected >= {want_two} two-hit pixels, got {two}"
+        )
         assert bad < 2e-3, (
             f"{name} view mismatch: {bad:.2%} of channels off by >3 "
-            f"(max err {err.max():.0f})")
-        print(f"ok: paraboloid {name} view matches the float64 reference "
-              f"({two} two-hit pixels, max err {err.max():.0f})")
+            f"(max err {err.max():.0f})"
+        )
+        print(
+            f"ok: paraboloid {name} view matches the float64 reference "
+            f"({two} two-hit pixels, max err {err.max():.0f})"
+        )
 
 
 def test_pn_watertight_seam():
@@ -893,8 +1122,9 @@ def test_pn_watertight_seam():
     W = H = 96
     alpha = 0.5
     full_uvs = [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
-    one_parts = _pn_parts_from_coeffs(_paraboloid_coeffs(),
-                                      _uv_corner_colors(full_uvs, alpha))
+    one_parts = _pn_parts_from_coeffs(
+        _paraboloid_coeffs(), _uv_corner_colors(full_uvs, alpha)
+    )
 
     def subpatch(q):
         """Control points of the paraboloid restricted to domain triangle
@@ -915,22 +1145,38 @@ def test_pn_watertight_seam():
     sub_b = [[0.0, 0.0], [0.5, 0.5], [0.0, 1.0]]
     ctrl = torch.stack((subpatch(sub_a), subpatch(sub_b)), 0).unsqueeze(0)
     two_parts = _pn_parts_from_coeffs(
-        pn_patch_coefficients(ctrl), _uv_corner_colors([sub_a, sub_b], alpha))
+        pn_patch_coefficients(ctrl), _uv_corner_colors([sub_a, sub_b], alpha)
+    )
 
-    for name, pos, tgt in (("top", (0.4, 0.2, 9.0), (0.5, 0.5, 0.0)),
-                           ("side", (2.6, -1.9, 1.3), (-1.9, 2.6, 0.6))):
+    for name, pos, tgt in (
+        ("top", (0.4, 0.2, 9.0), (0.5, 0.5, 0.0)),
+        ("side", (2.6, -1.9, 1.3), (-1.9, 2.6, 0.6)),
+    ):
         cam, sp, pbx, pby = _camera_frame(pos, tgt)
-        one = _run_kernel(*_dummy_triangle_parts(), cam, sp, pbx, pby,
-                          1, W, H, pn_parts=one_parts).view(-1, 4).float()
-        two = _run_kernel(*_dummy_triangle_parts(), cam, sp, pbx, pby,
-                          1, W, H, pn_parts=two_parts).view(-1, 4).float()
+        one = (
+            _run_kernel(
+                *_dummy_triangle_parts(), cam, sp, pbx, pby, 1, W, H, pn_parts=one_parts
+            )
+            .view(-1, 4)
+            .float()
+        )
+        two = (
+            _run_kernel(
+                *_dummy_triangle_parts(), cam, sp, pbx, pby, 1, W, H, pn_parts=two_parts
+            )
+            .view(-1, 4)
+            .float()
+        )
         err = (one - two).abs()
         bad = (err > 2).float().mean()
         assert bad < 2e-3, (
             f"{name}: split patch differs from unsplit "
-            f"({bad:.2%} of channels off by >2, max err {err.max():.0f})")
-        print(f"ok: {name} view of split patch matches unsplit "
-              f"(max err {err.max():.0f}, watertight seam)")
+            f"({bad:.2%} of channels off by >2, max err {err.max():.0f})"
+        )
+        print(
+            f"ok: {name} view of split patch matches unsplit "
+            f"(max err {err.max():.0f}, watertight seam)"
+        )
 
 
 def test_pn_mirror_and_monte_carlo():
@@ -941,47 +1187,75 @@ def test_pn_mirror_and_monte_carlo():
     """
     T, W, H = 1, 48, 48
     floor_corners = torch.tensor(
-        [[[-20.0, -20, 0], [20, -20, 0], [0, 40, 0]]],
-        device=DEVICE).unsqueeze(0)
+        [[[-20.0, -20, 0], [20, -20, 0], [0, 40, 0]]], device=DEVICE
+    ).unsqueeze(0)
     normals = torch.zeros_like(floor_corners)
     normals[..., 2] = 1.0
     colors = torch.zeros((1, 1, 3, 5), device=DEVICE)
     colors[0, 0] = torch.tensor([0.0, 0.0, 1.0, 0.0, 1.0], device=DEVICE)
     bvh, coeffs, norm9, extra, pcol = _pn_parts_from_mesh(
-        floor_corners, normals, colors)
+        floor_corners, normals, colors
+    )
     extra = extra.clone()
     extra[..., 0::2] = 1.0  # reflectivity 1 at every corner
     pn_parts = (bvh, coeffs, norm9, extra, pcol)
 
-    panel = torch.tensor([[[-30.0, -30, 9], [30, -30, 9], [0, 60, 9]]],
-                         device=DEVICE).unsqueeze(0)
-    tri_verts = torch.cat(
-        (panel, torch.zeros(1, 1, 3, 5, device=DEVICE)), -1)
+    panel = torch.tensor(
+        [[[-30.0, -30, 9], [30, -30, 9], [0, 60, 9]]], device=DEVICE
+    ).unsqueeze(0)
+    tri_verts = torch.cat((panel, torch.zeros(1, 1, 3, 5, device=DEVICE)), -1)
     tri_colors = torch.zeros((1, 1, 3, 5), device=DEVICE)
-    tri_colors[0, 0] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0],
-                                    device=DEVICE)
-    tri_bvh = build_stbvh(panel.amin(-2).contiguous(),
-                          panel.amax(-2).contiguous(), num_frames=T)
+    tri_colors[0, 0] = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0], device=DEVICE)
+    tri_bvh = build_stbvh(
+        panel.amin(-2).contiguous(), panel.amax(-2).contiguous(), num_frames=T
+    )
 
     cam = torch.tensor([[0.0, 0.0, 8.0]], device=DEVICE)
     sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
     pbx = torch.tensor([[1.0, 0.0, 0.0]], device=DEVICE)
     pby = torch.tensor([[0.0, 1.0, 0.0]], device=DEVICE)
 
-    det = _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby,
-                      T, W, H, max_bounces=2, pn_parts=pn_parts)
+    det = _run_kernel(
+        tri_bvh,
+        tri_verts,
+        tri_colors,
+        cam,
+        sp,
+        pbx,
+        pby,
+        T,
+        W,
+        H,
+        max_bounces=2,
+        pn_parts=pn_parts,
+    )
     center = det.view(T, H, W, 4)[0, H // 2, W // 2]
     assert center[0] > 200, f"PN mirror should reflect red: {center.tolist()}"
     assert center[2] < 50, f"PN mirror should not show blue: {center.tolist()}"
 
-    mc = _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby,
-                     T, W, H, max_bounces=2, samples_per_pixel=64,
-                     pn_parts=pn_parts)
+    mc = _run_kernel(
+        tri_bvh,
+        tri_verts,
+        tri_colors,
+        cam,
+        sp,
+        pbx,
+        pby,
+        T,
+        W,
+        H,
+        max_bounces=2,
+        samples_per_pixel=64,
+        pn_parts=pn_parts,
+    )
     center_mc = mc.view(T, H, W, 4)[0, H // 2, W // 2]
     assert center_mc[0] > 150, (
-        f"Monte Carlo PN mirror lost the reflection: {center_mc.tolist()}")
-    print("ok: PN mirror reflects via interpolated patch normals "
-          "(deterministic + Monte Carlo)")
+        f"Monte Carlo PN mirror lost the reflection: {center_mc.tolist()}"
+    )
+    print(
+        "ok: PN mirror reflects via interpolated patch normals "
+        "(deterministic + Monte Carlo)"
+    )
 
 
 def test_pn_physical_shadow():
@@ -990,21 +1264,22 @@ def test_pn_physical_shadow():
     block the point light.
     """
     W, H = 64, 48
-    floor = torch.tensor([[[-8.0, -8, 0], [8, -8, 0], [0, 12, 0]]],
-                         device=DEVICE).unsqueeze(0)
-    tri_verts = torch.cat(
-        (floor, torch.zeros(1, 1, 3, 5, device=DEVICE)), -1)
+    floor = torch.tensor(
+        [[[-8.0, -8, 0], [8, -8, 0], [0, 12, 0]]], device=DEVICE
+    ).unsqueeze(0)
+    tri_verts = torch.cat((floor, torch.zeros(1, 1, 3, 5, device=DEVICE)), -1)
     tri_colors = torch.zeros((1, 1, 3, 5), device=DEVICE)
     tri_colors[0, 0] = torch.tensor([0.8, 0.8, 0.8, 0.0, 1.0], device=DEVICE)
-    tri_bvh = build_stbvh(floor.amin(-2).contiguous(),
-                          floor.amax(-2).contiguous(), num_frames=1)
+    tri_bvh = build_stbvh(
+        floor.amin(-2).contiguous(), floor.amax(-2).contiguous(), num_frames=1
+    )
 
-    occluder = torch.tensor([[[1.8, -0.2, 2.0], [2.2, -0.2, 2.0],
-                              [2.0, 0.3, 2.0]]], device=DEVICE).unsqueeze(0)
+    occluder = torch.tensor(
+        [[[1.8, -0.2, 2.0], [2.2, -0.2, 2.0], [2.0, 0.3, 2.0]]], device=DEVICE
+    ).unsqueeze(0)
     occ_colors = torch.zeros((1, 1, 3, 5), device=DEVICE)
     occ_colors[0, 0] = torch.tensor([0.3, 0.3, 0.3, 0.0, 1.0], device=DEVICE)
-    pn_parts = _pn_parts_from_mesh(occluder, torch.zeros_like(occluder),
-                                   occ_colors)
+    pn_parts = _pn_parts_from_mesh(occluder, torch.zeros_like(occluder), occ_colors)
 
     cam = torch.tensor([[0.0, 0.0, 8.0]], device=DEVICE)
     sp = torch.tensor([[0.0, 0.0, 5.0]], device=DEVICE)
@@ -1013,18 +1288,37 @@ def test_pn_physical_shadow():
     light_pos = torch.tensor([[[2.0, 0.0, 4.0]]], device=DEVICE)
     light_col = torch.tensor([[[1.0, 1.0, 1.0]]], device=DEVICE)
 
-    img = _run_kernel(tri_bvh, tri_verts, tri_colors, cam, sp, pbx, pby,
-                      1, W, H, bg=0, max_bounces=0, samples_per_pixel=256,
-                      physical=True, light_pos=light_pos,
-                      light_col=light_col, pn_parts=pn_parts
-                      ).view(H, W, 4).float()
+    img = (
+        _run_kernel(
+            tri_bvh,
+            tri_verts,
+            tri_colors,
+            cam,
+            sp,
+            pbx,
+            pby,
+            1,
+            W,
+            H,
+            bg=0,
+            max_bounces=0,
+            samples_per_pixel=256,
+            physical=True,
+            light_pos=light_pos,
+            light_col=light_col,
+            pn_parts=pn_parts,
+        )
+        .view(H, W, 4)
+        .float()
+    )
     row = H // 2
     lit = img[row, _floor_pixel(-2.5, W, H), 0]
     shadowed = img[row, _floor_pixel(2.0, W, H), 0]
     assert lit > 60, f"floor unexpectedly dark away from the occluder: {lit}"
     assert shadowed < 30, f"PN occluder cast no shadow: {shadowed}"
-    print(f"ok: PN occluder shadows the point light "
-          f"(lit={lit:.0f} shadow={shadowed:.0f})")
+    print(
+        f"ok: PN occluder shadows the point light (lit={lit:.0f} shadow={shadowed:.0f})"
+    )
 
 
 if __name__ == "__main__":

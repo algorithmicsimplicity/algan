@@ -17,16 +17,20 @@ with Off():
         weight="BOLD",
         color=WHITE,
     ).move(UP * 1.55)
-    first_row = Group(
-        Sphere(radius=0.48).set_material(MeshBasicMaterial(color=BLUE)),
-        Sphere(radius=0.48).set_material(MeshLambertMaterial(color=GREEN)),
-        Sphere(radius=0.48).set_material(
-            MeshPhongMaterial(color=ORANGE, specular=WHITE, shininess=80)
-        ),
-        Sphere(radius=0.48).set_material(
-            MeshStandardMaterial(color=RED, roughness=0.18, metalness=0.75)
-        ),
-    ).arrange_in_line(RIGHT, buffer=0.55).move(DOWN * 0.05)
+    first_row = (
+        Group(
+            Sphere(radius=0.48).set_material(MeshBasicMaterial(color=BLUE)),
+            Sphere(radius=0.48).set_material(MeshLambertMaterial(color=GREEN)),
+            Sphere(radius=0.48).set_material(
+                MeshPhongMaterial(color=ORANGE, specular=WHITE, shininess=80)
+            ),
+            Sphere(radius=0.48).set_material(
+                MeshStandardMaterial(color=RED, roughness=0.18, metalness=0.75)
+            ),
+        )
+        .arrange_in_line(RIGHT, buffer=0.55)
+        .move(DOWN * 0.05)
+    )
     first_labels = Group(
         Text("Basic", font_size=24, color=GRAY_A),
         Text("Lambert", font_size=24, color=GRAY_A),
@@ -59,29 +63,25 @@ with Seq():
         first_labels.move(UP * 0.62)
 
 with Off():
-    second_row = Group(
-        Sphere(radius=0.43).set_material(
-            MeshPhysicalMaterial(
-                color=BLUE_A,
-                roughness=0.12,
-                clearcoat=0.8,
-                transmission=0.45,
-                ior=1.45,
-            )
-        ),
-        Sphere(radius=0.4).set_material(
-            MeshToonMaterial(color=GREEN, bands=4)
-        ),
-        Sphere(radius=0.4, color=WHITE).set_material(
-            MeshNormalMaterial()
-        ),
-        Sphere(radius=0.4).set_material(
-            MeshMatcapMaterial(color=ORANGE)
-        ),
-        Sphere(radius=0.4).set_material(
-            MeshDepthMaterial(near=2.0, far=12.0)
-        ),
-    ).arrange_in_line(RIGHT, buffer=0.36).move(DOWN * 0.68)
+    second_row = (
+        Group(
+            Sphere(radius=0.43).set_material(
+                MeshPhysicalMaterial(
+                    color=BLUE_A,
+                    roughness=0.12,
+                    clearcoat=0.8,
+                    transmission=0.45,
+                    ior=1.45,
+                )
+            ),
+            Sphere(radius=0.4).set_material(MeshToonMaterial(color=GREEN, bands=4)),
+            Sphere(radius=0.4, color=WHITE).set_material(MeshNormalMaterial()),
+            Sphere(radius=0.4).set_material(MeshMatcapMaterial(color=ORANGE)),
+            Sphere(radius=0.4).set_material(MeshDepthMaterial(near=2.0, far=12.0)),
+        )
+        .arrange_in_line(RIGHT, buffer=0.36)
+        .move(DOWN * 0.68)
+    )
     second_labels = Group(
         Text("Physical", font_size=21, color=GRAY_A),
         Text("Toon", font_size=21, color=GRAY_A),
@@ -110,6 +110,4 @@ with Seq():
     Scene.get_camera().rotate(-12, UP, about_point=ORIGIN)
     Scene.wait(0.3)
 
-Scene.save_frame(
-    "algan_outputs/checkpoints/materials_and_lighting.png"
-)
+Scene.save_frame("algan_outputs/checkpoints/materials_and_lighting.png")

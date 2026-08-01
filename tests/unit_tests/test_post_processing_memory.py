@@ -13,13 +13,9 @@ def _legacy_fft_conv1d(input_tensor, kernel, dim):
     fft_length = input_tensor.shape[dim] + kernel.shape[dim] - 1
     spectrum = torch.fft.rfft(input_tensor, n=fft_length, dim=dim)
     kernel_spectrum = torch.fft.rfft(kernel, n=fft_length, dim=dim)
-    result = torch.fft.irfft(
-        spectrum * kernel_spectrum, n=fft_length, dim=dim
-    )
+    result = torch.fft.irfft(spectrum * kernel_spectrum, n=fft_length, dim=dim)
     left = (kernel.shape[dim] - 1) // 2
-    return torch.ops.aten.slice(
-        result, dim, left, left + input_tensor.shape[dim], 1
-    )
+    return torch.ops.aten.slice(result, dim, left, left + input_tensor.shape[dim], 1)
 
 
 def _legacy_bloom_reference(x, *, scale_factor):
@@ -32,8 +28,10 @@ def _legacy_bloom_reference(x, *, scale_factor):
     glow.pow_(3)
     color.mul_(glow).mul_(30)
     color = F.interpolate(
-        color.permute(0, 3, 1, 2), scale_factor=1 / scale_factor,
-        mode="bilinear", antialias=True,
+        color.permute(0, 3, 1, 2),
+        scale_factor=1 / scale_factor,
+        mode="bilinear",
+        antialias=True,
     )
     height = color.shape[-2]
     sigma_rim = max(0.004 * height, 1.0)
@@ -98,13 +96,9 @@ def test_bloom_matches_legacy_render_tolerance_nondivisible(channels):
     frames = torch.randint(1, 220, (1, 9, 13, channels), dtype=torch.uint8)
     frames[..., 3] = 100
     scale_factor = 480  # int(480 * 9 / 2160) == 2
-    reference = _legacy_bloom_reference(
-        frames.clone(), scale_factor=scale_factor
-    )
+    reference = _legacy_bloom_reference(frames.clone(), scale_factor=scale_factor)
     memory = _managed_cpu_memory()
-    actual = bloom_filter(
-        frames.clone(), memory=memory, scale_factor=scale_factor
-    )
+    actual = bloom_filter(frames.clone(), memory=memory, scale_factor=scale_factor)
     if channels == 5:
         reference = reference[..., [0, 1, 2, 4]]
         actual = actual[..., [0, 1, 2, 4]]
@@ -113,7 +107,5 @@ def test_bloom_matches_legacy_render_tolerance_nondivisible(channels):
         actual = actual[..., :3]
     reference_u8 = reference.mul(255).clamp_max(255).to(torch.uint8)
     actual_u8 = actual.mul(255).clamp_max(255).to(torch.uint8)
-    difference = (
-        actual_u8.to(torch.int16) - reference_u8.to(torch.int16)
-    ).abs()
+    difference = (actual_u8.to(torch.int16) - reference_u8.to(torch.int16)).abs()
     assert difference.max().item() <= 2

@@ -8,6 +8,7 @@ invisible: spawned, styled, carrying primitives, and never drawn.
 
 Each test here pins a composite that used to be built exactly that way.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -74,9 +75,7 @@ def test_animated_boundary_layers_are_registered():
 
     actors = {id(actor) for actor in source.scene.actors}
     for layer in boundary.boundary_copies:
-        assert all(
-            id(descendant) in actors for descendant in layer.get_descendants()
-        )
+        assert all(id(descendant) in actors for descendant in layer.get_descendants())
     assert invisible_geometry(boundary) == []
 
 
@@ -112,9 +111,7 @@ def test_paragraph_built_detached_registers_nothing():
 
 @pytest.mark.parametrize("background", ["rectangle", "window", None])
 def test_code_renders_all_of_its_parts(background):
-    code = _spawned(
-        algan.Code(code_string="x = 1\ny = x + 2", background=background)
-    )
+    code = _spawned(algan.Code(code_string="x = 1\ny = x + 2", background=background))
 
     assert invisible_geometry(code) == []
 

@@ -16,19 +16,23 @@ with Off():
         weight="BOLD",
         color=WHITE,
     ).move(UP * 1.58)
-    solids = Group(
-        Sphere(radius=0.43).set_material(MeshBasicMaterial(color=BLUE)),
-        Cylinder(radius=0.34, height=0.85, show_ends=True).set_material(
-            MeshLambertMaterial(color=GREEN)
-        ),
-        Cone(base_radius=0.42, height=0.85, show_base=True).set_material(
-            MeshPhongMaterial(color=ORANGE, shininess=55)
-        ),
-        Torus(major_radius=0.4, minor_radius=0.14).set_material(
-            MeshStandardMaterial(color=TEAL, roughness=0.35, metalness=0.2)
-        ),
-        Cube(side_length=0.76).set_material(MeshBasicMaterial(color=RED)),
-    ).arrange_in_line(RIGHT, buffer=0.36).move(DOWN * 0.05)
+    solids = (
+        Group(
+            Sphere(radius=0.43).set_material(MeshBasicMaterial(color=BLUE)),
+            Cylinder(radius=0.34, height=0.85, show_ends=True).set_material(
+                MeshLambertMaterial(color=GREEN)
+            ),
+            Cone(base_radius=0.42, height=0.85, show_base=True).set_material(
+                MeshPhongMaterial(color=ORANGE, shininess=55)
+            ),
+            Torus(major_radius=0.4, minor_radius=0.14).set_material(
+                MeshStandardMaterial(color=TEAL, roughness=0.35, metalness=0.2)
+            ),
+            Cube(side_length=0.76).set_material(MeshBasicMaterial(color=RED)),
+        )
+        .arrange_in_line(RIGHT, buffer=0.36)
+        .move(DOWN * 0.05)
+    )
     solid_labels = Group(
         Text("sphere", font_size=21, color=GRAY_A),
         Text("cylinder", font_size=21, color=GRAY_A),
@@ -61,17 +65,17 @@ with Sync():
     solid_labels.despawn()
 
 with Off():
-    polyhedra = Group(
-        Tetrahedron(edge_length=1.0).set_material(
-            MeshBasicMaterial(color=BLUE)
-        ),
-        Octahedron(edge_length=0.95).set_material(
-            MeshLambertMaterial(color=GREEN)
-        ),
-        Icosahedron(edge_length=0.65).set_material(
-            MeshPhongMaterial(color=ORANGE, shininess=45)
-        ),
-    ).arrange_in_line(RIGHT, buffer=0.55).move(LEFT * 0.75 + DOWN * 0.2)
+    polyhedra = (
+        Group(
+            Tetrahedron(edge_length=1.0).set_material(MeshBasicMaterial(color=BLUE)),
+            Octahedron(edge_length=0.95).set_material(MeshLambertMaterial(color=GREEN)),
+            Icosahedron(edge_length=0.65).set_material(
+                MeshPhongMaterial(color=ORANGE, shininess=45)
+            ),
+        )
+        .arrange_in_line(RIGHT, buffer=0.55)
+        .move(LEFT * 0.75 + DOWN * 0.2)
+    )
     axes = Group(
         Arrow3D(
             start=LEFT * 0.55,
@@ -117,6 +121,4 @@ with Seq():
         phase_label.color = TEAL_A
     Scene.wait(0.3)
 
-Scene.save_frame(
-    "algan_outputs/checkpoints/geometry_and_camera.png"
-)
+Scene.save_frame("algan_outputs/checkpoints/geometry_and_camera.png")

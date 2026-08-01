@@ -60,6 +60,7 @@ SAH split pass per binary level across every node of that level), so the
 build runs on the render device under ``MERGE_ON_GPU`` like the classic
 builders.
 """
+
 from __future__ import annotations
 
 import torch
@@ -131,8 +132,7 @@ class RefitBVH(STBVH):
         return self.num_blocks
 
     @classmethod
-    def from_prebuilt(cls, nodes, node_miss, leaf_prim, leaf_tspan, blocks,
-                      like=None):
+    def from_prebuilt(cls, nodes, node_miss, leaf_prim, leaf_tspan, blocks, like=None):
         """Reattach already-built tensors (arena upload path). ``like`` is the
         source object whose scalar layout fields are carried over -- unlike
         the classic tree they cannot be derived from the tensor shapes alone
@@ -175,10 +175,10 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     seg = torch.repeat_interleave(torch.arange(K, device=device), counts)
     base = torch.zeros(K, dtype=torch.long, device=device)
     base[1:] = counts.cumsum(0)[:-1]
-    rank = torch.arange(S, device=device) - base[seg]         # pos in range
-    pos = starts[seg] + rank                                   # pos in order
+    rank = torch.arange(S, device=device) - base[seg]  # pos in range
+    pos = starts[seg] + rank  # pos in order
     tp = order[pos]
-    pc = cent[tp]                                              # [S, 3]
+    pc = cent[tp]  # [S, 3]
 
     # Per-range centroid bounds -> per-primitive bin index on each axis.
     cmin = torch.full((K, 3), float("inf"), device=device)
@@ -188,14 +188,15 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     ext = cmax - cmin
     nb = SAH_BINS
     t = (pc - cmin[seg]) / ext[seg].clamp_min(1e-30)
-    bins = (t * nb).long().clamp_(0, nb - 1)                   # [S, 3]
+    bins = (t * nb).long().clamp_(0, nb - 1)  # [S, 3]
 
     # Histograms + per-bin box unions, per (range, axis, bin).
     ax_off = torch.arange(3, device=device).view(1, 3)
-    idx = (seg.view(-1, 1) * 3 + ax_off) * nb + bins           # [S, 3]
+    idx = (seg.view(-1, 1) * 3 + ax_off) * nb + bins  # [S, 3]
     cnt = torch.zeros(K * 3 * nb, dtype=torch.long, device=device)
-    cnt.index_add_(0, idx.reshape(-1),
-                   torch.ones(S * 3, dtype=torch.long, device=device))
+    cnt.index_add_(
+        0, idx.reshape(-1), torch.ones(S * 3, dtype=torch.long, device=device)
+    )
     blo = torch.full((K * 3 * nb, 3), float("inf"), device=device)
     bhi = torch.full((K * 3 * nb, 3), float("-inf"), device=device)
     plo = ulo[tp]
@@ -209,17 +210,17 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
 
     # Prefix (left) and suffix (right) sweeps over the bins; split s puts
     # bins [0, s] left and (s, nb) right, s in [0, nb - 2].
-    lcnt = cnt.cumsum(-1)[..., :-1]                            # [K, 3, nb-1]
+    lcnt = cnt.cumsum(-1)[..., :-1]  # [K, 3, nb-1]
     rcnt = counts.view(K, 1, 1) - lcnt
     llo = blo.cummin(2).values[:, :, :-1]
     lhi = bhi.cummax(2).values[:, :, :-1]
     rlo = blo.flip(2).cummin(2).values.flip(2)[:, :, 1:]
     rhi = bhi.flip(2).cummax(2).values.flip(2)[:, :, 1:]
-    cost = (_half_area(llo, lhi) * lcnt + _half_area(rlo, rhi) * rcnt)
+    cost = _half_area(llo, lhi) * lcnt + _half_area(rlo, rhi) * rcnt
     invalid = (lcnt == 0) | (rcnt == 0)
     cost = torch.where(invalid, torch.full_like(cost, float("inf")), cost)
     flat = cost.view(K, 3 * (nb - 1))
-    best = flat.argmin(1)                                      # [K]
+    best = flat.argmin(1)  # [K]
     best_axis = best // (nb - 1)
     best_bin = best % (nb - 1)
     no_valid = torch.isinf(flat.gather(1, best.view(K, 1)).squeeze(1))
@@ -241,8 +242,9 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     return nl
 
 
-def build_refit_bvh(frame_lo, frame_hi, num_frames=None, opaque=None,
-                    tightness=None, builder=None):
+def build_refit_bvh(
+    frame_lo, frame_hi, num_frames=None, opaque=None, tightness=None, builder=None
+):
     """Build a shared-topology binned-SAH refit BVH from per-frame bounds.
 
     Parameters mirror :func:`stbvh.build_stbvh` (``tightness`` / ``builder``
@@ -260,28 +262,32 @@ def build_refit_bvh(frame_lo, frame_hi, num_frames=None, opaque=None,
         num_frames = Tc
     if Tc not in (1, num_frames):
         raise ValueError(
-            f"frame bounds have {Tc} frames but the batch has {num_frames}")
+            f"frame bounds have {Tc} frames but the batch has {num_frames}"
+        )
 
-    valid = (frame_hi >= frame_lo).all(-1)                     # [Tc, N]
+    valid = (frame_hi >= frame_lo).all(-1)  # [Tc, N]
     ever = valid.any(0)
-    pids = ever.nonzero(as_tuple=True)[0]                      # tree -> orig
+    pids = ever.nonzero(as_tuple=True)[0]  # tree -> orig
     M = int(pids.shape[0])
     if M >= LINK_PRIM_MASK:
         raise ValueError(
-            f"refit BVH link words carry 30-bit primitive indices; got {M}")
+            f"refit BVH link words carry 30-bit primitive indices; got {M}"
+        )
 
     # Batch-union boxes + centroids of the ever-visible primitives (the SAH
     # metric of the validated "union" topology in _rt2_refit_sah.py).
-    vlo = torch.where(valid.unsqueeze(-1), frame_lo,
-                      torch.full_like(frame_lo, EMPTY_LO))
-    vhi = torch.where(valid.unsqueeze(-1), frame_hi,
-                      torch.full_like(frame_hi, EMPTY_HI))
-    ulo = vlo.amin(0)[pids]                                    # [M, 3]
+    vlo = torch.where(
+        valid.unsqueeze(-1), frame_lo, torch.full_like(frame_lo, EMPTY_LO)
+    )
+    vhi = torch.where(
+        valid.unsqueeze(-1), frame_hi, torch.full_like(frame_hi, EMPTY_HI)
+    )
+    ulo = vlo.amin(0)[pids]  # [M, 3]
     uhi = vhi.amax(0)[pids]
     cent = (ulo + uhi) * 0.5
 
     a = BVH_ARITY
-    s_rounds = a.bit_length() - 1                              # log2(arity)
+    s_rounds = a.bit_length() - 1  # log2(arity)
 
     # ------------------------------------------------------------------
     # Topology: level-synchronous build. Each level splits every current
@@ -290,9 +296,9 @@ def build_refit_bvh(frame_lo, frame_hi, num_frames=None, opaque=None,
     # level's nodes. Blocks are numbered in BFS order.
     # ------------------------------------------------------------------
     order = torch.arange(M, dtype=torch.long, device=device)
-    kind_rows = []      # per level: [K, A] uint8 (0 absent, 1 leaf, 2 internal)
-    ref_rows = []       # per level: [K, A] long (leaf: TREE prim; internal: block)
-    levels = []         # (block_start, block_end) per level
+    kind_rows = []  # per level: [K, A] uint8 (0 absent, 1 leaf, 2 internal)
+    ref_rows = []  # per level: [K, A] long (leaf: TREE prim; internal: block)
+    levels = []  # (block_start, block_end) per level
     next_block = 0
     if M <= 1:
         kind = torch.zeros((1, a), dtype=torch.uint8, device=device)
@@ -331,8 +337,7 @@ def build_refit_bvh(frame_lo, frame_hi, num_frames=None, opaque=None,
                 ss = sub_start[splittable]
                 sc = sub_count[splittable]
                 sb = sub_block[splittable]
-                nl = _binary_split(order, ss, sc, forced_blk[sb], cent,
-                                   ulo, uhi)
+                nl = _binary_split(order, ss, sc, forced_blk[sb], cent, ulo, uhi)
                 keep_start = sub_start[~splittable]
                 keep_count = sub_count[~splittable]
                 keep_block = sub_block[~splittable]
@@ -344,15 +349,17 @@ def build_refit_bvh(frame_lo, frame_hi, num_frames=None, opaque=None,
             sub_start = sub_start[skey]
             sub_count = sub_count[skey]
             sub_block = sub_block[skey]
-            slot = (torch.arange(sub_block.shape[0], device=device)
-                    - torch.searchsorted(
-                        sub_block, sub_block, right=False))
+            slot = torch.arange(sub_block.shape[0], device=device) - torch.searchsorted(
+                sub_block, sub_block, right=False
+            )
             is_leaf = sub_count == 1
             kind = torch.zeros((K, a), dtype=torch.uint8, device=device)
             ref = torch.full((K, a), -1, dtype=torch.long, device=device)
             kind[sub_block, slot] = torch.where(
-                is_leaf, torch.ones_like(sub_block, dtype=torch.uint8),
-                torch.full_like(sub_block, 2, dtype=torch.uint8))
+                is_leaf,
+                torch.ones_like(sub_block, dtype=torch.uint8),
+                torch.full_like(sub_block, 2, dtype=torch.uint8),
+            )
             leaf_ref = order[sub_start]
             child_ids = torch.cumsum((~is_leaf).long(), 0) - 1 + next_block
             ref[sub_block, slot] = torch.where(is_leaf, leaf_ref, child_ids)
@@ -362,20 +369,21 @@ def build_refit_bvh(frame_lo, frame_hi, num_frames=None, opaque=None,
             r_count = sub_count[~is_leaf]
             depth += 1
             if depth > MAX_DEPTH:
-                raise RuntimeError(
-                    "refit BVH exceeded its depth budget (builder bug)")
+                raise RuntimeError("refit BVH exceeded its depth budget (builder bug)")
 
     B = next_block
     if B > (1 << (31 - BVH_ARITY)):
         raise ValueError(
             f"refit BVH has {B} sibling blocks; the traversal stack packs "
-            f"block << {BVH_ARITY} into int32 entries")
-    child_kind = torch.cat(kind_rows, 0)                       # [B, A]
-    child_ref = torch.cat(ref_rows, 0)                         # [B, A]
+            f"block << {BVH_ARITY} into int32 entries"
+        )
+    child_kind = torch.cat(kind_rows, 0)  # [B, A]
+    child_ref = torch.cat(ref_rows, 0)  # [B, A]
     # Leaf refs: tree-primitive -> original primitive index.
     if M:
         child_ref = torch.where(
-            child_kind == 1, pids[child_ref.clamp_min(0)], child_ref)
+            child_kind == 1, pids[child_ref.clamp_min(0)], child_ref
+        )
 
     # ------------------------------------------------------------------
     # Refit: per-frame child boxes + links per level, bottom-up, all frames
@@ -391,44 +399,47 @@ def build_refit_bvh(frame_lo, frame_hi, num_frames=None, opaque=None,
     ch_lo = torch.empty((Tb, B, a, 3), device=device)
     ch_hi = torch.empty((Tb, B, a, 3), device=device)
     link = torch.empty((Tb, B, a), dtype=torch.int32, device=device)
-    for (lv_s, lv_e) in reversed(levels):
-        kind = child_kind[lv_s:lv_e]                           # [k, A]
+    for lv_s, lv_e in reversed(levels):
+        kind = child_kind[lv_s:lv_e]  # [k, A]
         ref = child_ref[lv_s:lv_e]
         # Per-kind clamped gather indices: a slot's ref is a primitive index
         # for leaves and a block index for internal children, so each gather
         # must be bounded by its own array.
-        safe_prim = torch.where(kind == 1, ref,
-                                torch.zeros_like(ref)).reshape(-1)
-        safe_blk = torch.where(kind == 2, ref,
-                               torch.zeros_like(ref)).reshape(-1)
+        safe_prim = torch.where(kind == 1, ref, torch.zeros_like(ref)).reshape(-1)
+        safe_blk = torch.where(kind == 2, ref, torch.zeros_like(ref)).reshape(-1)
         leaf_lo = vlo[:, safe_prim].view(Tb, -1, a, 3)
         leaf_hi = vhi[:, safe_prim].view(Tb, -1, a, 3)
         int_lo = nb_lo[:, safe_blk].view(Tb, -1, a, 3)
         int_hi = nb_hi[:, safe_blk].view(Tb, -1, a, 3)
         km = kind.view(1, -1, a, 1)
         c_lo = torch.where(
-            km == 1, leaf_lo,
-            torch.where(km == 2, int_lo, torch.full_like(leaf_lo, EMPTY_LO)))
+            km == 1,
+            leaf_lo,
+            torch.where(km == 2, int_lo, torch.full_like(leaf_lo, EMPTY_LO)),
+        )
         c_hi = torch.where(
-            km == 1, leaf_hi,
-            torch.where(km == 2, int_hi, torch.full_like(leaf_hi, EMPTY_HI)))
+            km == 1,
+            leaf_hi,
+            torch.where(km == 2, int_hi, torch.full_like(leaf_hi, EMPTY_HI)),
+        )
         ch_lo[:, lv_s:lv_e] = c_lo
         ch_hi[:, lv_s:lv_e] = c_hi
         nb_lo[:, lv_s:lv_e] = c_lo.amin(2)
         nb_hi[:, lv_s:lv_e] = c_hi.amax(2)
         # Link words: invalid whenever the child's subtree is empty at t.
-        alive = (c_hi >= c_lo).all(-1)                         # [Tb, k, A]
-        leaf_opq = opq[:, safe_prim].view(
-            opq.shape[0], -1, a).to(torch.int32)
+        alive = (c_hi >= c_lo).all(-1)  # [Tb, k, A]
+        leaf_opq = opq[:, safe_prim].view(opq.shape[0], -1, a).to(torch.int32)
         if leaf_opq.shape[0] != Tb:
             leaf_opq = leaf_opq.expand(Tb, -1, -1)
-        leaf_w = (ref.to(torch.int32) | LINK_LEAF_BIT
-                  | (leaf_opq * LINK_OPAQUE_BIT))
-        w = torch.where(kind.view(1, -1, a) == 1, leaf_w,
-                        ref.to(torch.int32).view(1, -1, a).expand(Tb, -1, -1))
+        leaf_w = ref.to(torch.int32) | LINK_LEAF_BIT | (leaf_opq * LINK_OPAQUE_BIT)
+        w = torch.where(
+            kind.view(1, -1, a) == 1,
+            leaf_w,
+            ref.to(torch.int32).view(1, -1, a).expand(Tb, -1, -1),
+        )
         link[:, lv_s:lv_e] = torch.where(
-            alive & (kind.view(1, -1, a) > 0), w,
-            torch.full_like(w, LINK_INVALID))
+            alive & (kind.view(1, -1, a) > 0), w, torch.full_like(w, LINK_INVALID)
+        )
 
     # ------------------------------------------------------------------
     # Pack the kernel-facing blocks: [Tb * B, 8, ARITY].

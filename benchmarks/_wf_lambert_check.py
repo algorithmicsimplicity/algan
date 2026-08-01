@@ -26,12 +26,17 @@ def render(tag):
     enable_ray_tracing(1, pn_triangles=True, fragment_shading=True)
     set_wavefront(True)
     with Sync():
-        (Sphere().scale(0.8).move(UP * 2.6 + OUT * 1.5)
-         .set_material(MeshLambertMaterial(color=YELLOW)).spawn())
+        (
+            Sphere()
+            .scale(0.8)
+            .move(UP * 2.6 + OUT * 1.5)
+            .set_material(MeshLambertMaterial(color=YELLOW))
+            .spawn()
+        )
     scene = SceneManager.instance()
     out = os.path.join(OUT_DIR, f"wf_{tag}.png")
     frames = scene.save_frame(out)
-    arr = (frames[-1].permute(1, 2, 0).float().cpu().numpy() * 255.0)
+    arr = frames[-1].permute(1, 2, 0).float().cpu().numpy() * 255.0
     return arr, out
 
 
@@ -41,5 +46,6 @@ def main():
 
 if __name__ == "__main__":
     import torch
+
     with torch.inference_mode():
         main()

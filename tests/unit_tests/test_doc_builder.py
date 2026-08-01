@@ -24,8 +24,6 @@ def test_sphinx_command_separates_example_doctree_caches(
     command = _sphinx_command(docs_dir, skip_examples=skip_examples)
 
     assert command[:3] == [sys.executable, "-m", "sphinx"]
-    assert command[command.index("-d") + 1] == str(
-        docs_dir / "build" / doctree_name
-    )
+    assert command[command.index("-d") + 1] == str(docs_dir / "build" / doctree_name)
     assert ("skip-manim" in command) is skip_examples
     assert str(docs_dir / "build") in command

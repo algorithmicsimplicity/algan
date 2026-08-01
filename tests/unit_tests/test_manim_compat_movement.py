@@ -14,6 +14,7 @@ The second is why displacements have to reach Manim as a ``shift`` rather than a
 an absolute ``move_to`` target: only then does the Mob travel exactly as far as
 the caller asked.
 """
+
 import math
 
 import pytest
@@ -80,9 +81,7 @@ def test_move_shifts_the_center_by_exactly_the_displacement(name):
 
     assert mob.move(displacement) is mob
 
-    torch.testing.assert_close(
-        _center(mob) - start, displacement, atol=2e-5, rtol=0
-    )
+    torch.testing.assert_close(_center(mob) - start, displacement, atol=2e-5, rtol=0)
     # The backing Mobject has to travel with the Algan geometry, or delegated
     # queries (Axes.c2p, Arrow.get_start, ...) go on reporting the old position.
     torch.testing.assert_close(
@@ -156,9 +155,7 @@ def test_relative_moves_are_recorded_as_animations(name):
         return _center(mob).clone()
 
     torch.testing.assert_close(center_at(0.0), start, atol=2e-5, rtol=0)
-    torch.testing.assert_close(
-        center_at(1.0), start + displacement, atol=2e-5, rtol=0
-    )
+    torch.testing.assert_close(center_at(1.0), start + displacement, atol=2e-5, rtol=0)
     # Halfway through it must be in transit, not already parked at the target.
     travelled = float((center_at(0.5) - start)[1])
     assert 0 < travelled < float(displacement[1])
@@ -184,6 +181,4 @@ def test_batched_algan_points_are_accepted_where_manim_wants_one_point(name):
     # And through the generic delegation to an un-overridden Manim method.
     before = _center(mob)
     assert mob.shift(anchor.location) is mob
-    torch.testing.assert_close(
-        _center(mob) - before, anchor_point, atol=2e-5, rtol=0
-    )
+    torch.testing.assert_close(_center(mob) - before, anchor_point, atol=2e-5, rtol=0)

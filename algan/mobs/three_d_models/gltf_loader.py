@@ -12,6 +12,7 @@ The output is the same backend-independent :class:`SceneData` the FBX loader
 produces, so :class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob` builds both
 through one shared path.
 """
+
 from __future__ import annotations
 
 import os
@@ -76,7 +77,9 @@ def _convert_material(visual):
     base = _normalize_color(
         getattr(material, "baseColorFactor", None)
         if getattr(material, "baseColorFactor", None) is not None
-        else getattr(material, "main_color", None))
+        else getattr(material, "main_color", None)
+    )
+
     def _img(attr):
         tex = getattr(material, attr, None)
         if tex is None:
@@ -101,8 +104,11 @@ def _convert_material(visual):
         emissive_image=_img("emissiveTexture"),
         metallic_factor=float(metallic) if metallic is not None else 0.0,
         roughness_factor=float(roughness) if roughness is not None else 1.0,
-        emissive=(tuple(float(x) for x in np.asarray(emissive).reshape(-1)[:3])
-                  if emissive is not None else (0.0, 0.0, 0.0)),
+        emissive=(
+            tuple(float(x) for x in np.asarray(emissive).reshape(-1)[:3])
+            if emissive is not None
+            else (0.0, 0.0, 0.0)
+        ),
         opacity=base[3],
     )
 
@@ -130,7 +136,7 @@ def _convert_mesh(geom, material_index, name):
 
     vertex_colors = None
     vc = getattr(visual, "vertex_colors", None) if visual is not None else None
-    if (uvs is None and vc is not None and len(vc) == vertices.shape[0]):
+    if uvs is None and vc is not None and len(vc) == vertices.shape[0]:
         vertex_colors = _image_to_float_hwc(np.asarray(vc)[None])[0]
 
     return MeshData(
@@ -153,12 +159,21 @@ def _convert_mesh(geom, material_index, name):
 # against real animated assets (no such asset on hand) -- like the FBX path.
 
 _COMPONENT_DTYPE = {
-    5120: np.int8, 5121: np.uint8, 5122: np.int16,
-    5123: np.uint16, 5125: np.uint32, 5126: np.float32,
+    5120: np.int8,
+    5121: np.uint8,
+    5122: np.int16,
+    5123: np.uint16,
+    5125: np.uint32,
+    5126: np.float32,
 }
 _TYPE_COMPONENTS = {
-    "SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4,
-    "MAT2": 4, "MAT3": 9, "MAT4": 16,
+    "SCALAR": 1,
+    "VEC2": 2,
+    "VEC3": 3,
+    "VEC4": 4,
+    "MAT2": 4,
+    "MAT3": 9,
+    "MAT4": 16,
 }
 
 
@@ -244,7 +259,7 @@ def _build_hierarchy(gltf, meshes, blob):
     gnodes = gltf.nodes or []
     parent = [-1] * len(gnodes)
     for i, n in enumerate(gnodes):
-        for c in (n.children or []):
+        for c in n.children or []:
             parent[c] = i
     # Depth-first order from the scene roots so parents precede children.
     roots = []
@@ -267,14 +282,17 @@ def _build_hierarchy(gltf, meshes, blob):
     out = []
     for g in order:
         n = gnodes[g]
-        mesh_indices = ([mesh_map[n.mesh]] if n.mesh is not None
-                        and n.mesh in mesh_map else [])
-        out.append(NodeData(
-            name=n.name or f"node_{g}",
-            transform=_node_local_transform(n),
-            parent=remap[parent[g]] if parent[g] >= 0 else -1,
-            mesh_indices=mesh_indices,
-        ))
+        mesh_indices = (
+            [mesh_map[n.mesh]] if n.mesh is not None and n.mesh in mesh_map else []
+        )
+        out.append(
+            NodeData(
+                name=n.name or f"node_{g}",
+                transform=_node_local_transform(n),
+                parent=remap[parent[g]] if parent[g] >= 0 else -1,
+                mesh_indices=mesh_indices,
+            )
+        )
     return out
 
 
@@ -302,7 +320,8 @@ def _parse_animations(gltf, blob):
             values = _accessor_array(gltf, sampler.output, blob).float()
             duration = max(duration, float(times[-1]) if times.numel() else 0.0)
             na = per_node.setdefault(
-                target.node, NodeAnimation(node_name=node_name(target.node)))
+                target.node, NodeAnimation(node_name=node_name(target.node))
+            )
             path = target.path
             if path == "translation":
                 na.position_times, na.positions = times, values.reshape(-1, 3)
@@ -312,11 +331,13 @@ def _parse_animations(gltf, blob):
                 na.scaling_times, na.scalings = times, values.reshape(-1, 3)
             # 'weights' (morph) is left for the morph phase.
         if per_node:
-            clips.append(AnimationData(
-                name=anim.name or f"animation_{ai}",
-                duration=duration,
-                channels=list(per_node.values()),
-            ))
+            clips.append(
+                AnimationData(
+                    name=anim.name or f"animation_{ai}",
+                    duration=duration,
+                    channels=list(per_node.values()),
+                )
+            )
     return clips
 
 
@@ -399,8 +420,7 @@ def load_scene(file_path):
     # Fallback: no graph instances (single mesh) -> identity-placed nodes.
     if not nodes:
         for i in range(len(meshes)):
-            nodes.append(NodeData(name=meshes[i].name, parent=-1,
-                                  mesh_indices=[i]))
+            nodes.append(NodeData(name=meshes[i].name, parent=-1, mesh_indices=[i]))
 
     # If the file carries keyframe animation, recover the real hierarchy + clips
     # (trimesh drops both). No-op for static files, so the static path is

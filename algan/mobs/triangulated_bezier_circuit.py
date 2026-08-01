@@ -505,7 +505,9 @@ def tile_region(
                 polygons.append([])
                 continue
             e = get_peri_dist(exit_point)
-            next_enter = sorted(next_enters, key=lambda x: (get_peri_dist(x[1]) - e) % 4)[-1]
+            next_enter = sorted(
+                next_enters, key=lambda x: (get_peri_dist(x[1]) - e) % 4
+            )[-1]
             add_corners(exit_point, next_enter[1])
             current_ind = next_enter[0]
         total_num_polygons += len(polygons)
@@ -974,9 +976,7 @@ class TriangulatedBezierCircuit(Mob):
         # the packed hierarchy without constructing per-glyph Mob graphs.
         logical_count = len(all_tiles)
         if is_batched_input:
-            self.parent_batch_sizes = torch.tensor(
-                (logical_count,), dtype=torch.long
-            )
+            self.parent_batch_sizes = torch.tensor((logical_count,), dtype=torch.long)
             self.singleton_batch_indexing = True
         for mob in (self, self.tiles, *triangles.get_descendants()):
             row_count = mob.location.shape[-2]

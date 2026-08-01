@@ -453,7 +453,9 @@ def ShowPassingFlash(mobject, time_width: float = 0.1, run_time: float = 1.0):
                 mobject.set_control_points_to_partial(full_pts, 0.0, 0.0)
                 mobject.spawn()
                 mobject.opacity = 1
-            with Sync(run_time=run_time, animation_manager=animation_manager_for(mobject)):
+            with Sync(
+                run_time=run_time, animation_manager=animation_manager_for(mobject)
+            ):
                 mobject.animate_function(
                     passing_flash_step,
                     time_width=time_width,

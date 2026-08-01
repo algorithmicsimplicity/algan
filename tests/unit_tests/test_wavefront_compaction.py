@@ -54,9 +54,7 @@ def test_arena_compactor_filters_previous_set_and_scans_split_pool(monkeypatch):
     assert torch.equal(got, torch.tensor([2, 3], dtype=torch.int32))
 
     keys = torch.tensor([5, 5, 7, 7], dtype=torch.int32)
-    got = compactor.select(
-        status, 0, scan_pool=True, rs_key=keys, desired_key=7
-    )
+    got = compactor.select(status, 0, scan_pool=True, rs_key=keys, desired_key=7)
     assert torch.equal(got, torch.tensor([2, 3], dtype=torch.int32))
 
 
@@ -69,8 +67,7 @@ def test_auto_tile_size_accounts_for_alignment_and_fixed_words(monkeypatch):
     coefficients = tracer._wavefront_state_coefficients()
     fixed = coefficients["fixed"]
     per_primary = tracer._wavefront_state_bytes_per_primary(split_k)
-    assert per_primary == (
-        split_k * coefficients["pool"] + coefficients["primary"])
+    assert per_primary == (split_k * coefficients["pool"] + coefficients["primary"])
     # Start the tile after one uint8 byte. ManualMemory must spend three bytes
     # aligning the first f32 state tensor.
     total = 1 + 3 + fixed + wanted * per_primary
@@ -87,7 +84,9 @@ def test_auto_tile_size_accounts_for_alignment_and_fixed_words(monkeypatch):
     monkeypatch.setattr(rt_settings, "WAVEFRONT_TILE_MAX", 1 << 25)
 
     got = tracer._auto_primary_per_tile(
-        memory, split_k, static_primary=100,
+        memory,
+        split_k,
+        static_primary=100,
         fixed_bytes=fixed,
     )
     assert got == wanted
@@ -104,5 +103,3 @@ def test_auto_tile_size_accounts_for_alignment_and_fixed_words(monkeypatch):
     tracer._ArenaRayCompactor(memory, pool)
     # The tile is maximal: everything fit, and one more primary would not have.
     assert 0 <= memory.get_num_bytes_remaining() < per_primary
-
-

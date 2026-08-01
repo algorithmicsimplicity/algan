@@ -54,9 +54,7 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     return kwargs
 
 
-def animated_function(
-    function=None, *, animated_args=None, unique_args=()
-):
+def animated_function(function=None, *, animated_args=None, unique_args=()):
     """Decorator that turns a function into an animated function. The animation is created by interpolating
     all args named in the animated_args dict from the value provided in this dict the value passed as an actual argument
     when the function is called. Most commonly, animated_args will just be {'t': 0}, and the function
@@ -93,12 +91,15 @@ def animated_function(
                 # context. The throwaway context below is then pure overhead
                 # -- and mob construction performs thousands of these calls.
                 if not _opt_disabled("fastpath") and not (
-                        hasattr(self, "id") and self.is_spawned_in_subtree()):
+                    hasattr(self, "id") and self.is_spawned_in_subtree()
+                ):
                     return func(self, *args, **kwargs)
                 # Spawned but non-recording (e.g. inside Off(record_funcs=
                 # False)): attribute edits still record timestamps against
                 # the current context, so keep the context wrap.
-                with AnimationContext(record_funcs=False, animation_manager=self.animation_manager):
+                with AnimationContext(
+                    record_funcs=False, animation_manager=self.animation_manager
+                ):
                     return func(self, *args, **kwargs)
             else:
                 with AnimationContext(animation_manager=self.animation_manager):
@@ -114,7 +115,9 @@ def animated_function(
                         timeline.last_recorded_event
                     )
                     try:
-                        with AnimationContext(record_funcs=False, animation_manager=self.animation_manager):
+                        with AnimationContext(
+                            record_funcs=False, animation_manager=self.animation_manager
+                        ):
                             out = func(self, **kwargs)
                     finally:
                         timeline.set_active_edit_event(previous_event)
@@ -278,11 +281,13 @@ class Animatable:
         if hasattr(class_to_attach_to, property_name):
             return
 
-        tensor_subclass = Color if property_name == 'color' else torch.Tensor
+        tensor_subclass = Color if property_name == "color" else torch.Tensor
 
         @property
         def prop(self):
-            return self.get_animated_attribute(property_name).as_subclass(tensor_subclass)
+            return self.get_animated_attribute(property_name).as_subclass(
+                tensor_subclass
+            )
 
         @prop.setter
         def prop(self, value):
@@ -419,7 +424,9 @@ class Animatable:
         # The span must be recorded on an *entered* context: only contexts
         # that enter and exit get their rescaled timestamps synced, so events
         # on the top-level context's timespan would all evaluate to time 0.
-        with Off(record_funcs=False, animation_manager=self.animation_manager) as context:
+        with Off(
+            record_funcs=False, animation_manager=self.animation_manager
+        ) as context:
             updater_id = timeline.record_updater(
                 update_function, self, args, kwargs, context
             )
@@ -459,7 +466,9 @@ class Animatable:
             # Already removed.
             return
         # See add_updater: the end event must live on an entered context.
-        with Off(record_funcs=False, animation_manager=self.animation_manager) as context:
+        with Off(
+            record_funcs=False, animation_manager=self.animation_manager
+        ) as context:
             timeline.end_updater(updater_id, context)
             # Record the updater's final state as an ordinary attribute
             # modification at the removal time, so the mob keeps it afterwards.
@@ -550,7 +559,7 @@ class Animatable:
         .. code-block:: python
 
             with mob.retroactive():
-                mob.color = BLUE      # happens earlier in the video
+                mob.color = BLUE  # happens earlier in the video
         """
         self.set_to_retroactive()
         try:
@@ -566,9 +575,7 @@ class Animatable:
     @animation_manager.setter
     def animation_manager(self, manager):
         if manager is not self.scene.animation_manager:
-            raise ValueError(
-                "A Mob must use the AnimationManager owned by its Scene"
-            )
+            raise ValueError("A Mob must use the AnimationManager owned by its Scene")
 
     def is_animating(self) -> bool:
         """Whether changes to this Mob would currently be recorded as animation.
@@ -586,8 +593,9 @@ class Animatable:
         if not hasattr(self, "id"):
             # Not yet fully constructed (e.g. mid-clone).
             return False
-        return (self.animation_manager.context.record_funcs
-                and self.is_spawned_in_subtree())
+        return (
+            self.animation_manager.context.record_funcs and self.is_spawned_in_subtree()
+        )
 
     def generate_animatable_attr_set_get_methods(self):
         """Internal: install ``set_<attr>`` / ``get_<attr>`` helpers on this object.
@@ -761,18 +769,22 @@ class Animatable:
             This object, so calls can be chained.
         """
         timeline = self.scene.timeline_manager
-        replay_inds = timeline.replay_inds(
-            key, self.id, include_descendants)
-        inds = (replay_inds if replay_inds is not None else
-                self._get_attr_ranges(key, include_descendants=include_descendants))
+        replay_inds = timeline.replay_inds(key, self.id, include_descendants)
+        inds = (
+            replay_inds
+            if replay_inds is not None
+            else self._get_attr_ranges(key, include_descendants=include_descendants)
+        )
 
         context = self.animation_manager.context
-        if (replay_inds is not None or not self.is_spawned_in_subtree()
-                or not context.record_attr_modifications):
+        if (
+            replay_inds is not None
+            or not self.is_spawned_in_subtree()
+            or not context.record_attr_modifications
+        ):
             timeline.modify_attribute(key, inds, value)
             if replay_inds is not None:
-                timeline.replay_inds(
-                    key, self.id, include_descendants, consume=True)
+                timeline.replay_inds(key, self.id, include_descendants, consume=True)
             return self
         ts = context.timespan
         # Reached only for mobs that are on screen (themselves or through a
@@ -780,7 +792,8 @@ class Animatable:
         nt = ts.current_time + context.run_time_unit
         ts.original_end = max(ts.original_end, nt)
         timeline.modify_attribute_and_record(
-            key, self.id, include_descendants, inds, value, ts.get_time(nt))
+            key, self.id, include_descendants, inds, value, ts.get_time(nt)
+        )
         return self
 
     def _get_attr_ranges(self, key, include_descendants=False, value=None):
@@ -822,8 +835,11 @@ class Animatable:
             cache = {}
             object.__setattr__(self, "_attr_inds_cache", cache)
         hit = cache.get(key)
-        if (hit is not None and hit[0] == STRUCTURE_VERSION[0]
-                and not _opt_disabled("desccache")):
+        if (
+            hit is not None
+            and hit[0] == STRUCTURE_VERSION[0]
+            and not _opt_disabled("desccache")
+        ):
             return hit[1]
         if inds is None:
             return inds
@@ -870,11 +886,13 @@ class Animatable:
             The row indices, or ``None`` if the Mob has no rows for this attribute.
         """
         ranges = self._get_attr_ranges(
-            key, include_descendants=include_descendants, value=value)
+            key, include_descendants=include_descendants, value=value
+        )
         return None if ranges is None else ranges.tensor()
 
-    def get_animated_attribute(self, key, include_descendants: bool = False,
-                               default=None, copy: bool = True):
+    def get_animated_attribute(
+        self, key, include_descendants: bool = False, default=None, copy: bool = True
+    ):
         """Get an animatable attribute's current authoring value.
 
         This is the value as the scene is being authored -- the state the Mob has
@@ -902,13 +920,16 @@ class Animatable:
             The attribute's current value.
         """
         timeline = self.scene.timeline_manager
-        replay_inds = timeline.replay_inds(
-            key, self.id, include_descendants)
+        replay_inds = timeline.replay_inds(key, self.id, include_descendants)
         if default is not None and replay_inds is None:
             self._prepare_buffers(key, default)
-        inds = (replay_inds if replay_inds is not None else
-                self._get_attr_ranges(
-                    key, include_descendants=include_descendants, value=default))
+        inds = (
+            replay_inds
+            if replay_inds is not None
+            else self._get_attr_ranges(
+                key, include_descendants=include_descendants, value=default
+            )
+        )
         return timeline.get_attr(key, inds, copy=copy)
 
     def wait(self, *args, **kwargs):

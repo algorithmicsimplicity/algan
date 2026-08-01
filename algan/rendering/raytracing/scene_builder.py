@@ -1,6 +1,7 @@
 """Collection of helper functions used to combine collections of primitives
 into contiguous tensor data-structures, ready to be shipped to ray tracing kernels.
 """
+
 from __future__ import annotations
 
 import torch
@@ -37,20 +38,33 @@ from algan.utils.memory_utils import (
     end_cuda_peak,
 )
 
-_STBVH_TENSOR_FIELDS = (
-    "nodes", "blocks", "node_miss", "leaf_prim", "leaf_tspan")
+_STBVH_TENSOR_FIELDS = ("nodes", "blocks", "node_miss", "leaf_prim", "leaf_tspan")
 
 
 class _DeferredBackground:
     """Callback plus the metadata needed to fill the render output."""
 
     __slots__ = (
-        "callback", "width", "height", "anti_alias_level", "first_frame",
-        "frames_per_second", "device", "is_taichi_func",
+        "callback",
+        "width",
+        "height",
+        "anti_alias_level",
+        "first_frame",
+        "frames_per_second",
+        "device",
+        "is_taichi_func",
     )
 
-    def __init__(self, callback, width, height, anti_alias_level, first_frame,
-                 frames_per_second, device):
+    def __init__(
+        self,
+        callback,
+        width,
+        height,
+        anti_alias_level,
+        first_frame,
+        frames_per_second,
+        device,
+    ):
         self.callback = callback
         self.width = int(width)
         self.height = int(height)
@@ -58,16 +72,18 @@ class _DeferredBackground:
         self.first_frame = int(first_frame)
         self.frames_per_second = float(frames_per_second)
         self.device = torch.device(device)
-        self.is_taichi_func = bool(
-            getattr(callback, "_is_taichi_function", False)
-        )
+        self.is_taichi_func = bool(getattr(callback, "_is_taichi_function", False))
 
 
 def _projected_scene_device(primitives):
     """Device carrying a projected primitive batch's ray-tracing tensors."""
     preferred = (
-        "_rt_tri_pos", "_rt_pn_ctrl", "_rt_edges", "_rt_circuit_meta",
-        "_rt_frame_lo")
+        "_rt_tri_pos",
+        "_rt_pn_ctrl",
+        "_rt_edges",
+        "_rt_circuit_meta",
+        "_rt_frame_lo",
+    )
     for primitive in primitives:
         for name in preferred:
             value = getattr(primitive, name, None)
@@ -84,9 +100,9 @@ def _projected_scene_device(primitives):
 # Non-geometry ``_rt_*`` attributes that must never be relocated with the
 # packed inputs (the merged-scene cache, the arena-backed scene, and the
 # host/env prep handles).
-_MERGE_SKIP_ATTRS = frozenset({
-    "_rt_merged_scene", "_rt_device_scene", "_rt_prepared_host_scene",
-    "_rt_env_meta"})
+_MERGE_SKIP_ATTRS = frozenset(
+    {"_rt_merged_scene", "_rt_device_scene", "_rt_prepared_host_scene", "_rt_env_meta"}
+)
 
 
 def _iter_primitive_input_tensors(primitive):
@@ -94,8 +110,11 @@ def _iter_primitive_input_tensors(primitive):
     projected primitive (skipping the merged-scene cache / handle attrs).
     """
     for name, value in list(vars(primitive).items()):
-        if (name.startswith("_rt_") and name not in _MERGE_SKIP_ATTRS
-                and torch.is_tensor(value)):
+        if (
+            name.startswith("_rt_")
+            and name not in _MERGE_SKIP_ATTRS
+            and torch.is_tensor(value)
+        ):
             yield name, value
 
 
@@ -132,8 +151,11 @@ def _iter_primitive_source_tensors(primitive, include_shader_params=True):
     cache/handle attribute; project_to_screen releases them once packed.
     """
     for name, value in list(vars(primitive).items()):
-        if (torch.is_tensor(value) and not name.startswith("_rt_")
-                and name not in _MERGE_SKIP_ATTRS):
+        if (
+            torch.is_tensor(value)
+            and not name.startswith("_rt_")
+            and name not in _MERGE_SKIP_ATTRS
+        ):
             yield name, value
     if not include_shader_params or not hasattr(primitive, "shader_param_values"):
         return
@@ -145,7 +167,9 @@ def upload_primitive_source(primitive, device):
     """Move a primitive's pre-projection source geometry onto ``device`` so
     ``project_to_screen`` (and its vertex shader) run there (project-on-gpu).
     """
-    for name, value in _iter_primitive_source_tensors(primitive, include_shader_params=False):
+    for name, value in _iter_primitive_source_tensors(
+        primitive, include_shader_params=False
+    ):
         if value.device != device:
             setattr(primitive, name, value.to(device))
     if not hasattr(primitive, "shader_param_values"):
@@ -235,8 +259,7 @@ def get_merged_scene_tensor_nbytes(scene):
     values, so sliced/strided views are accounted and copied without breaking
     their alias relationship.
     """
-    return sum(group["storage"].nbytes()
-               for group in _scene_storage_groups(scene))
+    return sum(group["storage"].nbytes() for group in _scene_storage_groups(scene))
 
 
 def _storage_is_arena(storage, memory):
@@ -244,8 +267,7 @@ def _storage_is_arena(storage, memory):
 
 
 def _storage_alignment(group):
-    return max((tensor.element_size() for tensor in group["tensors"]),
-               default=1)
+    return max((tensor.element_size() for tensor in group["tensors"]), default=1)
 
 
 def _group_needs_arena_copy(group, memory):
@@ -269,8 +291,7 @@ def get_merged_scene_arena_nbytes(scene, memory, *, persist=True):
     """
     if not getattr(memory, "managed", False):
         return 0
-    pointer = (memory.current_reverse_pointer if persist
-               else memory.current_pointer)
+    pointer = memory.current_reverse_pointer if persist else memory.current_pointer
     initial = pointer
     for group in _scene_storage_groups(scene):
         if not _group_needs_arena_copy(group, memory):
@@ -299,19 +320,18 @@ def _arena_storage_copy(group, memory, persist):
         return memory.data[:0]
 
     alignment = _storage_alignment(group)
-    pointer = (memory.current_reverse_pointer if persist
-               else memory.current_pointer)
+    pointer = memory.current_reverse_pointer if persist else memory.current_pointer
     padding = pointer % alignment if persist else (-pointer) % alignment
     if padding:
         memory.get_tensor((padding,), dtype=torch.uint8, persist=persist)
-    destination = memory.get_tensor(
-        (nbytes,), dtype=torch.uint8, persist=persist)
+    destination = memory.get_tensor((nbytes,), dtype=torch.uint8, persist=persist)
 
     # Wrapping an UntypedStorage produces a byte view without allocating a
     # second source tensor. ``copy_`` performs any host/device transfer directly
     # into the already-reserved destination bytes.
-    source = torch.as_tensor(storage, dtype=torch.uint8,
-                             device=group["tensors"][0].device)
+    source = torch.as_tensor(
+        storage, dtype=torch.uint8, device=group["tensors"][0].device
+    )
     destination.copy_(source)
     if destination.device != target:  # defensive: ManualMemory owns the target
         raise RuntimeError("ManualMemory returned a tensor on the wrong device")
@@ -329,8 +349,11 @@ def _view_in_arena(source, destination_bytes):
     # ManualMemory uint8 backing tensor.
     typed = destination_bytes[:0].view(source.dtype)
     view = torch.as_strided(
-        typed, source.size(), source.stride(),
-        storage_offset=byte_offset // itemsize + source.storage_offset())
+        typed,
+        source.size(),
+        source.stride(),
+        storage_offset=byte_offset // itemsize + source.storage_offset(),
+    )
     if type(source) is not torch.Tensor:
         view = view.as_subclass(type(source))
     return view
@@ -346,27 +369,32 @@ def _rebuild_scene_with_tensors(value, tensor_map, memo):
         # Type-aware: a RefitBVH rebuilds as a RefitBVH, carrying over the
         # scalar layout fields the tensor shapes alone cannot recover.
         rebuilt = type(value).from_prebuilt(
-            tensor_map[id(value.nodes)], tensor_map[id(value.node_miss)],
-            tensor_map[id(value.leaf_prim)], tensor_map[id(value.leaf_tspan)],
-            tensor_map[id(value.blocks)], like=value)
+            tensor_map[id(value.nodes)],
+            tensor_map[id(value.node_miss)],
+            tensor_map[id(value.leaf_prim)],
+            tensor_map[id(value.leaf_tspan)],
+            tensor_map[id(value.blocks)],
+            like=value,
+        )
         memo[key] = rebuilt
         return rebuilt
     if isinstance(value, dict):
         rebuilt = {}
         memo[key] = rebuilt
         for item_key, item in value.items():
-            rebuilt[item_key] = _rebuild_scene_with_tensors(
-                item, tensor_map, memo)
+            rebuilt[item_key] = _rebuild_scene_with_tensors(item, tensor_map, memo)
         return rebuilt
     if isinstance(value, list):
         rebuilt = []
         memo[key] = rebuilt
-        rebuilt.extend(_rebuild_scene_with_tensors(item, tensor_map, memo)
-                       for item in value)
+        rebuilt.extend(
+            _rebuild_scene_with_tensors(item, tensor_map, memo) for item in value
+        )
         return rebuilt
     if isinstance(value, tuple):
-        rebuilt = tuple(_rebuild_scene_with_tensors(item, tensor_map, memo)
-                        for item in value)
+        rebuilt = tuple(
+            _rebuild_scene_with_tensors(item, tensor_map, memo) for item in value
+        )
         memo[key] = rebuilt
         return rebuilt
     return value
@@ -400,8 +428,9 @@ def _copy_merged_scene_to_arena(scene, memory, *, persist=True):
     groups = _scene_storage_groups(scene)
     if not getattr(memory, "managed", False):
         target = memory.data.device
-        if all(tensor.device == target
-               for group in groups for tensor in group["tensors"]):
+        if all(
+            tensor.device == target for group in groups for tensor in group["tensors"]
+        ):
             return scene
         tensor_map = {}
         for group in groups:
@@ -412,20 +441,20 @@ def _copy_merged_scene_to_arena(scene, memory, *, persist=True):
                 continue
             storage = group["storage"]
             destination = torch.empty(
-                (storage.nbytes(),), dtype=torch.uint8, device=target)
+                (storage.nbytes(),), dtype=torch.uint8, device=target
+            )
             source = torch.as_tensor(
-                storage, dtype=torch.uint8, device=tensors[0].device)
+                storage, dtype=torch.uint8, device=tensors[0].device
+            )
             destination.copy_(source)
             for tensor in tensors:
-                tensor_map[id(tensor)] = _view_in_arena(
-                    tensor, destination)
+                tensor_map[id(tensor)] = _view_in_arena(tensor, destination)
         return _rebuild_scene_with_tensors(scene, tensor_map, {})
 
     if not any(_group_needs_arena_copy(group, memory) for group in groups):
         return scene
 
-    required = get_merged_scene_arena_nbytes(
-        scene, memory, persist=persist)
+    required = get_merged_scene_arena_nbytes(scene, memory, persist=persist)
     if required > memory.get_num_bytes_remaining():
         raise InsufficientMemoryException
 
@@ -476,8 +505,8 @@ def _split_promotable(p, _append_texture, device, scene):
     properties from the material map, so promoted triangles need no per-vertex
     ``tri_colors``/``tri_extra`` row.
     """
-    colors = p._rt_tri_colors           # [Tc, N, 3, 5]
-    extra = p._rt_tri_extra             # [Te, N, 15]
+    colors = p._rt_tri_colors  # [Tc, N, 3, 5]
+    extra = p._rt_tri_extra  # [Te, N, 15]
     N = colors.shape[1]
     all_idx = torch.arange(N, device=device)
     if N == 0:
@@ -488,12 +517,17 @@ def _split_promotable(p, _append_texture, device, scene):
     # refraction 6/7/8), and the triangle is non-glowing (glow magnitude cols
     # 9-11 zero; a nonzero default glow_radius in 12-14 is irrelevant once glow
     # is 0). Only such a triangle is fully described by a single 1x1 texel.
-    color_eq = (colors == colors[:, :, :1, :]).all(-1).all(-1).all(0)      # [N]
+    color_eq = (colors == colors[:, :, :1, :]).all(-1).all(-1).all(0)  # [N]
     e = extra
-    mat_eq = ((e[..., 0] == e[..., 2]) & (e[..., 0] == e[..., 4])
-              & (e[..., 1] == e[..., 3]) & (e[..., 1] == e[..., 5])
-              & (e[..., 6] == e[..., 7]) & (e[..., 6] == e[..., 8])).all(0)  # [N]
-    nonglow = (e[..., 9:12] == 0).all(-1).all(0)                            # [N]
+    mat_eq = (
+        (e[..., 0] == e[..., 2])
+        & (e[..., 0] == e[..., 4])
+        & (e[..., 1] == e[..., 3])
+        & (e[..., 1] == e[..., 5])
+        & (e[..., 6] == e[..., 7])
+        & (e[..., 6] == e[..., 8])
+    ).all(0)  # [N]
+    nonglow = (e[..., 9:12] == 0).all(-1).all(0)  # [N]
     promotable = color_eq & mat_eq & nonglow
     keep_idx = all_idx[~promotable]
     promo_all = all_idx[promotable]
@@ -506,14 +540,15 @@ def _split_promotable(p, _append_texture, device, scene):
     # colour [T,5] plus material (refl, rough, ior) [T,3] over all frames.
     Tc, Te = colors.shape[0], extra.shape[0]
     T = max(Tc, Te)
-    col0 = _expand_frames(colors[:, :, 0, :], T)[:, promo_all, :]           # [T,P,5]
+    col0 = _expand_frames(colors[:, :, 0, :], T)[:, promo_all, :]  # [T,P,5]
     mat3 = _expand_frames(
-        torch.stack([extra[..., 0], extra[..., 1], extra[..., 6]], -1),
-        T)[:, promo_all, :]                                                 # [T,P,3]
-    key = torch.cat([col0, mat3], -1).permute(1, 0, 2).reshape(
-        promo_all.numel(), -1)                                             # [P, 8T]
-    uniq, inv = torch.unique(key, dim=0, return_inverse=True)             # inv [P]
-    order = torch.argsort(inv, stable=True)   # group identical values contiguously
+        torch.stack([extra[..., 0], extra[..., 1], extra[..., 6]], -1), T
+    )[:, promo_all, :]  # [T,P,3]
+    key = (
+        torch.cat([col0, mat3], -1).permute(1, 0, 2).reshape(promo_all.numel(), -1)
+    )  # [P, 8T]
+    uniq, inv = torch.unique(key, dim=0, return_inverse=True)  # inv [P]
+    order = torch.argsort(inv, stable=True)  # group identical values contiguously
     promo_idx = promo_all[order]
     inv_sorted = inv[order]
 
@@ -522,35 +557,42 @@ def _split_promotable(p, _append_texture, device, scene):
     group_meta = []
     for gid in range(uniq.shape[0]):
         rep = int(promo_all[int((inv == gid).nonzero()[0])])
-        cmap = _dedup_time(colors[:, rep:rep + 1, 0, :].contiguous())      # [T',1,5]
+        cmap = _dedup_time(colors[:, rep : rep + 1, 0, :].contiguous())  # [T',1,5]
         color_meta = _append_texture(
-            cmap.reshape(cmap.shape[0], 1, 1, 5).float().contiguous())
-        e0 = extra[:, rep:rep + 1, :]
+            cmap.reshape(cmap.shape[0], 1, 1, 5).float().contiguous()
+        )
+        e0 = extra[:, rep : rep + 1, :]
         z = torch.zeros_like(e0[..., 0])
-        mmap = _dedup_time(torch.stack(
-            [e0[..., 0], e0[..., 1], e0[..., 6], e0[..., 9], z], -1
-        ).contiguous())
+        mmap = _dedup_time(
+            torch.stack(
+                [e0[..., 0], e0[..., 1], e0[..., 6], e0[..., 9], z], -1
+            ).contiguous()
+        )
         material_meta = _append_texture(
-            mmap.reshape(mmap.shape[0], 1, 1, 5).float().contiguous())
+            mmap.reshape(mmap.shape[0], 1, 1, 5).float().contiguous()
+        )
         if bool((mmap[..., 3] > 1e-6).any()):
             scene["tex_has_refractive"] = True
         # Promoted metalness/IOR that can produce a nonzero Fresnel lobe
         # (mirrors _material_reflectance: metalness < 0 is the non-PBR
         # sentinel with R = 0; metalness 0 still reflects through the
         # dielectric lobe when IOR > 1).
-        if bool(((mmap[..., 0] > 0.0)
-                 | ((mmap[..., 0] >= 0.0)
-                    & (mmap[..., 2].abs() > 1.0 + 1e-4))).any()):
+        if bool(
+            (
+                (mmap[..., 0] > 0.0)
+                | ((mmap[..., 0] >= 0.0) & (mmap[..., 2].abs() > 1.0 + 1e-4))
+            ).any()
+        ):
             scene["tex_has_reflective"] = True
-        group_meta.append([*color_meta, *material_meta, -1, 0, 0,
-                           1 | 2 | 4 | 8])
+        group_meta.append([*color_meta, *material_meta, -1, 0, 0, 1 | 2 | 4 | 8])
     group_meta = torch.tensor(group_meta, dtype=torch.int32, device=device)
-    promo_meta = group_meta[inv_sorted]                                    # [P,10]
+    promo_meta = group_meta[inv_sorted]  # [P,10]
     return keep_idx, promo_idx, promo_meta
 
 
-def _build_accel(lo, hi, num_frames, tightness, opaque=None,
-                 builder="morton", refit=None):
+def _build_accel(
+    lo, hi, num_frames, tightness, opaque=None, builder="morton", refit=None
+):
     """Build one geometry type's acceleration structure: the classic
     spatio-temporal instance tree, or -- under ``settings.BVH_REFIT`` -- the
     shared-topology binned-SAH refit tree (refit_bvh.py; ``tightness`` /
@@ -564,8 +606,14 @@ def _build_accel(lo, hi, num_frames, tightness, opaque=None,
     _rts = SETTINGS.raytracing
     if _rts.refit_bvh_active() if refit is None else refit:
         return build_refit_bvh(lo, hi, num_frames=num_frames, opaque=opaque)
-    return build_stbvh(lo, hi, num_frames=num_frames, tightness=tightness,
-                       opaque=opaque, builder=builder)
+    return build_stbvh(
+        lo,
+        hi,
+        num_frames=num_frames,
+        tightness=tightness,
+        opaque=opaque,
+        builder=builder,
+    )
 
 
 def _empty_scene_part(device, refit=None):
@@ -577,8 +625,9 @@ def _empty_scene_part(device, refit=None):
     return _build_accel(lo, hi, num_frames=1, tightness=2.0, refit=refit)
 
 
-def _build_opaque_bvh(lo, hi, opaque, num_frames, tightness, builder="morton",
-                      refit=None):
+def _build_opaque_bvh(
+    lo, hi, opaque, num_frames, tightness, builder="morton", refit=None
+):
     """Build a BVH containing only primitives proven opaque when visible.
 
     The primitive index space is intentionally unchanged; transparent and
@@ -588,15 +637,20 @@ def _build_opaque_bvh(lo, hi, opaque, num_frames, tightness, builder="morton",
     visible = (hi >= lo).all(-1)
     visible_opaque = visible & opaque
     opaque_lo = torch.where(
-        visible_opaque.unsqueeze(-1), lo,
-        torch.full_like(lo, EMPTY_LO))
+        visible_opaque.unsqueeze(-1), lo, torch.full_like(lo, EMPTY_LO)
+    )
     opaque_hi = torch.where(
-        visible_opaque.unsqueeze(-1), hi,
-        torch.full_like(hi, EMPTY_HI))
+        visible_opaque.unsqueeze(-1), hi, torch.full_like(hi, EMPTY_HI)
+    )
     return _build_accel(
-        opaque_lo.contiguous(), opaque_hi.contiguous(),
-        num_frames=num_frames, tightness=tightness,
-        opaque=visible_opaque.contiguous(), builder=builder, refit=refit)
+        opaque_lo.contiguous(),
+        opaque_hi.contiguous(),
+        num_frames=num_frames,
+        tightness=tightness,
+        opaque=visible_opaque.contiguous(),
+        builder=builder,
+        refit=refit,
+    )
 
 
 def _bvh_deferral_eligible(scene):
@@ -625,17 +679,19 @@ def _bvh_deferral_eligible(scene):
     # the trees for any scene that carries one.
     if scene.get("has_user_pipeline"):
         return False
-    if (scene.get("has_refractive") or scene.get("has_refl_transparent")
-            or scene.get("tri_has_reflective")
-            or scene.get("bez_has_reflective")):
+    if (
+        scene.get("has_refractive")
+        or scene.get("has_refl_transparent")
+        or scene.get("tri_has_reflective")
+        or scene.get("bez_has_reflective")
+    ):
         return False
     if scene["num_pn"] > 0:
         return False
     return scene["num_triangles"] > 0 or scene["num_circuits"] > 0
 
 
-def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames,
-                   device):
+def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames, device):
     """Build each geometry type's STBVHs from the captured merge inputs, or
     record a deferral (placeholder trees + retained build inputs) for batches
     that provably never traverse one (see ``_bvh_deferral_eligible``).
@@ -643,20 +699,24 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames,
     if pn_inputs is not None:
         lo, hi, opaque = pn_inputs
         scene["pn_bvh"] = _build_accel(
-            lo, hi, num_frames=num_frames,
+            lo,
+            hi,
+            num_frames=num_frames,
             tightness=RayTracedPNTrianglePrimitive.stbvh_tightness,
-            opaque=opaque)
+            opaque=opaque,
+        )
         if not scene["pn_has_opaque"]:
             scene["pn_opaque_bvh"] = _empty_scene_part(device)
         elif not scene["pn_has_translucent"]:
             scene["pn_opaque_bvh"] = scene["pn_bvh"]
         else:
             scene["pn_opaque_bvh"] = _build_opaque_bvh(
-                lo, hi, opaque, num_frames,
-                RayTracedPNTrianglePrimitive.stbvh_tightness)
+                lo, hi, opaque, num_frames, RayTracedPNTrianglePrimitive.stbvh_tightness
+            )
 
-    if (_bvh_deferral_eligible(scene)
-            and (tri_inputs is not None or bez_inputs is not None)):
+    if _bvh_deferral_eligible(scene) and (
+        tri_inputs is not None or bez_inputs is not None
+    ):
         _rts = SETTINGS.raytracing
         placeholder = _empty_scene_part(device)
         if tri_inputs is not None:
@@ -682,31 +742,47 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames,
         # is arrangement-invariant). PN/bezier BVHs stay Morton -- their
         # seam de-dup is discovery-order sensitive (see stbvh._BVH_BUILD).
         scene["tri_bvh"] = _build_accel(
-            lo, hi, num_frames=num_frames,
+            lo,
+            hi,
+            num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
-            opaque=opaque, builder="split")
+            opaque=opaque,
+            builder="split",
+        )
         if not scene["tri_has_opaque"]:
             scene["tri_opaque_bvh"] = _empty_scene_part(device)
         elif not scene["tri_has_translucent"]:
             scene["tri_opaque_bvh"] = scene["tri_bvh"]
         else:
             scene["tri_opaque_bvh"] = _build_opaque_bvh(
-                lo, hi, opaque, num_frames,
-                RayTracedTrianglePrimitive.stbvh_tightness, builder="split")
+                lo,
+                hi,
+                opaque,
+                num_frames,
+                RayTracedTrianglePrimitive.stbvh_tightness,
+                builder="split",
+            )
     if bez_inputs is not None:
         lo, hi, opaque = bez_inputs
         scene["bez_bvh"] = _build_accel(
-            lo, hi, num_frames=num_frames,
+            lo,
+            hi,
+            num_frames=num_frames,
             tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
-            opaque=opaque)
+            opaque=opaque,
+        )
         if not scene["bez_has_opaque"]:
             scene["bez_opaque_bvh"] = _empty_scene_part(device)
         elif not scene["bez_has_translucent"]:
             scene["bez_opaque_bvh"] = scene["bez_bvh"]
         else:
             scene["bez_opaque_bvh"] = _build_opaque_bvh(
-                lo, hi, opaque, num_frames,
-                RayTracedBezierCircuitPrimitive.stbvh_tightness)
+                lo,
+                hi,
+                opaque,
+                num_frames,
+                RayTracedBezierCircuitPrimitive.stbvh_tightness,
+            )
 
 
 def build_deferred_bvhs(merged):
@@ -722,25 +798,33 @@ def build_deferred_bvhs(merged):
         return
     refit = bool(merged.get("bvh_deferred_refit"))
     num_frames = int(merged["num_frames"])
-    if merged.get("num_triangles", 0) > 0 \
-            and merged.get("tri_frame_lo") is not None:
+    if merged.get("num_triangles", 0) > 0 and merged.get("tri_frame_lo") is not None:
         lo = merged["tri_frame_lo"]
         hi = merged["tri_frame_hi"]
         opaque = merged["tri_frame_opaque"]
         merged["tri_bvh"] = _build_accel(
-            lo, hi, num_frames=num_frames,
+            lo,
+            hi,
+            num_frames=num_frames,
             tightness=RayTracedTrianglePrimitive.stbvh_tightness,
-            opaque=opaque, builder="split", refit=refit)
+            opaque=opaque,
+            builder="split",
+            refit=refit,
+        )
         if not merged["tri_has_opaque"]:
-            merged["tri_opaque_bvh"] = _empty_scene_part(lo.device,
-                                                         refit=refit)
+            merged["tri_opaque_bvh"] = _empty_scene_part(lo.device, refit=refit)
         elif not merged["tri_has_translucent"]:
             merged["tri_opaque_bvh"] = merged["tri_bvh"]
         else:
             merged["tri_opaque_bvh"] = _build_opaque_bvh(
-                lo, hi, opaque, num_frames,
-                RayTracedTrianglePrimitive.stbvh_tightness, builder="split",
-                refit=refit)
+                lo,
+                hi,
+                opaque,
+                num_frames,
+                RayTracedTrianglePrimitive.stbvh_tightness,
+                builder="split",
+                refit=refit,
+            )
         merged["tri_frame_lo"] = None
         merged["tri_frame_hi"] = None
     if merged.get("num_circuits", 0) > 0:
@@ -748,18 +832,26 @@ def build_deferred_bvhs(merged):
         hi = merged["bez_frame_hi"]
         opaque = merged["bez_frame_opaque"]
         merged["bez_bvh"] = _build_accel(
-            lo, hi, num_frames=num_frames,
+            lo,
+            hi,
+            num_frames=num_frames,
             tightness=RayTracedBezierCircuitPrimitive.stbvh_tightness,
-            opaque=opaque, refit=refit)
+            opaque=opaque,
+            refit=refit,
+        )
         if not merged["bez_has_opaque"]:
-            merged["bez_opaque_bvh"] = _empty_scene_part(lo.device,
-                                                         refit=refit)
+            merged["bez_opaque_bvh"] = _empty_scene_part(lo.device, refit=refit)
         elif not merged["bez_has_translucent"]:
             merged["bez_opaque_bvh"] = merged["bez_bvh"]
         else:
             merged["bez_opaque_bvh"] = _build_opaque_bvh(
-                lo, hi, opaque, num_frames,
-                RayTracedBezierCircuitPrimitive.stbvh_tightness, refit=refit)
+                lo,
+                hi,
+                opaque,
+                num_frames,
+                RayTracedBezierCircuitPrimitive.stbvh_tightness,
+                refit=refit,
+            )
     merged["bvh_deferred"] = False
 
 
@@ -789,22 +881,21 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     tri_tex_meta = scene["tri_tex_meta"].to(device)
     num_colored = int(scene["num_colored_triangles"])
     _UNLIT = 1
-    Nc = tri_extra.shape[1]        # prims with a per-vertex colour/extra row
+    Nc = tri_extra.shape[1]  # prims with a per-vertex colour/extra row
 
-    lit = (tri_mat_id != _UNLIT).any(0)                       # [N]
+    lit = (tri_mat_id != _UNLIT).any(0)  # [N]
     refl = torch.zeros(N, dtype=torch.bool, device=device)
     if Nc > 0:
         e = tri_extra
-        refl[:Nc] = ((e[..., 0] > 0) | (e[..., 2] > 0)
-                     | (e[..., 4] > 0)).any(0)
+        refl[:Nc] = ((e[..., 0] > 0) | (e[..., 2] > 0) | (e[..., 4] > 0)).any(0)
     promoted = torch.zeros(N, dtype=torch.bool, device=device)
     if Nc < N:
-        promoted[Nc:] = True       # constant-material prims: value in 1x1 map
+        promoted[Nc:] = True  # constant-material prims: value in 1x1 map
     normalmapped = torch.zeros(N, dtype=torch.bool, device=device)
     if tri_tex_meta.shape[0] > 0 and num_colored < N:
         nm = tri_tex_meta[:, 6] >= 0
         k = min(nm.shape[0], N - num_colored)
-        normalmapped[num_colored:num_colored + k] = nm[:k]
+        normalmapped[num_colored : num_colored + k] = nm[:k]
 
     needs_mat = lit
     needs_norm = needs_mat | refl | promoted | normalmapped
@@ -812,18 +903,19 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     n_norm = int(needs_norm.sum().item())
 
     zeros = torch.zeros(N, dtype=torch.long, device=device)
-    band = torch.where(needs_mat, zeros,
-                       torch.where(needs_norm, zeros + 1, zeros + 2))
-    perm = torch.argsort(band, stable=True)                   # band 0 first
-    orig = perm                                               # orig idx of prim p
+    band = torch.where(needs_mat, zeros, torch.where(needs_norm, zeros + 1, zeros + 2))
+    perm = torch.argsort(band, stable=True)  # band 0 first
+    orig = perm  # orig idx of prim p
 
     tri_pos_t = tri_pos.index_select(1, perm).contiguous()
-    tri_norm_t = tri_norm.index_select(
-        1, perm)[:, :max(n_norm, 1)].contiguous()
-    tri_mat_t = tri_mat.index_select(1, perm)[:, :max(n_lit, 1)].contiguous()
+    tri_norm_t = tri_norm.index_select(1, perm)[:, : max(n_norm, 1)].contiguous()
+    tri_mat_t = tri_mat.index_select(1, perm)[:, : max(n_lit, 1)].contiguous()
     tri_mat_id_t = tri_mat_id.index_select(1, perm).contiguous()
-    col_row = torch.where(orig < Nc, orig,
-                          torch.full_like(orig, -1)).to(torch.int32).contiguous()
+    col_row = (
+        torch.where(orig < Nc, orig, torch.full_like(orig, -1))
+        .to(torch.int32)
+        .contiguous()
+    )
 
     tex_meta_t = torch.zeros((N, 10), dtype=torch.int32, device=device)
     tex_meta_t[:, 0] = -1
@@ -834,19 +926,24 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     if tri_tex_meta.shape[0] > 0:
         has_meta = orig >= num_colored
         meta_src = (orig - num_colored).clamp(0, tri_tex_meta.shape[0] - 1)
-        tex_meta_t = torch.where(has_meta.unsqueeze(1),
-                                 tri_tex_meta.index_select(0, meta_src).int(),
-                                 tex_meta_t)
+        tex_meta_t = torch.where(
+            has_meta.unsqueeze(1),
+            tri_tex_meta.index_select(0, meta_src).int(),
+            tex_meta_t,
+        )
         uv_src = (orig - num_colored).clamp(0, tri_uvs.shape[1] - 1)
-        tri_uvs_t = (tri_uvs.index_select(1, uv_src)
-                     * has_meta.view(1, N, 1).to(tri_uvs.dtype))
+        tri_uvs_t = tri_uvs.index_select(1, uv_src) * has_meta.view(1, N, 1).to(
+            tri_uvs.dtype
+        )
 
     tri_bvh_t = _build_accel(
         lo.index_select(1, perm).contiguous(),
         hi.index_select(1, perm).contiguous(),
         num_frames=num_frames,
         tightness=RayTracedTrianglePrimitive.stbvh_tightness,
-        opaque=opaque.index_select(1, perm).contiguous(), builder="split")
+        opaque=opaque.index_select(1, perm).contiguous(),
+        builder="split",
+    )
 
     scene["tri_pos_t"] = tri_pos_t
     scene["tri_norm_t"] = tri_norm_t
@@ -897,8 +994,10 @@ def _promote_property_group(cv, present, num_frames, device):
         nonlocal texel_off, meta_base
         G = texels_flat.shape[1] // per_tex_texels
         banks.append(texels_flat)
-        offs = texel_off + torch.arange(G, device=device,
-                                        dtype=torch.int32) * per_tex_texels
+        offs = (
+            texel_off
+            + torch.arange(G, device=device, dtype=torch.int32) * per_tex_texels
+        )
         wv = torch.full((G,), w, dtype=torch.int32, device=device)
         hv = torch.full((G,), h, dtype=torch.int32, device=device)
         metas.append(torch.stack([offs, wv, hv], -1))
@@ -910,7 +1009,7 @@ def _promote_property_group(cv, present, num_frames, device):
     cc = present & const_mask
     if bool(cc.any()):
         sel = tri_ids[cc]
-        vals = cv[:, sel, 0, :]                                  # [T, nc, C]
+        vals = cv[:, sel, 0, :]  # [T, nc, C]
         key = vals.permute(1, 0, 2).reshape(sel.numel(), T * C)
         uniq, inv = torch.unique(key, dim=0, return_inverse=True)
         G = uniq.shape[0]
@@ -921,7 +1020,7 @@ def _promote_property_group(cv, present, num_frames, device):
     cvary = present & ~const_mask
     if bool(cvary.any()):
         sel = tri_ids[cvary]
-        vals = cv[:, sel, :, :]                                  # [T, nv, 3, C]
+        vals = cv[:, sel, :, :]  # [T, nv, 3, C]
         key = vals.permute(1, 0, 2, 3).reshape(sel.numel(), T * 3 * C)
         uniq, inv = torch.unique(key, dim=0, return_inverse=True)
         G = uniq.shape[0]
@@ -929,7 +1028,7 @@ def _promote_property_group(cv, present, num_frames, device):
         v0, v1, v2 = u[:, :, 0, :], u[:, :, 1, :], u[:, :, 2, :]  # [G,T,C]
         # Column-major texel order (offset + cx*h + cy, h=2): texel(0,0)=v0,
         # texel(0,1)=v2, texel(1,0)=v1, texel(1,1)=v0 -> [[v0,v1],[v2,v0]].
-        texs = torch.stack([v0, v2, v1, v0], 2)                  # [G,T,4,C]
+        texs = torch.stack([v0, v2, v1, v0], 2)  # [G,T,4,C]
         texels = texs.permute(1, 0, 2, 3).reshape(T, G * 4, C).contiguous()
         _emit(sel, texels, 4, 2, 2, inv)
 
@@ -961,38 +1060,38 @@ def _build_textured_scene(scene, num_frames, device):
     Every triangle is assigned the canonical corner UVs ``(0,0)/(1,0)/(0,1)``.
     """
     T = num_frames
-    tc = _expand_frames(scene["tri_colors"].to(device), T)     # [T,N,3,5]
-    te = _expand_frames(scene["tri_extra"].to(device), T)      # [T,N,15]
+    tc = _expand_frames(scene["tri_colors"].to(device), T)  # [T,N,3,5]
+    te = _expand_frames(scene["tri_extra"].to(device), T)  # [T,N,15]
     tm = _expand_frames(scene["tri_mat"].to(device), T)[..., :MAT_W]  # [T,N,MAT_W]
-    tmi = _expand_frames(scene["tri_mat_id"].to(device), T)    # [T,N]
+    tmi = _expand_frames(scene["tri_mat_id"].to(device), T)  # [T,N]
     N = tc.shape[1]
 
     # Colour: every triangle carries a colour.
     present = torch.ones(N, dtype=torch.bool, device=device)
-    col_bank, col_meta, col_idx = _promote_property_group(
-        tc, present, T, device)
+    col_bank, col_meta, col_idx = _promote_property_group(tc, present, T, device)
 
     # Surface (scatter): per-corner (metalness, roughness, IOR, transmission)
     # gathered from tri_extra cols {0,2,4}/{1,3,5}/{6,7,8}/{9,10,11}.
     c0 = torch.stack([te[..., 0], te[..., 1], te[..., 6], te[..., 9]], -1)
     c1 = torch.stack([te[..., 2], te[..., 3], te[..., 7], te[..., 10]], -1)
     c2 = torch.stack([te[..., 4], te[..., 5], te[..., 8], te[..., 11]], -1)
-    surf_corner = torch.stack([c0, c1, c2], 2)                 # [T,N,3,4]
+    surf_corner = torch.stack([c0, c1, c2], 2)  # [T,N,3,4]
     refl = surf_corner[..., 0]
     transmission = surf_corner[..., 3]
-    surf_present = ((refl >= 0.0).any(0).any(-1)
-                    | (transmission > 1e-6).any(0).any(-1))    # [N]
+    surf_present = (refl >= 0.0).any(0).any(-1) | (transmission > 1e-6).any(0).any(
+        -1
+    )  # [N]
     surf_bank, surf_meta, surf_idx = _promote_property_group(
-        surf_corner, surf_present, T, device)
+        surf_corner, surf_present, T, device
+    )
 
     # Material (shading): [pipeline id | 12-slot param block], per primitive so
     # always constant across the corners -> promotes to 1x1. Fed as a degenerate
     # per-corner tensor (all three corners equal) so it shares the promoter.
-    mat_vec = torch.cat([tmi.unsqueeze(-1).float(), tm], -1)   # [T,N,13]
-    lit = (tmi != _MID_UNLIT).any(0)                           # [N]
+    mat_vec = torch.cat([tmi.unsqueeze(-1).float(), tm], -1)  # [T,N,13]
+    lit = (tmi != _MID_UNLIT).any(0)  # [N]
     mat_corner = mat_vec.unsqueeze(2).expand(T, N, 3, 13)
-    mat_bank, mat_meta, mat_idx = _promote_property_group(
-        mat_corner, lit, T, device)
+    mat_bank, mat_meta, mat_idx = _promote_property_group(mat_corner, lit, T, device)
 
     scene["tx_color_bank"] = col_bank
     scene["tx_color_meta"] = col_meta
@@ -1010,9 +1109,12 @@ def _build_textured_scene(scene, num_frames, device):
     scene["tx_nmap_meta"] = torch.zeros((1, 3), dtype=torch.int32, device=device)
     scene["tx_nmap_idx"] = torch.full((N,), -1, dtype=torch.int32, device=device)
     # Canonical per-triangle corner UVs (shared, constant across frames).
-    scene["tx_uv"] = torch.tensor(
-        [0.0, 0.0, 1.0, 0.0, 0.0, 1.0], device=device).view(1, 1, 6).expand(
-            1, N, 6).contiguous()
+    scene["tx_uv"] = (
+        torch.tensor([0.0, 0.0, 1.0, 0.0, 0.0, 1.0], device=device)
+        .view(1, 1, 6)
+        .expand(1, N, 6)
+        .contiguous()
+    )
 
 
 def _merge_scene(primitives):
@@ -1049,20 +1151,24 @@ def _merge_scene(primitives):
         device = _projected_scene_device(primitives)
         if device.type != "cpu":
             empty_cache(force_gc=False)
-    pn_patches = [p for p in primitives
-                  if isinstance(p, RayTracedPNTrianglePrimitive)]
-    triangles = [p for p in primitives
-                 if isinstance(p, RayTracedTrianglePrimitive)
-                 and not isinstance(p, RayTracedPNTrianglePrimitive)]
-    beziers = [p for p in primitives
-               if isinstance(p, RayTracedBezierCircuitPrimitive)]
-    unknown = [p for p in primitives
-               if p not in triangles and p not in pn_patches
-               and p not in beziers]
+    pn_patches = [p for p in primitives if isinstance(p, RayTracedPNTrianglePrimitive)]
+    triangles = [
+        p
+        for p in primitives
+        if isinstance(p, RayTracedTrianglePrimitive)
+        and not isinstance(p, RayTracedPNTrianglePrimitive)
+    ]
+    beziers = [p for p in primitives if isinstance(p, RayTracedBezierCircuitPrimitive)]
+    unknown = [
+        p
+        for p in primitives
+        if p not in triangles and p not in pn_patches and p not in beziers
+    ]
     if unknown:
         raise TypeError(
             "The ray traced renderer can only draw ray traced primitives; "
-            f"got {[type(p).__name__ for p in unknown]}.")
+            f"got {[type(p).__name__ for p in unknown]}."
+        )
     num_frames = max(p._rt_num_frames for p in primitives)
 
     # PN texture maps are sampled only by the deterministic general wavefront
@@ -1071,7 +1177,8 @@ def _merge_scene(primitives):
     # metadata is folded into the widened pn_extra below. Covers PN color maps
     # too (unlike flat colour maps, which the megakernel can sample).
     has_pn_textures = any(
-        getattr(p, "_rt_pn_uvs", None) is not None for p in pn_patches)
+        getattr(p, "_rt_pn_uvs", None) is not None for p in pn_patches
+    )
 
     scene = {}
     scene["has_pn_textures"] = has_pn_textures
@@ -1089,8 +1196,7 @@ def _merge_scene(primitives):
         # triangle/circuit intersection kernels.  Preserve a conservative
         # batch-wide bit so the sparse raster path can skip exact COUNT
         # discovery when every materialized primitive is collapsed to a point.
-        has_extent = bool(
-            (visible & ((hi - lo) > 0.0).any(-1)).any())
+        has_extent = bool((visible & ((hi - lo) > 0.0).any(-1)).any())
         has_opaque = bool((visible & opaque).any())
         has_translucent = bool((visible & ~opaque).any())
         if uncertain_alpha and has_visible:
@@ -1099,10 +1205,11 @@ def _merge_scene(primitives):
         scene[f"{prefix}_has_extent"] = has_extent
         scene[f"{prefix}_has_opaque"] = has_opaque
         scene[f"{prefix}_has_translucent"] = has_translucent
-        scene["has_uncertain_texture_alpha"] = (
-            scene.get("has_uncertain_texture_alpha", False)
-            or (uncertain_alpha and has_visible))
+        scene["has_uncertain_texture_alpha"] = scene.get(
+            "has_uncertain_texture_alpha", False
+        ) or (uncertain_alpha and has_visible)
         return has_visible, has_opaque, has_translucent
+
     # Shared flat texel buffer for *all* texture maps, flat-triangle and
     # PN-patch alike (color / material / normal). Each map is appended once,
     # padded to 5 channels and flattened to [T, W*H, 5]; its placement is a
@@ -1120,8 +1227,7 @@ def _merge_scene(primitives):
             tex = tex.unsqueeze(0)  # [1, W, H, C]
         w, h, c = tex.shape[-3], tex.shape[-2], tex.shape[-1]
         if c < 5:
-            tex = torch.cat(
-                (tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
+            tex = torch.cat((tex, tex.new_zeros((*tex.shape[:-1], 5 - c))), -1)
         # Flatten W and H (dimensions 1 and 2).
         _texture_tensors.append(tex.reshape(tex.shape[0], -1, 5))
         o = _texel_offset[0]
@@ -1152,10 +1258,12 @@ def _merge_scene(primitives):
         # promotion is turned off for it (it would shrink tri_colors/tri_extra
         # out from under the texture builder).
         promote = _constant_promotion_active() and not _rts.WF_TEXTURED
-        plain_triangles = [p for p in triangles
-                           if getattr(p, "_rt_tri_uvs", None) is None]
-        textured_triangles = [p for p in triangles
-                              if getattr(p, "_rt_tri_uvs", None) is not None]
+        plain_triangles = [
+            p for p in triangles if getattr(p, "_rt_tri_uvs", None) is None
+        ]
+        textured_triangles = [
+            p for p in triangles if getattr(p, "_rt_tri_uvs", None) is not None
+        ]
         keep_idx, promo_idx, promo_meta = {}, {}, {}
         for p in plain_triangles:
             if promote:
@@ -1179,7 +1287,8 @@ def _merge_scene(primitives):
             # leave the geometry in source order while ``promo_meta`` is in
             # group order, pairing each triangle with another group's maps.
             if idx.numel() == arr.shape[1] and bool(
-                    (idx == torch.arange(idx.numel(), device=idx.device)).all()):
+                (idx == torch.arange(idx.numel(), device=idx.device)).all()
+            ):
                 return arr
             return arr.index_select(1, idx.to(arr.device))
 
@@ -1188,19 +1297,26 @@ def _merge_scene(primitives):
             # whole textured primitives, then the promoted triangles. Empty
             # selections are dropped so the promotion-inactive path passes each
             # original tensor through _cat_collections uncopied.
-            keep = [_sel(getattr(p, name), keep_idx[id(p)]) for p in plain_triangles
-                    if keep_idx[id(p)].numel()]
+            keep = [
+                _sel(getattr(p, name), keep_idx[id(p)])
+                for p in plain_triangles
+                if keep_idx[id(p)].numel()
+            ]
             tex = [getattr(p, name) for p in textured_triangles]
-            promo = [_sel(getattr(p, name), promo_idx[id(p)]) for p in plain_triangles
-                     if promo_idx[id(p)].numel()]
+            promo = [
+                _sel(getattr(p, name), promo_idx[id(p)])
+                for p in plain_triangles
+                if promo_idx[id(p)].numel()
+            ]
             return keep + tex + promo
 
         num_colored = sum(int(keep_idx[id(p)].numel()) for p in plain_triangles)
         scene["num_colored_triangles"] = num_colored
         scene["tri_pos"] = _cat_collections(_geom("_rt_tri_pos"), 1, "triangle merge")
         scene["tri_norm"] = _cat_collections(_geom("_rt_tri_norm"), 1, "triangle merge")
-        scene["tri_mat_id"] = _cat_collections(_geom("_rt_tri_mat_id"), 1,
-                                               "triangle merge")
+        scene["tri_mat_id"] = _cat_collections(
+            _geom("_rt_tri_mat_id"), 1, "triangle merge"
+        )
         scene["tri_mat"] = _cat_mat_blocks(_geom("_rt_tri_mat"), "triangle merge")
         lo = _cat_collections(_geom("_rt_frame_lo"), 1, "triangle merge")
         hi = _cat_collections(_geom("_rt_frame_hi"), 1, "triangle merge")
@@ -1215,23 +1331,34 @@ def _merge_scene(primitives):
         for p in plain_triangles:
             nk = int(keep_idx[id(p)].numel())
             if nk:
-                alpha_uncertain_parts.append(torch.zeros(
-                    (1, nk), dtype=torch.bool, device=device))
+                alpha_uncertain_parts.append(
+                    torch.zeros((1, nk), dtype=torch.bool, device=device)
+                )
         for p in textured_triangles:
-            uncertain = (getattr(p, "_rt_texture_map", None) is not None
-                         and not _texture_alpha_is_opaque(p._rt_texture_map))
-            alpha_uncertain_parts.append(torch.full(
-                (1, p._rt_tri_pos.shape[1]), bool(uncertain),
-                dtype=torch.bool, device=device))
+            uncertain = getattr(
+                p, "_rt_texture_map", None
+            ) is not None and not _texture_alpha_is_opaque(p._rt_texture_map)
+            alpha_uncertain_parts.append(
+                torch.full(
+                    (1, p._rt_tri_pos.shape[1]),
+                    bool(uncertain),
+                    dtype=torch.bool,
+                    device=device,
+                )
+            )
         for p in plain_triangles:
             npromo = int(promo_idx[id(p)].numel())
             if npromo:
-                alpha_uncertain_parts.append(torch.zeros(
-                    (1, npromo), dtype=torch.bool, device=device))
-        tri_alpha_uncertain = (torch.cat(alpha_uncertain_parts, 1)
-                               if alpha_uncertain_parts else torch.zeros(
-                                   (1, scene["tri_pos"].shape[1]),
-                                   dtype=torch.bool, device=device))
+                alpha_uncertain_parts.append(
+                    torch.zeros((1, npromo), dtype=torch.bool, device=device)
+                )
+        tri_alpha_uncertain = (
+            torch.cat(alpha_uncertain_parts, 1)
+            if alpha_uncertain_parts
+            else torch.zeros(
+                (1, scene["tri_pos"].shape[1]), dtype=torch.bool, device=device
+            )
+        )
         scene["tri_alpha_uncertain"] = tri_alpha_uncertain.contiguous()
         tri_uncertain_alpha = bool(tri_alpha_uncertain.any())
         _record_visibility("tri", lo, hi, opaque, tri_uncertain_alpha)
@@ -1241,12 +1368,16 @@ def _merge_scene(primitives):
         # normal maps and fall back to per-vertex colour, color-map offset -1).
         # Promoted triangles have no row here; guarded kernel reads keep their
         # (past-the-end) prims from ever indexing these.
-        vcolors = ([_sel(p._rt_tri_colors, keep_idx[id(p)]) for p in plain_triangles
-                    if keep_idx[id(p)].numel()]
-                   + [p._rt_tri_colors for p in textured_triangles])
-        vextra = ([_sel(p._rt_tri_extra, keep_idx[id(p)]) for p in plain_triangles
-                   if keep_idx[id(p)].numel()]
-                  + [p._rt_tri_extra for p in textured_triangles])
+        vcolors = [
+            _sel(p._rt_tri_colors, keep_idx[id(p)])
+            for p in plain_triangles
+            if keep_idx[id(p)].numel()
+        ] + [p._rt_tri_colors for p in textured_triangles]
+        vextra = [
+            _sel(p._rt_tri_extra, keep_idx[id(p)])
+            for p in plain_triangles
+            if keep_idx[id(p)].numel()
+        ] + [p._rt_tri_extra for p in textured_triangles]
         if any(t.shape[1] for t in vcolors):
             scene["tri_colors"] = _cat_collections(vcolors, 1, "triangle merge")
             scene["tri_extra"] = _cat_collections(vextra, 1, "triangle merge")
@@ -1263,7 +1394,8 @@ def _merge_scene(primitives):
         scene["has_material_textures"] = bool(has_promoted) or any(
             getattr(p, "_rt_material_texture", None) is not None
             or getattr(p, "_rt_normal_texture", None) is not None
-            for p in textured_triangles)
+            for p in textured_triangles
+        )
 
         # UVs + tex-meta cover the [textured ++ promoted] tiers, indexed by
         # ``prim - num_colored_triangles``. Meta layout: cols 0-2 color map, 3-5
@@ -1277,18 +1409,22 @@ def _merge_scene(primitives):
             material_meta = _append_texture(mtex)
             normal_meta = _append_texture(getattr(p, "_rt_normal_texture", None))
             flags = int(getattr(p, "_rt_material_flags", 0) or 0)
-            if (mtex is not None and (flags & 8)
-                    and bool((mtex[..., 3] > 1e-6).any())):
+            if mtex is not None and (flags & 8) and bool((mtex[..., 3] > 1e-6).any()):
                 scene["tex_has_refractive"] = True
             # A metalness-driving material map may produce a Fresnel lobe;
             # deliberately coarse (any such map counts) -- a false positive
             # only keeps the BVHs eagerly built.
             if mtex is not None and (flags & 1):
                 scene["tex_has_reflective"] = True
-            meta_parts.append(torch.tensor(
-                [*color_meta, *material_meta, *normal_meta, flags],
-                dtype=torch.int32, device=device).view(1, 10).expand(
-                    p._rt_tri_pos.shape[1], 10))
+            meta_parts.append(
+                torch.tensor(
+                    [*color_meta, *material_meta, *normal_meta, flags],
+                    dtype=torch.int32,
+                    device=device,
+                )
+                .view(1, 10)
+                .expand(p._rt_tri_pos.shape[1], 10)
+            )
             uvs_parts.append(p._rt_tri_uvs)
         for p in plain_triangles:
             n = int(promo_idx[id(p)].numel())
@@ -1302,8 +1438,9 @@ def _merge_scene(primitives):
             scene["tri_uvs"] = _cat_collections(uvs_parts, 1, "triangle merge")
         else:
             scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
-            scene["tri_tex_meta"] = torch.full((1, 10), -1, dtype=torch.int32,
-                                               device=device)
+            scene["tri_tex_meta"] = torch.full(
+                (1, 10), -1, dtype=torch.int32, device=device
+            )
 
         # Per-(frame, prim) visibility/opacity masks for the hybrid raster
         # front-end (settings.HYBRID_RASTER): candidate emission skips
@@ -1322,24 +1459,26 @@ def _merge_scene(primitives):
         scene["tri_extra"] = torch.zeros((1, 1, 15), device=device)
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
         scene["tri_uvs"] = torch.zeros((1, 1, 6), device=device)
-        scene["tri_tex_meta"] = torch.full((1, 10), -1, dtype=torch.int32, device=device)
+        scene["tri_tex_meta"] = torch.full(
+            (1, 10), -1, dtype=torch.int32, device=device
+        )
         scene["num_colored_triangles"] = 0
         scene["has_material_textures"] = False
-        scene["tri_mat_id"] = torch.zeros((1, 1), dtype=torch.int32,
-                                          device=device)
+        scene["tri_mat_id"] = torch.zeros((1, 1), dtype=torch.int32, device=device)
         scene["tri_mat"] = torch.zeros((1, 1, MAT_W), device=device)
         scene["tri_bvh"] = _empty_scene_part(device)
         scene["tri_opaque_bvh"] = scene["tri_bvh"]
-        scene["tri_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool,
-                                               device=device)
-        scene["tri_frame_opaque"] = torch.zeros((1, 1), dtype=torch.bool,
-                                                device=device)
+        scene["tri_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool, device=device)
+        scene["tri_frame_opaque"] = torch.zeros((1, 1), dtype=torch.bool, device=device)
         scene["tri_alpha_uncertain"] = torch.zeros(
-            (1, 1), dtype=torch.bool, device=device)
+            (1, 1), dtype=torch.bool, device=device
+        )
         _record_visibility(
-            "tri", torch.empty((0, 0, 3), device=device),
+            "tri",
             torch.empty((0, 0, 3), device=device),
-            torch.empty((0, 0), dtype=torch.bool, device=device))
+            torch.empty((0, 0, 3), device=device),
+            torch.empty((0, 0), dtype=torch.bool, device=device),
+        )
     scene["num_triangles"] = scene["tri_pos"].shape[1] if triangles else 0
 
     # Vestigial key from the retired knot temporal-compression experiment
@@ -1359,25 +1498,30 @@ def _merge_scene(primitives):
         ior = e[..., 6:9].abs()
         scene["tri_has_reflective"] = bool(
             ((refl > 0.0) | ((refl >= 0.0) & (ior > 1.0 + 1e-4))).any()
-            or scene.get("tex_has_reflective"))
+            or scene.get("tex_has_reflective")
+        )
         # A STRONG reflector -- metallic, not merely a dielectric's ~4% Fresnel
         # sheen. Consumed by the tracer to decide whether a batch is worth
         # over-allocating the split ray pool for: every PBR dielectric is
         # "reflective" by the test above, and treating those as splitting
         # quarters the tile size for a lobe nobody can see.
         scene["has_strong_reflective"] = bool(
-            (refl > 0.2).any() or scene.get("tex_has_reflective"))
+            (refl > 0.2).any() or scene.get("tex_has_reflective")
+        )
     else:
         scene["tri_has_reflective"] = bool(scene.get("tex_has_reflective"))
         scene["has_strong_reflective"] = bool(scene.get("tex_has_reflective"))
 
     if pn_patches:
         scene["pn_ctrl"] = _cat_collections(
-            [p._rt_pn_ctrl for p in pn_patches], 1, "pn merge")
+            [p._rt_pn_ctrl for p in pn_patches], 1, "pn merge"
+        )
         scene["pn_obb"] = _cat_collections(
-            [p._rt_pn_obb for p in pn_patches], 1, "pn merge")
+            [p._rt_pn_obb for p in pn_patches], 1, "pn merge"
+        )
         scene["pn_norm"] = _cat_collections(
-            [p._rt_pn_norm for p in pn_patches], 1, "pn merge")
+            [p._rt_pn_norm for p in pn_patches], 1, "pn merge"
+        )
         # Fold per-patch UVs + texture metadata into the (cold, hit-only)
         # pn_extra array: PN has no kernel-arg budget for its own uv/meta/
         # texture arrays (the general wavefront shade kernel is at Taichi's
@@ -1393,7 +1537,7 @@ def _merge_scene(primitives):
         # morton BVH seam de-dup is discovery-order sensitive).
         pn_extra_list = []
         for p in pn_patches:
-            extra = p._rt_pn_extra                # [Te, Np, 15]
+            extra = p._rt_pn_extra  # [Te, Np, 15]
             Np = extra.shape[1]
             uvs = getattr(p, "_rt_pn_uvs", None)
             if uvs is None:
@@ -1402,11 +1546,13 @@ def _merge_scene(primitives):
                 color_meta = _append_texture(getattr(p, "_rt_texture_map", None))
                 mtex = getattr(p, "_rt_material_texture", None)
                 material_meta = _append_texture(mtex)
-                normal_meta = _append_texture(
-                    getattr(p, "_rt_normal_texture", None))
+                normal_meta = _append_texture(getattr(p, "_rt_normal_texture", None))
                 flags = int(getattr(p, "_rt_material_flags", 0) or 0)
-                if (mtex is not None and (flags & 8)
-                        and bool((mtex[..., 3] > 1e-6).any())):
+                if (
+                    mtex is not None
+                    and (flags & 8)
+                    and bool((mtex[..., 3] > 1e-6).any())
+                ):
                     scene["tex_has_refractive"] = True
                 meta_vals = [*color_meta, *material_meta, *normal_meta, flags]
             else:
@@ -1416,27 +1562,34 @@ def _merge_scene(primitives):
             # while extra/meta are on the render device -- unify before cat.
             extra_e = _expand_frames(extra, T).to(device)
             uvs_e = _expand_frames(uvs, T).to(device)
-            meta_e = torch.tensor(
-                meta_vals, dtype=torch.float32, device=device
-            ).view(1, 1, 10).expand(T, Np, 10)
+            meta_e = (
+                torch.tensor(meta_vals, dtype=torch.float32, device=device)
+                .view(1, 1, 10)
+                .expand(T, Np, 10)
+            )
             pn_extra_list.append(torch.cat([extra_e, uvs_e, meta_e], -1))
         scene["pn_extra"] = _cat_collections(pn_extra_list, 1, "pn merge")
         scene["pn_colors"] = _cat_collections(
-            [p._rt_pn_colors for p in pn_patches], 1, "pn merge")
+            [p._rt_pn_colors for p in pn_patches], 1, "pn merge"
+        )
         scene["pn_mat_id"] = _cat_collections(
-            [p._rt_pn_mat_id for p in pn_patches], 1, "pn merge")
+            [p._rt_pn_mat_id for p in pn_patches], 1, "pn merge"
+        )
         scene["pn_mat"] = _cat_mat_blocks(
-            [p._rt_pn_mat for p in pn_patches], "pn merge")
-        lo = _cat_collections([p._rt_frame_lo for p in pn_patches], 1,
-                              "pn merge")
-        hi = _cat_collections([p._rt_frame_hi for p in pn_patches], 1,
-                              "pn merge")
-        opaque = _cat_collections([p._rt_frame_opaque for p in pn_patches],
-                                  1, "pn merge")
+            [p._rt_pn_mat for p in pn_patches], "pn merge"
+        )
+        lo = _cat_collections([p._rt_frame_lo for p in pn_patches], 1, "pn merge")
+        hi = _cat_collections([p._rt_frame_hi for p in pn_patches], 1, "pn merge")
+        opaque = _cat_collections(
+            [p._rt_frame_opaque for p in pn_patches], 1, "pn merge"
+        )
         pn_uncertain_alpha = any(
-            (getattr(p, "_rt_texture_map", None) is not None
-             and not _texture_alpha_is_opaque(p._rt_texture_map))
-            for p in pn_patches)
+            (
+                getattr(p, "_rt_texture_map", None) is not None
+                and not _texture_alpha_is_opaque(p._rt_texture_map)
+            )
+            for p in pn_patches
+        )
         _record_visibility("pn", lo, hi, opaque, pn_uncertain_alpha)
         # PN STBVHs are built in _finalize_bvhs (never deferred -- PN routes
         # to the classic primary traversal).
@@ -1449,23 +1602,23 @@ def _merge_scene(primitives):
         # the wavefront's PN texture reads never run off the stub (see above).
         scene["pn_extra"] = torch.zeros((1, 1, 31), device=device)
         scene["pn_colors"] = torch.zeros((1, 1, 3, 5), device=device)
-        scene["pn_mat_id"] = torch.zeros((1, 1), dtype=torch.int32,
-                                         device=device)
+        scene["pn_mat_id"] = torch.zeros((1, 1), dtype=torch.int32, device=device)
         scene["pn_mat"] = torch.zeros((1, 1, MAT_W), device=device)
         scene["pn_bvh"] = _empty_scene_part(device)
         scene["pn_opaque_bvh"] = scene["pn_bvh"]
         _record_visibility(
-            "pn", torch.empty((0, 0, 3), device=device),
+            "pn",
             torch.empty((0, 0, 3), device=device),
-            torch.empty((0, 0), dtype=torch.bool, device=device))
+            torch.empty((0, 0, 3), device=device),
+            torch.empty((0, 0), dtype=torch.bool, device=device),
+        )
     scene["num_pn"] = scene["pn_ctrl"].shape[1] if pn_patches else 0
 
     # Assemble the shared texel buffer now that both the flat-triangle and PN
     # blocks above have appended their maps (offsets recorded in tri_tex_meta /
     # pn_extra respectively).
     if _texture_tensors:
-        scene["textures"] = _cat_collections(
-            _texture_tensors, 1, "texture merge")
+        scene["textures"] = _cat_collections(_texture_tensors, 1, "texture merge")
     else:
         scene["textures"] = torch.zeros((1, 1, 5), device=device)
     scene["has_pn_textures"] = has_pn_textures
@@ -1476,9 +1629,12 @@ def _merge_scene(primitives):
     # wavefront's refraction template (and with it the split pool).
     def _extra_has_refractive(extra):
         return bool((extra[..., 9:12] > 1e-6).any())
-    scene["has_refractive"] = (_extra_has_refractive(scene["tri_extra"])
-                               or _extra_has_refractive(scene["pn_extra"])
-                               or bool(scene.get("tex_has_refractive")))
+
+    scene["has_refractive"] = (
+        _extra_has_refractive(scene["tri_extra"])
+        or _extra_has_refractive(scene["pn_extra"])
+        or bool(scene.get("tex_has_refractive"))
+    )
 
     # A surface that is both PBR-reflective and semi-transparent must trace its
     # reflection *and* its pass-through (see ``default_scatter``), which costs a
@@ -1495,6 +1651,7 @@ def _merge_scene(primitives):
             # Interleaved per-corner (metalness, roughness) in cols 0-5, so
             # metalness is 0/2/4 (matches ``_triangle_extra``).
             return (extra[..., 0:6:2] >= 0.0).any(0).any(-1)
+
         return mask
 
     def _pbr_from_circuit_meta(p):
@@ -1512,14 +1669,15 @@ def _merge_scene(primitives):
             mtex = getattr(p, "_rt_material_texture", None)
             # Material-map bit 0 drives metalness from channel 0 (see
             # ``_pn_hit_material`` / ``_tri_hit_material``).
-            if (mtex is not None
-                    and (int(getattr(p, "_rt_material_flags", 0) or 0) & 1)
-                    and bool((mtex[..., 0] >= 0.0).any())):
+            if (
+                mtex is not None
+                and (int(getattr(p, "_rt_material_flags", 0) or 0) & 1)
+                and bool((mtex[..., 0] >= 0.0).any())
+            ):
                 has_pbr = torch.ones_like(has_pbr)
             visible = (p._rt_frame_hi >= lo).all(-1)
             translucent = (visible & ~p._rt_frame_opaque).any(0)
-            if not _texture_alpha_is_opaque(
-                    getattr(p, "_rt_texture_map", None)):
+            if not _texture_alpha_is_opaque(getattr(p, "_rt_texture_map", None)):
                 translucent = translucent | visible.any(0)
             if bool((has_pbr.to(translucent.device) & translucent).any()):
                 return True
@@ -1528,46 +1686,51 @@ def _merge_scene(primitives):
     scene["has_refl_transparent"] = (
         _has_refl_transparent(triangles, _pbr_from_extra("_rt_tri_extra"))
         or _has_refl_transparent(pn_patches, _pbr_from_extra("_rt_pn_extra"))
-        or _has_refl_transparent(beziers, _pbr_from_circuit_meta))
+        or _has_refl_transparent(beziers, _pbr_from_circuit_meta)
+    )
 
     if beziers:
         scene["circuit_meta"] = _cat_collections(
-            [p._rt_circuit_meta for p in beziers], 1, "bezier merge")
+            [p._rt_circuit_meta for p in beziers], 1, "bezier merge"
+        )
         scene["circuit_border_colors"] = _cat_collections(
-            [p._rt_circuit_border_colors for p in beziers], 1, "bezier merge")
+            [p._rt_circuit_border_colors for p in beziers], 1, "bezier merge"
+        )
         max_points = max(p._rt_circuit_colors.shape[2] for p in beziers)
         padded = []
         for p in beziers:
             c = p._rt_circuit_colors
             if c.shape[2] < max_points:
-                pad = torch.zeros((c.shape[0], c.shape[1],
-                                   max_points - c.shape[2], c.shape[3]),
-                                  device=c.device)
+                pad = torch.zeros(
+                    (c.shape[0], c.shape[1], max_points - c.shape[2], c.shape[3]),
+                    device=c.device,
+                )
                 c = torch.cat((c, pad), 2)
             padded.append(c)
         scene["circuit_colors"] = _cat_collections(padded, 1, "bezier merge")
         scene["edges_2d"] = _cat_collections(
-            [p._rt_edges for p in beziers], 1, "bezier merge")
+            [p._rt_edges for p in beziers], 1, "bezier merge"
+        )
         # Degenerate sampled edges use the exact sentinel row installed by
         # BezierCircuitPrimitives._build_circuit_geometry.  A batch containing
         # no other edge cannot pass the circuit intersection/winding test even
         # when border/glow inflation gave its point bounds nonzero extent.
         scene["bez_has_nondegenerate_edges"] = bool(
-            (~(scene["edges_2d"][..., :4] == 1e9).all(-1)).any())
+            (~(scene["edges_2d"][..., :4] == 1e9).all(-1)).any()
+        )
         offsets, shift = [torch.zeros((1,), dtype=torch.int32, device=device)], 0
         for p in beziers:
             offsets.append(p._rt_edge_offsets[1:].long() + shift)
             shift = shift + p._rt_edges.shape[1]
-        edge_offsets = torch.cat(
-            [o.to(torch.int32) for o in offsets]).contiguous()
+        edge_offsets = torch.cat([o.to(torch.int32) for o in offsets]).contiguous()
         scene["edge_accel"] = build_bezier_edge_acceleration(
-            scene["edges_2d"], edge_offsets)
-        lo = _cat_collections([p._rt_frame_lo for p in beziers], 1,
-                              "bezier merge")
-        hi = _cat_collections([p._rt_frame_hi for p in beziers], 1,
-                              "bezier merge")
-        opaque = _cat_collections([p._rt_frame_opaque for p in beziers], 1,
-                                  "bezier merge")
+            scene["edges_2d"], edge_offsets
+        )
+        lo = _cat_collections([p._rt_frame_lo for p in beziers], 1, "bezier merge")
+        hi = _cat_collections([p._rt_frame_hi for p in beziers], 1, "bezier merge")
+        opaque = _cat_collections(
+            [p._rt_frame_opaque for p in beziers], 1, "bezier merge"
+        )
         _record_visibility("bez", lo, hi, opaque)
         # Per-(frame, circuit) visibility, opacity, and AABBs for the hybrid
         # raster frontend.  Proven-opaque circuits now participate in the typed
@@ -1586,29 +1749,29 @@ def _merge_scene(primitives):
         # circuits with no reflectance term at all, so it may only be routed
         # when every circuit is non-PBR (metalness -1, reflectance exactly 0).
         scene["bez_has_reflective"] = bool(
-            (scene["circuit_meta"][..., _M_REFLECTIVITY] >= 0.0).any())
+            (scene["circuit_meta"][..., _M_REFLECTIVITY] >= 0.0).any()
+        )
     else:
         scene["circuit_meta"] = torch.zeros((1, 1, _M_WIDTH), device=device)
         scene["circuit_colors"] = torch.zeros((1, 1, 1, 5), device=device)
         scene["circuit_border_colors"] = torch.zeros((1, 1, 5), device=device)
         scene["edges_2d"] = torch.zeros((1, 1, 5), device=device)
-        scene["edge_accel"] = torch.zeros((1,), dtype=torch.int32,
-                                          device=device)
+        scene["edge_accel"] = torch.zeros((1,), dtype=torch.int32, device=device)
         scene["bez_bvh"] = _empty_scene_part(device)
         scene["bez_opaque_bvh"] = scene["bez_bvh"]
-        scene["bez_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool,
-                                               device=device)
-        scene["bez_frame_opaque"] = torch.zeros((1, 1), dtype=torch.bool,
-                                                device=device)
+        scene["bez_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool, device=device)
+        scene["bez_frame_opaque"] = torch.zeros((1, 1), dtype=torch.bool, device=device)
         scene["bez_frame_lo"] = torch.full((1, 1, 3), EMPTY_LO, device=device)
         scene["bez_frame_hi"] = torch.full((1, 1, 3), EMPTY_HI, device=device)
         scene["num_circuits"] = 0
         scene["bez_has_reflective"] = False
         scene["bez_has_nondegenerate_edges"] = False
         _record_visibility(
-            "bez", torch.empty((0, 0, 3), device=device),
+            "bez",
             torch.empty((0, 0, 3), device=device),
-            torch.empty((0, 0), dtype=torch.bool, device=device))
+            torch.empty((0, 0, 3), device=device),
+            torch.empty((0, 0), dtype=torch.bool, device=device),
+        )
 
     scene["num_frames"] = num_frames
     # Host-side render classification.  The uploaded material-id tensors are
@@ -1625,13 +1788,17 @@ def _merge_scene(primitives):
         for material_id in scene[f"{prefix}_material_ids"]
     )
     scene["has_any_visible"] = any(
-        scene[f"{prefix}_has_visible"] for prefix in ("tri", "pn", "bez"))
+        scene[f"{prefix}_has_visible"] for prefix in ("tri", "pn", "bez")
+    )
     scene["has_any_opaque"] = any(
-        scene[f"{prefix}_has_opaque"] for prefix in ("tri", "pn", "bez"))
+        scene[f"{prefix}_has_opaque"] for prefix in ("tri", "pn", "bez")
+    )
     scene["has_any_translucent"] = any(
-        scene[f"{prefix}_has_translucent"] for prefix in ("tri", "pn", "bez"))
+        scene[f"{prefix}_has_translucent"] for prefix in ("tri", "pn", "bez")
+    )
     scene["all_visible_opaque"] = (
-        scene["has_any_visible"] and not scene["has_any_translucent"])
+        scene["has_any_visible"] and not scene["has_any_translucent"]
+    )
 
     # UNSUPPORTED legacy texture-lookup shading (Surface / flat-triangle
     # scenes only: no PN patches, no bezier circuits; opt-in via WF_TEXTURED,
@@ -1639,8 +1806,12 @@ def _merge_scene(primitives):
     # indexes the textured wavefront kernel consumes.
     scene["textured_active"] = False
     _rts = SETTINGS.raytracing
-    if (_rts.WF_TEXTURED and scene["num_triangles"] > 0
-            and scene["num_pn"] == 0 and scene["num_circuits"] == 0):
+    if (
+        _rts.WF_TEXTURED
+        and scene["num_triangles"] > 0
+        and scene["num_pn"] == 0
+        and scene["num_circuits"] == 0
+    ):
         _build_textured_scene(scene, num_frames, device)
         scene["textured_active"] = True
 
@@ -1648,8 +1819,9 @@ def _merge_scene(primitives):
     # traverse one (hybrid-raster primaries, no shadows, no reflective /
     # refractive / scatter materials), defer them entirely; the tracer builds
     # them on demand via ``build_deferred_bvhs`` if anything changes its mind.
-    _finalize_bvhs(scene, tri_bvh_inputs, pn_bvh_inputs, bez_bvh_inputs,
-                   num_frames, device)
+    _finalize_bvhs(
+        scene, tri_bvh_inputs, pn_bvh_inputs, bez_bvh_inputs, num_frames, device
+    )
 
     # The merged tensors replace the per-collection ones; release the
     # originals so peak GPU memory stays close to one copy of the scene.
@@ -1701,8 +1873,9 @@ def prewarm_merge_cache(primitives):
     """
     if not primitives:
         return
-    if not isinstance(primitives[0], (RayTracedTrianglePrimitive,
-                                      RayTracedBezierCircuitPrimitive)):
+    if not isinstance(
+        primitives[0], (RayTracedTrianglePrimitive, RayTracedBezierCircuitPrimitive)
+    ):
         return
     _merge_scene(primitives)
 
@@ -1726,27 +1899,31 @@ def _pack_lights(light_sources, num_frames, device):
     Area lights arrive pre-expanded into K emitter sample rows (see
     ``Scene._materialize_render_state``), each occupying its own light slot.
     """
-    any_ext = any(getattr(light, "_render_aux", None) is not None
-                  for light in (light_sources or ()))
+    any_ext = any(
+        getattr(light, "_render_aux", None) is not None
+        for light in (light_sources or ())
+    )
     if not any_ext:
         positions, colors = [], []
         for light in light_sources or ():
             origin = light.origin.detach().to(device)
             color = light.light_color.detach().to(device)
-            positions.append(_expand_frames(
-                _flat_frames(origin, (3,)), num_frames))
+            positions.append(_expand_frames(_flat_frames(origin, (3,)), num_frames))
             col = color.reshape(color.shape[0], -1)
             colors.append(_expand_frames(col[:, :3].float(), num_frames))
         if not positions:
-            return (torch.zeros((1, 1, 3), device=device),
-                    torch.zeros((1, 1, 3), device=device), 0)
+            return (
+                torch.zeros((1, 1, 3), device=device),
+                torch.zeros((1, 1, 3), device=device),
+                0,
+            )
         light_pos = torch.stack(positions, 1).to(device).contiguous()
         light_col = torch.stack(colors, 1).to(device).contiguous()
         return light_pos, light_col, light_pos.shape[1]
 
     positions, rows = [], []
     for light in light_sources or ():
-        pos = light.origin.detach().to(device)     # [T, K, 3]
+        pos = light.origin.detach().to(device)  # [T, K, 3]
         col = light.light_color.detach().to(device)  # [T, K, >=3]
         aux = getattr(light, "_render_aux", None)  # [T, K, 13] or None
         if aux is not None:
@@ -1761,8 +1938,7 @@ def _pack_lights(light_sources, num_frames, device):
                 # Plain point light sharing a pack with extended lights:
                 # type 0 with a whole-light power fraction (col 12 -> packed
                 # col 15).
-                a = torch.zeros(
-                    (c.shape[0], 13), dtype=torch.float32, device=device)
+                a = torch.zeros((c.shape[0], 13), dtype=torch.float32, device=device)
                 a[:, 12] = 1.0
             else:
                 a = _expand_frames(aux[:, k].float(), num_frames)
@@ -1782,10 +1958,11 @@ def _prefill_deferred_background(out, background, frame_offset):
     """
     requested_device = background.device
     device = out.device
-    if (requested_device.type != device.type or (
-            requested_device.index is not None
-            and device.index is not None
-            and requested_device.index != device.index)):
+    if requested_device.type != device.type or (
+        requested_device.index is not None
+        and device.index is not None
+        and requested_device.index != device.index
+    ):
         raise RuntimeError("deferred background and render output devices differ")
 
     width = background.width
@@ -1797,7 +1974,8 @@ def _prefill_deferred_background(out, background, frame_offset):
 
     if output_pixels not in (full_pixels, base_pixels):
         raise RuntimeError(
-            "deferred background resolution does not match render output")
+            "deferred background resolution does not match render output"
+        )
 
     if background.is_taichi_func:
         from algan.rendering.raytracing.background_taichi import (
@@ -1819,20 +1997,23 @@ def _prefill_deferred_background(out, background, frame_offset):
         )
         return
 
-    x = (torch.arange(width, device=device, dtype=torch.float32)
-         / width).view(1, -1, 1)
-    y = (torch.arange(height, device=device, dtype=torch.float32)
-         / height).view(-1, 1, 1)
+    x = (torch.arange(width, device=device, dtype=torch.float32) / width).view(1, -1, 1)
+    y = (torch.arange(height, device=device, dtype=torch.float32) / height).view(
+        -1, 1, 1
+    )
 
-    k_ = 1#out.shape[0]
+    k_ = 1  # out.shape[0]
     for local_frame in range(0, out.shape[0], k_):
-        k = min(k_, out.shape[0]-local_frame)
-        time = torch.arange(
-            background.first_frame + frame_offset + local_frame,
-            background.first_frame + frame_offset + local_frame+k,
-            device=device,
-            dtype=torch.float32,
-        ).view(k, 1, 1, 1) / background.frames_per_second
+        k = min(k_, out.shape[0] - local_frame)
+        time = (
+            torch.arange(
+                background.first_frame + frame_offset + local_frame,
+                background.first_frame + frame_offset + local_frame + k,
+                device=device,
+                dtype=torch.float32,
+            ).view(k, 1, 1, 1)
+            / background.frames_per_second
+        )
         frame = background.callback(x, y, time)
         if not torch.is_tensor(frame):
             frame = torch.as_tensor(frame, device=device)
@@ -1841,9 +2022,9 @@ def _prefill_deferred_background(out, background, frame_offset):
         if frame.dim() <= 1:
             values = (frame.float().flatten()[:5] * 255).round_().clamp_(0, 255)
             channels = min(values.shape[0], out.shape[-1])
-            out[local_frame:local_frame+k, :, :channels].copy_(values[:channels])
+            out[local_frame : local_frame + k, :, :channels].copy_(values[:channels])
             if out.shape[-1] > channels:
-                out[local_frame:local_frame+k, :, channels:].copy_(values[-1])
+                out[local_frame : local_frame + k, :, channels:].copy_(values[-1])
             del frame, values, time
             continue
 
@@ -1852,19 +2033,23 @@ def _prefill_deferred_background(out, background, frame_offset):
         if rows.shape[1] != (full_pixels):
             raise RuntimeError(
                 "callable background must produce one value per supersampled "
-                "pixel or a resolution-free color")
+                "pixel or a resolution-free color"
+            )
         rows = torch.add(0.5, rows, alpha=255).clamp_(0, 255).to(torch.uint8)
 
         if output_pixels == base_pixels and aa > 1:
-            image = rows.view(k, height, width, channels).float().permute(0,3,1,2)
-            rows = F.avg_pool2d(image, aa).permute(0,2,3,1).reshape(-1, channels)
+            image = rows.view(k, height, width, channels).float().permute(0, 3, 1, 2)
+            rows = F.avg_pool2d(image, aa).permute(0, 2, 3, 1).reshape(-1, channels)
             rows = (rows + 0.5).clamp_(0, 255).to(torch.uint8)
 
         copied_channels = min(rows.shape[-1], out.shape[-1])
-        out[local_frame:local_frame+k, :, :copied_channels].copy_(
-            rows[..., :copied_channels])
+        out[local_frame : local_frame + k, :, :copied_channels].copy_(
+            rows[..., :copied_channels]
+        )
         if out.shape[-1] > copied_channels:
-            out[local_frame:local_frame+k, :, copied_channels:].copy_(rows[..., -1:])
+            out[local_frame : local_frame + k, :, copied_channels:].copy_(
+                rows[..., -1:]
+            )
         del frame, rows, time
         if output_pixels == base_pixels and aa > 1:
             del image
@@ -1875,8 +2060,9 @@ def _prefill_deferred_background(out, background, frame_offset):
     empty_cache(force_gc=False)
 
 
-def _prefill_background(out, background_color, frame_offset, device,
-                        background_frames=None):
+def _prefill_background(
+    out, background_color, frame_offset, device, background_frames=None
+):
     """Fill the output buffer with the background. Solid colors arrive as a
     float [channels] tensor in [0, 1]; animated/image backgrounds arrive as a
     uint8 row tensor [1 + frames * pixels, channels] (leading padding row).
@@ -1914,9 +2100,11 @@ def _prefill_background(out, background_color, frame_offset, device,
                     "background resolution does not match render output "
                     f"({source_pixels} pixels per frame vs {num_pixels}); "
                     "a super-sampled background must be averaged down with "
-                    "_downsample_background first")
-        rows = rows[frame_offset * num_pixels:
-                    (frame_offset + num_frames) * num_pixels]
+                    "_downsample_background first"
+                )
+        rows = rows[
+            frame_offset * num_pixels : (frame_offset + num_frames) * num_pixels
+        ]
         rows = rows.view(num_frames, num_pixels, -1)
         k = min(rows.shape[-1], C_out)
         out[..., :k].copy_(rows[..., :k])
@@ -1924,8 +2112,9 @@ def _prefill_background(out, background_color, frame_offset, device,
             out[..., k:].copy_(rows[..., -1:])
 
 
-def _downsample_background(background_color, aa, num_frames, screen_height,
-                           screen_width):
+def _downsample_background(
+    background_color, aa, num_frames, screen_height, screen_width
+):
     """Average a super-sampled animated/image background down to the output
     resolution (box filter, matching ``post_process_frames``), so the in-place
     anti-aliased renderer -- which samples the background once per output pixel
@@ -1940,7 +2129,7 @@ def _downsample_background(background_color, aa, num_frames, screen_height,
         return bg  # solid color
     # This is preparation for an arena-backed copy; do the resampling on the
     # host even if a direct caller supplied a render-device background.
-    #bg = bg.detach().cpu()
+    # bg = bg.detach().cpu()
     C = bg.shape[-1]
     body = bg.reshape(-1, C)[1:]  # drop the leading padding row
     h_aa, w_aa = screen_height * aa, screen_width * aa

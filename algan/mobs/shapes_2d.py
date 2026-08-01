@@ -107,7 +107,9 @@ class Line(BezierCircuitCubic):
     """A straight or circular-arc line segment with Manim-compatible arguments."""
 
     def __init__(self, start=LEFT, end=RIGHT, buff=0, path_arc=0, *args, **kwargs):
-        start_center = start.get_center() if isinstance(start, Mob) else cast_to_tensor(start)
+        start_center = (
+            start.get_center() if isinstance(start, Mob) else cast_to_tensor(start)
+        )
         end_center = end.get_center() if isinstance(end, Mob) else cast_to_tensor(end)
         direction = end_center - start_center
         if isinstance(start, Mob):
@@ -118,7 +120,9 @@ class Line(BezierCircuitCubic):
         length = direction.norm(p=2, dim=-1, keepdim=True).clamp_min(1e-10)
         if buff:
             unit = direction / length
-            effective_buff = min(float(buff), max(float(length.reshape(-1)[0]) * 0.5, 0.0))
+            effective_buff = min(
+                float(buff), max(float(length.reshape(-1)[0]) * 0.5, 0.0)
+            )
             start_center = start_center + unit * effective_buff
             end_center = end_center - unit * effective_buff
 
@@ -204,7 +208,10 @@ class TriangleTriangulated(Mob):
             )
         self.corners = vertices(corner_locations, normals, **kwargs)
         if vertices != TriangleVertices:
-            with Off(record_attr_modifications=False, animation_manager=self.animation_manager):
+            with Off(
+                record_attr_modifications=False,
+                animation_manager=self.animation_manager,
+            ):
                 self.location = self.corners.location.mean(-2, keepdim=True)
             self.add_children(self.corners)
             return
@@ -223,7 +230,9 @@ class TriangleTriangulated(Mob):
             .square()
             .clamp_min_(1e-10)
         )
-        with Off(record_attr_modifications=False, animation_manager=self.animation_manager):
+        with Off(
+            record_attr_modifications=False, animation_manager=self.animation_manager
+        ):
             self.location = m  # .unsqueeze(-2)
             if self.corners.color.shape[-2] > 1:
                 corner_colors = self.corners.color.view(
@@ -335,7 +344,10 @@ class Polygon(BezierCircuitCubic):
                 corner_locations = corner_locations[0]
         else:
             corner_locations = torch.stack(
-                [cast_to_tensor(vertex).reshape(-1, 3)[0] for vertex in vertex_locations],
+                [
+                    cast_to_tensor(vertex).reshape(-1, 3)[0]
+                    for vertex in vertex_locations
+                ],
                 dim=0,
             )
         if corner_locations.shape[-2] < 3:
@@ -410,7 +422,11 @@ class RegularPolygon(Polygon):
             angles = start_angle + torch.arange(n) * (2 * math.pi / n)
             self.start_angle = start_angle
         vertices = torch.stack(
-            (radius * torch.cos(angles), radius * torch.sin(angles), torch.zeros_like(angles)),
+            (
+                radius * torch.cos(angles),
+                radius * torch.sin(angles),
+                torch.zeros_like(angles),
+            ),
             dim=-1,
         )
         self.n = n
@@ -556,7 +572,7 @@ class SurroundingRectangle(Quad):
         mx[..., 0] += horizontal_buff
         mx[..., 1] += vertical_buff
         if bottom_buffer is not None:
-            mn[...,1:2] -= bottom_buffer
+            mn[..., 1:2] -= bottom_buffer
         md = (mn + mx) * 0.5
 
         corners = torch.stack(

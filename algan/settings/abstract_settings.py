@@ -12,7 +12,9 @@ from algan.errors import AlganConfigurationError
 def _is_special_var(annotation) -> bool:
     """Return whether an annotation is not a normal instance setting field."""
     if isinstance(annotation, str):
-        return any(marker in annotation for marker in ("ClassVar", "InitVar", "KW_ONLY"))
+        return any(
+            marker in annotation for marker in ("ClassVar", "InitVar", "KW_ONLY")
+        )
 
     if annotation is getattr(dataclasses, "KW_ONLY", None):
         return True
@@ -22,7 +24,9 @@ def _is_special_var(annotation) -> bool:
         return True
 
     init_var = getattr(dataclasses, "InitVar", None)
-    return bool(origin is init_var or init_var is not None and isinstance(annotation, init_var))
+    return bool(
+        origin is init_var or init_var is not None and isinstance(annotation, init_var)
+    )
 
 
 class Settings:
@@ -164,7 +168,9 @@ class Settings:
     def override(self, **kwargs):
         """Temporarily override a mutable section and restore it reliably."""
         if self.is_preset:
-            raise AlganConfigurationError("Cannot override an immutable preset in place")
+            raise AlganConfigurationError(
+                "Cannot override an immutable preset in place"
+            )
         previous = self.to_dict()
         self.set(**kwargs)
         try:

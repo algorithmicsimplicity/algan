@@ -26,6 +26,7 @@ It is wired in by :func:`install`, which monkeypatches
 ``SVGMobject.init_svg_mobject`` on the *installed* ``manim`` package (the one
 Algan actually imports).  Importing this module installs the patch once.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -301,7 +302,9 @@ def install() -> None:
     try:
         from manim.mobject.svg import svg_mobject as _svg
     except Exception as e:  # noqa: BLE001 - never break import if manim moves things
-        get_logger().warning(f"manim_svg_cache: could not install ({e}); Tex geometry uncached")
+        get_logger().warning(
+            f"manim_svg_cache: could not install ({e}); Tex geometry uncached"
+        )
         return
 
     try:
@@ -313,6 +316,7 @@ def install() -> None:
     # importing manim.config here.
     try:
         from manim import config as _config
+
         _svg.SVGMobject._renderer_type = _config.renderer
     except Exception:  # noqa: BLE001
         pass

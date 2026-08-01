@@ -5,6 +5,7 @@ configuration or lifecycle contract is violated.  Keeping the taxonomy small
 lets applications catch actionable Algan failures without depending on
 implementation-specific exceptions from Torch, Taichi, MoviePy, or FFmpeg.
 """
+
 from __future__ import annotations
 
 

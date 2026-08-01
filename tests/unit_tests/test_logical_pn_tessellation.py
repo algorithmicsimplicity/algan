@@ -135,15 +135,9 @@ def test_adjacent_logical_pn_patches_share_their_curved_edge():
     reverse_uv = torch.stack((1.0 - t, torch.zeros_like(t)), dim=-1)
 
     positions = evaluate_logical_pn(position_controls, forward_uv)
-    reverse_positions = evaluate_logical_pn(
-        position_controls[:, 1:], reverse_uv
-    )
-    evaluated_normals = evaluate_logical_pn_normals(
-        normal_controls, forward_uv
-    )
-    reverse_normals = evaluate_logical_pn_normals(
-        normal_controls[:, 1:], reverse_uv
-    )
+    reverse_positions = evaluate_logical_pn(position_controls[:, 1:], reverse_uv)
+    evaluated_normals = evaluate_logical_pn_normals(normal_controls, forward_uv)
+    reverse_normals = evaluate_logical_pn_normals(normal_controls[:, 1:], reverse_uv)
 
     torch.testing.assert_close(positions[:, :1], reverse_positions)
     torch.testing.assert_close(evaluated_normals[:, :1], reverse_normals)
@@ -156,9 +150,7 @@ def test_camera_distance_selects_per_frame_subdivision_and_batch_padding():
 
     primitive._dice_logical_pn(camera)
 
-    (far_level,), (close_level,) = (
-        primitive._logical_pn_subdivision_levels.tolist()
-    )
+    (far_level,), (close_level,) = primitive._logical_pn_subdivision_levels.tolist()
     assert close_level > far_level
     assert primitive.corners.shape[1] == 4**close_level
     assert primitive._logical_pn_padding[0].sum() > 0
@@ -168,29 +160,19 @@ def test_camera_distance_selects_per_frame_subdivision_and_batch_padding():
 def test_batch_max_padding_does_not_change_per_frame_flat_mesh():
     corners, normals = _curved_patch_inputs()
     together = _logical_patch(corners, normals, render_tolerance=0.5)
-    together._dice_logical_pn(
-        _camera([-30.0, -3.0], device=together.corners.device)
-    )
+    together._dice_logical_pn(_camera([-30.0, -3.0], device=together.corners.device))
 
     for frame, camera_z in enumerate((-30.0, -3.0)):
         separate = _logical_patch(corners, normals, render_tolerance=0.5)
-        separate._dice_logical_pn(
-            _camera([camera_z], device=separate.corners.device)
-        )
+        separate._dice_logical_pn(_camera([camera_z], device=separate.corners.device))
         count = separate.corners.shape[1]
         assert torch.equal(
             together._logical_pn_subdivision_levels[frame],
             separate._logical_pn_subdivision_levels[0],
         )
-        torch.testing.assert_close(
-            together.corners[frame, :count], separate.corners[0]
-        )
-        torch.testing.assert_close(
-            together.normals[frame, :count], separate.normals[0]
-        )
-        torch.testing.assert_close(
-            together.colors[frame, :count], separate.colors[0]
-        )
+        torch.testing.assert_close(together.corners[frame, :count], separate.corners[0])
+        torch.testing.assert_close(together.normals[frame, :count], separate.normals[0])
+        torch.testing.assert_close(together.colors[frame, :count], separate.colors[0])
 
 
 def _dense_sample_weights(denominator, device, dtype):
@@ -212,9 +194,7 @@ def test_selected_flat_mesh_meets_dense_output_pixel_error_check():
     camera = _camera([-3.0], device=primitive.corners.device)
     device = primitive.corners.device
     dtype = primitive.corners.dtype
-    position_controls = logical_pn_control_points(
-        primitive.corners, primitive.normals
-    )
+    position_controls = logical_pn_control_points(primitive.corners, primitive.normals)
     cam = (
         camera.ray_origin.reshape(1, 3),
         camera.screen_point.reshape(1, 3),
@@ -313,8 +293,9 @@ def test_off_frame_geometry_does_not_drive_subdivision():
     # Framed, then swung progressively further out of frame. Screen-space
     # error grows without bound as the patch approaches the camera plane, so
     # without the guard box these levels would climb monotonically.
-    levels = _patch_levels_for(
-        primitive, _sideways_camera([0.0, 20.0, 400.0]))[:, 0].tolist()
+    levels = _patch_levels_for(primitive, _sideways_camera([0.0, 20.0, 400.0]))[
+        :, 0
+    ].tolist()
 
     assert levels[0] > 0, "in-frame patch should still be subdivided"
     assert levels[2] == 0, "wholly off-frame patch needs no subdivision"
@@ -326,11 +307,10 @@ def test_off_frame_camera_plane_straddler_needs_no_subdivision():
     # to be forced to max_subdivision_level -- 4**8 triangles per patch, which
     # is unallocatable for any real mesh -- however far off frame it was. Its
     # in-front samples decide now, and here they all project way outside.
-    corners = torch.tensor(
-        [[299.0, -0.7, -6.0], [301.0, -0.7, 4.0], [300.0, 1.0, 4.0]])
+    corners = torch.tensor([[299.0, -0.7, -6.0], [301.0, -0.7, 4.0], [300.0, 1.0, 4.0]])
     normals = torch.nn.functional.normalize(
-        torch.tensor([[-0.8, 0.0, 1.0], [0.8, 0.0, 1.0], [0.0, 0.8, 1.0]]),
-        dim=-1)
+        torch.tensor([[-0.8, 0.0, 1.0], [0.8, 0.0, 1.0], [0.0, 0.8, 1.0]]), dim=-1
+    )
     primitive = _logical_patch(corners, normals, render_tolerance=0.0005)
 
     assert int(_patch_levels_for(primitive, _camera([-3.0]))[0, 0]) == 0
@@ -359,8 +339,7 @@ def test_budget_cap_does_not_depend_on_the_frame_window():
     with pytest.warns(RuntimeWarning):
         alone = _patch_levels_for(primitive, _camera([-3.0])).tolist()
     with pytest.warns(RuntimeWarning):
-        batched = _patch_levels_for(
-            primitive, _camera([-30.0, -3.0, -3.0])).tolist()
+        batched = _patch_levels_for(primitive, _camera([-30.0, -3.0, -3.0])).tolist()
 
     assert batched[1:] == alone * 2
 
@@ -423,6 +402,7 @@ def _adjacent_patch_inputs(device=None):
     The second patch is far more strongly curved, so the two want different
     interior levels for the same camera.
     """
+
     def normalize(v):
         return torch.nn.functional.normalize(v, dim=-1)
 
@@ -456,9 +436,7 @@ def _distance_to_polyline(points, polyline):
 
 def test_adjacent_patches_stay_watertight_at_different_levels():
     corners, normals = _adjacent_patch_inputs()
-    primitive = _logical_patches(
-        corners[0], normals[0], render_tolerance=0.0008
-    )
+    primitive = _logical_patches(corners[0], normals[0], render_tolerance=0.0008)
     camera = _camera([-3.0], device=primitive.corners.device)
 
     primitive._dice_logical_pn(camera)
@@ -474,7 +452,7 @@ def test_adjacent_patches_stay_watertight_at_different_levels():
     counts = [4**level for level in levels]
     blocks = (
         primitive.corners[0, : counts[0]].reshape(-1, 3),
-        primitive.corners[0, counts[0]: counts[0] + counts[1]].reshape(-1, 3),
+        primitive.corners[0, counts[0] : counts[0] + counts[1]].reshape(-1, 3),
     )
     seams = [block[block[:, 1].abs() < 1e-6] for block in blocks]
     for seam, level in zip(seams, levels):

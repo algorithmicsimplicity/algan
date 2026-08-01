@@ -109,8 +109,8 @@ A mob is permanently associated with its Scene-owned timeline and managers. Do n
 Methods decorated with `active_scene_method` can be called either on a Scene instance or on the `Scene` class:
 
 ```python
-scene.save_frame("frame.png")     # uses scene
-Scene.save_frame("frame.png")     # uses SceneManager.current_scene
+scene.save_frame("frame.png")  # uses scene
+Scene.save_frame("frame.png")  # uses SceneManager.current_scene
 ```
 
 Class-level access reports the method's real signature with `self` removed (the descriptor sets `__signature__`), so `help()`, IDE tooltips and Sphinx autodoc show the actual parameters. Any method a tutorial calls as `Scene.foo(...)` **must** carry this decorator — an undecorated method silently binds its first argument to `self` and raises a confusing `TypeError`.

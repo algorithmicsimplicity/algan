@@ -4,6 +4,7 @@ These values affect process/runtime initialisation and intentionally have no
 public Python settings object. Set their environment variables before
 importing :mod:`algan`.
 """
+
 from __future__ import annotations
 
 import os
@@ -59,9 +60,7 @@ def _parse_device(env_name: str, default: str | torch.device) -> torch.device:
 _ANIMATION_DEVICE = _parse_device("ALGAN_ANIMATION_DEVICE", "cpu")
 _RENDER_DEVICE = _parse_device("ALGAN_RENDER_DEVICE", "auto")
 
-_ALGAN_HOME = Path(
-    os.environ.get("ALGAN_HOME", Path.home() / ".algan")
-).expanduser()
+_ALGAN_HOME = Path(os.environ.get("ALGAN_HOME", Path.home() / ".algan")).expanduser()
 _CACHE_DIRECTORY = Path(
     os.environ.get("ALGAN_CACHE_DIR", _ALGAN_HOME / "cache")
 ).expanduser()

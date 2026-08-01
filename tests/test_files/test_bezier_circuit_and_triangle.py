@@ -25,6 +25,7 @@ p = torch.stack(
 p = p - p.mean((0, 1))
 p = p * 4
 
+
 def get_mob(r=0):
     return BezierCircuitCubic(p).spawn()
 

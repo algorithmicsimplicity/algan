@@ -53,8 +53,7 @@ def test_background_callback_streams_one_frame_at_a_time_on_render_device():
     time = torch.arange(19).view(-1, 1, 1, 1) / 4
     raw = (x + y + time).expand(-1, -1, -1, 4)
     expected = raw.reshape(-1, 4)
-    expected = torch.add(0.5, expected, alpha=255).clamp_(0, 255).to(
-        torch.uint8)
+    expected = torch.add(0.5, expected, alpha=255).clamp_(0, 255).to(torch.uint8)
     expected = expected.view(19, 6, 4)
 
     assert all(device.type == "cpu" for device in callback_devices)
@@ -65,9 +64,7 @@ def test_background_callback_streams_one_frame_at_a_time_on_render_device():
 
 def test_background_image_quantization_stays_on_requested_device():
     image_device = "cuda" if torch.cuda.is_available() else "cpu"
-    image = torch.linspace(
-        0.0, 1.0, 2 * 3 * 4, device=image_device
-    ).view(1, 2, 3, 4)
+    image = torch.linspace(0.0, 1.0, 2 * 3 * 4, device=image_device).view(1, 2, 3, 4)
     image_result = _prepare_background_for_chunk(
         image,
         screen_width=3,
@@ -80,9 +77,9 @@ def test_background_image_quantization_stays_on_requested_device():
     )
     image_expected = image.expand(2, -1, -1, -1).contiguous().view(-1, 4)
     image_expected = torch.cat((image_expected[:1], image_expected))
-    image_expected = ((image_expected + (0.5 / 255)) * 255).to(
-        torch.uint8
-    ).clamp_max_(255)
+    image_expected = (
+        ((image_expected + (0.5 / 255)) * 255).to(torch.uint8).clamp_max_(255)
+    )
 
     assert image_result.device.type == image_device
     assert torch.equal(image_result, image_expected)
@@ -123,9 +120,7 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
 ):
     monkeypatch.setenv("ALGAN_PREFETCH_BATCHES", "0")
     monkeypatch.setattr(render_loop_module, "_sync_devices", lambda: None)
-    monkeypatch.setattr(
-        render_loop_module, "empty_cache", lambda force_gc=False: None
-    )
+    monkeypatch.setattr(render_loop_module, "empty_cache", lambda force_gc=False: None)
     monkeypatch.setattr(
         render_loop_module, "get_num_available_bytes", lambda _device: 1000
     )
@@ -152,9 +147,7 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
         def background_is_transparent(self):
             return False
 
-        def get_batch_of_primitives(
-            self, start_ind, end_ind, _actors, _max_memory
-        ):
+        def get_batch_of_primitives(self, start_ind, end_ind, _actors, _max_memory):
             primitive = Primitive()
             primitive.duration = end_ind - start_ind
             return [primitive], end_ind, {"lights": []}
@@ -162,9 +155,7 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
         def _prewarm_render_batch(self, _primitives, _render_state):
             pass
 
-        def _prepared_batch_fits_render_arena(
-            self, primitives, *_args, **_kwargs
-        ):
+        def _prepared_batch_fits_render_arena(self, primitives, *_args, **_kwargs):
             return primitives[0].duration <= 5
 
         def render_primitive_batch(
@@ -184,9 +175,7 @@ def test_outer_preflight_retry_renders_first_fitting_halved_duration(
     scene.actors = [[]]
     scene.frames_per_second = 1
 
-    frames = list(scene.get_frames(
-        0, 8, post_processes=(), manual_memory=False
-    ))
+    frames = list(scene.get_frames(0, 8, post_processes=(), manual_memory=False))
 
     # Eight frames fail preflight, so the retry renders the fitting half
     # immediately. The remaining four frames form the next batch.

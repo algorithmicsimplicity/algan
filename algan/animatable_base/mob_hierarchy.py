@@ -3,6 +3,7 @@
 Split out of ``mob.py`` for readability; :class:`MobHierarchyMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -73,9 +74,7 @@ class MobHierarchyMixin:
         :class:`~algan.animatable_base.mob.Mob`
             This Mob, so calls can be chained.
         """
-        self.parents[:] = [
-            parent for parent in self.parents if parent is not other_mob
-        ]
+        self.parents[:] = [parent for parent in self.parents if parent is not other_mob]
         return self
 
     def get_children(
@@ -127,8 +126,11 @@ class MobHierarchyMixin:
             and so on. The Mobs are live, not copies.
         """
         cache = getattr(self, "_descendants_cache", None)
-        if (cache is not None and cache[0] == HIERARCHY_VERSION[0]
-                and not _opt_disabled("desccache")):
+        if (
+            cache is not None
+            and cache[0] == HIERARCHY_VERSION[0]
+            and not _opt_disabled("desccache")
+        ):
             descendants = cache[1]
         else:
             descendants = list(
@@ -175,9 +177,7 @@ class MobHierarchyMixin:
             if mob is self:
                 raise HierarchyError("A Mob cannot be its own child")
             if mob.scene is not self.scene:
-                raise HierarchyError(
-                    "A Mob hierarchy cannot span multiple Scenes"
-                )
+                raise HierarchyError("A Mob hierarchy cannot span multiple Scenes")
             if self._contains_in_hierarchy(mob, self):
                 raise HierarchyError("This hierarchy mutation would create a cycle")
 
@@ -281,9 +281,7 @@ class MobHierarchyMixin:
         for mob in candidates:
             self.children.append(mob)
             mob.set_parent_to(self)
-            self.anchor_priority = max(
-                self.anchor_priority, 1 + mob.anchor_priority
-            )
+            self.anchor_priority = max(self.anchor_priority, 1 + mob.anchor_priority)
         bump_hierarchy_version()
         return self
 

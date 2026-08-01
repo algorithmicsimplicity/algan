@@ -47,7 +47,12 @@ def test_group_fits_exactly_into_normalized_screen_rectangle():
     bottom_left = (0.1, 0.2)
     top_right = (0.6, 0.7)
 
-    assert group.fit_to_screen_rectangle(bottom_left, top_right, preserve_aspect_ratio=False) is group
+    assert (
+        group.fit_to_screen_rectangle(
+            bottom_left, top_right, preserve_aspect_ratio=False
+        )
+        is group
+    )
 
     bbox = group.get_bounding_box()
     expected_lower, expected_upper = _screen_rectangle_at_z_zero(
@@ -60,9 +65,7 @@ def test_group_fits_exactly_into_normalized_screen_rectangle():
 def test_none_screen_rectangle_corners_default_to_whole_screen():
     scene = SceneManager.instance().current_scene
     square = Square(add_to_scene=False)
-    expected_lower, expected_upper = _screen_rectangle_at_z_zero(
-        scene, (0, 0), (1, 1)
-    )
+    expected_lower, expected_upper = _screen_rectangle_at_z_zero(scene, (0, 0), (1, 1))
 
     square.fit_to_screen_rectangle(preserve_aspect_ratio=False)
 
@@ -75,9 +78,7 @@ def test_exact_screen_rectangle_fit_animates_scale_and_position_together():
     scene = SceneManager.instance().current_scene
     square = Square().spawn(animate=False)
     source_size = square.get_axis_aligned_size()
-    expected_lower, expected_upper = _screen_rectangle_at_z_zero(
-        scene, (0, 0), (1, 1)
-    )
+    expected_lower, expected_upper = _screen_rectangle_at_z_zero(scene, (0, 0), (1, 1))
     target_size = expected_upper - expected_lower
 
     square.fit_to_screen_rectangle(preserve_aspect_ratio=False)
@@ -105,17 +106,13 @@ def test_screen_rectangle_fit_can_preserve_aspect_ratio():
         scene, bottom_left, top_right
     )
 
-    group.fit_to_screen_rectangle(
-        bottom_left, top_right, preserve_aspect_ratio=True
-    )
+    group.fit_to_screen_rectangle(bottom_left, top_right, preserve_aspect_ratio=True)
 
     torch.testing.assert_close(group.get_width() / group.get_height(), source_ratio)
     torch.testing.assert_close(
         group.get_width(), (target_upper - target_lower)[..., 0:1]
     )
-    torch.testing.assert_close(
-        group.get_center(), (target_lower + target_upper) * 0.5
-    )
+    torch.testing.assert_close(group.get_center(), (target_lower + target_upper) * 0.5)
 
 
 def test_layout_size_scale_and_center_helpers_are_chainable():
@@ -125,9 +122,7 @@ def test_layout_size_scale_and_center_helpers_are_chainable():
         square.get_axis_aligned_size(), torch.tensor([[[2.0, 2.0, 0.0]]])
     )
     assert square.move_center_to((1, 2, 3)) is square
-    torch.testing.assert_close(
-        square.get_center(), torch.tensor([[[1.0, 2.0, 3.0]]])
-    )
+    torch.testing.assert_close(square.get_center(), torch.tensor([[[1.0, 2.0, 3.0]]]))
     assert square.scale_to_width(4) is square
     torch.testing.assert_close(square.get_width(), torch.tensor([[[4.0]]]))
     assert square.scale_to_height(1) is square
@@ -154,9 +149,7 @@ def test_move_center_to_screen_position_accepts_screen_edges():
         ((0, 0), (1, float("nan"))),
     ],
 )
-def test_screen_rectangle_fit_rejects_invalid_rectangles(
-    bottom_left, top_right
-):
+def test_screen_rectangle_fit_rejects_invalid_rectangles(bottom_left, top_right):
     with pytest.raises(AlganConfigurationError, match="screen rectangle"):
         Square(add_to_scene=False).fit_to_screen_rectangle(bottom_left, top_right)
 

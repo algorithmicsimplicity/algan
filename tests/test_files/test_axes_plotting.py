@@ -6,6 +6,7 @@ from the render while the axes around it drew fine.  These scenes render the
 returned geometry, so a regression shows up as missing pixels rather than as a
 quiet no-op.
 """
+
 import numpy as np
 
 from algan.animation_timeline.animation_contexts import Off, Sync

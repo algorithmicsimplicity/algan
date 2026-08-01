@@ -6,6 +6,7 @@ while producing native
 :class:`~algan.mobs.surfaces.surface.Surface` and
 :class:`~algan.mobs.group.Group` objects.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -49,7 +50,10 @@ def _call_uv_function(function, u, v):
 
     flat_u = u.detach().cpu().reshape(-1).numpy()
     flat_v = v.detach().cpu().reshape(-1).numpy()
-    points = [np.asarray(function(float(uu), float(vv)), dtype=float) for uu, vv in zip(flat_u, flat_v)]
+    points = [
+        np.asarray(function(float(uu), float(vv)), dtype=float)
+        for uu, vv in zip(flat_u, flat_v)
+    ]
     return torch.as_tensor(
         np.asarray(points).reshape(*u.shape, 3),
         device=u.device,
@@ -111,8 +115,12 @@ class OpenGLSurface(Surface):
     def get_surface_points_and_nudged_points(self):
         grid = unsquish(self.grid.location, -2, self.grid_height)
         base = grid.reshape(-1, 3)
-        u_values = torch.linspace(0, 1, self.grid_width, device=base.device, dtype=base.dtype)
-        v_values = torch.linspace(0, 1, self.grid_height, device=base.device, dtype=base.dtype)
+        u_values = torch.linspace(
+            0, 1, self.grid_width, device=base.device, dtype=base.dtype
+        )
+        v_values = torch.linspace(
+            0, 1, self.grid_height, device=base.device, dtype=base.dtype
+        )
         u_grid, v_grid = torch.meshgrid(u_values, v_values, indexing="ij")
         unit_uv = torch.stack((u_grid, v_grid), dim=-1)
         du_uv = unit_uv.clone()
@@ -125,7 +133,9 @@ class OpenGLSurface(Surface):
 
     def get_unit_normals(self):
         points, du_points, dv_points = self.get_surface_points_and_nudged_points()
-        return F.normalize(torch.linalg.cross(du_points - points, dv_points - points), dim=-1)
+        return F.normalize(
+            torch.linalg.cross(du_points - points, dv_points - points), dim=-1
+        )
 
     def get_triangle_indices(self):
         nu, nv = self.resolution
@@ -172,9 +182,7 @@ class OpenGLTexturedSurface(OpenGLSurface):
         self.image_mode = image_mode
         texture = _load_rgba5(image_file)
         self.dark_image = (
-            _load_rgba5(dark_image_file)
-            if dark_image_file is not None
-            else None
+            _load_rgba5(dark_image_file) if dark_image_file is not None else None
         )
 
         if isinstance(uv_surface, OpenGLSurface):
@@ -186,6 +194,7 @@ class OpenGLTexturedSurface(OpenGLSurface):
             # Native surfaces are already sampled in unit UV coordinates.
             def uv_func(u, v):
                 return uv_surface.coord_function(torch.stack((u, v), dim=-1))
+
             u_range = (0, 1)
             v_range = (0, 1)
             resolution = (uv_surface.grid_width, uv_surface.grid_height)
@@ -228,13 +237,13 @@ class OpenGLSurfaceMesh(Group):
 
             scene = active_scene_for_new_mob()
             kwargs["scene"] = scene
-        lines = self._build_lines(
-            stroke_width=stroke_width, color=color, scene=scene
-        )
+        lines = self._build_lines(stroke_width=stroke_width, color=color, scene=scene)
         super().__init__(*lines, add_to_scene=add_to_scene, **kwargs)
 
     def _sample(self, u, v):
-        uv = torch.tensor([u, v], dtype=torch.get_default_dtype(), device=torch.get_default_device())
+        uv = torch.tensor(
+            [u, v], dtype=torch.get_default_dtype(), device=torch.get_default_device()
+        )
         if isinstance(self.uv_surface, OpenGLSurface):
             point = self.uv_surface._coord_from_unit_uv(uv)
         else:
@@ -246,15 +255,37 @@ class OpenGLSurfaceMesh(Group):
         thickness = max(float(stroke_width), 0.1) / 2
         paths = []
         for fixed_u in torch.linspace(0, 1, nu):
-            points = [self._sample(float(fixed_u), float(v)) for v in torch.linspace(0, 1, nv)]
+            points = [
+                self._sample(float(fixed_u), float(v)) for v in torch.linspace(0, 1, nv)
+            ]
             paths.extend(
-                Line(a, b, scene=scene, border_width=thickness, border_color=color, color=color, filled=False, add_to_scene=False)
+                Line(
+                    a,
+                    b,
+                    scene=scene,
+                    border_width=thickness,
+                    border_color=color,
+                    color=color,
+                    filled=False,
+                    add_to_scene=False,
+                )
                 for a, b in zip(points, points[1:])
             )
         for fixed_v in torch.linspace(0, 1, nv):
-            points = [self._sample(float(u), float(fixed_v)) for u in torch.linspace(0, 1, nu)]
+            points = [
+                self._sample(float(u), float(fixed_v)) for u in torch.linspace(0, 1, nu)
+            ]
             paths.extend(
-                Line(a, b, scene=scene, border_width=thickness, border_color=color, color=color, filled=False, add_to_scene=False)
+                Line(
+                    a,
+                    b,
+                    scene=scene,
+                    border_width=thickness,
+                    border_color=color,
+                    color=color,
+                    filled=False,
+                    add_to_scene=False,
+                )
                 for a, b in zip(points, points[1:])
             )
         return paths

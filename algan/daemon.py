@@ -42,6 +42,7 @@ modules stay stale, and editing ``*_taichi.py`` kernel sources under a live
 Taichi JIT can compile mixed-version kernels (the daemon warns when it sees
 algan sources change). Keep to one rendering process at a time on Windows.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -61,7 +62,6 @@ from algan.settings import SETTINGS
 
 DEFAULT_PORT = int(os.environ.get("ALGAN_DAEMON_PORT", "46711"))
 _ALGAN_DIR = os.path.dirname(os.path.abspath(algan.__file__))
-
 
 
 def _say(msg):
@@ -105,8 +105,9 @@ class _AlganSourceGuard:
     def __init__(self):
         self._mtimes = {}
         for dirpath, dirnames, filenames in os.walk(_ALGAN_DIR):
-            dirnames[:] = [d for d in dirnames
-                           if d not in ("external_libraries", "__pycache__")]
+            dirnames[:] = [
+                d for d in dirnames if d not in ("external_libraries", "__pycache__")
+            ]
             for fn in filenames:
                 if fn.endswith(".py"):
                     path = os.path.join(dirpath, fn)
@@ -123,16 +124,19 @@ class _AlganSourceGuard:
                 changed.append(path)
         if not changed:
             return
-        shown = ", ".join(os.path.relpath(p, _ALGAN_DIR)
-                          for p in changed[:5])
+        shown = ", ".join(os.path.relpath(p, _ALGAN_DIR) for p in changed[:5])
         more = f" (+{len(changed) - 5} more)" if len(changed) > 5 else ""
         _say(f"WARNING: algan sources changed since startup: {shown}{more}")
-        _say("WARNING: imported algan modules are stale -- restart the "
-             "daemon to pick these up.")
+        _say(
+            "WARNING: imported algan modules are stale -- restart the "
+            "daemon to pick these up."
+        )
         if any(p.endswith("_taichi.py") for p in changed):
-            _say("WARNING: *_taichi.py changed under a live JIT: newly "
-                 "compiled kernel variants would mix old and new source. "
-                 "Restart the daemon before rendering anything new.")
+            _say(
+                "WARNING: *_taichi.py changed under a live JIT: newly "
+                "compiled kernel variants would mix old and new source. "
+                "Restart the daemon before rendering anything new."
+            )
 
 
 def _user_modules(script_dir):
@@ -143,9 +147,12 @@ def _user_modules(script_dir):
         # Require a real absolute path: torch sets e.g.
         # torch.ops.__file__ = "torch.ops", which would otherwise resolve
         # relative to the cwd and match the script tree.
-        if (isinstance(file, str) and os.path.isabs(file)
-                and _is_under(file, script_dir)
-                and not _is_under(file, _ALGAN_DIR)):
+        if (
+            isinstance(file, str)
+            and os.path.isabs(file)
+            and _is_under(file, script_dir)
+            and not _is_under(file, _ALGAN_DIR)
+        ):
             names.append(name)
     return names
 
@@ -171,20 +178,24 @@ class _TriggerHandler(socketserver.StreamRequestHandler):
 
 def _start_socket(events, port):
     try:
-        server = socketserver.ThreadingTCPServer(
-            ("127.0.0.1", port), _TriggerHandler)
+        server = socketserver.ThreadingTCPServer(("127.0.0.1", port), _TriggerHandler)
     except OSError as e:
-        _say(f"trigger socket unavailable on 127.0.0.1:{port} ({e}); "
-             "stdin trigger still works.")
+        _say(
+            f"trigger socket unavailable on 127.0.0.1:{port} ({e}); "
+            "stdin trigger still works."
+        )
         return None
     server.daemon_threads = True
     server.events = events
-    threading.Thread(target=server.serve_forever, daemon=True,
-                     name="algan-daemon-socket").start()
+    threading.Thread(
+        target=server.serve_forever, daemon=True, name="algan-daemon-socket"
+    ).start()
     _say(f"trigger socket on 127.0.0.1:{port} -- poke with:")
-    _say("  python -c \"import socket;s=socket.create_connection"
-         f"(('127.0.0.1',{port}),2);s.sendall(b'render\\n');"
-         "print(s.recv(16).decode().strip())\"")
+    _say(
+        '  python -c "import socket;s=socket.create_connection'
+        f"(('127.0.0.1',{port}),2);s.sendall(b'render\\n');"
+        'print(s.recv(16).decode().strip())"'
+    )
     return server
 
 
@@ -205,8 +216,10 @@ def _start_stdin(events):
                 if interactive and got_line:
                     events.put(("quit", "stdin closed"))
                 else:
-                    _say("stdin trigger inactive (no interactive terminal); "
-                         "use the socket, --watch, or Ctrl+C.")
+                    _say(
+                        "stdin trigger inactive (no interactive terminal); "
+                        "use the socket, --watch, or Ctrl+C."
+                    )
                 return
             got_line = True
             command = line.strip().lower()
@@ -216,11 +229,9 @@ def _start_stdin(events):
             if command in ("", "r", "render"):
                 events.put(("render", "stdin"))
             else:
-                _say(f"unknown command {command!r} "
-                     "(Enter = re-render, q = quit)")
+                _say(f"unknown command {command!r} (Enter = re-render, q = quit)")
 
-    threading.Thread(target=loop, daemon=True,
-                     name="algan-daemon-stdin").start()
+    threading.Thread(target=loop, daemon=True, name="algan-daemon-stdin").start()
 
 
 class _Watcher:
@@ -231,8 +242,9 @@ class _Watcher:
         self._paths = set()
         self._mtimes = {}
         self._lock = threading.Lock()
-        threading.Thread(target=self._loop, daemon=True,
-                         name="algan-daemon-watch").start()
+        threading.Thread(
+            target=self._loop, daemon=True, name="algan-daemon-watch"
+        ).start()
 
     def set_paths(self, paths):
         with self._lock:
@@ -259,9 +271,11 @@ class _Watcher:
                         changed.append(path)
             if changed:
                 self.events.put(
-                    ("render",
-                     "changed: " + ", ".join(os.path.basename(p)
-                                             for p in changed)))
+                    (
+                        "render",
+                        "changed: " + ", ".join(os.path.basename(p) for p in changed),
+                    )
+                )
 
 
 def _drain(events, first):
@@ -281,23 +295,34 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="python -m algan.daemon",
         description="Warm-process algan render daemon: keeps the library "
-                    "and compiled kernels loaded, re-running SCRIPT on "
-                    "demand.",
+        "and compiled kernels loaded, re-running SCRIPT on "
+        "demand.",
         epilog="Triggers: Enter in this terminal; the localhost socket "
-               "(see startup banner); --watch. Script args go after '--'.")
+        "(see startup banner); --watch. Script args go after '--'.",
+    )
     parser.add_argument("script", help="scene script to (re-)execute")
-    parser.add_argument("script_args", nargs="*",
-                        help="arguments passed through to the script")
-    parser.add_argument("--watch", action="store_true",
-                        help="also re-render when the script or its helper "
-                             "modules change on disk")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
-                        help=f"trigger socket port (default {DEFAULT_PORT})")
-    parser.add_argument("--no-serve", action="store_true",
-                        help="do not open the trigger socket")
-    parser.add_argument("--no-initial-render", action="store_true",
-                        help="wait for a trigger instead of rendering once "
-                             "at startup")
+    parser.add_argument(
+        "script_args", nargs="*", help="arguments passed through to the script"
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="also re-render when the script or its helper modules change on disk",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"trigger socket port (default {DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--no-serve", action="store_true", help="do not open the trigger socket"
+    )
+    parser.add_argument(
+        "--no-initial-render",
+        action="store_true",
+        help="wait for a trigger instead of rendering once at startup",
+    )
     args = parser.parse_args(argv)
 
     script = os.path.abspath(args.script)
@@ -335,25 +360,32 @@ def main(argv=None):
         try:
             sys.argv = [script] + list(args.script_args)
             runpy.run_path(script, run_name="__main__")
-            _say(f"run #{run_count} finished in "
-                 f"{time.perf_counter() - started:.1f} s")
+            _say(f"run #{run_count} finished in {time.perf_counter() - started:.1f} s")
         except SystemExit as e:
-            _say(f"run #{run_count} exited (code {e.code}) after "
-                 f"{time.perf_counter() - started:.1f} s")
+            _say(
+                f"run #{run_count} exited (code {e.code}) after "
+                f"{time.perf_counter() - started:.1f} s"
+            )
         except KeyboardInterrupt:
-            _say(f"run #{run_count} interrupted; state will be reset on "
-                 "the next run")
+            _say(f"run #{run_count} interrupted; state will be reset on the next run")
         except Exception:
             traceback.print_exc()
-            _say(f"run #{run_count} FAILED after "
-                 f"{time.perf_counter() - started:.1f} s -- fix the script "
-                 "and re-trigger")
+            _say(
+                f"run #{run_count} FAILED after "
+                f"{time.perf_counter() - started:.1f} s -- fix the script "
+                "and re-trigger"
+            )
         finally:
             sys.argv = old_argv
         if watcher is not None:
             watcher.set_paths(
-                {script} | {getattr(sys.modules[n], "__file__", None)
-                            for n in _user_modules(script_dir)} - {None})
+                {script}
+                | {
+                    getattr(sys.modules[n], "__file__", None)
+                    for n in _user_modules(script_dir)
+                }
+                - {None}
+            )
 
     if not args.no_initial_render:
         do_run("startup")

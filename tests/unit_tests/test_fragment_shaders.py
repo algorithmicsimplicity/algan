@@ -7,6 +7,7 @@ pipeline is covered by ``tests/full_renders/scenes/media_and_shaders.py``.
 
     .venv/Scripts/python.exe -m pytest tests/unit_tests/test_fragment_shaders.py
 """
+
 import pytest
 
 import algan
@@ -37,12 +38,12 @@ def test_resolve_builtin_shader_to_stage():
 def test_registry_single_composed_and_dedup():
     m1, specs1 = build_fragment_pipeline(cosine_color)
     assert m1._frag_pipeline_id >= _USER_PIPELINE_BASE
-    assert m1._frag_total_width == 2          # frequency + phase
+    assert m1._frag_total_width == 2  # frequency + phase
     assert [n for n, _ in specs1] == ["frequency", "phase"]
 
     m2, specs2 = build_fragment_pipeline([cosine_color, phong_shader])
     assert m2._frag_pipeline_id != m1._frag_pipeline_id
-    assert m2._frag_total_width == 14         # 2 (cosine) + 12 (phong canonical)
+    assert m2._frag_total_width == 14  # 2 (cosine) + 12 (phong canonical)
 
     # Identical pipelines reuse the same id and composed func.
     m3, _ = build_fragment_pipeline(cosine_color)

@@ -71,10 +71,18 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     """Triangle batch rendered by ray tracing a spatio-temporal BVH."""
 
     frame_dependent_source_attrs = (
-        "corners", "colors", "normals",
-        "uvs", "texture_map", "material_texture_map",
-        "normal_texture_map", "reflectivity", "roughness",
-        "refractive_index", "transmission", "shader_param_values",
+        "corners",
+        "colors",
+        "normals",
+        "uvs",
+        "texture_map",
+        "material_texture_map",
+        "normal_texture_map",
+        "reflectivity",
+        "roughness",
+        "refractive_index",
+        "transmission",
+        "shader_param_values",
     )
 
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
@@ -87,25 +95,44 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     # whether -- and how much -- the surface transmits. All are derived from the
     # material alone (see ``_derive_material_surface_params``) -- there is no
     # user-facing renderer control, matching the Three.js material interface.
-    _surface_params = ("reflectivity", "roughness", "refractive_index",
-                       "transmission")
+    _surface_params = ("reflectivity", "roughness", "refractive_index", "transmission")
 
-    def __init__(self, corners=None, colors=None, opacity=1, normals=None,
-                 perimeter_points=None, reverse_perimeter=False,
-                 triangle_collection=None, glow=0, shader=None,
-                 uvs=None, texture_map=None,
-                 material_texture_map=None, material_texture_flags=0,
-                 normal_texture_map=None,
-                 **shader_kwargs):
+    def __init__(
+        self,
+        corners=None,
+        colors=None,
+        opacity=1,
+        normals=None,
+        perimeter_points=None,
+        reverse_perimeter=False,
+        triangle_collection=None,
+        glow=0,
+        shader=None,
+        uvs=None,
+        texture_map=None,
+        material_texture_map=None,
+        material_texture_flags=0,
+        normal_texture_map=None,
+        **shader_kwargs,
+    ):
         if triangle_collection is not None:
-            super().__init__(corners, colors, opacity, normals,
-                             perimeter_points, reverse_perimeter,
-                             triangle_collection, glow, shader,
-                             uvs=uvs, texture_map=texture_map,
-                             material_texture_map=material_texture_map,
-                             material_texture_flags=material_texture_flags,
-                             normal_texture_map=normal_texture_map,
-                             **shader_kwargs)
+            super().__init__(
+                corners,
+                colors,
+                opacity,
+                normals,
+                perimeter_points,
+                reverse_perimeter,
+                triangle_collection,
+                glow,
+                shader,
+                uvs=uvs,
+                texture_map=texture_map,
+                material_texture_map=material_texture_map,
+                material_texture_flags=material_texture_flags,
+                normal_texture_map=normal_texture_map,
+                **shader_kwargs,
+            )
             # Gather per-mob surface params with the same broadcast/cat
             # recipe the base class applies to corners/colors, so shapes
             # line up -- except along time: the references are sliced to a
@@ -117,12 +144,15 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                     v = getattr(triangle, name, None)
                     if v is None:
                         fill = -1.0 if name == "reflectivity" else 0.0
-                        v = torch.full_like(
-                            triangle.colors[:1, ..., :1], fill
-                        )
+                        v = torch.full_like(triangle.colors[:1, ..., :1], fill)
                     v = broadcast_all(
-                        [triangle.corners[:1], triangle.colors[:1],
-                         triangle.normals[:1], v], ignored_dims=[-1]
+                        [
+                            triangle.corners[:1],
+                            triangle.colors[:1],
+                            triangle.normals[:1],
+                            v,
+                        ],
+                        ignored_dims=[-1],
                     )[-1][..., :1]
                     values.append(v)
                 # A registered (animatable) surface param on an *animated* mob
@@ -130,18 +160,29 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 # mobs' params stay single-frame; unify the time dims before
                 # the cat (the kernels index time as ``f % T`` either way).
                 values, _ = _unify_time(values, "surface param merge")
-                setattr(self, name, unsquish(
-                    torch.cat(values, 1), -2, 3
-                ).to(self.corners.device))
+                setattr(
+                    self,
+                    name,
+                    unsquish(torch.cat(values, 1), -2, 3).to(self.corners.device),
+                )
         else:
-            super().__init__(corners, colors, opacity, normals,
-                             perimeter_points, reverse_perimeter,
-                             triangle_collection, glow, shader=shader,
-                             uvs=uvs, texture_map=texture_map,
-                             material_texture_map=material_texture_map,
-                             material_texture_flags=material_texture_flags,
-                             normal_texture_map=normal_texture_map,
-                             **shader_kwargs)
+            super().__init__(
+                corners,
+                colors,
+                opacity,
+                normals,
+                perimeter_points,
+                reverse_perimeter,
+                triangle_collection,
+                glow,
+                shader=shader,
+                uvs=uvs,
+                texture_map=texture_map,
+                material_texture_map=material_texture_map,
+                material_texture_flags=material_texture_flags,
+                normal_texture_map=normal_texture_map,
+                **shader_kwargs,
+            )
             self._derive_material_surface_params()
 
     def _derive_material_surface_params(self):
@@ -194,8 +235,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # the two together made an object at transmission=1 indistinguishable
         # from an absent one, and made a glass mob's spawn fade invisible.
         self.refractive_index = surface_value(ior, 1.5).abs()
-        self.transmission = surface_value(
-            by_name.get("transmission"), 0.0).clamp(0.0, 1.0)
+        self.transmission = surface_value(by_name.get("transmission"), 0.0).clamp(
+            0.0, 1.0
+        )
 
     def _shaded_per_fragment(self):
         """True when this primitive's hits are shaded per fragment in-kernel
@@ -208,8 +250,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             # A custom pipeline always shades in-kernel on the deterministic
             # renderer (fragment shading is forced on for such a scene).
             return rt_settings.SAMPLES_PER_PIXEL <= 1
-        return (rt_settings.FRAGMENT_SHADING and rt_settings.SAMPLES_PER_PIXEL <= 1
-                and _shader_is_core(shader))
+        return (
+            rt_settings.FRAGMENT_SHADING
+            and rt_settings.SAMPLES_PER_PIXEL <= 1
+            and _shader_is_core(shader)
+        )
 
     def _ordered_shader_param_values(self):
         """The shader's extra (material) parameters as a positional list in the
@@ -298,8 +343,9 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         if getattr(shader, "_frag_pipeline_id", None) is not None:
             return self._pack_frag_pipeline(shader, N, device, per_triangle)
 
-        mat_id = torch.full((1, N), _shader_material_id(shader),
-                            dtype=torch.int32, device=device)
+        mat_id = torch.full(
+            (1, N), _shader_material_id(shader), dtype=torch.int32, device=device
+        )
         pairs = []
         if _shader_is_core(shader):
             # The material's shader params, addressed by their real names.
@@ -309,13 +355,17 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 if name in _MAT_SLOTS and value is not None:
                     pairs.append((name, per_triangle(value)))
         Tm = max([1] + [v.shape[0] for _n, v in pairs])
-        mat = torch.tensor(_MAT_DEFAULTS, device=device).view(
-            1, 1, MAT_W).expand(Tm, N, MAT_W).contiguous()
+        mat = (
+            torch.tensor(_MAT_DEFAULTS, device=device)
+            .view(1, 1, MAT_W)
+            .expand(Tm, N, MAT_W)
+            .contiguous()
+        )
         for name, v in pairs:
             start, width = _MAT_SLOTS[name]
             if v.shape[-1] != width:  # broadcast a scalar into a vector slot
                 v = v.expand(*v.shape[:-1], width)
-            mat[:, :, start:start + width] = v
+            mat[:, :, start : start + width] = v
         return mat_id.contiguous(), mat.contiguous()
 
     def _pack_frag_pipeline(self, shader, N, device, per_triangle):
@@ -339,11 +389,10 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # Default row (every slot is covered by exactly one layout entry).
         default_row = torch.zeros(W, dtype=torch.float32, device=device)
         for _name, slot, width, default in layout:
-            dv = torch.as_tensor(default, dtype=torch.float32,
-                                 device=device).flatten()
+            dv = torch.as_tensor(default, dtype=torch.float32, device=device).flatten()
             if dv.numel() == 1 and width > 1:
                 dv = dv.expand(width)
-            default_row[slot:slot + width] = dv[:width]
+            default_row[slot : slot + width] = dv[:width]
 
         pairs = []
         for name, slot, width, _default in layout:
@@ -355,7 +404,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         for slot, width, v in pairs:
             if v.shape[-1] != width:  # broadcast a scalar into a vector slot
                 v = v.expand(*v.shape[:-1], width)
-            mat[:, :, slot:slot + width] = v
+            mat[:, :, slot : slot + width] = v
         return mat_id.contiguous(), mat.contiguous()
 
     def _pack_surface_extra(self, error_context):
@@ -368,12 +417,16 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         by ``_corner_transmission``).
         """
         (reflectivity_e, roughness_e, ior_e, transmission_e), _ = _unify_time(
-            [self.reflectivity.float(), self.roughness.float(),
-             self.refractive_index.float(), self.transmission.float()],
-            error_context)
+            [
+                self.reflectivity.float(),
+                self.roughness.float(),
+                self.refractive_index.float(),
+                self.transmission.float(),
+            ],
+            error_context,
+        )
         n_t, n_p = reflectivity_e.shape[0], reflectivity_e.shape[1]
-        refl_rough = torch.cat((reflectivity_e, roughness_e), -1).reshape(
-            n_t, n_p, 6)
+        refl_rough = torch.cat((reflectivity_e, roughness_e), -1).reshape(n_t, n_p, 6)
         ior = ior_e.reshape(n_t, n_p, 3)
         transmission = transmission_e.reshape(n_t, n_p, 3)
         return torch.cat((refl_rough, ior, transmission), -1).contiguous()
@@ -392,7 +445,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # Alpha is pure coverage, so it alone decides presence: a mob that is
         # un-spawned or faded out is absent, while clear glass keeps its
         # coverage and stays visible (see _derive_material_surface_params).
-        visible = (alpha.amax(-1) > MIN_ALPHA)
+        visible = alpha.amax(-1) > MIN_ALPHA
         # ...but full coverage is not enough to prune hits behind: a
         # transmissive surface still lets light through at alpha 1.
         opaque = alpha.amin(-1) >= 1.0 - 1e-6
@@ -401,16 +454,16 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             opaque = opaque & (transmission[..., 0] <= 1e-6).all(-1)
 
         (lo, hi, visible, opaque), _ = _unify_time(
-            [lo, hi, visible.unsqueeze(-1), opaque.unsqueeze(-1)],
-            error_context)
+            [lo, hi, visible.unsqueeze(-1), opaque.unsqueeze(-1)], error_context
+        )
         visible = visible.squeeze(-1)
         self._rt_frame_opaque = opaque.squeeze(-1).contiguous()
         self._rt_frame_lo = torch.where(
-            visible.unsqueeze(-1), lo,
-            torch.tensor(EMPTY_LO, device=lo.device)).contiguous()
+            visible.unsqueeze(-1), lo, torch.tensor(EMPTY_LO, device=lo.device)
+        ).contiguous()
         self._rt_frame_hi = torch.where(
-            visible.unsqueeze(-1), hi,
-            torch.tensor(EMPTY_HI, device=hi.device)).contiguous()
+            visible.unsqueeze(-1), hi, torch.tensor(EMPTY_HI, device=hi.device)
+        ).contiguous()
 
     def _stash_texture_maps(self):
         """Stash the raw texture maps (color / material / normal) for merge
@@ -423,18 +476,25 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             self._rt_material_flags = 0
             self._rt_normal_texture = None
             return None
-        uvs = self.uvs.float().reshape(
-            self.uvs.shape[0], self.uvs.shape[1], 6).contiguous()
-        self._rt_texture_map = (self.texture_map.float().contiguous()
-                                if self.texture_map is not None else None)
+        uvs = (
+            self.uvs.float()
+            .reshape(self.uvs.shape[0], self.uvs.shape[1], 6)
+            .contiguous()
+        )
+        self._rt_texture_map = (
+            self.texture_map.float().contiguous()
+            if self.texture_map is not None
+            else None
+        )
         mtex = getattr(self, "material_texture_map", None)
-        self._rt_material_texture = (mtex.float().contiguous()
-                                     if mtex is not None else None)
-        self._rt_material_flags = int(
-            getattr(self, "material_texture_flags", 0) or 0)
+        self._rt_material_texture = (
+            mtex.float().contiguous() if mtex is not None else None
+        )
+        self._rt_material_flags = int(getattr(self, "material_texture_flags", 0) or 0)
         ntex = getattr(self, "normal_texture_map", None)
-        self._rt_normal_texture = (ntex.float().contiguous()
-                                   if ntex is not None else None)
+        self._rt_normal_texture = (
+            ntex.float().contiguous() if ntex is not None else None
+        )
         return uvs
 
     def _release_unpacked_geometry(self):
@@ -462,33 +522,55 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # intersection, normals only by hits that bounce or scatter, and
         # reflectivity/roughness (usually static) only by confirmed hits.
         self._rt_tri_pos = corners.reshape(
-            corners.shape[0], corners.shape[1], 9).contiguous()
+            corners.shape[0], corners.shape[1], 9
+        ).contiguous()
         self._rt_tri_norm = normals.reshape(
-            normals.shape[0], normals.shape[1], 9).contiguous()
-        self._rt_tri_extra = self._pack_surface_extra(
-            "triangle surface params")
+            normals.shape[0], normals.shape[1], 9
+        ).contiguous()
+        self._rt_tri_extra = self._pack_surface_extra("triangle surface params")
         self._rt_tri_colors = self.colors.float().contiguous()
         self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
         self._rt_num_frames = camera.ray_origin.shape[0]
 
         uvs = self._stash_texture_maps()
-        self._rt_tri_uvs = (uvs.to(corners.device)
-                            if uvs is not None else None)
+        self._rt_tri_uvs = uvs.to(corners.device) if uvs is not None else None
 
-        self._pack_frame_visibility(corners.amin(-2), corners.amax(-2),
-                                    self._rt_tri_colors,
-                                    "triangle bounds/colors")
+        self._pack_frame_visibility(
+            corners.amin(-2),
+            corners.amax(-2),
+            self._rt_tri_colors,
+            "triangle bounds/colors",
+        )
 
         self._release_unpacked_geometry()
         return self
 
-    def render(self, primitives, scene, save_image, screen_width,
-               screen_height, time_start, time_end, background_color,
-               transparent_background=False, *args, **kwargs):
+    def render(
+        self,
+        primitives,
+        scene,
+        save_image,
+        screen_width,
+        screen_height,
+        time_start,
+        time_end,
+        background_color,
+        transparent_background=False,
+        *args,
+        **kwargs,
+    ):
         return KERNEL_REGISTRY.render_kernel(
-            primitives, scene, screen_width, screen_height, time_start,
-            time_end, background_color, transparent_background, *args,
-            **kwargs)
+            primitives,
+            scene,
+            screen_width,
+            screen_height,
+            time_start,
+            time_end,
+            background_color,
+            transparent_background,
+            *args,
+            **kwargs,
+        )
 
 
 class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
@@ -618,9 +700,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         screen_normal = sb[:, 2].view(camera_shape)
         rays = points - camera_origin
         depth = (rays * screen_normal).sum(-1, keepdim=True)
-        screen_distance = (
-            (screen_point - camera_origin) * screen_normal
-        ).sum(-1, keepdim=True)
+        screen_distance = ((screen_point - camera_origin) * screen_normal).sum(
+            -1, keepdim=True
+        )
         projected = camera_origin + (screen_distance / depth) * rays
         relative = projected - screen_point
         screen_x = sb[:, 0].view(camera_shape)
@@ -634,8 +716,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         )
         return pixels * (float(screen_height) / 2.0), depth.squeeze(-1)
 
-    def _guarded_pixel_error(self, exact, approximated, cam, front_sign,
-                             screen_height):
+    def _guarded_pixel_error(self, exact, approximated, cam, front_sign, screen_height):
         """Guarded projected pixel deviation between matching point sets.
 
         ``exact`` and ``approximated`` are ``[K, ..., 3]``; ``cam`` and
@@ -672,16 +753,17 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             approximated, *cam, screen_height
         )
         error = (
-            exact_pixels.clamp(-guard, guard)
-            - approximated_pixels.clamp(-guard, guard)
+            exact_pixels.clamp(-guard, guard) - approximated_pixels.clamp(-guard, guard)
         ).norm(dim=-1)
         sign = front_sign.view(-1, *((1,) * (error.ndim - 1)))
         usable = (
             torch.isfinite(error)
             & (exact_depth * sign > 1e-7)
             & (approximated_depth * sign > 1e-7)
-            & ((exact_pixels.abs() <= guard).all(-1)
-               | (approximated_pixels.abs() <= guard).all(-1))
+            & (
+                (exact_pixels.abs() <= guard).all(-1)
+                | (approximated_pixels.abs() <= guard).all(-1)
+            )
         )
         return torch.where(usable, error, torch.zeros_like(error))
 
@@ -690,8 +772,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         """``4 ** levels``, the diced triangle count of each patch."""
         return torch.bitwise_left_shift(torch.ones_like(levels), 2 * levels)
 
-    def _required_subdivision_levels(self, control_points, edge_controls,
-                                     cam_o, sp, sb, screen_height):
+    def _required_subdivision_levels(
+        self, control_points, edge_controls, cam_o, sp, sb, screen_height
+    ):
         """Choose the crack-free logical PN levels of every patch and edge.
 
         Returns per-patch interior levels ``[T, P]`` and per-edge boundary
@@ -706,7 +789,10 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             edge_controls, cam, front_sign, screen_height
         )
         levels, patch_capped = self._required_patch_levels(
-            control_points, edge_levels.amax(-1), cam, front_sign,
+            control_points,
+            edge_levels.amax(-1),
+            cam,
+            front_sign,
             screen_height,
         )
         if edge_capped or patch_capped:
@@ -718,8 +804,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             )
         return levels, edge_levels
 
-    def _required_edge_levels(self, edge_controls, cam, front_sign,
-                              screen_height):
+    def _required_edge_levels(self, edge_controls, cam, front_sign, screen_height):
         """Per-boundary-curve subdivision levels, shape ``[T, P, 3]``.
 
         Each curve is judged on its canonically oriented cubic and nothing else
@@ -752,12 +837,15 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             if active.numel() == 0:
                 break
             error = self._edge_chord_error(
-                edge_controls, active, level, cam, front_sign, samples,
+                edge_controls,
+                active,
+                level,
+                cam,
+                front_sign,
+                samples,
                 screen_height,
             )
-            candidates = active[
-                (error * self._flatness_safety_factor) > threshold
-            ]
+            candidates = active[(error * self._flatness_safety_factor) > threshold]
             if candidates.numel() == 0:
                 break
             if level == max_level:
@@ -766,9 +854,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             proposed = levels.clone()
             proposed.view(-1)[candidates] = level + 1
             blocked = self._triangle_counts(proposed.amax(-1)).sum(1) > budget
-            frames, _patches, _edges = self._unravel_edges(
-                candidates, num_patches
-            )
+            frames, _patches, _edges = self._unravel_edges(candidates, num_patches)
             promoted = candidates[~blocked[frames]]
             capped = capped or bool(promoted.numel() != candidates.numel())
             levels.view(-1)[promoted] = level + 1
@@ -778,15 +864,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
     @staticmethod
     def _unravel_edges(flat_indices, num_patches):
         """Split flat ``[T, P, 3]`` edge indices into frame/patch/edge."""
-        frames = torch.div(
-            flat_indices, num_patches * 3, rounding_mode="floor"
-        )
+        frames = torch.div(flat_indices, num_patches * 3, rounding_mode="floor")
         within = flat_indices - frames * (num_patches * 3)
         patches = torch.div(within, 3, rounding_mode="floor")
         return frames, patches, within - patches * 3
 
-    def _edge_chord_error(self, edge_controls, active, level, cam, front_sign,
-                          samples, screen_height):
+    def _edge_chord_error(
+        self, edge_controls, active, level, cam, front_sign, samples, screen_height
+    ):
         """Peak pixel deviation of each active curve from its chord polyline.
 
         The polyline has ``2 ** level`` chords; every chord is compared against
@@ -809,8 +894,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         steps = torch.arange(segments, device=device, dtype=dtype).unsqueeze(-1)
         parameters = torch.cat(
             (
-                torch.arange(segments + 1, device=device, dtype=dtype)
-                / segments,
+                torch.arange(segments + 1, device=device, dtype=dtype) / segments,
                 ((steps + samples.unsqueeze(0)) / segments).reshape(-1),
             )
         )
@@ -818,18 +902,18 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
         error = torch.empty(active.numel(), device=device, dtype=dtype)
         for start in range(0, active.numel(), chunk):
-            selected = active[start:start + chunk]
+            selected = active[start : start + chunk]
             frames, patches, edges = self._unravel_edges(selected, num_patches)
             curve = evaluate_cubic_curve(
                 edge_controls[frames, patches, edges], parameters
             )
-            knots = curve[:, :segments + 1]
-            exact = curve[:, segments + 1:].reshape(-1, segments, num_samples, 3)
+            knots = curve[:, : segments + 1]
+            exact = curve[:, segments + 1 :].reshape(-1, segments, num_samples, 3)
             chords = (
                 knots[:, :-1].unsqueeze(2) * (1.0 - blend)
                 + knots[:, 1:].unsqueeze(2) * blend
             )
-            error[start:start + chunk] = self._guarded_pixel_error(
+            error[start : start + chunk] = self._guarded_pixel_error(
                 exact,
                 chords,
                 tuple(value.index_select(0, frames) for value in cam),
@@ -838,8 +922,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             ).amax(dim=(1, 2))
         return error
 
-    def _required_patch_levels(self, control_points, start, cam, front_sign,
-                               screen_height):
+    def _required_patch_levels(
+        self, control_points, start, cam, front_sign, screen_height
+    ):
         """Per-patch interior subdivision levels, shape ``[T, P]``.
 
         Every patch starts at the largest of its three boundary levels -- the
@@ -878,7 +963,12 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 continue
             frames, patches = selected[:, 0], selected[:, 1]
             error = self._patch_flatness_error(
-                control_points, selected, level, cam, front_sign, screen_height,
+                control_points,
+                selected,
+                level,
+                cam,
+                front_sign,
+                screen_height,
             )
             failed = (error * self._flatness_safety_factor) > threshold
             if level == max_level:
@@ -904,8 +994,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 break
         return levels, bool(capped)
 
-    def _patch_flatness_error(self, control_points, selected, level, cam,
-                              front_sign, screen_height):
+    def _patch_flatness_error(
+        self, control_points, selected, level, cam, front_sign, screen_height
+    ):
         """Peak pixel deviation of each selected patch's level-``level`` dice,
         sampled at ``_flatness_sample_weights`` within every microtriangle.
         """
@@ -924,14 +1015,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
         error = torch.empty(selected.shape[0], device=device, dtype=dtype)
         for start in range(0, selected.shape[0], chunk):
-            rows = selected[start:start + chunk]
+            rows = selected[start : start + chunk]
             frames, patches = rows[:, 0], rows[:, 1]
             controls = control_points[frames, patches].unsqueeze(0)
             vertices = evaluate_logical_pn(controls, vertex_uv)[0]
             approximated = torch.einsum(
                 "sk,pmkc->pmsc", weights, vertices[:, triangle_indices]
             )
-            error[start:start + chunk] = self._guarded_pixel_error(
+            error[start : start + chunk] = self._guarded_pixel_error(
                 evaluate_logical_pn(controls, sample_uv)[0],
                 approximated,
                 tuple(value.index_select(0, frames) for value in cam),
@@ -946,8 +1037,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             return None
         if value.shape[0] not in (1, num_frames):
             raise ValueError(
-                f"{name} has {value.shape[0]} frames, expected 1 or "
-                f"{num_frames}"
+                f"{name} has {value.shape[0]} frames, expected 1 or {num_frames}"
             )
         return _expand_frames(value, num_frames)
 
@@ -957,15 +1047,15 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         source_normals = self.normals.float()
         device = source_corners.device
         dtype = source_corners.dtype
-        cam_o = _expand_frames(
-            _flat_frames(camera.ray_origin, (3,)), num_frames
-        ).to(device)
-        sp = _expand_frames(
-            _flat_frames(camera.screen_point, (3,)), num_frames
-        ).to(device)
-        sb = _expand_frames(
-            _flat_frames(camera.screen_basis, (3, 3)), num_frames
-        ).to(device)
+        cam_o = _expand_frames(_flat_frames(camera.ray_origin, (3,)), num_frames).to(
+            device
+        )
+        sp = _expand_frames(_flat_frames(camera.screen_point, (3,)), num_frames).to(
+            device
+        )
+        sb = _expand_frames(_flat_frames(camera.screen_basis, (3, 3)), num_frames).to(
+            device
+        )
 
         # Control nets are built on the source frames and only broadcast
         # afterwards, so a static mesh keeps one copy however many frames the
@@ -973,19 +1063,20 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # materialized.
         control_points = self._expanded_frames(
             logical_pn_control_points(source_corners, source_normals),
-            num_frames, "logical PN corners",
+            num_frames,
+            "logical PN corners",
         )
         normal_control_points = self._expanded_frames(
             logical_pn_normal_control_points(source_corners, source_normals),
-            num_frames, "logical PN normals",
+            num_frames,
+            "logical PN normals",
         )
         edge_controls = self._expanded_frames(
             logical_pn_edge_control_points(source_corners, source_normals),
-            num_frames, "logical PN edges",
+            num_frames,
+            "logical PN edges",
         )
-        output_height = getattr(
-            camera, "output_screen_height", camera.screen_height
-        )
+        output_height = getattr(camera, "output_screen_height", camera.screen_height)
         levels, edge_levels = self._required_subdivision_levels(
             control_points,
             edge_controls,
@@ -1013,14 +1104,10 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             for name in self._surface_params
         }
         shader_sources = [
-            self._expanded_frames(
-                value, num_frames, "logical PN shader parameter"
-            )
+            self._expanded_frames(value, num_frames, "logical PN shader parameter")
             for value in self.shader_param_values
         ]
-        uv_source = self._expanded_frames(
-            self.uvs, num_frames, "logical PN UVs"
-        )
+        uv_source = self._expanded_frames(self.uvs, num_frames, "logical PN UVs")
 
         def allocate(values):
             return torch.zeros(
@@ -1038,8 +1125,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         diced_normals = allocate(source_normals)
         diced_colors = allocate(colors)
         diced_surface_params = {
-            name: allocate(source)
-            for name, source in surface_sources.items()
+            name: allocate(source) for name, source in surface_sources.items()
         }
         diced_shader_params = [allocate(v) for v in shader_sources]
         diced_uvs = allocate(uv_source) if uv_source is not None else None
@@ -1052,22 +1138,16 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         for level in levels.unique(sorted=True).tolist():
             level = int(level)
             selected = (levels == level).nonzero()
-            vertex_uv = subdivision_vertex_uvs(
-                level, device=device, dtype=dtype
-            )
-            triangle_indices = subdivision_triangle_indices(
-                level, device=device
-            )
-            corner_uv = subdivision_triangle_uvs(
-                level, device=device, dtype=dtype
-            )
+            vertex_uv = subdivision_vertex_uvs(level, device=device, dtype=dtype)
+            triangle_indices = subdivision_triangle_indices(level, device=device)
+            corner_uv = subdivision_triangle_uvs(level, device=device, dtype=dtype)
             boundary = subdivision_boundary_map(level, device=device)
             num_triangles = triangle_indices.shape[0]
             columns = torch.arange(num_triangles, device=device)
             chunk = max(1, int(self.max_scratch_triangles) // num_triangles)
 
             for start in range(0, selected.shape[0], chunk):
-                rows = selected[start:start + chunk]
+                rows = selected[start : start + chunk]
                 frames, patches = rows[:, 0], rows[:, 1]
                 edges = edge_levels[frames, patches]
                 # The patch is evaluated once per shared subdivision vertex
@@ -1079,7 +1159,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                         control_points[frames, patches].unsqueeze(0),
                         vertex_uv,
                     )[0],
-                    level, edges, boundary,
+                    level,
+                    edges,
+                    boundary,
                 )
                 vertex_normals = F.normalize(
                     snap_boundary_values(
@@ -1087,37 +1169,32 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                             normal_control_points[frames, patches].unsqueeze(0),
                             vertex_uv,
                         )[0],
-                        level, edges, boundary,
+                        level,
+                        edges,
+                        boundary,
                     ),
-                    p=2, dim=-1,
+                    p=2,
+                    dim=-1,
                 )
                 target_rows = frames.unsqueeze(1).expand(-1, num_triangles)
-                target_columns = (
-                    offsets[frames, patches].unsqueeze(1) + columns
-                )
+                target_columns = offsets[frames, patches].unsqueeze(1) + columns
 
-                diced_corners[target_rows, target_columns] = (
-                    positions[:, triangle_indices]
-                )
-                diced_normals[target_rows, target_columns] = (
-                    vertex_normals[:, triangle_indices]
-                )
-                diced_colors[target_rows, target_columns] = (
-                    interpolate_patch_attribute(
-                        colors[frames, patches], corner_uv
-                    )
+                diced_corners[target_rows, target_columns] = positions[
+                    :, triangle_indices
+                ]
+                diced_normals[target_rows, target_columns] = vertex_normals[
+                    :, triangle_indices
+                ]
+                diced_colors[target_rows, target_columns] = interpolate_patch_attribute(
+                    colors[frames, patches], corner_uv
                 )
                 for name, output in diced_surface_params.items():
-                    output[target_rows, target_columns] = (
-                        interpolate_patch_attribute(
-                            surface_sources[name][frames, patches], corner_uv
-                        )
+                    output[target_rows, target_columns] = interpolate_patch_attribute(
+                        surface_sources[name][frames, patches], corner_uv
                     )
                 for output, source in zip(diced_shader_params, shader_sources):
-                    output[target_rows, target_columns] = (
-                        interpolate_patch_attribute(
-                            source[frames, patches], corner_uv
-                        )
+                    output[target_rows, target_columns] = interpolate_patch_attribute(
+                        source[frames, patches], corner_uv
                     )
                 if diced_uvs is not None:
                     diced_uvs[target_rows, target_columns] = (
@@ -1175,15 +1252,15 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # normals share a time dimension by construction (the batching
         # constructor broadcasts them together).
         control_points = pn_control_points(corners, normals)
-        self._rt_pn_ctrl = pn_patch_coefficients(
-            control_points).contiguous()
+        self._rt_pn_ctrl = pn_patch_coefficients(control_points).contiguous()
         # Tight oriented bounding box per patch: the trace kernel tests it
         # before the matrix-pencil solve to reject the (many) candidates
         # whose loose axis-aligned leaf box the ray pierces but whose actual
         # (often thin, diagonal) patch it misses.
         self._rt_pn_obb = pn_obb(control_points).contiguous()
         self._rt_pn_norm = normals.reshape(
-            normals.shape[0], normals.shape[1], 9).contiguous()
+            normals.shape[0], normals.shape[1], 9
+        ).contiguous()
         self._rt_pn_extra = self._pack_surface_extra("pn surface params")
         self._rt_pn_colors = self.colors.float().contiguous()
         self._rt_pn_mat_id, self._rt_pn_mat = self._pack_material()
@@ -1198,10 +1275,12 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
 
         # The patch lies in the convex hull of its control points, so
         # the control net bounds it.
-        self._pack_frame_visibility(control_points.amin(-2),
-                                    control_points.amax(-2),
-                                    self._rt_pn_colors,
-                                    "pn bounds/colors")
+        self._pack_frame_visibility(
+            control_points.amin(-2),
+            control_points.amax(-2),
+            self._rt_pn_colors,
+            "pn bounds/colors",
+        )
 
         self._release_unpacked_geometry()
         return self
@@ -1210,10 +1289,12 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
 def _evaluate_cubic_bezier_batch(p, t):
     """p: [..., 4, 3] control points, t: broadcastable parameter in [0, 1)."""
     mt = 1.0 - t
-    return ((mt * mt * mt) * p[..., 0, :]
-            + (3.0 * mt * mt * t) * p[..., 1, :]
-            + (3.0 * mt * t * t) * p[..., 2, :]
-            + (t * t * t) * p[..., 3, :])
+    return (
+        (mt * mt * mt) * p[..., 0, :]
+        + (3.0 * mt * mt * t) * p[..., 1, :]
+        + (3.0 * mt * t * t) * p[..., 2, :]
+        + (t * t * t) * p[..., 3, :]
+    )
 
 
 def _evaluate_cubic_bezier_derivative_batch(p, t):
@@ -1234,8 +1315,10 @@ def _uniform_cubic_subcurves(corners, num_subdivisions):
     determine the four controls of each restricted cubic exactly.
     """
     p = corners.unsqueeze(-3)
-    t0 = (torch.arange(num_subdivisions, device=corners.device,
-                       dtype=corners.dtype) / num_subdivisions)
+    t0 = (
+        torch.arange(num_subdivisions, device=corners.device, dtype=corners.dtype)
+        / num_subdivisions
+    )
     t0 = t0.view(1, 1, -1, 1)
     t1 = t0 + 1.0 / num_subdivisions
     q0 = _evaluate_cubic_bezier_batch(p, t0)
@@ -1276,7 +1359,8 @@ def _bezier_connection_visibility(corners, next_segment_inds):
     therefore must not contribute to the visible border.
     """
     (corners, next_segment_inds), _ = _unify_time(
-        [corners, next_segment_inds.unsqueeze(-1)], "bezier connections")
+        [corners, next_segment_inds.unsqueeze(-1)], "bezier connections"
+    )
     next_segment_inds = next_segment_inds.squeeze(-1)
     segment_ends = corners[..., 3, :]
     segment_starts = corners[..., 0, :]
@@ -1297,10 +1381,21 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     """
 
     frame_dependent_source_attrs = (
-        "corners", "colors", "normals", "border_width",
-        "border_color", "mob_center", "grid_width",
-        "grid_height", "basis1", "basis2", "next_segment_inds",
-        "reflectivity", "roughness", "refractive_index", "transmission",
+        "corners",
+        "colors",
+        "normals",
+        "border_width",
+        "border_color",
+        "mob_center",
+        "grid_width",
+        "grid_height",
+        "basis1",
+        "basis2",
+        "next_segment_inds",
+        "reflectivity",
+        "roughness",
+        "refractive_index",
+        "transmission",
     )
 
     # Same renderer-internal transport channels as the triangle primitive, with
@@ -1308,14 +1403,20 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
     # non-PBR), ``refractive_index`` is an unsigned magnitude feeding dielectric
     # F0, and ``transmission`` says how much light passes through. A circuit
     # transmits as a thin pane rather than refracting (see ``circuit_scatter``).
-    _surface_params = ("reflectivity", "roughness", "refractive_index",
-                       "transmission")
+    _surface_params = ("reflectivity", "roughness", "refractive_index", "transmission")
 
     # Non-PBR sentinel for metalness; the other channels are inert at 0.
     _surface_param_fill = {"reflectivity": -1.0}
 
-    def __init__(self, *args, reflectivity=None, roughness=None,
-                 refractive_index=None, transmission=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        reflectivity=None,
+        roughness=None,
+        refractive_index=None,
+        transmission=None,
+        **kwargs,
+    ):
         collection = kwargs.get("triangle_collection")
         super().__init__(*args, **kwargs)
         if collection is not None:
@@ -1326,23 +1427,28 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                     if value is None:
                         value = torch.full_like(
                             primitive.mob_center[..., :1],
-                            self._surface_param_fill.get(name, 0.0))
+                            self._surface_param_fill.get(name, 0.0),
+                        )
                     values.append(value)
                 values, _ = _unify_time(values, f"bezier {name} merge")
                 setattr(self, name, torch.cat(values, 1).to(self.mob_center.device))
         else:
             template = self.mob_center[..., :1]
-            for name, value in (("reflectivity", reflectivity),
-                                ("roughness", roughness),
-                                ("refractive_index", refractive_index),
-                                ("transmission", transmission)):
+            for name, value in (
+                ("reflectivity", reflectivity),
+                ("roughness", roughness),
+                ("refractive_index", refractive_index),
+                ("transmission", transmission),
+            ):
                 if value is None:
                     value = torch.full_like(
-                        template, self._surface_param_fill.get(name, 0.0))
+                        template, self._surface_param_fill.get(name, 0.0)
+                    )
                 else:
                     value = cast_to_tensor(value).to(template.device)
-                    value = broadcast_all(
-                        [template, value], ignored_dims=[-1])[-1][..., :1]
+                    value = broadcast_all([template, value], ignored_dims=[-1])[-1][
+                        ..., :1
+                    ]
                 setattr(self, name, value)
 
     stbvh_tightness = float(os.environ.get("ALGAN_STBVH_TIGHTNESS", "1.0"))
@@ -1355,25 +1461,33 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         self._rt_num_frames = num_frames
 
         device = corners.device
-        cam_o = _expand_frames(_flat_frames(camera.ray_origin, (3,)),
-                               num_frames).to(device)
-        sp = _expand_frames(_flat_frames(camera.screen_point, (3,)),
-                            num_frames).to(device)
-        sb = _expand_frames(_flat_frames(camera.screen_basis, (3, 3)),
-                            num_frames).to(device)
+        cam_o = _expand_frames(_flat_frames(camera.ray_origin, (3,)), num_frames).to(
+            device
+        )
+        sp = _expand_frames(_flat_frames(camera.screen_point, (3,)), num_frames).to(
+            device
+        )
+        sb = _expand_frames(_flat_frames(camera.screen_basis, (3, 3)), num_frames).to(
+            device
+        )
 
         # Ratio of the internal render resolution to the output resolution: the
         # supersampling factor actually in force for this batch, which is 1 on
         # the analytic-AA route regardless of the requested anti_alias_level.
         self._rt_projection_aa = float(camera.screen_height) / float(
-            getattr(camera, "output_screen_height", camera.screen_height))
+            getattr(camera, "output_screen_height", camera.screen_height)
+        )
 
         num_samples = self._compute_samples_per_segment(
-            corners, cam_o, sp, sb, camera.screen_height,
-            bool(getattr(camera, "analytic_raster", False)))
+            corners,
+            cam_o,
+            sp,
+            sb,
+            camera.screen_height,
+            bool(getattr(camera, "analytic_raster", False)),
+        )
         self._build_circuit_geometry(corners, num_samples)
-        self._build_frame_bounds(corners, cam_o, sp, sb,
-                                 camera.screen_height)
+        self._build_frame_bounds(corners, cam_o, sp, sb, camera.screen_height)
 
         # The polylines/metadata now carry everything the renderer needs;
         # release the control points to reduce resident GPU memory.
@@ -1384,7 +1498,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         return self
 
     def _compute_samples_per_segment(
-            self, corners, cam_o, sp, sb, screen_h, analytic_raster=False):
+        self, corners, cam_o, sp, sb, screen_h, analytic_raster=False
+    ):
         """Choose uniform chord counts independently for every cubic segment.
 
         At each power-of-two subdivision level, the four exact world-space
@@ -1410,7 +1525,8 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             return torch.empty((0,), dtype=torch.long, device=device)
         if Tc not in (1, T):
             raise ValueError(
-                f"Bezier controls have {Tc} frames, but the camera has {T}")
+                f"Bezier controls have {Tc} frames, but the camera has {T}"
+            )
 
         tolerance = float(self.num_pixels_per_sample)
         if tolerance <= 0:
@@ -1422,35 +1538,33 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             # height, i.e. 0.25 output pixels at the AA=2 reference; analytic AA
             # runs at AA=1, where the same number would relax to 0.5. Tighten
             # (never loosen) to keep the reference smoothness.
-            tolerance = min(
-                tolerance, float(rt_settings.ANALYTIC_AA_CHORD_TOLERANCE))
+            tolerance = min(tolerance, float(rt_settings.ANALYTIC_AA_CHORD_TOLERANCE))
         tolerance_squared = tolerance * tolerance
 
         chord_counts = torch.full(
-            (S,), self.max_samples_per_segment,
-            dtype=torch.long, device=device)
+            (S,), self.max_samples_per_segment, dtype=torch.long, device=device
+        )
         active = torch.arange(S, device=device)
         num_subdivisions = 1
 
         while active.numel() > 0:
             num_active = active.shape[0]
             max_error_squared = torch.zeros(
-                (num_active,), dtype=corners.dtype, device=device)
+                (num_active,), dtype=corners.dtype, device=device
+            )
 
             # Bound the largest temporary by projected control-point count.
             # The subcurve construction and projection use several arrays of
             # this shape, so a lower budget than the old single-pass sampler is
             # intentionally used here.
-            chunk = max(1, int(
-                5e5 // max(num_active * num_subdivisions * 4, 1)))
+            chunk = max(1, int(5e5 // max(num_active * num_subdivisions * 4, 1)))
             for frame_start in range(0, T, chunk):
                 frame_end = min(frame_start + chunk, T)
                 if Tc == 1:
                     active_corners = corners[:, active]
                 else:
                     active_corners = corners[frame_start:frame_end, active]
-                controls = _uniform_cubic_subcurves(
-                    active_corners, num_subdivisions)
+                controls = _uniform_cubic_subcurves(active_corners, num_subdivisions)
 
                 frame_shape = (-1,) + (1,) * (controls.ndim - 2) + (3,)
                 camera_origin = cam_o[frame_start:frame_end].view(frame_shape)
@@ -1458,17 +1572,16 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                 screen_normal = sb[frame_start:frame_end, 2].view(frame_shape)
                 rays = controls - camera_origin
                 depth = (rays * screen_normal).sum(-1, keepdim=True)
-                screen_distance = (
-                    (screen_point - camera_origin) * screen_normal
-                ).sum(-1, keepdim=True)
+                screen_distance = ((screen_point - camera_origin) * screen_normal).sum(
+                    -1, keepdim=True
+                )
                 projected = camera_origin + (screen_distance / depth) * rays
                 relative = projected - screen_point
                 basis_shape = (-1,) + (1,) * (controls.ndim - 2) + (3,)
                 screen_x = sb[frame_start:frame_end, 0].view(basis_shape)
                 screen_y = sb[frame_start:frame_end, 1].view(basis_shape)
                 points = torch.stack(
-                    ((relative * screen_x).sum(-1),
-                     (relative * screen_y).sum(-1)),
+                    ((relative * screen_x).sum(-1), (relative * screen_y).sum(-1)),
                     dim=-1,
                 ) * (screen_h / 2)
 
@@ -1479,29 +1592,29 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
 
                 error_squared = torch.maximum(
                     _point_to_segment_distance_squared(
-                        points[..., 1, :], chord_start, chord,
-                        chord_length_squared),
+                        points[..., 1, :], chord_start, chord, chord_length_squared
+                    ),
                     _point_to_segment_distance_squared(
-                        points[..., 2, :], chord_start, chord,
-                        chord_length_squared),
+                        points[..., 2, :], chord_start, chord, chord_length_squared
+                    ),
                 )
 
                 # Positive rational weights are required for the projected
                 # control hull to be a bound.  A subcurve touching/crossing the
                 # camera plane remains active and falls back to the hard cap.
                 depth = depth.squeeze(-1)
-                same_depth_side = (
-                    (depth.amin(-1) > 1e-8)
-                    | (depth.amax(-1) < -1e-8)
-                )
+                same_depth_side = (depth.amin(-1) > 1e-8) | (depth.amax(-1) < -1e-8)
                 finite = torch.isfinite(points).all(-1).all(-1)
                 valid_bound = same_depth_side & finite
                 error_squared = torch.where(
-                    valid_bound, error_squared,
-                    torch.full_like(error_squared, torch.inf))
+                    valid_bound,
+                    error_squared,
+                    torch.full_like(error_squared, torch.inf),
+                )
                 frame_error_squared = error_squared.amax(dim=(0, 2))
                 max_error_squared = torch.maximum(
-                    max_error_squared, frame_error_squared)
+                    max_error_squared, frame_error_squared
+                )
 
             if num_subdivisions == self.max_samples_per_segment:
                 break
@@ -1509,8 +1622,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             resolved = max_error_squared <= tolerance_squared
             chord_counts[active[resolved]] = num_subdivisions
             active = active[~resolved]
-            num_subdivisions = min(
-                num_subdivisions * 2, self.max_samples_per_segment)
+            num_subdivisions = min(num_subdivisions * 2, self.max_samples_per_segment)
 
         return chord_counts
 
@@ -1524,10 +1636,14 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         C = num_segments.shape[0]
 
         circuit_of_segment = torch.repeat_interleave(
-            torch.arange(C, device=device), num_segments)
+            torch.arange(C, device=device), num_segments
+        )
 
-        nsi = self.next_segment_inds.to(device).reshape(
-            self.next_segment_inds.shape[0], S).long()
+        nsi = (
+            self.next_segment_inds.to(device)
+            .reshape(self.next_segment_inds.shape[0], S)
+            .long()
+        )
         # A redirected edge is an invisible fill closure only when the cubic's
         # true endpoint and the selected next cubic's start are discontinuous.
         # Index wraparound alone is not sufficient: an ordinary closed circuit
@@ -1550,12 +1666,12 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # contributes a zero-length edge to neither metric.
         needs_endpoint = (~connection_visible).any(0).long()
         verts_per_segment = num_samples + needs_endpoint
-        vert_circuit = torch.repeat_interleave(
-            circuit_of_segment, verts_per_segment)
+        vert_circuit = torch.repeat_interleave(circuit_of_segment, verts_per_segment)
         V = int(verts_per_segment.sum())
 
         t_params = _packed_uniform_cubic_parameters(
-            num_samples, corners.dtype, verts_per_segment)
+            num_samples, corners.dtype, verts_per_segment
+        )
         ctrl = torch.repeat_interleave(corners, verts_per_segment, dim=1)
         verts = _evaluate_cubic_bezier_batch(ctrl, t_params.view(1, -1, 1))
 
@@ -1571,10 +1687,13 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         basis_u = F.normalize(torch.cross(normals, helper, dim=-1), p=2, dim=-1)
         basis_v = torch.cross(normals, basis_u, dim=-1)
 
-        segment_lengths = (corners[..., 1:, :] - corners[..., :-1, :]).square().sum(-1).sum(-1)
+        segment_lengths = (
+            (corners[..., 1:, :] - corners[..., :-1, :]).square().sum(-1).sum(-1)
+        )
         is_degenerate = segment_lengths < 1e-9
         edge_degenerate = torch.repeat_interleave(
-            is_degenerate, verts_per_segment, dim=1)
+            is_degenerate, verts_per_segment, dim=1
+        )
 
         # Absolute polyline index of the first sample of each segment, and of
         # the sample each segment's last sample connects to (closing each
@@ -1586,17 +1705,33 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         next_start = seg_starts[nsi]  # [Tn, S]
 
         Tn = connection_visible.shape[0]
-        border_visible = torch.ones(
-            (Tn, V), device=device, dtype=torch.float32)
+        border_visible = torch.ones((Tn, V), device=device, dtype=torch.float32)
         seg_ends_expanded = seg_ends.view(1, -1).expand(Tn, -1)
-        border_visible.scatter_(
-            1, seg_ends_expanded, connection_visible.float())
+        border_visible.scatter_(1, seg_ends_expanded, connection_visible.float())
 
-        (verts_e, centers_e, basis_u_e, basis_v_e, next_start_e, edge_degenerate_e,
-         border_visible_e), T_geo = _unify_time(
-            [verts, centers, basis_u, basis_v, next_start.unsqueeze(-1), edge_degenerate.unsqueeze(-1),
-             border_visible.unsqueeze(-1)],
-            "bezier geometry")
+        (
+            (
+                verts_e,
+                centers_e,
+                basis_u_e,
+                basis_v_e,
+                next_start_e,
+                edge_degenerate_e,
+                border_visible_e,
+            ),
+            T_geo,
+        ) = _unify_time(
+            [
+                verts,
+                centers,
+                basis_u,
+                basis_v,
+                next_start.unsqueeze(-1),
+                edge_degenerate.unsqueeze(-1),
+                border_visible.unsqueeze(-1),
+            ],
+            "bezier geometry",
+        )
         next_start_e = next_start_e.squeeze(-1)
         edge_degenerate_e = edge_degenerate_e.squeeze(-1)
         border_visible_e = border_visible_e.squeeze(-1)
@@ -1608,11 +1743,15 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         next_uv = locals_uv.roll(-1, dims=1)
         gather_inds = next_start_e.unsqueeze(-1).expand(T_geo, -1, 2)
         next_uv[:, seg_ends] = torch.gather(locals_uv, 1, gather_inds)
-        self._rt_edges = torch.cat((locals_uv, next_uv, border_visible_e.unsqueeze(-1)), -1).float().contiguous()
+        self._rt_edges = (
+            torch.cat((locals_uv, next_uv, border_visible_e.unsqueeze(-1)), -1)
+            .float()
+            .contiguous()
+        )
         self._rt_edges = torch.where(
             edge_degenerate_e.unsqueeze(-1),
             torch.tensor([1e9, 1e9, 1e9, 1e9, 0.0], device=device),
-            self._rt_edges
+            self._rt_edges,
         )
 
         samples_per_circuit = torch.zeros((C,), dtype=torch.long, device=device)
@@ -1626,7 +1765,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # mob-basis coordinates used by the texture lookup.
         def scaled(basis):
             basis = basis.float()
-            return basis / basis.norm(p=2, dim=-1, keepdim=True).square().clamp_min(1e-12)
+            return basis / basis.norm(p=2, dim=-1, keepdim=True).square().clamp_min(
+                1e-12
+            )
 
         basis1, basis2 = scaled(self.basis1), scaled(self.basis2)
         # ``border_width`` is authored in OUTPUT pixels, but every consumer
@@ -1634,37 +1775,87 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # (built from ``camera.screen_height``).  Convert here, so a supersampled
         # render draws the same apparent border as an analytic one instead of a
         # 1/aa-thin sliver.
-        border_width = self.border_width.float().reshape(
-            self.border_width.shape[0], C) * self._rt_projection_aa
+        border_width = (
+            self.border_width.float().reshape(self.border_width.shape[0], C)
+            * self._rt_projection_aa
+        )
         grid_w = self.grid_width.float().reshape(self.grid_width.shape[0], C)
         grid_h = self.grid_height.float().reshape(self.grid_height.shape[0], C)
         reflectivity = self.reflectivity.float()
         roughness = self.roughness.float()
         refractive_index = self.refractive_index.float()
         transmission = self.transmission.float()
-        (centers_m, normals_m, bu_m, bv_m, b1_m, b2_m, bw_m, gw_m, gh_m,
-         reflectivity_m, roughness_m,
-         ior_m, transmission_m), Tm = _unify_time(
-            [centers, normals, basis_u, basis_v, basis1, basis2,
-             border_width.unsqueeze(-1), grid_w.unsqueeze(-1),
-             grid_h.unsqueeze(-1),
-             reflectivity, roughness, refractive_index, transmission],
-            "bezier metadata")
-        filled = torch.full((Tm, C, 1), 1.0 if self.filled else 0.0,
-                            device=device)
-        tex = torch.stack((
-            (b1_m * bu_m).sum(-1), (b1_m * bv_m).sum(-1),
-            (b2_m * bu_m).sum(-1), (b2_m * bv_m).sum(-1)), -1).nan_to_num_()
+        (
+            (
+                centers_m,
+                normals_m,
+                bu_m,
+                bv_m,
+                b1_m,
+                b2_m,
+                bw_m,
+                gw_m,
+                gh_m,
+                reflectivity_m,
+                roughness_m,
+                ior_m,
+                transmission_m,
+            ),
+            Tm,
+        ) = _unify_time(
+            [
+                centers,
+                normals,
+                basis_u,
+                basis_v,
+                basis1,
+                basis2,
+                border_width.unsqueeze(-1),
+                grid_w.unsqueeze(-1),
+                grid_h.unsqueeze(-1),
+                reflectivity,
+                roughness,
+                refractive_index,
+                transmission,
+            ],
+            "bezier metadata",
+        )
+        filled = torch.full((Tm, C, 1), 1.0 if self.filled else 0.0, device=device)
+        tex = torch.stack(
+            (
+                (b1_m * bu_m).sum(-1),
+                (b1_m * bv_m).sum(-1),
+                (b2_m * bu_m).sum(-1),
+                (b2_m * bv_m).sum(-1),
+            ),
+            -1,
+        ).nan_to_num_()
         self._rt_circuit_meta = torch.cat(
-            (centers_m, normals_m, bu_m, bv_m, bw_m, filled, gw_m, gh_m,
-             tex, reflectivity_m, roughness_m, ior_m,
-             transmission_m), -1).contiguous()
+            (
+                centers_m,
+                normals_m,
+                bu_m,
+                bv_m,
+                bw_m,
+                filled,
+                gw_m,
+                gh_m,
+                tex,
+                reflectivity_m,
+                roughness_m,
+                ior_m,
+                transmission_m,
+            ),
+            -1,
+        ).contiguous()
 
         colors = self.colors.float()
         if colors.dim() == 3:  # plain fills: a 1x1 "texture" grid
             colors = colors.unsqueeze(-2)
         self._rt_circuit_colors = colors.contiguous().as_subclass(Color)
-        self._rt_circuit_border_colors = self.border_color.float().contiguous().as_subclass(Color)
+        self._rt_circuit_border_colors = (
+            self.border_color.float().contiguous().as_subclass(Color)
+        )
         self._rt_border_width = border_width
 
     def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h):
@@ -1680,45 +1871,62 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         Tb = seg_lo.shape[0]
         idx = circuit_of_segment.view(1, -1, 1).expand(Tb, -1, 3)
         lo = torch.full((Tb, C, 3), EMPTY_LO, device=device).scatter_reduce_(
-            1, idx, seg_lo, "amin", include_self=True)
+            1, idx, seg_lo, "amin", include_self=True
+        )
         hi = torch.full((Tb, C, 3), EMPTY_HI, device=device).scatter_reduce_(
-            1, idx, seg_hi, "amax", include_self=True)
+            1, idx, seg_hi, "amax", include_self=True
+        )
 
-        fill_alpha = self._rt_circuit_colors.opacity.squeeze(-1).amax(-1)  # over texture
+        fill_alpha = self._rt_circuit_colors.opacity.squeeze(-1).amax(
+            -1
+        )  # over texture
         fill_min = self._rt_circuit_colors.opacity.squeeze(-1).amin(-1)
         if not self.filled:
             fill_alpha = torch.zeros_like(fill_alpha)
         border_alpha = self._rt_circuit_border_colors.opacity.squeeze(-1)
         border_on = self._rt_border_width > 1e-3
         glow_alpha = self._rt_circuit_colors[..., 3].amax(-1)
-        visible = (fill_alpha > MIN_ALPHA) | (
-                (border_alpha > MIN_ALPHA) & border_on) | (glow_alpha > 0.0)
+        visible = (
+            (fill_alpha > MIN_ALPHA)
+            | ((border_alpha > MIN_ALPHA) & border_on)
+            | (glow_alpha > 0.0)
+        )
         # Alpha is pure coverage, so it alone decides presence (see
         # ``_pack_frame_visibility``); transmission only bears on opacity.
         transmissive = self.transmission[..., 0] > 1e-6
-        (lo, hi, visible, fill_min, border_alpha, border_on,
-         transmissive), _ = _unify_time(
-            [lo, hi, visible.unsqueeze(-1), fill_min.unsqueeze(-1),
-             border_alpha.unsqueeze(-1), border_on.unsqueeze(-1),
-             transmissive.unsqueeze(-1)],
-            "bezier bounds/colors")
+        (lo, hi, visible, fill_min, border_alpha, border_on, transmissive), _ = (
+            _unify_time(
+                [
+                    lo,
+                    hi,
+                    visible.unsqueeze(-1),
+                    fill_min.unsqueeze(-1),
+                    border_alpha.unsqueeze(-1),
+                    border_on.unsqueeze(-1),
+                    transmissive.unsqueeze(-1),
+                ],
+                "bezier bounds/colors",
+            )
+        )
         visible = visible.squeeze(-1)
         # A circuit is opaque (prunes hits behind it while gathering) only if
         # every region a hit can land in -- the fill/texture and, when shown,
         # the border -- is fully opaque.
         opaque = (fill_min.squeeze(-1) >= 1.0 - 1e-6) & (
-                (~border_on.squeeze(-1))
-                | (border_alpha.squeeze(-1) >= 1.0 - 1e-6))
+            (~border_on.squeeze(-1)) | (border_alpha.squeeze(-1) >= 1.0 - 1e-6)
+        )
         # A transmissive circuit lets light through even at full coverage, so
         # it can never prune hits behind it.
         opaque = opaque & ~transmissive.squeeze(-1)
         if not self.filled:
             opaque = torch.zeros_like(opaque)
         self._rt_frame_opaque = opaque.contiguous()
-        lo = torch.where(visible.unsqueeze(-1), lo,
-                         torch.tensor(EMPTY_LO, device=device))
-        hi = torch.where(visible.unsqueeze(-1), hi,
-                         torch.tensor(EMPTY_HI, device=device))
+        lo = torch.where(
+            visible.unsqueeze(-1), lo, torch.tensor(EMPTY_LO, device=device)
+        )
+        hi = torch.where(
+            visible.unsqueeze(-1), hi, torch.tensor(EMPTY_HI, device=device)
+        )
 
         # Inflate by however far outside the control-point hull the circuit can
         # still draw, converted to world units at its distance from the camera.
@@ -1737,10 +1945,29 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         self._rt_frame_lo = (lo - inflate.view(1, -1, 1)).contiguous()
         self._rt_frame_hi = (hi + inflate.view(1, -1, 1)).contiguous()
 
-    def render(self, primitives, scene, save_image, screen_width,
-               screen_height, time_start, time_end, background_color,
-               transparent_background=False, *args, **kwargs):
+    def render(
+        self,
+        primitives,
+        scene,
+        save_image,
+        screen_width,
+        screen_height,
+        time_start,
+        time_end,
+        background_color,
+        transparent_background=False,
+        *args,
+        **kwargs,
+    ):
         return KERNEL_REGISTRY.render_kernel(
-            primitives, scene, screen_width, screen_height, time_start,
-            time_end, background_color, transparent_background, *args,
-            **kwargs)
+            primitives,
+            scene,
+            screen_width,
+            screen_height,
+            time_start,
+            time_end,
+            background_color,
+            transparent_background,
+            *args,
+            **kwargs,
+        )

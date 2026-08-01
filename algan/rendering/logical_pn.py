@@ -188,9 +188,7 @@ def evaluate_cubic_curve(control_points, t):
     every chord of every patch edge, where the four-wide intermediate is the
     whole cost.
     """
-    controls = control_points.view(
-        control_points.shape[0], *((1,) * t.ndim), 4, 3
-    )
+    controls = control_points.view(control_points.shape[0], *((1,) * t.ndim), 4, 3)
     s = 1.0 - t
     weights = (s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t)
     total = None
@@ -328,9 +326,9 @@ def subdivision_triangle_indices(level, *, device):
     downward = (i + j) < (n - 1)
     result = torch.cat(
         (
-            torch.stack(
-                (table[i, j], table[i + 1, j], table[i, j + 1]), dim=-1
-            )[upward],
+            torch.stack((table[i, j], table[i + 1, j], table[i, j + 1]), dim=-1)[
+                upward
+            ],
             torch.stack(
                 (table[i + 1, j], table[i + 1, j + 1], table[i, j + 1]), dim=-1
             )[downward],
@@ -443,13 +441,13 @@ def snap_boundary_values(values, level, edge_levels, boundary):
     high_position = (low_position + step).clamp_max(n)
     blend = (positions - low_position).to(values.dtype) / step.to(values.dtype)
 
-    identity = torch.arange(num_vertices, device=values.device).view(
-        1, num_vertices
-    ).expand(num_patches, num_vertices)
-    interior = boundary.is_interior.view(1, num_vertices)
-    low = torch.where(
-        interior, identity, boundary.edge_vertex_ids[edges, low_position]
+    identity = (
+        torch.arange(num_vertices, device=values.device)
+        .view(1, num_vertices)
+        .expand(num_patches, num_vertices)
     )
+    interior = boundary.is_interior.view(1, num_vertices)
+    low = torch.where(interior, identity, boundary.edge_vertex_ids[edges, low_position])
     high = torch.where(
         interior, identity, boundary.edge_vertex_ids[edges, high_position]
     )

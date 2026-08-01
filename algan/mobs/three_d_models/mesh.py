@@ -17,6 +17,7 @@ attribute is also what lets a later animation phase drive per-frame vertex
 positions (skinning / morph baking) with no renderer changes: the
 spatio-temporal BVH already consumes ``[T, N, 3, 3]`` corners.
 """
+
 from __future__ import annotations
 
 import torch
@@ -48,7 +49,8 @@ def image_to_texture_map(image):
     image = cast_to_tensor(image).float()
     if image.dim() != 3:
         raise ValueError(
-            f"texture image must be [H, W, C], got shape {tuple(image.shape)}")
+            f"texture image must be [H, W, C], got shape {tuple(image.shape)}"
+        )
     if image.shape[-1] > 1 and image.shape[-1] <= 4:
         image = Color.add_defaults(image)
     elif image.shape[-1] == 1:
@@ -71,7 +73,8 @@ def image_to_normal_map(image, flip_green=True):
     image = cast_to_tensor(image).float()
     if image.dim() != 3 or image.shape[-1] < 3:
         raise ValueError(
-            f"normal map must be [H, W, >=3], got shape {tuple(image.shape)}")
+            f"normal map must be [H, W, >=3], got shape {tuple(image.shape)}"
+        )
     n = image[..., :3] * 2.0 - 1.0
     if flip_green:
         n = n.clone()
@@ -161,8 +164,7 @@ class TriangleMesh(Mob):
             self.corner_normals = None
         else:
             normals = cast_to_tensor(normals).view(-1, 3).to(device)
-            self.corner_normals = F.normalize(
-                normals[corner_index], p=2, dim=-1)
+            self.corner_normals = F.normalize(normals[corner_index], p=2, dim=-1)
 
         # Texture / material maps.
         self.texture_map = None
@@ -175,20 +177,27 @@ class TriangleMesh(Mob):
             self.texture_map = texture.to(device).as_subclass(Color)
         self.material_texture_map = (
             cast_to_tensor(material_texture_map).to(device)
-            if material_texture_map is not None else None)
+            if material_texture_map is not None
+            else None
+        )
         self.material_texture_flags = material_texture_flags
         self.normal_texture_map = (
             cast_to_tensor(normal_texture_map).to(device)
-            if normal_texture_map is not None else None)
+            if normal_texture_map is not None
+            else None
+        )
 
-        has_any_texture = (self.texture_map is not None
-                           or self.material_texture_map is not None
-                           or self.normal_texture_map is not None)
+        has_any_texture = (
+            self.texture_map is not None
+            or self.material_texture_map is not None
+            or self.normal_texture_map is not None
+        )
         if has_any_texture:
             if uvs is None:
                 raise ValueError(
                     "TriangleMesh with a texture/material/normal map requires "
-                    "per-vertex `uvs`")
+                    "per-vertex `uvs`"
+                )
             uvs = cast_to_tensor(uvs).view(-1, 2).to(device)
             # [1, 3F, 2] -- static per-corner UVs (broadcast over time in the
             # primitive, matching Surface.get_render_primitives).
@@ -210,15 +219,15 @@ class TriangleMesh(Mob):
             vertex_colors = Color.add_defaults(vertex_colors)
             corner_colors = vertex_colors[corner_index]
         else:
-            corner_colors = self.color.view(1, -1).expand(
-                corner_positions.shape[0], -1)
+            corner_colors = self.color.view(1, -1).expand(corner_positions.shape[0], -1)
         corner_colors = corner_colors.contiguous().as_subclass(Color)
 
         # The child Mob carries the per-corner geometry as its animatable
         # location/colour (mirrors Surface.self.grid). Style attributes
         # (opacity, glow) are inherited from kwargs.
-        grid_kwargs = {k: v for k, v in kwargs.items()
-                       if k not in ("location", "color", "basis")}
+        grid_kwargs = {
+            k: v for k, v in kwargs.items() if k not in ("location", "color", "basis")
+        }
         grid_kwargs["location"] = corner_positions
         grid_kwargs["color"] = corner_colors
         self.grid = Mob(**grid_kwargs)
@@ -246,8 +255,10 @@ class TriangleMesh(Mob):
             return self._smooth_corner_normals(corners_flat)
         if self.corner_normals is not None:
             n_local = self.corner_normals.unsqueeze(0).expand_as(corners_flat)
-            world = map_local_to_global_coords(
-                corners_flat, self.grid.basis, n_local) - corners_flat
+            world = (
+                map_local_to_global_coords(corners_flat, self.grid.basis, n_local)
+                - corners_flat
+            )
             return F.normalize(world, p=2, dim=-1)
         # Flat face normals: cross product of two edges, shared by all 3 corners.
         return self._flat_corner_normals(corners_flat)
@@ -258,8 +269,11 @@ class TriangleMesh(Mob):
         e1 = tris[..., 1, :] - tris[..., 0, :]
         e2 = tris[..., 2, :] - tris[..., 0, :]
         face_n = F.normalize(torch.cross(e1, e2, dim=-1), p=2, dim=-1)  # [T, F, 3]
-        return face_n.unsqueeze(-2).expand(*face_n.shape[:-1], 3, 3).reshape(
-            corners_flat.shape)
+        return (
+            face_n.unsqueeze(-2)
+            .expand(*face_n.shape[:-1], 3, 3)
+            .reshape(corners_flat.shape)
+        )
 
     def _smooth_corner_normals(self, corners_flat):
         """Area-weighted smooth per-vertex normals from the current corner
@@ -269,18 +283,18 @@ class TriangleMesh(Mob):
         smooth shading across shared edges under arbitrary deformation.
         """
         T = corners_flat.shape[0]
-        tris = unsquish(corners_flat, -2, 3)          # [T, F, 3, 3]
+        tris = unsquish(corners_flat, -2, 3)  # [T, F, 3, 3]
         e1 = tris[..., 1, :] - tris[..., 0, :]
         e2 = tris[..., 2, :] - tris[..., 0, :]
-        face_n = torch.cross(e1, e2, dim=-1)          # [T, F, 3] (area-weighted)
+        face_n = torch.cross(e1, e2, dim=-1)  # [T, F, 3] (area-weighted)
         # Each face contributes its normal to all three of its vertices.
         per_corner = face_n.unsqueeze(-2).expand(*face_n.shape[:-1], 3, 3)
-        per_corner = per_corner.reshape(T, -1, 3)     # [T, 3F, 3]
+        per_corner = per_corner.reshape(T, -1, 3)  # [T, 3F, 3]
         idx = self.corner_index.view(1, -1, 1).expand(T, -1, 3)
         vert_n = corners_flat.new_zeros(T, self.num_vertices, 3)
         vert_n.scatter_add_(1, idx, per_corner)
         vert_n = F.normalize(vert_n, p=2, dim=-1)
-        return vert_n.gather(1, idx)                   # [T, 3F, 3]
+        return vert_n.gather(1, idx)  # [T, 3F, 3]
 
     def get_render_primitives(self):
         corners = self.grid.location  # [T, 3F, 3]

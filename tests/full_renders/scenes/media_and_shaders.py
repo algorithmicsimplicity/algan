@@ -24,9 +24,11 @@ with Off():
         filled=False,
         buffer=0.08,
     )
-    shader_sphere = Sphere(radius=0.72, color=BLUE).set_fragment_shader(
-        [cosine_color, phong_shader]
-    ).move(RIGHT * 1.75)
+    shader_sphere = (
+        Sphere(radius=0.72, color=BLUE)
+        .set_fragment_shader([cosine_color, phong_shader])
+        .move(RIGHT * 1.75)
+    )
     media_labels = Group(
         Text("ImageMob texture", font_size=26, color=GRAY_A).move(
             LEFT * 1.75 + DOWN * 1.0
@@ -81,6 +83,4 @@ with Seq():
     model_label.color = ORANGE
     Scene.wait(0.35)
 
-Scene.save_frame(
-    "algan_outputs/checkpoints/media_and_shaders.png"
-)
+Scene.save_frame("algan_outputs/checkpoints/media_and_shaders.png")

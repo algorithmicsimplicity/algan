@@ -11,7 +11,9 @@ def _where(condition, a, b, out):
 def rgb_to_luma(image, memory, out=None):
     """Convert RGB to luma without allocating outside ``memory``."""
     if out is None:
-        out = memory.get_tensor((image.shape[0], 1, image.shape[2], image.shape[3]), image.dtype)
+        out = memory.get_tensor(
+            (image.shape[0], 1, image.shape[2], image.shape[3]), image.dtype
+        )
     product = memory.get_tensor(image[:, :3].shape, image.dtype)
     weights = memory.get_tensor((1, 3, 1, 1), image.dtype)
     weights[0, 0, 0, 0] = 0.299
@@ -22,8 +24,13 @@ def rgb_to_luma(image, memory, out=None):
     return out
 
 
-def fxaa(images, edge_threshold=0.125, edge_threshold_min=0.0625,
-         subpixel_quality=0.75, memory=None):
+def fxaa(
+    images,
+    edge_threshold=0.125,
+    edge_threshold_min=0.0625,
+    subpixel_quality=0.75,
+    memory=None,
+):
     """Apply FXAA using only tensors backed by ``ManualMemory``.
 
     ``images`` is ``[B, C, H, W]`` float data.  The returned tensor is a
@@ -50,19 +57,17 @@ def fxaa(images, edge_threshold=0.125, edge_threshold_min=0.0625,
         torch.sum(product, dim=1, keepdim=True, out=luma)
 
         luma_padded = memory.get_tensor((B, 1, H + 2, W + 2), images.dtype)
-        torch.ops.aten.replication_pad2d.out(
-            luma, [1, 1, 1, 1], out=luma_padded
-        )
+        torch.ops.aten.replication_pad2d.out(luma, [1, 1, 1, 1], out=luma_padded)
 
-        luma_c = luma_padded[:, :, 1:H + 1, 1:W + 1]
-        luma_n = luma_padded[:, :, 0:H, 1:W + 1]
-        luma_s = luma_padded[:, :, 2:H + 2, 1:W + 1]
-        luma_e = luma_padded[:, :, 1:H + 1, 2:W + 2]
-        luma_w = luma_padded[:, :, 1:H + 1, 0:W]
+        luma_c = luma_padded[:, :, 1 : H + 1, 1 : W + 1]
+        luma_n = luma_padded[:, :, 0:H, 1 : W + 1]
+        luma_s = luma_padded[:, :, 2 : H + 2, 1 : W + 1]
+        luma_e = luma_padded[:, :, 1 : H + 1, 2 : W + 2]
+        luma_w = luma_padded[:, :, 1 : H + 1, 0:W]
         luma_nw = luma_padded[:, :, 0:H, 0:W]
-        luma_ne = luma_padded[:, :, 0:H, 2:W + 2]
-        luma_sw = luma_padded[:, :, 2:H + 2, 0:W]
-        luma_se = luma_padded[:, :, 2:H + 2, 2:W + 2]
+        luma_ne = luma_padded[:, :, 0:H, 2 : W + 2]
+        luma_sw = luma_padded[:, :, 2 : H + 2, 0:W]
+        luma_se = luma_padded[:, :, 2 : H + 2, 2 : W + 2]
 
         s0 = product[:, 0:1]
         s1 = product[:, 1:2]
@@ -164,9 +169,7 @@ def fxaa(images, edge_threshold=0.125, edge_threshold_min=0.0625,
         torch.mul(s0, edge_mask, out=s0)
         grid[..., 1].add_(s0[:, 0])
 
-        torch.ops.aten.grid_sampler_2d.out(
-            images, grid, 0, 1, False, out=antialiased
-        )
+        torch.ops.aten.grid_sampler_2d.out(images, grid, 0, 1, False, out=antialiased)
 
     return antialiased
 

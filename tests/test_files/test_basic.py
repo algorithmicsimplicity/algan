@@ -8,15 +8,15 @@ from algan.utils.algan_utils import render_all_funcs
 
 def get_mob(r=0):
     return TriangleTriangulated(
-    torch.stack(
-        (
-            UP * 0.5,
-            F.normalize(RIGHT + DOWN, p=2, dim=-1) * 0.5,
-            F.normalize(LEFT + DOWN, p=2, dim=-1) * 0.5,
-        )
-    ),
-    color=torch.stack([PURE_RED, PURE_BLUE, PURE_GREEN]),
-).spawn()
+        torch.stack(
+            (
+                UP * 0.5,
+                F.normalize(RIGHT + DOWN, p=2, dim=-1) * 0.5,
+                F.normalize(LEFT + DOWN, p=2, dim=-1) * 0.5,
+            )
+        ),
+        color=torch.stack([PURE_RED, PURE_BLUE, PURE_GREEN]),
+    ).spawn()
 
 
 def test_move():

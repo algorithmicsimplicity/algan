@@ -6,6 +6,7 @@ cannot render no matter how it is spawned or styled.  These tests pin down which
 conversions in ``algan.mobs.manim_compat`` register and which deliberately do
 not.
 """
+
 from __future__ import annotations
 
 import manim as mn
@@ -71,9 +72,7 @@ def test_registered_plot_reaches_the_renderer_once_spawned():
             ),
             id="plot_parametric_curve",
         ),
-        pytest.param(
-            lambda axes: axes.get_axis_labels("x", "y"), id="get_axis_labels"
-        ),
+        pytest.param(lambda axes: axes.get_axis_labels("x", "y"), id="get_axis_labels"),
         pytest.param(
             lambda axes: axes.get_graph_label(axes.plot(lambda x: x), "f"),
             id="get_graph_label",
@@ -141,9 +140,7 @@ def test_manim_mob_add_to_scene_false_registers_nothing_at_all():
     scene = square.scene
     before = len(scene.actors)
 
-    mob = ManimMob(
-        mn.VGroup(mn.Circle(), mn.Square()), scene=scene, add_to_scene=False
-    )
+    mob = ManimMob(mn.VGroup(mn.Circle(), mn.Square()), scene=scene, add_to_scene=False)
 
     assert len(scene.actors) == before
     actors = _actor_ids(scene)

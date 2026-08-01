@@ -95,11 +95,7 @@ class Group(Mob):
             color=mean(
                 list(
                     traverse(
-                        [
-                            mob.color
-                            for mob in initial_mobs
-                            if hasattr(mob, "color")
-                        ]
+                        [mob.color for mob in initial_mobs if hasattr(mob, "color")]
                     )
                 )
             ),
@@ -112,8 +108,10 @@ class Group(Mob):
             # Group slices are non-owning views: operations still recurse over
             # these children, but creating the view does not mutate parent links.
             self.children[:] = initial_mobs
-        if self._link_children and initial_mobs and all(
-            mob.is_spawned() for mob in initial_mobs
+        if (
+            self._link_children
+            and initial_mobs
+            and all(mob.is_spawned() for mob in initial_mobs)
         ):
             self.spawn(animate=False)
 
@@ -411,14 +409,12 @@ class Group(Mob):
                 location = start
                 if alignment_direction is not None:
                     location = location + alignment_offsets[i] * alignment_direction
-                #loc + (disp_to_center) = l
+                # loc + (disp_to_center) = l
                 mob.location = location + (mob.location - mob.get_center())
                 start = start + direction * (mob_sizes[i] / 2 + buffer)
         return self
 
-    def arrange_between_points(
-        self, start: torch.Tensor, end: torch.Tensor
-    ):
+    def arrange_between_points(self, start: torch.Tensor, end: torch.Tensor):
         """Space the members evenly along the segment between two points.
 
         Members are placed at equal fractions of the way from ``start`` to ``end``,
@@ -572,7 +568,6 @@ class Group(Mob):
                 ]
             else:
                 raise ValueError("tight_axis must be 0, 1, or None")
-
 
         start = self.location - (
             row_direction * sum(buf_dist1) * 0.5

@@ -43,7 +43,9 @@ class ImageMob(Surface):
     ):
         submob = rgba_array_or_file_path
         if isinstance_if_loaded(rgba_array_or_file_path, _manim, "ImageMobject"):
-            rgba_array = Color.add_defaults(torch.from_numpy(submob.pixel_array).float() / 255)
+            rgba_array = Color.add_defaults(
+                torch.from_numpy(submob.pixel_array).float() / 255
+            )
         else:
             rgba_array = file_utils.get_image(rgba_array_or_file_path)
 
@@ -67,9 +69,7 @@ class ImageMob(Surface):
             **kwargs,
         )
         if not textured:
-            self.grid.setattr_without_record(
-                "color", surface_colors.flatten(-3, -2)
-            )
+            self.grid.setattr_without_record("color", surface_colors.flatten(-3, -2))
         if isinstance_if_loaded(rgba_array_or_file_path, _manim, "ImageMobject"):
             self.scale(torch.tensor((submob.width / 2, submob.height / 2, 1)).float())
             self.move_to(submob.get_center())

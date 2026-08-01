@@ -55,6 +55,7 @@ def _v(x):
 # Colour parsing
 # ---------------------------------------------------------------------------
 
+
 def test_colour_parsing():
     assert _to_rgb(0xFF0000).reshape(-1).tolist() == [1.0, 0.0, 0.0]
     assert _to_rgb("#00FF00").reshape(-1).tolist() == [0.0, 1.0, 0.0]
@@ -71,6 +72,7 @@ def test_colour_parsing():
 # ---------------------------------------------------------------------------
 # Three.js default settings
 # ---------------------------------------------------------------------------
+
 
 def test_base_defaults():
     m = Material()
@@ -135,6 +137,7 @@ def test_unexpected_kwarg_raises():
 # Shader-parameter contract
 # ---------------------------------------------------------------------------
 
+
 def test_param_contract():
     """Every key from get_shader_param_values must match the shader's extra
     parameter names exactly (so set_material wires values to the right attrs).
@@ -150,6 +153,7 @@ def test_param_contract():
 # ---------------------------------------------------------------------------
 # Shader numeric behaviour
 # ---------------------------------------------------------------------------
+
 
 def _toy_geometry():
     vloc = torch.tensor([[[0.0, 0, 0], [1, 0, 0], [0, 1, 0]]])  # [1,3,3]
@@ -183,7 +187,14 @@ def test_all_shaders_output_four_channels():
         "lambert": (ms.lambert_shader, (_col(0, 0, 0), _scalar(1), flat, _scalar(1))),
         "phong": (
             ms.phong_shader,
-            (_col(0, 0, 0), _scalar(1), _col(0.07, 0.07, 0.07), _scalar(30), flat, _scalar(1)),
+            (
+                _col(0, 0, 0),
+                _scalar(1),
+                _col(0.07, 0.07, 0.07),
+                _scalar(30),
+                flat,
+                _scalar(1),
+            ),
         ),
         "standard": (
             ms.standard_shader,
@@ -215,12 +226,34 @@ def test_emissive_brightens():
     vloc, vnrm, _alb, cam, light, lcol = _toy_geometry()
     black = torch.zeros(1, 3, 4)
     dark = ms.lambert_shader(
-        None, vloc, vnrm, black, cam, light, lcol, 1, 1,
-        _col(0, 0, 0), _scalar(1), _scalar(0.0), _scalar(1),
+        None,
+        vloc,
+        vnrm,
+        black,
+        cam,
+        light,
+        lcol,
+        1,
+        1,
+        _col(0, 0, 0),
+        _scalar(1),
+        _scalar(0.0),
+        _scalar(1),
     )
     glow = ms.lambert_shader(
-        None, vloc, vnrm, black, cam, light, lcol, 1, 1,
-        _col(1, 0, 0), _scalar(2.0), _scalar(0.0), _scalar(1),
+        None,
+        vloc,
+        vnrm,
+        black,
+        cam,
+        light,
+        lcol,
+        1,
+        1,
+        _col(1, 0, 0),
+        _scalar(2.0),
+        _scalar(0.0),
+        _scalar(1),
     )
     assert glow[0, 0, 0] > dark[0, 0, 0]
     print("ok: emissive brightens output")
@@ -234,9 +267,15 @@ def test_metalness_and_roughness_have_effect():
     alb1 = torch.tensor([0.8, 0.1, 0.1, 0.0]).view(1, 1, 4)
     flat = _scalar(0.0)
     args = (None, vloc1, vnrm1, alb1, cam, light, lcol, 1, 1)
-    dielectric = ms.standard_shader(*args, _scalar(0.25), _scalar(0.0), _col(0, 0, 0), _scalar(1), _scalar(1), flat)
-    metal = ms.standard_shader(*args, _scalar(0.25), _scalar(1.0), _col(0, 0, 0), _scalar(1), _scalar(1), flat)
-    rough = ms.standard_shader(*args, _scalar(0.9), _scalar(0.0), _col(0, 0, 0), _scalar(1), _scalar(1), flat)
+    dielectric = ms.standard_shader(
+        *args, _scalar(0.25), _scalar(0.0), _col(0, 0, 0), _scalar(1), _scalar(1), flat
+    )
+    metal = ms.standard_shader(
+        *args, _scalar(0.25), _scalar(1.0), _col(0, 0, 0), _scalar(1), _scalar(1), flat
+    )
+    rough = ms.standard_shader(
+        *args, _scalar(0.9), _scalar(0.0), _col(0, 0, 0), _scalar(1), _scalar(1), flat
+    )
     assert not torch.allclose(dielectric, metal), "metalness had no effect"
     assert not torch.allclose(dielectric, rough), "roughness had no effect"
     print("ok: metalness and roughness change PBR output")
@@ -245,6 +284,7 @@ def test_metalness_and_roughness_have_effect():
 # ---------------------------------------------------------------------------
 # Mob.set_material wiring
 # ---------------------------------------------------------------------------
+
 
 def test_set_material_wires_shader_and_attrs():
     from algan import RED, Sphere
@@ -319,6 +359,7 @@ def test_set_material_after_spawn_raises():
 # Warnings for unsupported properties
 # ---------------------------------------------------------------------------
 
+
 def test_texture_and_unsupported_warnings():
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter("always")
@@ -332,6 +373,7 @@ def test_texture_and_unsupported_warnings():
 # ---------------------------------------------------------------------------
 # Backward compatibility
 # ---------------------------------------------------------------------------
+
 
 def test_legacy_pbr_shader_still_works():
     from algan.rendering.shaders.pbr_shaders import basic_pbr_shader, null_shader
@@ -350,8 +392,9 @@ def test_legacy_pbr_shader_still_works():
 
 
 def _run_all():
-    fns = [v for k, v in sorted(globals().items())
-           if k.startswith("test_") and callable(v)]
+    fns = [
+        v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)
+    ]
     for fn in fns:
         fn()
     print(f"\nAll {len(fns)} material tests passed.")

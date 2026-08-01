@@ -61,7 +61,7 @@ def test_line_is_fitted_from_the_largest_chunks():
     # The first chunk of a job runs cheaper than steady state. Fitting through
     # it tilts the slope down, which is the direction that over-commits.
     model = ChunkMemoryModel()
-    model.observe(SIG, 1, 1_000_000)      # unrepresentatively cheap
+    model.observe(SIG, 1, 1_000_000)  # unrepresentatively cheap
     model.observe(SIG, 10, 20_000_000)
     model.observe(SIG, 20, 40_000_000)
     intercept, slope = model._line(SIG)
@@ -142,24 +142,54 @@ def test_a_flat_measurement_falls_back_to_per_frame_cost():
 
 def test_signatures_separate_batches_on_different_lines():
     small = chunk_signature(
-        width=64, height=64, channels=4, dtype="torch.float32",
-        samples_per_pixel=1, num_triangles=10, num_circuits=0)
+        width=64,
+        height=64,
+        channels=4,
+        dtype="torch.float32",
+        samples_per_pixel=1,
+        num_triangles=10,
+        num_circuits=0,
+    )
     wide = chunk_signature(
-        width=1920, height=64, channels=4, dtype="torch.float32",
-        samples_per_pixel=1, num_triangles=10, num_circuits=0)
+        width=1920,
+        height=64,
+        channels=4,
+        dtype="torch.float32",
+        samples_per_pixel=1,
+        num_triangles=10,
+        num_circuits=0,
+    )
     byte_buffer = chunk_signature(
-        width=64, height=64, channels=4, dtype="torch.uint8",
-        samples_per_pixel=1, num_triangles=10, num_circuits=0)
+        width=64,
+        height=64,
+        channels=4,
+        dtype="torch.uint8",
+        samples_per_pixel=1,
+        num_triangles=10,
+        num_circuits=0,
+    )
     assert small != wide
     assert small != byte_buffer
     # Ordinary geometry drift keeps the fit; an order of magnitude starts a new
     # one, so a scene that grows steadily does not discard usable evidence.
     nudged = chunk_signature(
-        width=64, height=64, channels=4, dtype="torch.float32",
-        samples_per_pixel=1, num_triangles=11, num_circuits=0)
+        width=64,
+        height=64,
+        channels=4,
+        dtype="torch.float32",
+        samples_per_pixel=1,
+        num_triangles=11,
+        num_circuits=0,
+    )
     exploded = chunk_signature(
-        width=64, height=64, channels=4, dtype="torch.float32",
-        samples_per_pixel=1, num_triangles=10_000, num_circuits=0)
+        width=64,
+        height=64,
+        channels=4,
+        dtype="torch.float32",
+        samples_per_pixel=1,
+        num_triangles=10_000,
+        num_circuits=0,
+    )
     assert small == nudged
     assert small != exploded
 

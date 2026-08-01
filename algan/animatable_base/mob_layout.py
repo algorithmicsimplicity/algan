@@ -4,6 +4,7 @@
 Split out of ``mob.py`` for readability; :class:`MobLayoutMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
+
 from __future__ import annotations
 
 import torch
@@ -126,12 +127,14 @@ class MobLayoutMixin:
         )
 
     def _select_in_direction(self, points, direction):
-        ind = dot_product(
-            points, direction, dim=-1, keepdim=True
-        ).argmax(-2, keepdim=True)
+        ind = dot_product(points, direction, dim=-1, keepdim=True).argmax(
+            -2, keepdim=True
+        )
         return broadcast_gather(points, -2, ind, keepdim=True)
 
-    def get_boundary_edge_point_recursive(self, direction: torch.Tensor) -> torch.Tensor:
+    def get_boundary_edge_point_recursive(
+        self, direction: torch.Tensor
+    ) -> torch.Tensor:
         """Get the outermost point of this Mob's hierarchy along a direction.
 
         Walks the hierarchy so a Group reports the extreme point of whichever
@@ -155,13 +158,17 @@ class MobLayoutMixin:
             return self._select_in_direction(self.get_boundary_points(), direction)
         elif num_children == 1:
             return self.children[0].get_boundary_edge_point_recursive(direction)
-        return self._select_in_direction(torch.cat([
-                child.get_boundary_edge_point_recursive(direction)
-                for child in self.children
-                if not child.exclude_from_boundary
-            ],
-            -2,
-            ), direction)
+        return self._select_in_direction(
+            torch.cat(
+                [
+                    child.get_boundary_edge_point_recursive(direction)
+                    for child in self.children
+                    if not child.exclude_from_boundary
+                ],
+                -2,
+            ),
+            direction,
+        )
 
     def get_boundary_edge_point(self, direction: torch.Tensor) -> torch.Tensor:
         """Get the point on the Mob furthest along a direction.
@@ -544,9 +551,7 @@ class MobLayoutMixin:
             ``0 <= bottom_left < top_right <= 1``, if the Mob's bounding box has
             zero width or height, or if the Scene has no camera.
         """
-        bottom_left, top_right = self._validate_screen_rectangle(
-            bottom_left, top_right
-        )
+        bottom_left, top_right = self._validate_screen_rectangle(bottom_left, top_right)
         bbox = self.get_bounding_box()
         source_lower = bbox.amin(-2, keepdim=True)
         source_upper = bbox.amax(-2, keepdim=True)

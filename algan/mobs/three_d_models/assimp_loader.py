@@ -13,6 +13,7 @@ Only the static-geometry portion of the IR is required by the current import
 phase; bones and animation channels are extracted here too so the later
 skeletal / morph phases have their inputs without a loader change.
 """
+
 from __future__ import annotations
 
 import os
@@ -47,13 +48,13 @@ def _require_pyassimp():
         import pyassimp
         import pyassimp.postprocess as pp
     except ImportError as e:
-        raise ImportError(
-            "pyassimp is not installed.\n" + _INSTALL_HINT) from e
+        raise ImportError("pyassimp is not installed.\n" + _INSTALL_HINT) from e
     except Exception as e:  # pragma: no cover - native lib lookup failure
         # pyassimp raises AssimpError (not ImportError) when the DLL is absent.
         raise ImportError(
             f"pyassimp could not load the native assimp library ({e}).\n"
-            + _INSTALL_HINT) from e
+            + _INSTALL_HINT
+        ) from e
     return pyassimp, pp
 
 
@@ -115,7 +116,8 @@ def _parse_material(mat, base_dir):
     """
     props = getattr(mat, "properties", {}) or {}
     diffuse = _material_tuple(props, "diffuse", 4) or _material_tuple(
-        props, "diffuse", 3)
+        props, "diffuse", 3
+    )
     if diffuse is not None and len(diffuse) == 3:
         diffuse = (*diffuse, 1.0)
     emissive = _material_tuple(props, "emissive", 3) or (0.0, 0.0, 0.0)
@@ -280,10 +282,10 @@ def _parse_channel(ch, tps):
         arr = getattr(ch, attr, None)
         if arr is None or len(arr) == 0:
             return None, None
-        times = torch.as_tensor(
-            [float(k.time) / tps for k in arr], dtype=torch.float32)
+        times = torch.as_tensor([float(k.time) / tps for k in arr], dtype=torch.float32)
         vals = torch.as_tensor(
-            np.stack([np.asarray(k.value) for k in arr]), dtype=torch.float32)
+            np.stack([np.asarray(k.value) for k in arr]), dtype=torch.float32
+        )
         return times, vals
 
     pt, pv = keys("positionkeys")
@@ -294,9 +296,12 @@ def _parse_channel(ch, tps):
         rv = rv[:, [1, 2, 3, 0]]
     return NodeAnimation(
         node_name=getattr(ch, "nodename", getattr(ch, "node_name", "")) or "",
-        position_times=pt, positions=pv,
-        rotation_times=rt, rotations=rv,
-        scaling_times=st, scalings=sv,
+        position_times=pt,
+        positions=pv,
+        rotation_times=rt,
+        rotations=rv,
+        scaling_times=st,
+        scalings=sv,
     )
 
 
@@ -315,8 +320,9 @@ def load_scene(file_path, extra_flags=0):
     # pyassimp.load frees native memory on context exit, so pull everything we
     # need into torch tensors inside the `with` block.
     with pyassimp.load(file_path, processing=flags) as scene:
-        materials = [_parse_material(m, base_dir)
-                     for m in getattr(scene, "materials", []) or []]
+        materials = [
+            _parse_material(m, base_dir) for m in getattr(scene, "materials", []) or []
+        ]
         meshes = []
         for m in getattr(scene, "meshes", []) or []:
             md = _parse_mesh(m)

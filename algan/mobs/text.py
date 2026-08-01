@@ -12,7 +12,7 @@ from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.lazy_import import LazyModule
 
 mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
-#mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
+# mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     Off,
@@ -158,9 +158,7 @@ class Tex(Mob):
         ]
         bezier_paths = [
             unsquish(
-                torch.from_numpy(char.points)
-                .to(_ANIMATION_DEVICE)
-                .float(),
+                torch.from_numpy(char.points).to(_ANIMATION_DEVICE).float(),
                 -2,
                 4,
             )
@@ -222,14 +220,11 @@ class Tex(Mob):
                 and not self.triangulated
                 and self._character_batch is not None
             ):
-                color_map = {
-                    k.upper(): v for k, v in (pango_color_map or {}).items()
-                }
+                color_map = {k.upper(): v for k, v in (pango_color_map or {}).items()}
                 base_color = bezier_kwargs.get("color", WHITE)
                 base_glow = (
                     float(base_color.reshape(-1)[3])
-                    if isinstance(base_color, torch.Tensor)
-                    and base_color.numel() >= 5
+                    if isinstance(base_color, torch.Tensor) and base_color.numel() >= 5
                     else 0.0
                 )
                 set_border = sync_border_color and bool(
@@ -308,7 +303,7 @@ class Tex(Mob):
         :class:`~.Group`
             A Group of the glyphs in that segment, sharing data with this text.
         """
-        return self[self.segment_starts[i]:self.segment_ends[i]]
+        return self[self.segment_starts[i] : self.segment_ends[i]]
 
     def __getitem__(self, item):
         """Get individual glyphs by index or slice, so ``text[0]`` works.
@@ -340,11 +335,7 @@ class Tex(Mob):
         """
         return len(self.character_mobs)
 
-    def write(
-        self,
-        *args, **kwargs
-
-    ):
+    def write(self, *args, **kwargs):
         """Animate this text appearing as if it were being hand-written.
 
         Each glyph's outline is traced and then filled, one glyph after another. This
@@ -405,11 +396,19 @@ class Tex(Mob):
             This text, so calls can be chained.
         """
         with Seq(run_time=1, animation_manager=self.animation_manager):
-            with Off(animation_manager=self.animation_manager):  # Ensure initial state setting is not recorded as an animation
+            with Off(
+                animation_manager=self.animation_manager
+            ):  # Ensure initial state setting is not recorded as an animation
                 opacity = self.opacity
                 self.opacity = 0
-            self._create_recursive(animate=False)  # Mark as created without immediate animation
-            self.wave_color( None, direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1), opacity=opacity)
+            self._create_recursive(
+                animate=False
+            )  # Mark as created without immediate animation
+            self.wave_color(
+                None,
+                direction=F.normalize(RIGHT * 1.5 + DOWN, p=2, dim=-1),
+                opacity=opacity,
+            )
         return self
 
     def on_destroy(self):
@@ -454,9 +453,7 @@ def _to_pango_hex(color, color_map):
     """
     if isinstance(color, torch.Tensor):
         flat = color.reshape(-1)
-        rgb = [
-            int(round(min(max(float(c), 0.0), 1.0) * 255)) for c in flat[:3]
-        ]
+        rgb = [int(round(min(max(float(c), 0.0), 1.0) * 255)) for c in flat[:3]]
         hex_c = "#{:02X}{:02X}{:02X}".format(*rgb)
         if isinstance(color, Color):
             color_map[hex_c] = color
@@ -812,7 +809,12 @@ class Code(Group):
         self.line_numbers = None
         if add_line_numbers:
             self.line_numbers = Paragraph(
-                *(str(i) for i in range(line_numbers_from, line_numbers_from + len(source_lines))),
+                *(
+                    str(i)
+                    for i in range(
+                        line_numbers_from, line_numbers_from + len(source_lines)
+                    )
+                ),
                 alignment="right",
                 add_to_scene=add_to_scene,
                 **paragraph_config,
@@ -840,9 +842,7 @@ class Code(Group):
             )
             dots = Group(
                 *[
-                    Circle(
-                        radius=0.04, scene=self.scene, add_to_scene=add_to_scene
-                    )
+                    Circle(radius=0.04, scene=self.scene, add_to_scene=add_to_scene)
                     for _ in range(3)
                 ],
                 scene=self.scene,
@@ -850,7 +850,9 @@ class Code(Group):
             )
             with Off(animation_manager=self.animation_manager):
                 dots.arrange_in_line(RIGHT, buffer=0.08)
-                dots.move_next_to(frame.get_boundary_in_direction(UP), DOWN, buffer=0.08)
+                dots.move_next_to(
+                    frame.get_boundary_in_direction(UP), DOWN, buffer=0.08
+                )
             self.background_mobject = Group(
                 frame, dots, scene=self.scene, add_to_scene=add_to_scene
             )

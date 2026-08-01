@@ -40,6 +40,7 @@ Usage::
     ...
     algan.Scene.save_video()
 """
+
 from __future__ import annotations
 
 from algan.rendering.raytracing.pn_patch import (

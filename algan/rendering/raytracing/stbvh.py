@@ -36,6 +36,7 @@ per-ray traversal lives in the Taichi kernel modules --
 ``raytrace_kernels_taichi.py`` holds the shared block-walk funcs, consumed by
 the wavefront and Monte Carlo kernels alike).
 """
+
 from __future__ import annotations
 
 import os
@@ -120,11 +121,13 @@ def _half_bits_directed(x, up):
     v = h2.float()
     sub = (v != 0) & (v.abs() < _F16_MIN_NORMAL)
     if up:
-        v2 = torch.where(v > 0, torch.full_like(v, _F16_MIN_NORMAL),
-                         torch.zeros_like(v))
+        v2 = torch.where(
+            v > 0, torch.full_like(v, _F16_MIN_NORMAL), torch.zeros_like(v)
+        )
     else:
-        v2 = torch.where(v < 0, torch.full_like(v, -_F16_MIN_NORMAL),
-                         torch.zeros_like(v))
+        v2 = torch.where(
+            v < 0, torch.full_like(v, -_F16_MIN_NORMAL), torch.zeros_like(v)
+        )
     h2 = torch.where(sub, v2.half(), h2)
     return h2.view(torch.int16)
 
@@ -146,13 +149,12 @@ def _build_blocks(nodes, first_leaf):
     """
     a = BVH_ARITY
     device = nodes.device
-    child = nodes[1:1 + a * first_leaf].view(first_leaf, a, 8)
+    child = nodes[1 : 1 + a * first_leaf].view(first_leaf, a, 8)
     t0 = child[..., 6].to(torch.int32).clamp(0, (1 << 15) - 1)
     t1 = child[..., 7].to(torch.int32).clamp(0, (1 << 15) - 1)
     tspan = (t0 | (t1 << 16)).contiguous()
     if BLOCK_F16:
-        blk = torch.zeros((first_leaf, 8, a), dtype=torch.int16,
-                          device=device)
+        blk = torch.zeros((first_leaf, 8, a), dtype=torch.int16, device=device)
         for d in range(3):
             blk[:, d] = _half_bits_directed(child[..., d], up=False)
             blk[:, 3 + d] = _half_bits_directed(child[..., 3 + d], up=True)
@@ -220,8 +222,7 @@ class STBVH:
         self.blocks = _build_blocks(nodes, self.first_leaf)
 
     @classmethod
-    def from_prebuilt(cls, nodes, node_miss, leaf_prim, leaf_tspan, blocks,
-                      like=None):
+    def from_prebuilt(cls, nodes, node_miss, leaf_prim, leaf_tspan, blocks, like=None):
         """Construct an STBVH whose kernel-facing blocks are already built.
         ``like`` (the source object) is accepted for interface parity with
         :meth:`refit_bvh.RefitBVH.from_prebuilt` and ignored -- this class
@@ -252,8 +253,13 @@ class STBVH:
     def get_memory_used(self):
         return sum(
             t.numel() * t.element_size()
-            for t in (self.nodes, self.blocks, self.node_miss, self.leaf_prim,
-                      self.leaf_tspan)
+            for t in (
+                self.nodes,
+                self.blocks,
+                self.node_miss,
+                self.leaf_prim,
+                self.leaf_tspan,
+            )
         )
 
 
@@ -278,9 +284,9 @@ def morton_code_4d(x, y, z, t):
 
 
 def _quantize(c, lo, hi):
-    scale = (2 ** _QUANT_BITS - 1) / (hi - lo).clamp_min(1e-12)
+    scale = (2**_QUANT_BITS - 1) / (hi - lo).clamp_min(1e-12)
     q = ((c - lo) * scale).long()
-    return q.clamp_(min=0, max=2 ** _QUANT_BITS - 1)
+    return q.clamp_(min=0, max=2**_QUANT_BITS - 1)
 
 
 # Instance-ordering builder: "morton" (4D-Morton sort), "split" (recursive
@@ -326,21 +332,21 @@ def _median_split_slots(centers, P):
         ng = 1 << level
         gs = P >> level
         sg = slot.view(ng, gs)
-        cg = cpad[sg]                       # [ng, gs, 4]
-        vg = valid[sg].unsqueeze(-1)        # [ng, gs, 1]
+        cg = cpad[sg]  # [ng, gs, 4]
+        vg = valid[sg].unsqueeze(-1)  # [ng, gs, 1]
         lo = torch.where(vg, cg, torch.full_like(cg, BIG)).amin(1)
         hi = torch.where(vg, cg, torch.full_like(cg, -BIG)).amax(1)
-        axis = (hi - lo).argmax(1)          # [ng] widest axis per group
-        key = torch.gather(
-            cg, 2, axis.view(ng, 1, 1).expand(ng, gs, 1)).squeeze(2)
+        axis = (hi - lo).argmax(1)  # [ng] widest axis per group
+        key = torch.gather(cg, 2, axis.view(ng, 1, 1).expand(ng, gs, 1)).squeeze(2)
         # Padding slots carry key == BIG, so they sort to the end of each group.
         perm = key.argsort(1)
         slot = torch.gather(sg, 1, perm).reshape(-1)
     return torch.where(slot < M, slot, torch.full_like(slot, -1))
 
 
-def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
-                   device, nbins=16):
+def _build_sah_dfs(
+    inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames, device, nbins=16
+):
     """Top-down binned-SAH BVH (binary, unbalanced), laid out in DFS preorder
     with stackless skip pointers -- the explicit-tree counterpart of the implicit
     balanced layout. Returns the same flat arrays the traversal consumes, but
@@ -383,8 +389,11 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
     pid = prim_id.detach().cpu().numpy().astype(np.int64)
     a0 = t0.detach().cpu().numpy().astype(np.int64)
     a1 = t1.detach().cpu().numpy().astype(np.int64)
-    opq = (inst_opaque.detach().cpu().numpy().astype(bool)
-           if inst_opaque is not None else np.zeros(M, bool))
+    opq = (
+        inst_opaque.detach().cpu().numpy().astype(bool)
+        if inst_opaque is not None
+        else np.zeros(M, bool)
+    )
 
     maxN = max(2 * M - 1, 1)
     n_lo = np.zeros((maxN, 3))
@@ -431,8 +440,9 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
             cmin, cmax = cax.min(), cax.max()
             if cmax - cmin <= 1e-12:
                 continue
-            b = np.minimum(((cax - cmin) / (cmax - cmin) * nbins).astype(int),
-                           nbins - 1)
+            b = np.minimum(
+                ((cax - cmin) / (cmax - cmin) * nbins).astype(int), nbins - 1
+            )
             for s in range(1, nbins):
                 lmask = b < s
                 nl = int(lmask.sum())
@@ -442,9 +452,9 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
                 rids = ids[~lmask]
                 te_l = float(a1[lids].max() - a0[lids].min() + 1)
                 te_r = float(a1[rids].max() - a0[rids].min() + 1)
-                cost = (te_l * half_area(lo[lids].min(0), hi[lids].max(0)) * nl
-                        + te_r * half_area(lo[rids].min(0), hi[rids].max(0))
-                        * (n - nl))
+                cost = te_l * half_area(
+                    lo[lids].min(0), hi[lids].max(0)
+                ) * nl + te_r * half_area(lo[rids].min(0), hi[rids].max(0)) * (n - nl)
                 if cost < best_cost:
                     best_cost = cost
                     best_left = lmask
@@ -452,7 +462,7 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
             ax = int(np.argmax(diag))
             order = np.argsort(cent[ids, ax], kind="stable")
             best_left = np.zeros(ids.shape[0], bool)
-            best_left[order[:ids.shape[0] // 2]] = True
+            best_left[order[: ids.shape[0] // 2]] = True
         build(ids[best_left])
         build(ids[~best_left])
         n_skip[ni] = ctr[0]
@@ -468,12 +478,14 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
     nodes[:, 7] = torch.from_numpy(n_t1[:N]).float()
     skip = torch.from_numpy(n_skip[:N]).long()
     skip = torch.where(skip >= N, torch.full_like(skip, -1), skip)
-    tspan = (torch.from_numpy(np.clip(n_t0[:N], 0, (1 << 15) - 1)).long()
-             | (torch.from_numpy(np.clip(n_t1[:N], 0, (1 << 15) - 1)).long()
-                << 16)).to(torch.int32)
+    tspan = (
+        torch.from_numpy(np.clip(n_t0[:N], 0, (1 << 15) - 1)).long()
+        | (torch.from_numpy(np.clip(n_t1[:N], 0, (1 << 15) - 1)).long() << 16)
+    ).to(torch.int32)
     opaque_t = torch.from_numpy(n_opq[:N])
-    tspan = torch.where(opaque_t, tspan | torch.tensor(-2147483648,
-                        dtype=torch.int32), tspan)
+    tspan = torch.where(
+        opaque_t, tspan | torch.tensor(-2147483648, dtype=torch.int32), tspan
+    )
     leaf_prim = torch.from_numpy(n_prim[:N]).to(torch.int32)
     return STBVH(
         nodes.contiguous().to(device),
@@ -515,12 +527,12 @@ def segment_primitives_in_time(frame_lo, frame_hi, tightness=2.0):
     chunk = max(1, int(4e6) // max(T, 1))
     if chunk < N:
         parts = [
-            segment_primitives_in_time(frame_lo[:, s:s + chunk],
-                                       frame_hi[:, s:s + chunk], tightness)
+            segment_primitives_in_time(
+                frame_lo[:, s : s + chunk], frame_hi[:, s : s + chunk], tightness
+            )
             for s in range(0, N, chunk)
         ]
-        prim_id = torch.cat([p[0] + s for p, s in
-                             zip(parts, range(0, N, chunk))])
+        prim_id = torch.cat([p[0] + s for p, s in zip(parts, range(0, N, chunk))])
         t0 = torch.cat([p[1] for p in parts])
         t1 = torch.cat([p[2] for p in parts])
         inst_lo = torch.cat([p[3] for p in parts], 0)
@@ -616,8 +628,9 @@ def _compute_miss_links(num_leaves, device):
     return miss
 
 
-def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
-                opaque=None, builder="morton"):
+def build_stbvh(
+    frame_lo, frame_hi, num_frames=None, tightness=2.0, opaque=None, builder="morton"
+):
     """Build a spatio-temporal BVH from per-frame primitive bounds.
 
     Parameters
@@ -650,7 +663,8 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
         raise ValueError(
             f"STBVH leaf frame intervals are packed into 16-bit halves; "
             f"render batches must stay below {1 << 15} frames "
-            f"(got {num_frames}).")
+            f"(got {num_frames})."
+        )
 
     if Tc == 1:
         valid = (frame_hi[0] >= frame_lo[0]).all(-1)
@@ -674,11 +688,9 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
             else:
                 # Opaque over [t0, t1] iff no non-opaque frame in between
                 # (prefix sums of the negated mask).
-                prefix = torch.zeros((Tc + 1, N), dtype=torch.long,
-                                     device=device)
+                prefix = torch.zeros((Tc + 1, N), dtype=torch.long, device=device)
                 prefix[1:] = (~opaque).long().cumsum(0)
-                inst_opaque = (prefix[t1 + 1, prim_id]
-                               - prefix[t0, prim_id]) == 0
+                inst_opaque = (prefix[t1 + 1, prim_id] - prefix[t0, prim_id]) == 0
         else:
             inst_opaque = None
 
@@ -691,7 +703,8 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
         raise NotImplementedError(
             "The SAH DFS traversal was removed with the sibling-block "
             "traversal rework; unset ALGAN_BVH_BUILD=sah (see "
-            "stbvh._build_sah_dfs).")
+            "stbvh._build_sah_dfs)."
+        )
 
     M = prim_id.shape[0]
     L = LEAF_SIZE
@@ -725,15 +738,15 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
         slot_src = _median_split_slots(torch.cat((cn, tn), -1), P)  # [P]
         real = slot_src >= 0
         src = slot_src.clamp_min(0)
-        slot_lo = torch.where(real.unsqueeze(-1), inst_lo[src],
-                              torch.tensor(EMPTY_LO, device=device))
-        slot_hi = torch.where(real.unsqueeze(-1), inst_hi[src],
-                              torch.tensor(EMPTY_HI, device=device))
-        slot_t0 = torch.where(real, t0[src],
-                              torch.full_like(t0[src], (1 << 15) - 1))
+        slot_lo = torch.where(
+            real.unsqueeze(-1), inst_lo[src], torch.tensor(EMPTY_LO, device=device)
+        )
+        slot_hi = torch.where(
+            real.unsqueeze(-1), inst_hi[src], torch.tensor(EMPTY_HI, device=device)
+        )
+        slot_t0 = torch.where(real, t0[src], torch.full_like(t0[src], (1 << 15) - 1))
         slot_t1 = torch.where(real, t1[src], torch.zeros_like(t1[src]))
-        leaf_prim = torch.where(real, prim_id[src],
-                                torch.full_like(prim_id[src], -1))
+        leaf_prim = torch.where(real, prim_id[src], torch.full_like(prim_id[src], -1))
         if inst_opaque is not None:
             slot_opaque = real & inst_opaque[src]
         else:
@@ -747,9 +760,11 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
             smin = inst_lo.amin(0)
             smax = inst_hi.amax(0)
             q = _quantize(center, smin, smax)
-            qt = _quantize(t_center, torch.zeros((), device=device),
-                           torch.full((), float(max(num_frames - 1, 1)),
-                                      device=device))
+            qt = _quantize(
+                t_center,
+                torch.zeros((), device=device),
+                torch.full((), float(max(num_frames - 1, 1)), device=device),
+            )
             codes = morton_code_4d(q[:, 0], q[:, 1], q[:, 2], qt)
             order = torch.argsort(codes)
             prim_id, t0, t1 = prim_id[order], t0[order], t1[order]
@@ -762,8 +777,7 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
         # bounds so they are never visited.
         slot_lo = torch.full((P * L, 3), EMPTY_LO, device=device)
         slot_hi = torch.full((P * L, 3), EMPTY_HI, device=device)
-        slot_t0 = torch.full((P * L,), (1 << 15) - 1, dtype=torch.long,
-                             device=device)
+        slot_t0 = torch.full((P * L,), (1 << 15) - 1, dtype=torch.long, device=device)
         slot_t1 = torch.zeros((P * L,), dtype=torch.long, device=device)
         slot_opaque = torch.zeros((P * L,), dtype=torch.bool, device=device)
         leaf_prim = torch.full((P * L,), -1, dtype=torch.long, device=device)
@@ -775,12 +789,15 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
             leaf_prim[:M] = prim_id
             if inst_opaque is not None:
                 slot_opaque[:M] = inst_opaque
-    leaf_tspan = (slot_t0.clamp(0, (1 << 15) - 1)
-                  | (slot_t1.clamp(0, (1 << 15) - 1) << 16)).to(torch.int32)
+    leaf_tspan = (
+        slot_t0.clamp(0, (1 << 15) - 1) | (slot_t1.clamp(0, (1 << 15) - 1) << 16)
+    ).to(torch.int32)
     # Bit 31 (sign bit) flags interval-opaque instances.
     leaf_tspan = torch.where(
-        slot_opaque, leaf_tspan | torch.tensor(-2147483648, dtype=torch.int32,
-                                               device=device), leaf_tspan)
+        slot_opaque,
+        leaf_tspan | torch.tensor(-2147483648, dtype=torch.int32, device=device),
+        leaf_tspan,
+    )
 
     nodes = torch.empty((num_nodes, 8), device=device)
     nodes[first_leaf:, 0:3] = slot_lo.view(P, L, 3).amin(1)
@@ -793,7 +810,7 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
     # level), so this works for any arity (a == 2 reproduces the binary union).
     offset, width = first_leaf, P
     while width > 1:
-        child = nodes[offset:offset + width]
+        child = nodes[offset : offset + width]
         parent_width = width // a
         parent_offset = offset - parent_width
         lo = torch.minimum(child[0::a, 0:3], child[1::a, 0:3])

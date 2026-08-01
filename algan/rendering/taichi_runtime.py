@@ -24,6 +24,7 @@ cannot silently regress, plus two empirically-tuned register knobs):
 * ``ALGAN_OPT_LEVEL`` (env int) -> ``opt_level`` (Taichi default 1). Higher is
   more aggressive but can *increase* register pressure, so it is opt-in.
 """
+
 from __future__ import annotations
 
 import datetime as _datetime
@@ -113,30 +114,43 @@ def _install_taichi_compile_logger():
                 key = (self.func, 0, self.autodiff_mode)
             if key in self.compiled_kernels:
                 return original_materialize(
-                    self, key=key, args=args, arg_features=arg_features)
+                    self, key=key, args=args, arg_features=arg_features
+                )
 
             name = _kernel_timing_name(self, key)
-            started_wall = _datetime.datetime.now(
-                _datetime.timezone.utc).astimezone().isoformat(timespec="milliseconds")
+            started_wall = (
+                _datetime.datetime.now(_datetime.timezone.utc)
+                .astimezone()
+                .isoformat(timespec="milliseconds")
+            )
             started = time.perf_counter()
-            _emit_compile_record({
-                "phase": "start", "status": "started", "kernel": name,
-                "timestamp": started_wall,
-            })
+            _emit_compile_record(
+                {
+                    "phase": "start",
+                    "status": "started",
+                    "kernel": name,
+                    "timestamp": started_wall,
+                }
+            )
             try:
                 result = original_materialize(
-                    self, key=key, args=args, arg_features=arg_features)
+                    self, key=key, args=args, arg_features=arg_features
+                )
             except Exception:
                 elapsed = time.perf_counter() - started
-                _emit_compile_record({
-                    "phase": "failed", "status": "frontend_failed",
-                    "kernel": name,
-                    "timestamp": _datetime.datetime.now(
-                        _datetime.timezone.utc).astimezone().isoformat(
-                            timespec="milliseconds"),
-                    "frontend_seconds": elapsed, "backend_seconds": 0.0,
-                    "total_seconds": elapsed,
-                })
+                _emit_compile_record(
+                    {
+                        "phase": "failed",
+                        "status": "frontend_failed",
+                        "kernel": name,
+                        "timestamp": _datetime.datetime.now(_datetime.timezone.utc)
+                        .astimezone()
+                        .isoformat(timespec="milliseconds"),
+                        "frontend_seconds": elapsed,
+                        "backend_seconds": 0.0,
+                        "total_seconds": elapsed,
+                    }
+                )
                 raise
 
             frontend_seconds = time.perf_counter() - started
@@ -178,28 +192,35 @@ def _install_taichi_compile_logger():
         except Exception:
             backend_seconds = time.perf_counter() - backend_started
             total_seconds = frontend_seconds + backend_seconds
-            _emit_compile_record({
-                "phase": "failed", "status": "backend_failed",
-                "kernel": name,
-                "timestamp": _datetime.datetime.now(
-                    _datetime.timezone.utc).astimezone().isoformat(
-                        timespec="milliseconds"),
-                "frontend_seconds": frontend_seconds,
-                "backend_seconds": backend_seconds,
-                "total_seconds": total_seconds,
-            })
+            _emit_compile_record(
+                {
+                    "phase": "failed",
+                    "status": "backend_failed",
+                    "kernel": name,
+                    "timestamp": _datetime.datetime.now(_datetime.timezone.utc)
+                    .astimezone()
+                    .isoformat(timespec="milliseconds"),
+                    "frontend_seconds": frontend_seconds,
+                    "backend_seconds": backend_seconds,
+                    "total_seconds": total_seconds,
+                }
+            )
             raise
         backend_seconds = time.perf_counter() - backend_started
         total_seconds = frontend_seconds + backend_seconds
-        _emit_compile_record({
-            "phase": "complete", "status": "complete", "kernel": name,
-            "timestamp": _datetime.datetime.now(
-                _datetime.timezone.utc).astimezone().isoformat(
-                    timespec="milliseconds"),
-            "frontend_seconds": frontend_seconds,
-            "backend_seconds": backend_seconds,
-            "total_seconds": total_seconds,
-        })
+        _emit_compile_record(
+            {
+                "phase": "complete",
+                "status": "complete",
+                "kernel": name,
+                "timestamp": _datetime.datetime.now(_datetime.timezone.utc)
+                .astimezone()
+                .isoformat(timespec="milliseconds"),
+                "frontend_seconds": frontend_seconds,
+                "backend_seconds": backend_seconds,
+                "total_seconds": total_seconds,
+            }
+        )
         return result
 
     program_type.compile_kernel = timed_compile_kernel
@@ -244,25 +265,28 @@ def taichi_init_kwargs():
     measures a different (much faster) config than real renders. See
     [[algan-render-benchmarking]].
     """
-    kwargs = {"arch": _taichi_arch(), "fast_math": True,
-                  # advanced_optimization defaults off (it raised register
-                  # pressure on the big megakernels); env ALGAN_ADV_OPT=1 to A/B.
-                  "advanced_optimization": os.environ.get("ALGAN_ADV_OPT", "0") == "1",
-                  # debug=True inserts a bounds-check on *every* ndarray access;
-                  # the ray-trace megakernels do millions of array reads per ray
-                  # (BVH nodes, packed geometry), so it ran them ~11x slower with
-                  # no benefit to released renders. Keep it off (env ALGAN_TI_DEBUG=1
-                  # re-enables it for kernel development).
-                  "debug": os.environ.get("ALGAN_TI_DEBUG", "0") == "1",
-                  "offline_cache": True,
-                  # The default 100 MB cache LRU-evicts large megakernel
-                  # artifacts once several variants (general / no-PN / lean /
-                  # path-trace / wavefront, plus per-config rebuilds) are
-                  # compiled, forcing repeated ~minutes-long recompiles. Raise
-                  # it (disk-backed) so every kernel stays cached. The field is
-                  # a 32-bit int, so stay just under 2^31 bytes (~1.9 GB, still
-                  # 19x the default).
-                  "offline_cache_max_size_of_files": 1_000_000_000}
+    kwargs = {
+        "arch": _taichi_arch(),
+        "fast_math": True,
+        # advanced_optimization defaults off (it raised register
+        # pressure on the big megakernels); env ALGAN_ADV_OPT=1 to A/B.
+        "advanced_optimization": os.environ.get("ALGAN_ADV_OPT", "0") == "1",
+        # debug=True inserts a bounds-check on *every* ndarray access;
+        # the ray-trace megakernels do millions of array reads per ray
+        # (BVH nodes, packed geometry), so it ran them ~11x slower with
+        # no benefit to released renders. Keep it off (env ALGAN_TI_DEBUG=1
+        # re-enables it for kernel development).
+        "debug": os.environ.get("ALGAN_TI_DEBUG", "0") == "1",
+        "offline_cache": True,
+        # The default 100 MB cache LRU-evicts large megakernel
+        # artifacts once several variants (general / no-PN / lean /
+        # path-trace / wavefront, plus per-config rebuilds) are
+        # compiled, forcing repeated ~minutes-long recompiles. Raise
+        # it (disk-backed) so every kernel stays cached. The field is
+        # a 32-bit int, so stay just under 2^31 bytes (~1.9 GB, still
+        # 19x the default).
+        "offline_cache_max_size_of_files": 1_000_000_000,
+    }
     # Keep Algan's compiled kernels in a dedicated directory under Algan's
     # cache dir instead of Taichi's global default, so they never contend
     # with other Taichi programs for the LRU budget. A ti.init kwarg beats
@@ -285,4 +309,4 @@ def init_taichi():
     if _already_initialized():
         return
     ti.init(**taichi_init_kwargs())
-    #_install_taichi_compile_logger()
+    # _install_taichi_compile_logger()

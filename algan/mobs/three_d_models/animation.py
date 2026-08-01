@@ -13,6 +13,7 @@ Everything here is pure tensor math (no rendering, no Algan mob state), so the
 evaluation is unit-testable on its own and reused unchanged by the skeletal
 phase (which drives the very same per-bone TRS tracks).
 """
+
 from __future__ import annotations
 
 import torch
@@ -28,11 +29,20 @@ def quaternion_to_matrix(q):
     xx, yy, zz = x * x, y * y, z * z
     xy, xz, yz = x * y, x * z, y * z
     wx, wy, wz = w * x, w * y, w * z
-    m = torch.stack([
-        1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy),
-        2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx),
-        2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy),
-    ], dim=-1)
+    m = torch.stack(
+        [
+            1 - 2 * (yy + zz),
+            2 * (xy - wz),
+            2 * (xz + wy),
+            2 * (xy + wz),
+            1 - 2 * (xx + zz),
+            2 * (yz - wx),
+            2 * (xz - wy),
+            2 * (yz + wx),
+            1 - 2 * (xx + yy),
+        ],
+        dim=-1,
+    )
     return m.reshape(*q.shape[:-1], 3, 3)
 
 
@@ -179,11 +189,9 @@ def evaluate_node_local_transform(node, channel, t, device=None):
         translation, rotation, scale = decompose_trs(rest)
 
     if channel.positions is not None and channel.position_times is not None:
-        translation = sample_vector_track(
-            channel.position_times, channel.positions, t)
+        translation = sample_vector_track(channel.position_times, channel.positions, t)
     if channel.rotations is not None and channel.rotation_times is not None:
-        rotation = sample_quaternion_track(
-            channel.rotation_times, channel.rotations, t)
+        rotation = sample_quaternion_track(channel.rotation_times, channel.rotations, t)
     if channel.scalings is not None and channel.scaling_times is not None:
         scale = sample_vector_track(channel.scaling_times, channel.scalings, t)
 
@@ -198,9 +206,10 @@ def evaluate_animated_locals(nodes, clip, t, device=None):
     if clip is not None:
         for ch in clip.channels:
             channels[ch.node_name] = ch
-    return [evaluate_node_local_transform(node, channels.get(node.name), t,
-                                          device=device)
-            for node in nodes]
+    return [
+        evaluate_node_local_transform(node, channels.get(node.name), t, device=device)
+        for node in nodes
+    ]
 
 
 def compose_world_from_locals(nodes, locals_):

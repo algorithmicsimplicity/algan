@@ -38,14 +38,13 @@ class NumericDisplay(Mob):
         value = cast_to_tensor(value)
         self.num_decimal_places = num_decimal_places
         if num_integer_places is None:
-            num_integer_places = max(
-                1, len(str(int(abs(float(value.reshape(-1)[0])))))
-            )
+            num_integer_places = max(1, len(str(int(abs(float(value.reshape(-1)[0]))))))
         self.num_integer_places = num_integer_places
         num_i, num_d = num_integer_places, num_decimal_places
         animation_manager = kwargs["scene"].animation_manager
-        with Off(animation_manager=animation_manager), NoExtra(
-            priority_level=1, animation_manager=animation_manager
+        with (
+            Off(animation_manager=animation_manager),
+            NoExtra(priority_level=1, animation_manager=animation_manager),
         ):
             self.placeholder = Tex(
                 "-" + "0" * num_i + ("." + "0" * num_d if num_d > 0 else ""), **kwargs
@@ -81,7 +80,7 @@ class NumericDisplay(Mob):
             self.add_children(self.digit_mobs, self.negative_sign)
         for c in self.children:
             c.on_create = lambda c=c: c
-        #self.components = [*self.digit_mobs, self.decimal, self.negative_sign]
+        # self.components = [*self.digit_mobs, self.decimal, self.negative_sign]
 
     @property
     def value(self):
@@ -97,8 +96,8 @@ class NumericDisplay(Mob):
                 o = c.opacity
                 with Seq(animation_manager=self.animation_manager):
                     with Off(animation_manager=self.animation_manager):
-                        c.set_non_recursive(opacity = 0)
-                    c.set_non_recursive(opacity = o)
+                        c.set_non_recursive(opacity=0)
+                    c.set_non_recursive(opacity=o)
 
     def get_value(self):
         return self.value
@@ -119,7 +118,7 @@ class NumericDisplay(Mob):
         num_i, num_d = self.num_integer_places, self.num_decimal_places
         # Largest value the digit slots can show; anything bigger is clamped
         # (also protects against rounding carrying into a non-existent digit).
-        limit = (10 ** num_i) - ((10 ** -num_d) if num_d > 0 else 1)
+        limit = (10**num_i) - ((10**-num_d) if num_d > 0 else 1)
 
         def get_opacities(value):
             all_opacities = []
@@ -132,9 +131,7 @@ class NumericDisplay(Mob):
                 int_part, _, frac_part = value_string.partition(".")
                 int_part = int_part.rjust(num_i, "0")
                 # Blank out leading zeros, always keeping the last integer digit.
-                num_leading = min(
-                    len(int_part) - len(int_part.lstrip("0")), num_i - 1
-                )
+                num_leading = min(len(int_part) - len(int_part.lstrip("0")), num_i - 1)
                 for k, digit in enumerate(int_part + frac_part):
                     if k < num_leading:
                         all_opacities.append(torch.zeros(10, 1, dtype=torch.long))

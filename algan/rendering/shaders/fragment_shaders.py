@@ -22,6 +22,7 @@ as fragment shaders and compose with custom ones, e.g.
 ``mob.set_fragment_shader([cosine_color, phong_shader])`` recolours each fragment
 with a cosine wave and then lights the result with Blinn-Phong.
 """
+
 import taichi as ti
 
 from algan.rendering.raytracing.shading_taichi import (
@@ -149,7 +150,8 @@ def resolve_stage(shader):
     raise TypeError(
         f"{shader!r} is not a valid fragment shader. Pass a FragmentStage "
         "(a @ti.func stage + its param specs) or a built-in material shader "
-        "such as phong_shader / standard_shader.")
+        "such as phong_shader / standard_shader."
+    )
 
 
 # --- Pipeline registry (session-global; ids are stable so the packed pipeline
@@ -181,9 +183,11 @@ def register_pipeline(stages):
     scatters = [s.scatter for s in stages if getattr(s, "scatter", None)]
     scatter = scatters[-1] if scatters else None
 
-    key = (tuple(id(s.ti_func) for s in stages),
-           tuple(s.width for s in stages),
-           id(scatter) if scatter is not None else None)
+    key = (
+        tuple(id(s.ti_func) for s in stages),
+        tuple(s.width for s in stages),
+        id(scatter) if scatter is not None else None,
+    )
     if key in _PIPELINE_REGISTRY:
         pid = _PIPELINE_REGISTRY[key][0]
     else:
@@ -196,7 +200,7 @@ def register_pipeline(stages):
     layout = []
     for s, base in zip(stages, offsets):
         slot = base
-        for (name, width, default) in s.param_specs:
+        for name, width, default in s.param_specs:
             layout.append((name, slot, width, default))
             slot += width
     return pid, total_width, layout
@@ -228,11 +232,12 @@ class FragmentPipelineShader:
 
     def __init__(self, pipeline_id, layout, total_width):
         self._frag_pipeline_id = pipeline_id
-        self._frag_param_layout = layout        # [(name, slot, width, default)]
+        self._frag_param_layout = layout  # [(name, slot, width, default)]
         self._frag_total_width = total_width
 
-    def __call__(self, memory, vertex_location, vertex_normal, albedo_color,
-                 *args, **kwargs):
+    def __call__(
+        self, memory, vertex_location, vertex_normal, albedo_color, *args, **kwargs
+    ):
         return albedo_color
 
 
@@ -254,7 +259,7 @@ def build_fragment_pipeline(shader):
     seen = {}
     layout = []
     param_specs = []
-    for (name, slot, width, default) in raw_layout:
+    for name, slot, width, default in raw_layout:
         if name in seen:
             seen[name] += 1
             fname = f"{name}_{seen[name]}"
@@ -272,11 +277,25 @@ def build_fragment_pipeline(shader):
 # Example custom stage.
 # ---------------------------------------------------------------------------
 
+
 @ti.func
-def _stage_cosine_color(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
-                        params: ti.template(), f, prim, off,
-                        light_pos: ti.template(), light_col: ti.template(),
-                        num_lights, shadows: ti.template(), vis):
+def _stage_cosine_color(
+    pos,
+    view_dir,
+    n_interp,
+    face_n,
+    in_rgb,
+    in_glow,
+    params: ti.template(),
+    f,
+    prim,
+    off,
+    light_pos: ti.template(),
+    light_col: ti.template(),
+    num_lights,
+    shadows: ti.template(),
+    vis,
+):
     """Modulate the albedo by an RGB-phase-shifted cosine of world x (rainbow
     banding). Params: ``frequency`` (slot 0), ``phase`` (slot 1).
     """
@@ -285,8 +304,8 @@ def _stage_cosine_color(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     phase = params[tm, prim, off + 1]
     w = pos[0] * freq + phase
     r = 0.5 + 0.5 * ti.cos(w)
-    g = 0.5 + 0.5 * ti.cos(w + 2.0943951)   # +2pi/3
-    b = 0.5 + 0.5 * ti.cos(w + 4.1887902)   # +4pi/3
+    g = 0.5 + 0.5 * ti.cos(w + 2.0943951)  # +2pi/3
+    b = 0.5 + 0.5 * ti.cos(w + 4.1887902)  # +4pi/3
     return ti.math.vec4(in_rgb[0] * r, in_rgb[1] * g, in_rgb[2] * b, in_glow)
 
 
@@ -303,11 +322,25 @@ cosine_color = FragmentStage(
 # ``algan.rendering.raytracing.shading_taichi``.
 # ---------------------------------------------------------------------------
 
+
 @ti.func
-def _scatter_forced_mirror(rd, n_interp, face_n, hit_point, shaded, albedo,
-                           alpha, reflectivity, ior, transmission,
-                           params: ti.template(), f, prim,
-                           bounces_left, refraction: ti.template()):
+def _scatter_forced_mirror(
+    rd,
+    n_interp,
+    face_n,
+    hit_point,
+    shaded,
+    albedo,
+    alpha,
+    reflectivity,
+    ior,
+    transmission,
+    params: ti.template(),
+    f,
+    prim,
+    bounces_left,
+    refraction: ti.template(),
+):
     """Treat the surface as a 85% mirror regardless of its per-vertex
     reflectivity: commit 15% of the shaded colour and bounce the remaining
     throughput along the mirror direction (no transmission). Branch weights
@@ -326,8 +359,7 @@ def _scatter_forced_mirror(rd, n_interp, face_n, hit_point, shaded, albedo,
         rw = 0.0
     refl_w = ti.math.vec3(rw, rw, rw)
     pass_w = ti.math.vec3(1.0 - alpha, 1.0 - alpha, 1.0 - alpha)
-    return (contrib, pass_w, refl_orig, refl_dir, refl_w,
-            zero3, zero3, zero3)
+    return (contrib, pass_w, refl_orig, refl_dir, refl_w, zero3, zero3, zero3)
 
 
 #: Example custom scatter: forces mirror bouncing regardless of the mob's
@@ -336,4 +368,5 @@ def _scatter_forced_mirror(rd, n_interp, face_n, hit_point, shaded, albedo,
 #: compose with a built-in stage: ``FragmentStage(STAGE_PHONG.ti_func,
 #: STAGE_PHONG.param_specs, scatter=forced_mirror_scatter.scatter)``.
 forced_mirror_scatter = FragmentStage(
-    _stage_unlit, _BUILTIN_MAT_SPECS, scatter=_scatter_forced_mirror)
+    _stage_unlit, _BUILTIN_MAT_SPECS, scatter=_scatter_forced_mirror
+)

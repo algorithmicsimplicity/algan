@@ -3,6 +3,7 @@
 Backend classes and kernels are runtime services, not user configuration, so
 this registry deliberately lives outside the global ``SETTINGS`` object.
 """
+
 from __future__ import annotations
 
 from algan.rendering.raytracing import (

@@ -23,6 +23,7 @@ the extended light types are rendered by the deterministic (single-sample)
 ray tracer with per-fragment shading, which Algan enables automatically when
 any extended light is present in the scene.
 """
+
 from __future__ import annotations
 
 import math
@@ -57,7 +58,6 @@ LIGHT_ENV_SH = 6.0
 # Number of aux columns following the RGB color in a packed light row
 # (packed row width 16 = 3 color + 13 aux).
 LIGHT_AUX_COLS = 13
-
 
 
 def _finite_number(
@@ -159,8 +159,9 @@ class Light(Mob):
         return location.unsqueeze(-2)
 
     def _blank_aux(self, location):
-        aux = torch.zeros((location.shape[0], self.num_samples(),
-                           LIGHT_AUX_COLS), dtype=torch.float32)
+        aux = torch.zeros(
+            (location.shape[0], self.num_samples(), LIGHT_AUX_COLS), dtype=torch.float32
+        )
         aux[..., 0] = self.light_type
         # Power fraction: the share of a whole light each packed row carries
         # (1/K for one of an area light's K emitter samples). Consumed by the
@@ -220,13 +221,12 @@ class PointLight(Light):
 
     light_type = LIGHT_POINT
 
-    def __init__(self, *args, intensity=1.0, decay=0.0, distance=0.0,
-                 shadow_radius=0.0, **kwargs):
+    def __init__(
+        self, *args, intensity=1.0, decay=0.0, distance=0.0, shadow_radius=0.0, **kwargs
+    ):
         self.decay = _finite_number("decay", decay, minimum=0.0)
         self.distance = _finite_number("distance", distance, minimum=0.0)
-        self.shadow_radius = _finite_number(
-            "shadow_radius", shadow_radius, minimum=0.0
-        )
+        self.shadow_radius = _finite_number("shadow_radius", shadow_radius, minimum=0.0)
         super().__init__(*args, intensity=intensity, **kwargs)
 
     def is_extended(self):
@@ -239,8 +239,7 @@ class PointLight(Light):
             light keeps the compact packing, which keeps renders that use no new
             features byte-identical.
         """
-        return (self.decay != 0.0 or self.distance != 0.0
-                or self.shadow_radius != 0.0)
+        return self.decay != 0.0 or self.distance != 0.0 or self.shadow_radius != 0.0
 
     def build_aux(self, location):
         """Internal: pack this light's falloff, range and shadow radius.
@@ -299,8 +298,7 @@ class _TargetedLight(Light):
 
     def _directions(self, location):
         """Unit emission direction per frame, ``[T, 3]``."""
-        return F.normalize(self.target.to(location.device) - location,
-                           p=2, dim=-1)
+        return F.normalize(self.target.to(location.device) - location, p=2, dim=-1)
 
 
 class DirectionalLight(_TargetedLight):
@@ -320,7 +318,10 @@ class DirectionalLight(_TargetedLight):
 
     def __init__(self, *args, target=ORIGIN, shadow_angle=0.0, **kwargs):
         self.shadow_angle = _finite_number(
-            "shadow_angle", shadow_angle, minimum=0.0, maximum=180.0,
+            "shadow_angle",
+            shadow_angle,
+            minimum=0.0,
+            maximum=180.0,
             maximum_inclusive=False,
         )
         super().__init__(*args, target=target, **kwargs)
@@ -418,20 +419,28 @@ class SpotLight(_TargetedLight):
 
     light_type = LIGHT_SPOT
 
-    def __init__(self, *args, target=ORIGIN, angle=30.0, penumbra=0.0,
-                 decay=0.0, distance=0.0, shadow_radius=0.0, **kwargs):
+    def __init__(
+        self,
+        *args,
+        target=ORIGIN,
+        angle=30.0,
+        penumbra=0.0,
+        decay=0.0,
+        distance=0.0,
+        shadow_radius=0.0,
+        **kwargs,
+    ):
         self.angle = _finite_number(
-            "angle", angle, minimum=0.0, maximum=90.0,
+            "angle",
+            angle,
+            minimum=0.0,
+            maximum=90.0,
             minimum_inclusive=False,
         )
-        self.penumbra = _finite_number(
-            "penumbra", penumbra, minimum=0.0, maximum=1.0
-        )
+        self.penumbra = _finite_number("penumbra", penumbra, minimum=0.0, maximum=1.0)
         self.decay = _finite_number("decay", decay, minimum=0.0)
         self.distance = _finite_number("distance", distance, minimum=0.0)
-        self.shadow_radius = _finite_number(
-            "shadow_radius", shadow_radius, minimum=0.0
-        )
+        self.shadow_radius = _finite_number("shadow_radius", shadow_radius, minimum=0.0)
         super().__init__(*args, target=target, **kwargs)
 
     def build_aux(self, location):
@@ -456,8 +465,9 @@ class SpotLight(_TargetedLight):
         aux[..., 6] = math.cos(outer)
         # Keep a minimal inner/outer separation so the smoothstep in the
         # kernel never divides by zero.
-        aux[..., 7] = math.cos(max(inner, 1e-4)) if self.penumbra > 0 \
-            else math.cos(outer) + 1e-4
+        aux[..., 7] = (
+            math.cos(max(inner, 1e-4)) if self.penumbra > 0 else math.cos(outer) + 1e-4
+        )
         aux[..., 8] = self.shadow_radius
         return aux
 
@@ -487,8 +497,17 @@ class RectAreaLight(_TargetedLight):
 
     light_type = LIGHT_AREA_SAMPLE
 
-    def __init__(self, *args, width=2.0, height=2.0, target=ORIGIN,
-                 samples=4, decay=0.0, distance=0.0, **kwargs):
+    def __init__(
+        self,
+        *args,
+        width=2.0,
+        height=2.0,
+        target=ORIGIN,
+        samples=4,
+        decay=0.0,
+        distance=0.0,
+        **kwargs,
+    ):
         self.width = _finite_number(
             "width", width, minimum=0.0, minimum_inclusive=False
         )
@@ -518,7 +537,7 @@ class RectAreaLight(_TargetedLight):
         ref = UP.reshape(-1)[:3].to(n.device).expand_as(n)
         # Fall back to a different reference axis where the normal is
         # (nearly) parallel to UP.
-        parallel = (F.cosine_similarity(n, ref, dim=-1).abs() > 0.99)
+        parallel = F.cosine_similarity(n, ref, dim=-1).abs() > 0.99
         alt = torch.tensor((1.0, 0.0, 0.0), device=n.device).expand_as(n)
         ref = torch.where(parallel.unsqueeze(-1), alt, ref)
         right = F.normalize(torch.linalg.cross(ref, n, dim=-1), p=2, dim=-1)
@@ -549,9 +568,11 @@ class RectAreaLight(_TargetedLight):
         offs_u, offs_v = torch.meshgrid(u, u, indexing="ij")
         offs = torch.stack((offs_u.flatten(), offs_v.flatten()), -1)  # [K, 2]
         offs = offs.to(location.device)
-        return (location.unsqueeze(-2)
-                + offs[..., :1] * self.width * right.unsqueeze(-2)
-                + offs[..., 1:] * self.height * up.unsqueeze(-2))
+        return (
+            location.unsqueeze(-2)
+            + offs[..., :1] * self.width * right.unsqueeze(-2)
+            + offs[..., 1:] * self.height * up.unsqueeze(-2)
+        )
 
     def build_aux(self, location):
         """Internal: pack this light's falloff, range and surface normal.

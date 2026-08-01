@@ -25,8 +25,9 @@ def test_selected_materialization_matches_full_state_for_active_mob():
 
     times = torch.tensor([start + 0.25, start + 0.75])
     timeline = scene.timeline_manager
-    with Off(record_attr_modifications=False, record_funcs=False,
-             priority_level=math.inf):
+    with Off(
+        record_attr_modifications=False, record_funcs=False, priority_level=math.inf
+    ):
         timeline.set_state_to_times(times)
         expected = active.location.clone()
         timeline.clear_buffers()

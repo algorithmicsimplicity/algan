@@ -95,6 +95,7 @@ def _surface_resolution_pair(resolution):
 
 _grid_triangle_indices_cache = {}
 
+
 def get_grid_to_triangle_indices(grid_width: int, grid_height: int, device):
     """Internal: get the vertex indices that split a grid into triangles.
 
@@ -196,17 +197,33 @@ def compute_grid_vertex_normals(grid):
     unnormalized_normals = triangle_normals.sum(-2)
 
     # Merge unnormalized normals along closed seams using vectorized masking to avoid CPU-GPU synchronization.
-    is_closed_x = torch.all((grid[..., 0, :, :] - grid[..., -1, :, :]).abs() < 1e-4, dim=(-1, -2))
+    is_closed_x = torch.all(
+        (grid[..., 0, :, :] - grid[..., -1, :, :]).abs() < 1e-4, dim=(-1, -2)
+    )
     mask_x = is_closed_x.view(*is_closed_x.shape, 1, 1)
-    closed_normals_x = unnormalized_normals[..., 0, :, :] + unnormalized_normals[..., -1, :, :]
-    unnormalized_normals[..., 0, :, :] = torch.where(mask_x, closed_normals_x, unnormalized_normals[..., 0, :, :])
-    unnormalized_normals[..., -1, :, :] = torch.where(mask_x, closed_normals_x, unnormalized_normals[..., -1, :, :])
+    closed_normals_x = (
+        unnormalized_normals[..., 0, :, :] + unnormalized_normals[..., -1, :, :]
+    )
+    unnormalized_normals[..., 0, :, :] = torch.where(
+        mask_x, closed_normals_x, unnormalized_normals[..., 0, :, :]
+    )
+    unnormalized_normals[..., -1, :, :] = torch.where(
+        mask_x, closed_normals_x, unnormalized_normals[..., -1, :, :]
+    )
 
-    is_closed_y = torch.all((grid[..., :, 0, :] - grid[..., :, -1, :]).abs() < 1e-4, dim=(-1, -2))
+    is_closed_y = torch.all(
+        (grid[..., :, 0, :] - grid[..., :, -1, :]).abs() < 1e-4, dim=(-1, -2)
+    )
     mask_y = is_closed_y.view(*is_closed_y.shape, 1, 1)
-    closed_normals_y = unnormalized_normals[..., :, 0, :] + unnormalized_normals[..., :, -1, :]
-    unnormalized_normals[..., :, 0, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, 0, :])
-    unnormalized_normals[..., :, -1, :] = torch.where(mask_y, closed_normals_y, unnormalized_normals[..., :, -1, :])
+    closed_normals_y = (
+        unnormalized_normals[..., :, 0, :] + unnormalized_normals[..., :, -1, :]
+    )
+    unnormalized_normals[..., :, 0, :] = torch.where(
+        mask_y, closed_normals_y, unnormalized_normals[..., :, 0, :]
+    )
+    unnormalized_normals[..., :, -1, :] = torch.where(
+        mask_y, closed_normals_y, unnormalized_normals[..., :, -1, :]
+    )
 
     # Rebuild the normals at singular poles (e.g. Sphere poles, Cone tip).
     # A collapsed pole column accumulates nothing usable of its own: every
@@ -289,7 +306,9 @@ def get_render_primitives_batched(surfaces):
     vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grids))
     corners = grid_to_triangle_vertices(grids)
     return [
-        s._build_render_primitive(grids[i], vertex_normals[i], precomputed_corners=corners[i])
+        s._build_render_primitive(
+            grids[i], vertex_normals[i], precomputed_corners=corners[i]
+        )
         for i, s in enumerate(surfaces)
     ]
 
@@ -398,7 +417,9 @@ class Surface(Mob):
         # vectorized ``coord_function(uv)``.  Manim instead accepts
         # ``func(u, v)``.  Support both forms without weakening the native API.
         manim_function = func
-        if manim_function is None and _looks_like_manim_surface_function(coord_function):
+        if manim_function is None and _looks_like_manim_surface_function(
+            coord_function
+        ):
             manim_function = coord_function
 
         self._func = manim_function
@@ -415,6 +436,7 @@ class Surface(Mob):
         self.stroke_width = stroke_width
 
         if manim_function is not None:
+
             def mapped_coord_function(uv):
                 u = self.u_range[0] + uv[..., 0] * (self.u_range[1] - self.u_range[0])
                 v = self.v_range[0] + uv[..., 1] * (self.v_range[1] - self.v_range[0])
@@ -538,21 +560,23 @@ class Surface(Mob):
         self.material_texture_flags = 0
         self.normal_texture = None
         material_prop_textures = {
-            'reflectivity': reflectivity_texture,
-            'roughness': roughness_texture,
-            'refractive_index': refractive_index_texture,
+            "reflectivity": reflectivity_texture,
+            "roughness": roughness_texture,
+            "refractive_index": refractive_index_texture,
         }
         material_prop_textures = {
             k: v for k, v in material_prop_textures.items() if v is not None
         }
         if material_prop_textures:
             self.material_texture, self.material_texture_flags = (
-                self._build_material_texture(material_prop_textures))
+                self._build_material_texture(material_prop_textures)
+            )
         if normal_texture is not None:
-            self.normal_texture = self._normalize_texture_shape(
-                normal_texture, 3).to(self.location.device)
+            self.normal_texture = self._normalize_texture_shape(normal_texture, 3).to(
+                self.location.device
+            )
         if glow_texture is not None:
-            kwargs['glow'] = self._bake_texture_to_grid(glow_texture)
+            kwargs["glow"] = self._bake_texture_to_grid(glow_texture)
 
         base_grid = self.get_base_grid()
         grid_points = squish(coord_function(base_grid), -3, -2) + self.location
@@ -567,11 +591,21 @@ class Surface(Mob):
             tex = color_texture
             if tex.dim() == 3:  # [W, H, 5]
                 tex_temp = tex.unsqueeze(0).permute(0, 3, 1, 2)
-                tex_temp = F.interpolate(tex_temp, size=(grid_width, grid_height), mode='bilinear', align_corners=True)
+                tex_temp = F.interpolate(
+                    tex_temp,
+                    size=(grid_width, grid_height),
+                    mode="bilinear",
+                    align_corners=True,
+                )
                 vertex_color_texture = tex_temp.permute(0, 2, 3, 1).squeeze(0)
             elif tex.dim() == 4:  # [T, W, H, 5]
                 tex_temp = tex.permute(0, 3, 1, 2)
-                tex_temp = F.interpolate(tex_temp, size=(grid_width, grid_height), mode='bilinear', align_corners=True)
+                tex_temp = F.interpolate(
+                    tex_temp,
+                    size=(grid_width, grid_height),
+                    mode="bilinear",
+                    align_corners=True,
+                )
                 vertex_color_texture = tex_temp.permute(0, 2, 3, 1)
             else:
                 vertex_color_texture = tex
@@ -611,7 +645,9 @@ class Surface(Mob):
     def func(self, u, v):
         """Evaluate the original Manim-style parametric function."""
         if self._func is None:
-            raise AttributeError("this Surface was constructed with coord_function, not func")
+            raise AttributeError(
+                "this Surface was constructed with coord_function, not func"
+            )
         return self._func(u, v)
 
     @property
@@ -642,17 +678,11 @@ class Surface(Mob):
 
         texture = torch.as_tensor(texture)
         if texture.dim() not in (3, 4) or texture.shape[-1] != 5:
-            raise ValueError(
-                "color_texture must have shape [W, H, 5] or [T, W, H, 5]"
-            )
+            raise ValueError("color_texture must have shape [W, H, 5] or [T, W, H, 5]")
         texture_height, texture_width = texture.shape[-3:-1]
         attr = f"color_texture_{texture_height * texture_width}"
 
-        if (
-            previous_attr is not None
-            and previous_attr != attr
-            and self.is_spawned()
-        ):
+        if previous_attr is not None and previous_attr != attr and self.is_spawned():
             # Keep the old texture topology on a frozen historical clone. The
             # live surface then receives a fresh timeline with the new width.
             self.detach_history()
@@ -685,8 +715,9 @@ class Surface(Mob):
         if not colors:
             return self
         converted = [
-            torch.as_tensor(color, device=self.grid.color.device, dtype=self.grid.color.dtype)
-            .reshape(-1, self.grid.color.shape[-1])[0]
+            torch.as_tensor(
+                color, device=self.grid.color.device, dtype=self.grid.color.dtype
+            ).reshape(-1, self.grid.color.shape[-1])[0]
             for color in colors
         ]
         palette = torch.stack(converted)
@@ -719,9 +750,7 @@ class Surface(Mob):
             return self
         if isinstance(entries[0], tuple) and len(entries[0]) == 2:
             colors, pivots = zip(*entries)
-            pivots = torch.as_tensor(
-                pivots, device=values.device, dtype=values.dtype
-            )
+            pivots = torch.as_tensor(pivots, device=values.device, dtype=values.dtype)
         else:
             colors = entries
             axis_range = getattr(axes, ("x_range", "y_range", "z_range")[axis], None)
@@ -811,13 +840,9 @@ class Surface(Mob):
         prepared = self._pending_auto_resolution
         self._pending_auto_resolution = None
         if prepared is None:
-            return self._update_resolution_for_current_shape(
-                allow_upsample=False
-            )
+            return self._update_resolution_for_current_shape(allow_upsample=False)
         required_width, required_height, target_function = prepared
-        width, height = self._select_auto_resolution(
-            required_width, required_height
-        )
+        width, height = self._select_auto_resolution(required_width, required_height)
         if (width, height) == (self.grid_width, self.grid_height):
             return self
         return self._change_resolution(width, height, target_function)
@@ -843,12 +868,8 @@ class Surface(Mob):
         target_width = max(current_width, required_width)
         target_height = max(current_height, required_height)
         current_work = max(current_width - 1, 1) * max(current_height - 1, 1)
-        required_work = max(required_width - 1, 1) * max(
-            required_height - 1, 1
-        )
-        shrink_boundary = current_work * (
-            1.0 - self._resolution_shrink_margin
-        )
+        required_work = max(required_width - 1, 1) * max(required_height - 1, 1)
+        shrink_boundary = current_work * (1.0 - self._resolution_shrink_margin)
         if required_work < shrink_boundary:
             return required_width, required_height
         return target_width, target_height
@@ -870,12 +891,10 @@ class Surface(Mob):
         """Return a continuous evaluator for the current world-space surface."""
         base_grid = self.get_base_grid()
         canonical = self.coord_function_active(base_grid.clone()).reshape(-1, 3)
-        current = self.grid.location.reshape(
-            -1, self.grid_width * self.grid_height, 3
-        )[0]
-        design = torch.cat(
-            (canonical, torch.ones_like(canonical[..., :1])), dim=-1
-        )
+        current = self.grid.location.reshape(-1, self.grid_width * self.grid_height, 3)[
+            0
+        ]
+        design = torch.cat((canonical, torch.ones_like(canonical[..., :1])), dim=-1)
         try:
             affine = torch.linalg.lstsq(design, current).solution
         except RuntimeError:
@@ -883,9 +902,7 @@ class Surface(Mob):
 
         def current_function(uv):
             points = self.coord_function_active(uv.clone())
-            homogeneous = torch.cat(
-                (points, torch.ones_like(points[..., :1])), dim=-1
-            )
+            homogeneous = torch.cat((points, torch.ones_like(points[..., :1])), dim=-1)
             return homogeneous @ affine
 
         return current_function
@@ -904,9 +921,8 @@ class Surface(Mob):
 
         screen_vector = camera.screen.location.reshape(-1, 3)[0] - camera_location
         screen_distance = (screen_vector * forward).sum().abs().clamp_min(1e-8)
-        pixel_scale = (
-            self.scene.video_settings.resolution[1]
-            / (2.0 * float(camera.screen_scale_factor))
+        pixel_scale = self.scene.video_settings.resolution[1] / (
+            2.0 * float(camera.screen_scale_factor)
         )
         safe_depth = depth.clamp_min(1e-8)
         x = (relative * right).sum(dim=-1) * screen_distance / safe_depth
@@ -939,8 +955,10 @@ class Surface(Mob):
         if not torch.any(visible):
             return torch.zeros((), device=approximated.device, dtype=approximated.dtype)
         return (
-            approximated_pixels[visible] - exact_pixels[visible]
-        ).norm(p=2, dim=-1).max()
+            (approximated_pixels[visible] - exact_pixels[visible])
+            .norm(p=2, dim=-1)
+            .max()
+        )
 
     def _compute_pn_geometry_error(self, coord_function, width, height):
         """Sample construction-time world error of a logical PN grid."""
@@ -954,15 +972,9 @@ class Surface(Mob):
         vertex_normals = compute_grid_vertex_normals(grid_points)
 
         triangle_uvs = grid_to_triangle_vertices(base_grid).reshape(-1, 3, 2)
-        triangle_corners = grid_to_triangle_vertices(grid_points).reshape(
-            -1, 3, 3
-        )
-        triangle_normals = grid_to_triangle_vertices(vertex_normals).reshape(
-            -1, 3, 3
-        )
-        control_points = logical_pn_control_points(
-            triangle_corners, triangle_normals
-        )
+        triangle_corners = grid_to_triangle_vertices(grid_points).reshape(-1, 3, 3)
+        triangle_normals = grid_to_triangle_vertices(vertex_normals).reshape(-1, 3, 3)
+        control_points = logical_pn_control_points(triangle_corners, triangle_normals)
         sample_uv = torch.tensor(
             [
                 [1 / 3, 1 / 3],
@@ -988,9 +1000,7 @@ class Surface(Mob):
             ),
             dim=-1,
         )
-        analytic_uv = torch.einsum(
-            "sk,pka->psa", barycentric, triangle_uvs
-        )
+        analytic_uv = torch.einsum("sk,pka->psa", barycentric, triangle_uvs)
         analytic_points = coord_function(analytic_uv.clone())
         return (pn_points - analytic_points).norm(dim=-1).max()
 
@@ -1002,25 +1012,17 @@ class Surface(Mob):
 
         def acceptable(width, height):
             try:
-                error = self._compute_pn_geometry_error(
-                    surface_function, width, height
-                )
+                error = self._compute_pn_geometry_error(surface_function, width, height)
             except Exception:
                 return False
-            return bool(
-                torch.isfinite(error).item() and error.item() <= tolerance
-            )
+            return bool(torch.isfinite(error).item() and error.item() <= tolerance)
 
         def first_acceptable(other, vary_width):
             low, high = minimum, maximum
             best = maximum
             while low <= high:
                 middle = (low + high) // 2
-                width, height = (
-                    (middle, other)
-                    if vary_width
-                    else (other, middle)
-                )
+                width, height = (middle, other) if vary_width else (other, middle)
                 if acceptable(width, height):
                     best = middle
                     high = middle - 1
@@ -1057,13 +1059,9 @@ class Surface(Mob):
                 width < maximum or height < maximum
             ):
                 if width < maximum:
-                    width = min(
-                        maximum, max(width + 1, int(width * 1.25))
-                    )
+                    width = min(maximum, max(width + 1, int(width * 1.25)))
                 if height < maximum:
-                    height = min(
-                        maximum, max(height + 1, int(height * 1.25))
-                    )
+                    height = min(maximum, max(height + 1, int(height * 1.25)))
             result = width, height
 
         if not acceptable(*result):
@@ -1092,9 +1090,7 @@ class Surface(Mob):
             best = maximum
             while low <= high:
                 middle = (low + high) // 2
-                width, height = (
-                    (middle, other) if vary_width else (other, middle)
-                )
+                width, height = (middle, other) if vary_width else (other, middle)
                 if acceptable(width, height):
                     best = middle
                     high = middle - 1
@@ -1108,9 +1104,7 @@ class Surface(Mob):
             best_width = maximum
             while low <= high:
                 width = (low + high) // 2
-                height = min(
-                    maximum, max(minimum, int(round(width * ratio)))
-                )
+                height = min(maximum, max(minimum, int(round(width * ratio))))
                 if acceptable(width, height):
                     best_width = width
                     high = width - 1
@@ -1122,9 +1116,7 @@ class Surface(Mob):
 
         width = first_acceptable(maximum, vary_width=True)
         height = first_acceptable(maximum, vary_width=False)
-        while not acceptable(width, height) and (
-            width < maximum or height < maximum
-        ):
+        while not acceptable(width, height) and (width < maximum or height < maximum):
             if width < maximum:
                 width = min(maximum, max(width + 1, int(width * 1.25)))
             if height < maximum:
@@ -1135,9 +1127,7 @@ class Surface(Mob):
     def _resample_grid_value(value, old_width, old_height, new_width, new_height):
         leading_shape = value.shape[:-2]
         channels = value.shape[-1]
-        image = value.reshape(
-            -1, old_width, old_height, channels
-        ).permute(0, 3, 1, 2)
+        image = value.reshape(-1, old_width, old_height, channels).permute(0, 3, 1, 2)
         resized = F.interpolate(
             image,
             size=(new_width, new_height),
@@ -1242,9 +1232,7 @@ class Surface(Mob):
                 surface_mask = torch.isin(edit["indexes"], surface_rows)
                 if not torch.any(surface_mask):
                     continue
-                captured_event[f"pre_{edit['attr']}"] = edit["values"][
-                    :, surface_mask
-                ]
+                captured_event[f"pre_{edit['attr']}"] = edit["values"][:, surface_mask]
         return captured, owner_rows
 
     def _map_resolution_boundary_block(
@@ -1559,7 +1547,7 @@ class Surface(Mob):
         device = self.location.device
         grid_u = torch.linspace(0, 1, W, device=device)
         grid_v = torch.linspace(0, 1, H, device=device)
-        grid_uu, grid_vv = torch.meshgrid(grid_u, grid_v, indexing='ij')
+        grid_uu, grid_vv = torch.meshgrid(grid_u, grid_v, indexing="ij")
         base_grid = torch.stack([grid_uu, grid_vv], dim=-1)
 
         grid_points = coord_function(base_grid.clone())
@@ -1570,15 +1558,18 @@ class Surface(Mob):
         corners_3d = triangle_corners.reshape(-1, 3, 3)
         uvs_2d = triangle_uvs.reshape(-1, 3, 2)
 
-        bary_coords = torch.tensor([
-            [1/3, 1/3],
-            [1/2, 0.0],
-            [0.0, 1/2],
-            [1/2, 1/2],
-            [1/6, 1/6],
-            [1/6, 2/3],
-            [2/3, 1/6]
-        ], device=device)
+        bary_coords = torch.tensor(
+            [
+                [1 / 3, 1 / 3],
+                [1 / 2, 0.0],
+                [0.0, 1 / 2],
+                [1 / 2, 1 / 2],
+                [1 / 6, 1 / 6],
+                [1 / 6, 2 / 3],
+                [2 / 3, 1 / 6],
+            ],
+            device=device,
+        )
 
         u = bary_coords[:, 0].view(1, -1, 1)
         v = bary_coords[:, 1].view(1, -1, 1)
@@ -1602,7 +1593,7 @@ class Surface(Mob):
         device = self.location.device
         grid_u = torch.linspace(0, 1, W, device=device)
         grid_v = torch.linspace(0, 1, H, device=device)
-        grid_uu, grid_vv = torch.meshgrid(grid_u, grid_v, indexing='ij')
+        grid_uu, grid_vv = torch.meshgrid(grid_u, grid_v, indexing="ij")
         base_grid = torch.stack([grid_uu, grid_vv], dim=-1)
 
         grid_points = coord_function(base_grid.clone())
@@ -1625,18 +1616,22 @@ class Surface(Mob):
             pn_control_points,
             pn_patch_coefficients,
         )
+
         control_points = pn_control_points(corners_3d, normals_3d)
         coefficients = pn_patch_coefficients(control_points)
 
-        bary_coords = torch.tensor([
-            [1/3, 1/3],
-            [1/2, 0.0],
-            [0.0, 1/2],
-            [1/2, 1/2],
-            [1/6, 1/6],
-            [1/6, 2/3],
-            [2/3, 1/6]
-        ], device=device)
+        bary_coords = torch.tensor(
+            [
+                [1 / 3, 1 / 3],
+                [1 / 2, 0.0],
+                [0.0, 1 / 2],
+                [1 / 2, 1 / 2],
+                [1 / 6, 1 / 6],
+                [1 / 6, 2 / 3],
+                [2 / 3, 1 / 6],
+            ],
+            device=device,
+        )
 
         coefs = coefficients.unsqueeze(1)
         u = bary_coords[:, 0].unsqueeze(0)
@@ -1669,14 +1664,16 @@ class Surface(Mob):
             if channels != 1:
                 raise ValueError(
                     f"a 2-D texture is only valid for single-channel "
-                    f"properties, expected {channels} channels")
+                    f"properties, expected {channels} channels"
+                )
             tex = tex.unsqueeze(-1)
         if tex.dim() == 3:
             tex = tex.unsqueeze(0)
         if tex.dim() != 4 or tex.shape[-1] != channels:
             raise ValueError(
                 f"texture must have shape [W, H, {channels}] or "
-                f"[T, W, H, {channels}], got {tuple(tex.shape)}")
+                f"[T, W, H, {channels}], got {tuple(tex.shape)}"
+            )
         return tex
 
     def _build_material_texture(self, textures_dict):
@@ -1686,11 +1683,12 @@ class Surface(Mob):
         channels are texture-driven (bit i = channel i has a map; unset
         channels keep the per-vertex value in-kernel).
         """
-        channel_slots = {'reflectivity': 0, 'roughness': 1,
-                         'refractive_index': 2}
+        channel_slots = {"reflectivity": 0, "roughness": 1, "refractive_index": 2}
         device = self.location.device
-        texs = {k: self._normalize_texture_shape(v, 1).to(device)
-                for k, v in textures_dict.items()}
+        texs = {
+            k: self._normalize_texture_shape(v, 1).to(device)
+            for k, v in textures_dict.items()
+        }
         T = max(t.shape[0] for t in texs.values())
         W = max(t.shape[1] for t in texs.values())
         H = max(t.shape[2] for t in texs.values())
@@ -1698,9 +1696,12 @@ class Surface(Mob):
         flags = 0
         for name, t in texs.items():
             if t.shape[1:3] != (W, H):
-                t = F.interpolate(t.permute(0, 3, 1, 2), size=(W, H),
-                                  mode='bilinear', align_corners=True
-                                  ).permute(0, 2, 3, 1)
+                t = F.interpolate(
+                    t.permute(0, 3, 1, 2),
+                    size=(W, H),
+                    mode="bilinear",
+                    align_corners=True,
+                ).permute(0, 2, 3, 1)
             slot = channel_slots[name]
             combined[..., slot] = t.expand(T, W, H, 1)[..., 0]
             flags |= 1 << slot
@@ -1715,11 +1716,14 @@ class Surface(Mob):
         if t.shape[0] != 1:
             raise ValueError(
                 "glow textures must be static (no time "
-                f"dimension), got {tuple(t.shape)}")
-        t = F.interpolate(t.permute(0, 3, 1, 2),
-                          size=(self.grid_width, self.grid_height),
-                          mode='bilinear', align_corners=True
-                          ).permute(0, 2, 3, 1)
+                f"dimension), got {tuple(t.shape)}"
+            )
+        t = F.interpolate(
+            t.permute(0, 3, 1, 2),
+            size=(self.grid_width, self.grid_height),
+            mode="bilinear",
+            align_corners=True,
+        ).permute(0, 2, 3, 1)
         return squish(t, -3, -2).squeeze(0)
 
     def get_memory_used_per_timestep(self) -> int:
@@ -1777,7 +1781,9 @@ class Surface(Mob):
         """
         grid = unsquish(self.grid.location, -2, self.grid_height)
         if not self.ignore_normals:
-            vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grid))
+            vertex_normals = grid_to_triangle_vertices(
+                compute_grid_vertex_normals(grid)
+            )
         else:
             vertex_normals = None
         return self._build_render_primitive(grid, vertex_normals)
@@ -1790,6 +1796,7 @@ class Surface(Mob):
         vertex normals. ``precomputed_corners`` lets the batched path pass in
         corners gathered on the whole surface stack at once.
         """
+
         def expand_grid_to_verts(x):
             if x.shape[-2] == 1:
                 x = x.expand(
@@ -1806,18 +1813,31 @@ class Surface(Mob):
 
         uvs = None
         texture_map = None
-        material_texture_map = getattr(self, 'material_texture', None)
-        material_texture_flags = getattr(self, 'material_texture_flags', 0)
-        normal_texture_map = getattr(self, 'normal_texture', None)
-        if (self.color_texture is not None or material_texture_map is not None
-                or normal_texture_map is not None):
+        material_texture_map = getattr(self, "material_texture", None)
+        material_texture_flags = getattr(self, "material_texture_flags", 0)
+        normal_texture_map = getattr(self, "normal_texture", None)
+        if (
+            self.color_texture is not None
+            or material_texture_map is not None
+            or normal_texture_map is not None
+        ):
             # Generate UV coordinates for the triangle corners from the base grid
             base_grid = self.get_base_grid()
-            uvs = grid_to_triangle_vertices(base_grid).unsqueeze(0)  # [1, num_triangles * 3, 2]
+            uvs = grid_to_triangle_vertices(base_grid).unsqueeze(
+                0
+            )  # [1, num_triangles * 3, 2]
         if self.color_texture is not None:
-            texture_map = (self.color_texture
-                          ).view(self.color_texture.shape[0], self.texture_height, self.texture_width,
-                                 5).as_subclass(Color).mult_opacity(self.opacity.unsqueeze(-2))
+            texture_map = (
+                (self.color_texture)
+                .view(
+                    self.color_texture.shape[0],
+                    self.texture_height,
+                    self.texture_width,
+                    5,
+                )
+                .as_subclass(Color)
+                .mult_opacity(self.opacity.unsqueeze(-2))
+            )
 
         colors = expand_grid_to_verts(compute_grid_color())
         corners = (
@@ -1903,7 +1923,11 @@ class Surface(Mob):
         torch.Tensor
             The ``(u, v)`` coordinates, shape ``[W, H, 2]``.
         """
-        device = self.grid.location.device if hasattr(self, "grid") and hasattr(self.grid, "location") else None
+        device = (
+            self.grid.location.device
+            if hasattr(self, "grid") and hasattr(self.grid, "location")
+            else None
+        )
         cache_key = (self.grid_width, self.grid_height, device)
         if getattr(self, "_cached_base_grid_key", None) != cache_key:
             grid = torch.stack(
@@ -1971,13 +1995,12 @@ class Surface(Mob):
         :class:`~algan.mobs.surfaces.surface.Surface`
             This surface, so calls can be chained.
         """
+
         def target_function(uv):
             return function(uv.clone()) + self.location
 
         self.coord_function_active = function
-        new_loc = target_function(
-            squish(self.get_base_grid(), -3, -2).unsqueeze(0)
-        )
+        new_loc = target_function(squish(self.get_base_grid(), -3, -2).unsqueeze(0))
         self.grid.location = new_loc
         return self
 

@@ -27,21 +27,27 @@ _color_rng = torch.Generator(device=_ANIMATION_DEVICE).manual_seed(COLOR_JITTER_
 
 def tweak_color(c, strength=0.2, min_strength=0.0):
     t = torch.rand((1,), generator=_color_rng).item()
-    t = t * strength + (1-t) * min_strength
-    #m = torch.randint(0, 2, (1,), generator=_color_rng)
-    #target_c = WHITE * m + (1 - m) * BLACK
-    target_c = c.set_rgb(torch.rand(c.rgb.shape, device=c.rgb.device, dtype=c.rgb.dtype, generator=_color_rng))
+    t = t * strength + (1 - t) * min_strength
+    # m = torch.randint(0, 2, (1,), generator=_color_rng)
+    # target_c = WHITE * m + (1 - m) * BLACK
+    target_c = c.set_rgb(
+        torch.rand(
+            c.rgb.shape, device=c.rgb.device, dtype=c.rgb.dtype, generator=_color_rng
+        )
+    )
     return c * (1 - t) + t * target_c
+
 
 gs = 0.75
 
+
 class Synapse(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
-        grid_height = 20#None
+        grid_height = 20  # None
         grid_width = 12
-        if 'color' in kwargs:
-            c = kwargs['color']
-            kwargs['color'] = tweak_color(c, strength=0.25, min_strength=0.25)
+        if "color" in kwargs:
+            c = kwargs["color"]
+            kwargs["color"] = tweak_color(c, strength=0.25, min_strength=0.25)
         super().__init__(grid_height=grid_height, grid_width=grid_width, **kwargs)
         self.scale(0.02)
 
@@ -61,7 +67,7 @@ class Neuron(Mob):
         self.synapses = [
             self.synapse_cls(
                 grid_height, scene=self.scene, color=neuron_color
-                ).move_between_points(input_location, self.location)
+            ).move_between_points(input_location, self.location)
             for input_location in input_locs
         ]
         self.add_children(self.core, self.shell, self.synapses)
@@ -109,22 +115,24 @@ class SynapseV2(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
         grid_height = 20
         grid_width = 12
-        c = kwargs.get('color')
+        c = kwargs.get("color")
         if c is not None:
             c = tweak_color(c, strength=0.25, min_strength=0.25)
-            kwargs['color'] = c
+            kwargs["color"] = c
         else:
             c = WHITE
         super().__init__(grid_height=grid_height, grid_width=grid_width, **kwargs)
         # Fill light comes from env_map_intensity (ambient = albedo * 0.1 * env)
         # rather than emissive, so it tracks the albedo during colour-wave
         # pulses instead of tinting them with the resting colour.
-        self.set_material(MeshStandardMaterial(
-            color=c.set_glow(0.04),
-            roughness=0.3,
-            metalness=0.0,
-            envMapIntensity=4.5,
-        ))
+        self.set_material(
+            MeshStandardMaterial(
+                color=c.set_glow(0.04),
+                roughness=0.3,
+                metalness=0.0,
+                envMapIntensity=4.5,
+            )
+        )
         self.scale(0.02)
 
 
@@ -173,6 +181,7 @@ class NeuronV2(Neuron):
             .scale(0.21)
         )
 
+
 k = 1
 
 
@@ -180,7 +189,10 @@ def zap(mob1, mob2, color=BLUE, direction=UP, num_points=3):
     with Off(animation_manager=mob1.animation_manager):
         p1 = mob1.get_points_evenly_along_direction(direction)
         p2 = mob2.get_points_evenly_along_direction(direction)
-        syns = [Synapse(scene=mob1.scene).move_between_points(p1[i], p2[i]) for i in range(num_points)]
+        syns = [
+            Synapse(scene=mob1.scene).move_between_points(p1[i], p2[i])
+            for i in range(num_points)
+        ]
         for s in syns:
             for _ in s.get_descendants():
                 if not _.is_primitive:
@@ -299,7 +311,7 @@ class NeuralNetMLP(Mob):
         o = self.forward(
             input_values, output_generator, run_time, reset=False, color=forward_color
         )  # .get_component_mobs())
-        #o.move_next_to(label, -self.get_right_direction())
+        # o.move_next_to(label, -self.get_right_direction())
         self.backward(o, label, color=backward_color, run_time=run_time)
         o.despawn()
         return self
@@ -334,18 +346,18 @@ class NeuralNetMLP(Mob):
             for n in self.layers[0]:
                 for syn in n.synapses:
                     syn.move_between_points(
-                        n.location + self.get_forward_direction() * self.input_synapse_offset,
                         n.location
+                        + self.get_forward_direction() * self.input_synapse_offset,
+                        n.location,
                     )  # , n.location)
-            '''with Off():
+            """with Off():
                 for n in self.layers[0]:
                     for syn in n.synapses:
                         syn.location = n.location + self.get_forward_direction() * self.input_synapse_offset * 0.5
                         syn.basis = torch.cat([-self.get_upwards_direction() * syn.scale_coefficient[...,:1],
                                                self.get_forward_direction() * self.input_synapse_offset,
                                                -self.get_right_direction() * syn.scale_coefficient[...,2:]], -1)
-                        syn.set_location_by_function(syn.coord_function)'''
-
+                        syn.set_location_by_function(syn.coord_function)"""
 
     def backward(
         self, output=None, label=None, color=PURE_BLUE * k + (1 - k) * WHITE, run_time=3
@@ -372,23 +384,33 @@ class NeuralNetMLP(Mob):
         layers = self.layers
 
         def pulse_synapses(neuron):
-            with Sync(rate_func=pulse_fade, animation_manager=neuron.animation_manager):#ease_out_expo):
+            with Sync(
+                rate_func=pulse_fade, animation_manager=neuron.animation_manager
+            ):  # ease_out_expo):
                 for synapse in neuron.synapses:
-                    synapse.wave_color(color + GLOW * 1, 0.7, reverse,
-                                       direction=self.get_forward_direction(),
-                                       new_color=tweak_color(synapse.color, 0.33) if reverse else None)
+                    synapse.wave_color(
+                        color + GLOW * 1,
+                        0.7,
+                        reverse,
+                        direction=self.get_forward_direction(),
+                        new_color=tweak_color(synapse.color, 0.33) if reverse else None,
+                    )
 
         def pulse_neuron(neuron):
-            with Sync(run_time=1.1, rate_func=delay_fade, animation_manager=neuron.animation_manager):#lambda t: pulse_fade(t, inflection=1.0)):
+            with Sync(
+                run_time=1.1,
+                rate_func=delay_fade,
+                animation_manager=neuron.animation_manager,
+            ):  # lambda t: pulse_fade(t, inflection=1.0)):
                 for n in [neuron.core, neuron.shell]:
                     n.wave_color(
-                        (color + GLOW * 0.8),#.set_opacity(
-                            #1 / neuron.shell.opacity.clamp_min(1e-5)
-                        #),
+                        (color + GLOW * 0.8),  # .set_opacity(
+                        # 1 / neuron.shell.opacity.clamp_min(1e-5)
+                        # ),
                         1,
                         reverse,
                         lag_duration=0.5,
-                        direction = self.get_forward_direction()
+                        direction=self.get_forward_direction(),
                     )
 
         pulse_funcs = [pulse_synapses, pulse_neuron]
@@ -397,7 +419,9 @@ class NeuralNetMLP(Mob):
             layers = list(reversed(layers))
 
         with Seq(animation_manager=self.animation_manager):
-            with Lag(0.70, rate_func=identity, animation_manager=self.animation_manager):  # , run_time=run_time):
+            with Lag(
+                0.70, rate_func=identity, animation_manager=self.animation_manager
+            ):  # , run_time=run_time):
                 for layer in layers:
                     with Sync(animation_manager=self.animation_manager):
                         for neuron in layer:
@@ -411,7 +435,9 @@ class NeuralNetMLP(Mob):
                 return
             with Off(animation_manager=self.animation_manager):
                 output = output_generator().move_next_to(
-                    self.layers[-1][len(self.layers[-1]) // 2], self.get_forward_direction(), buffer=0
+                    self.layers[-1][len(self.layers[-1]) // 2],
+                    self.get_forward_direction(),
+                    buffer=0,
                 )
                 for _ in output.get_descendants():
                     if not _.is_primitive:
@@ -420,7 +446,10 @@ class NeuralNetMLP(Mob):
                 output.spawn(animate=False)
             with Seq(run_time=3, animation_manager=self.animation_manager):
                 output.wave_color(
-                    color + GLOW, direction=self.get_forward_direction(), opacity=1, wave_length=1.5
+                    color + GLOW,
+                    direction=self.get_forward_direction(),
+                    opacity=1,
+                    wave_length=1.5,
                 )
             return output
 
@@ -433,10 +462,10 @@ class SynapseV3(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
         grid_height = 20
         grid_width = 12
-        c = kwargs.get('color')
+        c = kwargs.get("color")
         if c is not None:
             c = tweak_color(c, strength=0.25, min_strength=0.25)
-            kwargs['color'] = c
+            kwargs["color"] = c
         else:
             c = WHITE
         super().__init__(grid_height=grid_height, grid_width=grid_width, **kwargs)
@@ -449,7 +478,7 @@ class SynapseV3(Cylinder):
             envMapIntensity=5.0,
         ))"""
         self.color = c
-        #self.set_material(MeshBasicMaterial(color=c.set_glow(0.04)))
+        # self.set_material(MeshBasicMaterial(color=c.set_glow(0.04)))
         self.set_shader(None)
         self.scale(0.01)
 
@@ -470,7 +499,7 @@ class NeuronV3(Neuron):
             clearcoat=1.0,
             clearcoatRoughness=0.08,
             envMapIntensity=4.0,
-            #reflectivity=1.0
+            # reflectivity=1.0
         )
         return (
             Sphere(
@@ -499,7 +528,7 @@ class NeuronV3(Neuron):
             sheenColor=rim_color,
             envMapIntensity=5.0,
             transmission=0.0,
-            ior=5
+            ior=5,
         )
         return (
             Sphere(

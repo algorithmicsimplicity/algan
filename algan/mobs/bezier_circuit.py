@@ -26,8 +26,7 @@ def _border_width_in_render_pixels(border_width, video_settings):
     width in pixels: a filled circuit lays it inside the outline, an unfilled one
     centres it on the path (``_circuit_point_region``).
     """
-    return (border_width * video_settings.resolution[1]
-            / PREVIEW.resolution[1])
+    return border_width * video_settings.resolution[1] / PREVIEW.resolution[1]
 
 
 def _circuit_ior(ior, metalness):
@@ -49,15 +48,14 @@ def _circuit_location_and_basis(control_points):
     mx = control_points.amax(-2)
     location = (mn + mx) * 0.5
     if (mx - mn).norm(p=2, dim=-1) <= 1e-6:
-        basis = squish(torch.eye(3, device=control_points.device,
-                                  dtype=control_points.dtype))
+        basis = squish(
+            torch.eye(3, device=control_points.device, dtype=control_points.dtype)
+        )
         return location, basis.reshape(-1)
 
     disps = control_points - location
     dists = disps.norm(p=2, dim=-1, keepdim=True)
-    first_basis = disps[
-        ..., dists.argmax(-2, keepdim=True).squeeze(), :
-    ].unsqueeze(-2)
+    first_basis = disps[..., dists.argmax(-2, keepdim=True).squeeze(), :].unsqueeze(-2)
     if first_basis.norm(p=2, dim=-1) <= 1e-4:
         first_basis = RIGHT.to(control_points) * 1e-4
     first_basis_n = F.normalize(first_basis, p=2, dim=-1)
@@ -79,7 +77,6 @@ def _circuit_location_and_basis(control_points):
     )
     basis = torch.cat((first_basis, second_basis, third_basis_n), -1)
     return location, basis.reshape(-1)
-
 
 
 class BezierCircuitCubic(Mob):
@@ -179,8 +176,7 @@ class BezierCircuitCubic(Mob):
         views.
         """
         batches = [
-            cast_to_tensor(points).reshape(-1, 3)
-            for points in control_point_batches
+            cast_to_tensor(points).reshape(-1, 3) for points in control_point_batches
         ]
         if not batches:
             raise ValueError("from_batches requires at least one bezier circuit")
@@ -200,7 +196,11 @@ class BezierCircuitCubic(Mob):
         bases = torch.stack(bases, -2).unsqueeze(0)
         count = len(batches)
 
-        with Off(record_funcs=False, record_attr_modifications=False, animation_manager=mob.animation_manager):
+        with Off(
+            record_funcs=False,
+            record_attr_modifications=False,
+            animation_manager=mob.animation_manager,
+        ):
             for attr in mob.animatable_attrs:
                 try:
                     value = getattr(mob, attr)
@@ -216,9 +216,7 @@ class BezierCircuitCubic(Mob):
                     ).contiguous()
                 mob.setattr_and_rebatch_without_record(attr, value)
 
-            mob.texture_points.parent_batch_sizes = torch.ones(
-                count, dtype=torch.long
-            )
+            mob.texture_points.parent_batch_sizes = torch.ones(count, dtype=torch.long)
             for attr in mob.texture_points.animatable_attrs:
                 try:
                     value = getattr(mob.texture_points, attr)
@@ -238,9 +236,7 @@ class BezierCircuitCubic(Mob):
         return mob
 
     def get_animatable_attrs(self):
-        return {"border_width", "border_color"}.union(
-            super().get_animatable_attrs()
-        )
+        return {"border_width", "border_color"}.union(super().get_animatable_attrs())
 
     def get_default_color(self):
         return PURPLE
@@ -296,7 +292,8 @@ class BezierCircuitCubic(Mob):
                 self.basis,
                 self.glow,
                 _border_width_in_render_pixels(
-                    self.border_width, self.scene.video_settings),
+                    self.border_width, self.scene.video_settings
+                ),
                 self.border_color,
                 metalness,
                 roughness,
@@ -329,9 +326,21 @@ class BezierCircuitCubic(Mob):
         )
 
     def _get_render_primitives(
-        self, x, tpc, loc, basis, o, n, g, bw, bc, reflectivity,
-        roughness, refractive_index, transmission,
-        num_segments_per_circuit=None
+        self,
+        x,
+        tpc,
+        loc,
+        basis,
+        o,
+        n,
+        g,
+        bw,
+        bc,
+        reflectivity,
+        roughness,
+        refractive_index,
+        transmission,
+        num_segments_per_circuit=None,
     ):
         # x = unsquish(x, -2, num_control_points)
         # assert x.shape == [*, N, num_control_points, 3], where N is number of bezier segments.
@@ -383,7 +392,7 @@ class BezierCircuitCubic(Mob):
                         )
                         - starting_inds[i]
                     )
-            #num_segments_per_circuit = torch.stack(num_segments_per_circuit, 0)
+            # num_segments_per_circuit = torch.stack(num_segments_per_circuit, 0)
             num_segments_per_circuit = torch.tensor(
                 [x.shape[-3]], device=x.device, dtype=torch.long
             )
@@ -425,7 +434,6 @@ class BezierCircuitCubic(Mob):
         total_control_points = self._original_control_points.shape[-2]
         points = self._original_control_points.expand(num_frames, -1, -1)
 
-
         if self.control_points.parent_batch_sizes is not None:
             num_mobs = len(self.control_points.parent_batch_sizes)
         else:
@@ -443,11 +451,13 @@ class BezierCircuitCubic(Mob):
             t = t.unsqueeze(0)
         if t.shape[1] != num_mobs:
             t = t.expand(-1, num_mobs, -1)
-        t = t.unsqueeze(-1) # (num_frames, num_mobs, 1, 1)
+        t = t.unsqueeze(-1)  # (num_frames, num_mobs, 1, 1)
 
         # Calculate local b parameters
         inds_local = torch.arange(N_per_mob, device=points.device, dtype=points.dtype)
-        b = (N_per_mob * t - inds_local.view(1, 1, N_per_mob, 1)).clamp(0.0, 1.0) # (num_frames, num_mobs, N_per_mob, 1, 1)
+        b = (N_per_mob * t - inds_local.view(1, 1, N_per_mob, 1)).clamp(
+            0.0, 1.0
+        )  # (num_frames, num_mobs, N_per_mob, 1, 1)
 
         # Portion matrix coefficients for each segment
         mb = 1.0 - b
@@ -457,7 +467,11 @@ class BezierCircuitCubic(Mob):
         mb3 = mb2 * mb
 
         # Construct portion_matrix of shape (num_frames, num_mobs, N_per_mob, 4, 4)
-        portion_matrix = torch.zeros((num_frames, num_mobs, N_per_mob, 4, 4), device=points.device, dtype=points.dtype)
+        portion_matrix = torch.zeros(
+            (num_frames, num_mobs, N_per_mob, 4, 4),
+            device=points.device,
+            dtype=points.dtype,
+        )
         portion_matrix[..., 0, 0] = 1.0
 
         portion_matrix[..., 1, 0] = mb.squeeze(-1)
@@ -497,13 +511,9 @@ class BezierCircuitCubic(Mob):
 
         start_t = frame_values(start_t, "start_t")
         end_t = frame_values(end_t, "end_t")
-        num_frames = max(
-            full_control_points.shape[0], start_t.numel(), end_t.numel()
-        )
+        num_frames = max(full_control_points.shape[0], start_t.numel(), end_t.numel())
         if full_control_points.shape[0] == 1:
-            full_control_points = full_control_points.expand(
-                num_frames, -1, -1
-            )
+            full_control_points = full_control_points.expand(num_frames, -1, -1)
         elif full_control_points.shape[0] != num_frames:
             raise ValueError(
                 "full_control_points must have one row or one row per frame"
@@ -563,9 +573,7 @@ class BezierCircuitCubic(Mob):
             + b_t**3 * P3
         )
 
-        u = torch.where(
-            b_t > 1e-6, local_a.squeeze(-1) / b_t, torch.zeros_like(b_t)
-        )
+        u = torch.where(b_t > 1e-6, local_a.squeeze(-1) / b_t, torch.zeros_like(b_t))
         u = torch.clamp(u, 0.0, 1.0)
         mu = 1.0 - u
 
@@ -579,9 +587,6 @@ class BezierCircuitCubic(Mob):
         )
         self.control_points.location = new_points
         return self
-
-
-
 
 
 class BezierCurveCubic(BezierCircuitCubic):
@@ -623,8 +628,12 @@ def build_render_primitives_batched(actors, scene):
         for m in mobs:
             r = tl.ranges_for(m.id)
             if r.pairs is None:  # non-contiguous rows (defensive)
-                return tl.get(RowRanges(None, tensor=torch.cat(
-                    [tl.mob_id_to_inds[mm.id] for mm in mobs])))
+                return tl.get(
+                    RowRanges(
+                        None,
+                        tensor=torch.cat([tl.mob_id_to_inds[mm.id] for mm in mobs]),
+                    )
+                )
             for b, e in r.pairs:
                 if pairs and pairs[-1][1] == b:
                     pairs[-1] = (pairs[-1][0], e)
@@ -653,23 +662,24 @@ def build_render_primitives_batched(actors, scene):
     # (see _derive_material_surface_params). ``o`` is left alone.
     transmission = read_optional_material("transmission", 0.0).clamp(0.0, 1.0)
     refractive_index = _circuit_ior(
-        read_optional_material("ior", DIELECTRIC_IOR), reflectivity)
+        read_optional_material("ior", DIELECTRIC_IOR), reflectivity
+    )
     basis = read("basis", actors)
     g = read("glow", actors)
     bw = _border_width_in_render_pixels(
-        read("border_width", actors), scene.video_settings)
+        read("border_width", actors), scene.video_settings
+    )
     bc = read("border_color", actors)
     loc = read("location", actors)
-    o, basis, g, bw, bc = broadcast_all([o, basis, g, bw, bc],
-                                            ignored_dims=[-1])
+    o, basis, g, bw, bc = broadcast_all([o, basis, g, bw, bc], ignored_dims=[-1])
     cp = read("location", [a.control_points for a in actors])
     tpc = read("color", [a.texture_points for a in actors])
 
     # --- circuit topology (mirrors _get_render_primitives) ---
     loc_inds = timeline.attr_to_timeline["location"].mob_id_to_inds
     seg_counts = torch.tensor(
-        [loc_inds[a.control_points.id].numel() // 4 for a in actors],
-        dtype=torch.long)
+        [loc_inds[a.control_points.id].numel() // 4 for a in actors], dtype=torch.long
+    )
     x = unsquish(cp, -2, 4)  # [T, S_total, 4, 3]
     S_tot = x.shape[-3]
     seg_offsets = seg_counts.cumsum(0) - seg_counts
@@ -684,12 +694,12 @@ def build_render_primitives_batched(actors, scene):
     # Per-actor wrap-around neighbours: each actor's own roll(+-1, -3).
     prev_idx = torch.where(local == 0, off_of_seg + last_local, gidx - 1)
     next_idx = torch.where(local == last_local, off_of_seg, gidx + 1)
-    circuit_start_mask = (
-        start_points - end_points.index_select(-3, prev_idx)
-    ).norm(p=2, dim=-1, keepdim=True) > 1e-5
-    circuit_end_mask = (
-        end_points - start_points.index_select(-3, next_idx)
-    ).norm(p=2, dim=-1, keepdim=True) > 1e-5
+    circuit_start_mask = (start_points - end_points.index_select(-3, prev_idx)).norm(
+        p=2, dim=-1, keepdim=True
+    ) > 1e-5
+    circuit_end_mask = (end_points - start_points.index_select(-3, next_idx)).norm(
+        p=2, dim=-1, keepdim=True
+    ) > 1e-5
 
     local_col = local.view(-1, 1, 1)
     off_col = off_of_seg.view(-1, 1, 1)
@@ -697,13 +707,14 @@ def build_render_primitives_batched(actors, scene):
     # index space: candidate values are per-actor monotone blocks (every
     # actor's candidates are >= its offset and below the next actor's), so
     # one global cummax restarts cleanly at every actor boundary.
-    circuit_start_inds = torch.where(circuit_start_mask, local_col + off_col,
-                                     off_col)
+    circuit_start_inds = torch.where(circuit_start_mask, local_col + off_col, off_col)
     circuit_start_inds = torch.cummax(circuit_start_inds, -3)[0] - off_col
     next_segment_inds = torch.where(
-        local == last_local, torch.zeros_like(local), local + 1).view(-1, 1, 1)
-    next_segment_inds = torch.where(circuit_end_mask, circuit_start_inds,
-                                    next_segment_inds)
+        local == last_local, torch.zeros_like(local), local + 1
+    ).view(-1, 1, 1)
+    next_segment_inds = torch.where(
+        circuit_end_mask, circuit_start_inds, next_segment_inds
+    )
     next_segment_inds_offset = next_segment_inds - local_col  # [T, S, 1, 1]
 
     # --- texture colors (mirrors the ``c`` construction) ---
@@ -741,9 +752,9 @@ def build_render_primitives_batched(actors, scene):
     cols = colors.to(device)
     if ntp == 0:
         cols = cols.squeeze(-2)
-    mega.next_segment_inds = (
-        next_segment_inds_offset.to(device)
-        + torch.arange(S_tot, device=device).view(-1, 1, 1))
+    mega.next_segment_inds = next_segment_inds_offset.to(device) + torch.arange(
+        S_tot, device=device
+    ).view(-1, 1, 1)
     mega.normals = normals.to(device)
     mega.border_width = bw.to(device)
     mega.border_color = bc.to(device)
@@ -751,8 +762,9 @@ def build_render_primitives_batched(actors, scene):
     T = loc.shape[0]
 
     def per_actor_int(vals):
-        return (torch.tensor([float(v) for v in vals]).view(1, M, 1).int()
-                .expand(T, -1, -1))
+        return (
+            torch.tensor([float(v) for v in vals]).view(1, M, 1).int().expand(T, -1, -1)
+        )
 
     mega.mob_center = loc.to(device)
     # NB: the triangle_collection constructor assigns each primitive's

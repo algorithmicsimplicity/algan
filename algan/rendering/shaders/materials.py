@@ -32,6 +32,7 @@ sampled; a one-time warning is emitted when such a slot is set. ``wireframe``,
 normal and depth materials use documented approximations (see
 :mod:`algan.rendering.shaders.material_shaders`).
 """
+
 from __future__ import annotations
 
 import math
@@ -68,15 +69,38 @@ BackSide = 1
 DoubleSide = 2
 
 # Image-based property names accepted for API parity but never sampled.
-_TEXTURE_SLOTS = frozenset({
-    "map", "alphaMap", "aoMap", "envMap", "lightMap", "bumpMap", "normalMap",
-    "displacementMap", "roughnessMap", "metalnessMap", "emissiveMap",
-    "specularMap", "gradientMap", "matcap", "clearcoatMap",
-    "clearcoatRoughnessMap", "clearcoatNormalMap", "sheenColorMap",
-    "sheenRoughnessMap", "transmissionMap", "thicknessMap", "iridescenceMap",
-    "iridescenceThicknessMap", "specularIntensityMap", "specularColorMap",
-    "normalScale", "displacementScale", "displacementBias",
-})
+_TEXTURE_SLOTS = frozenset(
+    {
+        "map",
+        "alphaMap",
+        "aoMap",
+        "envMap",
+        "lightMap",
+        "bumpMap",
+        "normalMap",
+        "displacementMap",
+        "roughnessMap",
+        "metalnessMap",
+        "emissiveMap",
+        "specularMap",
+        "gradientMap",
+        "matcap",
+        "clearcoatMap",
+        "clearcoatRoughnessMap",
+        "clearcoatNormalMap",
+        "sheenColorMap",
+        "sheenRoughnessMap",
+        "transmissionMap",
+        "thicknessMap",
+        "iridescenceMap",
+        "iridescenceThicknessMap",
+        "specularIntensityMap",
+        "specularColorMap",
+        "normalScale",
+        "displacementScale",
+        "displacementBias",
+    }
+)
 
 
 def _to_rgb(value):
@@ -146,8 +170,7 @@ class Material:
         unexpected = set(texture_kwargs) - _TEXTURE_SLOTS
         if unexpected:
             raise TypeError(
-                f"{type(self).__name__} got unexpected keyword(s): "
-                f"{sorted(unexpected)}"
+                f"{type(self).__name__} got unexpected keyword(s): {sorted(unexpected)}"
             )
 
     # -- shader parameters ------------------------------------------------
@@ -184,11 +207,15 @@ class Material:
     def __repr__(self):
         return f"{type(self).__name__}()"
 
+
 class UnlitMaterial(Material):
     """Unlit material: renders the flat base colour, ignoring lights."""
 
     shader = staticmethod(ms.basic_material_shader)
+
+
 MeshBasicMaterial = UnlitMaterial
+
 
 class DiffuseMaterial(Material):
     """Lambertian (diffuse-only) shading plus emissive."""
@@ -216,7 +243,10 @@ class DiffuseMaterial(Material):
             "flat_shading": self._flat(),
             "env_map_intensity": self.envMapIntensity,
         }
+
+
 MeshLambertMaterial = DiffuseMaterial
+
 
 class SpecularMaterial(Material):
     """Blinn-Phong shading: diffuse + specular highlight + emissive."""
@@ -250,7 +280,10 @@ class SpecularMaterial(Material):
             "flat_shading": self._flat(),
             "env_map_intensity": self.envMapIntensity,
         }
+
+
 MeshPhongMaterial = SpecularMaterial
+
 
 class PBRMaterial(Material):
     """Metalness/roughness physically-based (Cook-Torrance) material."""
@@ -284,7 +317,10 @@ class PBRMaterial(Material):
             "env_map_intensity": self.envMapIntensity,
             "flat_shading": self._flat(),
         }
+
+
 MeshStandardMaterial = PBRMaterial
+
 
 class AdvancedPBRMaterial(MeshStandardMaterial):
     """Extends :class:`MeshStandardMaterial` with clearcoat, sheen, ior-driven
@@ -326,9 +362,7 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
             self.reflectivity = 2.5 * (ior - 1.0) / (ior + 1.0)
         else:
             self.reflectivity = reflectivity
-            self.ior = (1.0 + 0.4 * reflectivity) / (
-                1.0 - 0.4 * reflectivity
-            )
+            self.ior = (1.0 + 0.4 * reflectivity) / (1.0 - 0.4 * reflectivity)
         self.specularIntensity = specularIntensity
         self.specularColor = specularColor
         self.sheen = sheen
@@ -361,7 +395,10 @@ class AdvancedPBRMaterial(MeshStandardMaterial):
             "transmission": self.transmission,
             "iridescence": self.iridescence,
         }
+
+
 MeshPhysicalMaterial = AdvancedPBRMaterial
+
 
 class MeshToonMaterial(Material):
     """Cel-shaded (banded diffuse) material plus emissive.

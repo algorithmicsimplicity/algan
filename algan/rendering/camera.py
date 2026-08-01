@@ -19,21 +19,25 @@ from algan.utils.tensor_utils import (
 
 class Camera(Mob):
     def __init__(
-        self, orthographic=False, screen_distance=5, screen_scale=2.5,
-        fov=None, near=0.0, far=0.0, *args, **kwargs
+        self,
+        orthographic=False,
+        screen_distance=5,
+        screen_scale=2.5,
+        fov=None,
+        near=0.0,
+        far=0.0,
+        *args,
+        **kwargs,
     ):
         # fov (vertical, degrees) is an alternative way to specify the
         # perspective: it fixes the camera-to-screen distance for the given
         # screen size. near/far are the clip distances (0 disables each);
         # near is a plane, far is a distance along the ray.
-        screen_distance = self._validated_positive(
-            "screen_distance", screen_distance
-        )
+        screen_distance = self._validated_positive("screen_distance", screen_distance)
         screen_scale = self._validated_positive("screen_scale", screen_scale)
         if fov is not None:
             fov = self._validated_fov(fov)
-            screen_distance = screen_scale / math.tan(
-                math.radians(fov) * 0.5)
+            screen_distance = screen_scale / math.tan(math.radians(fov) * 0.5)
         self._near = self._validated_clip("near", near)
         self._far = self._validated_clip("far", far)
         self._validate_clip_order(self._near, self._far)
@@ -79,9 +83,7 @@ class Camera(Mob):
         try:
             result = float(value)
         except (TypeError, ValueError) as exc:
-            raise AlganConfigurationError(
-                f"{name} must be a finite number"
-            ) from exc
+            raise AlganConfigurationError(f"{name} must be a finite number") from exc
         if not math.isfinite(result):
             raise AlganConfigurationError(f"{name} must be a finite number")
         return result
@@ -144,12 +146,7 @@ class Camera(Mob):
         ``PerspectiveCamera.fov``), derived from the screen size and the
         camera-to-screen distance.
         """
-        d = (
-            (self.screen.location - self.location)
-            .norm(p=2, dim=-1)
-            .flatten()[0]
-            .item()
-        )
+        d = (self.screen.location - self.location).norm(p=2, dim=-1).flatten()[0].item()
         return math.degrees(2.0 * math.atan(self.screen_scale_factor / max(d, 1e-9)))
 
     def set_fov(self, fov):

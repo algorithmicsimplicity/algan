@@ -460,7 +460,9 @@ class AnimationContext:
                     child.timespan.end - child.timespan.start
                     for child in self.child_contexts
                 ]
-                positive_durations = [duration for duration in durations if duration > 0]
+                positive_durations = [
+                    duration for duration in durations if duration > 0
+                ]
                 max_run_time = max(positive_durations, default=0)
                 for child, duration in zip(self.child_contexts, durations):
                     # Empty / Off child contexts already have the desired zero
@@ -488,6 +490,7 @@ class AnimationContext:
                 self.timespan.end = self.timespan.original_end
 
             if self.combine_rate_func:
+
                 def wrap(rate_func):
                     if rate_func is None:
                         return rate_func
@@ -544,9 +547,13 @@ class AnimationContext:
         :class:`~.Seq` (1) moves it past the whole animation. Called by the
         ``animated_function`` machinery; you do not call it yourself.
         """
-        #self.end_time = max(self.end_time, self.current_time + self.run_time_unit)
-        self.timespan.original_end = max(self.timespan.original_end, self.timespan.current_time + self.run_time_unit)
-        self.timespan.current_time = self.timespan.current_time + self.run_time_unit * self.lag_ratio
+        # self.end_time = max(self.end_time, self.current_time + self.run_time_unit)
+        self.timespan.original_end = max(
+            self.timespan.original_end, self.timespan.current_time + self.run_time_unit
+        )
+        self.timespan.current_time = (
+            self.timespan.current_time + self.run_time_unit * self.lag_ratio
+        )
 
     def wait(self, t: float | None = None):
         """Hold still, leaving a pause before the next animation.
@@ -566,7 +573,9 @@ class AnimationContext:
         """
         if t is None:
             t = self.run_time_unit
-        self.timespan.original_end = max(self.timespan.original_end, self.timespan.current_time + t)
+        self.timespan.original_end = max(
+            self.timespan.original_end, self.timespan.current_time + t
+        )
         self.timespan.current_time = self.timespan.current_time + t * self.lag_ratio
 
     def on_create_extra(self, animatable):
@@ -672,9 +681,9 @@ class NoExtra(AnimationContext):
     .. code-block:: python
 
         with SlideShow():
-            title.spawn()                    # gets the slideshow pauses
+            title.spawn()  # gets the slideshow pauses
             with NoExtra(priority_level=1):
-                helper.spawn()               # does not
+                helper.spawn()  # does not
     """
 
     def on_create(self, animatable):
@@ -734,7 +743,7 @@ class Off(AnimationContext):
     .. code-block:: python
 
         with Off():
-            square.move(RIGHT * 3)     # teleports, takes no video time
+            square.move(RIGHT * 3)  # teleports, takes no video time
             square.color = BLUE
 
     See Also
@@ -811,7 +820,7 @@ class Sync(Lag):
     --------
     .. code-block:: python
 
-        with Sync():                   # both happen over one second
+        with Sync():  # both happen over one second
             square.rotate(90, OUT)
             square.color = BLUE
     """
@@ -839,7 +848,7 @@ class Seq(Lag):
     --------
     .. code-block:: python
 
-        with Seq(run_time=2):          # three moves squeezed into two seconds
+        with Seq(run_time=2):  # three moves squeezed into two seconds
             square.move(RIGHT)
             square.move(UP)
             square.move(LEFT)
@@ -873,7 +882,7 @@ class Audio(AnimationContext):
     .. code-block:: python
 
         with Audio("whoosh.wav"):
-            square.move(RIGHT * 5)     # takes exactly as long as the clip
+            square.move(RIGHT * 5)  # takes exactly as long as the clip
 
     See Also
     --------
@@ -893,8 +902,8 @@ class Audio(AnimationContext):
     def __enter__(self):
         context = super().__enter__()
         if self.prev_context.run_time_unit > 0 and (
-                self.prev_context.run_time is None or
-                self.prev_context.run_time > 0):
+            self.prev_context.run_time is None or self.prev_context.run_time > 0
+        ):
             self.animation_manager.scene.add_effect(
                 AudioEffect(self.audio_clip, self.get_current_time())
             )
@@ -929,7 +938,9 @@ class Speech(Audio):
     """
 
     def __init__(self, script, wait_at_end: float = 1, *args, **kwargs):
-        animation_manager = kwargs.get("animation_manager") or _active_animation_manager()
+        animation_manager = (
+            kwargs.get("animation_manager") or _active_animation_manager()
+        )
         kwargs["animation_manager"] = animation_manager
         audio_manager = animation_manager.scene.audio_manager
         audio_manager.append_script(script)
@@ -1045,7 +1056,7 @@ class ComposeRateFunc(AnimationContext):
     .. code-block:: python
 
         with ComposeRateFunc(rate_funcs.there_and_back):
-            square.move(RIGHT)     # goes out and comes back
+            square.move(RIGHT)  # goes out and comes back
     """
 
     def __init__(self, rfunc, **kwargs):

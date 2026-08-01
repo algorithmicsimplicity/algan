@@ -1,4 +1,5 @@
 """Animations whose geometry changes continuously for an indefinite duration."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -140,10 +141,10 @@ class AnimatedBoundary(Group):
             fading_copy = vmobject.clone(spawn=False)
             growing_paths = _bezier_family(growing_copy)
             fading_paths = _bezier_family(fading_copy)
-            if not (
-                len(source_paths) == len(growing_paths) == len(fading_paths)
-            ):
-                raise RuntimeError("AnimatedBoundary clone hierarchy did not match its source.")
+            if not (len(source_paths) == len(growing_paths) == len(fading_paths)):
+                raise RuntimeError(
+                    "AnimatedBoundary clone hierarchy did not match its source."
+                )
             for path in [*growing_paths, *fading_paths]:
                 path.color = path.color.as_subclass(Color).set_opacity(0.0)
                 path.border_width = 0.0

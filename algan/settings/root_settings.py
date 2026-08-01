@@ -66,7 +66,9 @@ class AlganSettings:
 
     def restore(self, snapshot: SettingsSnapshot):
         if not isinstance(snapshot, SettingsSnapshot):
-            raise AlganConfigurationError("SETTINGS.restore requires a SettingsSnapshot")
+            raise AlganConfigurationError(
+                "SETTINGS.restore requires a SettingsSnapshot"
+            )
         self.computing.set(**snapshot.computing.to_dict())
         self.paths.set(**snapshot.paths.to_dict())
         self.style.set(**snapshot.style.to_dict())

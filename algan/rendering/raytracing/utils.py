@@ -43,7 +43,8 @@ def _unify_time(tensors, error_context):
         if t.shape[0] not in (1, T):
             raise ValueError(
                 f"{error_context}: incompatible frame counts "
-                f"{[tuple(t.shape) for t in tensors]}")
+                f"{[tuple(t.shape) for t in tensors]}"
+            )
     return [_expand_frames(t, T) for t in tensors], T
 
 
@@ -75,8 +76,9 @@ def _cat_mat_blocks(blocks, error_context):
     padded = []
     for b in blocks:
         if b.shape[-1] < max_w:
-            pad = torch.zeros((*b.shape[:-1], max_w - b.shape[-1]),
-                              dtype=b.dtype, device=b.device)
+            pad = torch.zeros(
+                (*b.shape[:-1], max_w - b.shape[-1]), dtype=b.dtype, device=b.device
+            )
             b = torch.cat([b, pad], dim=-1)
         padded.append(b)
     return _cat_collections(padded, 1, error_context)

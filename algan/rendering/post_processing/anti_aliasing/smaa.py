@@ -25,13 +25,16 @@ class SMAA(nn.Module):
     Uses official SMAA area and search textures loaded from PNG files.
     """
 
-    def __init__(self, area_tex_path: str = "AreaTex.png",
-                 search_tex_path: str = "SearchTex.png",
-                 threshold: float = 0.1,
-                 local_contrast_adaptation_factor: float = 2.0,
-                 max_search_steps: int = 32,
-                 max_search_steps_diag: int = 16,
-                 corner_rounding: int = 25):
+    def __init__(
+        self,
+        area_tex_path: str = "AreaTex.png",
+        search_tex_path: str = "SearchTex.png",
+        threshold: float = 0.1,
+        local_contrast_adaptation_factor: float = 2.0,
+        max_search_steps: int = 32,
+        max_search_steps_diag: int = 16,
+        corner_rounding: int = 25,
+    ):
         """
         Initialize SMAA module.
 
@@ -59,8 +62,8 @@ class SMAA(nn.Module):
         self.SMAA_AREATEX_SUBTEX_SIZE = (1.0 / 16.0, 1.0 / 4.0)
 
         # Load official SMAA textures from files
-        self.register_buffer('area_tex', self._load_area_texture(area_tex_path))
-        self.register_buffer('search_tex', self._load_search_texture(search_tex_path))
+        self.register_buffer("area_tex", self._load_area_texture(area_tex_path))
+        self.register_buffer("search_tex", self._load_search_texture(search_tex_path))
 
     def _load_area_texture(self, path: str) -> torch.Tensor:
         """
@@ -119,7 +122,7 @@ class SMAA(nn.Module):
         luma = self._rgb_to_luma(color) if C == 3 else color[:, :1]
 
         # Prepare shifted versions for gradient calculation
-        padded = F.pad(luma, (1, 1, 1, 1), mode='replicate')
+        padded = F.pad(luma, (1, 1, 1, 1), mode="replicate")
 
         luma_left = padded[:, :, 1:-1, :-2]
         luma_right = padded[:, :, 1:-1, 2:]
@@ -167,7 +170,9 @@ class SMAA(nn.Module):
                 return i
 
             # Check if edge continues
-            edge_val = edges[0, 0, new_y, new_x] if C == 1 else edges[0, 1, new_y, new_x]
+            edge_val = (
+                edges[0, 0, new_y, new_x] if C == 1 else edges[0, 1, new_y, new_x]
+            )
             if edge_val < 0.5:
                 return i
 
@@ -179,11 +184,18 @@ class SMAA(nn.Module):
         """Search for diagonal patterns in opposite direction."""
         return self._search_diag_1(edges, pos, (-direction[0], -direction[1]))
 
-    def _area_tex_lookup(self, d1: float, d2: float, y: int, subsample_index: int) -> tuple[float, float]:
+    def _area_tex_lookup(
+        self, d1: float, d2: float, y: int, subsample_index: int
+    ) -> tuple[float, float]:
         """Lookup area values from the area texture."""
         # Calculate texture coordinates
-        tex_coord_x = (d1 * self.SMAA_AREATEX_SUBTEX_SIZE[0] + subsample_index * self.SMAA_AREATEX_SUBTEX_SIZE[0])
-        tex_coord_y = (d2 * self.SMAA_AREATEX_SUBTEX_SIZE[1] + y * self.SMAA_AREATEX_SUBTEX_SIZE[1])
+        tex_coord_x = (
+            d1 * self.SMAA_AREATEX_SUBTEX_SIZE[0]
+            + subsample_index * self.SMAA_AREATEX_SUBTEX_SIZE[0]
+        )
+        tex_coord_y = (
+            d2 * self.SMAA_AREATEX_SUBTEX_SIZE[1] + y * self.SMAA_AREATEX_SUBTEX_SIZE[1]
+        )
 
         # Clamp coordinates
         tex_coord_x = min(max(tex_coord_x, 0), 1)
@@ -196,8 +208,9 @@ class SMAA(nn.Module):
         area_val = self.area_tex[:, y_idx, x_idx]
         return area_val[0].item(), area_val[1].item()
 
-    def _blending_weight_calculation_pass(self, edges: torch.Tensor,
-                                          color: torch.Tensor) -> torch.Tensor:
+    def _blending_weight_calculation_pass(
+        self, edges: torch.Tensor, color: torch.Tensor
+    ) -> torch.Tensor:
         """Second pass: Calculate blending weights for detected edges."""
         B, _, H, W = edges.shape
         device = edges.device
@@ -275,16 +288,18 @@ class SMAA(nn.Module):
             corners_bl = edges[:, 0:1] * edges[:, 3:4]  # Bottom-left
             corners_br = edges[:, 2:3] * edges[:, 3:4]  # Bottom-right
 
-            corners = torch.max(torch.max(corners_tl, corners_tr),
-                                torch.max(corners_bl, corners_br))
+            corners = torch.max(
+                torch.max(corners_tl, corners_tr), torch.max(corners_bl, corners_br)
+            )
 
             # Reduce weights at corners
             weights = weights * (1.0 - corners * (1.0 - factor))
 
         return weights
 
-    def _neighborhood_blending_pass(self, color: torch.Tensor,
-                                    weights: torch.Tensor) -> torch.Tensor:
+    def _neighborhood_blending_pass(
+        self, color: torch.Tensor, weights: torch.Tensor
+    ) -> torch.Tensor:
         """Third pass: Blend colors using calculated weights."""
         B, C, H, W = color.shape
 
@@ -295,7 +310,7 @@ class SMAA(nn.Module):
         w_bottom = weights[:, 3:4]
 
         # Prepare padded image for neighbor sampling
-        padded = F.pad(color, (1, 1, 1, 1), mode='replicate')
+        padded = F.pad(color, (1, 1, 1, 1), mode="replicate")
 
         # Sample neighbors
         n_left = padded[:, :, 1:-1, :-2]
@@ -305,11 +320,11 @@ class SMAA(nn.Module):
 
         # Calculate weighted blend
         weighted_sum = (
-                color * (1.0 - torch.clamp(w_left + w_top + w_right + w_bottom, 0, 1)) +
-                n_left * w_left +
-                n_top * w_top +
-                n_right * w_right +
-                n_bottom * w_bottom
+            color * (1.0 - torch.clamp(w_left + w_top + w_right + w_bottom, 0, 1))
+            + n_left * w_left
+            + n_top * w_top
+            + n_right * w_right
+            + n_bottom * w_bottom
         )
 
         return torch.clamp(weighted_sum, 0.0, 1.0)
@@ -339,13 +354,15 @@ class SMAA(nn.Module):
         return result
 
 
-def apply_smaa(images: torch.Tensor,
-               area_tex_path: str = "AreaTex.png",
-               search_tex_path: str = "SearchTex.png",
-               threshold: float = 0.05,
-               local_contrast_adaptation_factor: float = 2.0,
-               max_search_steps: int = 32,
-               corner_rounding: int = 25) -> torch.Tensor:
+def apply_smaa(
+    images: torch.Tensor,
+    area_tex_path: str = "AreaTex.png",
+    search_tex_path: str = "SearchTex.png",
+    threshold: float = 0.05,
+    local_contrast_adaptation_factor: float = 2.0,
+    max_search_steps: int = 32,
+    corner_rounding: int = 25,
+) -> torch.Tensor:
     """
     Apply SMAA to a batch of images.
 
@@ -373,12 +390,14 @@ def apply_smaa(images: torch.Tensor,
             "Please ensure you have the official SMAA SearchTex.png file in the same directory."
         )
 
-    smaa = SMAA(area_tex_path=area_tex_path,
-                search_tex_path=search_tex_path,
-                threshold=threshold,
-                local_contrast_adaptation_factor=local_contrast_adaptation_factor,
-                max_search_steps=max_search_steps,
-                corner_rounding=corner_rounding)
+    smaa = SMAA(
+        area_tex_path=area_tex_path,
+        search_tex_path=search_tex_path,
+        threshold=threshold,
+        local_contrast_adaptation_factor=local_contrast_adaptation_factor,
+        max_search_steps=max_search_steps,
+        corner_rounding=corner_rounding,
+    )
 
     # Move to same device as input
     smaa = smaa.to(images.device)
@@ -394,7 +413,6 @@ def apply_smaa(images: torch.Tensor,
 
 # Example usage and testing
 if __name__ == "__main__":
-
     # Check for required texture files
     area_tex_path = "AreaTex.png"
     search_tex_path = "SearchTex.png"
@@ -422,30 +440,38 @@ if __name__ == "__main__":
                     test_image[0, :, i + 1, i] = 0.3
 
         # Add horizontal and vertical lines for comparison
-        test_image[0, :, height // 2 - 1:height // 2 + 1, :] = 0.7
-        test_image[0, :, :, width // 2 - 1:width // 2 + 1] = 0.7
+        test_image[0, :, height // 2 - 1 : height // 2 + 1, :] = 0.7
+        test_image[0, :, :, width // 2 - 1 : width // 2 + 1] = 0.7
 
         # Add circle
         center_y, center_x = height // 2, width // 2
         radius = min(height, width) // 3
 
-        y_grid, x_grid = torch.meshgrid(torch.arange(height), torch.arange(width), indexing='ij')
-        dist = torch.sqrt((y_grid - center_y).float() ** 2 + (x_grid - center_x).float() ** 2)
+        y_grid, x_grid = torch.meshgrid(
+            torch.arange(height), torch.arange(width), indexing="ij"
+        )
+        dist = torch.sqrt(
+            (y_grid - center_y).float() ** 2 + (x_grid - center_x).float() ** 2
+        )
         circle_mask = (torch.abs(dist - radius) < 2).float()
-        test_image[0, :] = torch.clamp(test_image[0, :] + circle_mask.unsqueeze(0) * 0.8, 0, 1)
+        test_image[0, :] = torch.clamp(
+            test_image[0, :] + circle_mask.unsqueeze(0) * 0.8, 0, 1
+        )
 
         print(f"Input shape: {test_image.shape}")
         print(f"Input range: [{test_image.min():.3f}, {test_image.max():.3f}]")
 
         # Apply SMAA with lower threshold for more aggressive anti-aliasing
         print("\nApplying SMAA anti-aliasing...")
-        antialiased = apply_smaa(test_image,
-                                 area_tex_path=area_tex_path,
-                                 search_tex_path=search_tex_path,
-                                 threshold=0.05,  # Lower threshold
-                                 local_contrast_adaptation_factor=2.0,
-                                 max_search_steps=32,
-                                 corner_rounding=25)
+        antialiased = apply_smaa(
+            test_image,
+            area_tex_path=area_tex_path,
+            search_tex_path=search_tex_path,
+            threshold=0.05,  # Lower threshold
+            local_contrast_adaptation_factor=2.0,
+            max_search_steps=32,
+            corner_rounding=25,
+        )
 
         print(f"Output shape: {antialiased.shape}")
         print(f"Output range: [{antialiased.min():.3f}, {antialiased.max():.3f}]")
@@ -462,24 +488,36 @@ if __name__ == "__main__":
             print("\n✓ SMAA is working! Edges have been smoothed.")
 
             # Convert to numpy for saving
-            original_np = (test_image[0].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-            antialiased_np = (antialiased[0].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-            diff_np = (difference[0].max(dim=0)[0].numpy() * 255 * 5).astype(np.uint8)  # Amplify difference
+            original_np = (test_image[0].permute(1, 2, 0).numpy() * 255).astype(
+                np.uint8
+            )
+            antialiased_np = (antialiased[0].permute(1, 2, 0).numpy() * 255).astype(
+                np.uint8
+            )
+            diff_np = (difference[0].max(dim=0)[0].numpy() * 255 * 5).astype(
+                np.uint8
+            )  # Amplify difference
 
             # Save images
             Image.fromarray(original_np).save("test_original.png")
             Image.fromarray(antialiased_np).save("test_antialiased.png")
             Image.fromarray(diff_np).save("test_difference.png")
 
-            print("Saved test images: test_original.png, test_antialiased.png, test_difference.png")
+            print(
+                "Saved test images: test_original.png, test_antialiased.png, test_difference.png"
+            )
         else:
             print("\n⚠ Warning: No anti-aliasing effect detected.")
-            print("This might indicate an issue with edge detection or weight calculation.")
+            print(
+                "This might indicate an issue with edge detection or weight calculation."
+            )
 
             # Debug: Check edge detection
-            smaa_debug = SMAA(area_tex_path=area_tex_path,
-                              search_tex_path=search_tex_path,
-                              threshold=0.05)
+            smaa_debug = SMAA(
+                area_tex_path=area_tex_path,
+                search_tex_path=search_tex_path,
+                threshold=0.05,
+            )
             edges = smaa_debug._edge_detection_pass(test_image)
             edge_count = (edges > 0.5).float().sum()
             print(f"Debug: Detected {edge_count.item():.0f} edge pixels")

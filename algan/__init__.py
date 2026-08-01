@@ -15,6 +15,7 @@ def __getattr__(name):
             return "0+unknown"
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
+
 import os
 import sys
 
@@ -106,6 +107,7 @@ def set_environment_map(*args, **kwargs):
     """Set the environment map on the current active scene."""
     return SceneManager.instance().current_scene.set_environment_map(*args, **kwargs)
 
+
 from algan.rendering.shaders.material_shaders import (
     basic_material_shader,
     depth_shader,
@@ -183,6 +185,7 @@ def clear_cache(taichi_kernels=False):
         shutil.rmtree(f)
         return
     from algan.settings._startup import _TAICHI_CACHE_DIRECTORY
+
     keep = os.path.normcase(os.path.abspath(_TAICHI_CACHE_DIRECTORY))
     for entry in os.listdir(f):
         p = os.path.join(f, entry)
@@ -237,59 +240,61 @@ _INTERNAL_EXPORT_MODULES = (
 )
 
 # Individually internal names from modules that are otherwise public.
-_INTERNAL_EXPORT_NAMES = frozenset({
-    # authoring/session plumbing
-    "default_scene_initializer",
-    "get_logger",
-    "install_opengl_aliases",
-    "active_scene_for_new_mob",
-    "animation_manager_bound",
-    "animation_manager_context",
-    "animation_manager_for",
-    "prepare_kwargs",
-    # render-primitive construction
-    "build_render_primitives_batched",
-    "get_render_primitives_batched",
-    "compute_grid_vertex_normals",
-    "get_grid_to_triangle_indices",
-    "grid_to_triangle_vertices",
-    "effective_triangle_primitive",
-    "render_batch_raytraced",
-    "point_to_tensor2",
-    "color_to_texture_map",
-    "midpoint",
-    "mid_point",
-    # service registries: not user settings
-    "KERNEL_REGISTRY",
-    "RENDERER_REGISTRY",
-    # internal rate-func/animation steps
-    "draw_step",
-    "undraw_step",
-    "passing_flash_step",
-    "wiggle_step",
-    "wiggle",
-    "there_and_back",
-    # tooling and dev utilities
-    "make_manim_dir",
-    "missing_manim_mobjects",
-    "validate_manim_mobject_parity",
-    "combine_scenes",
-    "concatenate_videos",
-    "get_file_writer",
-    "profile_func",
-    "BatchedMobViewSequence",
-    # internal constants
-    "HANDLED_FUNCTIONS",
-    "TIME_PARAMETER_NAME",
-    "SPAWN_VERSION",
-    "STRUCTURE_VERSION",
-    "HIERARCHY_VERSION",
-    "MANIM_COMMUNITY_VERSION",
-    "MANIM_MOBJECT_NAMES",
-    "MANIM_OPENGL_MOBJECT_NAMES",
-    "MANIM_PRIVATE_MOBJECT_NAMES",
-    "MANIM_EXTERNAL_TOOL_MOBJECT_NAMES",
-})
+_INTERNAL_EXPORT_NAMES = frozenset(
+    {
+        # authoring/session plumbing
+        "default_scene_initializer",
+        "get_logger",
+        "install_opengl_aliases",
+        "active_scene_for_new_mob",
+        "animation_manager_bound",
+        "animation_manager_context",
+        "animation_manager_for",
+        "prepare_kwargs",
+        # render-primitive construction
+        "build_render_primitives_batched",
+        "get_render_primitives_batched",
+        "compute_grid_vertex_normals",
+        "get_grid_to_triangle_indices",
+        "grid_to_triangle_vertices",
+        "effective_triangle_primitive",
+        "render_batch_raytraced",
+        "point_to_tensor2",
+        "color_to_texture_map",
+        "midpoint",
+        "mid_point",
+        # service registries: not user settings
+        "KERNEL_REGISTRY",
+        "RENDERER_REGISTRY",
+        # internal rate-func/animation steps
+        "draw_step",
+        "undraw_step",
+        "passing_flash_step",
+        "wiggle_step",
+        "wiggle",
+        "there_and_back",
+        # tooling and dev utilities
+        "make_manim_dir",
+        "missing_manim_mobjects",
+        "validate_manim_mobject_parity",
+        "combine_scenes",
+        "concatenate_videos",
+        "get_file_writer",
+        "profile_func",
+        "BatchedMobViewSequence",
+        # internal constants
+        "HANDLED_FUNCTIONS",
+        "TIME_PARAMETER_NAME",
+        "SPAWN_VERSION",
+        "STRUCTURE_VERSION",
+        "HIERARCHY_VERSION",
+        "MANIM_COMMUNITY_VERSION",
+        "MANIM_MOBJECT_NAMES",
+        "MANIM_OPENGL_MOBJECT_NAMES",
+        "MANIM_PRIVATE_MOBJECT_NAMES",
+        "MANIM_EXTERNAL_TOOL_MOBJECT_NAMES",
+    }
+)
 
 # Public names that the rules above would otherwise miss.
 _EXTRA_EXPORTS = ("cosine_color", "rate_funcs")
@@ -309,10 +314,6 @@ def _is_root_export(name, value):
 
 
 __all__ = (
-    *sorted(
-        name
-        for name, value in globals().items()
-        if _is_root_export(name, value)
-    ),
+    *sorted(name for name, value in globals().items() if _is_root_export(name, value)),
     *_EXTRA_EXPORTS,
 )

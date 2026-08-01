@@ -11,6 +11,7 @@ per-batch rendering
 (:meth:`~algan.render_loop.RenderLoopMixin.render_primitive_batch`), and video
 file output (:meth:`~algan.render_loop.RenderLoopMixin.render_to_video`).
 """
+
 from __future__ import annotations
 
 import collections
@@ -96,7 +97,11 @@ def _max_duration_that_fits(requested_frames, fits):
 def _primitive_source_device(primitive, fallback=None):
     """Device holding a not-yet-projected primitive's source geometry."""
     for name in (
-        "corners", "colors", "normals", "mob_center", "next_segment_inds",
+        "corners",
+        "colors",
+        "normals",
+        "mob_center",
+        "next_segment_inds",
     ):
         value = getattr(primitive, name, None)
         if torch.is_tensor(value):
@@ -123,26 +128,25 @@ def _projection_anti_alias_level(scene, primitives):
         RayTracedTrianglePrimitive,
     )
 
-    if (not primitives
-            or int(rt_settings.SAMPLES_PER_PIXEL) > 1
-            or not rt_settings.HYBRID_RASTER
-            or not rt_settings.ANALYTIC_AA
-            or float(getattr(scene.camera, "near", 0.0) or 0.0) > 0.0):
+    if (
+        not primitives
+        or int(rt_settings.SAMPLES_PER_PIXEL) > 1
+        or not rt_settings.HYBRID_RASTER
+        or not rt_settings.ANALYTIC_AA
+        or float(getattr(scene.camera, "near", 0.0) or 0.0) > 0.0
+    ):
         return requested, False
-    ray_types = (
-        RayTracedTrianglePrimitive, RayTracedBezierCircuitPrimitive)
+    ray_types = (RayTracedTrianglePrimitive, RayTracedBezierCircuitPrimitive)
     if not all(isinstance(primitive, ray_types) for primitive in primitives):
         return requested, False
 
-    has_pn = any(
-        isinstance(p, RayTracedPNTrianglePrimitive) for p in primitives)
+    has_pn = any(isinstance(p, RayTracedPNTrianglePrimitive) for p in primitives)
     has_tri = any(
         isinstance(p, RayTracedTrianglePrimitive)
         and not isinstance(p, RayTracedPNTrianglePrimitive)
         for p in primitives
     )
-    has_bez = any(
-        isinstance(p, RayTracedBezierCircuitPrimitive) for p in primitives)
+    has_bez = any(isinstance(p, RayTracedBezierCircuitPrimitive) for p in primitives)
     possible = (
         not has_pn
         and (has_tri or has_bez)
@@ -159,8 +163,11 @@ def _slice_render_state(render_state, start, end, total_frames):
     total_frames = int(total_frames)
 
     def sliced(value):
-        if (torch.is_tensor(value) and value.ndim > 0
-                and int(value.shape[0]) == total_frames):
+        if (
+            torch.is_tensor(value)
+            and value.ndim > 0
+            and int(value.shape[0]) == total_frames
+        ):
             return value[start:end]
         return value
 
@@ -285,9 +292,7 @@ class RenderLoopMixin:
             return float("inf")
         return int(get_num_available_bytes(device) * 0.9)
 
-    def _fetched_window_has_stable_actor_set(
-        self, actors, start_ind, end_ind
-    ):
+    def _fetched_window_has_stable_actor_set(self, actors, start_ind, end_ind):
         """Whether no renderable actor spawns inside a fetched frame window.
 
         Prefix slicing is exactly equivalent to fetching that prefix only when
@@ -344,9 +349,7 @@ class RenderLoopMixin:
             primitive.slice_time_window(0, duration, total_frames)
             for primitive in primitive_batch
         ]
-        return primitives, _slice_render_state(
-            render_state, 0, duration, total_frames
-        )
+        return primitives, _slice_render_state(render_state, 0, duration, total_frames)
 
     def _release_preflight_candidate(self, primitive_batch):
         """Drop projected/merged state belonging to a rejected arena probe."""
@@ -397,8 +400,7 @@ class RenderLoopMixin:
             )
 
             estimated_peak = int(
-                project_gpu_peak_factor()
-                * gpu_project_input_bytes(candidate)
+                project_gpu_peak_factor() * gpu_project_input_bytes(candidate)
             )
             return estimated_peak <= headroom
 
@@ -426,7 +428,9 @@ class RenderLoopMixin:
         if result is not None:
             logger.info(
                 "Arena planner selected %s/%s fetched frames on its first "
-                "exact preflight.", upper, total_frames
+                "exact preflight.",
+                upper,
+                total_frames,
             )
             return result[0], upper, result[1]
 
@@ -448,10 +452,12 @@ class RenderLoopMixin:
                 continue
 
             best = duration
-            if True:#duration == high:
+            if True:  # duration == high:
                 logger.info(
                     "Arena planner selected %s/%s fetched frames without "
-                    "rematerializing the batch.", duration, total_frames
+                    "rematerializing the batch.",
+                    duration,
+                    total_frames,
                 )
                 return result[0], duration, result[1]
 
@@ -478,7 +484,9 @@ class RenderLoopMixin:
             )
         logger.info(
             "Arena planner selected %s/%s fetched frames without "
-            "rematerializing the batch.", best, total_frames
+            "rematerializing the batch.",
+            best,
+            total_frames,
         )
         return result[0], best, result[1]
 
@@ -527,14 +535,16 @@ class RenderLoopMixin:
             # Read now: projecting releases the source geometry this sums.
             project_inputs = gpu_project_input_bytes(primitive_batch)
             estimated_project_peak = int(
-                self._project_peak_ratio.factor() * project_inputs)
+                self._project_peak_ratio.factor() * project_inputs
+            )
             if estimated_project_peak > self._gpu_merge_headroom_bytes():
                 logger.debug(
                     "GPU projection peak estimate %.1f MB exceeds pool "
                     "headroom %.1f MB [%s]; shrinking frame window.",
                     estimated_project_peak / 1e6,
                     self._gpu_merge_headroom_bytes() / 1e6,
-                    self._project_peak_ratio.describe())
+                    self._project_peak_ratio.describe(),
+                )
                 return False
             project_token = begin_cuda_peak(self.memory.data.device)
         try:
@@ -544,22 +554,23 @@ class RenderLoopMixin:
                 # precisely so no concurrent render pollutes the counter), so
                 # the peak it just reached bounds the next batch's estimate.
                 self._project_peak_ratio.observe(
-                    project_inputs, end_cuda_peak(project_token))
+                    project_inputs, end_cuda_peak(project_token)
+                )
                 project_token = None
         except (InsufficientMemoryException, RuntimeError) as exc:
             # Device projection overran the pool headroom. Drop partial state
             # and report not-fitting so the caller shrinks the frame window.
             # (Also treat a Taichi-allocator OOM as such; re-raise real errors.)
-            if (not isinstance(exc, InsufficientMemoryException)
-                    and not is_cuda_oom(exc)):
+            if not isinstance(exc, InsufficientMemoryException) and not is_cuda_oom(
+                exc
+            ):
                 raise
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
             empty_cache(force_gc=False)
             return False
         if not all(
-            getattr(primitive, "_rt_projected", False)
-            for primitive in primitive_batch
+            getattr(primitive, "_rt_projected", False) for primitive in primitive_batch
         ):
             # Non-ray-traced/custom primitives retain their existing render
             # path; there is no ray-scene layout to preflight here.
@@ -577,32 +588,33 @@ class RenderLoopMixin:
         if gpu_merge:
             # Read now: merging nulls the packed _rt_* arrays this sums.
             merge_inputs = gpu_merge_input_bytes(primitive_batch)
-            estimated_merge_peak = int(
-                self._merge_peak_ratio.factor() * merge_inputs)
+            estimated_merge_peak = int(self._merge_peak_ratio.factor() * merge_inputs)
             if estimated_merge_peak > self._gpu_merge_headroom_bytes():
                 logger.debug(
                     "GPU merge peak estimate %.1f MB exceeds pool headroom "
                     "%.1f MB; shrinking frame window.",
                     estimated_merge_peak / 1e6,
-                    self._gpu_merge_headroom_bytes() / 1e6)
+                    self._gpu_merge_headroom_bytes() / 1e6,
+                )
                 return False
         try:
-            merged_host, env_map = self._prepare_merged_host_scene(
-                primitive_batch)
+            merged_host, env_map = self._prepare_merged_host_scene(primitive_batch)
         except (InsufficientMemoryException, RuntimeError) as exc:
             # The device build overran the pool headroom. Drop any partial
             # merge state and report the batch as not fitting so the caller
             # shrinks the frame window and retries. (Also treat a Taichi-
             # allocator OOM as such; re-raise real errors.)
-            if (not isinstance(exc, InsufficientMemoryException)
-                    and not is_cuda_oom(exc)):
+            if not isinstance(exc, InsufficientMemoryException) and not is_cuda_oom(
+                exc
+            ):
                 raise
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
             empty_cache(force_gc=False)
             return False
         scene_bytes = get_merged_scene_arena_nbytes(
-            merged_host, self.memory, persist=True)
+            merged_host, self.memory, persist=True
+        )
         if gpu_merge:
             # The build just ran and reported its own peak, so the multiplier
             # that bounds the *next* one is measured rather than guessed.
@@ -617,7 +629,8 @@ class RenderLoopMixin:
                     f"{measured / 1e6:.1f}" if measured >= 0 else "n/a",
                     self._merge_peak_ratio.describe(),
                     self._gpu_merge_headroom_bytes() / 1e6,
-                    scene_bytes / 1e6)
+                    scene_bytes / 1e6,
+                )
         bytes_remaining = self.memory.get_num_bytes_remaining()
         if scene_bytes > bytes_remaining:
             return False
@@ -649,9 +662,7 @@ class RenderLoopMixin:
         # hdr_frame_dtype() -- float32 by default, opt-in float16 (RGBA16F,
         # half the memory) on GPUs with fast FP16.
         frame_dtype = (
-            hdr_frame_dtype()
-            if is_post_process_tonemap_enabled()
-            else torch.uint8
+            hdr_frame_dtype() if is_post_process_tonemap_enabled() else torch.uint8
         )
         samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
         # What one frame costs on top of the scene is *measured*, not modelled.
@@ -660,8 +671,10 @@ class RenderLoopMixin:
         # part, and the part that decides whether a batch is renderable at all.
         # An optimistic first batch is corrected by the render's own retry.
         signature = chunk_signature(
-            width=render_width, height=render_height,
-            channels=render_channels, dtype=frame_dtype,
+            width=render_width,
+            height=render_height,
+            channels=render_channels,
+            dtype=frame_dtype,
             samples_per_pixel=samples,
             num_triangles=merged_host.get("num_triangles", 0),
             num_circuits=merged_host.get("num_circuits", 0),
@@ -690,7 +703,8 @@ class RenderLoopMixin:
         logger.warning(
             "Arena preflight under-modeled the render; raising its safety "
             "margin to %.1f MB for the rest of this job.",
-            self._arena_unmodeled_bytes / 1e6)
+            self._arena_unmodeled_bytes / 1e6,
+        )
 
     def _reset_render_arena_after_failure(self):
         """Release every allocation owned by a failed render attempt.
@@ -723,8 +737,9 @@ class RenderLoopMixin:
             camera.ray_origin = render_state["ray_origin"]
             camera.screen_point = render_state["screen_point"]
             camera.screen_basis = render_state["screen_basis"]
-            projection_aa, projection_analytic = (
-                _projection_anti_alias_level(self, primitive_batch))
+            projection_aa, projection_analytic = _projection_anti_alias_level(
+                self, primitive_batch
+            )
             camera.screen_width = self.num_pixels_screen_width * projection_aa
             camera.screen_height = self.num_pixels_screen_height * projection_aa
             camera.output_screen_width = self.num_pixels_screen_width
@@ -758,11 +773,11 @@ class RenderLoopMixin:
                     # already projected on the prefetch worker has had its
                     # source geometry released, and reading it back raises.
                     _pending = [
-                        primitive for primitive in primitive_batch
+                        primitive
+                        for primitive in primitive_batch
                         if not getattr(primitive, "_rt_projected", False)
                     ]
-                    _project_inputs = (
-                        _project_input_bytes(_pending) if _pending else 0)
+                    _project_inputs = _project_input_bytes(_pending) if _pending else 0
                     _project_token = begin_cuda_peak(self.memory.data.device)
                 except Exception:  # noqa: BLE001
                     # Calibration instrumentation must never be able to break
@@ -783,9 +798,9 @@ class RenderLoopMixin:
                 # step later moves the packed result into managed render memory.
                 original_memory = primitive.memory
                 source_device = _primitive_source_device(
-                    primitive, fallback=camera.ray_origin.device)
-                scratch = ManualMemory(
-                    0, device=source_device, managed=False)
+                    primitive, fallback=camera.ray_origin.device
+                )
+                scratch = ManualMemory(0, device=source_device, managed=False)
                 try:
                     primitive.memory = scratch
                     primitive.project_to_screen(camera, self.light_sources)
@@ -794,8 +809,8 @@ class RenderLoopMixin:
             if _measuring:
                 with contextlib.suppress(Exception):
                     note_nonarena_peak(
-                        "project", _project_inputs,
-                        end_cuda_peak(_project_token))
+                        "project", _project_inputs, end_cuda_peak(_project_token)
+                    )
 
             # Reclaim animation-phase residuals before render batching.
             empty_cache(force_gc=False)
@@ -813,10 +828,10 @@ class RenderLoopMixin:
                 copy_merged_scene_to_arena,
             )
 
-            merged_host, env_map = self._prepare_merged_host_scene(
-                primitive_batch)
+            merged_host, env_map = self._prepare_merged_host_scene(primitive_batch)
             device_scene = copy_merged_scene_to_arena(
-                merged_host, self.memory, persist=True)
+                merged_host, self.memory, persist=True
+            )
             primitive_batch[0]._rt_device_scene = device_scene
             # The uploaded scene now owns every render-facing tensor.  Drop the
             # extra environment-widened host dict (the base merge remains in its
@@ -856,17 +871,17 @@ class RenderLoopMixin:
             # Linear-HDR buffer (hdr_frame_dtype: f32 default, opt-in f16) --
             # see the matching note in the deterministic render path.
             frame_dtype = (
-                hdr_frame_dtype()
-                if is_post_process_tonemap_enabled()
-                else torch.uint8
+                hdr_frame_dtype() if is_post_process_tonemap_enabled() else torch.uint8
             )
             samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
             # Batches whose peak lies on the same line share a fit. Nothing
             # here describes *what* gets allocated -- only what would put a
             # batch on a different line.
             signature = chunk_signature(
-                width=render_width, height=render_height,
-                channels=render_channels, dtype=frame_dtype,
+                width=render_width,
+                height=render_height,
+                channels=render_channels,
+                dtype=frame_dtype,
                 samples_per_pixel=samples,
                 num_triangles=merged_host.get("num_triangles", 0),
                 num_circuits=merged_host.get("num_circuits", 0),
@@ -878,12 +893,15 @@ class RenderLoopMixin:
             while True:
                 if getattr(self.memory, "managed", False):
                     duration = model.plan(
-                        signature, end_ind - current_ind, bytes_remaining)
+                        signature, end_ind - current_ind, bytes_remaining
+                    )
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
                             "chunk %d frames from model [%s], %.1f MB free",
-                            duration, model.describe(signature),
-                            bytes_remaining / 1e6)
+                            duration,
+                            model.describe(signature),
+                            bytes_remaining / 1e6,
+                        )
                 else:
                     # Unmanaged mode deliberately uses PyTorch's ordinary
                     # allocator.  There is no finite arena to size against,
@@ -892,11 +910,12 @@ class RenderLoopMixin:
                     duration = end_ind - current_ind
                 new_ind = current_ind + duration
 
-                logger.debug(f'rendering batch with duration {duration}')
+                logger.debug(f"rendering batch with duration {duration}")
 
                 background_source = (
                     self.background_frame
-                    if background_color is None else background_color
+                    if background_color is None
+                    else background_color
                 )
                 bgf = _prepare_background_for_chunk(
                     background_source,
@@ -906,10 +925,9 @@ class RenderLoopMixin:
                     current_ind=current_ind,
                     new_ind=new_ind,
                     frames_per_second=(
-                        self.frames_per_second
-                        if callable(background_source) else 1
+                        self.frames_per_second if callable(background_source) else 1
                     ),
-                    device=_RENDER_DEVICE
+                    device=_RENDER_DEVICE,
                 )
                 # Pressure-gated gc (like every other steady-state call site):
                 # a forced full collection here cost ~150 ms per frame window
@@ -920,8 +938,7 @@ class RenderLoopMixin:
                 # Baseline the high-water mark at this chunk's starting level,
                 # so what it reaches afterwards is this chunk's own footprint
                 # rather than the whole job's.
-                chunk_base = (render_pointers[0]
-                              + len(self.memory) - render_pointers[1])
+                chunk_base = render_pointers[0] + len(self.memory) - render_pointers[1]
                 self.memory.max_pointer = chunk_base
                 yield primitive_batch[0].render(
                     primitive_batch,
@@ -946,8 +963,10 @@ class RenderLoopMixin:
                 # only what the arena actually reached.
                 if getattr(self.memory, "managed", False):
                     model.observe(
-                        signature, duration,
-                        max(0, self.memory.max_pointer - chunk_base))
+                        signature,
+                        duration,
+                        max(0, self.memory.max_pointer - chunk_base),
+                    )
 
                 self.memory.set_pointers(render_pointers)
                 current_ind = new_ind
@@ -955,7 +974,9 @@ class RenderLoopMixin:
                     break
 
             self.memory.set_pointers(original_pointers)
-            self.memory.max_pointer = self.memory.current_pointer = (len(self.memory) - self.memory.current_reverse_pointer)
+            self.memory.max_pointer = self.memory.current_pointer = (
+                len(self.memory) - self.memory.current_reverse_pointer
+            )
             # Camera/screen/light state is no longer reset here: batch prep
             # (get_batch_of_primitives) resets and re-materializes it at the
             # start of each batch, and may already be running on a worker
@@ -1012,8 +1033,7 @@ class RenderLoopMixin:
         )
         device = self.memory.data.device
         background_source = (
-            self.background_frame
-            if background_color is None else background_color
+            self.background_frame if background_color is None else background_color
         )
 
         original_pointers = self.memory.get_pointers()
@@ -1022,15 +1042,20 @@ class RenderLoopMixin:
         # primitive path. Their own signature: no geometry, so their line is
         # much shallower and must not be mixed with a rendered batch's.
         signature = chunk_signature(
-            width=width, height=height, channels=channels, dtype=frame_dtype,
-            samples_per_pixel=1, num_triangles=0, num_circuits=0)
+            width=width,
+            height=height,
+            channels=channels,
+            dtype=frame_dtype,
+            samples_per_pixel=1,
+            num_triangles=0,
+            num_circuits=0,
+        )
         model = self._chunk_memory_model
 
         current_ind = start_ind
         while current_ind < end_ind:
             if getattr(self.memory, "managed", False):
-                duration = model.plan(
-                    signature, end_ind - current_ind, bytes_remaining)
+                duration = model.plan(signature, end_ind - current_ind, bytes_remaining)
             else:
                 # Unmanaged mode uses PyTorch's ordinary allocator; there is
                 # no finite arena to size against (see render_primitive_batch).
@@ -1045,8 +1070,7 @@ class RenderLoopMixin:
                 current_ind=current_ind,
                 new_ind=new_ind,
                 frames_per_second=(
-                    self.frames_per_second
-                    if callable(background_source) else 1
+                    self.frames_per_second if callable(background_source) else 1
                 ),
                 device=_RENDER_DEVICE,
             )
@@ -1055,7 +1079,9 @@ class RenderLoopMixin:
             # (solid colors are resolution-free).
             if aa > 1 and inplace_aa:
                 bgf = _downsample_background(
-                    bgf, aa, duration,
+                    bgf,
+                    aa,
+                    duration,
                     self.num_pixels_screen_height,
                     self.num_pixels_screen_width,
                 )
@@ -1063,14 +1089,12 @@ class RenderLoopMixin:
             # nothing per window, so a forced full collection here was pure
             # fixed cost (see the render_primitive_batch call site).
             empty_cache(force_gc=False)
-            chunk_base = (original_pointers[0]
-                          + len(self.memory) - original_pointers[1])
+            chunk_base = original_pointers[0] + len(self.memory) - original_pointers[1]
             self.memory.max_pointer = chunk_base
             out = self.memory.get_tensor(
                 (duration, width * height, channels), frame_dtype
             )
-            _prefill_background(out, bgf, 0, device,
-                                background_frames=duration)
+            _prefill_background(out, bgf, 0, device, background_frames=duration)
             frames = post_process_frames(
                 self.memory,
                 out.view(duration, height, width, channels),
@@ -1080,8 +1104,8 @@ class RenderLoopMixin:
             )
             if getattr(self.memory, "managed", False):
                 model.observe(
-                    signature, duration,
-                    max(0, self.memory.max_pointer - chunk_base))
+                    signature, duration, max(0, self.memory.max_pointer - chunk_base)
+                )
             self.memory.set_pointers(original_pointers)
             yield frames
             current_ind = new_ind
@@ -1103,10 +1127,16 @@ class RenderLoopMixin:
             return False
         if actor.color_texture is not None or actor.ignore_normals:
             return False
-        if (getattr(actor, "material_texture", None) is not None
-                or getattr(actor, "normal_texture", None) is not None):
+        if (
+            getattr(actor, "material_texture", None) is not None
+            or getattr(actor, "normal_texture", None) is not None
+        ):
             return False
-        return not (actor is self.camera or actor is self.camera.screen or actor in self.light_sources)
+        return not (
+            actor is self.camera
+            or actor is self.camera.screen
+            or actor in self.light_sources
+        )
 
     def _is_batchable_bezier(self, actor):
         """True if this bezier circuit's primitive build can be merged with
@@ -1134,16 +1164,23 @@ class RenderLoopMixin:
             return False
         timeline = self.timeline_manager
         try:
-            for attr in ("opacity", "basis", "glow", "border_width",
-                         "border_color", "location"):
-                if timeline.attr_to_timeline[attr].mob_id_to_inds[
-                        actor.id].numel() != 1:
+            for attr in (
+                "opacity",
+                "basis",
+                "glow",
+                "border_width",
+                "border_color",
+                "location",
+            ):
+                if (
+                    timeline.attr_to_timeline[attr].mob_id_to_inds[actor.id].numel()
+                    != 1
+                ):
                     return False
             loc_inds = timeline.attr_to_timeline["location"].mob_id_to_inds
             if loc_inds[actor.control_points.id].numel() % 4 != 0:
                 return False
-            timeline.attr_to_timeline["color"].mob_id_to_inds[
-                actor.texture_points.id]
+            timeline.attr_to_timeline["color"].mob_id_to_inds[actor.texture_points.id]
         except (KeyError, AttributeError):
             return False
         return True
@@ -1154,11 +1191,15 @@ class RenderLoopMixin:
         )
 
         timeline = self.timeline_manager
-        tex_rows = timeline.attr_to_timeline["color"].mob_id_to_inds[
-            actor.texture_points.id].numel()
+        tex_rows = (
+            timeline.attr_to_timeline["color"]
+            .mob_id_to_inds[actor.texture_points.id]
+            .numel()
+        )
         return (
             BezierCircuitPrimitive.batch_identifier_for(
-                actor.num_texture_points, actor.filled),
+                actor.num_texture_points, actor.filled
+            ),
             tex_rows,
             actor.render_primitive,
         )
@@ -1175,11 +1216,9 @@ class RenderLoopMixin:
 
         groups = {}
         for entry in deferred:
-            groups.setdefault(self._bezier_group_key(entry["actor"]),
-                              []).append(entry)
+            groups.setdefault(self._bezier_group_key(entry["actor"]), []).append(entry)
         for entries in groups.values():
-            mega = build_render_primitives_batched(
-                [e["actor"] for e in entries], self)
+            mega = build_render_primitives_batched([e["actor"] for e in entries], self)
             entries[0]["prebuilt"] = [mega]
 
     def _build_deferred_surfaces(self, deferred):
@@ -1219,8 +1258,7 @@ class RenderLoopMixin:
         return any(
             (actor.lifespan.start() >= 0)
             and (actor.lifespan.start() <= end_time)
-            and ((actor.lifespan.end() >= start_time)
-                 or actor.lifespan.end() < 0)
+            and ((actor.lifespan.end() >= start_time) or actor.lifespan.end() < 0)
             and hasattr(actor, "get_render_primitives")
             for actor in self.actors
         )
@@ -1241,7 +1279,9 @@ class RenderLoopMixin:
         ]
 
         # Precompute memory per timestep once to avoid redundant calls inside binary search loop
-        actor_mem = {actor: actor.get_memory_used_per_timestep() for actor in primitive_actors}
+        actor_mem = {
+            actor: actor.get_memory_used_per_timestep() for actor in primitive_actors
+        }
 
         # Binary search for the largest batch that fits the animation-device
         # budget.  The selected actor set grows monotonically with duration, so
@@ -1261,10 +1301,7 @@ class RenderLoopMixin:
                         <= (start_time_ind + duration) / self.frames_per_second
                     )
                 ]
-                mem_used = sum(
-                    actor_mem[actor] * duration
-                    for actor in selected_actors
-                )
+                mem_used = sum(actor_mem[actor] * duration for actor in selected_actors)
                 return mem_used <= max_mem_used
 
             return _max_duration_that_fits(requested_duration, fits)
@@ -1278,8 +1315,10 @@ class RenderLoopMixin:
                 actor.lifespan.start()
                 <= (start_time_ind + duration) / self.frames_per_second
             )
-            and ((actor.lifespan.end() >= start_time_ind / self.frames_per_second)
-                 or (actor.lifespan.end() < 0))
+            and (
+                (actor.lifespan.end() >= start_time_ind / self.frames_per_second)
+                or (actor.lifespan.end() < 0)
+            )
         ]
         time_inds = torch.arange(start_time_ind, start_time_ind + duration)
 
@@ -1289,7 +1328,8 @@ class RenderLoopMixin:
         # timeline conservatively falls back to all rows for user callbacks or
         # updaters whose dependencies cannot be discovered safely.
         timeline.set_state_to_times(
-            time_inds / self.frames_per_second, active_mobs=actors)
+            time_inds / self.frames_per_second, active_mobs=actors
+        )
 
         grouped_primitives = collections.defaultdict(lambda: [None, []])
         # Surfaces sharing a grid shape are not built one-by-one: their state
@@ -1339,8 +1379,9 @@ class RenderLoopMixin:
                 if self._bezier_group_key(entry["actor"])[0] in raw_identifiers:
                     primitive = entry["actor"].get_render_primitives()
                     if primitive is not None:
-                        entry["prims"] = (primitive if isinstance(primitive, list)
-                                          else [primitive])
+                        entry["prims"] = (
+                            primitive if isinstance(primitive, list) else [primitive]
+                        )
                 else:
                     clean.append(entry)
             if clean:
@@ -1399,7 +1440,10 @@ class RenderLoopMixin:
                 textured = []
                 colored = []
                 for p in primitives:
-                    if getattr(p, "uvs", None) is not None or getattr(p, "texture_map", None) is not None:
+                    if (
+                        getattr(p, "uvs", None) is not None
+                        or getattr(p, "texture_map", None) is not None
+                    ):
                         textured.append(p)
                     else:
                         colored.append(p)
@@ -1462,8 +1506,8 @@ class RenderLoopMixin:
         except Exception:
             return
         if not primitives or not isinstance(
-                primitives[0], (RayTracedTrianglePrimitive,
-                                RayTracedBezierCircuitPrimitive)):
+            primitives[0], (RayTracedTrianglePrimitive, RayTracedBezierCircuitPrimitive)
+        ):
             return
         rt_settings = SETTINGS.raytracing
 
@@ -1474,8 +1518,7 @@ class RenderLoopMixin:
         # built on it (ready for the GPU merge, no upload). Off keeps
         # projection on the snapshot's source (CPU) device.
         gpu_project = rt_settings.project_on_gpu_active()
-        project_device = (_RENDER_DEVICE
-                          if gpu_project else None)
+        project_device = _RENDER_DEVICE if gpu_project else None
 
         def _to_device(value):
             if gpu_project and torch.is_tensor(value):
@@ -1517,11 +1560,11 @@ class RenderLoopMixin:
                     source_device = project_device
                 else:
                     source_device = _primitive_source_device(
-                        primitive, fallback=render_state["ray_origin"].device)
+                        primitive, fallback=render_state["ray_origin"].device
+                    )
                 scratch = scratch_by_device.get(source_device)
                 if scratch is None:
-                    scratch = ManualMemory(
-                        0, device=source_device, managed=False)
+                    scratch = ManualMemory(0, device=source_device, managed=False)
                     scratch_by_device[source_device] = scratch
                 primitive.memory = scratch
                 primitive.project_to_screen(camera, lights)
@@ -1564,21 +1607,25 @@ class RenderLoopMixin:
                 # emitter sample positions and packed aux parameter columns.
                 # Area lights expand into K samples, each carrying 1/K of the
                 # light's power.
-                loc_f = loc.reshape(loc.shape[0], -1)[:, :3]   # [T, 3]
-                col_f = col.reshape(col.shape[0], -1)          # [T, C]
-                pos_rows = light.get_sample_positions(loc_f)       # [T, K, 3]
+                loc_f = loc.reshape(loc.shape[0], -1)[:, :3]  # [T, 3]
+                col_f = col.reshape(col.shape[0], -1)  # [T, C]
+                pos_rows = light.get_sample_positions(loc_f)  # [T, K, 3]
                 k = pos_rows.shape[-2]
-                col_rows = ((col_f / k if k > 1 else col_f)
-                            .unsqueeze(-2).expand(-1, k, -1))
-                aux = light.build_aux(loc_f)                       # [T, K, 13]
-                lights.append((pos_rows.to(device), col_rows.to(device),
-                               aux.to(device)))
+                col_rows = (
+                    (col_f / k if k > 1 else col_f).unsqueeze(-2).expand(-1, k, -1)
+                )
+                aux = light.build_aux(loc_f)  # [T, K, 13]
+                lights.append(
+                    (pos_rows.to(device), col_rows.to(device), aux.to(device))
+                )
             else:
-                lights.append((
-                    loc.unsqueeze(-2).to(device),
-                    col.unsqueeze(-2).to(device),
-                    None,
-                ))
+                lights.append(
+                    (
+                        loc.unsqueeze(-2).to(device),
+                        col.unsqueeze(-2).to(device),
+                        None,
+                    )
+                )
         return {
             "ray_origin": camera_location.unsqueeze(-2).to(device),
             "screen_point": camera.screen.location.unsqueeze(-2).to(device),
@@ -1586,8 +1633,14 @@ class RenderLoopMixin:
             "lights": lights,
         }
 
-    def get_frames(self, start_time_ind, end_time_ind, background_color=None,
-                   post_processes=(bloom_filter,), manual_memory=True):
+    def get_frames(
+        self,
+        start_time_ind,
+        end_time_ind,
+        background_color=None,
+        post_processes=(bloom_filter,),
+        manual_memory=True,
+    ):
         """Yield frames and always release per-render state on exit.
 
         The wrapper is deliberately outside the implementation generator so
@@ -1614,9 +1667,14 @@ class RenderLoopMixin:
                 render_memory.data = None
             self.memory = original_memory
 
-    def _get_frames_impl(self, start_time_ind, end_time_ind,
-                         background_color=None,
-                         post_processes=(bloom_filter,), manual_memory=True):
+    def _get_frames_impl(
+        self,
+        start_time_ind,
+        end_time_ind,
+        background_color=None,
+        post_processes=(bloom_filter,),
+        manual_memory=True,
+    ):
         if end_time_ind <= start_time_ind:
             yield []
             return
@@ -1633,7 +1691,8 @@ class RenderLoopMixin:
         save_image = False
 
         self.memory = ManualMemory(
-            SETTINGS.computing.rendering_memory_fraction, managed=manual_memory,
+            SETTINGS.computing.rendering_memory_fraction,
+            managed=manual_memory,
         )
         # Safety margin learned from render failures this job: when a batch
         # that passed the arena preflight still fails to render, the preflight
@@ -1648,9 +1707,11 @@ class RenderLoopMixin:
         # model cannot see them; their multipliers are measured from the builds
         # themselves, seeded by the previous guesses until one has run.
         self._merge_peak_ratio = PeakRatioModel(
-            rt_settings_module.MERGE_GPU_PEAK_FACTOR)
+            rt_settings_module.MERGE_GPU_PEAK_FACTOR
+        )
         self._project_peak_ratio = PeakRatioModel(
-            rt_settings_module.PROJECT_GPU_PEAK_FACTOR)
+            rt_settings_module.PROJECT_GPU_PEAK_FACTOR
+        )
 
         # Adaptive gen-fused forecast (settings.WF_GEN_FUSED == "auto") is fed
         # per-batch render timings below; a new job restarts its batch count.
@@ -1680,9 +1741,7 @@ class RenderLoopMixin:
             # share no mutable state. All Taichi work stays on this thread.
             # Set ALGAN_PREFETCH_BATCHES=0 to fall back to serial (also
             # reduces peak memory by one batch's tensors).
-            prefetch_enabled = (
-                os.environ.get("ALGAN_PREFETCH_BATCHES", "1") != "0"
-            )
+            prefetch_enabled = os.environ.get("ALGAN_PREFETCH_BATCHES", "1") != "0"
             # inference_mode is thread-local; mirror the caller's mode in the
             # worker so prep-created tensors can be mutated in-place later by
             # the render thread (inference tensors may only be modified while
@@ -1710,22 +1769,22 @@ class RenderLoopMixin:
                     # path prewarms here.
                     from algan.rendering.raytracing import settings as rt_settings
 
-                    if (batch[0]
-                            and os.environ.get("ALGAN_PREFETCH_MERGE", "1")
-                            != "0"
-                            and not rt_settings.project_on_gpu_active()):
+                    if (
+                        batch[0]
+                        and os.environ.get("ALGAN_PREFETCH_MERGE", "1") != "0"
+                        and not rt_settings.project_on_gpu_active()
+                    ):
                         try:
                             self._prewarm_render_batch(batch[0], batch[2])
                         except Exception as e:
                             logger.warning(
                                 f"render-batch prewarm failed (deferring to "
-                                f"the render thread): {e}")
+                                f"the render thread): {e}"
+                            )
                     return batch
 
             executor = (
-                ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix="algan-batch-prep"
-                )
+                ThreadPoolExecutor(max_workers=1, thread_name_prefix="algan-batch-prep")
                 if prefetch_enabled
                 else None
             )
@@ -1738,15 +1797,13 @@ class RenderLoopMixin:
                     _sync_devices()
                     s = time.time()
                     fetch_end_ind = (
-                        retry_end_ind
-                        if retry_end_ind is not None else end_time_ind
+                        retry_end_ind if retry_end_ind is not None else end_time_ind
                     )
-                    logger.info(
-                        f"Fetching batch {current_time_ind}:{fetch_end_ind}."
-                    )
+                    logger.info(f"Fetching batch {current_time_ind}:{fetch_end_ind}.")
                     if retry_end_ind is not None:
                         primitives, new_time_ind, render_state = fetch_batch(
-                            current_time_ind, retry_end_ind)
+                            current_time_ind, retry_end_ind
+                        )
                         retry_end_ind = None
                     elif pending is not None:
                         primitives, new_time_ind, render_state = pending.result()
@@ -1757,9 +1814,7 @@ class RenderLoopMixin:
                         )
                     _sync_devices()
                     e = time.time()
-                    logger.info(
-                        f"Batch fetch took {e - s} seconds"
-                    )
+                    logger.info(f"Batch fetch took {e - s} seconds")
                     if new_time_ind <= current_time_ind:
                         raise OutOfRenderMemory(
                             "Insufficient memory to render this scene,"
@@ -1775,14 +1830,12 @@ class RenderLoopMixin:
                             actors, current_time_ind, new_time_ind
                         )
                     ):
-                        planned_prefix = (
-                            self._select_largest_fitting_fetched_prefix(
-                                primitives,
-                                render_state,
-                                duration,
-                                post_processes,
-                                transparent_background,
-                            )
+                        planned_prefix = self._select_largest_fitting_fetched_prefix(
+                            primitives,
+                            render_state,
+                            duration,
+                            post_processes,
+                            transparent_background,
                         )
 
                     if planned_prefix is not None:
@@ -1828,18 +1881,14 @@ class RenderLoopMixin:
                         empty_cache(force_gc=False)
                         target_duration = max(
                             1,
-                            (
-                                retry_lower_duration
-                                + retry_upper_duration
-                            ) // 2,
+                            (retry_lower_duration + retry_upper_duration) // 2,
                         )
                         retry_end_ind = current_time_ind + target_duration
                         continue
 
                     if retry_upper_duration is not None:
-                        retry_lower_duration = max(
-                            retry_lower_duration, duration)
-                        if False:#retry_upper_duration - retry_lower_duration > 1:
+                        retry_lower_duration = max(retry_lower_duration, duration)
+                        if False:  # retry_upper_duration - retry_lower_duration > 1:
                             # This candidate fits, but a failed upper bound
                             # leaves room to probe a larger prepared batch
                             # without emitting speculative frames.
@@ -1851,11 +1900,9 @@ class RenderLoopMixin:
                             self.memory.reset()
                             empty_cache(force_gc=False)
                             target_duration = (
-                                retry_lower_duration
-                                + retry_upper_duration
+                                retry_lower_duration + retry_upper_duration
                             ) // 2
-                            retry_end_ind = (
-                                current_time_ind + target_duration)
+                            retry_end_ind = current_time_ind + target_duration
                             continue
 
                     # Only prefetch the successor once the current duration is
@@ -1883,17 +1930,19 @@ class RenderLoopMixin:
                             ):
                                 produced_output = True
                                 yield frame_batch
-                        except (InsufficientMemoryException,
-                                OutOfRenderMemory,
-                                RuntimeError) as render_exc:
+                        except (
+                            InsufficientMemoryException,
+                            OutOfRenderMemory,
+                            RuntimeError,
+                        ) as render_exc:
                             # A Taichi launch can OOM as a bare RuntimeError from
                             # its own allocator once the render chunk retry is
                             # exhausted; treat it as a render OOM here too (and
                             # re-raise any genuine, non-OOM RuntimeError).
-                            if (not isinstance(render_exc, (
-                                        InsufficientMemoryException,
-                                        OutOfRenderMemory))
-                                    and not is_cuda_oom(render_exc)):
+                            if not isinstance(
+                                render_exc,
+                                (InsufficientMemoryException, OutOfRenderMemory),
+                            ) and not is_cuda_oom(render_exc):
                                 raise
                             if produced_output or duration <= 1:
                                 raise
@@ -1902,7 +1951,8 @@ class RenderLoopMixin:
                                 "Render failed despite arena preflight "
                                 f"({type(render_exc).__name__}: {render_exc}); "
                                 f"retrying {current_time_ind}:{new_time_ind} "
-                                "at half duration.")
+                                "at half duration."
+                            )
                             # A prefetched successor starts at the old end and
                             # is invalid after this split. Drain and discard it
                             # before rematerializing the smaller current batch.
@@ -1926,8 +1976,7 @@ class RenderLoopMixin:
                             # arbitrate everything afterwards.
                             retry_lower_duration = 0
                             retry_upper_duration = max(1, duration // 2)
-                            retry_end_ind = (
-                                current_time_ind + max(1, duration // 2))
+                            retry_end_ind = current_time_ind + max(1, duration // 2)
                             retry_after_render_failure = True
                         if retry_after_render_failure:
                             # This deliberately runs after the exception handler:
@@ -1957,8 +2006,10 @@ class RenderLoopMixin:
                             f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
                         )
                         if _rt_settings._note_batch_rendered(
-                                new_time_ind - current_time_ind, e - s,
-                                end_time_ind - new_time_ind):
+                            new_time_ind - current_time_ind,
+                            e - s,
+                            end_time_ind - new_time_ind,
+                        ):
                             logger.info(
                                 "Adaptive gen-fused: forecasted remaining "
                                 "render time justifies compiling the fused "
@@ -2045,21 +2096,28 @@ class RenderLoopMixin:
         if not self._scene_has_renderable_actors(*self.scene_times[-1]):
             warnings.warn(
                 "You are rendering an empty scene! Did you forget to spawn() your Mobs?",
-                EmptySceneWarning, stacklevel=2,
+                EmptySceneWarning,
+                stacklevel=2,
             )
 
         self.file_path = file_path
         self.file_writer = file_writer
 
         frame_queue = Queue(maxsize=8)
-        writer_process = threading.Thread(target=write_frames_from_queue, args=(frame_queue, file_writer))
+        writer_process = threading.Thread(
+            target=write_frames_from_queue, args=(frame_queue, file_writer)
+        )
         writer_process.daemon = True
         writer_process.start()
 
         self.frame_queue = frame_queue
         # Wait for the writer process to complete
-        for frame_batch in self.get_frames(*self.scene_times[-1], background_color=background_color,
-                                           post_processes=post_processes, manual_memory=True):
+        for frame_batch in self.get_frames(
+            *self.scene_times[-1],
+            background_color=background_color,
+            post_processes=post_processes,
+            manual_memory=True,
+        ):
             for frame in frame_batch:
                 frame_queue.put(frame)
 

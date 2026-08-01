@@ -5,6 +5,7 @@ self-contained objects: each owns its timeline, animation, and audio managers.
 Creating a scene pushes it onto this manager's stack, making it the destination
 for subsequently constructed mobs that were not given an explicit ``scene``.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -54,7 +55,9 @@ class SceneManager(Singleton):
         scene_class = manager_type._scene_class
         scene_initializer = manager_type._scene_initializer
         if scene_class is None:
-            raise RuntimeError("SceneManager has not been configured with a Scene class")
+            raise RuntimeError(
+                "SceneManager has not been configured with a Scene class"
+            )
         if self._creating_default_scene:
             raise RuntimeError("Recursive default Scene creation")
         self._creating_default_scene = True
@@ -79,7 +82,9 @@ class SceneManager(Singleton):
         if scene in self._scene_stack:
             if self._scene_stack[-1] is scene:
                 return scene
-            raise RuntimeError("Cannot reactivate a Scene covered by another active Scene")
+            raise RuntimeError(
+                "Cannot reactivate a Scene covered by another active Scene"
+            )
         self._scene_stack.append(scene)
         scene._terminated = False
         return scene

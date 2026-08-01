@@ -21,9 +21,7 @@ def fresh_scene_stack():
 def _midpoint_of_recorded_move(angle_degrees):
     scene = Scene(scene_initializer=_empty_scene)
     mob = Mob(location=[0, 0, 0]).spawn(animate=False)
-    mob.move_to_point_along_arc(
-        [2, 0, 0], angle_degrees, arc_normal=[0, 0, 1]
-    )
+    mob.move_to_point_along_arc([2, 0, 0], angle_degrees, arc_normal=[0, 0, 1])
     scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
     location = mob.location.clone()
     scene.terminate()
@@ -104,9 +102,7 @@ def test_batched_zero_and_circular_sweeps_are_supported_together():
     )
     scene.timeline_manager.set_state_to_times(torch.tensor([0.5]))
 
-    expected = torch.tensor(
-        [[[1.0, 0.0, 0.0], [1.0, math.sqrt(2) - 1, 0.0]]]
-    )
+    expected = torch.tensor([[[1.0, 0.0, 0.0], [1.0, math.sqrt(2) - 1, 0.0]]])
     torch.testing.assert_close(mob.location, expected, atol=2e-5, rtol=2e-5)
     scene.terminate()
 

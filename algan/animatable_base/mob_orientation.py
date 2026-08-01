@@ -3,6 +3,7 @@
 Split out of ``mob.py`` for readability; :class:`MobOrientationMixin` is mixed
 into ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
+
 from __future__ import annotations
 
 import torch.nn.functional as F
@@ -104,9 +105,7 @@ class MobOrientationMixin:
         """
         axis = F.normalize(cast_to_tensor(axis), p=2, dim=-1)
         rotation_matrix = get_rotation_around_axis(num_degrees, axis, dim=-1)
-        self.basis = squish(
-            unsquish(self.basis, -1, 3) @ rotation_matrix, -2, -1
-        )
+        self.basis = squish(unsquish(self.basis, -1, 3) @ rotation_matrix, -2, -1)
         if about_point is not None:
             self.orbit(num_degrees, axis, about_point)
         return self

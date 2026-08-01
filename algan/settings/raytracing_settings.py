@@ -80,20 +80,22 @@ _LEGACY_TO_FIELD = {value: key for key, value in _FIELD_TO_LEGACY.items()}
 # _FIELD_TO_LEGACY is a performance or capability switch whose meaning is tied
 # to the current kernel implementation; those live under ``.experimental`` so
 # that the supported surface is obvious from tab-completion and repr.
-_PUBLIC_FIELDS = frozenset({
-    "samples_per_pixel",
-    "max_bounces",
-    "shadows",
-    "ambient_light",
-    "light_intensity",
-    "indirect_bounce_strength",
-    "glossy_reflection",
-    "analytic_aa",
-    "tonemapping",
-    "tonemap_method",
-    "tonemap_exposure",
-    "unsupported_feature_policy",
-})
+_PUBLIC_FIELDS = frozenset(
+    {
+        "samples_per_pixel",
+        "max_bounces",
+        "shadows",
+        "ambient_light",
+        "light_intensity",
+        "indirect_bounce_strength",
+        "glossy_reflection",
+        "analytic_aa",
+        "tonemapping",
+        "tonemap_method",
+        "tonemap_exposure",
+        "unsupported_feature_policy",
+    }
+)
 
 _EXPERIMENTAL_FIELDS = frozenset(_FIELD_TO_LEGACY) - _PUBLIC_FIELDS
 
@@ -341,9 +343,7 @@ class RayTracingSettings:
                 else:
                     setattr(module, _FIELD_TO_LEGACY[field], value)
                     if field == "refract_initial_pool_ratio":
-                        module.REFRACT_SPLIT_SLOTS = (
-                            module.REFRACT_INITIAL_POOL_RATIO
-                        )
+                        module.REFRACT_SPLIT_SLOTS = module.REFRACT_INITIAL_POOL_RATIO
         except Exception:
             self._restore(previous)
             raise

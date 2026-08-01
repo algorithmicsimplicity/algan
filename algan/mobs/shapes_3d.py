@@ -254,7 +254,9 @@ class Cylinder(Surface):
         offset = self.get_upwards_basis() * 0.5
         current_end = self.location + offset
         current_start = self.location - offset
-        point = current_start * (1 - interpolation) + interpolation * cast_to_tensor(point)
+        point = current_start * (1 - interpolation) + interpolation * cast_to_tensor(
+            point
+        )
         self._move_between_points(point, current_end)
         return self
 
@@ -354,9 +356,7 @@ class Arrow3D(Mob):
         self.add_children(self.tail, self.head)
 
     def get_memory_used_per_timestep(self):
-        return sum(
-            child.get_memory_used_per_timestep() for child in self.children
-        )
+        return sum(child.get_memory_used_per_timestep() for child in self.children)
 
     def get_render_primitives(self):
         primitives = []
@@ -364,9 +364,7 @@ class Arrow3D(Mob):
             primitive = child.get_render_primitives()
             if primitive is None:
                 continue
-            primitives.extend(
-                primitive if isinstance(primitive, list) else [primitive]
-            )
+            primitives.extend(primitive if isinstance(primitive, list) else [primitive])
         return primitives or None
 
     def get_start(self):
@@ -441,8 +439,12 @@ class Line3D(Cylinder):
     def set_start_and_end_attrs(self, start, end, **kwargs):
         from algan.utils.tensor_utils import cast_to_tensor
 
-        self.start = cast_to_tensor(start.get_center() if hasattr(start, "get_center") else start)
-        self.end = cast_to_tensor(end.get_center() if hasattr(end, "get_center") else end)
+        self.start = cast_to_tensor(
+            start.get_center() if hasattr(start, "get_center") else start
+        )
+        self.end = cast_to_tensor(
+            end.get_center() if hasattr(end, "get_center") else end
+        )
         self.move_between_points(self.start, self.end)
         return self
 
@@ -460,14 +462,20 @@ class Line3D(Cylinder):
         direction = line.get_end() - line.get_start()
         direction = F.normalize(direction, p=2, dim=-1)
         point = point.get_center() if hasattr(point, "get_center") else point
-        return cls(point - direction * length / 2, point + direction * length / 2, **kwargs)
+        return cls(
+            point - direction * length / 2, point + direction * length / 2, **kwargs
+        )
 
     @classmethod
     def perpendicular_to(cls, line, point, length=1, **kwargs):
         direction = line.get_end() - line.get_start()
         perpendicular = get_orthonormal_vector(F.normalize(direction, p=2, dim=-1))
         point = point.get_center() if hasattr(point, "get_center") else point
-        return cls(point - perpendicular * length / 2, point + perpendicular * length / 2, **kwargs)
+        return cls(
+            point - perpendicular * length / 2,
+            point + perpendicular * length / 2,
+            **kwargs,
+        )
 
 
 class Torus(Surface):
@@ -523,7 +531,11 @@ class Torus(Surface):
         v = torch.as_tensor(v)
         ring_radius = self.major_radius - self.minor_radius * torch.cos(v)
         return torch.stack(
-            (ring_radius * torch.cos(u), ring_radius * torch.sin(u), -self.minor_radius * torch.sin(v)),
+            (
+                ring_radius * torch.cos(u),
+                ring_radius * torch.sin(u),
+                -self.minor_radius * torch.sin(v),
+            ),
             -1,
         )
 
@@ -575,7 +587,9 @@ class Polyhedron(Mob):
         self.faces_list = [list(face) for face in faces_list]
         self.vertex_indices = list(range(len(self.vertex_coords)))
         self.layout = {i: self.vertex_coords[i] for i in self.vertex_indices}
-        self.face_coords = [[self.vertex_coords[j] for j in face] for face in self.faces_list]
+        self.face_coords = [
+            [self.vertex_coords[j] for j in face] for face in self.faces_list
+        ]
         self.edges = self.get_edges(self.faces_list)
         self.faces_config = dict(faces_config or {})
         self.graph_config = dict(graph_config or {})
@@ -587,7 +601,11 @@ class Polyhedron(Mob):
             triangles = []
             for i in range(1, len(face) - 1):
                 corners = torch.stack(
-                    (self.vertex_coords[face[0]], self.vertex_coords[face[i]], self.vertex_coords[face[i + 1]])
+                    (
+                        self.vertex_coords[face[0]],
+                        self.vertex_coords[face[i]],
+                        self.vertex_coords[face[i + 1]],
+                    )
                 )
                 triangles.append(
                     TriangleTriangulated(
@@ -597,12 +615,8 @@ class Polyhedron(Mob):
                         **face_style,
                     )
                 )
-            face_groups.append(
-                Group(*triangles, scene=self.scene, add_to_scene=False)
-            )
-        self.faces = Group(
-            *face_groups, scene=self.scene, add_to_scene=False
-        )
+            face_groups.append(Group(*triangles, scene=self.scene, add_to_scene=False))
+        self.faces = Group(*face_groups, scene=self.scene, add_to_scene=False)
 
         vertex_type = self.graph_config.get("vertex_type", Dot3D)
         vertex_config = dict(self.graph_config.get("vertex_config", {}))
@@ -629,8 +643,7 @@ class Polyhedron(Mob):
 
     def get_memory_used_per_timestep(self):
         return sum(
-            mob.get_memory_used_per_timestep()
-            for mob in self._face_primitive_mobs()
+            mob.get_memory_used_per_timestep() for mob in self._face_primitive_mobs()
         )
 
     def get_render_primitives(self):
@@ -639,9 +652,7 @@ class Polyhedron(Mob):
             primitive = mob.get_render_primitives()
             if primitive is None:
                 continue
-            primitives.extend(
-                primitive if isinstance(primitive, list) else [primitive]
-            )
+            primitives.extend(primitive if isinstance(primitive, list) else [primitive])
         return primitives or None
 
     @staticmethod
@@ -684,15 +695,29 @@ class Prism(Polyhedron):
         self.dimensions = cast_to_tensor(dimensions).reshape(-1)
         x, y, z = self.dimensions / 2
         vertices = [
-            [-x, -y, -z], [x, -y, -z], [x, y, -z], [-x, y, -z],
-            [-x, -y, z], [x, -y, z], [x, y, z], [-x, y, z],
+            [-x, -y, -z],
+            [x, -y, -z],
+            [x, y, -z],
+            [-x, y, -z],
+            [-x, -y, z],
+            [x, -y, z],
+            [x, y, z],
+            [-x, y, z],
         ]
         faces = [
-            [0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4],
-            [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7],
+            [0, 3, 2, 1],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [1, 2, 6, 5],
+            [2, 3, 7, 6],
+            [3, 0, 4, 7],
         ]
         faces_config = dict(kwargs.pop("faces_config", {}) or {})
-        for source, target in (("fill_color", "fill_color"), ("fill_opacity", "fill_opacity"), ("stroke_width", "stroke_width")):
+        for source, target in (
+            ("fill_color", "fill_color"),
+            ("fill_opacity", "fill_opacity"),
+            ("stroke_width", "stroke_width"),
+        ):
             if source in kwargs:
                 faces_config[target] = kwargs.pop(source)
         super().__init__(vertices, faces, faces_config=faces_config, **kwargs)
@@ -727,7 +752,12 @@ class Tetrahedron(Polyhedron):
     def __init__(self, edge_length=1, **kwargs):
         unit = edge_length * math.sqrt(2) / 4
         super().__init__(
-            [[unit, unit, unit], [unit, -unit, -unit], [-unit, unit, -unit], [-unit, -unit, unit]],
+            [
+                [unit, unit, unit],
+                [unit, -unit, -unit],
+                [-unit, unit, -unit],
+                [-unit, -unit, unit],
+            ],
             [[0, 1, 2], [3, 0, 2], [0, 1, 3], [3, 1, 2]],
             **kwargs,
         )
@@ -737,8 +767,24 @@ class Octahedron(Polyhedron):
     def __init__(self, edge_length=1, **kwargs):
         unit = edge_length * math.sqrt(2) / 2
         super().__init__(
-            [[unit, 0, 0], [-unit, 0, 0], [0, unit, 0], [0, -unit, 0], [0, 0, unit], [0, 0, -unit]],
-            [[2, 4, 1], [0, 4, 2], [4, 3, 0], [1, 3, 4], [3, 5, 0], [1, 5, 3], [2, 5, 1], [0, 5, 2]],
+            [
+                [unit, 0, 0],
+                [-unit, 0, 0],
+                [0, unit, 0],
+                [0, -unit, 0],
+                [0, 0, unit],
+                [0, 0, -unit],
+            ],
+            [
+                [2, 4, 1],
+                [0, 4, 2],
+                [4, 3, 0],
+                [1, 3, 4],
+                [3, 5, 0],
+                [1, 5, 3],
+                [2, 5, 1],
+                [0, 5, 2],
+            ],
             **kwargs,
         )
 
@@ -747,8 +793,42 @@ class Icosahedron(Polyhedron):
     def __init__(self, edge_length=1, **kwargs):
         a = edge_length * ((1 + math.sqrt(5)) / 4)
         b = edge_length / 2
-        vertices = [[0,b,a],[0,-b,a],[0,b,-a],[0,-b,-a],[b,a,0],[b,-a,0],[-b,a,0],[-b,-a,0],[a,0,b],[a,0,-b],[-a,0,b],[-a,0,-b]]
-        faces = [[1,8,0],[1,5,7],[8,5,1],[7,3,5],[5,9,3],[8,9,5],[3,2,9],[9,4,2],[8,4,9],[0,4,8],[6,4,0],[6,2,4],[11,2,6],[3,11,2],[0,6,10],[10,1,0],[10,7,1],[11,7,3],[10,11,7],[10,11,6]]
+        vertices = [
+            [0, b, a],
+            [0, -b, a],
+            [0, b, -a],
+            [0, -b, -a],
+            [b, a, 0],
+            [b, -a, 0],
+            [-b, a, 0],
+            [-b, -a, 0],
+            [a, 0, b],
+            [a, 0, -b],
+            [-a, 0, b],
+            [-a, 0, -b],
+        ]
+        faces = [
+            [1, 8, 0],
+            [1, 5, 7],
+            [8, 5, 1],
+            [7, 3, 5],
+            [5, 9, 3],
+            [8, 9, 5],
+            [3, 2, 9],
+            [9, 4, 2],
+            [8, 4, 9],
+            [0, 4, 8],
+            [6, 4, 0],
+            [6, 2, 4],
+            [11, 2, 6],
+            [3, 11, 2],
+            [0, 6, 10],
+            [10, 1, 0],
+            [10, 7, 1],
+            [11, 7, 3],
+            [10, 11, 7],
+            [10, 11, 6],
+        ]
         super().__init__(vertices, faces, **kwargs)
 
 
@@ -757,8 +837,42 @@ class Dodecahedron(Polyhedron):
         a = edge_length * ((1 + math.sqrt(5)) / 4)
         b = edge_length * ((3 + math.sqrt(5)) / 4)
         c = edge_length / 2
-        vertices = [[a,a,a],[a,a,-a],[a,-a,a],[a,-a,-a],[-a,a,a],[-a,a,-a],[-a,-a,a],[-a,-a,-a],[0,c,b],[0,c,-b],[0,-c,-b],[0,-c,b],[c,b,0],[-c,b,0],[c,-b,0],[-c,-b,0],[b,0,c],[-b,0,c],[b,0,-c],[-b,0,-c]]
-        faces = [[18,16,0,12,1],[3,18,16,2,14],[3,10,9,1,18],[1,9,5,13,12],[0,8,4,13,12],[2,16,0,8,11],[4,17,6,11,8],[17,19,5,13,4],[19,7,15,6,17],[6,15,14,2,11],[19,5,9,10,7],[7,10,3,14,15]]
+        vertices = [
+            [a, a, a],
+            [a, a, -a],
+            [a, -a, a],
+            [a, -a, -a],
+            [-a, a, a],
+            [-a, a, -a],
+            [-a, -a, a],
+            [-a, -a, -a],
+            [0, c, b],
+            [0, c, -b],
+            [0, -c, -b],
+            [0, -c, b],
+            [c, b, 0],
+            [-c, b, 0],
+            [c, -b, 0],
+            [-c, -b, 0],
+            [b, 0, c],
+            [-b, 0, c],
+            [b, 0, -c],
+            [-b, 0, -c],
+        ]
+        faces = [
+            [18, 16, 0, 12, 1],
+            [3, 18, 16, 2, 14],
+            [3, 10, 9, 1, 18],
+            [1, 9, 5, 13, 12],
+            [0, 8, 4, 13, 12],
+            [2, 16, 0, 8, 11],
+            [4, 17, 6, 11, 8],
+            [17, 19, 5, 13, 4],
+            [19, 7, 15, 6, 17],
+            [6, 15, 14, 2, 11],
+            [19, 5, 9, 10, 7],
+            [7, 10, 3, 14, 15],
+        ]
         super().__init__(vertices, faces, **kwargs)
 
 

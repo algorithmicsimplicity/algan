@@ -60,8 +60,9 @@ def _checker_texture(n=32):
 
 
 def _quad():
-    v = torch.tensor([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]],
-                     dtype=torch.float32)
+    v = torch.tensor(
+        [[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], dtype=torch.float32
+    )
     uv = torch.tensor([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=torch.float32)
     n = torch.tensor([[0, 0, 1]] * 4, dtype=torch.float32)
     f = torch.tensor([[0, 1, 2], [0, 2, 3]], dtype=torch.long)
@@ -69,12 +70,24 @@ def _quad():
 
 
 def _octahedron():
-    v = torch.tensor([[1, 0, 0], [-1, 0, 0], [0, 1, 0],
-                      [0, -1, 0], [0, 0, 1], [0, 0, -1]], dtype=torch.float32)
+    v = torch.tensor(
+        [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]],
+        dtype=torch.float32,
+    )
     n = torch.nn.functional.normalize(v, dim=-1)
-    f = torch.tensor([[0, 2, 4], [2, 1, 4], [1, 3, 4], [3, 0, 4],
-                      [2, 0, 5], [1, 2, 5], [3, 1, 5], [0, 3, 5]],
-                     dtype=torch.long)
+    f = torch.tensor(
+        [
+            [0, 2, 4],
+            [2, 1, 4],
+            [1, 3, 4],
+            [3, 0, 4],
+            [2, 0, 5],
+            [1, 2, 5],
+            [3, 1, 5],
+            [0, 3, 5],
+        ],
+        dtype=torch.long,
+    )
     return v, f, n
 
 
@@ -88,10 +101,10 @@ def _two_mesh_scene():
     qv, qf, qn, quv = _quad()
     ov, of, on = _octahedron()
     meshes = [
-        MeshData(vertices=qv, faces=qf, normals=qn, uvs=quv,
-                 material_index=0, name="quad"),
-        MeshData(vertices=ov, faces=of, normals=on,
-                 material_index=1, name="octa"),
+        MeshData(
+            vertices=qv, faces=qf, normals=qn, uvs=quv, material_index=0, name="quad"
+        ),
+        MeshData(vertices=ov, faces=of, normals=on, material_index=1, name="octa"),
     ]
     materials = [
         MaterialData(name="tex", diffuse_texture="__CHECKER__"),
@@ -99,13 +112,16 @@ def _two_mesh_scene():
     ]
     nodes = [
         NodeData(name="root", transform=torch.eye(4), parent=-1),
-        NodeData(name="quad_node", transform=_translate(-1.6), parent=0,
-                 mesh_indices=[0]),
-        NodeData(name="octa_node", transform=_translate(1.6), parent=0,
-                 mesh_indices=[1]),
+        NodeData(
+            name="quad_node", transform=_translate(-1.6), parent=0, mesh_indices=[0]
+        ),
+        NodeData(
+            name="octa_node", transform=_translate(1.6), parent=0, mesh_indices=[1]
+        ),
     ]
-    return SceneData(meshes=meshes, materials=materials, nodes=nodes,
-                     source_path="synthetic")
+    return SceneData(
+        meshes=meshes, materials=materials, nodes=nodes, source_path="synthetic"
+    )
 
 
 class _CheckerModel(ThreeDModelMob):
@@ -178,11 +194,11 @@ def test_normal_map_conversion():
     """glTF rgb normal map -> engine [-1, 1] tangent map, transposed/flipped
     like the colour texture with the green axis flipped.
     """
-    img = torch.zeros(4, 6, 3)     # [H, W, 3] in [0, 1]
-    img[..., 2] = 1.0              # flat normal rgb (0,0,1) -> vector (-1,-1,+1)
-    img[..., 1] = 1.0              # green = 1 -> y = +1, flipped to -1
+    img = torch.zeros(4, 6, 3)  # [H, W, 3] in [0, 1]
+    img[..., 2] = 1.0  # flat normal rgb (0,0,1) -> vector (-1,-1,+1)
+    img[..., 1] = 1.0  # green = 1 -> y = +1, flipped to -1
     nm = image_to_normal_map(img)
-    assert nm.shape == (6, 4, 3)   # [W, H, 3] (transposed)
+    assert nm.shape == (6, 4, 3)  # [W, H, 3] (transposed)
     assert nm[..., 2].min() > 0.99  # z stays +1
     assert nm[..., 1].max() < -0.99  # green flipped: y = -(2*1-1) = -1
 
@@ -193,20 +209,25 @@ def _material_scene_with_maps():
     """
     v, f, n, uv = _quad()
     mr = torch.zeros(8, 8, 3)
-    mr[..., 1] = 0.5   # roughness channel (G)
+    mr[..., 1] = 0.5  # roughness channel (G)
     mr[..., 2] = 0.25  # metallic channel (B)
     normal = torch.zeros(8, 8, 3)
     normal[..., 2] = 1.0  # flat normal map
     mat = MaterialData(
-        name="pbr", base_color=(0.8, 0.7, 0.6, 1.0),
-        metallic_factor=1.0, roughness_factor=1.0,
-        metallic_roughness_image=mr, normal_image=normal,
+        name="pbr",
+        base_color=(0.8, 0.7, 0.6, 1.0),
+        metallic_factor=1.0,
+        roughness_factor=1.0,
+        metallic_roughness_image=mr,
+        normal_image=normal,
     )
-    mesh = MeshData(vertices=v, faces=f, normals=n, uvs=uv, material_index=0,
-                    name="quad")
+    mesh = MeshData(
+        vertices=v, faces=f, normals=n, uvs=uv, material_index=0, name="quad"
+    )
     node = NodeData(name="quad_node", parent=-1, mesh_indices=[0])
-    return SceneData(meshes=[mesh], materials=[mat], nodes=[node],
-                     source_path="synthetic")
+    return SceneData(
+        meshes=[mesh], materials=[mat], nodes=[node], source_path="synthetic"
+    )
 
 
 def test_pbr_and_normal_map_wiring():
@@ -228,8 +249,9 @@ def test_pbr_and_normal_map_wiring():
 
 def test_normal_maps_and_pbr_can_be_disabled():
     SceneManager.reset()
-    model = ThreeDModelMob(scene_data=_material_scene_with_maps(),
-                           normal_maps=False, pbr_materials=False)
+    model = ThreeDModelMob(
+        scene_data=_material_scene_with_maps(), normal_maps=False, pbr_materials=False
+    )
     mesh = model.mesh_mobs[0]
     assert mesh.normal_texture_map is None
     assert mesh.shader is not standard_shader
@@ -251,7 +273,7 @@ def test_animation_math_roundtrips():
     """Quaternion<->matrix, TRS decompose/recompose and slerp midpoint."""
     from algan.mobs.three_d_models import animation as anim
 
-    q = torch.tensor([0.0, 0.7071068, 0.0, 0.7071068])   # 90 deg about +Y
+    q = torch.tensor([0.0, 0.7071068, 0.0, 0.7071068])  # 90 deg about +Y
     R = anim.quaternion_to_matrix(q)
     # +90 about Y maps (x,y,z) -> (z, y, -x).
     v = torch.tensor([1.0, 2.0, 3.0])
@@ -266,8 +288,9 @@ def test_animation_math_roundtrips():
     t2, r2, s2 = anim.decompose_trs(M)
     assert torch.allclose(t2, T, atol=1e-5)
     assert torch.allclose(s2, S, atol=1e-5)
-    assert torch.allclose(anim.quaternion_to_matrix(r2),
-                          anim.quaternion_to_matrix(q), atol=1e-5)
+    assert torch.allclose(
+        anim.quaternion_to_matrix(r2), anim.quaternion_to_matrix(q), atol=1e-5
+    )
 
     # slerp halfway between identity and 90-about-Y is 45-about-Y.
     times = torch.tensor([0.0, 1.0])
@@ -275,8 +298,9 @@ def test_animation_math_roundtrips():
     half = anim.sample_quaternion_track(times, quats, 0.5)
     Rh = anim.quaternion_to_matrix(half)
     c = 0.70710678
-    assert torch.allclose(Rh @ torch.tensor([1.0, 0.0, 0.0]),
-                          torch.tensor([c, 0.0, -c]), atol=1e-4)
+    assert torch.allclose(
+        Rh @ torch.tensor([1.0, 0.0, 0.0]), torch.tensor([c, 0.0, -c]), atol=1e-4
+    )
 
 
 def _triangle_mesh(v=None):
@@ -292,17 +316,28 @@ def _spin_translate_scene():
     x=+2 over one second.
     """
     times = torch.tensor([0.0, 1.0])
-    quats = torch.stack([torch.tensor([0.0, 0.0, 0.0, 1.0]),
-                         torch.tensor([0.0, 0.7071068, 0.0, 0.7071068])])
+    quats = torch.stack(
+        [
+            torch.tensor([0.0, 0.0, 0.0, 1.0]),
+            torch.tensor([0.0, 0.7071068, 0.0, 0.7071068]),
+        ]
+    )
     positions = torch.tensor([[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
-    channel = NodeAnimation(node_name="spin",
-                            position_times=times, positions=positions,
-                            rotation_times=times, rotations=quats)
+    channel = NodeAnimation(
+        node_name="spin",
+        position_times=times,
+        positions=positions,
+        rotation_times=times,
+        rotations=quats,
+    )
     clip = AnimationData(name="clip", duration=1.0, channels=[channel])
-    node = NodeData(name="spin", transform=torch.eye(4), parent=-1,
-                    mesh_indices=[0])
-    return SceneData(meshes=[_triangle_mesh()], materials=[MaterialData()],
-                     nodes=[node], animations=[clip])
+    node = NodeData(name="spin", transform=torch.eye(4), parent=-1, mesh_indices=[0])
+    return SceneData(
+        meshes=[_triangle_mesh()],
+        materials=[MaterialData()],
+        nodes=[node],
+        animations=[clip],
+    )
 
 
 def test_bake_rigid_node_animation():
@@ -311,16 +346,15 @@ def test_bake_rigid_node_animation():
     model = ThreeDModelMob(scene_data=_spin_translate_scene())
     times, corners = model.bake_animation(times=[0.0, 0.5, 1.0])
     mob = model.mesh_mobs[0]
-    baked = corners[mob]                       # [3, 3F, 3]
-    v0 = torch.tensor([1.0, 0.0, 0.0])         # first triangle corner
+    baked = corners[mob]  # [3, 3F, 3]
+    v0 = torch.tensor([1.0, 0.0, 0.0])  # first triangle corner
     # t=0: rest pose (identity, no translation).
     assert torch.allclose(baked[0, 0], v0, atol=1e-5)
     # t=1: R_y(90) v + (2,0,0) = (0,0,-1)+(2,0,0).
     assert torch.allclose(baked[2, 0], torch.tensor([2.0, 0.0, -1.0]), atol=1e-4)
     # t=0.5: R_y(45) v + (1,0,0).
     c = 0.70710678
-    assert torch.allclose(baked[1, 0], torch.tensor([1.0 + c, 0.0, -c]),
-                          atol=1e-4)
+    assert torch.allclose(baked[1, 0], torch.tensor([1.0 + c, 0.0, -c]), atol=1e-4)
     assert model.animation_names == ["clip"]
 
 
@@ -330,23 +364,28 @@ def test_bake_hierarchy_animation():
     times = torch.tensor([0.0, 1.0])
     positions = torch.tensor([[0.0, 0.0, 0.0], [0.0, 3.0, 0.0]])
     clip = AnimationData(
-        name="c", duration=1.0,
-        channels=[NodeAnimation(node_name="root", position_times=times,
-                                positions=positions)])
+        name="c",
+        duration=1.0,
+        channels=[
+            NodeAnimation(node_name="root", position_times=times, positions=positions)
+        ],
+    )
     nodes = [
         NodeData(name="root", transform=torch.eye(4), parent=-1),
-        NodeData(name="child", transform=torch.eye(4), parent=0,
-                 mesh_indices=[0]),
+        NodeData(name="child", transform=torch.eye(4), parent=0, mesh_indices=[0]),
     ]
-    scene = SceneData(meshes=[_triangle_mesh()], materials=[MaterialData()],
-                      nodes=nodes, animations=[clip])
+    scene = SceneData(
+        meshes=[_triangle_mesh()],
+        materials=[MaterialData()],
+        nodes=nodes,
+        animations=[clip],
+    )
     model = ThreeDModelMob(scene_data=scene)
     _, corners = model.bake_animation(times=[0.0, 1.0])
     baked = corners[model.mesh_mobs[0]]
     v0 = torch.tensor([1.0, 0.0, 0.0])
     assert torch.allclose(baked[0, 0], v0, atol=1e-5)
-    assert torch.allclose(baked[1, 0], v0 + torch.tensor([0.0, 3.0, 0.0]),
-                          atol=1e-5)
+    assert torch.allclose(baked[1, 0], v0 + torch.tensor([0.0, 3.0, 0.0]), atol=1e-5)
 
 
 def test_play_animation_sets_recompute_normals():
@@ -366,12 +405,10 @@ def _write_animated_glb(path):
     """
     import pygltflib as g
 
-    verts = np.array([[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.0, 0.5, 0]],
-                     dtype=np.float32)
+    verts = np.array([[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.0, 0.5, 0]], dtype=np.float32)
     idx = np.array([0, 1, 2], dtype=np.uint16)
     times = np.array([0.0, 1.0], dtype=np.float32)
-    rots = np.array([[0, 0, 0, 1], [0, 0.7071068, 0, 0.7071068]],
-                    dtype=np.float32)
+    rots = np.array([[0, 0, 0, 1], [0, 0.7071068, 0, 0.7071068]], dtype=np.float32)
 
     pos_b = verts.tobytes()
     idx_b = idx.tobytes()
@@ -387,14 +424,29 @@ def _write_animated_glb(path):
         scene=0,
         scenes=[g.Scene(nodes=[0])],
         nodes=[g.Node(mesh=0, name="spinner")],
-        meshes=[g.Mesh(primitives=[g.Primitive(
-            attributes=g.Attributes(POSITION=0), indices=1)])],
+        meshes=[
+            g.Mesh(
+                primitives=[g.Primitive(attributes=g.Attributes(POSITION=0), indices=1)]
+            )
+        ],
         accessors=[
-            g.Accessor(bufferView=0, componentType=5126, count=3, type="VEC3",
-                       min=verts.min(0).tolist(), max=verts.max(0).tolist()),
+            g.Accessor(
+                bufferView=0,
+                componentType=5126,
+                count=3,
+                type="VEC3",
+                min=verts.min(0).tolist(),
+                max=verts.max(0).tolist(),
+            ),
             g.Accessor(bufferView=1, componentType=5123, count=3, type="SCALAR"),
-            g.Accessor(bufferView=2, componentType=5126, count=2, type="SCALAR",
-                       min=[0.0], max=[1.0]),
+            g.Accessor(
+                bufferView=2,
+                componentType=5126,
+                count=2,
+                type="SCALAR",
+                min=[0.0],
+                max=[1.0],
+            ),
             g.Accessor(bufferView=3, componentType=5126, count=2, type="VEC4"),
         ],
         bufferViews=[
@@ -404,14 +456,20 @@ def _write_animated_glb(path):
             g.BufferView(buffer=0, byteOffset=o_rot, byteLength=len(rot_b)),
         ],
         buffers=[g.Buffer(byteLength=len(blob))],
-        animations=[g.Animation(
-            name="spin",
-            samplers=[g.AnimationSampler(input=2, output=3,
-                                         interpolation="LINEAR")],
-            channels=[g.AnimationChannel(
-                sampler=0,
-                target=g.AnimationChannelTarget(node=0, path="rotation"))],
-        )],
+        animations=[
+            g.Animation(
+                name="spin",
+                samplers=[
+                    g.AnimationSampler(input=2, output=3, interpolation="LINEAR")
+                ],
+                channels=[
+                    g.AnimationChannel(
+                        sampler=0,
+                        target=g.AnimationChannelTarget(node=0, path="rotation"),
+                    )
+                ],
+            )
+        ],
     )
     gltf.set_binary_blob(blob)
     gltf.save_binary(path)
@@ -435,7 +493,7 @@ def test_glb_animation_roundtrip(tmp_path):
     # A corner at +x rotates 90 about Y to -z; check the pose moved as expected.
     rest = baked[0].reshape(-1, 3)
     end = baked[1].reshape(-1, 3)
-    assert not torch.allclose(rest, end, atol=1e-3)       # motion happened
+    assert not torch.allclose(rest, end, atol=1e-3)  # motion happened
     # Rotation preserves distance from the Y axis for every corner.
     r_rest = rest[:, [0, 2]].norm(dim=-1)
     r_end = end[:, [0, 2]].norm(dim=-1)
@@ -457,10 +515,10 @@ def test_glb_load_and_build():
     model = ThreeDModelMob(str(DRAGON_GLB), normalize=True, normalize_size=2.0)
     assert len(model.mesh_mobs) >= 1
     mesh = model.mesh_mobs[0]
-    assert mesh.num_triangles > 1000              # a real, detailed mesh
-    assert mesh.texture_map is not None           # embedded diffuse texture
-    assert mesh.texture_map.shape[-1] == 5         # engine colour layout
-    assert mesh.corner_normals is not None         # smooth normals
+    assert mesh.num_triangles > 1000  # a real, detailed mesh
+    assert mesh.texture_map is not None  # embedded diffuse texture
+    assert mesh.texture_map.shape[-1] == 5  # engine colour layout
+    assert mesh.corner_normals is not None  # smooth normals
     # Phase 2: the dragon carries a normal map + PBR material.
     assert mesh.normal_texture_map is not None
     assert mesh.normal_texture_map.shape[-1] == 3

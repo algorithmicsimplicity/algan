@@ -211,7 +211,8 @@ def broadcast_gather(src, dim: int, ind, keepdim=True, out=None, **kwargs):
 
 def broadcast_scatter(input_tensor, dim, ind, src, **kwargs):
     input_tensor, ind, src = broadcast_all(
-        [input_tensor, ind, src], ignored_dims=[dim if dim >= 0 else len(src.shape) + dim]
+        [input_tensor, ind, src],
+        ignored_dims=[dim if dim >= 0 else len(src.shape) + dim],
     )
     return input_tensor.scatter_reduce(dim, ind, src, **kwargs)
 
@@ -305,7 +306,7 @@ def _get_broadcasted_shape(x, y):
 def _dot_product_low_dim(x, y, out=None):
     if out is None:
         out = torch.empty(_get_broadcasted_shape(x, y), device=x.device)
-    elif hasattr(out, 'get_tensor'):
+    elif hasattr(out, "get_tensor"):
         out = out.get_tensor(_get_broadcasted_shape(x, y))
     out = out.squeeze(-1)
     torch.mul(x[..., 0], y[..., 0], out=out)

@@ -183,7 +183,8 @@ class AlganDirective(Directive):
         source_path = Path(document.attributes["source"])
         source_rel_dir = source_path.relative_to(setup.confdir).parent  # type: ignore[attr-defined]
         destination_dir = Path(
-            setup.app.builder.outdir, source_rel_dir  # type: ignore[attr-defined]
+            setup.app.builder.outdir,
+            source_rel_dir,  # type: ignore[attr-defined]
         ).resolve()
         destination_dir.mkdir(parents=True, exist_ok=True)
 
@@ -222,7 +223,9 @@ class AlganDirective(Directive):
                 SceneManager.reset()
                 try:
                     run_time = timeit(
-                        lambda: exec(compile(source, str(source_path), "exec"), namespace),
+                        lambda: exec(
+                            compile(source, str(source_path), "exec"), namespace
+                        ),
                         number=1,
                     )
                 finally:
@@ -309,7 +312,9 @@ def _next_occurrence(name: str) -> int:
     return occurrence
 
 
-rendering_times_file_path = Path(__file__).resolve().parents[3] / "docs" / "rendering_times.csv"
+rendering_times_file_path = (
+    Path(__file__).resolve().parents[3] / "docs" / "rendering_times.csv"
+)
 
 
 def _write_rendering_stats(scene_name: str, run_time: float, file_name: str) -> None:
