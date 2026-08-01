@@ -34,9 +34,13 @@ from algan.rendering.taichi_runtime import sync_devices as _sync_devices
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     ManualMemory,
+    auto_record_enabled,
+    begin_cuda_peak,
     empty_cache,
+    end_cuda_peak,
     get_num_available_bytes,
     is_cuda_oom,
+    note_nonarena_peak,
 )
 
 logger = get_logger("scene")
@@ -162,11 +166,13 @@ def _slice_render_state(render_state, start, end, total_frames):
     )
 
 
-def _arena_allocation_end(pointer, numel, dtype):
-    """Pointer after one :class:`ManualMemory` forward allocation."""
-    alignment = int(dtype.itemsize)
-    pointer = int(pointer) + (-int(pointer)) % alignment
-    return pointer + int(numel) * alignment
+def _align_up(pointer, item_size):
+    """Forward-arena alignment, matching ``ManualMemory.get_tensor``.
+
+    Alignment is allocator semantics rather than a memory *estimate*, so it
+    stays in code while the byte figures come from the measured tables.
+    """
+    return int(pointer) + (-int(pointer)) % int(item_size)
 
 
 def _raytrace_persistent_input_end(
@@ -179,25 +185,35 @@ def _raytrace_persistent_input_end(
 ):
     """Arena pointer after the tracer's camera and light input copies.
 
-    This mirrors the allocations before ``render_chunk`` in
-    ``render_batch_raytraced``.  Camera and packed-light inputs cover the whole
-    prepared primitive batch, so they are paid once and do not shrink with an
-    individual render chunk.
+    *Which* light rows get packed, and how wide their colour rows are, is route
+    policy and is decided here. Every byte figure comes from the measured
+    ``persistent_inputs`` table -- nothing below multiplies a hand-derived
+    width by an item size.
+
+    Camera and packed-light inputs cover the whole prepared primitive batch, so
+    they are paid once and do not shrink with an individual render chunk.
     """
     rt_settings = SETTINGS.raytracing
+    from algan.rendering.mem_usage_lookup import unit_bytes_or_bound
     from algan.rendering.raytracing.settings import _scene_has_user_pipeline
 
-    pointer = int(initial_pointer)
     num_frames = int(num_frames)
+    # All of these copies are float32, so one alignment at the start covers
+    # the whole run.
+    pointer = _align_up(int(initial_pointer), torch.float32.itemsize)
 
-    # cam_origin, screen_point, pixel_basis_x and pixel_basis_y are [T, 3];
-    # pixel_world_scale is [T].  _flat_frames casts every input to float32.
-    pointer = _arena_allocation_end(
-        pointer, num_frames * (3 + 3 + 3 + 3 + 1), torch.float32)
+    def _end(cam_frames=0, light_pos_cells=0, light_col_cells=0):
+        # _include_slack=False: this walks the arena pointer itself, so the
+        # measured padding would be charged twice.
+        return pointer + int(unit_bytes_or_bound(
+            "persistent_inputs", {}, _include_slack=False,
+            cam_frames=cam_frames,
+            light_pos_cells=light_pos_cells,
+            light_col_cells=light_col_cells) or 0)
 
     samples = max(1, int(rt_settings.SAMPLES_PER_PIXEL))
     if samples > 1:
-        return pointer
+        return _end(cam_frames=num_frames)
 
     lights_extended = any(
         getattr(light, "_render_aux", None) is not None
@@ -212,7 +228,8 @@ def _raytrace_persistent_input_end(
     )
     if not det_frag:
         # Two [1, 1, 3] float32 placeholders.
-        return _arena_allocation_end(pointer, 6, torch.float32)
+        return _end(cam_frames=num_frames, light_pos_cells=3,
+                    light_col_cells=3)
 
     if lights_extended:
         num_light_rows = sum(
@@ -241,44 +258,86 @@ def _raytrace_persistent_input_end(
         light_frames = num_frames
     else:
         # _pack_lights' empty-scene placeholders are copied even when fragment
-        # shading is enabled.
-        return _arena_allocation_end(pointer, 6, torch.float32)
+        # shading is enabled: two [1, 1, 3] float32 rows.
+        return _end(cam_frames=num_frames, light_pos_cells=3,
+                    light_col_cells=3)
 
-    pointer = _arena_allocation_end(
-        pointer, light_frames * num_light_rows * 3, torch.float32)
-    return _arena_allocation_end(
-        pointer, light_frames * num_light_rows * color_width, torch.float32)
+    return _end(
+        cam_frames=num_frames,
+        light_pos_cells=light_frames * num_light_rows * 3,
+        light_col_cells=light_frames * num_light_rows * color_width)
 
 
 def _raytrace_frame_buffers_end(
     initial_pointer, num_frames, width, height, channels, frame_dtype, samples
 ):
-    """Arena pointer after the output and optional Monte Carlo accumulator."""
+    """Arena pointer after the output and optional Monte Carlo accumulator.
+
+    Element counts are structural; the bytes each element costs come from the
+    measured ``frame_buffers`` table, keyed on the buffer's dtype (the HDR
+    float path is four times the byte path).
+    """
+    from algan.rendering.mem_usage_lookup import unit_bytes_or_bound
+
     pixels = int(width) * int(height)
-    pointer = _arena_allocation_end(
-        initial_pointer, int(num_frames) * pixels * int(channels), frame_dtype)
-    if int(samples) > 1:
-        pointer = _arena_allocation_end(
-            pointer, int(num_frames) * pixels * 5, torch.float32)
+    out_cells = int(num_frames) * pixels * int(channels)
+    accum_cells = int(num_frames) * pixels * 5 if int(samples) > 1 else 0
+    pointer = _align_up(int(initial_pointer), frame_dtype.itemsize)
+    measured = unit_bytes_or_bound(
+        "frame_buffers", {"dtype": str(frame_dtype)}, _include_slack=False,
+        out_cells=out_cells)
+    if measured is None:
+        # No table at all (first run before generation): fall back to the
+        # dtype's own item size, which is what the table measures anyway.
+        measured = out_cells * frame_dtype.itemsize
+    pointer += int(measured)
+    if accum_cells:
+        pointer = _align_up(pointer, torch.float32.itemsize)
+        accum = unit_bytes_or_bound(
+            "frame_accum", {}, _include_slack=False, accum_cells=accum_cells)
+        pointer += int(accum if accum is not None
+                       else accum_cells * torch.float32.itemsize)
     return pointer
+
+
+class PostProcessTooLarge(Exception):
+    """A post-process configuration could not be sized even for one frame.
+
+    Raised only when the on-demand probe itself does not fit, which means a
+    single frame cannot be post-processed in the arena at all. Callers treat it
+    as "does not fit" so the existing single-frame diagnostic still surfaces.
+    """
 
 
 def _postprocess_memory_used(
     *, frame_shape, frame_dtype, anti_alias_level, post_processes, apply_fxaa,
-    initial_pointer, device,
+    initial_pointer, device, memory=None,
 ):
-    """Exact additional arena peak of the built-in post-processing pipeline."""
-    from algan.rendering.post_processing import post_process as post_process_module
+    """Additional arena peak of the post-processing pipeline.
 
-    return int(post_process_module.get_post_process_memory_required(
-        frame_shape=frame_shape,
-        frame_dtype=frame_dtype,
-        anti_alias_level=anti_alias_level,
-        post_processes=post_processes,
-        apply_fxaa=apply_fxaa,
+    Read from the measured tables, falling back to a one-frame probe of the
+    real pipeline for configurations the shipped table does not cover --
+    including any post-process the user supplied. Nothing here is hand-derived.
+    """
+    from algan.rendering.mem_usage_lookup import (
+        get_post_process_memory_required,
+    )
+
+    result = get_post_process_memory_required(
+        frame_shape,
+        frame_dtype,
+        anti_alias_level,
+        post_processes,
+        apply_fxaa,
         initial_pointer=initial_pointer,
         device=device,
-    ))
+        memory=memory,
+    )
+    if result is None:
+        raise PostProcessTooLarge(
+            f"post-processing of a single {tuple(frame_shape)[1:]} frame does "
+            f"not fit in the render arena")
+    return int(result)
 
 
 def _prepare_background_for_chunk(
@@ -485,7 +544,6 @@ class RenderLoopMixin:
         if not self._can_slice_fetched_batch(primitive_batch, total_frames):
             return None
 
-        rt_settings = SETTINGS.raytracing
         from algan.rendering.raytracing.scene_builder import (
             gpu_project_input_bytes,
         )
@@ -498,8 +556,12 @@ class RenderLoopMixin:
             candidate, _ = self._slice_fetched_batch(
                 primitive_batch, render_state, duration, total_frames
             )
+            from algan.rendering.raytracing.settings import (
+                project_gpu_peak_factor,
+            )
+
             estimated_peak = int(
-                rt_settings.PROJECT_GPU_PEAK_FACTOR
+                project_gpu_peak_factor()
                 * gpu_project_input_bytes(candidate)
             )
             return estimated_peak <= headroom
@@ -625,8 +687,15 @@ class RenderLoopMixin:
         # its peak from the source-geometry bytes and shrink the window before
         # attempting it, with the OOM handler as the exact fallback.
         if rt_settings.project_on_gpu_active():
+            # From the settings module, not the SETTINGS facade: the facade
+            # exposes each field under its lower-cased name and would shadow
+            # this helper with the raw float.
+            from algan.rendering.raytracing.settings import (
+                project_gpu_peak_factor,
+            )
+
             estimated_project_peak = int(
-                rt_settings.PROJECT_GPU_PEAK_FACTOR
+                project_gpu_peak_factor()
                 * gpu_project_input_bytes(primitive_batch))
             if estimated_project_peak > self._gpu_merge_headroom_bytes():
                 logger.debug(
@@ -665,8 +734,15 @@ class RenderLoopMixin:
         # which routes to the outer window-shrink retry.
         gpu_merge = rt_settings.merge_on_gpu_active()
         if gpu_merge:
+            # From the settings *module*, not the SETTINGS facade: the facade
+            # exposes each field under its lower-cased name, which would
+            # shadow this helper with the raw float.
+            from algan.rendering.raytracing.settings import (
+                merge_gpu_peak_factor,
+            )
+
             estimated_merge_peak = int(
-                rt_settings.MERGE_GPU_PEAK_FACTOR
+                merge_gpu_peak_factor()
                 * gpu_merge_input_bytes(primitive_batch))
             if estimated_merge_peak > self._gpu_merge_headroom_bytes():
                 logger.debug(
@@ -757,15 +833,21 @@ class RenderLoopMixin:
             frame_dtype,
             samples,
         )
-        postprocess_bytes = _postprocess_memory_used(
-            frame_shape=(1, render_height, render_width, render_channels),
-            frame_dtype=frame_dtype,
-            anti_alias_level=aa,
-            post_processes=post_processes,
-            apply_fxaa=self.video_settings.fxaa,
-            initial_pointer=frame_buffers_end,
-            device=self.memory.data.device,
-        )
+        try:
+            postprocess_bytes = _postprocess_memory_used(
+                frame_shape=(1, render_height, render_width, render_channels),
+                frame_dtype=frame_dtype,
+                anti_alias_level=aa,
+                post_processes=post_processes,
+                apply_fxaa=self.video_settings.fxaa,
+                initial_pointer=frame_buffers_end,
+                device=self.memory.data.device,
+                memory=self.memory,
+            )
+        except PostProcessTooLarge:
+            # The probe could not fit one frame, which is the answer this
+            # predicate exists to give.
+            return False
         wavefront_bytes = get_wavefront_memory_required(
             merged_host,
             1,
@@ -854,6 +936,36 @@ class RenderLoopMixin:
 
             self.memory.scene = self
             original_pointers = self.memory.get_pointers()
+            # Projection builds out of place in pool headroom, so the arena
+            # recorder cannot see it; measure it from torch's counters instead
+            # so PROJECT_GPU_PEAK_FACTOR can be a measurement rather than a
+            # guess. The input size has to be read *now*: projecting releases
+            # the source geometry it is computed from. Skipped entirely unless
+            # a calibration run is recording.
+            _measuring = auto_record_enabled()
+            _project_token = None
+            _project_inputs = 0
+            if _measuring:
+                try:
+                    from algan.rendering.raytracing.scene_builder import (
+                        gpu_project_input_bytes as _project_input_bytes,
+                    )
+
+                    # Only the primitives this loop will actually project: one
+                    # already projected on the prefetch worker has had its
+                    # source geometry released, and reading it back raises.
+                    _pending = [
+                        primitive for primitive in primitive_batch
+                        if not getattr(primitive, "_rt_projected", False)
+                    ]
+                    _project_inputs = (
+                        _project_input_bytes(_pending) if _pending else 0)
+                    _project_token = begin_cuda_peak(self.memory.data.device)
+                except Exception:  # noqa: BLE001
+                    # Calibration instrumentation must never be able to break
+                    # a render; a missed sample only costs corpus coverage.
+                    _measuring = False
+                    _project_token = None
             for primitive in primitive_batch:
                 if getattr(primitive, "_rt_projected", False):
                     # Already projected on the batch-prep worker against this
@@ -876,6 +988,13 @@ class RenderLoopMixin:
                     primitive.project_to_screen(camera, self.light_sources)
                 finally:
                     primitive.memory = original_memory
+            if _measuring:
+                try:
+                    note_nonarena_peak(
+                        "project", _project_inputs,
+                        end_cuda_peak(_project_token))
+                except Exception:  # noqa: BLE001
+                    pass
 
             # Reclaim animation-phase residuals before render batching.
             empty_cache(force_gc=False)
@@ -920,6 +1039,7 @@ class RenderLoopMixin:
             )
             from algan.rendering.raytracing.tracer import (
                 effective_anti_alias_level,
+                get_raster_precompute_memory_required,
                 get_wavefront_memory_required,
             )
 
@@ -950,6 +1070,11 @@ class RenderLoopMixin:
                 env_map,
                 getattr(self, "environment_ambient", True),
             )
+            # Sized from the *batch* frame count, not the chunk's: these
+            # tables do not shrink when a chunk is split, so they are an
+            # additive constant of the search rather than part of it.
+            raster_precompute_bytes = get_raster_precompute_memory_required(
+                merged_host, merged_host["num_frames"])
 
             def chunk_memory_required(num_frames):
                 """Exact forward-arena peak for one candidate render chunk."""
@@ -975,6 +1100,7 @@ class RenderLoopMixin:
                     apply_fxaa=self.video_settings.fxaa,
                     initial_pointer=frame_buffers_end,
                     device=self.memory.data.device,
+                    memory=self.memory,
                 )
                 wavefront_bytes = get_wavefront_memory_required(
                     merged_host,
@@ -1007,12 +1133,18 @@ class RenderLoopMixin:
                     - render_pointers[0]
                     + temporary_bytes
                     + sparse_bytes
+                    + raster_precompute_bytes
                 )
 
             bytes_remaining = self.memory.get_num_bytes_remaining()
 
             def chunk_fits(num_frames):
-                return chunk_memory_required(num_frames) <= bytes_remaining
+                try:
+                    return chunk_memory_required(num_frames) <= bytes_remaining
+                except PostProcessTooLarge:
+                    # Not sizable even for one frame; the caller's
+                    # single-frame path reports it.
+                    return False
 
             current_ind = start_ind
             while True:
@@ -1771,6 +1903,17 @@ class RenderLoopMixin:
         _rt_settings = SETTINGS.raytracing
 
         _rt_settings._begin_render_job()
+        # Start the sparse-coverage reservation from the measured corpus
+        # density rather than from zero, so the job's first chunk is not
+        # guaranteed to over-commit and pay an out-of-memory retry. Purely an
+        # optimisation, so it must never be the thing that breaks a render.
+        try:
+            _rt_settings.seed_sparse_discovery_density(
+                int(getattr(self, "num_pixels_screen_width", 0) or 0)
+                * int(getattr(self, "num_pixels_screen_height", 0) or 0))
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not seed the sparse-coverage reservation.",
+                         exc_info=True)
 
         with Off(
             record_attr_modifications=False,

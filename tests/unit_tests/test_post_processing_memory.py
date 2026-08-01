@@ -72,6 +72,12 @@ def _managed_cpu_memory():
 def _run_and_compare(shape, dtype, aa, post_processes, fxaa, monkeypatch,
                      *, tonemap_enabled=False, tonemapping=True,
                      tonemap_method="neutral"):
+    """Prediction must equal the arena's actual peak, exactly.
+
+    The prediction comes from the measured tables, falling back to a one-frame
+    probe. The probe runs on a *separate* arena so its own allocations cannot
+    inflate the ``max_pointer`` this then compares against.
+    """
     monkeypatch.setattr(rt_settings, "POST_PROCESS_TONEMAP", tonemap_enabled)
     monkeypatch.setattr(rt_settings, "TONEMAPPING", tonemapping)
     monkeypatch.setattr(rt_settings, "TONEMAP_METHOD", tonemap_method)
@@ -84,14 +90,17 @@ def _run_and_compare(shape, dtype, aa, post_processes, fxaa, monkeypatch,
         frames = torch.rand(shape, dtype=dtype) * 2.0
         frames[..., 3] = 0.7
 
-    memory = _managed_cpu_memory()
     predicted = get_post_process_memory_required(
         shape, dtype, aa, post_processes, fxaa,
         tonemap_enabled=tonemap_enabled,
         tonemapping=tonemapping,
         tonemap_method=tonemap_method,
         device=torch.device("cpu"),
+        memory=_managed_cpu_memory(),
     )
+    assert predicted is not None
+
+    memory = _managed_cpu_memory()
     output = post_process_frames(
         memory, frames, aa, post_processes=post_processes,
         apply_fxaa=fxaa,
@@ -145,6 +154,7 @@ def test_estimator_accounts_for_unaligned_entry_pointer(monkeypatch):
         shape, torch.uint8, 1, (), False,
         tonemap_enabled=True, tonemapping=True, tonemap_method="neutral",
         initial_pointer=entry_pointer, device=torch.device("cpu"),
+        memory=_managed_cpu_memory(),
     )
     post_process_frames(memory, frames, 1)
     assert memory.max_pointer - entry_pointer == predicted
@@ -195,7 +205,9 @@ def test_exact_bloom_memory_with_downsample_fallback(monkeypatch):
     )
 
 
-def test_custom_post_process_exact_planner_protocol(monkeypatch):
+def test_custom_post_process_is_sized_without_a_planner(monkeypatch):
+    # A user's own post-process used to be a hard error unless it shipped an
+    # exact algan_memory_planner. It is now measured by running it once.
     monkeypatch.setattr(rt_settings, "POST_PROCESS_TONEMAP", False)
 
     def custom_stage(frame, gain=1, *, memory):
@@ -203,29 +215,34 @@ def test_custom_post_process_exact_planner_protocol(monkeypatch):
         output.add_(gain)
         return output
 
-    def plan_custom_stage(*, sizer, frame_shape, frame_dtype, device,
-                          args, kwargs):
-        assert device.type == "cpu"
-        assert args == ()
-        assert kwargs == {"gain": 2}
-        sizer.alloc(frame_shape, frame_dtype)
-        return frame_shape, frame_dtype
-
-    custom_stage.algan_memory_planner = plan_custom_stage
     process = partial(custom_stage, gain=2)
     shape = (1, 4, 6, 4)
     frames = torch.full(shape, 10, dtype=torch.uint8)
-    memory = _managed_cpu_memory()
     predicted = get_post_process_memory_required(
         shape, torch.uint8, 1, (process,), False,
-        device=torch.device("cpu"),
+        device=torch.device("cpu"), memory=_managed_cpu_memory(),
     )
+    assert predicted is not None
+
+    memory = _managed_cpu_memory()
     output = post_process_frames(
         memory, frames, 1, post_processes=(process,),
     )
     assert memory.max_pointer == predicted
     assert torch.equal(output, torch.full((1, 4, 6, 3), 12,
                                           dtype=torch.uint8))
+
+
+def test_unsizable_post_process_reports_not_fitting_rather_than_raising():
+    # When even one frame will not fit, the answer is None -- the render loop
+    # reads that as "does not fit" and keeps its single-frame diagnostic.
+    tiny = ManualMemory(
+        0, device=torch.device("cpu"), managed=True, num_bytes=16)
+    predicted = get_post_process_memory_required(
+        (1, 256, 256, 4), torch.float32, 2, (bloom_filter,), True,
+        device=torch.device("cpu"), memory=tiny,
+    )
+    assert predicted is None
 
 
 @pytest.mark.parametrize("channels", [4, 5])

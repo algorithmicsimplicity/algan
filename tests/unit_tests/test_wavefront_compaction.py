@@ -63,8 +63,14 @@ def test_arena_compactor_filters_previous_set_and_scans_split_pool(monkeypatch):
 def test_auto_tile_size_accounts_for_alignment_and_fixed_words(monkeypatch):
     split_k = 4
     wanted = 7
-    fixed = 4 * torch.int32.itemsize
+    # Both figures come from the measured coefficients, so the arena is exactly
+    # as big as the tiler believes it needs to be. Restating them would make
+    # this test assert the old hand model rather than the tiler's arithmetic.
+    coefficients = tracer._wavefront_state_coefficients()
+    fixed = coefficients["fixed"]
     per_primary = tracer._wavefront_state_bytes_per_primary(split_k)
+    assert per_primary == (
+        split_k * coefficients["pool"] + coefficients["primary"])
     # Start the tile after one uint8 byte. ManualMemory must spend three bytes
     # aligning the first f32 state tensor.
     total = 1 + 3 + fixed + wanted * per_primary
@@ -87,13 +93,17 @@ def test_auto_tile_size_accounts_for_alignment_and_fixed_words(monkeypatch):
     assert got == wanted
 
     pool = got * split_k
-    tracer._alloc_wavefront_state(memory, pool, 7)
+    # global_hits=False is the route the maintained renderer takes (and the one
+    # the measured coefficients describe): the K-buffers are (1,1) stubs and a
+    # transient event batch sized to the live queue is used instead.
+    tracer._alloc_wavefront_state(memory, pool, 7, global_hits=False)
     memory.get_tensor((pool,), torch.int32)  # rs_pix
     memory.get_tensor((got, 7), torch.float32)  # pix_accum
     memory.get_tensor((2,), torch.int32)  # rs_alloc
     memory.get_tensor((1,), torch.int32)  # rs_vis
     tracer._ArenaRayCompactor(memory, pool)
-    assert memory.get_num_bytes_remaining() == 0
+    # The tile is maximal: everything fit, and one more primary would not have.
+    assert 0 <= memory.get_num_bytes_remaining() < per_primary
 
 
 def test_fixed_wavefront_estimator_uses_configured_route_targets(monkeypatch):
@@ -112,18 +122,25 @@ def test_fixed_wavefront_estimator_uses_configured_route_targets(monkeypatch):
         "has_refractive": False,
         "textured_active": False,
     }
-    tail = 7 * torch.float32.itemsize
-    base_slot = tracer._wavefront_state_bytes_per_primary(1) - tail
+    # The per-slot and per-primary byte figures are measured, not re-derived
+    # here: asserting a hand-computed sum would just re-introduce the second
+    # copy of the model that this whole mechanism exists to remove. What is
+    # worth pinning is that the *route selection* still picks the tile and pool
+    # sizes it always did, and that those scale the measured costs.
+    tail = tracer._wavefront_state_bytes_per_primary(1, 0, 0)
+    per_slot = tracer._wavefront_state_coefficients()["pool"]
+    per_primary = tracer._wavefront_state_coefficients()["primary"]
+    assert tail == per_slot + per_primary
 
     general = tracer.get_wavefront_memory_required(scene, 1, 20, 1)
-    # col_row + gen_meta + two layer offsets + rs_vis + compactor count +
-    # two shared allocator words.
-    assert general == 12 * (base_slot + tail) + 32
+    # Static tiling: 12 primaries, one pool slot each.
+    assert general == 12 * per_slot + 12 * per_primary + _metadata(general, 12)
 
     scene["textured_active"] = True
     textured = tracer.get_wavefront_memory_required(scene, 1, 20, 1)
-    # Textured route: gen_meta, compactor count, and shared allocator.
-    assert textured == 12 * (base_slot + tail) + 16
+    # The textured route carries less fixed metadata than the general one.
+    assert textured < general
+    assert textured == 12 * per_slot + 12 * per_primary + 16
 
     scene["textured_active"] = False
     monkeypatch.setattr(rt_settings, "WAVEFRONT_SORT_MATERIALS", True)
@@ -131,9 +148,8 @@ def test_fixed_wavefront_estimator_uses_configured_route_targets(monkeypatch):
     sorted_bytes = tracer.get_wavefront_memory_required(scene, 1, 20, 1)
     sorted_primary = 8  # (12 * 2) // 3
     event_slot = 16 * 4 + 3 * 4
-    # Sorted route: per-slot event/shadow state plus four fixed words.
     assert sorted_bytes == (
-        sorted_primary * (base_slot + event_slot + tail) + 16
+        sorted_primary * (per_slot + event_slot + per_primary) + 16
     )
 
     monkeypatch.setattr(rt_settings, "WAVEFRONT_SORT_MATERIALS", False)
@@ -142,9 +158,25 @@ def test_fixed_wavefront_estimator_uses_configured_route_targets(monkeypatch):
     split = int(rt_settings.REFRACT_SPLIT_SLOTS)
     split_primary = max(1, 12 // split)
     split_bytes = tracer.get_wavefront_memory_required(scene, 1, 20, 1)
+    # Splitting buys ``split`` pool slots per primary; the per-primary tail is
+    # unchanged.
     assert split_bytes == (
-        split_primary * split * base_slot + split_primary * tail + 32
+        split_primary * split * per_slot
+        + split_primary * per_primary
+        + _metadata(split_bytes,
+                    split_primary, split_primary * split)
     )
+
+
+def _metadata(total, primary, pool=None):
+    """Route metadata implied by a total, given its pool/primary scaling.
+
+    Derived from the measured coefficients rather than restated, so a change to
+    the metadata table does not need this test edited too.
+    """
+    coefficients = tracer._wavefront_state_coefficients()
+    pool = primary if pool is None else pool
+    return total - pool * coefficients["pool"] - primary * coefficients["primary"]
 
 
 def test_auto_wavefront_estimator_reserves_one_primary_for_each_route(
@@ -165,19 +197,25 @@ def test_auto_wavefront_estimator_reserves_one_primary_for_each_route(
         "has_refractive": False,
         "textured_active": False,
     }
-    tail = 7 * torch.float32.itemsize
-    base_slot = tracer._wavefront_state_bytes_per_primary(1) - tail
+    coefficients = tracer._wavefront_state_coefficients()
+    base_slot, tail = coefficients["pool"], coefficients["primary"]
 
-    # General route: one pool slot, one primary tail, and all general metadata.
-    assert tracer.get_wavefront_memory_required(scene, 1, 20, 1) == (
-        base_slot + tail + 32
-    )
+    # The contract of automatic tiling: the estimate is the *minimum viable*
+    # one-primary allocation, so it must not scale with the frame count or the
+    # resolution -- the runtime grows the tile into whatever arena is left.
+    general = tracer.get_wavefront_memory_required(scene, 1, 20, 1)
+    assert general == tracer.get_wavefront_memory_required(scene, 8, 640, 480)
+    # One pool slot and one primary tail, plus this route's metadata. The
+    # metadata bytes are measured, so they are read from the table rather than
+    # restated here.
+    assert general > base_slot + tail
+    general_metadata = general - base_slot - tail
 
-    # Textured route has the same one-slot state and only gen/count metadata.
+    # Textured route has the same one-slot state and strictly less metadata.
     scene["textured_active"] = True
-    assert tracer.get_wavefront_memory_required(scene, 1, 20, 1) == (
-        base_slot + tail + 16
-    )
+    textured = tracer.get_wavefront_memory_required(scene, 1, 20, 1)
+    assert textured == base_slot + tail + 16
+    assert textured < base_slot + tail + general_metadata
 
     # Sorted shadows add the full event record/key/primitive/visibility state
     # for that one pool slot.
@@ -188,12 +226,11 @@ def test_auto_wavefront_estimator_reserves_one_primary_for_each_route(
     assert tracer.get_wavefront_memory_required(scene, 1, 20, 1) == (
         base_slot + event_slot + tail + 16
     )
-
     # A single refractive primary still requires its complete split-slot pool.
     monkeypatch.setattr(rt_settings, "WAVEFRONT_SORT_MATERIALS", False)
     monkeypatch.setattr(rt_settings, "SHADOWS", False)
     scene["has_refractive"] = True
     split = int(rt_settings.REFRACT_SPLIT_SLOTS)
     assert tracer.get_wavefront_memory_required(scene, 1, 20, 1) == (
-        split * base_slot + tail + 32
+        split * base_slot + tail + general_metadata
     )

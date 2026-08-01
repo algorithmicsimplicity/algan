@@ -4,13 +4,9 @@ from algan.settings import SETTINGS
 import torch
 
 from algan.rendering.post_processing.anti_aliasing.fxaa import fxaa
-from algan.rendering.post_processing.memory_estimator import (
-    PostProcessMemorySizer,
-    get_post_process_memory_required,
-)
+from algan.rendering.mem_usage_lookup import get_post_process_memory_required
 
 __all__ = [
-    "PostProcessMemorySizer",
     "get_post_process_memory_required",
     "post_process_frames",
 ]
@@ -233,7 +229,35 @@ def _finalize_on_device(frame, original_num_channels, memory, *,
     return output
 
 
-def post_process_frames(self, frames, anti_alias_level, post_processes=(), apply_fxaa=False):
+from algan.rendering.mem_usage_runtime import post_process_chain_id
+
+
+def post_process_frames(self, frames, anti_alias_level, post_processes=(),
+                        apply_fxaa=False):
+    """Downsample, anti-alias, run the post-process chain and tonemap.
+
+    ``self`` is the render arena. The whole pipeline is one memory-calibration
+    scope: the batcher sizes it as a single term that shares the temporary
+    arena with the wavefront state, so its allocations must be attributed
+    together (see ``chunk_memory_required``).
+    """
+    _rt = SETTINGS.raytracing
+    with self.scope("postprocess", frames=int(frames.shape[0]),
+                    height=int(frames.shape[1]), width=int(frames.shape[2]),
+                    channels=int(frames.shape[3]),
+                    anti_alias_level=int(anti_alias_level),
+                    fxaa=int(bool(apply_fxaa)), dtype=str(frames.dtype),
+                    chain=post_process_chain_id(post_processes),
+                    tonemap=int(_rt.is_post_process_tonemap_enabled()),
+                    tonemapping=int(bool(_rt.TONEMAPPING)),
+                    tonemap_method=str(_rt.TONEMAP_METHOD),
+                    tonemap_kernel=int(bool(_rt.POST_TONEMAP_KERNEL))):
+        return _post_process_frames(
+            self, frames, anti_alias_level, post_processes, apply_fxaa)
+
+
+def _post_process_frames(self, frames, anti_alias_level, post_processes=(),
+                         apply_fxaa=False):
     rt_settings = SETTINGS.raytracing
     # Byte frames are never linear-HDR, whatever the toggle says: the render
     # loop picks the float buffer from the same setting, but a caller that

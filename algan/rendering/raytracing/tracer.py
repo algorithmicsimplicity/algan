@@ -468,17 +468,29 @@ def _wavefront_state_bytes_per_primary(pool_ratio, extra_bytes_per_slot=0,
     and is accounted separately by the callers. Orchestrator-specific extras
     (for example the sorted path's event record/key arrays) are passed in so
     adaptive tile sizing can account for them."""
-    # rs_ro(3) + rs_rd(3) + rs_acc(4) + rs_sca(7) f32, rs_int(5) i32,
-    # rs_pix i32 and two arena-backed active-index ping-pong buffers are
-    # permanent per pool slot. The 6*KBUF words are now a transient event batch
-    # sized to the current active queue. Charge the conservative pool-sized
-    # worst case here so automatic tiling cannot overrun the arena even if every
-    # continuation slot becomes active simultaneously.
-    per_slot = ((3 + 3 + 4 + 7 + 5) * 4 + 6 * KBUF * 4
-                + 4 + 2 * 4 + extra_bytes_per_slot)
-    # pix_accum(7) f32 -- per primary (RGB+glow premultiplied colour plus the
-    # per-channel leftover/background weight of the colour transport).
-    return pool_ratio * per_slot + 7 * 4 + extra_bytes_per_primary
+    # Both figures are measured (see algan/utils/calibrate_memory.py): the
+    # per-slot cost of the ray-state arrays and the per-primary cost of
+    # pix_accum. They are *not* hand-derived here any more -- the previous
+    # hand model charged 6*KBUF words per slot for K-buffers that this route
+    # does not allocate at all (they are (1,1) stubs, with a transient event
+    # batch sized to the live queue instead), which over-reserved by ~2x.
+    coefficients = _wavefront_state_coefficients()
+    per_slot = coefficients["pool"] + extra_bytes_per_slot
+    per_primary = coefficients["primary"] + extra_bytes_per_primary
+    return pool_ratio * per_slot + per_primary
+
+
+def _wavefront_state_coefficients():
+    """Measured per-slot / per-primary / fixed bytes of the ray-state block."""
+    from algan.rendering.mem_usage_lookup import unit_coefficients
+
+    measured = unit_coefficients(
+        "wavefront_state", {"global_hits": 0, "sparse": 1})
+    if measured is None:
+        # Only before the tables have ever been generated. Deliberately the
+        # conservative side: the old hand model's per-slot figure.
+        return {"pool": 196, "primary": 28, "fixed": 24, "align_slack": 4}
+    return measured
 
 
 def get_wavefront_memory_required(
@@ -601,17 +613,71 @@ def get_wavefront_memory_required(
         and pool_ratio == 1
         and float(near_clip) <= 0.0
     )
-    # col_row placeholder (unless the scene-owned remap is used), gen_meta,
-    # layer_offsets, rs_vis placeholder, and the compactor count.
-    metadata = 0 if mem_trim else torch.int32.itemsize
-    metadata += (4 if gen_fused else 1) * torch.float32.itemsize
-    metadata += (
-        8 if (gen_fused or has_environment or float(far_clip) > 0.0) else 2
-    ) * torch.float32.itemsize
+    # Route-metadata words (col_row placeholder unless the scene-owned remap is
+    # used, gen_meta, layer_offsets) come from the measured ``batch_metadata``
+    # table; the route selection above still decides *which* entry applies.
+    from algan.rendering.mem_usage_lookup import unit_bytes_or_bound
+
+    metadata = unit_bytes_or_bound("batch_metadata", {
+        "col_row_placeholder": 1,
+        "gen_fused": int(gen_fused),
+        "raster": int(analytic_raster or bool(rt_settings.HYBRID_RASTER)),
+        "extended": int(has_environment or float(far_clip) > 0.0),
+    })
+    if metadata is None:
+        metadata = 0 if mem_trim else torch.int32.itemsize
+        metadata += (4 if gen_fused else 1) * torch.float32.itemsize
+        metadata += (
+            8 if (gen_fused or has_environment or float(far_clip) > 0.0) else 2
+        ) * torch.float32.itemsize
+    elif mem_trim:
+        # The scene owns the remap, so the placeholder word is not allocated.
+        metadata -= torch.int32.itemsize
     # layer/route metadata above, plus rs_vis placeholder + compactor count +
     # the shared allocator's next-slot and overflow words.
     metadata += 4 * torch.int32.itemsize
     return pool * base_slot + primary * per_primary_tail + metadata
+
+
+def get_raster_precompute_memory_required(merged, num_batch_frames):
+    """Measured arena bytes of the raster screen-projection/bounds tables.
+
+    These are ``[frames, primitives, columns]`` tables built once per prepared
+    batch. Two things make them worth their own term rather than folding into
+    the wavefront estimate:
+
+    * they are large -- tens of bytes per (frame, primitive), against the
+      handful of *words* the wavefront metadata model accounted for; and
+    * ``frames`` here is the whole prepared batch's frame count, not the render
+      chunk's, so shrinking a chunk does **not** shrink them. A model that
+      treats them as per-chunk would under-reserve exactly when the batcher is
+      trying to recover from being short.
+
+    Returns 0 when the raster front end is not in play.
+    """
+    from algan.rendering.mem_usage_lookup import unit_bytes_or_bound
+
+    if not rt_settings.HYBRID_RASTER or int(rt_settings.SAMPLES_PER_PIXEL) > 1:
+        return 0
+    frames = max(1, int(num_batch_frames))
+    num_tri = int(merged.get("num_triangles", 0) or 0)
+    num_bez = int(merged.get("num_circuits", 0) or 0)
+    if not num_tri and not num_bez:
+        return 0
+    aa_tri = int(rt_settings.analytic_aa_tri_active())
+    columns = 13 if aa_tri else 10
+    tri_screen_cells = frames * max(1, num_tri) * columns
+    tri_bounds_cells = (
+        frames * num_tri
+        if (rt_settings.RASTER_TRI_PRECOMPUTE and num_tri) else 0)
+    bez_bounds_cells = (
+        frames * num_bez
+        if (rt_settings.RASTER_BEZ_PRECOMPUTE and num_bez) else 0)
+    return int(unit_bytes_or_bound(
+        "raster_precompute", {"aa_tri": aa_tri},
+        tri_screen_cells=tri_screen_cells,
+        tri_bounds_cells=tri_bounds_cells,
+        bez_bounds_cells=bez_bounds_cells) or 0)
 
 
 def _auto_primary_per_tile(memory, pool_ratio, static_primary,
@@ -1016,11 +1082,16 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     pixel_world_scale_host = (
         2.0 / (screen_height * aa * b1_norm * screen_dist).clamp_min(1e-12)
     ).contiguous()
-    cam_origin = _arena_copy(memory, cam_origin_host)
-    sp = _arena_copy(memory, sp_host)
-    pbx = _arena_copy(memory, pbx_host)
-    pby = _arena_copy(memory, pby_host)
-    pixel_world_scale = _arena_copy(memory, pixel_world_scale_host)
+    # Camera and packed-light inputs cover the whole prepared batch and are
+    # paid once, so they are one calibration scope even though the light copies
+    # happen further down (nothing else allocates in between).
+    with memory.scope("persistent_inputs",
+                      cam_frames=int(cam_origin_host.shape[0])):
+        cam_origin = _arena_copy(memory, cam_origin_host)
+        sp = _arena_copy(memory, sp_host)
+        pbx = _arena_copy(memory, pbx_host)
+        pby = _arena_copy(memory, pby_host)
+        pixel_world_scale = _arena_copy(memory, pixel_world_scale_host)
 
     # An animated/image background arrives super-sampled at the *requested*
     # anti-alias level (Scene.set_background_color and
@@ -1142,16 +1213,20 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
                 light_pos_host, light_col_host, num_lights, env_source,
                 float(getattr(scene, "environment_intensity", 1.0)),
                 light_device)
-        light_pos = _arena_copy(memory, light_pos_host)
-        light_col = _arena_copy(memory, light_col_host)
+        with memory.scope("persistent_inputs",
+                          light_pos_cells=light_pos_host.numel(),
+                          light_col_cells=light_col_host.numel()):
+            light_pos = _arena_copy(memory, light_pos_host)
+            light_col = _arena_copy(memory, light_col_host)
     elif samples > 1:
         light_pos = light_col = None
         num_lights = 0
     else:
         # Deterministic, fragment shading off: tiny placeholders for the
         # (compiled-out) material/light kernel args.
-        light_pos = memory.get_tensor((1, 1, 3), torch.float32)
-        light_col = memory.get_tensor((1, 1, 3), torch.float32)
+        with memory.scope("persistent_inputs", light_route="placeholder"):
+            light_pos = memory.get_tensor((1, 1, 3), torch.float32)
+            light_col = memory.get_tensor((1, 1, 3), torch.float32)
         light_pos.zero_()
         light_col.zero_()
         num_lights = 0
@@ -1174,17 +1249,31 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
         entry_pointers = memory.get_pointers()
         try:
             out_dtype = torch.float32 if is_post_process_tonemap_enabled() else torch.uint8
-            out = memory.get_tensor((end - start, width * height, C_out),
-                                    out_dtype)
-            _prefill_background(out, background_color, start - time_start,
-                                device,
-                                background_frames=time_end - time_start)
-            accum = None
-            if samples > 1:
-                # f32 per-pixel sample sums, averaged by finalize_samples.
-                accum = memory.get_tensor((end - start, width * height, 5),
-                                          torch.float32)
-                accum.zero_()
+            # Drivers are element counts, not the resolution: the buffers scale
+            # linearly, so keying on width/height would make the table useless
+            # at any resolution the corpus happened not to cover.
+            with memory.scope(
+                    "frame_buffers",
+                    out_cells=(end - start) * width * height * C_out,
+                    dtype=str(out_dtype)):
+                out = memory.get_tensor((end - start, width * height, C_out),
+                                        out_dtype)
+                _prefill_background(out, background_color, start - time_start,
+                                    device,
+                                    background_frames=time_end - time_start)
+                accum = None
+                if samples > 1:
+                    # f32 per-pixel sample sums, averaged by finalize_samples.
+                    # Its own scope: the accumulator is float32 whatever the
+                    # frame buffer's dtype is, so charging it under the frame
+                    # buffer's dtype key would claim a dependency that does
+                    # not exist (and leave it unmeasured on the byte route).
+                    with memory.scope(
+                            "frame_accum",
+                            accum_cells=(end - start) * width * height * 5):
+                        accum = memory.get_tensor(
+                            (end - start, width * height, 5), torch.float32)
+                    accum.zero_()
             # Coplanar layer order: circuits < triangles < PN patches.
             layer_offset_triangles = float(merged["num_circuits"])
             layer_offset_pn = layer_offset_triangles + float(
@@ -1383,18 +1472,27 @@ def _run_wavefront_tiles(memory, out, *, n, width, height, time_start,
                 while True:
                     state_ptrs = memory.get_pointers()
                     try:
-                        state = _alloc_wavefront_state(
-                            memory, pool, 7, global_hits=global_hits)
+                        # Per-ray state for one tile: ``pool`` slots plus
+                        # ``attempt_primary`` per-primary rows. Calibrated as
+                        # unit coefficients (bytes per slot, per primary, and
+                        # fixed per tile) rather than as a peak -- under
+                        # WAVEFRONT_TILE_AUTO the tile is sized from whatever
+                        # arena is free, so its peak would measure the arena.
+                        with memory.scope("wavefront_state", pool=pool,
+                                          primary=attempt_primary,
+                                          global_hits=int(global_hits)):
+                            state = _alloc_wavefront_state(
+                                memory, pool, 7, global_hits=global_hits)
+                            rs_pix = memory.get_tensor((pool,), i32)
+                            pix_accum = memory.get_tensor(
+                                (attempt_primary, 7), f32)
+                            # [0] next free shared slot, [1] overflow flag. The
+                            # classic generation kernel initialises both. Fused
+                            # generation is split-free, but zeroing keeps the
+                            # state well-defined.
+                            rs_alloc = memory.get_tensor((2,), i32)
                         (rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
                          rs_kt, rs_kl, rs_ka, rs_kb, rs_kp, rs_kf) = state
-                        rs_pix = memory.get_tensor((pool,), i32)
-                        pix_accum = memory.get_tensor((attempt_primary, 7),
-                                                      f32)
-                        # [0] next free shared slot, [1] overflow flag. The
-                        # classic generation kernel initialises both. Fused
-                        # generation is split-free, but zeroing keeps the
-                        # state well-defined.
-                        rs_alloc = memory.get_tensor((2,), i32)
 
                         if raster:
                             # Hybrid raster front-end: no generate pass.
@@ -1681,7 +1779,8 @@ def raytrace_render_wavefront(
         a_pos, a_norm = merged["tri_pos"], merged["tri_norm"]
         a_mat, a_matid = merged["tri_mat"], merged["tri_mat_id"]
         a_uvs, a_meta = merged["tri_uvs"], merged["tri_tex_meta"]
-        col_row_arr = memory.get_tensor((1,), i32)
+        with memory.scope("batch_metadata", col_row_placeholder=1):
+            col_row_arr = memory.get_tensor((1,), i32)
         col_row_arr.zero_()
     opaque_closest = int(
         rt_settings.WF_OPAQUE_CLOSEST
@@ -1766,13 +1865,18 @@ def raytrace_render_wavefront(
     gen_fused = (rt_settings.wf_gen_fused_active() and pool_ratio == 1
                  and near_clip <= 0.0 and max(1, int(aa_level)) <= 1
                  and not use_raster)
-    if gen_fused or use_raster:
-        gen_meta = _arena_values(
-            memory, [0.5, 0.5, float(half_screen_w),
-                     float(half_screen_h)], f32)
-    else:
-        gen_meta = memory.get_tensor((1,), f32)
-        gen_meta.zero_()
+    # Route metadata words: a handful of floats whose count depends on the
+    # selected route, paid once per batch. Separate from the raster precompute
+    # tables below so the latter's per-(frame, primitive) coefficient is not
+    # fitted through a route-dependent constant.
+    with memory.scope("batch_metadata"):
+        if gen_fused or use_raster:
+            gen_meta = _arena_values(
+                memory, [0.5, 0.5, float(half_screen_w),
+                         float(half_screen_h)], f32)
+        else:
+            gen_meta = memory.get_tensor((1,), f32)
+            gen_meta.zero_()
     if gen_fused or use_raster or env_meta is not None or far_clip > 0.0:
         # Extras packed behind the two layer offsets (the shade kernel is at
         # the 64-arg ceiling): env map placement in the shared texel buffer +
@@ -1783,11 +1887,19 @@ def raytrace_render_wavefront(
             float(layer_offset_triangles), float(layer_offset_pn),
             float(eo), float(ew), float(eh), float(ei), float(far_clip),
             float(max_bounces)]
-        layer_offsets_t = _arena_values(memory, layer_values, f32)
+        with memory.scope("batch_metadata", gen_fused=int(bool(gen_fused)),
+                          raster=int(bool(use_raster)),
+                          extended=int(env_meta is not None
+                                       or far_clip > 0.0)):
+            layer_offsets_t = _arena_values(memory, layer_values, f32)
     else:
-        layer_offsets_t = _arena_values(
-            memory,
-            [float(layer_offset_triangles), float(layer_offset_pn)], f32)
+        with memory.scope("batch_metadata", gen_fused=int(bool(gen_fused)),
+                          raster=int(bool(use_raster)),
+                          extended=int(env_meta is not None
+                                       or far_clip > 0.0)):
+            layer_offsets_t = _arena_values(
+                memory,
+                [float(layer_offset_triangles), float(layer_offset_pn)], f32)
 
     tri_screen = None
     tri_bounds = None
@@ -1796,21 +1908,29 @@ def raytrace_render_wavefront(
         from algan.rendering.raytracing.raster_pipeline import (
             precompute_circuit_screen_bounds, precompute_triangle_projection,
             precompute_triangle_screen_bounds)
-        tri_screen = precompute_triangle_projection(
-            merged, cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
-            half_screen_w, half_screen_h, memory)
-        # Live reads (settings convention): each kill-switch falls back to
-        # the per-(tile, frame) pair emission inside raster_iteration_zero.
-        if (rt_settings.RASTER_TRI_PRECOMPUTE
-                and int(merged.get("num_triangles", 0)) > 0):
-            tri_bounds = precompute_triangle_screen_bounds(
-                merged, tri_screen, cam_origin, screen_point, pixel_basis_x,
-                pixel_basis_y, half_screen_w, half_screen_h, width, memory)
-        if (rt_settings.RASTER_BEZ_PRECOMPUTE
-                and int(merged.get("num_circuits", 0)) > 0):
-            bez_bounds = precompute_circuit_screen_bounds(
+        # Screen-space projection and bounds tables, sized
+        # [batch_frames, primitives, cols].  Note ``batch_frames`` is the whole
+        # prepared batch's frame count, not the render chunk's, so this term
+        # does NOT shrink when the chunk does -- see the calibration model.
+        with memory.scope("raster_precompute",
+                          aa_tri=int(rt_settings.analytic_aa_tri_active())):
+            tri_screen = precompute_triangle_projection(
                 merged, cam_origin, screen_point, pixel_basis_x,
-                pixel_basis_y, half_screen_w, half_screen_h, width, memory)
+                pixel_basis_y, half_screen_w, half_screen_h, memory)
+            # Live reads (settings convention): each kill-switch falls back to
+            # the per-(tile, frame) pair emission inside raster_iteration_zero.
+            if (rt_settings.RASTER_TRI_PRECOMPUTE
+                    and int(merged.get("num_triangles", 0)) > 0):
+                tri_bounds = precompute_triangle_screen_bounds(
+                    merged, tri_screen, cam_origin, screen_point,
+                    pixel_basis_x, pixel_basis_y, half_screen_w,
+                    half_screen_h, width, memory)
+            if (rt_settings.RASTER_BEZ_PRECOMPUTE
+                    and int(merged.get("num_circuits", 0)) > 0):
+                bez_bounds = precompute_circuit_screen_bounds(
+                    merged, cam_origin, screen_point, pixel_basis_x,
+                    pixel_basis_y, half_screen_w, half_screen_h, width,
+                    memory)
 
     def _drain_sparse_secondary(
             active, state, rs_pix, pix_accum, rs_alloc, compactor, rs_vis):
@@ -1953,19 +2073,25 @@ def raytrace_render_wavefront(
                 while True:
                     state_ptrs = memory.get_pointers()
                     try:
-                        state = _alloc_wavefront_state(
-                            memory, pool, 7, global_hits=False)
+                        # Same unit-coefficient treatment as the dense tile
+                        # above; this route additionally holds the visibility
+                        # word and both compaction index buffers.
+                        with memory.scope("wavefront_state", pool=pool,
+                                          primary=attempt_primary,
+                                          global_hits=0, sparse=1):
+                            state = _alloc_wavefront_state(
+                                memory, pool, 7, global_hits=False)
+                            rs_pix = memory.get_tensor((pool,), i32)
+                            pix_accum = memory.get_tensor(
+                                (attempt_primary, 7), f32)
+                            rs_alloc = memory.get_tensor((2,), i32)
+                            rs_vis = memory.get_tensor((1,), i32)
+                            compactor = _ArenaRayCompactor(memory, pool, i32)
                         rs_int = state[4]
-                        rs_pix = memory.get_tensor((pool,), i32)
-                        pix_accum = memory.get_tensor(
-                            (attempt_primary, 7), f32)
                         pix_accum.zero_()
-                        rs_alloc = memory.get_tensor((2,), i32)
                         rs_int[:, 2].fill_(1)
                         rs_alloc.zero_()
                         rs_alloc[0] = attempt_primary
-                        rs_vis = memory.get_tensor((1,), i32)
-                        compactor = _ArenaRayCompactor(memory, pool, i32)
 
                         with memory.temp():
                             covered_idx = shade_sparse_raster_coverage(

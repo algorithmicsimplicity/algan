@@ -6,7 +6,12 @@ from algan.settings._startup import _RENDER_DEVICE
 import torch
 import torch.nn.functional as F
 
-from algan.utils.memory_utils import InsufficientMemoryException, empty_cache
+from algan.utils.memory_utils import (
+    InsufficientMemoryException,
+    begin_cuda_peak,
+    empty_cache,
+    end_cuda_peak,
+)
 from algan.rendering.raytracing.primitives import (
     RayTracedBezierCircuitPrimitive,
     RayTracedPNTrianglePrimitive,
@@ -357,6 +362,17 @@ def _rebuild_scene_with_tensors(value, tensor_map, memo):
 
 
 def copy_merged_scene_to_arena(scene, memory, *, persist=True):
+    """Copy the merged scene into the arena (see :func:`_copy_merged_scene_to_arena`).
+
+    Wrapped as its own memory-calibration scope. Its size is already known
+    exactly from ``get_merged_scene_arena_nbytes``, so this is recorded for
+    stale-table detection rather than to be modelled.
+    """
+    with memory.scope("scene_upload"):
+        return _copy_merged_scene_to_arena(scene, memory, persist=persist)
+
+
+def _copy_merged_scene_to_arena(scene, memory, *, persist=True):
     """Copy every merged-scene tensor into ``memory`` without target allocs.
 
     One aligned arena range is reserved per unique source storage, then every
@@ -1005,12 +1021,11 @@ def _merge_scene(primitives):
     # opt-in and off during profiling runs).
     gpu_merge = _rts.merge_on_gpu_active()
     track_peak = gpu_merge and _rts.MERGE_TRACK_PEAK
-    peak_base = None
+    peak_token = None
     if gpu_merge:
         device = _RENDER_DEVICE
         if track_peak:
-            torch.cuda.reset_peak_memory_stats(device)
-            peak_base = torch.cuda.memory_allocated(device)
+            peak_token = begin_cuda_peak(device)
         _upload_primitive_inputs(primitives, device)
         empty_cache(force_gc=False)
     else:
@@ -1648,8 +1663,7 @@ def _merge_scene(primitives):
     # -1 marks "not measured". Purely diagnostic -- the arena preflight bounds
     # the build with the MERGE_GPU_PEAK_FACTOR estimate, not this value.
     if track_peak:
-        scene["_gpu_merge_peak_bytes"] = int(
-            torch.cuda.max_memory_allocated(device) - peak_base)
+        scene["_gpu_merge_peak_bytes"] = int(end_cuda_peak(peak_token))
     else:
         scene["_gpu_merge_peak_bytes"] = -1
     first._rt_merged_scene = scene

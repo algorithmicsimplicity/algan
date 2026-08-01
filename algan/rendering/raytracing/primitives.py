@@ -423,7 +423,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                                    if ntex is not None else None)
         return uvs
 
-    def _release_unpacked_geometry(self, camera):
+    def _release_unpacked_geometry(self):
         """Everything the renderer needs now lives in the packed arrays;
         release the unpacked geometry to halve resident GPU memory."""
         self.corners = self.normals = None
@@ -464,7 +464,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                                     self._rt_tri_colors,
                                     "triangle bounds/colors")
 
-        self._release_unpacked_geometry(camera)
+        self._release_unpacked_geometry()
         return self
 
     def render(self, primitives, scene, save_image, screen_width,
@@ -1188,7 +1188,7 @@ class RayTracedPNTrianglePrimitive(RayTracedTrianglePrimitive):
                                     self._rt_pn_colors,
                                     "pn bounds/colors")
 
-        self._release_unpacked_geometry(camera)
+        self._release_unpacked_geometry()
         return self
 
 

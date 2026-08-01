@@ -77,6 +77,11 @@ def precompute_triangle_projection(
     ncol = 13 if rt_settings.analytic_aa_tri_active() else 10
     out = memory.get_tensor((max(1, frames), max(1, ntri), ncol), torch.float32)
     out.zero_()
+    # Reported rather than inferred: ``frames`` here is the longest dynamic
+    # input, not the batch's frame count (any input may be deduplicated to
+    # T=1), and the row count is clamped to at least one.
+    memory.note_scope_params(
+        tri_screen_cells=max(1, frames) * max(1, ntri) * ncol)
     if ntri == 0:
         return out
 
@@ -559,6 +564,7 @@ def precompute_circuit_screen_bounds(
         0, frame_ids % opaque_all.shape[0]).bool()
 
     ncirc = int(lo.shape[1])
+    memory.note_scope_params(bez_bounds_cells=frames * ncirc)
     pre_f = memory.get_tensor((frames, ncirc, 4), torch.float32)
     pre_f.copy_(torch.stack(
         ((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1))
@@ -644,6 +650,7 @@ def precompute_triangle_screen_bounds(
     opaque = valid & opaque_all.index_select(
         0, frame_ids % opaque_all.shape[0]).bool() & ~unc
 
+    memory.note_scope_params(tri_bounds_cells=frames * ntri)
     pre_f = memory.get_tensor((frames, ntri, 4), torch.float32)
     pre_f.copy_(torch.stack(
         ((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1))
@@ -942,8 +949,16 @@ def prepare_sparse_raster_coverage(
 
     # All forward allocations in this scope are discovery scratch.  Only the
     # final compact arrays use persist=True (reverse arena) and survive.
-    with memory.temp():
+    #
+    # Value-dependent: every buffer here is sized from the fragment count the
+    # COUNT kernel produces, so calibration measures the exact bytes-per-
+    # fragment/per-covered-pixel here and learns the density separately.
+    with memory.scope("sparse_discovery"), memory.temp():
         dummy_z = _arena_tensor(memory, (1,), torch.int64, Z_SENTINEL)
+        # Candidate (primitive, tile) pair count: a value-dependent driver of
+        # the per-pair count arrays, independent of the fragment count.
+        memory.note_scope_params(
+            num_pairs=sum(int(pairs.shape[0]) for _kind, pairs, _op in specs))
         count_parts = []
         for kind, pairs, opaque in specs:
             counts = _arena_tensor(
@@ -1082,6 +1097,16 @@ def prepare_sparse_raster_coverage(
         frag_msk.copy_(msk_s)
         covered_idx.copy_(covered.to(torch.int32))
         run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
+
+        # Recorded for calibration: the fragment/covered counts are this
+        # scope's value-dependent drivers and are only known once the COUNT
+        # kernel has run, so they are attached from inside the scope.
+        memory.note_scope_params(
+            frames=int(time_end) - int(time_start),
+            discovery_frags=int(discovery_frags),
+            num_fragments=int(num_frags),
+            num_covered=int(num_covered),
+            pixels=int(width) * int(height))
 
     # Reserve for the next chunk's discovery peak: the pre-truncation scratch
     # (frag_*_u: 8+4+8+4+4+1 B/frag) plus the persistent compact result

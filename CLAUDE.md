@@ -34,7 +34,7 @@ Always use the local venv: `.venv/Scripts/python.exe`. The default system Python
 
 ### Documentation
 - Build: `.venv/Scripts/python.exe docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
-- Source in `docs/source/`. API stubs in `docs/source/reference/` are autosummary-generated but checked in — when classes/methods are added or removed, the stubs must be updated too or the docs build breaks.
+- Source in `docs/source/`. API stubs in `docs/source/reference/` are autosummary-generated.
 - **Docstrings on user-facing API follow `DOCSTRINGS.md`** — read it before writing or editing a public docstring. It is prescriptive, not a description of current code: NumPy style with types in annotations only (never repeated in the docstring), every default stated in prose, units/shapes mandatory, an `Animation` section stating recorded-vs-immediate and spawn-order constraints, and `.. algan::` examples that call `Scene.save_video()` exactly once.
 
 ### Building / Publishing
@@ -123,7 +123,15 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `setattr_
 
 ### Memory
 
-- `ManualMemory` (`utils/memory_utils.py`): a bump-allocator arena for render-time GPU tensors; callers snapshot/restore pointers to free deterministically. Render out-of-memory retries by shrinking the frame window (`OutOfRenderMemory`). When adding buffers, update every memory estimator and preflight calculation, and test one-frame and multi-frame windows plus the retry path.
+- `ManualMemory` (`utils/memory_utils.py`): a bump-allocator arena for render-time GPU tensors; callers snapshot/restore pointers to free deterministically. Render out-of-memory retries by shrinking the frame window (`OutOfRenderMemory`).
+- **Batch sizing reads measured tables, not hand-written formulas.** `rendering/mem_usage.py` is generated; `mem_usage_runtime.py` replays its allocation traces and `mem_usage_lookup.py` resolves route keys (falling back to a one-frame probe of the real pipeline for anything the table misses, which is how a user's custom post-process gets sized). **After adding, removing or resizing an arena buffer, re-run the generator** — that is the whole update procedure:
+  ```
+  .venv/Scripts/python.exe -m algan.utils.calibrate_memory            # rewrite
+  .venv/Scripts/python.exe -m algan.utils.calibrate_memory --verify   # check
+  ```
+  `get_tensor` is the arena's only allocation entry point and the recorder hooks it there, so new buffers are captured with no annotation. You only touch `algan/utils/calibrate_memory.py` when adding a whole new **scope** (it must be given a model) or when the generator says the corpus cannot separate two drivers — it fails loudly and names them rather than fitting something plausible. Corpus scenes live in `algan/utils/calibration_corpus.py`.
+- Value-dependent sizes (sparse-coverage fragments, continuation-pool occupancy) are split into exact measured bytes-per-unit times a density seeded from the corpus and raised in-job. The OOM retry stays the hard backstop; the tables only make it rare.
+- `tests/unit_tests/test_mem_usage_tables.py` replays the shipped traces against the live pipeline, so a stale table fails the fast suite instead of surfacing as an OOM in someone's render. `benchmarks/_mem_usage_shadow.py` checks predictions against real renders end to end.
 - The whole package runs under a process-global `torch.inference_mode()` entered at import. **Importing algan disables autograd for the process** — never share a process with torch training.
 
 ## Development Notes
@@ -156,6 +164,8 @@ Core: torch, torchvision, taichi, numpy, opencv-python, moviepy, scipy, svgeleme
 - `algan/animations/` — built-in composable animations
 - `algan/mobs/` — all renderable object classes
 - `algan/rendering/` — camera, lights, ray tracer + Taichi kernels, shaders, post-processing
+- `algan/rendering/mem_usage.py` — **generated** measured memory tables (regenerate, never hand-edit); `mem_usage_runtime.py` replays them, `mem_usage_lookup.py` resolves keys and probes
+- `algan/utils/calibrate_memory.py` — the memory-table generator; `calibration_corpus.py` — the scenes and configurations it measures
 - `algan/constants/` — spatial (UP, RIGHT, ORIGIN...), colors, rate functions
 - `algan/settings/` — `SETTINGS` sections, presets, startup-only env configuration
 - `algan/utils/` — tensor helpers, memory arena, profiling, doc-build tooling

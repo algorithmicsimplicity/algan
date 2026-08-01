@@ -88,6 +88,7 @@ from algan.scene import Scene
 import algan.mobs.bezier_circuit as bzc
 import algan.rendering.raytracing.tracer as rtr
 import algan.rendering.raytracing.raster_pipeline as rpl
+from algan.utils.memory_utils import peak_allocated, reset_peak_floor
 
 OUT_DIR = os.path.join("algan_outputs", "profiling")
 REPORT_PATH = "algan_profile_report.txt"
@@ -836,6 +837,7 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
+        reset_peak_floor()
     if KERNEL_PROFILER:
         try:
             ti.profiler.clear_kernel_profiler_info()
@@ -879,7 +881,9 @@ def run_once(scene_func, settings, tag="", run_index=0, telemetry=True):
         except Exception as e:
             print(f"[profiling] could not write cProfile dump: {e}")
 
-    peak_alloc = (torch.cuda.max_memory_allocated() / 2**20
+    # Via peak_allocated, so a component that measured its own peak (the GPU
+    # merge) cannot silently reset the whole-render number out from under us.
+    peak_alloc = (peak_allocated() / 2**20
                   if torch.cuda.is_available() else 0.0)
     peak_reserved = (torch.cuda.max_memory_reserved() / 2**20
                      if torch.cuda.is_available() else 0.0)
