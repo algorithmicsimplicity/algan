@@ -27,6 +27,7 @@ cannot silently regress, plus two empirically-tuned register knobs):
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _datetime
 import json
 import os
@@ -40,10 +41,12 @@ from algan.settings._startup import _RENDER_DEVICE, _TAICHI_CACHE_DIRECTORY
 
 _COMPILE_LOG_LOCK = threading.Lock()
 _COMPILE_FRONTEND = {}
+_COMPILE_NOTICE_CALLBACK = None
+_COMPILE_NOTICE_THREAD_ID = None
 
 
 def _compile_logging_enabled():
-    return os.environ.get("ALGAN_LOG_TAICHI_COMPILES", "1") != "0"
+    return os.environ.get("ALGAN_LOG_TAICHI_COMPILES", "0") != "0"
 
 
 def _compile_log_path():
@@ -53,6 +56,8 @@ def _compile_log_path():
 
 def _emit_compile_record(record):
     """Print and optionally persist one Taichi compilation timing record."""
+    if not _compile_logging_enabled():
+        return
     phase = record["phase"]
     name = record["kernel"]
     status = record["status"]
@@ -90,6 +95,114 @@ def _kernel_timing_name(kernel, key):
     return f"{base}[specialization={instance}, autodiff={mode}]"
 
 
+def _set_compile_notice_callback(callback):
+    """Register the one-shot callback used for a real kernel compilation."""
+    global _COMPILE_NOTICE_CALLBACK, _COMPILE_NOTICE_THREAD_ID
+    with _COMPILE_LOG_LOCK:
+        _COMPILE_NOTICE_CALLBACK = callback
+        _COMPILE_NOTICE_THREAD_ID = threading.get_ident() if callback else None
+
+
+def _compile_notice_active():
+    with _COMPILE_LOG_LOCK:
+        return (
+            _COMPILE_NOTICE_CALLBACK is not None
+            and threading.get_ident() == _COMPILE_NOTICE_THREAD_ID
+        )
+
+
+def _notify_compile_notice():
+    global _COMPILE_NOTICE_CALLBACK, _COMPILE_NOTICE_THREAD_ID
+    with _COMPILE_LOG_LOCK:
+        if threading.get_ident() != _COMPILE_NOTICE_THREAD_ID:
+            return
+        callback = _COMPILE_NOTICE_CALLBACK
+        _COMPILE_NOTICE_CALLBACK = None
+        _COMPILE_NOTICE_THREAD_ID = None
+    if callback is not None:
+        callback()
+
+
+def _taichi_log_level():
+    """Return Taichi's current native logging threshold, when available."""
+    is_effective = getattr(ti, "is_logging_effective", None)
+    if is_effective is None:
+        return None
+    try:
+        for level in ("trace", "debug", "info", "warn", "error", "critical"):
+            if is_effective(level):
+                return level
+    except Exception:
+        return None
+    return None
+
+
+def _capture_native_stderr(call):
+    """Run ``call`` while collecting native writes to file descriptor 2."""
+    read_fd, write_fd = os.pipe()
+    chunks = []
+
+    def drain():
+        try:
+            while True:
+                chunk = os.read(read_fd, 4096)
+                if not chunk:
+                    return
+                chunks.append(chunk)
+        except OSError:
+            return
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    saved_fd = os.dup(2)
+    write_fd_open = True
+    try:
+        os.dup2(write_fd, 2)
+        os.close(write_fd)
+        write_fd_open = False
+        result = call()
+    finally:
+        if write_fd_open:
+            os.close(write_fd)
+        os.dup2(saved_fd, 2)
+        os.close(saved_fd)
+        reader.join()
+        os.close(read_fd)
+    return result, b"".join(chunks)
+
+
+def _compile_with_cache_observation(call):
+    """Run one backend compile and return its native cache diagnostics.
+
+    Taichi 1.7.4 reports an offline-cache hit as ``Create kernel ... from
+    cache`` and a miss as ``Cache kernel ...``. The messages are native
+    debug-level output, so temporarily enable and capture that stream while
+    preserving the caller's logging level and output.
+    """
+    previous_level = _taichi_log_level()
+    if previous_level is None:
+        return call(), b""
+    try:
+        if previous_level != "trace":
+            ti.set_logging_level("trace")
+    except Exception:
+        return call(), b""
+    try:
+        result, native_log = _capture_native_stderr(call)
+    finally:
+        if previous_level != "trace":
+            with contextlib.suppress(Exception):
+                ti.set_logging_level(previous_level)
+    if previous_level in ("trace", "debug") and native_log:
+        with contextlib.suppress(OSError):
+            os.write(2, native_log)
+    return result, native_log
+
+
+def _loaded_from_offline_cache(native_log):
+    return b"from cache" in native_log.lower()
+
+
 def _install_taichi_compile_logger():
     """Instrument Taichi's Python front-end and backend compiler boundary.
 
@@ -100,9 +213,6 @@ def _install_taichi_compile_logger():
     the specialization becomes launchable. With an empty cache the backend time
     is cold compilation time; with a populated cache it is cache lookup/load time.
     """
-    if not _compile_logging_enabled():
-        return
-
     from taichi.lang import impl as _ti_impl
     from taichi.lang.kernel_impl import Kernel as _TaichiKernel
 
@@ -187,8 +297,14 @@ def _install_taichi_compile_logger():
         name = meta["kernel"]
         frontend_seconds = float(meta["frontend_seconds"])
         backend_started = time.perf_counter()
+        observe_cache = _compile_notice_active()
         try:
-            result = original_compile_kernel(self, *args, **kwargs)
+            if observe_cache:
+                result, native_log = _compile_with_cache_observation(
+                    lambda: original_compile_kernel(self, *args, **kwargs)
+                )
+            else:
+                result = original_compile_kernel(self, *args, **kwargs)
         except Exception:
             backend_seconds = time.perf_counter() - backend_started
             total_seconds = frontend_seconds + backend_seconds
@@ -206,6 +322,8 @@ def _install_taichi_compile_logger():
                 }
             )
             raise
+        if observe_cache and not _loaded_from_offline_cache(native_log):
+            _notify_compile_notice()
         backend_seconds = time.perf_counter() - backend_started
         total_seconds = frontend_seconds + backend_seconds
         _emit_compile_record(
@@ -307,6 +425,7 @@ def taichi_init_kwargs():
 def init_taichi():
     """Initialize Taichi on Algan's selected backend, once."""
     if _already_initialized():
+        _install_taichi_compile_logger()
         return
     ti.init(**taichi_init_kwargs())
-    # _install_taichi_compile_logger()
+    _install_taichi_compile_logger()

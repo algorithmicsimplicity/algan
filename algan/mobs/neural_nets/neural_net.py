@@ -376,10 +376,10 @@ class NeuralNetMLP(Mob):
 
     def activate(
         self,
+            output_generator=None,
         color=PURE_RED * k + (1 - k) * WHITE,
         run_time=1,
         reverse=False,
-        output_generator=None,
     ):
         layers = self.layers
 
@@ -402,16 +402,19 @@ class NeuralNetMLP(Mob):
                 rate_func=delay_fade,
                 animation_manager=neuron.animation_manager,
             ):  # lambda t: pulse_fade(t, inflection=1.0)):
-                for n in [neuron.core, neuron.shell]:
-                    n.wave_color(
-                        (color + GLOW * 0.8),  # .set_opacity(
-                        # 1 / neuron.shell.opacity.clamp_min(1e-5)
-                        # ),
-                        1,
-                        reverse,
-                        lag_duration=0.5,
-                        direction=self.get_forward_direction(),
-                    )
+                for n, w in [[neuron.core, 0.15], [neuron.shell, 0]]:
+                    with Seq(run_time=1):
+                        n.wait(w)
+                        n.wave_color(
+                            (color + GLOW * 0.8),  # .set_opacity(
+                            # 1 / neuron.shell.opacity.clamp_min(1e-5)
+                            # ),
+                            1,
+                            reverse,
+                            lag_duration=0.5,
+                            direction=self.get_forward_direction(),
+                        )
+                        n.wait(w)
 
         pulse_funcs = [pulse_synapses, pulse_neuron]
         if reverse:
@@ -420,7 +423,7 @@ class NeuralNetMLP(Mob):
 
         with Seq(animation_manager=self.animation_manager):
             with Lag(
-                0.70, rate_func=identity, animation_manager=self.animation_manager
+                0.55, rate_func=identity, animation_manager=self.animation_manager
             ):  # , run_time=run_time):
                 for layer in layers:
                     with Sync(animation_manager=self.animation_manager):
@@ -428,11 +431,11 @@ class NeuralNetMLP(Mob):
                             with Lag(0.5, animation_manager=self.animation_manager):
                                 for f in pulse_funcs:
                                     f(neuron)
-            self.animation_manager.context.timespan.current_time = (
-                self.animation_manager.context.timespan.current_time - 1.7
-            )
             if output_generator is None:
                 return
+            self.animation_manager.context.current_time = (
+                    self.animation_manager.context.current_time - 1.7
+            )
             with Off(animation_manager=self.animation_manager):
                 output = output_generator().move_next_to(
                     self.layers[-1][len(self.layers[-1]) // 2],
@@ -510,7 +513,7 @@ class NeuronV3(Neuron):
                 opacity=1.0,
             )
             .set_material(material)
-            .scale(0.09)
+            .scale(0.15)
         )
 
     def _make_shell(self, grid_height, neuron_color):

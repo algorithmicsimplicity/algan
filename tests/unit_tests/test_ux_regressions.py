@@ -22,6 +22,7 @@ from algan.rendering.raytracing.tracer import (
     RenderPlan,
     _validate_render_capabilities,
 )
+from algan.rendering.taichi_runtime import _loaded_from_offline_cache
 from algan.scene_manager import SceneManager
 from algan.settings.video_settings import PREVIEW, VideoSettings
 from algan.utils import algan_utils
@@ -50,6 +51,13 @@ def test_context_is_restored_after_user_exception():
     assert scene.animation_manager.context is root
     assert root.child_contexts == children_before
     assert failed not in root.child_contexts
+
+
+def test_kernel_compile_notice_ignores_offline_cache_hits():
+    assert _loaded_from_offline_cache(
+        b"Create kernel 'wavefront_shade' from cache"
+    )
+    assert not _loaded_from_offline_cache(b"Cache kernel 'wavefront_shade'")
 
 
 def test_same_run_time_tolerates_zero_duration_children():

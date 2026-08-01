@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 os.environ["ALGAN_PREFETCH_BATCHES"] = "0"
-os.environ["ALGAN_ADV_OPT"] = "1"
+os.environ["ALGAN_ADV_OPT"] = "0"
 
 import torch
 

@@ -33,6 +33,7 @@ from __future__ import annotations
 import sys
 import traceback
 from dataclasses import dataclass
+from functools import wraps
 from typing import Literal
 
 import torch
@@ -61,6 +62,9 @@ from algan.rendering.raytracing.settings import (
     _get_tonemap_t_val,
     _scene_has_user_pipeline,
     is_post_process_tonemap_enabled,
+)
+from algan.rendering.taichi_runtime import (
+    _set_compile_notice_callback,
 )
 from algan.settings import SETTINGS
 
@@ -630,6 +634,19 @@ def _show_kernel_compile_notice():
     )
 
 
+def _observe_render_kernel_compiles(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if not _kernel_compile_notice_shown:
+            _set_compile_notice_callback(_show_kernel_compile_notice)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _set_compile_notice_callback(None)
+
+    return wrapped
+
+
 def _append_env_texture(textures, env, intensity, device):
     """Append an equirect environment map to the shared flat texel buffer.
 
@@ -801,6 +818,7 @@ def _validate_render_capabilities(
     return plan
 
 
+@_observe_render_kernel_compiles
 def render_batch_raytraced(
     primitives,
     scene,
@@ -826,7 +844,6 @@ def render_batch_raytraced(
     is just the output buffer (plus post-processing), independent of scene
     depth complexity or bounce count.
     """
-    _show_kernel_compile_notice()
     # Read the user-toggleable settings *live* from the settings module.
     # These names used to be imported by value at module-import time, which
     # froze them before user code ran -- silently disabling
