@@ -14,9 +14,9 @@ The tables and their per-circuit floating-point bounds are packed into one
 all kernels to replace the old ``edge_offsets`` argument without increasing
 Taichi's runtime-argument count.
 """
+from __future__ import annotations
 
 import torch
-
 
 BEZIER_SCAN_BINS = 16
 BEZIER_SPATIAL_GRID = 8

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from algan.settings.abstract_settings import Settings
 from algan.settings.computing_settings import ComputingSettings
 from algan.settings.path_settings import PathSettings

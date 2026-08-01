@@ -4,12 +4,13 @@ from algan.animation_timeline.animation_contexts import Sync
 from algan.constants.spatial import *  # RIGHT, LEFT, IN, OUT, ORIGIN, UP
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import TriangleTriangulated
+from algan.mobs.shapes_3d import Cylinder, Sphere
 from algan.mobs.surfaces.surface import Surface
-from algan.mobs.shapes_3d import Sphere, Cylinder
 from algan.utils.algan_utils import render_all_funcs
 
 
-get_mob = lambda r=0: TriangleTriangulated(
+def get_mob(r=0):
+    return TriangleTriangulated(
     torch.stack(
         (
             UP * 0.5,
@@ -35,7 +36,7 @@ def test_cylinder():
         x.move_between_points(LEFT + UP + DOWN * i, RIGHT)
     # x.move(LEFT)
     with Sync():
-        for i, x in enumerate(xs):
+        for _, x in enumerate(xs):
             x.wave_color(PURE_BLUE)
 
 

@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 from algan import *
 from algan.rendering.raytracing import enable_ray_tracing
 
 
 def render_static_triangles():
     n = 100
-    m = Sphere(grid_height=n, grid_width=n).scale(3).spawn()
+    Sphere(grid_height=n, grid_width=n).scale(3).spawn()
     Scene.wait(5)
 
 

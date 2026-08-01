@@ -19,7 +19,8 @@ from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, dot_produ
 
 class MobLayoutMixin:
     """Bounding boxes, boundary queries, and screen-relative placement
-    (``move_to_edge``, ``move_next_to``, ``move_inline_with_*``, ...)."""
+    (``move_to_edge``, ``move_next_to``, ``move_inline_with_*``, ...).
+    """
 
     def get_axis_aligned_lower_corner(self) -> torch.Tensor:
         """Get the minimum corner of this Mob's own points, ignoring children.
@@ -793,8 +794,8 @@ class MobLayoutMixin:
         torch.Tensor
             A copy of the requested coordinates, safe to keep and modify.
         """
-        l = self.get_center() if centered else self.location
-        return l[..., coord_indexes].clone()
+        location = self.get_center() if centered else self.location
+        return location[..., coord_indexes].clone()
 
     def set_x_y_coord(self, xy_coords: torch.Tensor):
         """Move the Mob in the screen plane, keeping its distance from the camera.

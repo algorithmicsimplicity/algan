@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from algan import *
-import manim as mn
 
 
 def render_static_triangulated_text():

@@ -5,14 +5,19 @@ Split out of ``mob.py`` for readability; :class:`MobHierarchyMixin` is mixed int
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from algan.animatable_base.animatable import Animatable
-from algan.animation_timeline.timeline import HIERARCHY_VERSION
 from algan.animation_timeline.timeline import (
+    HIERARCHY_VERSION,
     _opt_disabled,
     bump_hierarchy_version,
 )
-from algan.utils.python_utils import traverse
 from algan.errors import HierarchyError
+from algan.utils.python_utils import traverse
+
+if TYPE_CHECKING:
+    from algan.animatable_base.mob import Mob
 
 
 class MobHierarchyMixin:
@@ -105,7 +110,7 @@ class MobHierarchyMixin:
         if generation <= 0:
             return children
         children = [_.get_children(generation - 1) for _ in children]
-        return [x for l in children for x in l]
+        return [x for level_children in children for x in level_children]
 
     def get_descendants(self, include_self: bool = True) -> list[Mob]:
         """Get every Mob at or below this one, flattened into one list.

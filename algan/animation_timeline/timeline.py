@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import contextlib
 import math
 
 import torch
@@ -7,7 +10,6 @@ from algan.animation_timeline.utils_taichi import (
     _query_state_from_edits,
 )
 from algan.utils.tensor_utils import cast_to_tensor
-
 
 #: Name of the special kwarg that animated functions receive the per-frame
 #: elapsed time through (see :meth:`AnimationTimeline.set_state_to_times`).
@@ -59,7 +61,8 @@ def bump_hierarchy_version():
     """Bump both the hierarchy and structure versions. Call this (instead of
     :func:`bump_structure_version`) for any change to a mob's ``children``: it
     invalidates both the descendant-list cache and the descendant-row-index
-    caches, since a hierarchy change alters both."""
+    caches, since a hierarchy change alters both.
+    """
     HIERARCHY_VERSION[0] += 1
     STRUCTURE_VERSION[0] += 1
 
@@ -69,7 +72,8 @@ _OPT_DISABLED = None
 
 def _opt_disabled(name):
     """Bisect aid: ALGAN_OPT_DISABLE=fastpath,ranges,desccache,windows disables
-    individual animation-prep optimizations (read once, first use)."""
+    individual animation-prep optimizations (read once, first use).
+    """
     global _OPT_DISABLED
     if _OPT_DISABLED is None:
         import os
@@ -117,7 +121,8 @@ class RowRanges:
     def from_contiguous_blocks(inds_list):
         """Build from per-mob index tensors, each of which is a contiguous
         arange (how ``AttributeTimeline.add`` allocates). Returns None when a
-        block is not contiguous (caller falls back to plain concatenation)."""
+        block is not contiguous (caller falls back to plain concatenation).
+        """
         if len(inds_list) == 1:
             inds = inds_list[0]
             n = inds.numel()
@@ -149,7 +154,8 @@ class RowRanges:
         """Build from a list of already-known ``(begin, end)`` integer runs
         (e.g. each mob's cached single-run range). Coalesces adjacent runs,
         equivalent to :meth:`from_contiguous_blocks` but without any per-row
-        tensor indexing/conversion. ``runs`` must contain no empty runs."""
+        tensor indexing/conversion. ``runs`` must contain no empty runs.
+        """
         if len(runs) == 1:
             return RowRanges([runs[0]])
         pairs = []
@@ -227,7 +233,8 @@ class EditRecord:
 def _replay_window_end(f):
     """End of a function application's replay window: its context end time,
     extended to its edits' resolved ``replay_end`` when they overlap
-    earlier-executed edits (never shrunk below the context end)."""
+    earlier-executed edits (never shrunk below the context end).
+    """
     end = f.time.end
     if f.replay_end is None:
         return end
@@ -335,10 +342,10 @@ class AttributeTimeline:
         self.edits = []
         self._is_ready_for_queries = False
         self._query_cache = {}
-        self.mob_id_to_inds = dict()
-        self.mob_id_to_ranges = dict()
-        self.mob_id_to_starts = dict()
-        self.mob_id_to_ends = dict()
+        self.mob_id_to_inds = {}
+        self.mob_id_to_ranges = {}
+        self.mob_id_to_starts = {}
+        self.mob_id_to_ends = {}
 
     def set_start_point(self, mob, starts):
         self.mob_id_to_starts[mob.id] = starts
@@ -397,7 +404,8 @@ class AttributeTimeline:
         (e.g. :meth:`~algan.animatable_base.mob.Mob.detach_history`'s history
         swap). Bumps the structure
         version so per-mob descendant-row caches (``Mob._attr_inds_cache``) that
-        may reference the old ownership are rebuilt."""
+        may reference the old ownership are rebuilt.
+        """
         self.mob_id_to_inds[mob_id] = inds
         self.mob_id_to_ranges.pop(mob_id, None)
         bump_structure_version()
@@ -682,7 +690,8 @@ class UpdaterSpan:
     """The [added, removed) interval of one updater. ``start``/``end`` expose
     the (lazily rescaled) timestamps as numbers, matching the protocol of the
     context timespans carried by ordinary :class:`FunctionApplicationEvent` s.
-    An updater that was never removed ends at :data:`UPDATER_FOREVER`."""
+    An updater that was never removed ends at :data:`UPDATER_FOREVER`.
+    """
 
     __slots__ = ("start_event", "end_event")
 
@@ -702,7 +711,8 @@ class UpdaterSpan:
 class UpdaterEvent:
     """An updater: ``function(mob, time_elapsed, *args, **kwargs)`` is applied
     at every frame in ``time.start <= t < time.end``, with ``time_elapsed``
-    equal to ``t - time.start``."""
+    equal to ``t - time.start``.
+    """
 
     __slots__ = (
         "function",
@@ -778,9 +788,9 @@ class FunctionTimeline:
 
 class AnimationTimeline:
     def __init__(self):
-        self.attr_to_timeline = dict()
+        self.attr_to_timeline = {}
         self.function_timeline = FunctionTimeline()
-        self.mob_id_to_lifespan = dict()
+        self.mob_id_to_lifespan = {}
         # Edit attribution state: a global execution counter for edits, the
         # function application the currently-executing animated function was
         # recorded as (edits made while it runs attach to it), and the most
@@ -799,7 +809,8 @@ class AnimationTimeline:
     def set_active_edit_event(self, event):
         """Set the function application that subsequently recorded attribute
         edits are attributed to, returning the previous one (so callers can
-        restore it)."""
+        restore it).
+        """
         previous = self._active_edit_event
         self._active_edit_event = event
         return previous
@@ -823,10 +834,7 @@ class AnimationTimeline:
         event = self._active_updater_trace
         if event is None:
             return
-        if include_descendants:
-            mob_ids = self._collect_mob_ids((mob,))
-        else:
-            mob_ids = {mob.id}
+        mob_ids = self._collect_mob_ids((mob,)) if include_descendants else {mob.id}
         event.dependency_mob_ids.update(mob_ids)
 
         if self._materialized_mob_ids is None or self._materialization_times is None:
@@ -841,7 +849,8 @@ class AnimationTimeline:
 
     def get_lifespan(self, mob_id):
         """The :class:`Lifespan` of the mob with the given id, created on
-        first access (start = end = "never")."""
+        first access (start = end = "never").
+        """
         lifespan = self.mob_id_to_lifespan.get(mob_id)
         if lifespan is None:
             lifespan = self.mob_id_to_lifespan[mob_id] = Lifespan()
@@ -898,7 +907,8 @@ class AnimationTimeline:
         rate_func_compose = c.rate_func_compose
         rf = rate_func
         if rate_func_compose is not None:
-            rf = lambda x, rf=rate_func, rfc=rate_func_compose: rf(rfc(x))
+            def rf(x, rf=rate_func, rfc=rate_func_compose):
+                return rf(rfc(x))
         event = FunctionApplicationEvent(
             function, caller, animated_args, kwargs, rf, c.timespan)
         self.function_timeline.add(event)
@@ -907,7 +917,8 @@ class AnimationTimeline:
 
     def record_updater(self, function, caller, args, kwargs, animation_context):
         """Register an updater starting at the context's current time and
-        lasting until :meth:`end_updater` (or forever). Returns its id."""
+        lasting until :meth:`end_updater` (or forever). Returns its id.
+        """
         span = UpdaterSpan(animation_context.timespan.get_current_time())
         event = UpdaterEvent(function, caller, args, kwargs, span)
         event.dependency_mob_ids.update(
@@ -1047,10 +1058,8 @@ class AnimationTimeline:
                 mob_ids.add(value.id)
                 get_descendants = getattr(value, "get_descendants", None)
                 if get_descendants is not None:
-                    try:
+                    with contextlib.suppress(AttributeError, TypeError):
                         stack.extend(get_descendants(include_self=False))
-                    except (AttributeError, TypeError):
-                        pass
                 continue
             if isinstance(value, dict):
                 stack.extend(value.values())
@@ -1132,7 +1141,7 @@ class AnimationTimeline:
                 elapsed = elapsed.clamp(max=duration)
             a = f.rate_func(a)
 
-            kwargs = {k: v for k, v in f.kwargs.items()}
+            kwargs = dict(f.kwargs.items())
             for k in f.animated_args:
                 kwargs[k] = torch.lerp(cast_to_tensor(f.animated_args[k]), f.kwargs[k], a)
             if TIME_PARAMETER_NAME in kwargs:

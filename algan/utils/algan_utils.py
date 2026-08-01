@@ -1,25 +1,24 @@
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import cProfile
-from dataclasses import dataclass
-from typing import Literal
-import os.path
-import time
-
-from pathlib import Path
-
-import multiprocessing
-import re
 import inspect
+import multiprocessing
+import os.path
 import pstats
-import sys
+import re
 import subprocess
+import sys
+import time
 import warnings
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
-from algan.errors import AlganConfigurationError, LegacySceneDiscoveryWarning
 from algan.animation_timeline.animation_contexts import Off
-from algan.rendering.camera import Camera
-from algan.scene_manager import SceneManager
+from algan.errors import AlganConfigurationError, LegacySceneDiscoveryWarning
 from algan.logging.logger import get_logger
+from algan.rendering.camera import Camera
+from algan.settings import SETTINGS
 
 logger = get_logger()
 
@@ -37,8 +36,8 @@ def scene_function(function=None, *, name=None):
     def decorate(func):
         if not callable(func):
             raise TypeError("@scene can only decorate callables")
-        setattr(func, "__algan_scene__", True)
-        setattr(func, "__algan_scene_name__", name or func.__name__)
+        func.__algan_scene__ = True
+        func.__algan_scene_name__ = name or func.__name__
         return func
 
     if function is None:
@@ -48,7 +47,9 @@ from algan.utils.memory_utils import empty_cache
 
 
 def get_file_writer(temp_file_path, video_settings_resolution, codec, fps, with_mask, ffmpeg_params, audiofile, audio_codec):
-    from moviepy.video.io.ffmpeg_writer import FFMPEG_VideoWriter  # deferred: ~0.3 s of import algan
+    from moviepy.video.io.ffmpeg_writer import (
+        FFMPEG_VideoWriter,  # deferred: ~0.3 s of import algan
+    )
 
     try:
         file_writer = FFMPEG_VideoWriter(
@@ -362,14 +363,8 @@ def render_all_funcs(
         if output_directory is None:
             output_directory = SETTINGS.paths.output_directory
         output_directory = os.path.join(output_directory, module_name)
-        if start_index < 0:
-            start = start_index + len(scene_funcs)
-        else:
-            start = start_index
-        if max_rendered < 0:
-            end = len(scene_funcs)
-        else:
-            end = start + max_rendered
+        start = start_index + len(scene_funcs) if start_index < 0 else start_index
+        end = len(scene_funcs) if max_rendered < 0 else start + max_rendered
 
         results = []
         from algan.scene import Scene
@@ -537,9 +532,9 @@ def concatenate_videos(directory: str, threads: int = None, reencode: bool = Fal
             concat_file.unlink()
 
 
-def combine_scenes(dir):
+def combine_scenes(directory):
     ext = None
-    output_text_file = os.path.join(dir, "transcript.txt")
+    output_text_file = os.path.join(directory, "transcript.txt")
     transcript = ""
     video_files = []
     def starts_with_int(s):
@@ -548,17 +543,20 @@ def combine_scenes(dir):
             return True
         except ValueError:
             return False
-    for f in sorted([_ for _ in os.listdir(dir) if starts_with_int(_)], key=lambda x: int(x.split('_')[0])):
+    for f in sorted(
+        [_ for _ in os.listdir(directory) if starts_with_int(_)],
+        key=lambda x: int(x.split('_')[0]),
+    ):
         if f.endswith('.mp4'):
-            video_files.append(os.path.join(dir, f))
+            video_files.append(os.path.join(directory, f))
             if ext is None:
                 ext = f.split('.')[-1]
         elif f.endswith('.txt'):
-            with open(os.path.join(dir, f), 'r') as f:
+            with open(os.path.join(directory, f)) as f:
                 transcript += f.read()
 
     with open(output_text_file, 'w') as f:
         f.write(transcript)
 
-    concatenate_videos(dir, output_file=f"video.{ext}")
+    concatenate_videos(directory, output_file=f"video.{ext}")
 

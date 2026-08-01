@@ -8,9 +8,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
+
+
 def linear_sum_assignment(*args, **kwargs):
     """scipy.optimize.linear_sum_assignment, imported on first call
-    (deferred: scipy costs ~0.4 s of ``import algan``)."""
+    (deferred: scipy costs ~0.4 s of ``import algan``).
+    """
     from scipy.optimize import linear_sum_assignment as _lsa
 
     return _lsa(*args, **kwargs)
@@ -25,7 +28,8 @@ if TYPE_CHECKING:
 
 class MobMorphMixin:
     """``become`` morphing plus the ``expand_n_*`` batch-expansion helpers it
-    uses to match source and target sub-mob counts."""
+    uses to match source and target sub-mob counts.
+    """
 
     def expand_n_list(self, lst, n: int) -> list:
         """Internal: pad a list of point tensors by duplicating entries.

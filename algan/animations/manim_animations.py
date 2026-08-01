@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from algan.animation_timeline.animation_contexts import *
 
 

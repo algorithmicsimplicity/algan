@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import functools
+import re
 from collections import defaultdict
 from math import sqrt
 from string import ascii_lowercase
-from typing import List, Optional
-import re
 
 import numpy as np
 import torch
@@ -24,7 +25,7 @@ def packed_reorder(x, counts, ids):
 
 
 def _cast_to_tensor_recursive(x):
-    if isinstance(x, list) or isinstance(x, tuple):
+    if isinstance(x, (list, tuple)):
         return torch.stack([_cast_to_tensor_recursive(_) for _ in x], 0)
     else:
         return torch.tensor((x,), dtype=torch.get_default_dtype()).view(1)
@@ -42,7 +43,7 @@ def cast_to_tensor(x):
         while x.dim() < 3:
             x = x.unsqueeze(0)
         return x  # .view(-1,x.shape[-1])
-    if isinstance(x, list) or isinstance(x, tuple):
+    if isinstance(x, (list, tuple)):
         x = _cast_to_tensor_recursive(x).squeeze(-1)
         return x.view(1, -1, x.shape[-1])
     if x is None:
@@ -56,7 +57,7 @@ def cast_to_tensor(x):
 
 
 def cast_to_tensor_single(x):
-    if isinstance(x, list) or isinstance(x, tuple):
+    if isinstance(x, (list, tuple)):
         return torch.stack(x, -2)  # [cast_to_tensor(_) for _ in x]
     if isinstance(x, torch.Tensor):
         return x  # .view(-1,x.shape[-1])
@@ -136,7 +137,7 @@ def expand_as_right(x, y, offset: int = 0):
     return x.expand(([-1] * (n)) + list(y.shape[n:]))
 
 
-def broadcast(x, y, ignored_dims: List[int]):
+def broadcast(x, y, ignored_dims: list[int]):
     return x.expand(
         [
             y.shape[i] if (x.shape[i] == 1 and i not in ignored_dims) else -1
@@ -145,14 +146,14 @@ def broadcast(x, y, ignored_dims: List[int]):
     )
 
 
-def broadcast_both(x, y, ignored_dims: List[int]):
+def broadcast_both(x, y, ignored_dims: list[int]):
     x = unsqueeze_right(x, y)
     x = broadcast(x, y, ignored_dims=ignored_dims)
     y = broadcast(y, x, ignored_dims=ignored_dims)
     return x, y
 
 
-def broadcast_both_left(x, y, ignored_dims: List[int]):
+def broadcast_both_left(x, y, ignored_dims: list[int]):
     x = unsqueeze_left(x, y)
     y = unsqueeze_left(y, x)
     x = broadcast(x, y, ignored_dims=ignored_dims)
@@ -208,11 +209,11 @@ def broadcast_gather(src, dim: int, ind, keepdim=True, out=None, **kwargs):
     return out
 
 
-def broadcast_scatter(input, dim, ind, src, **kwargs):
-    input, ind, src = broadcast_all(
-        [input, ind, src], ignored_dims=[dim if dim >= 0 else len(src.shape) + dim]
+def broadcast_scatter(input_tensor, dim, ind, src, **kwargs):
+    input_tensor, ind, src = broadcast_all(
+        [input_tensor, ind, src], ignored_dims=[dim if dim >= 0 else len(src.shape) + dim]
     )
-    return input.scatter_reduce(dim, ind, src, **kwargs)
+    return input_tensor.scatter_reduce(dim, ind, src, **kwargs)
 
 
 def offset(x):
@@ -236,7 +237,7 @@ def squish(x, start: int = 0, end: int = 1):
     return x.reshape(list(x.shape[:start]) + [-1] + list(x.shape[end + 1 :]))
 
 
-def unsquish(x, dim: int = 0, factor: Optional[int] = None):
+def unsquish(x, dim: int = 0, factor: int | None = None):
     """Split dimension ``dim`` of ``x`` into two dimensions.
 
     ``factor`` sets the size of the *second* new dimension (``dim`` becomes
@@ -396,9 +397,7 @@ def reduce_max_score(x, scores, dim=-1):
 
 
 def robust_concat(xs):
-    """
-    Concatenates multiple tensors together while broadcasting as necessary to ensure shapes match.
-    """
+    """Concatenates multiple tensors together while broadcasting as necessary to ensure shapes match."""
     xs = [cast_to_tensor_single(x) for x in xs]
     max_dim = max([x.dim() for x in xs])
 

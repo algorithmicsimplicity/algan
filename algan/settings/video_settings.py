@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Tuple
 
 from algan.errors import AlganConfigurationError
 from algan.settings.abstract_settings import Settings
@@ -9,7 +10,7 @@ from algan.settings.abstract_settings import Settings
 class VideoSettings(Settings):
     """Video output settings used by :meth:`algan.scene.Scene.save_video`."""
 
-    resolution: Tuple[int, int]
+    resolution: tuple[int, int]
     frames_per_second: int = 30
     anti_alias_level: int = 2
     fxaa: bool = False

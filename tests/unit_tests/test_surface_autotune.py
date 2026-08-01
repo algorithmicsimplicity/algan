@@ -1,6 +1,8 @@
 import torch
+
+from algan.mobs.shapes_3d import Cylinder, Sphere
 from algan.mobs.surfaces.surface import Surface
-from algan.mobs.shapes_3d import Sphere, Cylinder
+
 
 def test_surface_autotune_default():
     # Test that default instantiation of Surface performs auto-tuning

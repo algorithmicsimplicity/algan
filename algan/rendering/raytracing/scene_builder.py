@@ -1,36 +1,41 @@
 """Collection of helper functions used to combine collections of primitives
 into contiguous tensor data-structures, ready to be shipped to ray tracing kernels.
 """
-from algan.settings import SETTINGS
-from algan.settings._startup import _RENDER_DEVICE
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
 
-from algan.utils.memory_utils import (
-    InsufficientMemoryException,
-    begin_cuda_peak,
-    empty_cache,
-    end_cuda_peak,
+from algan.rendering.raytracing.bezier_acceleration import (
+    build_bezier_edge_acceleration,
 )
 from algan.rendering.raytracing.primitives import (
     RayTracedBezierCircuitPrimitive,
     RayTracedPNTrianglePrimitive,
     RayTracedTrianglePrimitive,
 )
-from algan.rendering.raytracing.bezier_acceleration import (
-    build_bezier_edge_acceleration,
-)
+from algan.rendering.raytracing.raytrace_kernels_taichi import _M_REFLECTIVITY, _M_WIDTH
+from algan.rendering.raytracing.refit_bvh import build_refit_bvh
 from algan.rendering.raytracing.settings import (
     _USER_PIPELINE_BASE,
     _constant_promotion_active,
 )
-from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    _M_REFLECTIVITY, _M_WIDTH)
-from algan.rendering.raytracing.shading_taichi import MAT_W, _MID_UNLIT
-from algan.rendering.raytracing.refit_bvh import build_refit_bvh
-from algan.rendering.raytracing.stbvh import EMPTY_LO, EMPTY_HI, STBVH, build_stbvh
-from algan.rendering.raytracing.utils import _expand_frames, _cat_collections, _cat_mat_blocks, _flat_frames
-
+from algan.rendering.raytracing.shading_taichi import _MID_UNLIT, MAT_W
+from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO, STBVH, build_stbvh
+from algan.rendering.raytracing.utils import (
+    _cat_collections,
+    _cat_mat_blocks,
+    _expand_frames,
+    _flat_frames,
+)
+from algan.settings import SETTINGS
+from algan.settings._startup import _RENDER_DEVICE
+from algan.utils.memory_utils import (
+    InsufficientMemoryException,
+    begin_cuda_peak,
+    empty_cache,
+    end_cuda_peak,
+)
 
 _STBVH_TENSOR_FIELDS = (
     "nodes", "blocks", "node_miss", "leaf_prim", "leaf_tspan")
@@ -86,7 +91,8 @@ _MERGE_SKIP_ATTRS = frozenset({
 
 def _iter_primitive_input_tensors(primitive):
     """Yield ``(name, tensor)`` for each packed ``_rt_*`` geometry tensor of a
-    projected primitive (skipping the merged-scene cache / handle attrs)."""
+    projected primitive (skipping the merged-scene cache / handle attrs).
+    """
     for name, value in list(vars(primitive).items()):
         if (name.startswith("_rt_") and name not in _MERGE_SKIP_ATTRS
                 and torch.is_tensor(value)):
@@ -97,7 +103,8 @@ def _upload_primitive_inputs(primitives, device):
     """Move every primitive's packed ``_rt_*`` geometry onto ``device`` in
     place, so the subsequent merge + STBVH build run there. Each CPU source
     tensor is dropped as it is replaced; the merge nulls the device copies once
-    the contiguous per-type arrays are built."""
+    the contiguous per-type arrays are built.
+    """
     for primitive in primitives:
         for name, value in _iter_primitive_input_tensors(primitive):
             if value.device != device:
@@ -109,7 +116,8 @@ def gpu_merge_input_bytes(primitives):
 
     Feeds the GPU merge's transient-peak estimate used by the render-arena
     preflight to keep the build inside the pool's headroom (see
-    ``settings.MERGE_GPU_PEAK_FACTOR`` and ``RenderLoopMixin``)."""
+    ``settings.MERGE_GPU_PEAK_FACTOR`` and ``RenderLoopMixin``).
+    """
     total = 0
     for primitive in primitives:
         for _name, value in _iter_primitive_input_tensors(primitive):
@@ -121,7 +129,8 @@ def _iter_primitive_source_tensors(primitive, include_shader_params=True):
     """Yield ``(name, tensor)`` for each pre-projection source-geometry tensor
     of a primitive (corners/normals/colors/material/texture rows, ...). These
     are every torch tensor that is not a packed ``_rt_*`` output or a
-    cache/handle attribute; project_to_screen releases them once packed."""
+    cache/handle attribute; project_to_screen releases them once packed.
+    """
     for name, value in list(vars(primitive).items()):
         if (torch.is_tensor(value) and not name.startswith("_rt_")
                 and name not in _MERGE_SKIP_ATTRS):
@@ -134,7 +143,8 @@ def _iter_primitive_source_tensors(primitive, include_shader_params=True):
 
 def upload_primitive_source(primitive, device):
     """Move a primitive's pre-projection source geometry onto ``device`` so
-    ``project_to_screen`` (and its vertex shader) run there (project-on-gpu)."""
+    ``project_to_screen`` (and its vertex shader) run there (project-on-gpu).
+    """
     for name, value in _iter_primitive_source_tensors(primitive, include_shader_params=False):
         if value.device != device:
             setattr(primitive, name, value.to(device))
@@ -152,7 +162,8 @@ def gpu_project_input_bytes(primitives):
     Feeds the projection's transient-peak estimate used by the render-arena
     preflight (see ``settings.PROJECT_GPU_PEAK_FACTOR`` and
     ``RenderLoopMixin``). Already-projected primitives (source released) count
-    zero."""
+    zero.
+    """
     total = 0
     for primitive in primitives:
         for _name, value in _iter_primitive_source_tensors(primitive):
@@ -441,7 +452,8 @@ def _dedup_time(x):
     """Collapse a leading (time) dimension that is constant across frames to
     length 1, so a temporally-constant map/colour is stored once instead of T
     times. The kernels index the time axis as ``f % shape[0]``, so a length-1
-    axis is read by every frame."""
+    axis is read by every frame.
+    """
     if x.shape[0] > 1 and bool((x == x[:1]).all()):
         return x[:1].contiguous()
     return x
@@ -462,7 +474,8 @@ def _split_promotable(p, _append_texture, device, scene):
     (colour map cols 0-2, material map 3-5, no normal map 6-8 = -1, bitmask 9 =
     refl|rough|ior) aligned to ``promo_idx``. The kernel reads all three material
     properties from the material map, so promoted triangles need no per-vertex
-    ``tri_colors``/``tri_extra`` row."""
+    ``tri_colors``/``tri_extra`` row.
+    """
     colors = p._rt_tri_colors           # [Tc, N, 3, 5]
     extra = p._rt_tri_extra             # [Te, N, 15]
     N = colors.shape[1]
@@ -546,7 +559,8 @@ def _build_accel(lo, hi, num_frames, tightness, opaque=None,
     template to the kernels. ``refit`` overrides the live toggle so a
     deferred build (see ``build_deferred_bvhs``) reproduces the tree kind the
     batch's placeholder trees were merged with, even if the user flipped the
-    toggle in between."""
+    toggle in between.
+    """
     _rts = SETTINGS.raytracing
     if _rts.refit_bvh_active() if refit is None else refit:
         return build_refit_bvh(lo, hi, num_frames=num_frames, opaque=opaque)
@@ -556,7 +570,8 @@ def _build_accel(lo, hi, num_frames, tightness, opaque=None,
 
 def _empty_scene_part(device, refit=None):
     """Placeholder BVH + arrays for an absent geometry type (same tree kind
-    as the batch's real trees, so one compile-time flag covers all six)."""
+    as the batch's real trees, so one compile-time flag covers all six).
+    """
     lo = torch.full((1, 1, 3), EMPTY_LO, device=device)
     hi = torch.full((1, 1, 3), EMPTY_HI, device=device)
     return _build_accel(lo, hi, num_frames=1, tightness=2.0, refit=refit)
@@ -623,7 +638,8 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames,
                    device):
     """Build each geometry type's STBVHs from the captured merge inputs, or
     record a deferral (placeholder trees + retained build inputs) for batches
-    that provably never traverse one (see ``_bvh_deferral_eligible``)."""
+    that provably never traverse one (see ``_bvh_deferral_eligible``).
+    """
     if pn_inputs is not None:
         lo, hi, opaque = pn_inputs
         scene["pn_bvh"] = _build_accel(
@@ -758,7 +774,8 @@ def _build_mem_trim(scene, lo, hi, opaque, num_frames, device):
     promoted, colour/material from its 1x1 maps); ``tex_meta``/``uvs`` are widened
     to full band-order arrays indexed directly by prim. Byte-identical to the
     untrimmed path (only indexing/layout changes). Stores ``*_t`` variants +
-    ``col_row`` + a band-reordered BVH; the wavefront picks them when engaged."""
+    ``col_row`` + a band-reordered BVH; the wavefront picks them when engaged.
+    """
     tri_pos = scene["tri_pos"].to(device)
     N = tri_pos.shape[1]
     if N == 0:

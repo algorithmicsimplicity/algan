@@ -1,4 +1,5 @@
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import os
 import warnings
 
@@ -20,24 +21,33 @@ from algan.rendering.logical_pn import (
     subdivision_triangle_uvs,
     subdivision_vertex_uvs,
 )
-from algan.utils.memory_utils import empty_cache
-from algan.rendering.primitives.bezier_circuit_primitive import batch_arange, BezierCircuitPrimitive
+from algan.rendering.primitives.bezier_circuit_primitive import (
+    BezierCircuitPrimitive,
+    batch_arange,
+)
+from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.rendering.raytracing import pn_control_points, pn_patch_coefficients
 from algan.rendering.raytracing.pn_patch import pn_obb
 from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_ALPHA
-from algan.rendering.raytracing.settings import _shader_is_core, _shader_material_id, _MAT_SLOTS, _MAT_DEFAULTS
+from algan.rendering.raytracing.settings import (
+    _MAT_DEFAULTS,
+    _MAT_SLOTS,
+    _shader_is_core,
+    _shader_material_id,
+)
 from algan.rendering.raytracing.shading_taichi import MAT_W
-from algan.rendering.raytracing.stbvh import EMPTY_LO, EMPTY_HI
-from algan.rendering.raytracing.utils import _expand_frames, _unify_time, _flat_frames
+from algan.rendering.raytracing.stbvh import EMPTY_HI, EMPTY_LO
+from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _unify_time
+from algan.settings import SETTINGS
+from algan.utils.memory_utils import empty_cache
 from algan.utils.tensor_utils import broadcast_all, cast_to_tensor, unsquish
-from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
+
 # rt_settings values are mutable module globals (set_samples_per_pixel etc.);
 # read them live as rt_settings.X -- importing them by value freezes them at
 # import time, before user code runs.
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.settings import *  # noqa: F403 -- re-export for callers of this module
 from algan.settings.kernel_settings import KERNEL_REGISTRY
-
 
 _SAMPLE_TENSOR_CACHE = {}
 
@@ -144,7 +154,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         """
         names = list(getattr(self, "shader_param_names", None) or [])
         values = list(getattr(self, "shader_param_values", None) or [])
-        by_name = {name: value for name, value in zip(names, values)}
+        by_name = dict(zip(names, values))
         template = self.colors[:1, ..., :1]
 
         metalness = by_name.get("metalness")
@@ -191,7 +201,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         """True when this primitive's hits are shaded per fragment in-kernel
         (deterministic renderer, fragment shading on, core lit material or a
         custom fragment pipeline) rather than baked per vertex -- in which case
-        ``colors`` stays raw albedo."""
+        ``colors`` stays raw albedo.
+        """
         shader = getattr(self, "shader", None)
         if getattr(shader, "_frag_pipeline_id", None) is not None:
             # A custom pipeline always shades in-kernel on the deterministic
@@ -217,7 +228,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
         names = list(getattr(self, "shader_param_names", None) or [])
         values = list(getattr(self, "shader_param_values", None) or [])
-        by_name = {n: v for n, v in zip(names, values)}
+        by_name = dict(zip(names, values))
 
         args = []
         for name in extra_names:
@@ -314,7 +325,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         parameters occupy a contiguous slot range (the marker shader's
         ``_frag_param_layout`` maps attr name -> absolute slot); values are the
         materialised animated ``shader_param_values``, with defaults filling any
-        slot whose attr is absent."""
+        slot whose attr is absent.
+        """
         pid = int(shader._frag_pipeline_id)
         W = int(shader._frag_total_width)
         layout = shader._frag_param_layout  # list of (name, slot, width, default)
@@ -322,11 +334,11 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
         names = list(getattr(self, "shader_param_names", None) or [])
         values = list(getattr(self, "shader_param_values", None) or [])
-        val_by_name = {n: v for n, v in zip(names, values)}
+        val_by_name = dict(zip(names, values))
 
         # Default row (every slot is covered by exactly one layout entry).
         default_row = torch.zeros(W, dtype=torch.float32, device=device)
-        for name, slot, width, default in layout:
+        for _name, slot, width, default in layout:
             dv = torch.as_tensor(default, dtype=torch.float32,
                                  device=device).flatten()
             if dv.numel() == 1 and width > 1:
@@ -334,8 +346,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
             default_row[slot:slot + width] = dv[:width]
 
         pairs = []
-        for name, slot, width, default in layout:
-            v = val_by_name.get(name, None)
+        for name, slot, width, _default in layout:
+            v = val_by_name.get(name)
             if v is not None:
                 pairs.append((slot, width, per_triangle(v)))
         Tm = max([1] + [v.shape[0] for _s, _w, v in pairs])
@@ -353,7 +365,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         refractive index in columns 6-8 (unsigned magnitude, 0 = non-PBR; read
         by the wavefront's ``_corner_ior``), followed by the per-corner
         transmission in columns 9-11 (0 = opaque to light passing through; read
-        by ``_corner_transmission``)."""
+        by ``_corner_transmission``).
+        """
         (reflectivity_e, roughness_e, ior_e, transmission_e), _ = _unify_time(
             [self.reflectivity.float(), self.roughness.float(),
              self.refractive_index.float(), self.transmission.float()],
@@ -402,7 +415,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
     def _stash_texture_maps(self):
         """Stash the raw texture maps (color / material / normal) for merge
         time and return the packed ``[T, N, 6]`` per-triangle uv tensor, or
-        None when the batch is untextured."""
+        None when the batch is untextured.
+        """
         if self.uvs is None:
             self._rt_texture_map = None
             self._rt_material_texture = None
@@ -425,7 +439,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
 
     def _release_unpacked_geometry(self):
         """Everything the renderer needs now lives in the packed arrays;
-        release the unpacked geometry to halve resident GPU memory."""
+        release the unpacked geometry to halve resident GPU memory.
+        """
         self.corners = self.normals = None
         self.reflectivity = self.roughness = self.refractive_index = None
         self.colors = self.shader_param_values = None

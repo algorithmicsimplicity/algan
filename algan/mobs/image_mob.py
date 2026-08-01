@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import torch
 import torch.types
-from algan.mobs.surfaces.surface import Surface
-from algan.constants.color import Color
+
 import algan.utils.file_utils as file_utils
+from algan.constants.color import Color
+from algan.mobs.surfaces.surface import Surface
 from algan.utils.lazy_import import LazyModule, isinstance_if_loaded
 
 # Deferred: an ImageMob is usually built from a file path / array; only the

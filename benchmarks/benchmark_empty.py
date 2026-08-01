@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import os
+
 os.environ['ALGAN_PREFETCH_BATCHES'] = '0'
 from algan import *
 from algan.utils.profiling_utils import profile_scene

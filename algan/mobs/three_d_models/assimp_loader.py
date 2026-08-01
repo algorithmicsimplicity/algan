@@ -61,7 +61,8 @@ def _default_flags(pp):
     """Post-process flags: triangulate everything, generate smooth normals
     where absent, and drop degenerate/duplicate data. Left UV-space as authored
     (:func:`image_to_texture_map` handles the engine's v-orientation), so no
-    ``FlipUVs`` here."""
+    ``FlipUVs`` here.
+    """
     return (
         pp.aiProcess_Triangulate
         | pp.aiProcess_GenSmoothNormals
@@ -110,7 +111,8 @@ def _parse_material(mat, base_dir):
     """assimp material -> :class:`MaterialData`. pyassimp exposes a material's
     properties as a plain ``dict`` keyed by short semantic names (e.g.
     ``'diffuse'``, ``'file'``); different assimp versions vary, so every lookup
-    is defensive."""
+    is defensive.
+    """
     props = getattr(mat, "properties", {}) or {}
     diffuse = _material_tuple(props, "diffuse", 4) or _material_tuple(
         props, "diffuse", 3)

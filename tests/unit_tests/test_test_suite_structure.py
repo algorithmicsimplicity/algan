@@ -1,7 +1,6 @@
 import ast
 from pathlib import Path
 
-
 TESTS_DIR = Path(__file__).resolve().parents[1]
 SCENES_DIR = TESTS_DIR / "full_renders" / "scenes"
 EXPECTED_SCENES = {

@@ -1,5 +1,5 @@
-from algan.settings._startup import _ANIMATION_DEVICE
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import hashlib
 import os
 from collections import defaultdict
@@ -8,24 +8,26 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from algan.constants.color import WHITE, GREEN
-from algan.constants.spatial import RIGHT, DOWN
+from algan.animatable_base.mob import Mob
+from algan.constants.color import GREEN, WHITE
+from algan.constants.spatial import DOWN, RIGHT
 from algan.geometry.geometry import (
+    get_2d_polygon_mask,
     get_roots_of_cubic,
     get_roots_of_quadratic,
-    get_2d_polygon_mask,
 )
-from algan.animatable_base.mob import Mob
 from algan.mobs.shapes_2d import TriangleTriangulated
+from algan.settings import SETTINGS
+from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import (
-    dot_product,
-    squish,
     broadcast_gather,
+    dot_product,
     expand_as_left,
-    unsquish,
-    unsqueeze_left,
     packed_reorder,
+    squish,
     unpack_tensor,
+    unsqueeze_left,
+    unsquish,
 )
 
 
@@ -91,7 +93,6 @@ def get_points_per_tile(grid, perimeter_points, max_pp=500):
 from algan.external_libraries.ground.base import get_context
 from algan.external_libraries.sect.triangulation import Triangulation
 
-
 """import triangle as tr
 import numpy as np
 
@@ -115,7 +116,6 @@ B = tr.triangulate(A, 'qpa0.05')"""
 
 def triangulate_simple_polygon(polygons):
     all_triangles = []
-    count = 0
     context = get_context()
     Polygon = context.polygon_cls
     Contour, Point = context.contour_cls, context.point_cls
@@ -123,10 +123,9 @@ def triangulate_simple_polygon(polygons):
 
     for grid in polygons:
         grid_triangles = []
-        for i, vertices in enumerate(grid):
+        for _i, vertices in enumerate(grid):
             if len(vertices) == 0:
                 continue
-            all_verts = vertices
             points = Polygon(
                 Contour([Point(*[__.item() for __ in _]) for _ in vertices]), []
             )
@@ -219,7 +218,7 @@ def tile_region(
     grid4 = grid4.cpu()
 
     def intersect_line_segments(s1, e1, s2, e2):
-        origs = [_.clone() for _ in [s1, e1, s2, e2]]
+        [_.clone() for _ in [s1, e1, s2, e2]]
         e1, s2, e2 = [_ - s1 for _ in [e1, s2, e2]]
         p = torch.stack((e1[..., 1], -e1[..., 0]), -1)
         x = e2 - s2
@@ -231,9 +230,9 @@ def tile_region(
 
         y = a * x + b
         d1 = dot_product(y, e1, dim=-1, keepdim=True)
-        m1 = (0 <= d1) & (d1 <= dot_product(e1, e1, dim=-1, keepdim=True))
+        m1 = (d1 >= 0) & (d1 <= dot_product(e1, e1, dim=-1, keepdim=True))
         d2 = dot_product(y - s2, x, dim=-1, keepdim=True)
-        m2 = (0 <= d2) & (d2 <= dot_product(x, x, dim=-1, keepdim=True))
+        m2 = (d2 >= 0) & (d2 <= dot_product(x, x, dim=-1, keepdim=True))
 
         return (
             (m1 & m2).float(),
@@ -301,7 +300,7 @@ def tile_region(
         prev_hit_walls, prev_intx, prev_hit_portion = get_cell_hits(
             grid4, grid4_offset, prev_p, pp, prev_ind
         )
-        w = len(grid_x) - 1
+        len(grid_x) - 1
         now_hit_walls, now_intx, now_hit_portion = get_cell_hits(
             grid4, grid4_offset, prev_p, pp, hit_ind
         )
@@ -353,7 +352,7 @@ def tile_region(
                             continue
                         sorted_ps, argsort_ps = hit_portion_2[int_ind].view(-1).sort()
                         argsort_ps = argsort_ps[
-                            (~sorted_ps.isnan() & (0 <= sorted_ps) & (sorted_ps <= 1))
+                            (~sorted_ps.isnan() & (sorted_ps >= 0) & (sorted_ps <= 1))
                         ]
                         if len(argsort_ps) <= 1:
                             continue
@@ -385,10 +384,9 @@ def tile_region(
     cell_to_exits[curve_begin_ind].append((torch.tensor((5,)), torch.tensor((5,))))
     if len(cell_to_exits[prev_ind]) < len(cell_to_enters[prev_ind]):
         cell_to_exits[prev_ind].append((torch.tensor((5,)), torch.tensor((5,))))
-    end_ind = hit_ind
 
     for c in cell_to_paths:
-        cell_to_paths[c] = [l for l in cell_to_paths[c] if len(l) > 0]
+        cell_to_paths[c] = [path for path in cell_to_paths[c] if len(path) > 0]
 
     def get_peri_dist(wp):
         wall_ind, portion = wp
@@ -409,15 +407,15 @@ def tile_region(
         first_enter = None
 
         while True:
-            path, enter, exit = pee[current_ind]
+            path, enter, exit_point = pee[current_ind]
             if first_enter is None:
                 first_enter = enter
             polygons[-1].extend(path)
-            if exit[0] > 4.5:
+            if exit_point[0] > 4.5:
                 prev_end = path[-1]
                 closest_j = -1
                 closest_dist = 1e12
-                for j, (pathj, enterj, exitj) in enumerate(pee):
+                for j, (pathj, _enterj, _exitj) in enumerate(pee):
                     if j in used_paths + [current_ind]:
                         continue
                     dist = (torch.stack(pathj) - prev_end).norm(p=2, dim=-1).amin(0)
@@ -430,26 +428,24 @@ def tile_region(
                     first_enter = None
                     polygons.append([])
                     continue
-            s, e = (get_peri_dist(_) for _ in (first_enter, exit))
+            s, e = (get_peri_dist(_) for _ in (first_enter, exit_point))
             next_enters = []
-            for j, (pathj, enterj, exitj) in enumerate(pee):
+            for j, (_pathj, enterj, exitj) in enumerate(pee):
                 if j in used_paths + [current_ind]:
                     continue
                 if get_peri_dist(enterj) < -0.5:
                     continue
-                if get_peri_dist(exitj) > 4.5:
-                    if s > -0.5:
-                        continue
+                if get_peri_dist(exitj) > 4.5 and s > -0.5:
+                    continue
                 if s < -0.5:
                     next_enters.append([j, enterj])
                     continue
                 q = get_peri_dist(enterj)
-                ordered = list(sorted([(q, 0), (s, 1), (e, 2)], key=lambda x: x[0]))
-                for i, (v, k) in enumerate(ordered):
-                    if k == 0:
-                        if ordered[(i + 1) % len(ordered)][1] == 2:
-                            next_enters.append([j, enterj])
-                            break
+                ordered = sorted([(q, 0), (s, 1), (e, 2)], key=lambda x: x[0])
+                for i, (_v, k) in enumerate(ordered):
+                    if k == 0 and ordered[(i + 1) % len(ordered)][1] == 2:
+                        next_enters.append([j, enterj])
+                        break
                 """for i in range(4):
                     ep = (e - i) % 4
                     if i == 0:
@@ -470,7 +466,7 @@ def tile_region(
 
             used_paths.append(current_ind)
 
-            def add_corners(s, e):
+            def add_corners(s, e, c=c, polygons=polygons):
                 if e[0] < -0.5 and s[0] > 4.5:
                     return
                 s = s[0] + s[1]
@@ -494,7 +490,7 @@ def tile_region(
                     polygons[-1].append(grid4[c, (s[0]-i) % 4])"""
 
             if len(next_enters) == 0:
-                add_corners(exit, first_enter)
+                add_corners(exit_point, first_enter)
                 if len(initial_inds) > 0:
                     current_ind = initial_inds[0]
                     initial_inds = initial_inds[1:]
@@ -508,11 +504,9 @@ def tile_region(
                 first_enter = None
                 polygons.append([])
                 continue
-            e = get_peri_dist(exit)
-            next_enter = list(
-                sorted(next_enters, key=lambda x: (get_peri_dist(x[1]) - e) % 4)
-            )[-1]
-            add_corners(exit, next_enter[1])
+            e = get_peri_dist(exit_point)
+            next_enter = sorted(next_enters, key=lambda x: (get_peri_dist(x[1]) - e) % 4)[-1]
+            add_corners(exit_point, next_enter[1])
             current_ind = next_enter[0]
         total_num_polygons += len(polygons)
 
@@ -570,7 +564,6 @@ def tile_region2(
     tile_size: size of each tile.
     random_perturbation: strength of random perturbation applied to tile corners.
     """
-
     m = (perimeter_points > -1e11).float()
     mn_corner, mx_corner = (
         (perimeter_points * m + (1 - m) * 1e12).amin(0),
@@ -852,7 +845,6 @@ class TriangulatedBezierCircuit(Mob):
             hash_keys = [None for _ in range(len(paths))]
         for path, hash_key in zip(paths, hash_keys):
             found_hash = False
-            just_moved = False
             if hash_key is not None:
                 n = 12
                 # hash_key = torch.from_numpy(hash_key).to(DEFAULT_DEVICE)
@@ -893,7 +885,7 @@ class TriangulatedBezierCircuit(Mob):
                 loop_inds = loop_end_mask.nonzero() + 1
                 if len(loop_inds) > 0:
                     paths = []
-                    loop_inds = [0] + [_ for _ in loop_inds]
+                    loop_inds = [0] + list(loop_inds)
                     if loop_inds[-1] < path.shape[-2]:
                         loop_inds = loop_inds + [path.shape[-2]]
                     for i in range(len(loop_inds) - 1):
@@ -955,9 +947,8 @@ class TriangulatedBezierCircuit(Mob):
         #    create = kwargs['create']
         #    del kwargs['create']
 
-        animate_creation = True
         if "animate_creation" in kwargs:
-            animate_creation = kwargs["animate_creation"]
+            kwargs["animate_creation"]
             del kwargs["animate_creation"]
         super().__init__(*args, **kwargs)
         kwargs["scene"] = self.scene

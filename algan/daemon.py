@@ -1,4 +1,4 @@
-"""Warm-process render daemon: re-run a scene script without paying startup.
+r"""Warm-process render daemon: re-run a scene script without paying startup.
 
 Every fresh ``python scene.py`` pays ~8 s of library import plus ~10 s of
 Taichi kernel preparation before the first pixel renders. This daemon pays
@@ -42,8 +42,10 @@ modules stay stale, and editing ``*_taichi.py`` kernel sources under a live
 Taichi JIT can compile mixed-version kernels (the daemon warns when it sees
 algan sources change). Keep to one rendering process at a time on Windows.
 """
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import argparse
+import contextlib
 import os
 import queue
 import runpy
@@ -55,6 +57,7 @@ import traceback
 
 import algan  # noqa: F401  (the whole point: pay the import once, up front)
 from algan import SceneManager
+from algan.settings import SETTINGS
 
 DEFAULT_PORT = int(os.environ.get("ALGAN_DAEMON_PORT", "46711"))
 _ALGAN_DIR = os.path.dirname(os.path.abspath(algan.__file__))
@@ -107,10 +110,8 @@ class _AlganSourceGuard:
             for fn in filenames:
                 if fn.endswith(".py"):
                     path = os.path.join(dirpath, fn)
-                    try:
+                    with contextlib.suppress(OSError):
                         self._mtimes[path] = os.stat(path).st_mtime_ns
-                    except OSError:
-                        pass
 
     def warn_if_changed(self):
         changed = []
@@ -190,10 +191,8 @@ def _start_socket(events, port):
 def _start_stdin(events):
     def loop():
         interactive = False
-        try:
+        with contextlib.suppress(Exception):
             interactive = sys.stdin.isatty()
-        except Exception:
-            pass
         got_line = False
         while True:
             try:

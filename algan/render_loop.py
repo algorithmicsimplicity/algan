@@ -11,9 +11,10 @@ per-batch rendering
 (:meth:`~algan.render_loop.RenderLoopMixin.render_primitive_batch`), and video
 file output (:meth:`~algan.render_loop.RenderLoopMixin.render_to_video`).
 """
-from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import collections
+import contextlib
 import logging
 import math
 import os
@@ -25,18 +26,20 @@ from queue import Queue
 
 import torch
 
+import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
 from algan.logging.logger import get_logger
-from algan.rendering.post_processing.bloom import bloom_filter
-from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
-import algan.rendering.raytracing.settings as rt_settings_module
 from algan.rendering.memory_model import (
     ChunkMemoryModel,
     PeakRatioModel,
     chunk_signature,
 )
+from algan.rendering.post_processing.bloom import bloom_filter
+from algan.rendering.primitives.bezier_circuit_primitive import BezierCircuitPrimitive
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.taichi_runtime import sync_devices as _sync_devices
+from algan.settings import SETTINGS
+from algan.settings._startup import _ANIMATION_DEVICE, _RENDER_DEVICE
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
     ManualMemory,
@@ -161,15 +164,15 @@ def _slice_render_state(render_state, start, end, total_frames):
             return value[start:end]
         return value
 
-    return dict(
-        ray_origin=sliced(render_state["ray_origin"]),
-        screen_point=sliced(render_state["screen_point"]),
-        screen_basis=sliced(render_state["screen_basis"]),
-        lights=[
+    return {
+        "ray_origin": sliced(render_state["ray_origin"]),
+        "screen_point": sliced(render_state["screen_point"]),
+        "screen_basis": sliced(render_state["screen_basis"]),
+        "lights": [
             (sliced(origin), sliced(color), sliced(aux))
             for origin, color, aux in render_state["lights"]
         ],
-    )
+    }
 
 
 def _prepare_background_for_chunk(
@@ -230,7 +233,8 @@ def _prepare_background_for_chunk(
 
 class RenderLoopMixin:
     """Frame batching, batch preparation, and the render/video-output loop
-    (mixed into :class:`~algan.scene.Scene`)."""
+    (mixed into :class:`~algan.scene.Scene`).
+    """
 
     def _prepare_merged_host_scene(self, primitive_batch):
         """Return the cached source-device scene used for upload/preflight."""
@@ -674,7 +678,8 @@ class RenderLoopMixin:
         modeled, so future preflights must leave real slack. The failed
         batch's own (need, remaining) pair makes the margin large enough to
         reject at least that exact configuration; repeated failures grow it
-        geometrically."""
+        geometrically.
+        """
         prev = int(getattr(self, "_arena_unmodeled_bytes", 0))
         last = getattr(self, "_last_arena_preflight", None)
         observed = 0
@@ -725,12 +730,12 @@ class RenderLoopMixin:
             camera.output_screen_width = self.num_pixels_screen_width
             camera.output_screen_height = self.num_pixels_screen_height
             camera.analytic_raster = projection_analytic
-            for l, (origin, light_color, aux) in zip(
+            for light, (origin, light_color, aux) in zip(
                 self.light_sources, render_state["lights"]
             ):
-                l.origin = origin
-                l.light_color = light_color
-                l._render_aux = aux
+                light.origin = origin
+                light.light_color = light_color
+                light._render_aux = aux
 
             self.memory.scene = self
             original_pointers = self.memory.get_pointers()
@@ -787,12 +792,10 @@ class RenderLoopMixin:
                 finally:
                     primitive.memory = original_memory
             if _measuring:
-                try:
+                with contextlib.suppress(Exception):
                     note_nonarena_peak(
                         "project", _project_inputs,
                         end_cuda_peak(_project_token))
-                except Exception:  # noqa: BLE001
-                    pass
 
             # Reclaim animation-phase residuals before render batching.
             empty_cache(force_gc=False)
@@ -1088,7 +1091,8 @@ class RenderLoopMixin:
         peers into one tensor pass (see surface.get_render_primitives_batched).
         Requires the stock Surface build (no subclass override), the plain
         vertex-color path, and computed normals. Set ALGAN_BATCH_SURFACE_PREP=0
-        to disable batching (A/B against the per-surface path)."""
+        to disable batching (A/B against the per-surface path).
+        """
         if os.environ.get("ALGAN_BATCH_SURFACE_PREP", "1") == "0":
             return False
         from algan.mobs.surfaces.surface import Surface
@@ -1102,13 +1106,7 @@ class RenderLoopMixin:
         if (getattr(actor, "material_texture", None) is not None
                 or getattr(actor, "normal_texture", None) is not None):
             return False
-        if (
-            actor is self.camera
-            or actor is self.camera.screen
-            or actor in self.light_sources
-        ):
-            return False
-        return True
+        return not (actor is self.camera or actor is self.camera.screen or actor in self.light_sources)
 
     def _is_batchable_bezier(self, actor):
         """True if this bezier circuit's primitive build can be merged with
@@ -1117,7 +1115,8 @@ class RenderLoopMixin:
         BezierCircuitCubic build methods, a non-empty circuit, un-batched
         control points, and singleton rows for the per-circuit attributes.
         Set ALGAN_BATCH_BEZIER_PREP=0 to disable (A/B against the per-actor
-        path)."""
+        path).
+        """
         if os.environ.get("ALGAN_BATCH_BEZIER_PREP", "1") == "0":
             return False
         from algan.mobs.bezier_circuit import BezierCircuitCubic
@@ -1170,7 +1169,8 @@ class RenderLoopMixin:
         bezier_circuit.build_render_primitives_batched). The merged primitive
         is attached to the group's first entry (matching the position the
         group's collection had in the per-actor path); later entries stay
-        empty."""
+        empty.
+        """
         from algan.mobs.bezier_circuit import build_render_primitives_batched
 
         groups = {}
@@ -1185,7 +1185,8 @@ class RenderLoopMixin:
     def _build_deferred_surfaces(self, deferred):
         """Build geometry for all deferred surfaces, one stacked tensor pass
         per (grid shape, materialized location shape) group (see
-        surface.get_render_primitives_batched)."""
+        surface.get_render_primitives_batched).
+        """
         from algan.mobs.surfaces.surface import get_render_primitives_batched
 
         groups = collections.defaultdict(list)
@@ -1377,7 +1378,7 @@ class RenderLoopMixin:
                 )
                 num_sub_batches = (counts[-1] // max_bezier_batch_size) + 1
                 current_ind = 0
-                for i in range(num_sub_batches):
+                for _i in range(num_sub_batches):
                     inds = (counts > max_bezier_batch_size).nonzero()
                     if len(inds) == 0:
                         next_ind = len(primitives)
@@ -1451,9 +1452,13 @@ class RenderLoopMixin:
         """
         try:
             from algan.rendering.raytracing.primitives import (
-                RayTracedBezierCircuitPrimitive, RayTracedTrianglePrimitive)
+                RayTracedBezierCircuitPrimitive,
+                RayTracedTrianglePrimitive,
+            )
             from algan.rendering.raytracing.scene_builder import (
-                prewarm_merge_cache, upload_primitive_source)
+                prewarm_merge_cache,
+                upload_primitive_source,
+            )
         except Exception:
             return
         if not primitives or not isinstance(
@@ -1547,13 +1552,13 @@ class RenderLoopMixin:
         camera_location = camera.location
         device = camera_location.device
         lights = []
-        for l in self.light_sources:
-            loc = l.location
-            col = l.color[..., :-1] * l.color[..., -1:] * l.opacity
-            intensity = float(getattr(l, "intensity", 1.0))
+        for light in self.light_sources:
+            loc = light.location
+            col = light.color[..., :-1] * light.color[..., -1:] * light.opacity
+            intensity = float(getattr(light, "intensity", 1.0))
             if intensity != 1.0:
                 col = col * intensity
-            is_ext = getattr(l, "is_extended", None)
+            is_ext = getattr(light, "is_extended", None)
             if is_ext is not None and is_ext():
                 # Extended light (see algan.rendering.lights): snapshot its
                 # emitter sample positions and packed aux parameter columns.
@@ -1561,11 +1566,11 @@ class RenderLoopMixin:
                 # light's power.
                 loc_f = loc.reshape(loc.shape[0], -1)[:, :3]   # [T, 3]
                 col_f = col.reshape(col.shape[0], -1)          # [T, C]
-                pos_rows = l.get_sample_positions(loc_f)       # [T, K, 3]
+                pos_rows = light.get_sample_positions(loc_f)       # [T, K, 3]
                 k = pos_rows.shape[-2]
                 col_rows = ((col_f / k if k > 1 else col_f)
                             .unsqueeze(-2).expand(-1, k, -1))
-                aux = l.build_aux(loc_f)                       # [T, K, 13]
+                aux = light.build_aux(loc_f)                       # [T, K, 13]
                 lights.append((pos_rows.to(device), col_rows.to(device),
                                aux.to(device)))
             else:
@@ -1574,12 +1579,12 @@ class RenderLoopMixin:
                     col.unsqueeze(-2).to(device),
                     None,
                 ))
-        return dict(
-            ray_origin=camera_location.unsqueeze(-2).to(device),
-            screen_point=camera.screen.location.unsqueeze(-2).to(device),
-            screen_basis=camera.get_render_screen_basis().to(device),
-            lights=lights,
-        )
+        return {
+            "ray_origin": camera_location.unsqueeze(-2).to(device),
+            "screen_point": camera.screen.location.unsqueeze(-2).to(device),
+            "screen_basis": camera.get_render_screen_basis().to(device),
+            "lights": lights,
+        }
 
     def get_frames(self, start_time_ind, end_time_ind, background_color=None,
                    post_processes=(bloom_filter,), manual_memory=True):
@@ -1622,8 +1627,8 @@ class RenderLoopMixin:
 
         transparent_background = self.background_is_transparent()
 
-        for l in self.light_sources:
-            l.is_primitive = True
+        for light in self.light_sources:
+            light.is_primitive = True
         actors = [self.camera, self.camera.screen, *self.light_sources, *self.actors]
         save_image = False
 
@@ -1703,8 +1708,7 @@ class RenderLoopMixin:
                     # worker would contend with the in-flight render and pollute
                     # the transient-peak stats -- so only the CPU-projection
                     # path prewarms here.
-                    from algan.rendering.raytracing import (
-                        settings as rt_settings)
+                    from algan.rendering.raytracing import settings as rt_settings
 
                     if (batch[0]
                             and os.environ.get("ALGAN_PREFETCH_MERGE", "1")
@@ -1903,10 +1907,8 @@ class RenderLoopMixin:
                             # is invalid after this split. Drain and discard it
                             # before rematerializing the smaller current batch.
                             if pending is not None:
-                                try:
+                                with contextlib.suppress(Exception):
                                     pending.result()
-                                except Exception:
-                                    pass
                                 pending = None
                             if primitives:
                                 primitives[0]._rt_device_scene = None
@@ -1992,10 +1994,8 @@ class RenderLoopMixin:
                 # error, or abandoned generator): a prep still running while
                 # the caller resets or reuses the scene would race it.
                 if pending is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         pending.result()
-                    except Exception:
-                        pass
                 if executor is not None:
                     executor.shutdown(wait=True)
 
@@ -2039,13 +2039,13 @@ class RenderLoopMixin:
         # rendered frame index either way, so the output is unaffected.
         if despawn_camera_and_lights:
             self.camera.despawn(animate=False)
-            for l in self.light_sources:
-                l.despawn(animate=False)
+            for light in self.light_sources:
+                light.despawn(animate=False)
 
         if not self._scene_has_renderable_actors(*self.scene_times[-1]):
             warnings.warn(
                 "You are rendering an empty scene! Did you forget to spawn() your Mobs?",
-                EmptySceneWarning,
+                EmptySceneWarning, stacklevel=2,
             )
 
         self.file_path = file_path

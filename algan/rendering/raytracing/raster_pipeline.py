@@ -14,18 +14,18 @@ sort/index scratch remains allocator-owned because PyTorch's radix sort cannot
 write directly into an arena view.
 """
 from __future__ import annotations
-from algan.settings import SETTINGS
 
 import torch
 
+from algan.settings import SETTINGS
+
 rt_settings = SETTINGS.raytracing
-from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    DEPTH_TIE_EPSILON,
+from algan.rendering.raytracing.raster_taichi import (
+    _AA_MASK_ALL as AA_MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
-    AA_FULL_COVERAGE,
-    _AA_MASK_ALL as AA_MASK_ALL,
     _BEZ_BORDER_BITS,
+    AA_FULL_COVERAGE,
     RASTER_CHUNK,
     Z_SENTINEL,
     raster_bez_count,
@@ -37,6 +37,9 @@ from algan.rendering.raytracing.raster_taichi import (
     raster_tri_count,
     raster_tri_write,
     raster_tri_z,
+)
+from algan.rendering.raytracing.raytrace_kernels_taichi import (
+    DEPTH_TIE_EPSILON,
 )
 
 

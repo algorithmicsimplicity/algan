@@ -5,6 +5,7 @@ self-contained objects: each owns its timeline, animation, and audio managers.
 Creating a scene pushes it onto this manager's stack, making it the destination
 for subsequently constructed mobs that were not given an explicit ``scene``.
 """
+from __future__ import annotations
 
 from contextlib import contextmanager
 

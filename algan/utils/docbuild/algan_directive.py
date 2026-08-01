@@ -37,7 +37,8 @@ from docutils import nodes
 from docutils.parsers.rst import Directive, directives
 from docutils.statemachine import StringList
 
-from algan import SceneManager, __version__ as algan_version
+from algan import SceneManager
+from algan import __version__ as algan_version
 from algan.settings import SETTINGS
 from algan.settings.video_settings import _QUALITIES
 

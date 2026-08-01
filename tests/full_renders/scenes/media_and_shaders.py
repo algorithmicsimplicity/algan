@@ -1,6 +1,5 @@
 from algan import *
 
-
 Scene.instance().set_background_color(DARKER_GRAY, True)
 
 with Off():

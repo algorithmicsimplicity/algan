@@ -7,7 +7,6 @@ from copy import deepcopy
 
 from algan.errors import AlganConfigurationError
 
-
 _FIELD_TO_LEGACY = {
     name.lower(): name
     for name in (
@@ -187,8 +186,6 @@ class RayTracingPreset:
         values.update(normalized)
         return RayTracingPreset(values)
 
-    replace = set
-
     def to_dict(self):
         return deepcopy(self._values)
 
@@ -227,8 +224,6 @@ class _ExperimentalRayTracingSettings:
     def set(self, source=None, **kwargs):
         self._parent._set(source, kwargs, allow_experimental=True)
         return self
-
-    replace = set
 
     def to_dict(self):
         values = self._parent.to_dict()
@@ -353,8 +348,6 @@ class RayTracingSettings:
             self._restore(previous)
             raise
         return self
-
-    replace = set
 
     def to_dict(self):
         module = _module()

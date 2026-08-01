@@ -38,10 +38,12 @@ def test_temp_scope_restores_pointer_when_operation_raises():
     memory.get_tensor((4,), torch.float32)
     before = memory.get_pointers()
 
-    with pytest.raises(RuntimeError, match="failed"):
-        with memory.temp():
-            memory.get_tensor((8,), torch.float32)
-            raise RuntimeError("failed")
+    def allocate_then_fail():
+        memory.get_tensor((8,), torch.float32)
+        raise RuntimeError("failed")
+
+    with memory.temp(), pytest.raises(RuntimeError, match="failed"):
+        allocate_then_fail()
 
     assert memory.get_pointers() == before
 

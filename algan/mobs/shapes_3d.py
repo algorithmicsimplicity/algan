@@ -1,18 +1,20 @@
+from __future__ import annotations
+
 import math
 
 import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
+from algan.constants.color import WHITE
 from algan.constants.math import PI
 from algan.constants.spatial import LEFT, ORIGIN, OUT, RIGHT, UP
-from algan.constants.color import WHITE
-from algan.animatable_base.mob import Mob
+from algan.geometry.geometry import get_orthonormal_vector, project_onto_basis
 from algan.mobs.group import Group
-from algan.geometry.geometry import project_onto_basis, get_orthonormal_vector
-from algan.mobs.surfaces.surface import Surface
 from algan.mobs.shapes_2d import Circle
+from algan.mobs.surfaces.surface import Surface
 from algan.utils.tensor_utils import cast_to_tensor
 
 
@@ -319,7 +321,7 @@ class Arrow3D(Mob):
             raise ValueError("Arrow3D length must be greater than its tip height")
         direction = F.normalize(vector, p=2, dim=-1)
         shaft_end = end - direction * height
-        super().__init__(location=(start + end) * 0.5, color=color, *args, **kwargs)
+        super().__init__(*args, location=(start + end) * 0.5, color=color, **kwargs)
         surface_resolution = (
             (resolution, resolution) if isinstance(resolution, int) else resolution
         )
@@ -762,14 +764,14 @@ class Dodecahedron(Polyhedron):
 
 class ConvexHull3D(Polyhedron):
     def __init__(self, *points, tolerance=1e-5, **kwargs):
-        from scipy.spatial import ConvexHull
         import numpy as np
+        from scipy.spatial import ConvexHull
 
         array = np.asarray(points, dtype=float)
         if len(array) < 4:
             raise ValueError("ConvexHull3D requires at least four non-coplanar points")
         hull = ConvexHull(array, qhull_options=f"QJ{tolerance}")
-        vertex_ids = sorted(set(int(i) for i in hull.simplices.reshape(-1)))
+        vertex_ids = sorted({int(i) for i in hull.simplices.reshape(-1)})
         remap = {old: new for new, old in enumerate(vertex_ids)}
         vertices = [array[i].tolist() for i in vertex_ids]
         faces = [[remap[int(i)] for i in simplex] for simplex in hull.simplices]

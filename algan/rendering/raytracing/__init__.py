@@ -48,8 +48,8 @@ from algan.rendering.raytracing.pn_patch import (
     pn_patch_coefficients,
 )
 from algan.rendering.raytracing.primitives import (
-    LogicalPNTrianglePrimitive,
     MAX_BOUNCES,
+    LogicalPNTrianglePrimitive,
     RayTracedBezierCircuitPrimitive,
     RayTracedPNTrianglePrimitive,
     RayTracedTrianglePrimitive,

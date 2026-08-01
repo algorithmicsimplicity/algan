@@ -26,8 +26,9 @@ It is wired in by :func:`install`, which monkeypatches
 ``SVGMobject.init_svg_mobject`` on the *installed* ``manim`` package (the one
 Algan actually imports).  Importing this module installs the patch once.
 """
-from algan.settings import SETTINGS
+from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib
 import os
@@ -37,6 +38,7 @@ import numpy as np
 import torch
 
 from algan.logging.logger import get_logger
+from algan.settings import SETTINGS
 
 # Keys we never persist per glyph: ``path_obj`` is a large ``svgelements`` Path
 # that is only needed to *produce* the points (already done); ``submobjects``
@@ -164,10 +166,8 @@ def _load_disk(key: str):
         get_logger().warning(f"manim_svg_cache: failed to load {path.name}: {e}")
         return None
     # Touch so the LRU cap treats this as recently used.
-    try:
+    with contextlib.suppress(OSError):
         os.utime(path, None)
-    except OSError:
-        pass
     return recipe
 
 
@@ -216,10 +216,8 @@ def _save_disk(key: str, recipe: tuple) -> None:
     except Exception as e:  # noqa: BLE001
         get_logger().warning(f"manim_svg_cache: failed to save {path.name}: {e}")
         if tmp.exists():
-            try:
+            with contextlib.suppress(OSError):
                 tmp.unlink()
-            except OSError:
-                pass
         return
     _enforce_cap()
 

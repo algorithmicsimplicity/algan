@@ -137,7 +137,8 @@ class RefitBVH(STBVH):
         source object whose scalar layout fields are carried over -- unlike
         the classic tree they cannot be derived from the tensor shapes alone
         (``blocks`` has ``Tb`` frames of ``num_blocks`` rows flattened
-        together)."""
+        together).
+        """
         if like is None:
             raise ValueError("RefitBVH.from_prebuilt requires like=<source>")
         self = cls.__new__(cls)

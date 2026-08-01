@@ -1,15 +1,21 @@
+from __future__ import annotations
+
 import os
+
 os.environ["ALGAN_PREFETCH_BATCHES"] = "0"
 from algan import *
 from algan.mobs.neural_nets.neural_net import NeuralNetMLP
+from algan.rendering.raytracing.primitives import (
+    RayTracedTrianglePrimitive,
+)
 from algan.utils.profiling_utils import profile_scene
-from algan.rendering.raytracing.primitives import RayTracedPNTrianglePrimitive, RayTracedTrianglePrimitive
+
 RENDERER_SETTINGS.triangle_primitive = RayTracedTrianglePrimitive
 
 def neural_net():
     with Off():
         nn = NeuralNetMLP([10, 10, 10]).set_material(MeshBasicMaterial(color=GREEN)).spawn()
-        label = Text('Neural Network').move_next_to(nn, UP).spawn()
+        Text('Neural Network').move_next_to(nn, UP).spawn()
     #nn.activate()
     with Seq(run_time=1):
         nn.move(DOWN)

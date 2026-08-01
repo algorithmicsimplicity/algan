@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import inspect
 import warnings
 
@@ -6,12 +8,6 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
-from algan.settings.renderer_settings import RENDERER_REGISTRY
-from algan.rendering.logical_pn import (
-    evaluate_logical_pn,
-    logical_pn_control_points,
-)
-from algan.utils.tensor_utils import broadcast_cross_product
 from algan.animation_timeline.animation_contexts import Sync
 from algan.animation_timeline.timeline import EditRecord
 from algan.constants.color import *
@@ -21,10 +17,18 @@ from algan.geometry.geometry import (
     map_local_to_global_coords,
 )
 from algan.mobs.shapes_2d import TriangleTriangulated
+from algan.rendering.logical_pn import (
+    evaluate_logical_pn,
+    logical_pn_control_points,
+)
+from algan.settings.renderer_settings import RENDERER_REGISTRY
 from algan.utils.file_utils import get_image
-from algan.utils.tensor_utils import unsqueeze_left, squish, unsquish
-
-
+from algan.utils.tensor_utils import (
+    broadcast_cross_product,
+    squish,
+    unsqueeze_left,
+    unsquish,
+)
 
 
 def _call_parametric_function(function, u, v):
@@ -158,7 +162,8 @@ def compute_grid_vertex_normals(grid):
     """Area-weighted vertex normals for a surface grid ``[..., W, H, 3]``,
     with closed-seam and pole merging. All computations broadcast over any
     leading dims (time, or a stack of same-shaped surfaces), which lets
-    :func:`get_render_primitives_batched` run this once for many surfaces."""
+    :func:`get_render_primitives_batched` run this once for many surfaces.
+    """
     grid_x_plus_1 = grid.roll(-1, -3)
     grid_x_minus_1 = grid.roll(1, -3)
     grid_y_plus_1 = grid.roll(-1, -2)
@@ -276,7 +281,8 @@ def get_render_primitives_batched(surfaces):
     Python/torch dispatches. Callers must ensure every surface uses the stock
     ``Surface.get_render_primitives``, has no ``color_texture``, has
     ``ignore_normals`` False, and has identical grid dimensions and
-    ``grid.location`` shape."""
+    ``grid.location`` shape.
+    """
     grids = torch.stack(
         [unsquish(s.grid.location, -2, s.grid_height) for s in surfaces]
     )
@@ -1614,7 +1620,11 @@ class Surface(Mob):
         normals_3d = triangle_normals.reshape(-1, 3, 3)
         uvs_2d = triangle_uvs.reshape(-1, 3, 2)
 
-        from algan.rendering.raytracing.pn_patch import pn_control_points, pn_patch_coefficients, evaluate_pn_patch
+        from algan.rendering.raytracing.pn_patch import (
+            evaluate_pn_patch,
+            pn_control_points,
+            pn_patch_coefficients,
+        )
         control_points = pn_control_points(corners_3d, normals_3d)
         coefficients = pn_patch_coefficients(control_points)
 
@@ -1652,7 +1662,8 @@ class Surface(Mob):
         """Normalize a user-supplied texture to ``[T, W, H, channels]``.
         Accepts ``[W, H]`` (single-channel maps only), ``[W, H, channels]``
         or ``[T, W, H, channels]``; ``W`` is the ``u`` axis, ``H`` the ``v``
-        axis of the surface's intrinsic coordinates."""
+        axis of the surface's intrinsic coordinates.
+        """
         tex = torch.as_tensor(tex).float()
         if tex.dim() == 2:
             if channels != 1:
@@ -1673,7 +1684,8 @@ class Surface(Mob):
         texture (channels: reflectivity, roughness, refractive index, and two
         reserved) at the finest common resolution, plus the bitmask of which
         channels are texture-driven (bit i = channel i has a map; unset
-        channels keep the per-vertex value in-kernel)."""
+        channels keep the per-vertex value in-kernel).
+        """
         channel_slots = {'reflectivity': 0, 'roughness': 1,
                          'refractive_index': 2}
         device = self.location.device
@@ -1697,7 +1709,8 @@ class Surface(Mob):
     def _bake_texture_to_grid(self, tex, channels=1):
         """Resample a texture to the surface grid resolution and flatten it to
         per-vertex values ``[W*H, channels]`` (the same bake the color path
-        applies to grid-resolution textures)."""
+        applies to grid-resolution textures).
+        """
         t = self._normalize_texture_shape(tex, channels).to(self.location.device)
         if t.shape[0] != 1:
             raise ValueError(
@@ -1775,7 +1788,8 @@ class Surface(Mob):
         for this surface from an already-materialized grid ``[T, W, H, 3]``
         and (triangle-gathered)
         vertex normals. ``precomputed_corners`` lets the batched path pass in
-        corners gathered on the whole surface stack at once."""
+        corners gathered on the whole surface stack at once.
+        """
         def expand_grid_to_verts(x):
             if x.shape[-2] == 1:
                 x = x.expand(
@@ -1907,7 +1921,7 @@ class Surface(Mob):
             self._cached_base_grid_key = cache_key
         return self._cached_base_grid
 
-    def set_shape_to(self, other_surface: "Surface"):
+    def set_shape_to(self, other_surface: Surface):
         """Changes this surface's shape to the shape defined by another surface's
         :meth:`~algan.mobs.surfaces.surface.Surface.coord_function`. Any lower-resolution
         grid axis is

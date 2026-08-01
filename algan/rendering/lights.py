@@ -23,6 +23,8 @@ the extended light types are rendered by the deterministic (single-sample)
 ray tracer with per-fragment shading, which Algan enables automatically when
 any extended light is present in the scene.
 """
+from __future__ import annotations
+
 import math
 
 import torch
@@ -142,7 +144,8 @@ class Light(Mob):
     def is_extended(self):
         """Whether this light needs the extended (16-column) packed row.
         Plain point lights return False and keep the compact legacy packing
-        (which keeps the no-new-features render byte-identical)."""
+        (which keeps the no-new-features render byte-identical).
+        """
         return True
 
     def num_samples(self):
@@ -151,7 +154,8 @@ class Light(Mob):
 
     def get_sample_positions(self, location):
         """World positions of the emitter samples, ``[T, K, 3]`` for per-frame
-        light locations ``location [T, 3]``."""
+        light locations ``location [T, 3]``.
+        """
         return location.unsqueeze(-2)
 
     def _blank_aux(self, location):
@@ -261,7 +265,8 @@ class PointLight(Light):
 class _TargetedLight(Light):
     """Shared behaviour for lights that aim at a target point: the per-frame
     emission direction is ``normalize(target - location)``, so animating the
-    light's location (or re-targeting) swings the beam."""
+    light's location (or re-targeting) swings the beam.
+    """
 
     def __init__(self, *args, target=ORIGIN, **kwargs):
         self.target = _as_direction_target(target)
@@ -570,6 +575,7 @@ class RectAreaLight(_TargetedLight):
 
 def light_is_extended(light):
     """True when ``light`` needs the extended packed-light row (any light
-    beyond a plain, falloff-free point light)."""
+    beyond a plain, falloff-free point light).
+    """
     fn = getattr(light, "is_extended", None)
     return bool(fn()) if fn is not None else False

@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import os
 
-from algan.settings._startup import _ANIMATION_DEVICE
 from algan.constants.color import Color
+from algan.settings._startup import _ANIMATION_DEVICE
 
 
 def resolve_asset_path(file_path):

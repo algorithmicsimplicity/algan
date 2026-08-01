@@ -1,4 +1,4 @@
-"""Warm-start accelerator for Taichi kernel materialization.
+r"""Warm-start accelerator for Taichi kernel materialization.
 
 Even with a hot offline cache, every program run pays a large Python-side
 "materialize" cost per kernel instantiation before Taichi can even *look up*
@@ -35,9 +35,11 @@ The patch replicates taichi 1.7 internals verbatim, so it applies only on
 taichi 1.7.x and degrades to a silent no-op anywhere else (or when
 ``ALGAN_TAICHI_WARMSTART=0``).
 """
+from __future__ import annotations
+
 import ast
+import contextlib
 import os
-import sys
 import textwrap
 
 _APPLIED = False
@@ -100,8 +102,6 @@ def apply():
         return textwrap.TextWrapper(width=80).wrap(text)
 
     def _fast_get_pos_info(self, node):
-        if sys.version_info < (3, 8):
-            return _orig_get_pos_info(self, node)
         msg = (f'File "{self.file}", line {node.lineno + self.lineno_offset},'
                f" in {self.func.func.__name__}:\n")
         col_offset = self.indent + node.col_offset
@@ -200,10 +200,8 @@ def apply():
             src, start_lineno = getsourcelines(self.func)
             src = [textwrap.fill(line, tabsize=4, width=9999) for line in src]
             cached = (file, src, start_lineno)
-            try:
+            with contextlib.suppress(AttributeError):
                 self.func._algan_src_cache = cached
-            except AttributeError:
-                pass
         file, src, start_lineno = cached
         tree = ast.parse(textwrap.dedent("\n".join(src)))
 

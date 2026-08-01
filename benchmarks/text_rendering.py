@@ -1,5 +1,8 @@
-from algan import *
+from __future__ import annotations
+
 import manim as mn
+
+from algan import *
 
 
 def render_static_text():

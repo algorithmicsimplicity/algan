@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import dataclasses
 import difflib
 import typing
@@ -20,10 +22,7 @@ def _is_special_var(annotation) -> bool:
         return True
 
     init_var = getattr(dataclasses, "InitVar", None)
-    if origin is init_var or (init_var is not None and isinstance(annotation, init_var)):
-        return True
-
-    return False
+    return bool(origin is init_var or init_var is not None and isinstance(annotation, init_var))
 
 
 class Settings:
@@ -138,8 +137,6 @@ class Settings:
         for name in type(self)._declared_field_names():
             object.__setattr__(self, name, deepcopy(getattr(replacement, name)))
         return self
-
-    replace = set
 
     @property
     def is_preset(self) -> bool:

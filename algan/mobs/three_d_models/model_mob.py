@@ -26,6 +26,7 @@ import os
 
 import torch
 
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import Color
 from algan.constants.rate_funcs import identity
@@ -36,7 +37,6 @@ from algan.mobs.three_d_models.mesh import (
     image_to_texture_map,
 )
 from algan.mobs.three_d_models.scene_data import SceneData
-from algan.animatable_base.mob import Mob
 
 # File extensions routed to the trimesh backend; everything else falls to the
 # assimp (FBX) backend.
@@ -61,7 +61,8 @@ def _compose_world_transforms(nodes, device):
     """World (model-space) 4x4 transform per node. Nodes are depth-first with
     ``parent < child``, so a single forward pass suffices: ``world[i] =
     world[parent] @ local[i]`` (assimp/glTF matrices transform column vectors,
-    translation in the last column)."""
+    translation in the last column).
+    """
     world = [None] * len(nodes)
     for i, node in enumerate(nodes):
         local = node.transform
@@ -91,7 +92,8 @@ def _transform_points(points, matrix):
 
 def _transform_normals(normals, matrix):
     """Transform normals by the inverse-transpose of the linear part (correct
-    under non-uniform scale); falls back to the linear part if singular."""
+    under non-uniform scale); falls back to the linear part if singular.
+    """
     linear = matrix[:3, :3]
     try:
         inv_t = torch.linalg.inv(linear).T
@@ -102,7 +104,8 @@ def _transform_normals(normals, matrix):
 
 def _load_image_hwc(path):
     """Load an image file to ``[H, W, C]`` float in ``[0, 1]`` (C in {3, 4}),
-    or ``None`` on failure."""
+    or ``None`` on failure.
+    """
     try:
         import torchvision
 
@@ -297,9 +300,11 @@ class ThreeDModelMob(Mob):
         and roughness are per-primitive constants for the in-kernel GGX shader;
         when a packed metallic-roughness map is present they are taken as its
         mean (modulated by the factors) since the deterministic fragment shader
-        reads them per triangle, not per texel."""
+        reads them per triangle, not per texel.
+        """
         from algan.rendering.shaders.materials import (
-            MeshPhysicalMaterial, MeshStandardMaterial,
+            MeshPhysicalMaterial,
+            MeshStandardMaterial,
         )
 
         metalness = float(material.metallic_factor)
@@ -309,7 +314,7 @@ class ThreeDModelMob(Mob):
             # glTF packing: G = roughness, B = metallic.
             roughness *= float(mr[..., 1].mean())
             metalness *= float(mr[..., 2].mean())
-        emissive = list(float(x) for x in material.emissive)
+        emissive = [float(x) for x in material.emissive]
         ei = material.emissive_image
         if ei is not None and ei.shape[-1] >= 3:
             # Scale emissive by the mean of the emissive texture.
@@ -320,12 +325,12 @@ class ThreeDModelMob(Mob):
         material_cls = (MeshPhysicalMaterial
                         if float(material.refractive_index or 0.0) > 1.0
                         else MeshStandardMaterial)
-        material_kwargs = dict(
-            color=color,
-            metalness=metalness,
-            roughness=roughness,
-            emissive=(emissive if any(e > 0 for e in emissive) else 0x000000),
-        )
+        material_kwargs = {
+            "color": color,
+            "metalness": metalness,
+            "roughness": roughness,
+            "emissive": (emissive if any(e > 0 for e in emissive) else 0x000000),
+        }
         if material_cls is MeshPhysicalMaterial:
             material_kwargs.update(
                 ior=float(material.refractive_index),
@@ -340,7 +345,8 @@ class ThreeDModelMob(Mob):
 
     def _resolve_normal_map(self, material, device):
         """Tangent-space normal map for a material as a ``[W, H, 3]`` tensor in
-        ``[-1, 1]``: an embedded image takes precedence over a file path."""
+        ``[-1, 1]``: an embedded image takes precedence over a file path.
+        """
         if material.normal_image is not None:
             return image_to_normal_map(material.normal_image.to(device)).to(device)
         if material.normal_texture and os.path.exists(material.normal_texture):
@@ -352,7 +358,8 @@ class ThreeDModelMob(Mob):
     def _resolve_texture(self, material, device):
         """Diffuse texture map for a material: an embedded in-memory image
         (``diffuse_image``, e.g. from glB) takes precedence over an external
-        ``diffuse_texture`` file path. Returns a ``[W, H, 5]`` map or ``None``."""
+        ``diffuse_texture`` file path. Returns a ``[W, H, 5]`` map or ``None``.
+        """
         if material.diffuse_image is not None:
             return image_to_texture_map(
                 material.diffuse_image.to(device)).to(device)
@@ -372,7 +379,8 @@ class ThreeDModelMob(Mob):
 
     def _normalize(self, target_size):
         """Recenter to the origin and uniformly scale so the model's bounding
-        box diagonal equals ``target_size``."""
+        box diagonal equals ``target_size``.
+        """
         mins, maxs = [], []
         for mob in self.mesh_mobs:
             loc = mob.grid.location.reshape(-1, 3)
@@ -400,7 +408,8 @@ class ThreeDModelMob(Mob):
         """The imported mesh mob(s) for a named node, so a sub-part of the model
         can be manipulated (moved, coloured, animated) on its own. Returns a
         single :class:`~algan.mobs.three_d_models.mesh.TriangleMesh` when the node has one
-        mesh, else a list. Raises ``KeyError`` for an unknown node."""
+        mesh, else a list. Raises ``KeyError`` for an unknown node.
+        """
         if name not in self.parts:
             raise KeyError(
                 f"no node named {name!r}; available: {self.node_names}")
@@ -412,7 +421,8 @@ class ThreeDModelMob(Mob):
     def animations(self):
         """The animation clips
         (:class:`~algan.mobs.three_d_models.scene_data.AnimationData`) parsed from the model
-        file, if any."""
+        file, if any.
+        """
         return self.scene_data.animations
 
     @property

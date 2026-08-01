@@ -18,7 +18,6 @@ sys.path.insert(0, str(REPOSITORY_ROOT))
 from algan import __version__ as algan_version
 from algan.utils.docbuild.module_parsing import parse_module_attributes
 
-
 # -- Project information -----------------------------------------------------
 
 project = "Algan"

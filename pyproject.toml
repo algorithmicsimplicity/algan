@@ -140,6 +140,8 @@ extend-exclude = [
   "build",
   "buck-out",
   "media",
+  "algan/external_libraries",
+  "**/*_taichi.py",
 ]
 fix = true
 
@@ -216,6 +218,21 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
   "F401",
   "F403",
 ]
+
+# These modules intentionally defer or stage imports after runtime setup.
+"algan/__init__.py" = ["E402"]
+"algan/animatable_base/mob_morph.py" = ["E402"]
+"algan/mobs/manim_compat.py" = ["E402"]
+"algan/mobs/text.py" = ["E402"]
+"algan/mobs/triangulated_bezier_circuit.py" = ["E402"]
+"algan/rendering/raytracing/primitives.py" = ["E402"]
+"algan/rendering/raytracing/raster_pipeline.py" = ["E402"]
+"algan/rendering/raytracing/tracer.py" = ["E402"]
+"algan/utils/algan_utils.py" = ["E402"]
+"algan/utils/audio_utils.py" = ["E402"]
+"docs/source/conf.py" = ["E402"]
+"algan/rendering/shaders/fragment_shaders.py" = ["I002"]
+"algan/utils/taichi_utils.py" = ["I002"]
 
 [tool.ruff.lint.isort]
 required-imports = ["from __future__ import annotations"]

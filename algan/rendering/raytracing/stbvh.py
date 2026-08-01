@@ -104,7 +104,8 @@ _F16_MAX = 65504.0
 def _half_bits_directed(x, up):
     """float16 bit patterns (int16) of ``x`` rounded toward +inf (``up``) or
     -inf, with subnormal results pushed outward to 0 / +-min-normal. The
-    decoded f16 is guaranteed ``>= x`` (``up``) or ``<= x`` (down)."""
+    decoded f16 is guaranteed ``>= x`` (``up``) or ``<= x`` (down).
+    """
     x = x.float().clamp(-_F16_MAX, _F16_MAX)
     h = x.half()
     dec = h.float()
@@ -359,8 +360,9 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
     ``builder="sah"``). Kept as the reference SAH build for a future explicit
     child-link block layout.
     """
-    import numpy as np
     import sys
+
+    import numpy as np
 
     M = int(prim_id.shape[0])
     if M == 0:
@@ -385,8 +387,10 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
            if inst_opaque is not None else np.zeros(M, bool))
 
     maxN = max(2 * M - 1, 1)
-    n_lo = np.zeros((maxN, 3)); n_hi = np.zeros((maxN, 3))
-    n_t0 = np.zeros(maxN, np.int64); n_t1 = np.zeros(maxN, np.int64)
+    n_lo = np.zeros((maxN, 3))
+    n_hi = np.zeros((maxN, 3))
+    n_t0 = np.zeros(maxN, np.int64)
+    n_t1 = np.zeros(maxN, np.int64)
     n_prim = np.full(maxN, -1, np.int64)
     n_opq = np.zeros(maxN, bool)
     n_skip = np.zeros(maxN, np.int64)
@@ -399,17 +403,22 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
     sys.setrecursionlimit(max(10000, 4 * M))
 
     def build(ids):
-        ni = ctr[0]; ctr[0] += 1
-        blo = lo[ids].min(0); bhi = hi[ids].max(0)
-        n_lo[ni] = blo; n_hi[ni] = bhi
-        n_t0[ni] = a0[ids].min(); n_t1[ni] = a1[ids].max()
+        ni = ctr[0]
+        ctr[0] += 1
+        blo = lo[ids].min(0)
+        bhi = hi[ids].max(0)
+        n_lo[ni] = blo
+        n_hi[ni] = bhi
+        n_t0[ni] = a0[ids].min()
+        n_t1[ni] = a1[ids].max()
         if ids.shape[0] == 1:
             n_prim[ni] = pid[ids[0]]
             n_opq[ni] = opq[ids[0]]
             n_skip[ni] = ctr[0]
             return
         n = ids.shape[0]
-        best_cost = np.inf; best_left = None
+        best_cost = np.inf
+        best_left = None
         diag = bhi - blo
         # Spatio-temporal SAH: search splits along x/y/z centroid AND the time
         # centroid (axis 3); weight each child's box cost by its frame-interval
@@ -418,10 +427,7 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
         # scales with surface_area * temporal_extent -- this recovers the
         # temporal coherence the 4D Morton curve gets for free.
         for ax in range(4):
-            if ax < 3:
-                cax = cent[ids, ax]
-            else:
-                cax = (a0[ids] + a1[ids]) * 0.5
+            cax = cent[ids, ax] if ax < 3 else (a0[ids] + a1[ids]) * 0.5
             cmin, cmax = cax.min(), cax.max()
             if cmax - cmin <= 1e-12:
                 continue
@@ -432,14 +438,16 @@ def _build_sah_dfs(inst_lo, inst_hi, t0, t1, prim_id, inst_opaque, num_frames,
                 nl = int(lmask.sum())
                 if nl == 0 or nl == n:
                     continue
-                lids = ids[lmask]; rids = ids[~lmask]
+                lids = ids[lmask]
+                rids = ids[~lmask]
                 te_l = float(a1[lids].max() - a0[lids].min() + 1)
                 te_r = float(a1[rids].max() - a0[rids].min() + 1)
                 cost = (te_l * half_area(lo[lids].min(0), hi[lids].max(0)) * nl
                         + te_r * half_area(lo[rids].min(0), hi[rids].max(0))
                         * (n - nl))
                 if cost < best_cost:
-                    best_cost = cost; best_left = lmask
+                    best_cost = cost
+                    best_left = lmask
         if best_left is None:
             ax = int(np.argmax(diag))
             order = np.argsort(cent[ids, ax], kind="stable")
@@ -651,10 +659,7 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
         t1 = torch.full_like(prim_id, num_frames - 1)
         inst_lo = frame_lo[0, prim_id]
         inst_hi = frame_hi[0, prim_id]
-        if opaque is not None:
-            inst_opaque = opaque.all(0)[prim_id]
-        else:
-            inst_opaque = None
+        inst_opaque = opaque.all(0)[prim_id] if opaque is not None else None
     else:
         if Tc != num_frames:
             raise ValueError(
@@ -698,7 +703,7 @@ def build_stbvh(frame_lo, frame_hi, num_frames=None, tightness=2.0,
     # single-instance trees keep one internal root + ARITY leaves (padding
     # slots carry an impossible frame interval and never pass the gate).
     P = a
-    while P < num_groups:
+    while num_groups > P:
         P *= a
     num_nodes = (a * P - 1) // (a - 1)
     first_leaf = num_nodes - P

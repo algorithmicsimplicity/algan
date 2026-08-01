@@ -1,8 +1,14 @@
 # from camera import Sequential, Synchronized, Off
+from __future__ import annotations
+
 import torch
 
 from algan.animation_timeline.animation_contexts import (
-    Seq, Sync, Off, ComposeRateFunc, animation_manager_for,
+    ComposeRateFunc,
+    Off,
+    Seq,
+    Sync,
+    animation_manager_for,
 )
 from algan.utils.tensor_utils import dot_product
 
@@ -40,7 +46,6 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
     min_dot, max_dot = dotsc.amin(-2, keepdim=True), dotsc.amax(-2, keepdim=True)
 
     amc = mobs[0].animation_manager.context
-    rate_func = amc.rate_func if amc.rate_func is not None else lambda x: x
     ts = [((_ - min_dot) / (max_dot - min_dot).clamp_(min=1e-8)) for _ in dots]
     # t = t * lag_duration
 
@@ -51,9 +56,10 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
     # amc.max_max_time = max(amc.max_time, start_time + (run_time + lag_duration))
     for i in range(len(mobs)):
         amc.timespan.current_time = (start_time + ts[i].amin()).item()
-        rf = lambda x, t=ts[i], r=run_time, l=(lag_duration): rfd(
-            x, t, r, l
-        )  # ((x - t).clamp_(min=0) / lag_duration).clamp_(max=1)
+        def rf(x, t=ts[i], r=run_time, lag=lag_duration):
+            return rfd(
+                    x, t, r, lag
+                )  # ((x - t).clamp_(min=0) / lag_duration).clamp_(max=1)
         with ComposeRateFunc(rf, run_time=run_time + lag_duration, animation_manager=animation_manager_for(mobs)):
             animation_func(mobs[i])
     amc.timespan.original_end_time = max(old_max_time, start_time + (run_time + lag_duration))

@@ -14,7 +14,10 @@ from algan import SceneManager, Sphere, cosine_color, phong_shader
 from algan.animatable_base.mob import ModifiedProtectedAttributeError
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
 from algan.rendering.shaders.fragment_shaders import (
-    build_fragment_pipeline, build_frag_pipelines, resolve_stage, STAGE_PHONG,
+    STAGE_PHONG,
+    build_frag_pipelines,
+    build_fragment_pipeline,
+    resolve_stage,
 )
 
 
@@ -53,7 +56,8 @@ def test_set_fragment_shader_registers_animatable_params():
     # Marker shader carries the pipeline metadata used by the ray tracer.
     assert getattr(s.shader, "_frag_pipeline_id", None) is not None
     # Stage params are exposed as (animatable) attributes.
-    assert hasattr(s, "frequency") and hasattr(s, "shininess")
+    assert hasattr(s, "frequency")
+    assert hasattr(s, "shininess")
 
 
 def test_set_fragment_shader_after_spawn_raises():

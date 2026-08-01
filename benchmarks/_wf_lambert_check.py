@@ -1,16 +1,20 @@
+from __future__ import annotations
+
 import os
 import sys
-
-import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from algan import (  # noqa: E402
-    Sync, Sphere, SceneManager, RIGHT, UP, IN, OUT,
-    RED, GREEN, BLUE, WHITE, YELLOW, MeshLambertMaterial,
+    OUT,
+    UP,
+    YELLOW,
+    MeshLambertMaterial,
+    SceneManager,
+    Sphere,
+    Sync,
 )
-from algan.rendering.raytracing import (  # noqa: E402
-    enable_ray_tracing, set_reflectivity, set_refractive_index)
+from algan.rendering.raytracing import enable_ray_tracing  # noqa: E402
 from algan.rendering.raytracing.primitives import set_wavefront  # noqa: E402
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "_tc_out")

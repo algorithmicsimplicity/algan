@@ -1,18 +1,17 @@
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import torch.nn.functional as F
 
-from algan.constants.spatial import OUT, RIGHT
-from algan.settings.video_settings import PREVIEW
-from algan.geometry.geometry import rotate_vector_around_axis
+from algan.animatable_base.animatable import animated_function
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import *
-from algan.animatable_base.mob import Mob
-
-from algan.animatable_base.animatable import animated_function
-from algan.utils.tensor_utils import *
-from algan.settings.renderer_settings import RENDERER_REGISTRY
+from algan.constants.spatial import OUT, RIGHT
+from algan.geometry.geometry import rotate_vector_around_axis
 from algan.rendering.raytracing.utils import _unify_time
-
+from algan.settings.renderer_settings import RENDERER_REGISTRY
+from algan.settings.video_settings import PREVIEW
+from algan.utils.tensor_utils import *
 
 # Three.js's fixed dielectric F0 = 0.04 corresponds to IOR 1.5; MeshStandard
 # has no ``ior`` of its own, so that is the default a circuit falls back to.
@@ -100,7 +99,7 @@ class BezierCircuitCubic(Mob):
         self.num_bezier_parameters = 4
         control_points = control_points.view(-1, control_points.shape[-1])
 
-        kwargs2 = {k: v for k, v in kwargs.items()}
+        kwargs2 = dict(kwargs.items())
 
         if "color" in kwargs2:
             kwargs2["color"] = (
@@ -291,7 +290,7 @@ class BezierCircuitCubic(Mob):
         transmission = material_param("transmission", 0.0).clamp(0.0, 1.0)
         ior = _circuit_ior(material_param("ior", DIELECTRIC_IOR), metalness)
 
-        vars = broadcast_all(
+        shader_vars = broadcast_all(
             [
                 self.opacity,
                 self.basis,
@@ -313,7 +312,7 @@ class BezierCircuitCubic(Mob):
                 self.texture_points.color,
                 self.location,
                 self.basis,
-                *vars,
+                *shader_vars,
             )
         x = self.control_points.location
         tpc = self.texture_points.color
@@ -325,7 +324,7 @@ class BezierCircuitCubic(Mob):
             (tpc),
             self.location,
             self.basis,
-            *vars,
+            *shader_vars,
             num_segments_per_circuit,
         )
 
@@ -334,7 +333,6 @@ class BezierCircuitCubic(Mob):
         roughness, refractive_index, transmission,
         num_segments_per_circuit=None
     ):
-        num_control_points = 4  # cubic beziers
         # x = unsquish(x, -2, num_control_points)
         # assert x.shape == [*, N, num_control_points, 3], where N is number of bezier segments.
         start_points = x[..., :1, :]

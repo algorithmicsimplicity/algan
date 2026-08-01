@@ -11,6 +11,8 @@ raise verbosity, either:
 * attach your own handlers to ``logging.getLogger("algan")`` after calling
   ``logger.handlers.clear()``.
 """
+from __future__ import annotations
+
 import logging
 import os
 

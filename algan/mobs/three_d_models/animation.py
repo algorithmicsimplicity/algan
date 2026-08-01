@@ -20,7 +20,8 @@ import torch
 
 def quaternion_to_matrix(q):
     """Rotation matrix ``[..., 3, 3]`` from a quaternion ``[..., 4]`` in glTF
-    ``(x, y, z, w)`` order. The quaternion is normalized first."""
+    ``(x, y, z, w)`` order. The quaternion is normalized first.
+    """
     q = torch.as_tensor(q, dtype=torch.float32)
     q = q / q.norm(dim=-1, keepdim=True).clamp_min(1e-12)
     x, y, z, w = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
@@ -37,7 +38,8 @@ def quaternion_to_matrix(q):
 
 def matrix_to_quaternion(m):
     """Quaternion ``(x, y, z, w)`` from a pure-rotation ``3x3`` matrix (columns
-    already unit-length). Uses the numerically stable branch selection."""
+    already unit-length). Uses the numerically stable branch selection.
+    """
     m = torch.as_tensor(m, dtype=torch.float32)
     t = m[0, 0] + m[1, 1] + m[2, 2]
     if t > 0:
@@ -74,7 +76,8 @@ def decompose_trs(matrix):
     Assumes a TRS matrix (no shear), which node transforms are; scale is the
     per-column length of the linear block and the rotation is that block with
     the scale divided out (a negative determinant folds one axis' sign into the
-    scale so the rotation stays proper)."""
+    scale so the rotation stays proper).
+    """
     matrix = torch.as_tensor(matrix, dtype=torch.float32)
     translation = matrix[:3, 3].clone()
     linear = matrix[:3, :3]
@@ -88,7 +91,8 @@ def decompose_trs(matrix):
 
 def compose_trs(translation, rotation_quat, scale, device=None):
     """Recompose translation ``[3]``, rotation quaternion ``[4]`` and scale
-    ``[3]`` into an affine ``4x4`` transform ``M = T @ R @ S``."""
+    ``[3]`` into an affine ``4x4`` transform ``M = T @ R @ S``.
+    """
     rot = quaternion_to_matrix(rotation_quat)
     scale = torch.as_tensor(scale, dtype=torch.float32)
     linear = rot * scale.unsqueeze(0)  # scale columns
@@ -102,7 +106,8 @@ def compose_trs(translation, rotation_quat, scale, device=None):
 
 def _segment(times, t):
     """Index ``i`` and fraction ``f`` so ``t`` lies in ``[times[i], times[i+1]]``
-    (clamped to the ends). ``times`` is a sorted 1-D tensor."""
+    (clamped to the ends). ``times`` is a sorted 1-D tensor.
+    """
     n = times.shape[0]
     if n == 1 or t <= float(times[0]):
         return 0, 0.0
@@ -117,7 +122,8 @@ def _segment(times, t):
 
 def sample_vector_track(times, values, t):
     """Linearly-interpolated ``[D]`` sample of a keyframed vector track
-    (``times`` ``[K]``, ``values`` ``[K, D]``) at time ``t``."""
+    (``times`` ``[K]``, ``values`` ``[K, D]``) at time ``t``.
+    """
     i, f = _segment(times, t)
     if f == 0.0 or i + 1 >= values.shape[0]:
         return values[i].clone()
@@ -126,7 +132,8 @@ def sample_vector_track(times, values, t):
 
 def sample_quaternion_track(times, quats, t):
     """Spherically-interpolated (slerp) ``[4]`` sample of a keyframed rotation
-    track (``times`` ``[K]``, ``quats`` ``[K, 4]`` in x, y, z, w) at ``t``."""
+    track (``times`` ``[K]``, ``quats`` ``[K, 4]`` in x, y, z, w) at ``t``.
+    """
     i, f = _segment(times, t)
     q0 = quats[i]
     if f == 0.0 or i + 1 >= quats.shape[0]:
@@ -154,7 +161,8 @@ def evaluate_node_local_transform(node, channel, t, device=None):
     ``channel`` (a :class:`NodeAnimation` or ``None``) override the matching
     component of the node's rest transform; absent components keep the rest
     value. When the node has no animation channel the rest transform is returned
-    unchanged."""
+    unchanged.
+    """
     rest = node.transform
     if channel is None:
         if rest is None:
@@ -184,7 +192,8 @@ def evaluate_node_local_transform(node, channel, t, device=None):
 
 def evaluate_animated_locals(nodes, clip, t, device=None):
     """Per-node local ``4x4`` transforms at time ``t`` for every node, applying
-    ``clip``'s channels (matched to nodes by name) over the rest pose."""
+    ``clip``'s channels (matched to nodes by name) over the rest pose.
+    """
     channels = {}
     if clip is not None:
         for ch in clip.channels:
@@ -197,7 +206,8 @@ def evaluate_animated_locals(nodes, clip, t, device=None):
 def compose_world_from_locals(nodes, locals_):
     """World ``4x4`` per node from per-node local transforms, composed down the
     hierarchy (nodes are depth-first with ``parent < child``): ``world[i] =
-    world[parent] @ local[i]``."""
+    world[parent] @ local[i]``.
+    """
     world = [None] * len(nodes)
     for i, node in enumerate(nodes):
         if node.parent < 0:
@@ -216,13 +226,14 @@ def clip_key_times(clip):
                 times.extend(float(x) for x in tt.reshape(-1))
     if not times:
         return [0.0]
-    return sorted(set(round(x, 6) for x in times))
+    return sorted({round(x, 6) for x in times})
 
 
 def sample_times(duration, fps, key_times=None):
     """Times (seconds) at which to bake the animation: a uniform ``fps`` grid
     over ``[0, duration]`` unioned with any authored ``key_times`` so keyed
-    poses are hit exactly. Always includes ``0`` and ``duration``."""
+    poses are hit exactly. Always includes ``0`` and ``duration``.
+    """
     duration = max(float(duration), 0.0)
     ts = {0.0, duration}
     if fps and fps > 0 and duration > 0:

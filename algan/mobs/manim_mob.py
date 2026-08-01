@@ -1,14 +1,15 @@
+from __future__ import annotations
+
 import torch
 
-from algan.constants.color import Color, BLACK
-from algan.mobs.bezier_circuit import BezierCircuitCubic
-from algan.mobs.image_mob import ImageMob
-from algan.mobs.group import Group
-from algan.utils.tensor_utils import unsquish
-from algan.utils.mob_utils import batch_mobs
-from algan.utils.lazy_import import LazyModule
 from algan.animation_timeline.animation_contexts import active_scene_for_new_mob
-from manim import ImageMobject, VectorizedPoint, ThreeDVMobject
+from algan.constants.color import BLACK, Color
+from algan.mobs.bezier_circuit import BezierCircuitCubic
+from algan.mobs.group import Group
+from algan.mobs.image_mob import ImageMob
+from algan.utils.lazy_import import LazyModule
+from algan.utils.mob_utils import batch_mobs
+from algan.utils.tensor_utils import unsquish
 
 # Deferred: a ManimMob wraps an already-constructed manim mobject, so manim
 # is inevitably imported by the caller first; keeping it lazy here means

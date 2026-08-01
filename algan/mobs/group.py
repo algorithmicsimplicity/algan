@@ -1,15 +1,17 @@
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import math
 
 import torch
 import torch.nn.functional as F
 
-from algan.animation_timeline.animation_contexts import Sync, Off
-from algan.constants.spatial import RIGHT, DOWN, ORIGIN
-from algan.errors import AlganConfigurationError
 from algan.animatable_base.mob import Mob
+from algan.animation_timeline.animation_contexts import Off, Sync
+from algan.constants.spatial import DOWN, ORIGIN, RIGHT
+from algan.errors import AlganConfigurationError
+from algan.settings import SETTINGS
 from algan.utils.python_utils import traverse
-from algan.utils.tensor_utils import dot_product, broadcast_gather
+from algan.utils.tensor_utils import broadcast_gather, dot_product
 
 
 def midpoint(x):
@@ -372,7 +374,6 @@ class Group(Mob):
         :meth:`~algan.mobs.group.Group.arrange_between_points`
             Space members evenly between two points.
         """
-
         if not self.children:
             return self
         if buffer is None:
@@ -407,11 +408,11 @@ class Group(Mob):
         with Sync(animation_manager=self.animation_manager):
             for i, mob in enumerate(self.mobs):
                 start = start + direction * (mob_sizes[i] / 2)
-                l = start
+                location = start
                 if alignment_direction is not None:
-                    l = l + alignment_offsets[i] * alignment_direction
+                    location = location + alignment_offsets[i] * alignment_direction
                 #loc + (disp_to_center) = l
-                mob.location = l + (mob.location - mob.get_center())
+                mob.location = location + (mob.location - mob.get_center())
                 start = start + direction * (mob_sizes[i] / 2 + buffer)
         return self
 

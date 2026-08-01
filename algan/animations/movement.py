@@ -17,11 +17,11 @@ import numpy as np
 import torch
 
 from algan.animatable_base.animatable import animated_function
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Sync, animation_manager_for
 from algan.constants import rate_funcs
 from algan.constants.spatial import ORIGIN
 from algan.mobs.bezier_circuit import BezierCircuitCubic
-from algan.animatable_base.mob import Mob
 from algan.mobs.surfaces.surface import Surface
 from algan.utils.tensor_utils import cast_to_tensor, unsquish
 

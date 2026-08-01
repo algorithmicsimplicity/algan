@@ -1,9 +1,10 @@
 from __future__ import annotations
-from algan.settings import SETTINGS
 
 import torch
 
 from algan.rendering.post_processing.anti_aliasing.fxaa import fxaa
+from algan.settings import SETTINGS
+
 __all__ = [
     "post_process_frames",
 ]

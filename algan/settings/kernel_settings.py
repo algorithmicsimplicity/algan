@@ -1,4 +1,5 @@
 """Render-kernel registry (runtime service, not user configuration)."""
+from __future__ import annotations
 
 
 class KernelRegistry:

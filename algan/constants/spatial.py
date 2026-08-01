@@ -1,5 +1,6 @@
-from algan.constants.color import *
+from __future__ import annotations
 
+from algan.constants.color import *
 
 RIGHT = torch.tensor((1, 0, 0), dtype=torch.get_default_dtype())
 LEFT = -RIGHT

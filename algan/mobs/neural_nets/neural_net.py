@@ -1,16 +1,17 @@
-from algan.settings._startup import _ANIMATION_DEVICE
-from algan.animation_timeline.animation_contexts import Off, Sync, Seq, Lag
-from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
+from __future__ import annotations
+
 from algan.animatable_base.mob import Mob
-from algan.mobs.shapes_3d import Sphere, Cylinder
-from algan.constants.rate_funcs import identity
+from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
+from algan.constants.rate_funcs import delay_fade, identity, pulse_fade
+from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
+from algan.mobs.shapes_3d import Cylinder, Sphere
+from algan.mobs.text import Tex
 from algan.rendering.shaders.materials import (
     MeshPhysicalMaterial,
-    MeshStandardMaterial, )
+    MeshStandardMaterial,
+)
+from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import dot_product
-from algan.mobs.text import Tex
-from algan.constants.rate_funcs import pulse_fade, delay_fade
-
 
 # Synapses jitter their colour for visual variety. Draw that jitter from a
 # dedicated, fixed-seed generator (reseeded per net in NeuralNetMLP.__init__)
@@ -60,8 +61,8 @@ class Neuron(Mob):
         self.synapses = [
             self.synapse_cls(
                 grid_height, scene=self.scene, color=neuron_color
-            ).move_between_points(l, self.location)
-            for l in input_locs
+                ).move_between_points(input_location, self.location)
+            for input_location in input_locs
         ]
         self.add_children(self.core, self.shell, self.synapses)
 
@@ -102,12 +103,13 @@ class Neuron(Mob):
 
 class SynapseV2(Cylinder):
     """Improved synapse: a thin filament lit from within (emissive) with a
-    glossy dielectric surface, so pulses read as light travelling down a wire."""
+    glossy dielectric surface, so pulses read as light travelling down a wire.
+    """
 
     def __init__(self, grid_height=5, *args, **kwargs):
         grid_height = 20
         grid_width = 12
-        c = kwargs.get('color', None)
+        c = kwargs.get('color')
         if c is not None:
             c = tweak_color(c, strength=0.25, min_strength=0.25)
             kwargs['color'] = c
@@ -129,7 +131,8 @@ class SynapseV2(Cylinder):
 class NeuronV2(Neuron):
     """Improved neuron: a glossy self-lit core (crisp specular highlight over
     an emissive base) inside a soft translucent halo shell, replacing the
-    flat-shaded spheres of :class:`Neuron`."""
+    flat-shaded spheres of :class:`Neuron`.
+    """
 
     synapse_cls = SynapseV2
 
@@ -241,24 +244,24 @@ class NeuralNetMLP(Mob):
             self.layers = [
                 [
                     self.neuron_cls(
-                        [l + direction * self.input_synapse_offset],
+                        [location + direction * self.input_synapse_offset],
                         direction,
-                        location=l,
+                        location=location,
                         neuron_color=neuron_color,
                         scene=self.scene,
                     )
-                    for l in neuron_locs[0]
+                    for location in neuron_locs[0]
                 ]
             ] + [
                 [
                     self.neuron_cls(
                         neuron_locs[i],
                         direction,
-                        location=l,
+                        location=location,
                         neuron_color=neuron_color,
                         scene=self.scene,
                     )
-                    for l in neuron_locs[i + 1]
+                    for location in neuron_locs[i + 1]
                 ]
                 for i in range(len(neuron_locs) - 1)
             ]
@@ -286,7 +289,7 @@ class NeuralNetMLP(Mob):
 
     def train_step(
         self,
-        input,
+        input_values,
         output_generator,
         label,
         run_time=3,
@@ -294,7 +297,7 @@ class NeuralNetMLP(Mob):
         backward_color=PURE_BLUE * k + (1 - k) * WHITE,
     ):
         o = self.forward(
-            input, output_generator, run_time, reset=False, color=forward_color
+            input_values, output_generator, run_time, reset=False, color=forward_color
         )  # .get_component_mobs())
         #o.move_next_to(label, -self.get_right_direction())
         self.backward(o, label, color=backward_color, run_time=run_time)
@@ -424,12 +427,13 @@ class NeuralNetMLP(Mob):
 
 class SynapseV3(Cylinder):
     """V3 synapse: a thin filament with a lacquered (clearcoat) surface, so the
-    wires pick up crisp light streaks on top of their colour-tracking fill."""
+    wires pick up crisp light streaks on top of their colour-tracking fill.
+    """
 
     def __init__(self, grid_height=5, *args, **kwargs):
         grid_height = 20
         grid_width = 12
-        c = kwargs.get('color', None)
+        c = kwargs.get('color')
         if c is not None:
             c = tweak_color(c, strength=0.25, min_strength=0.25)
             kwargs['color'] = c
@@ -453,7 +457,8 @@ class SynapseV3(Cylinder):
 class NeuronV3(Neuron):
     """V3 neuron: the full physical-material design -- a lacquered clearcoat
     core inside a translucent glass shell with a soft sheen rim, shaded per
-    fragment by the physical material's in-kernel port."""
+    fragment by the physical material's in-kernel port.
+    """
 
     synapse_cls = SynapseV3
 
@@ -513,7 +518,8 @@ class NeuralNetMLPV2(NeuralNetMLP):
     """Drop-in replacement for :class:`NeuralNetMLP` with upgraded visuals:
     glossy self-lit neuron cores inside translucent halo shells and filament
     synapses, built from MeshStandardMaterial. Same constructor and animation
-    API."""
+    API.
+    """
 
     neuron_cls = NeuronV2
 
@@ -522,6 +528,7 @@ class NeuralNetMLPV3(NeuralNetMLP):
     """Drop-in replacement for :class:`NeuralNetMLP` built from
     MeshPhysicalMaterial: lacquered clearcoat neuron cores inside glass shells
     with sheen rims, and clearcoat filament synapses. Same constructor and
-    animation API."""
+    animation API.
+    """
 
     neuron_cls = NeuronV3

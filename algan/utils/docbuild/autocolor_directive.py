@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 from docutils import nodes
 from docutils.parsers.rst import Directive
-
 from manim import ManimColor
 
 if TYPE_CHECKING:

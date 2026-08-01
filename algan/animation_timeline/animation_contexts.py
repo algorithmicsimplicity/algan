@@ -1,16 +1,16 @@
+from __future__ import annotations
+
 import copy
 from contextlib import contextmanager
 from contextvars import ContextVar
-from functools import wraps
-from typing import Any, Callable, Optional
-
-
-from algan.scene_manager import SceneManager
-from algan.animation_timeline.timeline import TimelineSpan
-from algan.sound.audio_effect import AudioEffect
-from algan.constants import rate_funcs
 from dataclasses import dataclass, field
+from functools import wraps
+from typing import Any, Callable
 
+from algan.animation_timeline.timeline import TimelineSpan
+from algan.constants import rate_funcs
+from algan.scene_manager import SceneManager
+from algan.sound.audio_effect import AudioEffect
 from algan.utils.python_utils import traverse
 
 DEFAULT_RUN_TIME = 1
@@ -237,7 +237,7 @@ class AnimationContext:
     combine_rate_func: bool = False
     record_funcs: bool | None = None
     record_attr_modifications: bool | None = None
-    prev_context: Optional["AnimationContext"] = None
+    prev_context: AnimationContext | None = None
     spawn_at_end: bool | None = None
     new_animation: bool | None = False
     finished: bool = False
@@ -248,11 +248,11 @@ class AnimationContext:
 
     def __post_init__(self):
         if self.new_mobs is None:
-            self.new_mobs = list()
+            self.new_mobs = []
         if self.child_contexts is None:
-            self.child_contexts = list()
+            self.child_contexts = []
         if self.kwargs is None:
-            self.kwargs = dict()
+            self.kwargs = {}
         self.timespan = TimelineSpan()
 
     def __enter__(self):

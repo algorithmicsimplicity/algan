@@ -1,26 +1,29 @@
-from svgelements import Path, Move, Close, Line
+from __future__ import annotations
+
+import torch.nn.functional as F
+from svgelements import Close, Line, Move, Path
 
 from algan.animatable_base.animatable import animated_function
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     Off,
     Sync,
     active_scene_for_new_mob,
 )
-from algan.constants.spatial import OUT, LEFT, RIGHT, DOWN, UP, ORIGIN
 from algan.constants.color import *
-from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
+from algan.constants.spatial import DOWN, LEFT, ORIGIN, OUT, RIGHT, UP
 from algan.mobs.group import Group
-from algan.animatable_base.mob import Mob
-from algan.mobs.shapes_2d import Quad, TriangleTriangulated, Rectangle
+from algan.mobs.shapes_2d import Quad, Rectangle, TriangleTriangulated
+from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
-from algan.utils.tensor_utils import squish, broadcast_all
 from algan.utils.tensor_utils import (
-    mean,
+    broadcast_all,
     broadcast_cross_product,
     interpolate,
+    mean,
+    squish,
     unsquish,
 )
-import torch.nn.functional as F
 
 
 class Line2(Quad):
@@ -84,7 +87,11 @@ class Arrow(TriangulatedBezierCircuit):
             interpolate(start + perp * width * 0.5, end + perp * width * 0.5, _)
             for _ in tick_a
         ]
-        tick_points = [x for l in [get_tick_at(_) for _ in tick_points] for x in l]
+        tick_points = [
+            x
+            for tick_segment in [get_tick_at(_) for _ in tick_points]
+            for x in tick_segment
+        ]
         points = torch.stack(
             [
                 start + perp * width * 0.5,
@@ -180,8 +187,8 @@ class FunctionPlotMob(Mob):
         bar_plot=False,
         **kwargs,
     ):
-        create = kwargs["create"] if "create" in kwargs else True
-        init = kwargs["init"] if "init" in kwargs else True
+        create = kwargs.get("create", True)
+        init = kwargs.get("init", True)
         kwargs["create"] = False
         kwargs["init"] = False
         super().__init__(**kwargs)
@@ -244,8 +251,8 @@ class FunctionPlotMob(Mob):
                 widths = (x[..., 1] - x[..., 0]) * 0.5
                 self.func = Group(
                     [
-                        Rectangle(h, w, scene=self.scene).move_to(l)
-                        for h, w, l in zip(heights, widths, locs)
+                        Rectangle(h, w, scene=self.scene).move_to(location)
+                        for h, w, location in zip(heights, widths, locs)
                     ],
                     scene=self.scene,
                 )
@@ -304,7 +311,7 @@ class FunctionPlotMob(Mob):
 
 class TriangleVertices2(Mob):
     def __init__(self, corner_locations, **kwargs):
-        kwargs2 = {k: v for k, v in kwargs.items()}
+        kwargs2 = dict(kwargs.items())
         if "location" in kwargs2:
             del kwargs2["location"]
         kwargs2["location"] = corner_locations.view(-1, 3)
@@ -318,10 +325,10 @@ class TriangleVertices2(Mob):
         return self.location.view(-1, 3)
 
     def get_render_primitives(self):
-        l, c, o = broadcast_all(
+        locations, c, o = broadcast_all(
             [self.location, self.color, self.opacity], ignore_dims=[-1]
         )
-        return TrianglePrimitive(l, c, o)
+        return TrianglePrimitive(locations, c, o)
 
 
 class Quad(Mob):
@@ -342,12 +349,12 @@ class Quad(Mob):
             triangles = [
                 TriangleTriangulated(
                     corner_locations[..., :3, :],
-                    color=color[..., :3, :],
                     *args,
+                    color=color[..., :3, :],
                     **kwargs,
                 ),
                 TriangleTriangulated(
-                    q(corner_locations), color=q(color), *args, **kwargs
+                    q(corner_locations), *args, color=q(color), **kwargs
                 ),
             ]
             kwargs["location"] = mean([_.location for _ in triangles])

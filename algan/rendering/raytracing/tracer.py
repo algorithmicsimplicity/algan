@@ -28,23 +28,22 @@ On out-of-memory the frame window is halved and retried
 (``OutOfRenderMemory``); see ``render_batch_raytraced``.
 """
 from __future__ import annotations
-from algan.settings import SETTINGS
 
+import sys
+import traceback
 from dataclasses import dataclass
 from typing import Literal
 
 import torch
 
 from algan.errors import UnsupportedFeatureError
-
-import sys
-import traceback
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
-from algan.rendering.raytracing.settings import _scene_has_user_pipeline
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     KBUF,
-    MAX_SURFACES_PER_RAY, path_trace_scene_stbvh, finalize_samples,
+    MAX_SURFACES_PER_RAY,
+    finalize_samples,
+    path_trace_scene_stbvh,
 )
 from algan.rendering.raytracing.scene_builder import (
     _downsample_background,
@@ -53,13 +52,16 @@ from algan.rendering.raytracing.scene_builder import (
     _prefill_background,
     copy_merged_scene_to_arena,
 )
+
 # NOTE: only immutable settings values may be imported by value here; the
 # mutable module globals (SAMPLES_PER_PIXEL, TONEMAP_*, SHADOWS, ...) must be
 # read live as ``rt_settings.X`` or their setters silently stop working.
 from algan.rendering.raytracing.settings import (
     _get_tonemap_t_val,
+    _scene_has_user_pipeline,
     is_post_process_tonemap_enabled,
 )
+from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
@@ -70,20 +72,22 @@ _MEM_TRIM_ENGAGED = [0]
 # Number of tile attempts discarded and retried after the shared continuation
 # allocator reported overflow. Kept as a list for low-overhead in-process tests.
 _WAVEFRONT_POOL_RETRIES = [0]
+from algan.logging.logger import get_logger
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
+
 # ``build_frag_pipelines`` is imported lazily in the render dispatch to avoid a
 # module-load import cycle (fragment_shaders -> shading_taichi -> raytracing
 # package __init__ -> primitives).
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     compact_ray_slots,
-    wf_composite_accum,
-    wf_composite_accum_sparse,
-    wf_composite_accum_aa,
-    wf_finalize_aa,
     wavefront_generate_rays,
     wavefront_shade,
     wavefront_traverse,
     wavefront_traverse_events,
+    wf_composite_accum,
+    wf_composite_accum_aa,
+    wf_composite_accum_sparse,
+    wf_finalize_aa,
 )
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
@@ -91,7 +95,6 @@ from algan.utils.memory_utils import (
     ensure_render_headroom,
     is_cuda_oom,
 )
-from algan.logging.logger import get_logger
 
 logger = get_logger("raytracing")
 
@@ -467,7 +470,8 @@ def _wavefront_state_bytes_per_primary(pool_ratio, extra_bytes_per_slot=0,
     the two-word shared allocator (next slot + overflow flag) is fixed per tile
     and is accounted separately by the callers. Orchestrator-specific extras
     (for example the sorted path's event record/key arrays) are passed in so
-    adaptive tile sizing can account for them."""
+    adaptive tile sizing can account for them.
+    """
     coefficients = _wavefront_state_coefficients()
     per_slot = coefficients["pool"] + extra_bytes_per_slot
     per_primary = coefficients["primary"] + extra_bytes_per_primary
@@ -509,7 +513,8 @@ def _auto_primary_per_tile(memory, pool_ratio, static_primary,
     cost). Falls back to ``static_primary`` (the WAVEFRONT_TILE_RAYS-derived
     value) for unmanaged pools or when auto is disabled. Byte-identical to any
     other tile size: tiles partition pixels, and every per-pixel computation
-    is independent of its tile."""
+    is independent of its tile.
+    """
     if not rt_settings.WAVEFRONT_TILE_AUTO or not getattr(memory, "managed", False):
         return static_primary
     bytes_per_primary = _wavefront_state_bytes_per_primary(
@@ -672,7 +677,8 @@ def _append_env_sh_light(light_pos, light_col, num_lights, env, intensity,
                          device):
     """Add the environment map's diffuse irradiance as one ENV_SH light row
     (type 6) to the packed lights, widening the color rows to 16 columns if
-    they are still in the compact point-light packing."""
+    they are still in the compact point-light packing.
+    """
     A, Bx, By, Bz = _env_sh_coeffs(env, intensity)
     row = torch.zeros(16)
     row[0:3] = A
@@ -841,8 +847,8 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # sorted variants. Plain point-light scenes keep the compact light packing
     # and are untouched.
     lights_extended = (int(SAMPLES_PER_PIXEL) <= 1 and any(
-        getattr(l, "_render_aux", None) is not None
-        for l in (light_sources or ())))
+        getattr(light, "_render_aux", None) is not None
+        for light in (light_sources or ())))
     cam = getattr(scene, "camera", None)
     near_clip = float(getattr(cam, "near", 0.0) or 0.0)
     far_clip = float(getattr(cam, "far", 0.0) or 0.0)
@@ -933,8 +939,7 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # the real trees now if that is where this batch is headed. (The
     # deterministic wavefront has its own later, finer-grained check.)
     if merged.get("bvh_deferred") and int(SAMPLES_PER_PIXEL) > 1:
-        from algan.rendering.raytracing.scene_builder import (
-            build_deferred_bvhs)
+        from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
         build_deferred_bvhs(merged)
     tri_bvh = merged["tri_bvh"]
     pn_bvh = merged["pn_bvh"]
@@ -1003,7 +1008,9 @@ def render_batch_raytraced(primitives, scene, screen_width, screen_height,
     # ordinary scene keeps the byte-identical built-in bounce block (empty ()).
     if det_frag:
         from algan.rendering.shaders.fragment_shaders import (
-            build_frag_pipelines, build_frag_scatters)
+            build_frag_pipelines,
+            build_frag_scatters,
+        )
         frag_pipelines = build_frag_pipelines()
         frag_scatters = (build_frag_scatters()
                          if _scene_has_custom_scatter(merged) else ())
@@ -1556,7 +1563,6 @@ def raytrace_render_wavefront(
             layer_offset_pn, has_tri, has_pn, has_bez, max_bounces,
             light_pos, light_col, num_lights, frag_pipelines, shadow_flag,
             refraction_flag, transparent, memory, out, aa_level)
-    device = out.device
     i32 = torch.int32
     f32 = torch.float32
     max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
@@ -1666,8 +1672,7 @@ def raytrace_render_wavefront(
         # trees and rebind everything derived from the placeholders. Deferral
         # implies mem_trim was inactive at merge, so t_bvh is plain tri_bvh.
         nonlocal tri_bvh, pn_bvh, bez_bvh, t_bvh, bvh_refit
-        from algan.rendering.raytracing.scene_builder import (
-            build_deferred_bvhs)
+        from algan.rendering.raytracing.scene_builder import build_deferred_bvhs
         build_deferred_bvhs(merged)
         tri_bvh = merged["tri_bvh"]
         pn_bvh = merged["pn_bvh"]
@@ -1726,8 +1731,10 @@ def raytrace_render_wavefront(
     bez_bounds = None
     if use_raster:
         from algan.rendering.raytracing.raster_pipeline import (
-            precompute_circuit_screen_bounds, precompute_triangle_projection,
-            precompute_triangle_screen_bounds)
+            precompute_circuit_screen_bounds,
+            precompute_triangle_projection,
+            precompute_triangle_screen_bounds,
+        )
         # Screen-space projection and bounds tables, sized
         # [batch_frames, primitives, cols].  Note ``batch_frames`` is the whole
         # prepared batch's frame count, not the render chunk's, so this term
@@ -2055,8 +2062,7 @@ def raytrace_render_wavefront(
             # records, CSR runs and the sparse shadow-event queue) is
             # phase-local: the temporary arena scope releases it before the
             # bounce loop's per-iteration surface-event batches are allocated.
-            from algan.rendering.raytracing.raster_pipeline import (
-                raster_iteration_zero)
+            from algan.rendering.raytracing.raster_pipeline import raster_iteration_zero
             with memory.temp():
                 tile_empty, covered_idx, num_covered = raster_iteration_zero(
                     merged, tri_screen, tri_bounds, bez_bounds, memory,
@@ -2226,12 +2232,13 @@ def _raytrace_render_wavefront_textured(
     but the shade stage is ``wf_shade_textured`` reading the three
     per-triangle texture banks built by
     ``scene_builder._build_textured_scene``. PN and bezier traversals gate out
-    (the scene is all flat triangles)."""
+    (the scene is all flat triangles).
+    """
     from algan.rendering.raytracing.wavefront_textured_kernels_taichi import (
-        wf_shade_textured)
+        wf_shade_textured,
+    )
     rt_settings = SETTINGS.raytracing
 
-    device = out.device
     i32 = torch.int32
     f32 = torch.float32
     max_iters = MAX_SURFACES_PER_RAY + max_bounces * 2 + 4
@@ -2358,7 +2365,8 @@ def _scene_has_custom_scatter(merged):
     the scatter templates get compiled in (scatter-free scenes stay on the
     scatter-free, byte-identical default path). Cheap: exits on the
     tensor-max user-pipeline pre-check for the (overwhelmingly common)
-    all-built-in scene."""
+    all-built-in scene.
+    """
     cached = merged.get("has_custom_scatter")
     if cached is not None:
         return bool(cached)
@@ -2406,14 +2414,21 @@ def _raytrace_render_wavefront_sorted(
     once per chunk from the merged scene's material ids, so only materials
     actually present cost a kernel instantiation.
     """
-    from algan.rendering.shaders.fragment_shaders import build_frag_scatters
     from algan.rendering.raytracing.shading_taichi import (
-        _USER_PIPELINE_BASE, builtin_pipeline_fn)
+        _USER_PIPELINE_BASE,
+        builtin_pipeline_fn,
+    )
     from algan.rendering.raytracing.wavefront_sorted_kernels_taichi import (
-        ST_PEEL, ST_SHADE, ST_TRAVERSE,
-        default_scatter, wf_peel, wf_shade_event, wf_shadow_event)
+        ST_PEEL,
+        ST_SHADE,
+        ST_TRAVERSE,
+        default_scatter,
+        wf_peel,
+        wf_shade_event,
+        wf_shadow_event,
+    )
+    from algan.rendering.shaders.fragment_shaders import build_frag_scatters
 
-    device = out.device
     i32 = torch.int32
     f32 = torch.float32
     n = (time_end - time_start) * width * height
@@ -2645,5 +2660,6 @@ def is_ray_tracing_enabled():
     engine's only renderer (``RENDERER_REGISTRY`` binds them by default), and
     the ``enable_ray_tracing`` toggle that used to populate ``_originals`` was
     removed with the rasterizer. Kept only because ``post_processing.bloom``
-    probes for it defensively."""
+    probes for it defensively.
+    """
     return bool(_originals)

@@ -6,6 +6,7 @@ the classes here for their *construction and batching* only (gathering
 per-mob tensors into one batched primitive per geometry type). The
 rasterization code itself is gone.
 """
+from __future__ import annotations
 
 import copy
 
@@ -36,7 +37,8 @@ def _slice_frame_value(value, start, end, total_frames):
 
 class OutOfRenderMemory(Exception):
     """Raised when a frame batch does not fit in the render memory arena;
-    the render loop catches it and retries with a halved frame window."""
+    the render loop catches it and retries with a halved frame window.
+    """
 
 
 class RenderPrimitive:
@@ -88,7 +90,8 @@ class RenderPrimitive:
 
     def get_batch_identifier(self):
         """Key used by the scene batcher: primitives with equal keys are
-        merged into one batched primitive of this class."""
+        merged into one batched primitive of this class.
+        """
         return f"{self.__class__}"
 
     def project_to_screen(self, camera, light_sources):

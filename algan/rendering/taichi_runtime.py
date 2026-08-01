@@ -24,8 +24,8 @@ cannot silently regress, plus two empirically-tuned register knobs):
 * ``ALGAN_OPT_LEVEL`` (env int) -> ``opt_level`` (Taichi default 1). Higher is
   more aggressive but can *increase* register pressure, so it is opt-in.
 """
-from algan.settings._startup import _RENDER_DEVICE, _TAICHI_CACHE_DIRECTORY
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import datetime as _datetime
 import json
 import os
@@ -35,7 +35,7 @@ import time
 import taichi as ti
 import torch
 
-
+from algan.settings._startup import _RENDER_DEVICE, _TAICHI_CACHE_DIRECTORY
 
 _COMPILE_LOG_LOCK = threading.Lock()
 _COMPILE_FRONTEND = {}
@@ -244,17 +244,17 @@ def taichi_init_kwargs():
     measures a different (much faster) config than real renders. See
     [[algan-render-benchmarking]].
     """
-    kwargs = dict(arch=_taichi_arch(), fast_math=True,
+    kwargs = {"arch": _taichi_arch(), "fast_math": True,
                   # advanced_optimization defaults off (it raised register
                   # pressure on the big megakernels); env ALGAN_ADV_OPT=1 to A/B.
-                  advanced_optimization=os.environ.get("ALGAN_ADV_OPT", "0") == "1",
+                  "advanced_optimization": os.environ.get("ALGAN_ADV_OPT", "0") == "1",
                   # debug=True inserts a bounds-check on *every* ndarray access;
                   # the ray-trace megakernels do millions of array reads per ray
                   # (BVH nodes, packed geometry), so it ran them ~11x slower with
                   # no benefit to released renders. Keep it off (env ALGAN_TI_DEBUG=1
                   # re-enables it for kernel development).
-                  debug=os.environ.get("ALGAN_TI_DEBUG", "0") == "1",
-                  offline_cache=True,
+                  "debug": os.environ.get("ALGAN_TI_DEBUG", "0") == "1",
+                  "offline_cache": True,
                   # The default 100 MB cache LRU-evicts large megakernel
                   # artifacts once several variants (general / no-PN / lean /
                   # path-trace / wavefront, plus per-config rebuilds) are
@@ -262,7 +262,7 @@ def taichi_init_kwargs():
                   # it (disk-backed) so every kernel stays cached. The field is
                   # a 32-bit int, so stay just under 2^31 bytes (~1.9 GB, still
                   # 19x the default).
-                  offline_cache_max_size_of_files=1_000_000_000)
+                  "offline_cache_max_size_of_files": 1_000_000_000}
     # Keep Algan's compiled kernels in a dedicated directory under Algan's
     # cache dir instead of Taichi's global default, so they never contend
     # with other Taichi programs for the LRU budget. A ti.init kwarg beats

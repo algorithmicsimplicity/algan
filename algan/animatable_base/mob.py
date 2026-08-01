@@ -9,15 +9,21 @@ from algan.animatable_base.animatable import (
     Animatable,
     animated_function,
 )
-from algan.animation_timeline.animation_contexts import AnimationContext, NoExtra, Off, Sync, Seq
 from algan.animatable_base.mob_hierarchy import MobHierarchyMixin
-from algan.animatable_base.mob_orientation import MobOrientationMixin
-from algan.animatable_base.mob_movement import MobMovementMixin
 from algan.animatable_base.mob_layout import MobLayoutMixin
-from algan.animatable_base.mob_morph import MobMorphMixin
 from algan.animatable_base.mob_materials import (  # noqa: F401 -- exception re-exported
     MobMaterialsMixin,
     ModifiedProtectedAttributeError,
+)
+from algan.animatable_base.mob_morph import MobMorphMixin
+from algan.animatable_base.mob_movement import MobMovementMixin
+from algan.animatable_base.mob_orientation import MobOrientationMixin
+from algan.animation_timeline.animation_contexts import (
+    AnimationContext,
+    NoExtra,
+    Off,
+    Seq,
+    Sync,
 )
 from algan.constants.spatial import *
 from algan.geometry.geometry import (
@@ -31,7 +37,6 @@ from algan.utils.tensor_utils import (
     squish,
     unsquish,
 )
-
 
 
 class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
@@ -163,7 +168,8 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
         normal property setter. Valid for a fresh mob (no children yet, not
         spawned, buffer not yet allocated) whose setter would only establish
         the initial value -- the state inside :meth:`__init__`. Falls back to
-        the full setter if any precondition does not hold."""
+        the full setter if any precondition does not hold.
+        """
         tm = self.scene.timeline_manager
         tl = tm.attr_to_timeline.get(attr)
         if self.children or (tl is not None and self.id in tl.mob_id_to_inds):
@@ -896,7 +902,7 @@ class Mob(MobHierarchyMixin, MobOrientationMixin, MobMovementMixin,
             animatable attribute; the message lists what is available.
         """
         # TODO: consider caching this union on the owning timeline.
-        available_attrs = set([*self.animatable_attrs, *self.scene.timeline_manager.attr_to_timeline.keys()])
+        available_attrs = {*self.animatable_attrs, *self.scene.timeline_manager.attr_to_timeline.keys()}
         for p in property_names:
             if not hasattr(self, p) and (p not in available_attrs):
                 raise AttributeError(f'"{p}" is not recognized as an animatable Mob property. '

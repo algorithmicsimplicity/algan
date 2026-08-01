@@ -4,7 +4,6 @@ Split out of ``mob.py`` for readability; :class:`MobMovementMixin` is mixed into
 ``Mob`` and is not useful standalone (``self`` is always a Mob).
 """
 from __future__ import annotations
-from algan.settings import SETTINGS
 
 import torch
 import torch.nn.functional as F
@@ -13,6 +12,7 @@ from algan import animated_function
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.spatial import *
 from algan.geometry.geometry import project_point_onto_line
+from algan.settings import SETTINGS
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
     broadcast_gather,
@@ -20,13 +20,15 @@ from algan.utils.tensor_utils import (
     dot_product,
 )
 
+
 def _resolve_buffer(buffer):
     return SETTINGS.style.buffer if buffer is None else buffer
 
 
 class MobMovementMixin:
     """Methods for moving Mobs around, mixed into
-    :class:`~algan.animatable_base.mob.Mob`."""
+    :class:`~algan.animatable_base.mob.Mob`.
+    """
 
     def move_between(
         self, loc1: Mob | torch.Tensor, loc2: Mob | torch.Tensor
@@ -147,7 +149,6 @@ class MobMovementMixin:
                 "perpendicular to arc_normal"
             )
 
-        zero_angle = angle_degrees == 0
         coincident = chord_length == 0
         whole_turn_count = torch.round(angle_degrees / 360)
         exact_whole_turn = (

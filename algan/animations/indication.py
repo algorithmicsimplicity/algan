@@ -7,7 +7,10 @@ import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
 from algan.animation_timeline.animation_contexts import (
-    Off, Seq, Sync, animation_manager_for,
+    Off,
+    Seq,
+    Sync,
+    animation_manager_for,
 )
 from algan.animations.movement import Homotopy
 from algan.constants import rate_funcs

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 from string import ascii_lowercase
 
@@ -5,12 +7,13 @@ import torch
 import torch.nn.functional as F
 
 from algan.constants.math import DEGREES_TO_RADIANS, RADIANS_TO_DEGREES
-from algan.utils.tensor_utils import expand_as_left, squish
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
-    dot_product,
-    unsqueeze_left,
     broadcast_gather,
+    dot_product,
+    expand_as_left,
+    squish,
+    unsqueeze_left,
     unsquish,
 )
 
@@ -145,7 +148,7 @@ def rotate_vector_around_axis(vector, num_degrees, axis, dim=0):
     vector = unsqueeze_left(vector.unsqueeze(dim - 1), R)
     if dim < 0:
         dim = dim + R.dim()
-    r = [a[i] for i in [dim]]
+    [a[i] for i in [dim]]
     a1 = "".join([a[: dim - 1], ma[:2], a[dim + 1 :]])
     a2 = "".join([a[: dim - 1], ma[1:], a[dim + 1 :]])
     a3 = "".join([a[: dim - 1], "".join([ma[0], ma[2]]), a[dim + 1 :]])
@@ -228,9 +231,7 @@ def pad_to_length(x, length):
 
 
 def project_point_onto_line(point, line_direction, line_start=0, dim=-1):
-    """
-    Projects point x to the closest point on a line defined by a starting point and a direction
-    """
+    """Projects point x to the closest point on a line defined by a starting point and a direction"""
     line_direction = F.normalize(line_direction, p=2, dim=dim)
     return line_start + line_direction * dot_product(
         point - line_start, line_direction, dim=dim
@@ -238,9 +239,7 @@ def project_point_onto_line(point, line_direction, line_start=0, dim=-1):
 
 
 def project_point_onto_line_segment(point, line_start, line_end, dim=-1, memory=None):
-    """
-    Projects point x to the closest point on a line segment defined by its start and end points.
-    """
+    """Projects point x to the closest point on a line segment defined by its start and end points."""
     if memory is None:
         line_direction = F.normalize(line_end - line_start, p=2, dim=dim)
         line_lengths = (line_end - line_start).norm(p=2, dim=dim, keepdim=True)
@@ -275,9 +274,7 @@ def project_point_onto_line_segment(point, line_start, line_end, dim=-1, memory=
 
 
 def project_point_onto_plane(point, plane_normal, plane_point=0, dim=-1):
-    """
-    Projects point x onto a plane defined by a point and normal direction
-    """
+    """Projects point x onto a plane defined by a point and normal direction"""
     return project_point_onto_line(
         point, get_orthonormal_vector(plane_normal), plane_point, dim
     )
@@ -343,7 +340,7 @@ def nth_root(z, n: int):
 
 # @torch.jit.script
 def get_roots_of_cubic(a, b, c, d, fill_value: float = 2e12):
-    m_backup = (a.abs() <= 1e-7).unsqueeze(-1)
+    (a.abs() <= 1e-7).unsqueeze(-1)
 
     backup_roots = get_roots_of_quadratic(
         expand_as_left(b, d), expand_as_left(c, d), d, fill_value
@@ -517,7 +514,7 @@ def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):
 
     def angle(x):
         a = torch.complex(x[..., 0], x[..., 1]).angle()
-        m = (0 <= a).float()
+        m = (a >= 0).float()
         return a * m + (1 - m) * (2 * math.pi + a)
 
     # dots1 = dot_product(nearest_perp1, bounded_pixels, dim=-1, keepdim=True)
@@ -527,7 +524,6 @@ def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):
     )
     ##plot_tensor(bounded_pixels[0,...,1].view(1, 251, 205).abs())
     ## plot_tensor(nearest_ind[0].view(1, 251, 205)==2)
-    m1 = (angles[..., -1:] - angles[..., :-1]).abs().amin(-1) <= 0.0001
     i = angles.argsort(-1)
     m2 = (
         broadcast_gather(
@@ -540,64 +536,6 @@ def get_2d_polygon_mask(polygon_vertices, grid_points, eps=1e-6):
         return x[0, 0].view(107, 96, -1)
 
     return (m2).float()  # .squeeze(-1)
-    ##plot_tensor((broadcast_gather(i, -1, ((i == 2).float().argmax(-1, keepdim=True)+1)%3, keepdim=False) != 1)[-1].view(1, 251, 205).float())
-    # plot_tensor((m2.float())[0, 0].view(1,107,96))
-
-    nearest_perp = torch.stack((bounded_pixels[..., 1], -bounded_pixels[..., 0]), -1)
-
-    def get_dots(x):
-        d1 = dot_product(x, nearest_par1, dim=-1)
-        d2 = dot_product(x, nearest_par2, dim=-1)
-        return d1, d2
-
-    d1_perp, d2_perp = get_dots(nearest_perp)
-    d1_par, d2_par = get_dots(bounded_pixels)
-    m = (d1_perp.abs() <= 0.1) | (d2_perp.abs() <= 0.1)
-    return (
-        (
-            (((d1_perp >= 0) != (d2_perp > 0)) & ~m)
-            | (m & ((d1_par > 0.1) != (d2_par > 0.1)))
-        )
-        .float()
-        .squeeze(-1)
-    )
-
-    def angle(x):
-        a = torch.complex(x[..., 1], x[..., 0]).angle()
-        m = (0 <= a).float()
-        return a * m + (1 - m) * (2 * math.pi + a)
-
-    # dots1 = dot_product(nearest_perp1, bounded_pixels, dim=-1, keepdim=True)
-    # dots2 = dot_product(nearest_perp2, bounded_pixels, dim=-1, keepdim=True)
-    a1, a2, ab = [angle(_) for _ in [nearest_par1, nearest_par2, bounded_pixels]]
-    a1 = a1 - 0.1
-    a2 = a2 + 0.1
-
-    return ((a1 <= ab) & (ab <= a2)).float()  # .squeeze(-1)
-
-    dots = torch.minimum(dots1, dots2)
-    # dots = (dots * m + (1-m) * 1e12).amin(-2)
-    return (dots <= 0).float().squeeze(-1)
-
-    # dots1 = dot_product(perp1.unsqueeze(-3), bounded_pixels.unsqueeze(-2) - pp2d.unsqueeze(-3), dim=-1, keepdim=True)
-    bounded_pixels = bounded_pixels.float().unsqueeze(-2)
-    parallel = parallel.unsqueeze(-3)
-    perp_dists = (
-        bounded_pixels - dot_product(bounded_pixels, parallel) * parallel
-    ).norm(p=2, dim=-1, keepdim=True)
-    max_ind = (perp_dists * m + (1 - m) * -1e12).argmax(-2, keepdim=True)
-    dots = dot_product(
-        perp.unsqueeze(-3), bounded_pixels, dim=-1, keepdim=True
-    ) - dot_product(perp, pp2d, dim=-1, keepdim=True).unsqueeze(-3)
-
-    # max_ind = (dots.abs() * m + (1-m) * -1e12).argmax(-2, keepdim=True)
-
-    dots = broadcast_gather(dots, -2, max_ind, keepdim=False)
-
-    # md = (dots > 0)
-    return (dots <= 0).float().squeeze(-1)
-    md = (dots.unsqueeze(-2) * mf + (1 - mf) * 1e12).amin(-2, keepdim=False) < 0
-    return md.float().squeeze(-1)
 
 
 def get_2d_polygon_mask2(polygon_vertices, grid_points, eps=1e-6):

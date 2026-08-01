@@ -24,6 +24,7 @@ matcap images and view-space depth packing are not sampled (Algan has no
 per-fragment UV pipeline); the corresponding approximations are noted per
 function.
 """
+from __future__ import annotations
 
 import torch
 import torch.nn.functional as F

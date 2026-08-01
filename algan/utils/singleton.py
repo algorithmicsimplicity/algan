@@ -3,6 +3,7 @@
 Only :class:`~algan.scene_manager.SceneManager` currently uses this base.
 Timeline, animation, and audio managers are ordinary per-scene objects.
 """
+from __future__ import annotations
 
 
 class Singleton:

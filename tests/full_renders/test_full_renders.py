@@ -12,7 +12,6 @@ import torch
 
 from algan import PREVIEW, SETTINGS, Scene
 
-
 HERE = Path(__file__).resolve().parent
 SCENES_DIR = HERE / "scenes"
 OUTPUT_DIR = HERE / "algan_outputs"
@@ -124,7 +123,8 @@ def test_full_render_scene(scene_path: Path, render_environment):
 
     assert result.rendered
     assert result.output_path == output_path
-    assert output_path.exists() and output_path.stat().st_size > 0
+    assert output_path.exists()
+    assert output_path.stat().st_size > 0
 
     expected_path = EXPECTED_DIR / output_path.name
     if UPDATE_BASELINES:

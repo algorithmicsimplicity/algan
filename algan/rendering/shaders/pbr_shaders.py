@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 import torch.nn.functional as F
 
@@ -172,7 +174,6 @@ def default_shader(
         The final computed RGB color for the vertex.
 
     """
-
     incidences = torch.subtract(vertex_location, light_origin, out=memory.get_tensor(vertex_location.shape))
     incidences = normalize(incidences, dim=-1, p=2, memory=memory)
     vertex_normal = normalize(vertex_normal, p=2, dim=-1, memory=memory)

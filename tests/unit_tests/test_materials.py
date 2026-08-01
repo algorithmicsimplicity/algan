@@ -13,23 +13,23 @@ import warnings
 
 import torch
 
+from algan.constants.color import WHITE
 from algan.rendering.shaders import material_shaders as ms
 from algan.rendering.shaders.materials import (
     FrontSide,
     Material,
     MeshBasicMaterial,
-    MeshLambertMaterial,
-    MeshPhongMaterial,
-    MeshStandardMaterial,
-    MeshPhysicalMaterial,
-    MeshToonMaterial,
-    MeshNormalMaterial,
-    MeshMatcapMaterial,
     MeshDepthMaterial,
-    _to_rgb,
+    MeshLambertMaterial,
+    MeshMatcapMaterial,
+    MeshNormalMaterial,
+    MeshPhongMaterial,
+    MeshPhysicalMaterial,
+    MeshStandardMaterial,
+    MeshToonMaterial,
     _to_color5,
+    _to_rgb,
 )
-from algan.constants.color import WHITE
 
 _NUM_BASE_PARAMS = len(inspect.signature(ms.basic_material_shader).parameters)  # 9
 
@@ -112,11 +112,13 @@ def test_material_defaults():
     assert ph.transmission == 0.0
     assert ph.iridescence == 0.0
     # Inherits Standard defaults.
-    assert ph.roughness == 1.0 and ph.metalness == 0.0
+    assert ph.roughness == 1.0
+    assert ph.metalness == 0.0
 
     assert MeshToonMaterial().bands == 3.0
     d = MeshDepthMaterial()
-    assert d.near == 0.1 and d.far == 100.0
+    assert d.near == 0.1
+    assert d.far == 100.0
     print("ok: material-specific defaults match Three.js")
 
 
@@ -135,7 +137,8 @@ def test_unexpected_kwarg_raises():
 
 def test_param_contract():
     """Every key from get_shader_param_values must match the shader's extra
-    parameter names exactly (so set_material wires values to the right attrs)."""
+    parameter names exactly (so set_material wires values to the right attrs).
+    """
     for cls in ALL_MATERIALS:
         m = cls()
         extra = list(inspect.signature(m.shader).parameters)[_NUM_BASE_PARAMS:]
@@ -195,7 +198,8 @@ def test_all_shaders_output_four_channels():
         out = fn(None, vloc, vnrm, alb, cam, light, lcol, 1, 1, *extra)
         assert out.shape[-1] == 4, (name, out.shape)
         assert torch.isfinite(out).all(), name
-        assert out[..., :3].min() >= 0.0 and out[..., :3].max() <= 1.0, name
+        assert out[..., :3].min() >= 0.0, name
+        assert out[..., :3].max() <= 1.0, name
     print("ok: all lit shaders return finite 4-channel colour in [0,1]")
 
 
@@ -338,7 +342,8 @@ def test_legacy_pbr_shader_still_works():
     out = basic_pbr_shader(
         None, vloc, vnrm, alb[..., :4], cam, light, lcol, 1, 1, 0.5, 0.5
     )
-    assert out.shape[-1] == 4 and torch.isfinite(out).all()
+    assert out.shape[-1] == 4
+    assert torch.isfinite(out).all()
     out2 = null_shader(None, vloc, vnrm, alb, cam, light, lcol, 1, 1)
     assert torch.allclose(out2, alb)
     print("ok: legacy basic_pbr_shader / null_shader still work")

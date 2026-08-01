@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -18,8 +15,8 @@ from algan.errors import (
 )
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Square
-from algan.rendering.lights import PointLight, RectAreaLight, SpotLight
 from algan.rendering.camera import Camera
+from algan.rendering.lights import PointLight, RectAreaLight, SpotLight
 from algan.rendering.raytracing import settings as rt_settings
 from algan.rendering.raytracing.tracer import (
     RenderPlan,
@@ -48,18 +45,16 @@ def test_context_is_restored_after_user_exception():
     root = scene.animation_manager.context
     children_before = list(root.child_contexts)
     failed = Sync()
-    with pytest.raises(RuntimeError):
-        with failed:
-            raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), failed:
+        raise RuntimeError("boom")
     assert scene.animation_manager.context is root
     assert root.child_contexts == children_before
     assert failed not in root.child_contexts
 
 
 def test_same_run_time_tolerates_zero_duration_children():
-    with Sync(same_run_time=True):
-        with algan.Off():
-            pass
+    with Sync(same_run_time=True), algan.Off():
+        pass
 
 
 def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
@@ -204,7 +199,8 @@ def test_default_render_keeps_the_scene_authorable(monkeypatch, tmp_path):
     assert scene.audio_manager is managers[2]
     assert square.is_spawned()
     assert not square.is_despawned()
-    assert scene.camera.is_spawned() and not scene.camera.is_despawned()
+    assert scene.camera.is_spawned()
+    assert not scene.camera.is_despawned()
 
 
 def test_reset_true_discards_the_authored_scene(monkeypatch, tmp_path):
@@ -298,7 +294,7 @@ def test_video_settings_are_immutable_validated_and_typo_safe():
         PREVIEW.set(resoluton=(1, 1))
     with pytest.raises(AlganConfigurationError, match="positive"):
         PREVIEW.set(resolution=(0, 1))
-    with pytest.raises(Exception):
+    with pytest.raises(AlganConfigurationError, match="immutable"):
         PREVIEW.frames_per_second = 99
 
     changed = PREVIEW.replace(frames_per_second=12)
@@ -435,8 +431,8 @@ def test_root_star_exports_exclude_internal_helpers():
     ):
         assert leaked not in namespace, f"{leaked} leaked into the star namespace"
     # Still importable from their real home.
-    from algan.utils.tensor_utils import mean  # noqa: F401
     from algan.utils.algan_utils import scene_function  # noqa: F401
+    from algan.utils.tensor_utils import mean  # noqa: F401
 
 
 def test_camera_validates_projection_and_clip_parameters():

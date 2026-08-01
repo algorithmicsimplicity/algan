@@ -10,6 +10,8 @@ third-party boundary instead: modules bind a :class:`LazyModule` and use it
 exactly like the real module; the real import happens on first attribute
 access.
 """
+from __future__ import annotations
+
 import importlib
 import sys
 
@@ -46,7 +48,8 @@ class LazyModule:
 def isinstance_if_loaded(obj, lazy_module, class_name):
     """``isinstance(obj, getattr(module, class_name))`` without forcing the
     import: if the module was never loaded, ``obj`` cannot be an instance of
-    one of its classes, so the answer is False for free."""
+    one of its classes, so the answer is False for free.
+    """
     if lazy_module._module is None and lazy_module._name not in sys.modules:
         return False
     return isinstance(obj, getattr(lazy_module, class_name))

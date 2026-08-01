@@ -7,9 +7,13 @@ into ``Mob`` and is not useful standalone (``self`` is always a Mob).
 from __future__ import annotations
 
 import inspect
+from typing import TYPE_CHECKING
 
 from algan.rendering.shaders.pbr_shaders import default_shader
 from algan.utils.tensor_utils import cast_to_tensor
+
+if TYPE_CHECKING:
+    from algan.animatable_base.mob import Mob
 
 
 class ModifiedProtectedAttributeError(Exception):
@@ -18,7 +22,8 @@ class ModifiedProtectedAttributeError(Exception):
 
 class MobMaterialsMixin:
     """``set_shader`` / ``set_fragment_shader`` / ``set_material`` -- all must
-    be called *before* the mob is spawned."""
+    be called *before* the mob is spawned.
+    """
 
     def set_shader(self, shader) -> Mob:
         """Set the per-vertex lighting shader for this Mob and its descendants.
@@ -97,7 +102,7 @@ class MobMaterialsMixin:
 
         for d in reversed(self.get_descendants()):
             d.register_attrs_as_animatable(shader_specific_param_names)
-            d.set_non_recursive(**{k: v for k, v in zip(shader_specific_param_names, shader_specific_param_defaults)})
+            d.set_non_recursive(**dict(zip(shader_specific_param_names, shader_specific_param_defaults)))
             #for n, v in zip(
             #
             #):
@@ -282,5 +287,5 @@ class MobMaterialsMixin:
             return {
                 _: self.__getattribute__(_) for _ in self.shader_specific_param_names
             }
-        return dict()
+        return {}
 

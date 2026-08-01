@@ -54,7 +54,8 @@ def _image_to_float_hwc(image):
 
 def _normalize_color(color):
     """glTF colour factors may be uint8 [0, 255] or float [0, 1]; return a
-    4-tuple in [0, 1]."""
+    4-tuple in [0, 1].
+    """
     if color is None:
         return (1.0, 1.0, 1.0, 1.0)
     c = [float(x) for x in np.asarray(color).reshape(-1)[:4]]
@@ -67,7 +68,8 @@ def _normalize_color(color):
 
 def _convert_material(visual):
     """trimesh visual -> :class:`MaterialData` (PBR base colour + embedded
-    diffuse texture where present)."""
+    diffuse texture where present).
+    """
     material = getattr(visual, "material", None)
     if material is None:
         return MaterialData()
@@ -162,7 +164,8 @@ _TYPE_COMPONENTS = {
 
 def _accessor_array(gltf, accessor_idx, blob):
     """Read glTF accessor ``accessor_idx`` into a torch tensor ``[count, C]``
-    (or ``[count]`` for SCALAR)."""
+    (or ``[count]`` for SCALAR).
+    """
     acc = gltf.accessors[accessor_idx]
     view = gltf.bufferViews[acc.bufferView]
     dtype = _COMPONENT_DTYPE[acc.componentType]
@@ -181,7 +184,8 @@ def _accessor_array(gltf, accessor_idx, blob):
 
 def _node_local_transform(node):
     """Local ``4x4`` transform of a glTF node (its ``matrix`` if present, else
-    its TRS components)."""
+    its TRS components).
+    """
     if node.matrix:
         # glTF matrices are column-major; reshape row-major then transpose.
         m = torch.tensor(node.matrix, dtype=torch.float32).reshape(4, 4).T
@@ -194,7 +198,8 @@ def _node_local_transform(node):
 
 def _gltf_mesh_counts(gltf, blob):
     """Per glTF-mesh (vertex_count, face_count) from its first primitive, to map
-    glTF meshes onto the trimesh-built :class:`MeshData` list by shape."""
+    glTF meshes onto the trimesh-built :class:`MeshData` list by shape.
+    """
     counts = []
     for mesh in gltf.meshes or []:
         vc = fc = -1
@@ -212,7 +217,8 @@ def _gltf_mesh_counts(gltf, blob):
 def _map_gltf_meshes(gltf, meshes, blob):
     """Map each glTF mesh index to a unique built ``MeshData`` index by matching
     (vertex_count, face_count). Returns ``None`` if any glTF mesh is ambiguous
-    or unmatched (caller then falls back to the flat static nodes)."""
+    or unmatched (caller then falls back to the flat static nodes).
+    """
     our = [(m.vertices.shape[0], m.faces.shape[0]) for m in meshes]
     counts = _gltf_mesh_counts(gltf, blob)
     mapping = {}
@@ -230,7 +236,8 @@ def _build_hierarchy(gltf, meshes, blob):
     """Recover the real node hierarchy from the glTF, mapping mesh-carrying
     nodes onto built ``MeshData`` indices. Returns an ordered ``list[NodeData]``
     with ``parent < child`` (so a single forward compose pass works), or
-    ``None`` if the mesh mapping is ambiguous."""
+    ``None`` if the mesh mapping is ambiguous.
+    """
     mesh_map = _map_gltf_meshes(gltf, meshes, blob)
     if mesh_map is None:
         return None
@@ -273,7 +280,8 @@ def _build_hierarchy(gltf, meshes, blob):
 
 def _parse_animations(gltf, blob):
     """Parse glTF animation clips into ``list[AnimationData]`` keyed by node
-    name (matching :class:`NodeData.name`)."""
+    name (matching :class:`NodeData.name`).
+    """
     gnodes = gltf.nodes or []
 
     def node_name(idx):
@@ -315,7 +323,8 @@ def _parse_animations(gltf, blob):
 def _augment_with_animations(file_path, meshes, static_nodes):
     """When ``file_path`` carries glTF animations, return ``(nodes, animations)``
     with the real hierarchy and parsed clips; otherwise return the static nodes
-    and no animations. Fully defensive: any failure degrades to static."""
+    and no animations. Fully defensive: any failure degrades to static.
+    """
     try:
         from pygltflib import GLTF2
 
@@ -341,7 +350,8 @@ def load_scene(file_path):
     """Parse ``file_path`` (glTF/glB/OBJ/PLY/... anything trimesh reads) into a
     :class:`SceneData`. Node-instance world transforms from the scene graph are
     baked into flat root nodes (parent -1), which the shared model builder then
-    applies to the geometry."""
+    applies to the geometry.
+    """
     if not os.path.exists(file_path):
         raise FileNotFoundError(file_path)
     import trimesh

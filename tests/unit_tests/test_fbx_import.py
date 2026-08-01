@@ -44,7 +44,8 @@ FULL_RENDER_GLB = (
 # --- geometry / IR builders -------------------------------------------------
 def _checker_texture(n=32):
     """Asymmetric texture: RED in the top-left image quadrant, a green/blue
-    checker elsewhere -- asymmetry lets the render test verify UV orientation."""
+    checker elsewhere -- asymmetry lets the render test verify UV orientation.
+    """
     img = torch.zeros(n, n, 4)
     img[..., 3] = 1.0
     for r in range(n):
@@ -119,7 +120,8 @@ class _CheckerModel(ThreeDModelMob):
 # --- pure-logic tests (no rendering) ----------------------------------------
 def test_world_transform_baking():
     """Node-local transforms compose down the hierarchy and bake into
-    world-space vertices."""
+    world-space vertices.
+    """
     from algan.mobs.three_d_models.model_mob import (
         _compose_world_transforms,
         _transform_points,
@@ -174,7 +176,8 @@ def test_assimp_loader_missing_file():
 # --- Phase 2: PBR materials + normal maps + node access ---------------------
 def test_normal_map_conversion():
     """glTF rgb normal map -> engine [-1, 1] tangent map, transposed/flipped
-    like the colour texture with the green axis flipped."""
+    like the colour texture with the green axis flipped.
+    """
     img = torch.zeros(4, 6, 3)     # [H, W, 3] in [0, 1]
     img[..., 2] = 1.0              # flat normal rgb (0,0,1) -> vector (-1,-1,+1)
     img[..., 1] = 1.0              # green = 1 -> y = +1, flipped to -1
@@ -186,7 +189,8 @@ def test_normal_map_conversion():
 
 def _material_scene_with_maps():
     """Two-triangle quad whose material carries an embedded metallic-roughness
-    map and a normal map, for wiring assertions (no render)."""
+    map and a normal map, for wiring assertions (no render).
+    """
     v, f, n, uv = _quad()
     mr = torch.zeros(8, 8, 3)
     mr[..., 1] = 0.5   # roughness channel (G)
@@ -215,7 +219,8 @@ def test_pbr_and_normal_map_wiring():
     # PBR material -> standard (GGX) shader with metalness/roughness params.
     assert mesh.shader is standard_shader
     params = mesh.grid.get_shader_params()
-    assert "metalness" in params and "roughness" in params
+    assert "metalness" in params
+    assert "roughness" in params
     # Flat metalness/roughness = factor * mean(map channel): 1*0.25, 1*0.5.
     assert abs(float(mesh.grid.metalness.reshape(-1)[0]) - 0.25) < 1e-3
     assert abs(float(mesh.grid.roughness.reshape(-1)[0]) - 0.5) < 1e-3
@@ -284,7 +289,8 @@ def _triangle_mesh(v=None):
 
 def _spin_translate_scene():
     """Single triangle on a node that rotates 90 deg about +Y and translates to
-    x=+2 over one second."""
+    x=+2 over one second.
+    """
     times = torch.tensor([0.0, 1.0])
     quats = torch.stack([torch.tensor([0.0, 0.0, 0.0, 1.0]),
                          torch.tensor([0.0, 0.7071068, 0.0, 0.7071068])])
@@ -345,7 +351,8 @@ def test_bake_hierarchy_animation():
 
 def test_play_animation_sets_recompute_normals():
     """Playing an animation drives the corner geometry and switches meshes to
-    per-frame smooth-normal recomputation."""
+    per-frame smooth-normal recomputation.
+    """
     SceneManager.reset()
     with torch.inference_mode():
         model = ThreeDModelMob(scene_data=_spin_translate_scene()).spawn()
@@ -355,7 +362,8 @@ def test_play_animation_sets_recompute_normals():
 
 def _write_animated_glb(path):
     """Author a minimal animated glB (one triangle on a node spinning 90 deg
-    about +Y over 1s) with pygltflib, to exercise the real loader path."""
+    about +Y over 1s) with pygltflib, to exercise the real loader path.
+    """
     import pygltflib as g
 
     verts = np.array([[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.0, 0.5, 0]],
@@ -411,7 +419,8 @@ def _write_animated_glb(path):
 
 def test_glb_animation_roundtrip(tmp_path):
     """Author, load and bake an animated glB through the real trimesh+pygltflib
-    loader path: the clip is recovered and the pose is correct."""
+    loader path: the clip is recovered and the pose is correct.
+    """
     pytest.importorskip("pygltflib")
     SceneManager.reset()
     path = tmp_path / "spinner.glb"
@@ -441,7 +450,8 @@ def _skip_if_no_dragon():
 
 def test_glb_load_and_build():
     """Parse and build the textured dragon glB via trimesh (embedded texture,
-    per-vertex normals/UVs, node-instance transform)."""
+    per-vertex normals/UVs, node-instance transform).
+    """
     _skip_if_no_dragon()
     SceneManager.reset()
     model = ThreeDModelMob(str(DRAGON_GLB), normalize=True, normalize_size=2.0)

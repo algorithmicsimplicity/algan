@@ -4,14 +4,14 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     NoExtra,
     Off,
-    Sync,
     Seq,
+    Sync,
     active_scene_for_new_mob,
 )
-from algan.animatable_base.mob import Mob
 from algan.mobs.text import Tex
 from algan.utils.tensor_utils import cast_to_tensor
 
@@ -66,11 +66,11 @@ class NumericDisplay(Mob):
                 self.digit_mobs.append(Tex("0123456789", **kwargs))
                 self.digit_mobs[-1].set(opacity=0)
             for i in range(len(self.digit_mobs)):
-                l = self.placeholder[
+                location = self.placeholder[
                     1 + i + (1 if (num_d > 0 and i >= num_i) else 0)
                 ].location
                 for d in self.digit_mobs[i].character_mobs:
-                    d.location = l
+                    d.location = location
             super().__init__(**kwargs)
             self.register_attrs_as_animatable(["value"], NumericDisplay)
             self.setattr_without_record("value", value)

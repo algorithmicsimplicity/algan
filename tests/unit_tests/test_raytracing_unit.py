@@ -25,6 +25,7 @@ from algan.rendering.raytracing.pn_patch import (
     pn_control_points,
     pn_patch_coefficients,
 )
+
 # The deterministic megakernel ``render_scene_stbvh`` was removed in the
 # raytracing "MAJOR CLEAN UP" (commit ceaf3c4): deterministic (samples-per-pixel
 # == 1) rendering is now the multi-stage wavefront tracer, and only the Monte
@@ -652,7 +653,8 @@ def test_physical_emissive_surface():
 
 def _pn_hull_points(coeffs):
     """Bezier control points recovered from monomial coefficient rows
-    [..., 18]; the patch lies in their convex hull."""
+    [..., 18]; the patch lies in their convex hull.
+    """
     k = coeffs.unflatten(-1, (6, 3))
     k0, ku, kv, kuu, kvv, kuv = k.unbind(-2)
     return torch.stack((k0, k0 + ku + kuu, k0 + kv + kvv,
@@ -662,7 +664,8 @@ def _pn_hull_points(coeffs):
 
 def _bvh_from_hull(hull, colors, num_frames):
     """STBVH over per-frame control-net bounds, with the production rules:
-    fully transparent frames are empty, fully opaque primitives flagged."""
+    fully transparent frames are empty, fully opaque primitives flagged.
+    """
     lo = hull.amin(-2)
     hi = hull.amax(-2)
     vis = colors[..., 4].amax(-1) > MIN_ALPHA
@@ -678,7 +681,8 @@ def _bvh_from_hull(hull, colors, num_frames):
 def _pn_parts_from_coeffs(coeffs, colors, normals9=None, extra=None,
                           num_frames=None):
     """Packed PN arrays + STBVH for explicit patch coefficients [Tp, N, 18]
-    and per-corner colors [Tc, N, 3, 5]."""
+    and per-corner colors [Tc, N, 3, 5].
+    """
     n = coeffs.shape[1]
     if num_frames is None:
         num_frames = coeffs.shape[0]
@@ -694,7 +698,8 @@ def _pn_parts_from_coeffs(coeffs, colors, normals9=None, extra=None,
 def _pn_parts_from_mesh(corners, normals, colors):
     """Production-style PN parts from per-corner positions/normals
     [T, N, 3, 3] (the construction shared with
-    ``RayTracedPNTrianglePrimitive``)."""
+    ``RayTracedPNTrianglePrimitive``).
+    """
     T, n = corners.shape[0], corners.shape[1]
     control = pn_control_points(corners, normals)
     coeffs = pn_patch_coefficients(control)
@@ -708,7 +713,8 @@ def _pn_parts_from_mesh(corners, normals, colors):
 def _camera_frame(position, target, T=1):
     """Camera arrays (origin, screen point, pixel bases) for a viewpoint:
     screen plane 3 units toward ``target``, unit pixel bases orthogonal to
-    the view direction. The references below use the same convention."""
+    the view direction. The references below use the same convention.
+    """
     pos = torch.tensor(position, device=DEVICE, dtype=torch.float32)
     tgt = torch.tensor(target, device=DEVICE, dtype=torch.float32)
     fwd = torch.nn.functional.normalize(tgt - pos, dim=-1)
@@ -752,7 +758,8 @@ def _uv_corner_colors(uvs, alpha):
     """Per-corner colors (R, G, B) = (u, v, 1 - u - v) at the given domain
     corners [N, 3, 2]: every hit then renders the *global* domain
     coordinates (linear interpolation is exact for affine data), which
-    makes split and unsplit patches directly comparable."""
+    makes split and unsplit patches directly comparable.
+    """
     uvs = torch.as_tensor(uvs, device=DEVICE, dtype=torch.float32)
     c = torch.zeros((1, uvs.shape[0], 3, 5), device=DEVICE)
     c[0, :, :, 0] = uvs[..., 0]
@@ -824,7 +831,8 @@ def test_pn_flat_matches_triangle_reference():
     """PN patches with zero normals are exactly flat triangles, so the
     curved intersector (running its degenerate linear-in-v branch) must
     reproduce the brute-force triangle reference -- animated bounds, mixed
-    transparency and opaque pruning included."""
+    transparency and opaque pruning included.
+    """
     T, W, H = 7, 64, 48
     _, tri_verts, colors, cam, sp, pbx, pby = _random_triangle_scene(T)
     corners = tri_verts[..., :3].contiguous()
@@ -846,7 +854,8 @@ def test_pn_paraboloid_analytic():
     """Curved-patch correctness against the exact float64 paraboloid
     reference. The top-down view exercises mostly single hits; the low
     diagonal view sends many rays through the bowl twice, exercising
-    multiple hits per patch and their front-to-back transparency order."""
+    multiple hits per patch and their front-to-back transparency order.
+    """
     W = H = 96
     alpha = 0.5
     full_uvs = [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
@@ -879,7 +888,8 @@ def test_pn_watertight_seam():
     report hits on the shared boundary curve, which must blend exactly once
     (the PN analogue of the triangle mesh seam rule), with no holes. The
     sub-patches also exercise the uv cross term (the unsplit patch has
-    none)."""
+    none).
+    """
     W = H = 96
     alpha = 0.5
     full_uvs = [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]]
@@ -890,7 +900,8 @@ def test_pn_watertight_seam():
         """Control points of the paraboloid restricted to domain triangle
         ``q`` [3, 2]: corner samples plus mid-edge controls from the exact
         edge midpoint values (the restriction of a quadratic to a straight
-        parameter line is a quadratic curve)."""
+        parameter line is a quadratic curve).
+        """
         q = torch.tensor(q, device=DEVICE, dtype=torch.float32)
         pts = _paraboloid_point(q[:, 0], q[:, 1])
         mids = (q + q.roll(-1, 0)) * 0.5  # edge midpoints (01, 12, 20)
@@ -926,7 +937,8 @@ def test_pn_mirror_and_monte_carlo():
     """A perfectly reflective PN floor must mirror a red triangle panel
     that sits behind the camera -- exercising the PN normal fetch on the
     deterministic bounce path -- and the Monte Carlo kernel must agree
-    (smoke for its PN dispatch)."""
+    (smoke for its PN dispatch).
+    """
     T, W, H = 1, 48, 48
     floor_corners = torch.tensor(
         [[[-20.0, -20, 0], [20, -20, 0], [0, 40, 0]]],
@@ -975,7 +987,8 @@ def test_pn_mirror_and_monte_carlo():
 def test_pn_physical_shadow():
     """Physical mode with a PN occluder over a triangle floor: the explicit
     shadow rays must see the patch (the transmittance kernel's PN path) and
-    block the point light."""
+    block the point light.
+    """
     W, H = 64, 48
     floor = torch.tensor([[[-8.0, -8, 0], [8, -8, 0], [0, 12, 0]]],
                          device=DEVICE).unsqueeze(0)

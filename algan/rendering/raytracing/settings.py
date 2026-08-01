@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 import os
 import warnings
 
 from algan.errors import UnsupportedFeatureError, UnsupportedFeatureWarning
-from algan.settings._startup import _HDR_BUFFER_F16, _RENDER_DEVICE
-
 from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
+from algan.settings._startup import _HDR_BUFFER_F16, _RENDER_DEVICE
 
 # Maximum number of ray bounces (mirror reflections / diffuse scatters).
 MAX_BOUNCES = 8
@@ -126,7 +127,8 @@ WAVEFRONT_TILE_MAX = int(
 def set_wavefront_tile_auto(enabled):
     """Toggle adaptive (pool-sized) wavefront tile sizing (see
     ``WAVEFRONT_TILE_AUTO``). Off falls back to the fixed
-    ``WAVEFRONT_TILE_RAYS``."""
+    ``WAVEFRONT_TILE_RAYS``.
+    """
     global WAVEFRONT_TILE_AUTO
     WAVEFRONT_TILE_AUTO = bool(enabled)
 # On the common non-splitting wavefront path (no refraction/custom scatter), a
@@ -265,7 +267,8 @@ SPARSE_DISCOVERY_SAFETY = float(
 def note_sparse_discovery_footprint(arena_bytes, num_frames):
     """Record the arena footprint of one sparse-coverage discovery pass so the
     render-chunk preflight can reserve for the next one (see
-    ``_SPARSE_DISCOVERY_BYTES_PER_FRAME``)."""
+    ``_SPARSE_DISCOVERY_BYTES_PER_FRAME``).
+    """
     global _SPARSE_DISCOVERY_BYTES_PER_FRAME
     per_frame = float(arena_bytes) / max(1, int(num_frames))
     if per_frame > _SPARSE_DISCOVERY_BYTES_PER_FRAME:
@@ -274,7 +277,8 @@ def note_sparse_discovery_footprint(arena_bytes, num_frames):
 
 def sparse_discovery_bytes_for_frames(num_frames):
     """Reserved arena bytes for the sparse-coverage discovery over ``num_frames``
-    frames (0 until the first discovery of the job establishes a density)."""
+    frames (0 until the first discovery of the job establishes a density).
+    """
     return int(_SPARSE_DISCOVERY_BYTES_PER_FRAME * SPARSE_DISCOVERY_SAFETY
                * max(1, int(num_frames)))
 
@@ -284,14 +288,16 @@ def set_gen_fused(mode):
     ``True``/``False`` force it on/off; ``"auto"`` (default) starts unfused
     for fast startup and enables it mid-render when the forecasted remaining
     render time justifies compiling the fused kernel variants. All modes are
-    byte-identical (see ``WF_GEN_FUSED``)."""
+    byte-identical (see ``WF_GEN_FUSED``).
+    """
     global WF_GEN_FUSED
     WF_GEN_FUSED = _parse_gen_fused_mode(mode)
 
 
 def wf_gen_fused_active():
     """Live effective value of the fused-generation toggle (resolves
-    ``"auto"`` to the adaptive decision)."""
+    ``"auto"`` to the adaptive decision).
+    """
     if WF_GEN_FUSED == "auto":
         return _WF_GEN_FUSED_ON
     return bool(WF_GEN_FUSED)
@@ -299,7 +305,8 @@ def wf_gen_fused_active():
 
 def _begin_render_job():
     """Render-loop hook: a new render job starts (resets the per-job batch
-    count; the fused decision itself stays sticky for the process)."""
+    count; the fused decision itself stays sticky for the process).
+    """
     global _WF_GEN_FUSED_BATCHES, _SPARSE_DISCOVERY_BYTES_PER_FRAME
     _WF_GEN_FUSED_BATCHES = 0
     _SPARSE_DISCOVERY_BYTES_PER_FRAME = 0.0
@@ -310,7 +317,8 @@ def _note_batch_rendered(frames, seconds, frames_remaining):
     wall seconds with ``frames_remaining`` still to go. Returns True when this
     call switches fused generation on (so the caller can log it). The first
     rendered batch of a job is never used for the forecast -- it typically
-    contains the one-off kernel materialization/compile time."""
+    contains the one-off kernel materialization/compile time.
+    """
     global _WF_GEN_FUSED_ON, _WF_GEN_FUSED_BATCHES
     _WF_GEN_FUSED_BATCHES += 1
     if (WF_GEN_FUSED != "auto" or _WF_GEN_FUSED_ON
@@ -356,7 +364,8 @@ BVH_REFIT = os.environ.get("ALGAN_BVH_REFIT", "1") == "1"
 
 def set_refit_bvh(enabled):
     """Toggle the shared-topology binned-SAH refit BVH (see ``BVH_REFIT``).
-    Takes effect at the next batch's scene merge."""
+    Takes effect at the next batch's scene merge.
+    """
     global BVH_REFIT
     BVH_REFIT = bool(enabled)
 
@@ -377,14 +386,16 @@ BVH_DEFER = os.environ.get("ALGAN_BVH_DEFER", "1") == "1"
 def set_bvh_defer(enabled):
     """Toggle deferred (on-demand) STBVH builds for batches that provably do
     not traverse them (see ``BVH_DEFER``). Takes effect at the next batch's
-    scene merge."""
+    scene merge.
+    """
     global BVH_DEFER
     BVH_DEFER = bool(enabled)
 
 
 def refit_bvh_active():
     """Live effective value of the refit-BVH toggle: the legacy textured /
-    sorted-material orchestrators walk the classic tree only."""
+    sorted-material orchestrators walk the classic tree only.
+    """
     return (BVH_REFIT and not WF_TEXTURED
             and WAVEFRONT_SORT_MATERIALS is not True)
 
@@ -407,7 +418,8 @@ HYBRID_RASTER = os.environ.get("ALGAN_HYBRID_RASTER", "1") == "1"
 
 def set_hybrid_raster(enabled):
     """Toggle the hybrid raster primary-visibility front-end (see
-    ``HYBRID_RASTER``)."""
+    ``HYBRID_RASTER``).
+    """
     global HYBRID_RASTER
     HYBRID_RASTER = bool(enabled)
 
@@ -423,7 +435,8 @@ RASTER_SS = os.environ.get("ALGAN_RASTER_SS", "1") == "1"
 
 def set_raster_screen_space(enabled):
     """Toggle screen-space rasterization in the hybrid raster front-end (see
-    ``RASTER_SS``)."""
+    ``RASTER_SS``).
+    """
     global RASTER_SS
     RASTER_SS = bool(enabled)
 
@@ -442,7 +455,8 @@ RASTER_BEZ_PRECOMPUTE = (
 
 def set_raster_bez_precompute(enabled):
     """Toggle the batched circuit screen-bounds precompute in the hybrid
-    raster front-end (see ``RASTER_BEZ_PRECOMPUTE``)."""
+    raster front-end (see ``RASTER_BEZ_PRECOMPUTE``).
+    """
     global RASTER_BEZ_PRECOMPUTE
     RASTER_BEZ_PRECOMPUTE = bool(enabled)
 
@@ -457,7 +471,8 @@ RASTER_TRI_PRECOMPUTE = (
 
 def set_raster_tri_precompute(enabled):
     """Toggle the batched triangle screen-bounds precompute in the hybrid
-    raster front-end (see ``RASTER_TRI_PRECOMPUTE``)."""
+    raster front-end (see ``RASTER_TRI_PRECOMPUTE``).
+    """
     global RASTER_TRI_PRECOMPUTE
     RASTER_TRI_PRECOMPUTE = bool(enabled)
 
@@ -484,7 +499,8 @@ RASTER_STRADDLE_CLIP = (
 
 def set_raster_straddle_clip(enabled):
     """Toggle the camera-plane clip of hybrid-raster candidate bboxes (see
-    ``RASTER_STRADDLE_CLIP``)."""
+    ``RASTER_STRADDLE_CLIP``).
+    """
     global RASTER_STRADDLE_CLIP
     RASTER_STRADDLE_CLIP = bool(enabled)
 
@@ -508,7 +524,8 @@ RASTER_EMPTY_SKIP = (
 
 def set_raster_empty_skip(enabled):
     """Toggle the empty-pixel fast path of the hybrid raster resolve (see
-    ``RASTER_EMPTY_SKIP``)."""
+    ``RASTER_EMPTY_SKIP``).
+    """
     global RASTER_EMPTY_SKIP
     RASTER_EMPTY_SKIP = bool(enabled)
 
@@ -528,7 +545,8 @@ RASTER_PAIR_FLAGS = (
 
 def set_raster_pair_flags(enabled):
     """Toggle the host-side per-frame candidate-class flags used to skip
-    empty per-tile pair emission (see ``RASTER_PAIR_FLAGS``)."""
+    empty per-tile pair emission (see ``RASTER_PAIR_FLAGS``).
+    """
     global RASTER_PAIR_FLAGS
     RASTER_PAIR_FLAGS = bool(enabled)
 
@@ -551,7 +569,8 @@ RASTER_COVERED_SHADE = (
 
 def set_raster_covered_shade(enabled):
     """Toggle the covered-pixel-compacted raster resolve (see
-    ``RASTER_COVERED_SHADE``)."""
+    ``RASTER_COVERED_SHADE``).
+    """
     global RASTER_COVERED_SHADE
     RASTER_COVERED_SHADE = bool(enabled)
 
@@ -1162,7 +1181,8 @@ def hdr_frame_dtype():
     (GTX 10-series) at ~1/64 FP32 -- run the f16 torch post-processing (and
     f16 buffer traffic) far slower than the memory saving is worth (measured
     ~80% slower end-to-end on a GTX 1050). On Turing/Ampere+ (fast f16) it is
-    a clear win, so enable it there."""
+    a clear win, so enable it there.
+    """
     import torch
     if _HDR_BUFFER_F16:
         return torch.float16
@@ -1178,7 +1198,8 @@ def set_post_tonemap_kernel(enabled):
     tonemap pipeline). The kernel reuses the in-composite tonemap ti.funcs and
     computes in f32, recovering most of the cost the move to post-process
     tonemapping added (the torch tonemap ran ~20 ops/pixel over every frame).
-    Kill-switch / A-B hook."""
+    Kill-switch / A-B hook.
+    """
     global POST_TONEMAP_KERNEL
     POST_TONEMAP_KERNEL = bool(enabled)
 
@@ -1265,7 +1286,8 @@ def _core_shader_ids():
 def _shader_material_id(shader):
     """In-kernel material id for a shader function. Unknown / non-core shaders
     (and ``None``) map to 1 (unlit passthrough: the kernel returns the colour --
-    raw or baked -- unchanged)."""
+    raw or baked -- unchanged).
+    """
     if shader is None:
         return 1
     return _core_shader_ids().get(shader, 1)
@@ -1273,7 +1295,8 @@ def _shader_material_id(shader):
 
 def _shader_is_core(shader):
     """True if ``shader`` has an in-kernel port (so its hits can be fragment
-    shaded rather than baked)."""
+    shaded rather than baked).
+    """
     return shader is not None and shader in _core_shader_ids()
 
 def _constant_promotion_active():
@@ -1282,12 +1305,14 @@ def _constant_promotion_active():
     fragment-shading general wavefront (the only path where a mob's colours are
     raw albedo, so a "constant colour" is genuinely constant per fragment, and
     the only kernel whose per-vertex reads are guarded for shrunk arrays).
-    Every deterministic (samples <= 1) batch renders through that kernel."""
+    Every deterministic (samples <= 1) batch renders through that kernel.
+    """
     return PROMOTE_CONSTANTS and FRAGMENT_SHADING and SAMPLES_PER_PIXEL <= 1
 
 def _scene_has_user_pipeline(merged):
     """True if any merged primitive carries a custom fragment-pipeline id
-    (``>= _USER_PIPELINE_BASE``), so the render must enable fragment shading."""
+    (``>= _USER_PIPELINE_BASE``), so the render must enable fragment shading.
+    """
     cached = merged.get("has_user_pipeline")
     if cached is not None:
         return bool(cached)

@@ -29,7 +29,7 @@ from algan.scene_manager import SceneManager
 
 R = torch.tensor([1.0, 0.0, 0.0])
 U = torch.tensor([0.0, 1.0, 0.0])
-O = torch.tensor([0.0, 0.0, 1.0])
+OUT = torch.tensor([0.0, 0.0, 1.0])
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +51,8 @@ def _now():
 
 def _materialize(times, mobs, attr="location"):
     """Materialize the global timeline at ``times`` the way the render loop
-    does, and return each mob's values there ([T, rows, channels])."""
+    does, and return each mob's values there ([T, rows, channels]).
+    """
     tm = mobs[0].scene.timeline_manager
     with Off(record_attr_modifications=False, record_funcs=False,
              priority_level=math.inf):
@@ -83,7 +84,8 @@ def test_sequential_edits():
 
 def test_edits_ending_at_same_time():
     """Two edits of the same rows ending at the same time: the base must be
-    the pre-value of the first-executed one, and both must replay in order."""
+    the pre-value of the first-executed one, and both must replay in order.
+    """
     m = Mob().spawn(animate=False)
     t0 = _now()
     with Sync(rate_func=rate_funcs.identity):
@@ -98,7 +100,8 @@ def test_edits_ending_at_same_time():
 def test_nested_overlap():
     """[0,1] and [0,0.5]: the later-executed edit ends first. Its pre-value
     must not be used as base while the first animation is mid-flight, and its
-    finished contribution must persist through [0.5, 1)."""
+    finished contribution must persist through [0.5, 1).
+    """
     m = Mob().spawn(animate=False)
     t0 = _now()
     with Sync(rate_func=rate_funcs.identity):
@@ -121,10 +124,10 @@ def test_three_overlapping_intervals():
             m.move(R * 2)          # [t0, t0+1]
         with Seq(run_time=1):
             m.move(U * 2)          # [t0, t0+0.5]
-            m.move(O * 2)          # [t0+0.5, t0+1]
+            m.move(OUT * 2)          # [t0+0.5, t0+1]
     offs = [0.25, 0.4999, 0.5, 0.75, 0.9999, 1.0, 1.5]
     expected = [R * 2 * _lin(dt, 0, 1) + U * 2 * _lin(dt, 0, 0.5)
-                + O * 2 * _lin(dt, 0.5, 1) for dt in offs]
+                + OUT * 2 * _lin(dt, 0.5, 1) for dt in offs]
     (actual,) = _materialize([t0 + dt for dt in offs], [m])
     _assert_matches(offs, actual, expected)
 
@@ -133,7 +136,8 @@ def test_partial_row_overlap():
     """mob1 animated on [0,2]; a group edit covering mob1+mob2 rows on [0,1].
     The group edit overlaps an earlier edit only on mob1's rows; both mobs'
     rows must nevertheless stay consistent (the group animation's replay
-    window is extended on all of its rows together)."""
+    window is extended on all of its rows together).
+    """
     m1 = Mob().spawn(animate=False)
     m2 = Mob().spawn(animate=False)
     g = Group([m1, m2])
@@ -155,12 +159,13 @@ def test_overlapping_rotations_continuity():
     """Two overlapping rotations ([0,1] and [0,0.5]) of one mob's basis.
     Rotations compose by reading the current basis, so this exercises the
     non-additive replay chain: the state must be continuous across the inner
-    edit's end and settle exactly on the recorded final basis."""
+    edit's end and settle exactly on the recorded final basis.
+    """
     m = Mob().spawn(animate=False)
     t0 = _now()
     with Sync(rate_func=rate_funcs.identity):
         with Seq(run_time=1):
-            m.rotate(90, O)        # [t0, t0+1]
+            m.rotate(90, OUT)        # [t0, t0+1]
         with Seq(run_time=0.5):
             m.rotate(90, U)        # [t0, t0+0.5]
     offs = [0.4999, 0.5, 0.9999, 1.0, 1.5]

@@ -2,11 +2,12 @@ import torch.nn.functional as F
 
 from algan.animation_timeline.animation_contexts import Sync
 from algan.constants.spatial import *  # RIGHT, LEFT, IN, OUT, ORIGIN, UP
-from algan.utils.algan_utils import render_all_funcs
 from algan.mobs.shapes_2d import TriangleTriangulated
+from algan.utils.algan_utils import render_all_funcs
 
 
-get_mob = lambda a=0: TriangleTriangulated(
+def get_mob(a=0):
+    return TriangleTriangulated(
     torch.stack(
         (
             UP * 10,

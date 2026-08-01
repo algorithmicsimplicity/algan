@@ -1,10 +1,11 @@
-from dataclasses import dataclass
+from __future__ import annotations
+
 import math
+from dataclasses import dataclass
 
 from algan.constants.math import GIGABYTES
 from algan.errors import AlganConfigurationError
 from algan.settings.abstract_settings import Settings
-
 
 _INITIALIZATION_ONLY = {
     "animation_device": "ALGAN_ANIMATION_DEVICE",

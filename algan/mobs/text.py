@@ -1,11 +1,10 @@
-from algan.settings._startup import _ANIMATION_DEVICE
-from algan.settings import SETTINGS
-import copy
+from __future__ import annotations
 
-import numpy
-import torch.nn.functional as F
-from svgelements import Path, Line, Move, Close
 import pathlib
+
+import torch.nn.functional as F
+
+from algan.settings._startup import _ANIMATION_DEVICE
 
 # Deferred: manim's import chain (sympy/networkx/scipy/...) costs ~2 s of
 # ``import algan`` and is only needed once a Text/Tex is constructed. The
@@ -14,28 +13,22 @@ from algan.utils.lazy_import import LazyModule
 
 mn = LazyModule("manim", extras=("algan.utils.manim_svg_cache",))
 #mn = LazyModule("algan.external_libraries.manim", extras=("algan.utils.manim_svg_cache",))
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
-    Sync,
     Off,
-    AnimationContext,
-    Lag,
     Seq,
     active_scene_for_new_mob,
 )
+from algan.constants.color import *
+from algan.constants.spatial import DOWN, LEFT, ORIGIN, RIGHT, UP
+from algan.mobs.bezier_circuit import BezierCircuitCubic
+from algan.mobs.group import Group
+from algan.mobs.image_mob import ImageMob
 from algan.mobs.triangulated_bezier_circuit import (
     TriangulatedBezierCircuit,
-    point_to_tensor2,
 )
-from algan.mobs.bezier_circuit import BezierCircuitCubic
-from algan.constants.spatial import DOWN, LEFT, ORIGIN, RIGHT, UP
-from algan.constants.color import *
-from algan.mobs.group import Group
-from algan.animatable_base.mob import Mob
-from algan.mobs.image_mob import ImageMob
-from algan.utils.animation_utils import animate_lagged_by_location
-from algan.utils.python_utils import traverse
-from algan.utils.tensor_utils import unsquish
 from algan.utils.mob_utils import BatchedMobViewSequence
+from algan.utils.tensor_utils import unsquish
 
 
 def make_manim_dir():
@@ -480,7 +473,8 @@ def _to_pango_hex(color, color_map):
 def _default_preamble():
     """Vendored manim's default LaTeX preamble, fetched on first use
     (deferred: importing ``algan.external_libraries.manim`` costs ~2 s of
-    ``import algan`` and is only needed when a Tex has a custom preamble)."""
+    ``import algan`` and is only needed when a Tex has a custom preamble).
+    """
     from algan.external_libraries.manim.utils.tex import _DEFAULT_PREAMBLE
 
     return _DEFAULT_PREAMBLE

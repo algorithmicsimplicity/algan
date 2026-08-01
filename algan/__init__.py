@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 def __getattr__(name):
     # PEP 562: resolve __version__ lazily -- the importlib.metadata lookup
     # costs ~0.1 s and almost no session reads it. (Underscored names are
@@ -25,6 +28,7 @@ sys.modules.setdefault("manim", _vendored_manim)
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 import shutil
+
 import torch
 
 # Algan never needs gradients: all animation math is pure tensor arithmetic.
@@ -45,16 +49,16 @@ if _ANIMATION_DEVICE.type != "cpu":
 torch.set_default_dtype(torch.float32)
 from algan.errors import *
 from algan.logging.logger import get_logger, set_log_level
+
 get_logger().info(f"Rendering device set to {_RENDER_DEVICE}")
 
-from algan.utils.memory_utils import ManualMemory
-from algan.scene_manager import SceneManager
-
-from algan.settings.video_settings import *
-
-from algan.constants.spatial import *
 from algan.constants.color import *
 from algan.constants.math import *
+from algan.constants.spatial import *
+from algan.scene_manager import SceneManager
+from algan.settings.video_settings import *
+from algan.utils.memory_utils import ManualMemory
+from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 
 # Taichi is imported (via the rendering modules above) but no kernel has
 # materialized yet -- install the warm-start memoization now so every kernel
@@ -62,29 +66,28 @@ from algan.constants.math import *
 # the cached fast launcher that skips Taichi's per-launch Python argument
 # re-validation on repeat launches (see utils/taichi_fast_launch.py).
 from algan.utils.taichi_warmstart import apply as _apply_taichi_warmstart
-from algan.utils.taichi_fast_launch import apply as _apply_taichi_fast_launch
 
 _apply_taichi_warmstart()
 _apply_taichi_fast_launch()
 
 from algan.animatable_base.animatable import *
 from algan.animatable_base.mob import *
-from algan.rendering import camera
-from algan.mobs.manim_mob import *
-from algan.mobs.group import *
-from algan.mobs.text import *
-from algan.mobs.image_mob import *
-from algan.mobs.image_compat import *
-from algan.mobs.surfaces.surface import *
-from algan.mobs.shapes_3d import *
-from algan.mobs.shapes_2d import *
-from algan.mobs.point_cloud import *
-from algan.mobs.opengl_compat import *
 from algan.mobs.bezier_circuit import *
-from algan.mobs.three_d_models import ThreeDModelMob, TriangleMesh
-from algan.mobs.numeric_display import NumericDisplay
+from algan.mobs.group import *
+from algan.mobs.image_compat import *
+from algan.mobs.image_mob import *
 from algan.mobs.manim_compat import *
+from algan.mobs.manim_mob import *
 from algan.mobs.manim_parity import *
+from algan.mobs.numeric_display import NumericDisplay
+from algan.mobs.opengl_compat import *
+from algan.mobs.point_cloud import *
+from algan.mobs.shapes_2d import *
+from algan.mobs.shapes_3d import *
+from algan.mobs.surfaces.surface import *
+from algan.mobs.text import *
+from algan.mobs.three_d_models import ThreeDModelMob, TriangleMesh
+from algan.rendering import camera
 
 # Manim names its root class Mobject; Algan's native equivalent is Mob.  Its
 # abstract graph and OpenGL renderer-specific bases likewise map to Algan's
@@ -92,64 +95,74 @@ from algan.mobs.manim_parity import *
 Mobject = Mob
 GenericGraph = Graph
 install_opengl_aliases(globals())
-from algan.scene import Scene
-
 from algan.animation_timeline.animation_contexts import *
+from algan.rendering.lights import *
+from algan.scene import Scene
 from algan.sound.audio_effect import AudioEffect, AudioManager
 from algan.utils.algan_utils import *
-from algan.rendering.lights import *
+
 
 def set_environment_map(*args, **kwargs):
     """Set the environment map on the current active scene."""
     return SceneManager.instance().current_scene.set_environment_map(*args, **kwargs)
 
-from algan.rendering.shaders.materials import *
 from algan.rendering.shaders.material_shaders import (
     basic_material_shader,
-    lambert_shader,
-    phong_shader,
-    standard_shader,
-    physical_shader,
-    toon_shader,
-    normal_shader,
-    matcap_shader,
     depth_shader,
+    lambert_shader,
+    matcap_shader,
+    normal_shader,
+    phong_shader,
+    physical_shader,
+    standard_shader,
+    toon_shader,
 )
+from algan.rendering.shaders.materials import *
 from algan.rendering.shaders.pbr_shaders import (
-    default_shader,
     basic_pbr_shader,
+    default_shader,
     null_shader,
 )
+
 SETTINGS.style.set(default_shader=default_shader)
-from algan.rendering.shaders.fragment_shaders import (
-    FragmentStage,
-    cosine_color,
-    STAGE_DEFAULT,
-    STAGE_UNLIT,
-    STAGE_LAMBERT,
-    STAGE_PHONG,
-    STAGE_STANDARD,
-    STAGE_PHYSICAL,
-)
 from algan.rendering.raytracing.shading_taichi import (
     _ggx_distribution as ggx_distribution,
-    _smith_geometry as smith_geometry,
-    _shading_normal as shading_normal,
-    _prep_normal as prep_normal,
+)
+from algan.rendering.raytracing.shading_taichi import (
     _light as fragment_light,
+)
+from algan.rendering.raytracing.shading_taichi import (
     _light_vis as fragment_light_vis,
 )
-
+from algan.rendering.raytracing.shading_taichi import (
+    _prep_normal as prep_normal,
+)
+from algan.rendering.raytracing.shading_taichi import (
+    _shading_normal as shading_normal,
+)
+from algan.rendering.raytracing.shading_taichi import (
+    _smith_geometry as smith_geometry,
+)
 from algan.rendering.raytracing.tracer import RenderPlan, render_batch_raytraced
-
+from algan.rendering.shaders.fragment_shaders import (
+    STAGE_DEFAULT,
+    STAGE_LAMBERT,
+    STAGE_PHONG,
+    STAGE_PHYSICAL,
+    STAGE_STANDARD,
+    STAGE_UNLIT,
+    FragmentStage,
+    cosine_color,
+)
 from algan.settings.kernel_settings import KERNEL_REGISTRY
+
 KERNEL_REGISTRY.render_kernel = render_batch_raytraced
 
-from algan.animations.manim_animations import *
-from algan.animations.movement import *
+from algan.animation_timeline.timeline import TimelineManager
 from algan.animations.changing import *
 from algan.animations.indication import *
-from algan.animation_timeline.timeline import TimelineManager
+from algan.animations.manim_animations import *
+from algan.animations.movement import *
 
 
 def clear_cache(taichi_kernels=False):
@@ -197,8 +210,6 @@ def default_scene_initializer(scene):
 SceneManager.set_scene_class(Scene, default_scene_initializer)
 
 # Re-exported for backwards compatibility; it now runs lazily on first Tex use.
-from algan.mobs.text import make_manim_dir
-
 # Curate star imports. ``from algan import *`` is the documented entry point,
 # so it is effectively the public API: it must expose mobs, animations,
 # contexts, materials, settings and authoring constants, and nothing else.
@@ -206,6 +217,8 @@ from algan.mobs.text import make_manim_dir
 # land in the user's namespace, where names like ``mean``, ``interpolate`` and
 # ``offset`` would shadow whatever the user imported before Algan.
 from types import ModuleType as _ModuleType
+
+from algan.mobs.text import make_manim_dir
 
 # Whole modules whose public names are implementation detail.
 _INTERNAL_EXPORT_MODULES = (
@@ -295,11 +308,11 @@ def _is_root_export(name, value):
     return name.isupper()
 
 
-__all__ = tuple([
+__all__ = (
     *sorted(
         name
         for name, value in globals().items()
         if _is_root_export(name, value)
     ),
     *_EXTRA_EXPORTS,
-])
+)

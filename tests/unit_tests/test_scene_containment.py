@@ -128,10 +128,13 @@ def test_scene_context_pops_after_exception():
     manager = SceneManager.instance()
     outer = Scene(scene_initializer=_empty_scene)
 
-    with pytest.raises(RuntimeError, match="boom"):
+    def enter_and_fail():
         with Scene(scene_initializer=_empty_scene) as inner:
             assert manager.current_scene is inner
             raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        enter_and_fail()
 
     assert manager.current_scene is outer
     outer.terminate()

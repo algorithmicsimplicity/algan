@@ -32,13 +32,14 @@ sampled; a one-time warning is emitted when such a slot is set. ``wireframe``,
 normal and depth materials use documented approximations (see
 :mod:`algan.rendering.shaders.material_shaders`).
 """
+from __future__ import annotations
 
 import math
 import warnings
 
 from algan.constants.color import Color
-from algan.utils.tensor_utils import cast_to_tensor
 from algan.rendering.shaders import material_shaders as ms
+from algan.utils.tensor_utils import cast_to_tensor
 
 __all__ = [
     "FrontSide",
@@ -152,7 +153,8 @@ class Material:
     # -- shader parameters ------------------------------------------------
     def get_shader_param_values(self):
         """Map of ``{shader_param_name: value}`` matching this material's shader
-        signature. Base materials expose no extra parameters."""
+        signature. Base materials expose no extra parameters.
+        """
         return {}
 
     def _flat(self):
@@ -286,7 +288,8 @@ MeshStandardMaterial = PBRMaterial
 
 class AdvancedPBRMaterial(MeshStandardMaterial):
     """Extends :class:`MeshStandardMaterial` with clearcoat, sheen, ior-driven
-    specular, ray-traced transmission, and approximate iridescence."""
+    specular, ray-traced transmission, and approximate iridescence.
+    """
 
     shader = staticmethod(ms.physical_shader)
 
@@ -365,7 +368,8 @@ class MeshToonMaterial(Material):
 
     Three.js drives the bands with ``gradientMap``; since textures are not
     sampled, the band count is controlled by the Algan-specific ``bands``
-    argument (default 3)."""
+    argument (default 3).
+    """
 
     shader = staticmethod(ms.toon_shader)
 
@@ -404,7 +408,8 @@ class MeshNormalMaterial(Material):
 
 class MeshMatcapMaterial(Material):
     """Material-capture shading. The matcap image is not sampled; a default
-    view-facing approximation is used (tinted by the base colour)."""
+    view-facing approximation is used (tinted by the base colour).
+    """
 
     shader = staticmethod(ms.matcap_shader)
 

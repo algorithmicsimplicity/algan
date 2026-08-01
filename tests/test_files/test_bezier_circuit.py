@@ -1,4 +1,4 @@
-from algan.animation_timeline.animation_contexts import Sync, Off
+from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import *  # RIGHT, LEFT, IN, OUT, ORIGIN, UP
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.utils.algan_utils import render_all_funcs
@@ -22,7 +22,8 @@ p = torch.stack(
 p = p - p.mean((0, 1))
 p = p * 4
 
-get_mob = lambda r=0: BezierCircuitCubic(p).spawn()
+def get_mob(r=0):
+    return BezierCircuitCubic(p).spawn()
 
 
 def test_bezier_circuit_basic():

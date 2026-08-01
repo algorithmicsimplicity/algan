@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import torch
 
 from algan.constants.color import BLUE
 from algan.rendering.primitives.primitive import RenderPrimitive
-from algan.utils.tensor_utils import broadcast_all, cast_to_tensor
+from algan.utils.tensor_utils import broadcast_all
 
 
 def batch_arange(lengths, memory=None):
@@ -86,7 +88,7 @@ class BezierCircuitPrimitive(RenderPrimitive):
                 self.border_width,
                 self.border_color,
             ) = (
-                (torch.cat([(__) for __ in _], -2)).to(device)
+                (torch.cat(list(_), -2)).to(device)
                 for _ in zip(
                     *(
                         (
@@ -106,7 +108,7 @@ class BezierCircuitPrimitive(RenderPrimitive):
                 self.basis1,
                 self.basis2,
             ) = (
-                (torch.cat([(__) for __ in _], 1)).to(device)
+                (torch.cat(list(_), 1)).to(device)
                 for _ in zip(
                     *(
                         broadcast_all(

@@ -1,9 +1,11 @@
-from dataclasses import dataclass, field
+from __future__ import annotations
+
 import os
 import sys
+from dataclasses import dataclass, field
 
-from algan.settings.abstract_settings import Settings
 from algan.settings._startup import _CACHE_DIRECTORY
+from algan.settings.abstract_settings import Settings
 
 
 def _main_script_path():

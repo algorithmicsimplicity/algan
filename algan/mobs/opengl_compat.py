@@ -8,7 +8,6 @@ while producing native
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +17,7 @@ import torch.nn.functional as F
 from algan.constants.color import GREY, WHITE
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Line
-from algan.mobs.surfaces.surface import Surface, compute_grid_vertex_normals
+from algan.mobs.surfaces.surface import Surface
 from algan.utils.tensor_utils import unsquish
 
 
@@ -185,7 +184,8 @@ class OpenGLTexturedSurface(OpenGLSurface):
             resolution = uv_surface.resolution
         else:
             # Native surfaces are already sampled in unit UV coordinates.
-            uv_func = lambda u, v: uv_surface.coord_function(torch.stack((u, v), dim=-1))
+            def uv_func(u, v):
+                return uv_surface.coord_function(torch.stack((u, v), dim=-1))
             u_range = (0, 1)
             v_range = (0, 1)
             resolution = (uv_surface.grid_width, uv_surface.grid_height)

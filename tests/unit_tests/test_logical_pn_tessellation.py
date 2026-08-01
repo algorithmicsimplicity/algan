@@ -286,7 +286,8 @@ def _patch_levels_for(primitive, camera):
 
 def _sideways_camera(offsets, *, screen_height=480):
     """Cameras displaced sideways but still aimed down +z, as `orbit` leaves
-    them: the subject swings out of frame without the camera following."""
+    them: the subject swings out of frame without the camera following.
+    """
     offsets = torch.as_tensor(offsets, dtype=torch.float32)
     origins = torch.zeros((len(offsets), 1, 3))
     origins[..., 0] = offsets.view(-1, 1)

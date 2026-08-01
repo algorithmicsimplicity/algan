@@ -34,24 +34,25 @@ import torch
 class MaterialData:
     """A surface material. Texture fields are absolute file paths (resolved
     relative to the model file) or ``None``; ``*_factor`` fields are the flat
-    fallbacks used when no map is present."""
+    fallbacks used when no map is present.
+    """
 
     name: str = ""
     base_color: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
     diffuse_texture: str | None = None
     # In-memory images [H, W, C] in [0, 1] (for embedded textures, e.g. glB),
     # used in preference to the corresponding ``*_texture`` file path.
-    diffuse_image: "torch.Tensor | None" = None
+    diffuse_image: torch.Tensor | None = None
     normal_texture: str | None = None
     # Tangent-space normal map [H, W, 3] in [0, 1] (rgb-encoded; = 2*n-1).
-    normal_image: "torch.Tensor | None" = None
+    normal_image: torch.Tensor | None = None
     metallic_factor: float = 0.0
     roughness_factor: float = 1.0
     metallic_roughness_texture: str | None = None
     # glTF-packed metallic-roughness map [H, W, 3]: G = roughness, B = metallic.
-    metallic_roughness_image: "torch.Tensor | None" = None
+    metallic_roughness_image: torch.Tensor | None = None
     emissive: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    emissive_image: "torch.Tensor | None" = None
+    emissive_image: torch.Tensor | None = None
     reflectivity: float = 0.0
     opacity: float = 1.0
     refractive_index: float = 0.0
@@ -61,7 +62,8 @@ class MaterialData:
 class SkinData:
     """Linear-blend-skinning data for a mesh. Consumed by the skeletal
     animation phase (baked to per-frame vertex positions); ignored by static
-    import."""
+    import.
+    """
 
     # Names of the bones (indices into these are what `weights` refers to).
     bone_names: list[str] = field(default_factory=list)
@@ -93,7 +95,8 @@ class MeshData:
 @dataclass
 class NodeData:
     """A node in the model's scene graph. ``transform`` is the node-local
-    ``4x4`` transform (relative to its parent)."""
+    ``4x4`` transform (relative to its parent).
+    """
 
     name: str = ""
     transform: torch.Tensor | None = None       # [4, 4], local to parent
@@ -105,7 +108,8 @@ class NodeData:
 class NodeAnimation:
     """Keyframed local transform track for a single node (rigid / node
     animation, and the per-bone tracks skeletal animation reads). Times are in
-    seconds; each channel may key independently."""
+    seconds; each channel may key independently.
+    """
 
     node_name: str = ""
     position_times: torch.Tensor | None = None      # [Kp]

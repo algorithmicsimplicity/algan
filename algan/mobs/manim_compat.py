@@ -9,29 +9,30 @@ remain native to Algan.
 """
 from __future__ import annotations
 
+import contextlib
+import inspect
 from collections.abc import Mapping
 from functools import wraps
-import inspect
 from typing import Any
 
+import manim as _manim
 import numpy as np
 import torch
-import manim as _manim
 
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
+from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.constants.color import Color
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.group import Group
 from algan.mobs.image_mob import ImageMob
 from algan.mobs.manim_mob import ManimMob
-from algan.animatable_base.mob import Mob
-from algan.animation_timeline.timeline import bump_hierarchy_version
 from algan.utils.tensor_utils import cast_to_tensor
 
 # Public compatibility classes are registered by Manim class name so methods
 # such as Axes.plot can convert their returned Mobjects back to the most useful
 # Algan wrapper type.
-_MANIM_WRAPPER_REGISTRY: dict[str, type["ManimCompatMob"]] = {}
+_MANIM_WRAPPER_REGISTRY: dict[str, type[ManimCompatMob]] = {}
 
 
 def _tensor_to_manim(value: torch.Tensor):
@@ -142,7 +143,7 @@ def to_manim(value: Any):
     return value
 
 
-def _wrapper_type_for(source) -> type["ManimCompatMob"]:
+def _wrapper_type_for(source) -> type[ManimCompatMob]:
     for cls in type(source).__mro__:
         wrapper = _MANIM_WRAPPER_REGISTRY.get(cls.__name__)
         if wrapper is not None:
@@ -431,10 +432,8 @@ def _make_manim_wrapper(name: str):
             "__doc__": manim_class.__doc__,
         },
     )
-    try:
+    with contextlib.suppress(TypeError, ValueError):
         wrapper.__signature__ = inspect.signature(manim_class)
-    except (TypeError, ValueError):
-        pass
     _MANIM_WRAPPER_REGISTRY[name] = wrapper
     globals()[name] = wrapper
     return wrapper
@@ -547,6 +546,9 @@ _WRAPPED_MANIM_CLASS_NAMES = (
 for _name in _WRAPPED_MANIM_CLASS_NAMES:
     if hasattr(_manim, _name):
         _make_manim_wrapper(_name)
+
+ArcBetweenPoints = _MANIM_WRAPPER_REGISTRY["ArcBetweenPoints"]
+SingleStringMathTex = _MANIM_WRAPPER_REGISTRY["SingleStringMathTex"]
 
 
 

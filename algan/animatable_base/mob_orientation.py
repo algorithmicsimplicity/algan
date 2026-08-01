@@ -19,7 +19,8 @@ from algan.utils.tensor_utils import cast_to_tensor, squish, unsquish
 
 class MobOrientationMixin:
     """Methods for rotating and orienting Mobs, mixed into
-    :class:`~algan.animatable_base.mob.Mob`."""
+    :class:`~algan.animatable_base.mob.Mob`.
+    """
 
     def reset_basis(self) -> Mob:
         """Reset the Mob's orientation and scale to the default.

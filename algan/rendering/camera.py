@@ -1,17 +1,20 @@
+from __future__ import annotations
+
 import math
 import warnings
 
+import torch.nn.functional as F
+
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off, Sync
 from algan.constants.spatial import *  # CAMERA_ORIGIN
-from algan.animatable_base.mob import Mob
+from algan.errors import AlganConfigurationError, ApproximationWarning
+from algan.geometry.geometry import intersect_line_with_plane_colinear
 from algan.utils.tensor_utils import (
     broadcast_gather,
-    unsquish,
     dot_product,
+    unsquish,
 )
-from algan.geometry.geometry import intersect_line_with_plane_colinear
-from algan.errors import AlganConfigurationError, ApproximationWarning
-import torch.nn.functional as F
 
 
 class Camera(Mob):
@@ -38,7 +41,7 @@ class Camera(Mob):
         # Mob kwargs without passing duplicates into the base constructor.
         kwargs.pop("add_to_scene", None)
         kwargs.pop("init", None)
-        super().__init__(add_to_scene=False, init=False, *args, **kwargs)
+        super().__init__(*args, add_to_scene=False, init=False, **kwargs)
         self.animatable_attrs.remove("color")
         with Off(animation_manager=self.animation_manager):
             self.orthographic = orthographic
@@ -139,7 +142,8 @@ class Camera(Mob):
     def get_fov(self):
         """The camera's vertical field of view in degrees (like Three.js's
         ``PerspectiveCamera.fov``), derived from the screen size and the
-        camera-to-screen distance."""
+        camera-to-screen distance.
+        """
         d = (
             (self.screen.location - self.location)
             .norm(p=2, dim=-1)
@@ -168,7 +172,8 @@ class Camera(Mob):
 
     def get_near(self):
         """Near clip distance (world units from the camera along its forward
-        axis); geometry closer than this is not rendered. 0 = disabled."""
+        axis); geometry closer than this is not rendered. 0 = disabled.
+        """
         return getattr(self, "_near", 0.0)
 
     def set_near(self, near):
@@ -183,7 +188,8 @@ class Camera(Mob):
     def get_far(self):
         """Far clip distance (world units of ray travel from the camera);
         geometry farther than this shows the background/environment instead.
-        0 = disabled."""
+        0 = disabled.
+        """
         return getattr(self, "_far", 0.0)
 
     def set_far(self, far):

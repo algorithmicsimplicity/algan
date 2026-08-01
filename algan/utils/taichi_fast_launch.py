@@ -44,6 +44,8 @@ every fast hit and raises if it disagrees with the plan (used by
 ``benchmarks/_taichi_fast_launch_check.py``).  Applies on taichi 1.7.x
 only; silent no-op anywhere else (or when ``ALGAN_TAICHI_FAST_LAUNCH=0``).
 """
+from __future__ import annotations
+
 import os
 
 _APPLIED = False

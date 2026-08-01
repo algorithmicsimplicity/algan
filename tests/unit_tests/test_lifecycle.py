@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from algan import Group, RIGHT, Scene, Seq, Square, Sync
+from algan import RIGHT, Group, Scene, Seq, Square, Sync
 
 
 def test_unspawned_group_despawn_preserves_spawned_child_history():

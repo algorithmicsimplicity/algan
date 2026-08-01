@@ -1,34 +1,33 @@
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import math
 
 import torch.nn.functional as F
 
+from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import (
     Off,
     active_scene_for_new_mob,
 )
-from algan.constants.spatial import ORIGIN, RIGHT, LEFT, IN
 from algan.constants.color import *
+from algan.constants.spatial import IN, LEFT, ORIGIN, RIGHT
 from algan.geometry.geometry import map_local_to_global_coords
 from algan.mobs.bezier_circuit import BezierCircuitCubic
-from algan.animatable_base.mob import Mob
+from algan.settings import SETTINGS
 from algan.settings.renderer_settings import effective_triangle_primitive
 from algan.utils.tensor_utils import (
     broadcast_all,
     cast_to_tensor,
+    mean,
     unsquish,
 )
-from algan.utils.tensor_utils import mean
 
 
 def _coerce_algan_color(value, opacity=None):
     """Return an Algan :class:`Color` from a Manim-style color value."""
     if isinstance(value, str):
         named = globals().get(value.upper())
-        if isinstance(named, Color):
-            value = named
-        else:
-            value = Color(value)
+        value = named if isinstance(named, Color) else Color(value)
     value = cast_to_tensor(value)
     value = Color.add_defaults(value).as_subclass(Color)
     if opacity is not None:
@@ -194,7 +193,6 @@ class TriangleTriangulated(Mob):
             color = self.get_default_color()
         super().__init__(**kwargs)
         kwargs["color"] = color
-        k = self.location
         # scl = squish(corner_locations, 0, -2)
         if vertices == TriangleVertices:
             corner_locations = corner_locations.view(-1, 3, 3)
@@ -243,7 +241,7 @@ class TriangleTriangulated(Mob):
 class TriangleVertices(Mob):
     def __init__(self, corner_locations, normals=None, **kwargs):
         corner_locations = cast_to_tensor(corner_locations)
-        kwargs2 = {k: v for k, v in kwargs.items()}
+        kwargs2 = dict(kwargs.items())
         if "location" in kwargs2:
             del kwargs2["location"]
         kwargs2["location"] = corner_locations.reshape(-1, 3)
@@ -271,7 +269,7 @@ class TriangleVertices(Mob):
         return PURE_RED
 
     def get_render_primitives(self):
-        l, c, o, n, g = broadcast_all(
+        locations, c, o, n, g = broadcast_all(
             [
                 self.location,
                 self.color,
@@ -282,9 +280,9 @@ class TriangleVertices(Mob):
             ignored_dims=[-1],
         )
         if n is None:
-            n = torch.zeros_like(l)
+            n = torch.zeros_like(locations)
         return effective_triangle_primitive()(
-            l,
+            locations,
             c,
             o,
             F.normalize(
@@ -651,7 +649,7 @@ class Circle(BezierCircuitCubic):
             return torch.stack([x[..., 1], -x[..., 0]], -1)
 
         def rot_n_quarters(x, n):
-            for i in range(n):
+            for _i in range(n):
                 x = rot90_in_2d(x)
             return x
 
@@ -661,14 +659,14 @@ class Circle(BezierCircuitCubic):
         control_points = torch.cat(
             [control_points, torch.zeros_like(control_points[..., :1])], -1
         )
-        l = ORIGIN
+        mob_location = ORIGIN
         if "location" in kwargs:
-            l = kwargs["location"]
+            mob_location = kwargs["location"]
             del kwargs["location"]
 
         super().__init__(control_points, *args, **kwargs)
         self.scale(radius)
-        self.move_to(l)
+        self.move_to(mob_location)
 
     @property
     def radius(self):

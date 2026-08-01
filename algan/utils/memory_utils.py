@@ -1,5 +1,5 @@
-from algan.settings._startup import _RENDER_DEVICE
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import gc
 import sys
 from contextlib import contextmanager
@@ -7,6 +7,8 @@ from contextlib import contextmanager
 import torch
 
 from algan.constants.math import GIGABYTES
+from algan.settings import SETTINGS
+from algan.settings._startup import _RENDER_DEVICE
 
 
 class InsufficientMemoryException(Exception):
@@ -61,7 +63,8 @@ def get_num_available_bytes(device=torch.device("cuda")):
 
 def _gpu_memory_pressure(threshold=0.8):
     """True when the CUDA device is using more than ``threshold`` of its memory
-    (driver-level, so it accounts for Taichi + torch + everything)."""
+    (driver-level, so it accounts for Taichi + torch + everything).
+    """
     if not torch.cuda.is_available():
         return True  # No CUDA telemetry; keep the original (always-gc) behavior.
     try:
@@ -260,7 +263,8 @@ def reset_peak_floor():
 
 def peak_allocated(device=None):
     """Process-wide peak torch CUDA allocation, including peaks that an
-    intervening :func:`begin_cuda_peak` region reset off the live counter."""
+    intervening :func:`begin_cuda_peak` region reset off the live counter.
+    """
     if not torch.cuda.is_available():
         return 0
     device = torch.device(device) if device is not None else torch.device("cuda")

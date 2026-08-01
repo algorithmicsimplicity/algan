@@ -10,8 +10,8 @@ import torch.nn.functional as F
 def _should_bypass_bloom():
     try:
         from algan.rendering.raytracing import (
-            is_raytraced_glow_enabled,
             is_ray_tracing_enabled,
+            is_raytraced_glow_enabled,
         )
         return is_ray_tracing_enabled() and is_raytraced_glow_enabled()
     except ImportError:
@@ -54,13 +54,10 @@ def fft_conv1d(input_tensor, kernel, dim=-1, padding="same", memory=None,
         if kernel.ndim >= 3:
             C = input_tensor.shape[-3]
             C_k = kernel.shape[-3]
-            assert C == C_k, "Number of channels must match between input and kernel"
+            assert C_k == C, "Number of channels must match between input and kernel"
 
     # Calculate output size
-    if padding == "same":
-        out_l = L
-    else:  # 'valid'
-        out_l = L - L_k + 1
+    out_l = L if padding == "same" else L - L_k + 1
 
     # Calculate FFT size
     fft_l = L + L_k - 1
@@ -319,15 +316,14 @@ def fft_conv2d(input_tensor, kernel, padding="same", num_iterations=1):
     C, H, W = input_tensor.shape
     C_k, Kh, Kw = kernel.shape
 
-    assert C == C_k, "Number of channels must match between input and kernel"
+    assert C_k == C, "Number of channels must match between input and kernel"
 
     # Calculate output size and padding
     if padding == "same":
-        pad_h = Kh // 2
-        pad_w = Kw // 2
+        Kh // 2
+        Kw // 2
         out_h, out_w = H, W
     else:  # 'valid'
-        pad_h = pad_w = 0
         out_h, out_w = H - Kh + 1, W - Kw + 1
 
     # Calculate FFT size (next power of 2 for efficiency)
@@ -413,11 +409,13 @@ def bloom_filter_old(
     # d = kernel_size / (min(x.shape[0], x.shape[1])/scale_factor)
     # filter = torch.exp(-1*(torch.linspace(-d, d, kernel_size, device=x.device)**2) * 2 / blur_width)
     d = 1
-    filter = torch.exp(-1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2))
-    filter /= filter.sum()
-    filter *= 1
+    kernel_filter = torch.exp(
+        -1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2)
+    )
+    kernel_filter /= kernel_filter.sum()
+    kernel_filter *= 1
     # filter /= filter.amax()
-    filter_horizontal = filter.view(1, 1, 1, kernel_size).expand(
+    filter_horizontal = kernel_filter.view(1, 1, 1, kernel_size).expand(
         xb.shape[-1], -1, -1, -1
     )
     filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
@@ -447,7 +445,7 @@ def bloom_filter_old(
 
     k = 1  # kernel_size * kernel_size * 0.01
     # count = count.permute(-1,0,1)
-    for i in range(num_iterations):
+    for _i in range(num_iterations):
         """xbu = F.unfold(xb.unsqueeze(0), (kernel_size, kernel_size), padding=(p, p)).squeeze(0)
         xbu = unsquish(unsquish(unsquish(xbu, 0, -xb.shape[0]), -1, xb.shape[-1]), 1, kernel_size)
         #a = torch.exp(-dists) * (xbu[-1:])#.clamp(min=1e-5))
@@ -477,11 +475,10 @@ def bloom_filter_old(
     xb = F.interpolate(xb.unsqueeze(0), size=orig_shape, mode="bilinear").squeeze(0)
     xb = xb.permute(1, 2, 0)
 
-    a = xb[..., -1:].clamp(min=0, max=1)
-    a2 = (xb[..., -1:] * 0.5).clamp(min=0, max=1)
-    m = ((xb[..., -1:] - x[..., -1:]) >= 0).float()
-    a4 = torch.zeros_like((xb[..., -1:] - x[..., -1:]).clamp(min=0, max=1))
-    r = 0.5
+    xb[..., -1:].clamp(min=0, max=1)
+    (xb[..., -1:] * 0.5).clamp(min=0, max=1)
+    ((xb[..., -1:] - x[..., -1:]) >= 0).float()
+    torch.zeros_like((xb[..., -1:] - x[..., -1:]).clamp(min=0, max=1))
     # a5 = ((1/r)*((xb[...,-1:] +1).log() - r)).clamp(min=0, max=1)
     a5 = ((xb[..., -1:] + 1).log() / 3).clamp(min=0, max=1)
     # a5 = (((xb[...,-1:] / x[...,-1:].clamp(min=1e-5)))).clamp(min=0, max=1)
@@ -508,15 +505,15 @@ def bloom_filter_old(
 
     # count = count.permute(1,2,0) + 1
 
-    n3 = xb[..., -1:] + k
+    xb[..., -1:] + k
     # xb = (xb[...,:-1] + x[...,:-1] * k) / n3# / xb[...,-1:].clamp(min=1e-5)#*strength
     # xb = xb[...,:-1] + (x[...,:-1] * (k + x[...,-1:])) / xb[...,-1:].clamp(min=1e-5)
     # glow = (glow / glow.amax().clamp_(min=255)) * 255
     # glow = glow.clamp(max=255)
-    a = (xb[..., -1:]).clamp(min=0, max=1)
+    (xb[..., -1:]).clamp(min=0, max=1)
     # glow = glow * (1-a) + a * (torch.ones_like(glow))# * 0.4 + glow * 0.6)
     # out = (x[...,:-1] * (1-a) + a * glow)# / (1+xb[...,-1:])
-    a2 = (xb[..., -1:] * 1).clamp(min=0, max=1)
+    (xb[..., -1:] * 1).clamp(min=0, max=1)
     out = xb  # + (x[..., :-1])# + glow)  # / (1+xb[...,-1:])
     # out = (x[..., :-1] + glow)  # / (1+xb[...,-1:])
     # out = (x[...,:-1] * (1-a) + (a2) * glow)# / (1+xb[...,-1:])
@@ -547,9 +544,11 @@ def bloom_filter_premultiply(
     color = color * glow * strength
 
     d = 3
-    filter = torch.exp(-1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2))
-    filter /= filter.sum()
-    filter_horizontal = filter.view(1, 1, 1, kernel_size).expand(
+    kernel_filter = torch.exp(
+        -1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2)
+    )
+    kernel_filter /= kernel_filter.sum()
+    filter_horizontal = kernel_filter.view(1, 1, 1, kernel_size).expand(
         color.shape[-1], -1, -1, -1
     )
     filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
@@ -562,7 +561,7 @@ def bloom_filter_premultiply(
         color.unsqueeze(0), scale_factor=1 / scale_factor, mode="bilinear"
     ).squeeze(0)
 
-    for i in range(num_iterations):
+    for _i in range(num_iterations):
         color = F.conv2d(
             color, filter_horizontal, padding=(0, p), groups=color.shape[0]
         )
@@ -595,9 +594,11 @@ def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_fa
     color = color * glow * strength
 
     d = 3
-    filter = torch.exp(-1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2))
-    filter /= filter.sum()
-    filter_horizontal = filter.view(1, 1, 1, kernel_size).expand(
+    kernel_filter = torch.exp(
+        -1 * (torch.linspace(-d, d, kernel_size, device=x.device) ** 2)
+    )
+    kernel_filter /= kernel_filter.sum()
+    filter_horizontal = kernel_filter.view(1, 1, 1, kernel_size).expand(
         color.shape[-1], -1, -1, -1
     )
     filter_vertical = filter_horizontal.squeeze(-2).unsqueeze(-1)
@@ -613,11 +614,11 @@ def bloom_filter_conv(x, num_iterations=3, kernel_size=31, strength=10, scale_fa
     ).squeeze(0)
 
     # Apply the gaussian blur convolutional filter num_iteration times
-    for i in range(num_iterations):
+    for _i in range(num_iterations):
         color = F.conv2d(
             color, filter_horizontal, padding=(0, p), groups=color.shape[0]
         )
-    for i in range(num_iterations):
+    for _i in range(num_iterations):
         color = F.conv2d(color, filter_vertical, padding=(p, 0), groups=color.shape[0])
 
     color = F.interpolate(color.unsqueeze(0), size=orig_shape, mode="bilinear").squeeze(

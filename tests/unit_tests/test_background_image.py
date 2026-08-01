@@ -12,7 +12,8 @@ from algan.settings.video_settings import SMOKE_TEST
 
 def _write_test_image(tmp_path, height, width):
     """A PNG with no symmetry in either axis, so a transpose or a flip of the
-    decoded background is detectable."""
+    decoded background is detectable.
+    """
     import torchvision
 
     rows = torch.arange(height, dtype=torch.float32).view(-1, 1) * 7
@@ -57,7 +58,8 @@ def test_image_background_is_scaled_to_the_supersampled_frame(tmp_path):
 def test_prefill_rejects_a_background_at_the_wrong_resolution():
     """A super-sampled background read at output stride used to scroll a
     different slice of itself into every frame (flickering image backgrounds
-    on the analytic raster route, which renders at aa == 1)."""
+    on the analytic raster route, which renders at aa == 1).
+    """
     aa, screen_height, screen_width, frames = 2, 2, 3, 3
     image = torch.rand(1, screen_height * aa, screen_width * aa, 4)
     background = _prepare_background_for_chunk(

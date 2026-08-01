@@ -1,26 +1,24 @@
+from __future__ import annotations
+
 import inspect
 import math
 import time
+from collections.abc import Sequence
+from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
-
-from algan.settings import SETTINGS
-from algan.settings.video_settings import VideoSettings
+from typing import TYPE_CHECKING
 
 import torch.nn.functional as F
 
-from algan.errors import AlganConfigurationError
-
-from algan.constants.spatial import *
-
 from algan.animation_timeline.animation_contexts import (
+    AnimationManager,
     Seq,
     Sync,
-    AnimationManager,
     animation_manager_context,
 )
 from algan.animation_timeline.timeline import TimelineManager
-from algan.sound.audio_effect import AudioManager
+from algan.constants.spatial import *
+from algan.errors import AlganConfigurationError
 
 # EmptySceneWarning and write_frames_from_queue moved to render_loop.py;
 # re-exported here for backwards compatibility.
@@ -29,10 +27,11 @@ from algan.render_loop import (  # noqa: F401
     RenderLoopMixin,
     write_frames_from_queue,
 )
-from algan.utils.file_utils import get_image
 from algan.scene_manager import SceneManager
-
-from functools import wraps
+from algan.settings import SETTINGS
+from algan.settings.video_settings import VideoSettings
+from algan.sound.audio_effect import AudioManager
+from algan.utils.file_utils import get_image
 
 if TYPE_CHECKING:  # algan_utils imports Scene, so only for annotations.
     from algan.utils.algan_utils import RenderResult
@@ -602,9 +601,7 @@ class Scene(RenderLoopMixin):
             ``animate=False`` to remove everything without fading.
         """
         with Sync(animation_manager=self.animation_manager):
-            for actor in list(
-                sorted(self.actors, key=lambda x: x.anchor_priority, reverse=True)
-            ):
+            for actor in sorted(self.actors, key=lambda x: x.anchor_priority, reverse=True):
                 if actor.is_spawned():
                     actor.despawn(**kwargs)
 
@@ -797,7 +794,7 @@ class Scene(RenderLoopMixin):
         bool
             Whether any background pixel is less than fully opaque.
         """
-        if hasattr(self.background_frame, '__call__'):
+        if callable(self.background_frame):
             return False
         return (self.background_frame[..., -1].min() < (1-(0.5/255))).item()
 
@@ -887,7 +884,7 @@ class Scene(RenderLoopMixin):
         *,
         overwrite: bool = True,
         background_color=None,
-    ) -> "RenderResult | list[RenderResult]":
+    ) -> RenderResult | list[RenderResult]:
         """Render one or more still frames from this Scene.
 
         Unlike :meth:`save_video` this never modifies the Scene: nothing is
@@ -1073,7 +1070,7 @@ class Scene(RenderLoopMixin):
         codec: str | None = None,
         audio_codec: str | None = None,
         ffmpeg_params: list[str] | None = None,
-    ) -> "RenderResult":
+    ) -> RenderResult:
         """Render everything recorded on this Scene to a video file.
 
         Parameters

@@ -1,20 +1,22 @@
-from algan.settings import SETTINGS
-import bisect
-import os
+from __future__ import annotations
+
 import hashlib
+import os
 from pathlib import Path
 
 import pyttsx3
+
+from algan.settings import SETTINGS
 
 
 class Timer:
     def __init__(self):
         self.time = 0
 
-import os
+import re
+
 import torch
 
-import re, string
 from algan.logging.logger import get_logger
 
 logger = get_logger("audio")
@@ -30,7 +32,7 @@ class TranscriptAudioMismatchError(Exception):
     pass
 
 
-class Counter():
+class Counter:
     def __init__(self):
         self.count = 0
 
@@ -46,9 +48,9 @@ def unflatten(list_, lengths):
     assert len(list_) == sum(lengths)
     i = 0
     ret = []
-    for l in lengths:
-        ret.append(list_[i : i + l])
-        i += l
+    for length in lengths:
+        ret.append(list_[i : i + length])
+        i += length
     return ret
 
 
@@ -81,7 +83,7 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
     audio_info = torchaudio.info(audio_path)
     audio_duration_s = audio_info.num_frames / audio_info.sample_rate
 
-    with open(transcript_path, 'r') as f:
+    with open(transcript_path) as f:
         full_transcript_text = f.read().upper()
         full_transcript_text = full_transcript_text.replace('-', ' ')
         full_transcript_words = full_transcript_text.split()
@@ -125,14 +127,12 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
         transcript_was_too_long = True
         retry_count = 0
         MAX_RETRIES = 10
-        transcript_len_multiplier_base = 0.75
-        transcript_len_multiplier = transcript_len_multiplier_base
         aligned_tokens, scores = None, None
 
         while transcript_was_too_long and retry_count < MAX_RETRIES:
             remaining_transcript = full_transcript_words[transcript_cursor:]
 
-            audio_ratio = ((chunk_end_s - chunk_start_s) / (audio_duration_s - chunk_start_s) )if (
+            ((chunk_end_s - chunk_start_s) / (audio_duration_s - chunk_start_s) )if (
                                                         audio_duration_s - chunk_start_s) > 0 else 0
             estimated_len = max(int(estimated_words_per_chunk), 3)
 
@@ -146,7 +146,6 @@ def align_large_audio_torchaudio_robust(audio_path, transcript_path, model_id=MO
 
             # --- Perform the optimized alignment ---
             blank_id = processor.tokenizer.pad_token_id
-            delimiter_id = processor.tokenizer.word_delimiter_token_id
 
             aligned_tokens, scores = torchaudio.functional.forced_align(
                 emissions.unsqueeze(0),
@@ -210,7 +209,7 @@ def get_speech_generator_from_file(audio_file, transcript_file):
 
     if os.path.exists(time_stamp_file):
         word_time_stamps = []
-        with open(time_stamp_file, mode='r') as f:
+        with open(time_stamp_file) as f:
             for line in f.readlines():
                 word, start, end = [_.strip() for _ in line.split(',')]
                 word_time_stamps.append([word, float(start), float(end)])
@@ -221,7 +220,7 @@ def get_speech_generator_from_file(audio_file, transcript_file):
             for word, start, end in word_time_stamps:
                 f.write(f"{word},{start},{end}\n")
 
-    word_counter = Counter()
+    Counter()
     def generator(script):
         script = script.replace('-', ' ')
         script_words = [strip_nonchars(_) for _ in script.split(' ')]

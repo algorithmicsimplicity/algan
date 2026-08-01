@@ -1,11 +1,12 @@
+from __future__ import annotations
+
+import os
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 from PIL import Image
-import os
-from typing import Tuple, Optional
-import math
 
 from algan.logging.logger import get_logger
 
@@ -43,7 +44,7 @@ class SMAA(nn.Module):
             max_search_steps_diag: Maximum search distance for diagonal edges
             corner_rounding: Corner rounding percentage (0-100)
         """
-        super(SMAA, self).__init__()
+        super().__init__()
 
         self.threshold = threshold
         self.local_contrast_factor = local_contrast_adaptation_factor
@@ -115,10 +116,7 @@ class SMAA(nn.Module):
         device = color.device
 
         # Convert to luminance
-        if C == 3:
-            luma = self._rgb_to_luma(color)
-        else:
-            luma = color[:, :1]
+        luma = self._rgb_to_luma(color) if C == 3 else color[:, :1]
 
         # Prepare shifted versions for gradient calculation
         padded = F.pad(luma, (1, 1, 1, 1), mode='replicate')
@@ -153,11 +151,13 @@ class SMAA(nn.Module):
 
         return edges
 
-    def _search_diag_1(self, edges: torch.Tensor, pos: Tuple[int, int], dir: Tuple[int, int]) -> float:
+    def _search_diag_1(
+        self, edges: torch.Tensor, pos: tuple[int, int], direction: tuple[int, int]
+    ) -> float:
         """Search for diagonal patterns in one direction."""
         B, C, H, W = edges.shape
         pos_y, pos_x = pos
-        dir_y, dir_x = dir
+        dir_y, dir_x = direction
 
         for i in range(self.SMAA_AREATEX_MAX_DISTANCE_DIAG):
             new_y = pos_y + dir_y * (i + 1)
@@ -173,11 +173,13 @@ class SMAA(nn.Module):
 
         return self.SMAA_AREATEX_MAX_DISTANCE_DIAG
 
-    def _search_diag_2(self, edges: torch.Tensor, pos: Tuple[int, int], dir: Tuple[int, int]) -> float:
+    def _search_diag_2(
+        self, edges: torch.Tensor, pos: tuple[int, int], direction: tuple[int, int]
+    ) -> float:
         """Search for diagonal patterns in opposite direction."""
-        return self._search_diag_1(edges, pos, (-dir[0], -dir[1]))
+        return self._search_diag_1(edges, pos, (-direction[0], -direction[1]))
 
-    def _area_tex_lookup(self, d1: float, d2: float, y: int, subsample_index: int) -> Tuple[float, float]:
+    def _area_tex_lookup(self, d1: float, d2: float, y: int, subsample_index: int) -> tuple[float, float]:
         """Lookup area values from the area texture."""
         # Calculate texture coordinates
         tex_coord_x = (d1 * self.SMAA_AREATEX_SUBTEX_SIZE[0] + subsample_index * self.SMAA_AREATEX_SUBTEX_SIZE[0])
@@ -196,9 +198,7 @@ class SMAA(nn.Module):
 
     def _blending_weight_calculation_pass(self, edges: torch.Tensor,
                                           color: torch.Tensor) -> torch.Tensor:
-        """
-        Second pass: Calculate blending weights for detected edges.
-        """
+        """Second pass: Calculate blending weights for detected edges."""
         B, _, H, W = edges.shape
         device = edges.device
         weights = torch.zeros(B, 4, H, W, device=device)
@@ -285,11 +285,8 @@ class SMAA(nn.Module):
 
     def _neighborhood_blending_pass(self, color: torch.Tensor,
                                     weights: torch.Tensor) -> torch.Tensor:
-        """
-        Third pass: Blend colors using calculated weights.
-        """
+        """Third pass: Blend colors using calculated weights."""
         B, C, H, W = color.shape
-        device = color.device
 
         # Extract weight components
         w_left = weights[:, 0:1]
@@ -397,7 +394,6 @@ def apply_smaa(images: torch.Tensor,
 
 # Example usage and testing
 if __name__ == "__main__":
-    import matplotlib.pyplot as plt
 
     # Check for required texture files
     area_tex_path = "AreaTex.png"
@@ -456,7 +452,7 @@ if __name__ == "__main__":
 
         # Calculate difference
         difference = torch.abs(antialiased - test_image)
-        print(f"\nAnti-aliasing effect:")
+        print("\nAnti-aliasing effect:")
         print(f"Average change: {difference.mean():.4f}")
         print(f"Max change: {difference.max():.4f}")
         print(f"Pixels affected: {(difference > 0.001).float().mean() * 100:.1f}%")

@@ -1,10 +1,11 @@
-import torch
-import cv2
 import importlib
-import numpy as np
 import os
 import shutil
 from unittest import TestCase
+
+import cv2
+import numpy as np
+import torch
 from parameterized import parameterized
 
 from algan import *
@@ -89,15 +90,7 @@ class TestOverseer(TestCase):
                     writer.release()
 
                 if frame_count_mismatch is not None:
-                    self.assertEqual(
-                        frame_count_mismatch[0],
-                        frame_count_mismatch[1],
-                        f"{module_name} output does not have the expected number of frames.",
-                    )
-                self.assertLessEqual(
-                    overall_max_diff,
-                    2,
-                    f"{module_name} output does not match expectation. Max pixel difference: {overall_max_diff}",
-                )
+                    assert frame_count_mismatch[0] == frame_count_mismatch[1], f"{module_name} output does not have the expected number of frames."
+                assert overall_max_diff <= 2, f"{module_name} output does not match expectation. Max pixel difference: {overall_max_diff}"
                 # with open(os.path.join(test_output_dir, f), 'r') as yh, open(os.path.getsize(), 'r') as y:
                 # self.assertEqual(os.path.getsize(os.path.join(test_output_dir, f)), os.path.getsize(os.path.join(expected_output_dir, f)))

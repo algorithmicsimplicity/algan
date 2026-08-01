@@ -106,7 +106,8 @@ STAGE_PHYSICAL = FragmentStage(_stage_physical, _PHYSICAL_MAT_SPECS)
 
 def _builtin_shader_to_stage():
     """Map the built-in PyTorch material shader functions to their stage ports,
-    so ``set_fragment_shader(phong_shader)`` resolves to ``STAGE_PHONG``."""
+    so ``set_fragment_shader(phong_shader)`` resolves to ``STAGE_PHONG``.
+    """
     from algan.rendering.shaders.material_shaders import (
         basic_material_shader,
         lambert_shader,
@@ -203,13 +204,15 @@ def register_pipeline(stages):
 
 def build_frag_pipelines():
     """Flat tuple of every registered composed pipeline func, ordered by id, for
-    injection as the shade kernel's ``frag_pipelines`` template argument."""
+    injection as the shade kernel's ``frag_pipelines`` template argument.
+    """
     return tuple(_PIPELINE_LIST)
 
 
 def build_frag_scatters():
     """Per-registered-pipeline custom scatter funcs (None = default scatter),
-    ordered by id, for the sorted-material wavefront's per-bucket dispatch."""
+    ordered by id, for the sorted-material wavefront's per-bucket dispatch.
+    """
     return tuple(_PIPELINE_SCATTERS)
 
 
@@ -275,7 +278,8 @@ def _stage_cosine_color(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
                         light_pos: ti.template(), light_col: ti.template(),
                         num_lights, shadows: ti.template(), vis):
     """Modulate the albedo by an RGB-phase-shifted cosine of world x (rainbow
-    banding). Params: ``frequency`` (slot 0), ``phase`` (slot 1)."""
+    banding). Params: ``frequency`` (slot 0), ``phase`` (slot 1).
+    """
     tm = f % params.shape[0]
     freq = params[tm, prim, off + 0]
     phase = params[tm, prim, off + 1]
@@ -308,7 +312,8 @@ def _scatter_forced_mirror(rd, n_interp, face_n, hit_point, shaded, albedo,
     reflectivity: commit 15% of the shaded colour and bounce the remaining
     throughput along the mirror direction (no transmission). Branch weights
     are vec3 per-channel throughput multipliers (colour transport); this
-    scatter reflects achromatically, so all three channels match."""
+    scatter reflects achromatically, so all three channels match.
+    """
     n = n_interp.normalized()
     if n.dot(rd) > 0.0:
         n = -n

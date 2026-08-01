@@ -5,8 +5,8 @@ from algan.mobs.shapes_2d import TriangleTriangulated
 from algan.utils.algan_utils import render_all_funcs
 
 
-get_mob = (
-    lambda r=0: TriangleTriangulated(
+def get_mob(r=0):
+    return (TriangleTriangulated(
         torch.stack(
             (
                 UP * 0.5,
@@ -16,8 +16,7 @@ get_mob = (
         ),
         color=torch.stack([RED for _ in range(3)]),
     )
-    .spawn()
-)
+    .spawn())
 
 
 def test_glow():

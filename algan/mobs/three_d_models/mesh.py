@@ -23,10 +23,11 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.mob import Mob
-from algan.settings.renderer_settings import (
-    RENDERER_REGISTRY, effective_triangle_primitive)
-from algan.constants.color import Color, WHITE
+from algan.constants.color import WHITE, Color
 from algan.geometry.geometry import map_local_to_global_coords
+from algan.settings.renderer_settings import (
+    effective_triangle_primitive,
+)
 from algan.utils.tensor_utils import cast_to_tensor, unsquish
 
 
@@ -265,7 +266,8 @@ class TriangleMesh(Mob):
         positions ``[T, 3F, 3]``. Un-normalized face normals (whose magnitude is
         twice the triangle area) are scattered onto shared vertices so larger
         faces contribute more, then gathered back to the corners. Preserves
-        smooth shading across shared edges under arbitrary deformation."""
+        smooth shading across shared edges under arbitrary deformation.
+        """
         T = corners_flat.shape[0]
         tris = unsquish(corners_flat, -2, 3)          # [T, F, 3, 3]
         e1 = tris[..., 1, :] - tris[..., 0, :]

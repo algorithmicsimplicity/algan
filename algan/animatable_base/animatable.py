@@ -1,31 +1,34 @@
-from collections import defaultdict
+from __future__ import annotations
+
 import copy
-from functools import wraps
-from contextlib import contextmanager
-import warnings
 import inspect
+from collections import defaultdict
+from contextlib import contextmanager
+from functools import wraps
 
 import torch
 
+from algan.animation_timeline.animation_contexts import (
+    AnimationContext,
+    AnimationManager,
+    Off,
+    Sync,
+    active_scene_for_new_mob,
+    animation_manager_bound,
+)
+
 # Re-exported for backwards compatibility (it used to be defined here).
-from algan.animation_timeline.timeline import TIME_PARAMETER_NAME, TimelineManager  # noqa: F401
-from algan.animation_timeline.timeline import (
+from algan.animation_timeline.timeline import (  # noqa: F401
     HIERARCHY_VERSION,
     SPAWN_VERSION,
     STRUCTURE_VERSION,
+    TIME_PARAMETER_NAME,
     RowRanges,
+    TimelineManager,
     _opt_disabled,
 )
+from algan.constants.color import BLACK, Color
 from algan.scene import Scene
-from algan.animation_timeline.animation_contexts import (
-    Sync,
-    AnimationManager,
-    AnimationContext,
-    Off,
-    animation_manager_bound,
-    active_scene_for_new_mob,
-)
-from algan.constants.color import Color, BLACK
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 
 
@@ -37,7 +40,7 @@ def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     default_kwargs = {
         param.name: param.default
         for param in params.values()
-        if not (param.default is inspect._empty)
+        if param.default is not inspect._empty
     }
     default_kwargs.update(kwargs)
     kwargs = {
@@ -291,7 +294,8 @@ class Animatable:
     def lifespan(self):
         """This mob's [spawn, despawn) interval on its Scene timeline (a
         :class:`~algan.animation_timeline.timeline.Lifespan`). Sub-mobs created by
-        indexing share their source's id, and therefore its lifespan."""
+        indexing share their source's id, and therefore its lifespan.
+        """
         return self.scene.timeline_manager.get_lifespan(self.id)
 
     @animated_function(animated_args={"t": 0}, unique_args=["function"])
@@ -1045,7 +1049,7 @@ class Animatable:
         ]
 
         child_to_id = {c: i for i, c in enumerate(children)}
-        id_to_child = {i: c for i, c in enumerate(children_clones)}
+        id_to_child = dict(enumerate(children_clones))
 
         for k, v in self.__dict__.items():
             if k in [

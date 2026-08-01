@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from algan.utils.audio_utils import get_pyttsx_speech_generator
 
 

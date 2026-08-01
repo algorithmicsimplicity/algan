@@ -1,9 +1,11 @@
-from algan.settings._startup import _ANIMATION_DEVICE
-from algan.settings import SETTINGS
+from __future__ import annotations
+
 import torch
 
 from algan.constants.color import BLUE
 from algan.rendering.primitives.primitive import RenderPrimitive
+from algan.settings import SETTINGS
+from algan.settings._startup import _ANIMATION_DEVICE
 from algan.utils.tensor_utils import (
     broadcast_all,
     cast_to_tensor,
