@@ -13,7 +13,20 @@ import warnings
 
 import torch
 
+import algan
 from algan.constants.color import WHITE
+from algan.constants.material_presets import (
+    BRUSHED_METAL,
+    CERAMIC,
+    CHROME,
+    COPPER,
+    GLASS,
+    MIRROR,
+    PLASTIC,
+    RUBBER,
+    STONE,
+    WOOD,
+)
 from algan.rendering.shaders import material_shaders as ms
 from algan.rendering.shaders.materials import (
     FrontSide,
@@ -44,6 +57,19 @@ ALL_MATERIALS = [
     MeshMatcapMaterial,
     MeshDepthMaterial,
 ]
+
+MATERIAL_PRESETS = {
+    "WOOD": WOOD,
+    "GLASS": GLASS,
+    "PLASTIC": PLASTIC,
+    "RUBBER": RUBBER,
+    "CERAMIC": CERAMIC,
+    "STONE": STONE,
+    "MIRROR": MIRROR,
+    "BRUSHED_METAL": BRUSHED_METAL,
+    "CHROME": CHROME,
+    "COPPER": COPPER,
+}
 
 
 def _v(x):
@@ -122,6 +148,29 @@ def test_material_defaults():
     assert d.near == 0.1
     assert d.far == 100.0
     print("ok: material-specific defaults match Three.js")
+
+
+def test_material_presets_are_public_and_have_valid_pbr_ranges():
+    for name, preset in MATERIAL_PRESETS.items():
+        assert getattr(algan, name) is preset
+        assert name in algan.__all__
+        assert isinstance(preset, MeshStandardMaterial)
+        assert 0.0 <= preset.roughness <= 1.0
+        assert 0.0 <= preset.metalness <= 1.0
+
+    assert isinstance(GLASS, MeshPhysicalMaterial)
+    assert GLASS.transmission == 1.0
+    assert GLASS.ior == 1.5
+    assert MIRROR.metalness == 1.0
+    assert MIRROR.roughness == 0.0
+
+
+def test_neutral_material_presets_preserve_mob_colour():
+    for preset in (GLASS, PLASTIC, RUBBER, CERAMIC, BRUSHED_METAL):
+        assert preset.color is None
+
+    for preset in (WOOD, STONE, MIRROR, CHROME, COPPER):
+        assert preset.color is not None
 
 
 def test_unexpected_kwarg_raises():

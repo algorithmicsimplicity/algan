@@ -108,6 +108,7 @@ def set_environment_map(*args, **kwargs):
     return SceneManager.instance().current_scene.set_environment_map(*args, **kwargs)
 
 
+from algan.constants.material_presets import *
 from algan.rendering.shaders.material_shaders import (
     basic_material_shader,
     depth_shader,

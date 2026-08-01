@@ -97,6 +97,22 @@ and ``ior``. There are no separate
 Mob-level reflectivity or refractive-index setters; the material is the single
 source of these. See :doc:`reflections_and_glass`.
 
+Material presets
+----------------
+
+Common surfaces are available as ready-to-use constants: ``WOOD``, ``GLASS``,
+``PLASTIC``, ``RUBBER``, ``CERAMIC``, ``STONE``, ``MIRROR``,
+``BRUSHED_METAL``, ``CHROME`` and ``COPPER``. Apply them exactly like a material
+you constructed yourself::
+
+    desk = Prism().set_material(WOOD).spawn()
+    lens = Sphere(color=BLUE_A).set_material(GLASS).spawn()
+
+Neutral presets preserve the Mob's existing colour, while naturally coloured
+presets such as ``WOOD`` and ``COPPER`` supply a representative base colour.
+They configure PBR surface response and a flat base colour only; they do not add
+wood grain, stone detail or other texture maps.
+
 Colours and naming
 ------------------
 

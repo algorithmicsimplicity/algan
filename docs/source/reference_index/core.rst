@@ -6,6 +6,7 @@ Core
 
    ~algan.errors
    ~algan.constants.color
+   ~algan.constants.material_presets
    ~algan.constants.spatial
    ~algan.constants.math
    ~algan.constants.rate_funcs
