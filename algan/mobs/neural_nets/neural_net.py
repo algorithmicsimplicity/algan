@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import torch
+
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Lag, Off, Seq, Sync
 from algan.constants.rate_funcs import delay_fade, identity, pulse_fade
 from algan.constants.spatial import *  # ORIGIN, OUT, RIGHT
+from algan.geometry.geometry import (
+    map_global_to_local_coords,
+    map_local_to_global_coords,
+)
 from algan.mobs.shapes_3d import Cylinder, Sphere
 from algan.mobs.text import Tex
 from algan.rendering.shaders.materials import (
@@ -23,6 +29,156 @@ from algan.utils.tensor_utils import dot_product
 # leaves the global torch RNG untouched for everything else.
 COLOR_JITTER_SEED = 0xA76A
 _color_rng = torch.Generator(device=_ANIMATION_DEVICE).manual_seed(COLOR_JITTER_SEED)
+
+# The idle walk is authored as a loop of deterministic random waypoints. An
+# updater must be a pure function of elapsed time because Algan may materialize
+# frame windows out of playback order; drawing a fresh random increment per
+# invocation would make the path depend on batching and render order.
+_IDLE_WALK_SEED = 0x1D1E
+_IDLE_WAYPOINT_COUNT = 16
+_IDLE_SECONDS_PER_WAYPOINT = 4
+_IDLE_DESIRED_RADIUS_PER_SPACING = 0.9
+_IDLE_CLEARANCE_RADIUS_FRACTION = 0.9
+_idle_rng = torch.Generator(device=_ANIMATION_DEVICE).manual_seed(_IDLE_WALK_SEED)
+
+
+def _single_location(mob):
+    """Return the one world-space center represented by a network component."""
+    return mob.location.reshape(-1, 3)[0]
+
+
+def _neuron_collision_radius(neuron):
+    """Radius of a sphere enclosing the neuron's visible core and shell."""
+    center = _single_location(neuron)
+    bounds = []
+    for component in (neuron.core, neuron.shell):
+        component_center = _single_location(component)
+        scale = component.scale_coefficient.reshape(-1, 3).amax()
+        base_radius = torch.as_tensor(
+            component.radius,
+            device=component_center.device,
+            dtype=component_center.dtype,
+        )
+        bounds.append((component_center - center).norm() + base_radius * scale)
+    return torch.stack(bounds).amax()
+
+
+def _idle_radii_for_layers(layers, neuron_spacing):
+    """Return per-neuron walk and collision radii in layer-flattened order.
+
+    If two original centers are distance ``d`` apart and their enclosing
+    radii are ``a`` and ``b``, giving every neuron in the layer a walk radius
+    below ``(d - a - b) / 2`` makes overlap impossible for every pair of
+    points in their walk spheres. The 0.45 multiplier leaves a strict margin.
+    """
+    first_neuron = next(neuron for layer in layers for neuron in layer)
+    reference = _single_location(first_neuron)
+    desired_radius = (
+        torch.as_tensor(
+            neuron_spacing, device=reference.device, dtype=reference.dtype
+        ).abs()
+        * _IDLE_DESIRED_RADIUS_PER_SPACING
+    )
+    walk_radii = []
+    collision_radii = []
+    for layer in layers:
+        centers = torch.stack([_single_location(neuron) for neuron in layer])
+        radii = torch.stack([_neuron_collision_radius(neuron) for neuron in layer])
+        layer_radius = desired_radius
+        if len(layer) > 1:
+            distances = torch.cdist(centers, centers)
+            clearances = distances - radii[:, None] - radii[None, :]
+            pair_mask = torch.triu(
+                torch.ones_like(clearances, dtype=torch.bool), diagonal=1
+            )
+            minimum_clearance = clearances[pair_mask].amin().clamp_min(0)
+            layer_radius = torch.minimum(
+                layer_radius,
+                minimum_clearance * _IDLE_CLEARANCE_RADIUS_FRACTION,
+            )
+        walk_radii.append(layer_radius.expand(len(layer)))
+        collision_radii.append(radii)
+    return torch.cat(walk_radii), torch.cat(collision_radii)
+
+
+def _make_idle_waypoints(walk_radii, *, dtype, device):
+    """Sample deterministic points uniformly inside each neuron's unit ball."""
+    _idle_rng.manual_seed(_IDLE_WALK_SEED)
+    shape = (walk_radii.numel(), _IDLE_WAYPOINT_COUNT - 1, 3)
+    directions = torch.randn(
+        shape, dtype=dtype, device=device, generator=_idle_rng
+    )
+    directions = directions / directions.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+    radial_scale = torch.rand(
+        (*shape[:-1], 1), dtype=dtype, device=device, generator=_idle_rng
+    ).pow(1 / 3)
+    random_points = directions * radial_scale
+    unit_waypoints = torch.cat(
+        [torch.zeros((shape[0], 1, 3), dtype=dtype, device=device), random_points],
+        dim=1,
+    )
+    return unit_waypoints * walk_radii.view(-1, 1, 1)
+
+
+def _interpolate_idle_waypoints(time_elapsed, waypoints):
+    """Evaluate the looping, smooth random-waypoint walk at arbitrary times."""
+    elapsed = time_elapsed.reshape(-1)
+    progress = elapsed / _IDLE_SECONDS_PER_WAYPOINT
+    segment = torch.floor(progress).long()
+    alpha = (progress - segment).view(-1, 1, 1)
+    # Smoothstep gives every random waypoint zero arrival/departure velocity,
+    # avoiding a visible direction snap while retaining a convex interpolation.
+    alpha = alpha * alpha * (3 - 2 * alpha)
+    current_index = segment.remainder(waypoints.shape[1])
+    next_index = (current_index + 1).remainder(waypoints.shape[1])
+    current = waypoints[:, current_index].permute(1, 0, 2)
+    following = waypoints[:, next_index].permute(1, 0, 2)
+    return torch.lerp(current, following, alpha)
+
+
+def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
+    """Updater for bounded neuron drift and synapses that follow their ends."""
+    scalar_time = time_elapsed.ndim == 0
+    local_positions = local_origins.unsqueeze(0) + _interpolate_idle_waypoints(
+        time_elapsed, waypoints
+    )
+    if scalar_time:
+        local_positions = local_positions[0]
+        net_location = net.location
+        net_basis = net.basis
+    else:
+        frame_count = time_elapsed.numel()
+        net_location = net.location.reshape(frame_count, -1, 3)
+        net_basis = net.basis.reshape(frame_count, -1, 9)
+    world_positions = map_local_to_global_coords(
+        net_location, net_basis, local_positions
+    )
+
+    neurons = [neuron for layer in net.layers for neuron in layer]
+    if scalar_time:
+        world_positions = world_positions.reshape(-1, len(neurons), 3)[0]
+    else:
+        world_positions = world_positions.reshape(frame_count, len(neurons), 3)
+    for index, neuron in enumerate(neurons):
+        target = (
+            world_positions[index]
+            if scalar_time
+            else world_positions[:, index : index + 1]
+        )
+        neuron.move_to(target)
+
+    forward = net.get_forward_direction()
+    for neuron in net.layers[0]:
+        for synapse in neuron.synapses:
+            synapse.move_between_points(
+                neuron.location + forward * net.input_synapse_offset,
+                neuron.location,
+            )
+    for previous_layer, layer in zip(net.layers, net.layers[1:]):
+        for neuron in layer:
+            for source, synapse in zip(previous_layer, neuron.synapses):
+                synapse.move_between_points(source.location, neuron.location)
+    return net
 
 
 def tweak_color(c, strength=0.2, min_strength=0.0):
@@ -280,6 +436,26 @@ class NeuralNetMLP(Mob):
         # self.layers = [[Neuron(neuron_locs[i], location=l) for l in neuron_locs[i+1]] for i in range(len(neuron_locs)-1)]
 
         self.add_children(self.layers)
+        self._idle_neurons = [neuron for layer in self.layers for neuron in layer]
+        original_locations = torch.stack(
+            [_single_location(neuron) for neuron in self._idle_neurons]
+        )
+        self._idle_origins_local = map_global_to_local_coords(
+            self.location, self.basis, original_locations
+        )
+        self._idle_walk_radii, self._idle_collision_radii = _idle_radii_for_layers(
+            self.layers, neuron_spacing
+        )
+        self._idle_waypoints = _make_idle_waypoints(
+            self._idle_walk_radii,
+            dtype=original_locations.dtype,
+            device=original_locations.device,
+        )
+        self.idle_updater_id = self.add_updater(
+            _update_neural_net_idle,
+            self._idle_origins_local,
+            self._idle_waypoints,
+        )
 
     def increment_weight(self):
         weight = self.layers[1][0].synapses[0]
@@ -431,30 +607,31 @@ class NeuralNetMLP(Mob):
                             with Lag(0.5, animation_manager=self.animation_manager):
                                 for f in pulse_funcs:
                                     f(neuron)
-            if output_generator is None:
-                return
-            self.animation_manager.context.current_time = (
-                    self.animation_manager.context.current_time - 1.7
-            )
-            with Off(animation_manager=self.animation_manager):
-                output = output_generator().move_next_to(
-                    self.layers[-1][len(self.layers[-1]) // 2],
-                    self.get_forward_direction(),
-                    buffer=0,
-                )
-                for _ in output.get_descendants():
-                    if not _.is_primitive:
-                        continue
-                    _.set_opacity(0)
-                output.spawn(animate=False)
-            with Seq(run_time=3, animation_manager=self.animation_manager):
-                output.wave_color(
-                    color + GLOW,
-                    direction=self.get_forward_direction(),
-                    opacity=1,
-                    wave_length=1.5,
-                )
-            return output
+                if output_generator is None:
+                    return
+                with Seq():
+                    #self.animation_manager.context.current_time = (
+                    #        self.animation_manager.context.current_time - 1.7
+                    #)
+                    with Off(animation_manager=self.animation_manager):
+                        output = output_generator().move_next_to(
+                            self.layers[-1][len(self.layers[-1]) // 2],
+                            self.get_forward_direction(),
+                            buffer=0,
+                        )
+                        for _ in output.get_descendants():
+                            if not _.is_primitive:
+                                continue
+                            _.set_opacity(0)
+                        output.spawn(animate=False)
+                    with Seq(run_time=3, animation_manager=self.animation_manager):
+                        output.wave_color(
+                            color + GLOW,
+                            direction=self.get_forward_direction(),
+                            opacity=1,
+                            wave_length=1.5,
+                        )
+                    return output
 
 
 class SynapseV3(Cylinder):
