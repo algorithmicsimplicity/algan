@@ -188,8 +188,9 @@ in between when you change it:
     Scene.save_video()
 
 ``num_decimal_places`` fixes the digits after the point and
-``num_integer_places`` pads the ones before it, so the display does not jitter
-in width as the number grows.
+``num_integer_places`` sets an initial minimum width before it. If the value later
+needs more integer digits, the display grows automatically; the extra slots remain
+available so its width stays stable afterwards.
 
 Where to next
 -------------
