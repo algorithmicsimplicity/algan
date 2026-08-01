@@ -204,7 +204,7 @@ Images and Imported Models
 
     from algan import *
 
-    photo = ImageMob('world_map.jpg').scale(2).spawn()
+    photo = ImageMob('world_map.png').scale(2).spawn()
     with Seq(run_time=2):
         photo.rotate(30, UP)
         photo.rotate(-30, UP)

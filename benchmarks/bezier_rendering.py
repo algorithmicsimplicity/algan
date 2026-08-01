@@ -8,7 +8,7 @@ os.environ["ALGAN_ADV_OPT"] = "1"
 import torch
 
 from algan import *
-from algan.mobs.neural_nets.neural_net import NeuralNetMLP
+from algan.mobs.neural_nets.neural_net import NeuralNetMLPV3
 from algan.utils.profiling_utils import profile_scene
 
 
@@ -45,7 +45,7 @@ text_string = ("a" * 50 + "\n") * 50
 
 def text_scene():
     with Off():
-        nn = NeuralNetMLP([3, 3, 3]).spawn()
+        nn = NeuralNetMLPV3([3, 3, 3]).spawn()
         mob = Boxed(GlowTex(GREEN, text_string)).spawn()
     with Sync(run_time=1):
         mob.move(LEFT)

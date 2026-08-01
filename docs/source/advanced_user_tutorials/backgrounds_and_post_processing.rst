@@ -57,7 +57,7 @@ Pass a path and the image is scaled to the frame:
     Circle(color=YELLOW, glow=0.4).scale(0.8).spawn()
     Scene.wait(1)
 
-    Scene.save_video(background_color='world_map.jpg')
+    Scene.save_video(background_color='world_map.png')
 
 Paths resolve against the working directory and then your script's directory.
 

@@ -63,6 +63,8 @@ builders.
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 
 from algan.rendering.raytracing.stbvh import (
@@ -183,8 +185,17 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     # Per-range centroid bounds -> per-primitive bin index on each axis.
     cmin = torch.full((K, 3), float("inf"), device=device)
     cmax = torch.full((K, 3), float("-inf"), device=device)
-    cmin.index_reduce_(0, seg, pc, "amin")
-    cmax.index_reduce_(0, seg, pc, "amax")
+    # ``index_reduce_`` remains the supported vectorized operation for this
+    # reduction, but PyTorch intentionally warns that its API is beta. Keep
+    # that implementation warning local to these internal uses.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"index_reduce\(\) is in beta and the API may change at any time\.",
+            category=UserWarning,
+        )
+        cmin.index_reduce_(0, seg, pc, "amin")
+        cmax.index_reduce_(0, seg, pc, "amax")
     ext = cmax - cmin
     nb = SAH_BINS
     t = (pc - cmin[seg]) / ext[seg].clamp_min(1e-30)
@@ -201,9 +212,15 @@ def _binary_split(order, starts, counts, forced, cent, ulo, uhi):
     bhi = torch.full((K * 3 * nb, 3), float("-inf"), device=device)
     plo = ulo[tp]
     phi = uhi[tp]
-    for a in range(3):
-        blo.index_reduce_(0, idx[:, a], plo, "amin")
-        bhi.index_reduce_(0, idx[:, a], phi, "amax")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"index_reduce\(\) is in beta and the API may change at any time\.",
+            category=UserWarning,
+        )
+        for a in range(3):
+            blo.index_reduce_(0, idx[:, a], plo, "amin")
+            bhi.index_reduce_(0, idx[:, a], phi, "amax")
     cnt = cnt.view(K, 3, nb)
     blo = blo.view(K, 3, nb, 3)
     bhi = bhi.view(K, 3, nb, 3)

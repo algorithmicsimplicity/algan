@@ -31,7 +31,7 @@ textured surface:
 
     from algan import *
 
-    photo = ImageMob('world_map.jpg').scale(2).spawn()
+    photo = ImageMob('world_map.png').scale(2).spawn()
     with Seq(run_time=2):
         photo.rotate(30, UP)
         photo.rotate(-30, UP)
@@ -57,7 +57,7 @@ while it keeps its texture. That is how you wrap a map onto a globe:
     from algan import *
 
     # Start as a flat plane coloured by our image file.
-    mob = ImageMob('world_map.jpg').scale(2).spawn()
+    mob = ImageMob('world_map.png').scale(2).spawn()
     mob.wait()
 
     with Seq(run_time_unit=10, rate_func=rate_funcs.identity):
