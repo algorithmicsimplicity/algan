@@ -37,8 +37,8 @@ _color_rng = torch.Generator(device=_ANIMATION_DEVICE).manual_seed(COLOR_JITTER_
 _IDLE_WALK_SEED = 0x1D1E
 _IDLE_WAYPOINT_COUNT = 16
 _IDLE_SECONDS_PER_WAYPOINT = 4
-_IDLE_DESIRED_RADIUS_PER_SPACING = 0.9
-_IDLE_CLEARANCE_RADIUS_FRACTION = 0.9
+_IDLE_DESIRED_RADIUS_PER_SPACING = 1
+_IDLE_CLEARANCE_RADIUS_FRACTION = 1
 _idle_rng = torch.Generator(device=_ANIMATION_DEVICE).manual_seed(_IDLE_WALK_SEED)
 
 
@@ -101,7 +101,7 @@ def _idle_radii_for_layers(layers, neuron_spacing):
     return torch.cat(walk_radii), torch.cat(collision_radii)
 
 
-def _make_idle_waypoints(walk_radii, *, dtype, device):
+def _make_idle_waypoints(walk_radii, direction, *, dtype, device):
     """Sample deterministic points uniformly inside each neuron's unit ball."""
     _idle_rng.manual_seed(_IDLE_WALK_SEED)
     shape = (walk_radii.numel(), _IDLE_WAYPOINT_COUNT - 1, 3)
@@ -117,6 +117,7 @@ def _make_idle_waypoints(walk_radii, *, dtype, device):
         [torch.zeros((shape[0], 1, 3), dtype=dtype, device=device), random_points],
         dim=1,
     )
+    unit_waypoints = unit_waypoints - dot_product(unit_waypoints, direction) * direction * 0.8
     return unit_waypoints * walk_radii.view(-1, 1, 1)
 
 
@@ -450,6 +451,7 @@ class NeuralNetMLP(Mob):
         )
         self._idle_waypoints = _make_idle_waypoints(
             self._idle_walk_radii,
+            direction,
             dtype=original_locations.dtype,
             device=original_locations.device,
         )

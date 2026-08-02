@@ -234,6 +234,34 @@ def test_restore_waits_for_the_outermost_block_so_siblings_stay_visible():
     timeline.clear_buffers()
 
 
+def test_updater_keeps_moving_the_visible_surface_across_history_splits():
+    # Resolution refinement hands each completed topology to a historical
+    # clone. A persistent updater must follow that ownership transfer; writing
+    # only the final live Surface would leave the visible historical clone
+    # stationary for the whole wave.
+    sheet = flat_sheet()
+    sheet.add_updater(lambda mob, time_elapsed: mob.move_to(RIGHT * time_elapsed))
+
+    with Sync(run_time=4):
+        sheet.wave_color(PURE_BLUE, wave_length=0.5)
+
+    times = torch.linspace(0.0, 4.0, 9)
+    timeline = sheet.scene.timeline_manager
+    timeline.set_state_to_times(times)
+    surfaces = [actor for actor in sheet.scene.actors if isinstance(actor, Surface)]
+    visible = torch.stack(
+        [surface.grid.opacity.mean(-2)[..., 0] for surface in surfaces]
+    )
+    centers = torch.stack(
+        [surface.grid.location.mean(-2)[..., 0] for surface in surfaces]
+    )
+    shown = centers.gather(0, visible.argmax(0, keepdim=True))[0]
+
+    assert torch.equal(visible.sum(0), torch.ones_like(times))
+    assert torch.allclose(shown, times, atol=1e-4)
+    timeline.clear_buffers()
+
+
 def test_top_level_wave_restores_immediately_after_itself():
     sheet = flat_sheet()
     sheet.wave_color(PURE_BLUE, wave_length=0.5)

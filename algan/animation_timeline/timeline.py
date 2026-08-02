@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import math
 
 import torch
@@ -767,6 +768,8 @@ class UpdaterEvent:
         "kwargs",
         "time",
         "dependency_mob_ids",
+        "_history_clones",
+        "_invocation_cache",
     )
 
     def __init__(self, function, caller, args, kwargs, time):
@@ -776,6 +779,66 @@ class UpdaterEvent:
         self.kwargs = kwargs
         self.time = time
         self.dependency_mob_ids = set()
+        # ``Mob.detach_history`` leaves the live Python object on the newest
+        # timeline rows and hands each earlier interval to a clone. Persistent
+        # updaters still need to address whichever incarnation is visible in a
+        # queried frame, including replacements nested below their caller.
+        self._history_clones = {}
+        self._invocation_cache = {}
+
+    def register_history_clone(self, original, clone):
+        entry = self._history_clones.setdefault(id(original), (original, []))
+        if not any(existing is clone for existing in entry[1]):
+            entry[1].append(clone)
+            self._invocation_cache.clear()
+        self.dependency_mob_ids.add(clone.id)
+
+    def replacement_signature_at(self, time):
+        """Return ``(original, visible historical clone)`` pairs at ``time``."""
+        replacements = []
+        for original, clones in self._history_clones.values():
+            replacement = next(
+                (
+                    clone
+                    for clone in clones
+                    if clone.lifespan.start() <= time < clone.lifespan.end()
+                ),
+                None,
+            )
+            if replacement is not None:
+                replacements.append((original, replacement))
+        replacements.sort(key=lambda pair: id(pair[0]))
+        return tuple(replacements)
+
+    def invocation_for_signature(self, signature):
+        """Build a view of the caller graph containing historical Mobs.
+
+        The view shares every untouched Mob's timeline id. Only references to
+        objects replaced by ``detach_history`` point at the independent clone,
+        so ordinary updater code can keep navigating user attributes and child
+        lists without knowing that ownership changed.
+        """
+        if not signature:
+            return self.caller, self.args, self.kwargs
+        key = tuple((id(original), id(clone)) for original, clone in signature)
+        cached = self._invocation_cache.get(key)
+        if cached is not None:
+            return cached
+        memo = {
+            "___copy_add_to_scene___": False,
+            "___copy_spawn___": False,
+            "___copy_animate_creation___": False,
+            "___copy_recursive___": True,
+            "___clone_data___": False,
+            **{id(original): clone for original, clone in signature},
+        }
+        invocation = (
+            copy.deepcopy(self.caller, memo),
+            copy.deepcopy(self.args, memo),
+            copy.deepcopy(self.kwargs, memo),
+        )
+        self._invocation_cache[key] = invocation
+        return invocation
 
 
 class FunctionTimeline:
@@ -857,6 +920,7 @@ class AnimationTimeline:
         self._active_updater_trace = None
         self._materialization_times = None
         self._materialized_mob_ids = None
+        self._updater_history_clones = {}
 
     def set_active_edit_event(self, event):
         """Set the function application that subsequently recorded attribute
@@ -888,6 +952,7 @@ class AnimationTimeline:
             return
         mob_ids = self._collect_mob_ids((mob,)) if include_descendants else {mob.id}
         event.dependency_mob_ids.update(mob_ids)
+        mob_ids.update(self._register_known_history_clones(event, mob_ids))
 
         if self._materialized_mob_ids is None or self._materialization_times is None:
             return
@@ -898,6 +963,27 @@ class AnimationTimeline:
             rows = timeline.rows_for_mob_ids(missing)
             timeline.materialize_additional_rows(self._materialization_times, rows)
         self._materialized_mob_ids.update(missing)
+
+    def _register_known_history_clones(self, event, mob_ids):
+        # Registering a clone adds its id to the same dependency set.
+        registered_ids = set()
+        for mob_id in tuple(mob_ids):
+            for original, clone in self._updater_history_clones.get(mob_id, ()):
+                event.register_history_clone(original, clone)
+                registered_ids.add(clone.id)
+        return registered_ids
+
+    def register_updater_history_split(self, descendant_map):
+        """Teach persistent updaters about rows handed to historical clones."""
+        for original, clone in descendant_map.items():
+            entries = self._updater_history_clones.setdefault(original.id, [])
+            if not any(
+                known_original is original and known_clone is clone
+                for known_original, known_clone in entries
+            ):
+                entries.append((original, clone))
+        for event in self.function_timeline.updaters:
+            self._register_known_history_clones(event, event.dependency_mob_ids)
 
     def get_lifespan(self, mob_id):
         """The :class:`Lifespan` of the mob with the given id, created on
@@ -979,6 +1065,7 @@ class AnimationTimeline:
         span = UpdaterSpan(animation_context.timespan.get_current_time())
         event = UpdaterEvent(function, caller, args, kwargs, span)
         event.dependency_mob_ids.update(self._collect_mob_ids((caller, args, kwargs)))
+        self._register_known_history_clones(event, event.dependency_mob_ids)
         self.function_timeline.add_updater(event)
         return len(self.function_timeline.updaters) - 1
 
@@ -1234,19 +1321,44 @@ class AnimationTimeline:
             ).nonzero()
             if active_time_inds.numel() == 0:
                 continue
-            for timeline in self.attr_to_timeline.values():
-                timeline.set_active_time_inds(active_time_inds)
-            elapsed = times[active_time_inds.squeeze(-1)] - f.time.start
-            previous_trace = self.begin_updater_dependency_trace(f)
-            try:
-                f.function(
-                    f.caller,
-                    elapsed.view(-1, 1, 1),
-                    *f.args,
-                    **f.kwargs,
-                )
-            finally:
-                self.end_updater_dependency_trace(previous_trace)
+            groups = [((), active_time_inds)]
+            if f._history_clones:
+                grouped = {}
+                flat_inds = active_time_inds.squeeze(-1)
+                queried_times = times[flat_inds].detach().cpu().tolist()
+                for index, time in zip(flat_inds.tolist(), queried_times):
+                    signature = f.replacement_signature_at(time)
+                    key = tuple(
+                        (id(original), id(clone)) for original, clone in signature
+                    )
+                    grouped.setdefault(key, [signature, []])[1].append(index)
+                groups = [
+                    (
+                        signature,
+                        torch.tensor(
+                            indexes,
+                            dtype=torch.long,
+                            device=active_time_inds.device,
+                        ).unsqueeze(-1),
+                    )
+                    for signature, indexes in grouped.values()
+                ]
+
+            for signature, group_time_inds in groups:
+                for timeline in self.attr_to_timeline.values():
+                    timeline.set_active_time_inds(group_time_inds)
+                elapsed = times[group_time_inds.squeeze(-1)] - f.time.start
+                caller, args, kwargs = f.invocation_for_signature(signature)
+                previous_trace = self.begin_updater_dependency_trace(f)
+                try:
+                    f.function(
+                        caller,
+                        elapsed.view(-1, 1, 1),
+                        *args,
+                        **kwargs,
+                    )
+                finally:
+                    self.end_updater_dependency_trace(previous_trace)
 
         for timeline in self.attr_to_timeline.values():
             timeline.set_active_time_inds(slice(None, None, None))
