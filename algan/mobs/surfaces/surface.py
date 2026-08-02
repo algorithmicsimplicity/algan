@@ -25,10 +25,16 @@ from algan.settings.renderer_settings import RENDERER_REGISTRY
 from algan.utils.file_utils import get_image
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
+    dot_product,
     squish,
     unsqueeze_left,
     unsquish,
 )
+
+# Ceiling on the grid resolution ``wave_color`` will refine a surface to. A
+# tighter wave than this can afford is drawn as smoothly as the budget allows
+# rather than tessellating the surface into millions of triangles.
+_MAX_WAVE_GRID_RESOLUTION = 64
 
 
 def _call_parametric_function(function, u, v):
@@ -895,10 +901,14 @@ class Surface(Mob):
             0
         ]
         design = torch.cat((canonical, torch.ones_like(canonical[..., :1])), dim=-1)
-        try:
-            affine = torch.linalg.lstsq(design, current).solution
-        except RuntimeError:
-            affine = torch.linalg.pinv(design) @ current
+        # The design matrix is rank deficient whenever the canonical surface is
+        # flat in some direction -- a plane spans only three of its four columns
+        # -- which is exactly the shape a colour wave most often has to refine.
+        # ``lstsq``'s CUDA driver assumes full rank and returns garbage there
+        # without raising, so take the pseudo-inverse's minimum-norm solution:
+        # identical where the fit is determined, and correct on the surface's own
+        # affine span where it is not.
+        affine = torch.linalg.pinv(design) @ current
 
         def current_function(uv):
             points = self.coord_function_active(uv.clone())
@@ -1504,6 +1514,61 @@ class Surface(Mob):
         if (width, height) == (self.grid_width, self.grid_height):
             return self
         return self._change_resolution(width, height, surface_function)
+
+    def _refine_sampling_for_color_wave(self, direction, max_spacing, pulsed_attrs):
+        """Refine the grid so a travelling colour wave crosses it smoothly.
+
+        A surface's grid resolution is chosen to fit its *shape*, so a surface
+        that is flat along one axis is sampled only at the ends of it -- enough
+        to draw the geometry, far too coarse to draw a colour band moving across
+        it. Both colour and opacity are carried per grid vertex, so either kind
+        of wave benefits. Re-sample the parameter grid finely enough that
+        neighbouring vertices are no further than ``max_spacing`` apart along the
+        wave, by running ``coord_function`` over a denser ``(u, v)`` grid (see
+        :meth:`~.Mob._refine_sampling_for_color_wave`).
+        """
+        if (
+            not hasattr(self, "grid")
+            or self._resolution_update_in_progress
+            or self.data_sub_inds is not None
+            or self.grid.data_sub_inds is not None
+        ):
+            return None
+        if self.color_texture is not None:
+            # Textured surfaces shade from the texture map rather than from
+            # vertex colours, so a finer grid would buy geometry and no pixels.
+            return None
+        width, height = self.grid_width, self.grid_height
+        location = self.grid.location
+        if location.shape[-2] != width * height:
+            # A grid that has been rebatched away from its parameter domain
+            # (imported meshes, indexed views) cannot be regenerated from uv.
+            return None
+        projected = dot_product(direction, location, dim=-1, keepdim=False).reshape(
+            -1, width, height
+        )[0]
+
+        maximum = min(self._max_grid_resolution, _MAX_WAVE_GRID_RESOLUTION)
+
+        def refined(size, gaps):
+            if size < 2:
+                return size
+            spacing = gaps.abs().amax().item()
+            if spacing <= max_spacing:
+                return size
+            required = int(np.ceil((size - 1) * spacing / max_spacing)) + 1
+            return max(size, min(required, maximum))
+
+        new_width = refined(width, projected[1:, :] - projected[:-1, :])
+        new_height = refined(height, projected[:, 1:] - projected[:, :-1])
+        if (new_width, new_height) == (width, height):
+            return None
+        self._change_resolution(new_width, new_height)
+
+        def restore():
+            self._change_resolution(width, height)
+
+        return restore
 
     def _uses_pn_triangles(self):
         """True if newly created surfaces render as curved point-normal (PN)

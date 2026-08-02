@@ -253,6 +253,7 @@ class AnimationContext:
             self.child_contexts = []
         if self.kwargs is None:
             self.kwargs = {}
+        self.exit_callbacks = []
         self.timespan = TimelineSpan()
 
     def __enter__(self):
@@ -316,6 +317,27 @@ class AnimationContext:
     @end_time.setter
     def end_time(self, value):
         self.timespan.original_end = value
+
+    def add_exit_callback(self, callback):
+        """Register work to run once this block has finished, at its end time.
+
+        The callback runs after everything inside the block has been recorded
+        and rescaled, with the authoring cursor placed at this context's end, so
+        anything the callback records lands after the whole block. Callbacks run
+        in reverse registration order, so nested set-up unwinds the way it was
+        applied.
+
+        This exists for changes that have to outlive the statement that asked for
+        them: :meth:`~.Mob.wave_color` refines a Mob's sampling so its colour
+        wave renders smoothly, and can only drop that resolution again once
+        nothing further will be recorded alongside the wave.
+
+        Parameters
+        ----------
+        callback
+            Zero-argument callable.
+        """
+        self.exit_callbacks.append(callback)
 
     def add_child_context(self, c):
         """Register a nested context, so this one's rescaling reaches it.
@@ -528,6 +550,8 @@ class AnimationContext:
                         self.new_mobs, key=lambda item: -item.anchor_priority
                     ):
                         mob.spawn()
+            if self.exit_callbacks:
+                self._run_exit_callbacks(am.context)
             return False
         finally:
             # Context-stack restoration is unconditional.  In particular, an
@@ -538,6 +562,23 @@ class AnimationContext:
             if token is not None:
                 _ANIMATION_MANAGER_OVERRIDE.reset(token)
                 self._manager_override_token = None
+
+    def _run_exit_callbacks(self, parent):
+        """Run the callbacks registered with :meth:`add_exit_callback`.
+
+        They run in the parent context (this one has already been popped) with
+        its cursor moved to this block's end, so whatever they record follows
+        everything recorded inside the block. The cursor is put back afterwards
+        so the callbacks do not disturb the parent's own timing.
+        """
+        callbacks, self.exit_callbacks = self.exit_callbacks, []
+        cursor = parent.timespan.current_time
+        parent.timespan.current_time = max(cursor, self.timespan.end)
+        try:
+            for callback in reversed(callbacks):
+                callback()
+        finally:
+            parent.timespan.current_time = cursor
 
     def increment_times(self):
         """Advance the cursor after recording one animation.

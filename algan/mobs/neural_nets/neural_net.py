@@ -154,7 +154,7 @@ def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
         net_location, net_basis, local_positions
     )
 
-    neurons = [neuron for layer in net.layers for neuron in layer]
+    neurons = [neuron for layer in net.layers[:-1] for neuron in layer]
     if scalar_time:
         world_positions = world_positions.reshape(-1, len(neurons), 3)[0]
     else:
@@ -174,7 +174,7 @@ def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
                 neuron.location + forward * net.input_synapse_offset,
                 neuron.location,
             )
-    for previous_layer, layer in zip(net.layers, net.layers[1:]):
+    for previous_layer, layer in zip(net.layers[:-1], net.layers[1:-1]):
         for neuron in layer:
             for source, synapse in zip(previous_layer, neuron.synapses):
                 synapse.move_between_points(source.location, neuron.location)
@@ -199,8 +199,10 @@ gs = 0.75
 
 class Synapse(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
-        grid_height = 20  # None
-        grid_width = 12
+        #grid_height = 20  # None
+        #grid_width = 12
+        grid_height = None
+        grid_width = None
         if "color" in kwargs:
             c = kwargs["color"]
             kwargs["color"] = tweak_color(c, strength=0.25, min_strength=0.25)
@@ -213,7 +215,7 @@ class Neuron(Mob):
 
     def __init__(self, input_locs, direction, neuron_color, **kwargs):
         super().__init__(**kwargs)
-        grid_height = 18
+        grid_height = None
         self.core = self._make_core(grid_height, neuron_color).move_to(self.location)
         self.shell = (
             self._make_shell(grid_height, neuron_color)
@@ -436,7 +438,7 @@ class NeuralNetMLP(Mob):
         # self.layers = [[Neuron(neuron_locs[i], location=l) for l in neuron_locs[i+1]] for i in range(len(neuron_locs)-1)]
 
         self.add_children(self.layers)
-        self._idle_neurons = [neuron for layer in self.layers for neuron in layer]
+        self._idle_neurons = [neuron for layer in self.layers[:-1] for neuron in layer]
         original_locations = torch.stack(
             [_single_location(neuron) for neuron in self._idle_neurons]
         )
@@ -444,7 +446,7 @@ class NeuralNetMLP(Mob):
             self.location, self.basis, original_locations
         )
         self._idle_walk_radii, self._idle_collision_radii = _idle_radii_for_layers(
-            self.layers, neuron_spacing
+            self.layers[:-1], neuron_spacing
         )
         self._idle_waypoints = _make_idle_waypoints(
             self._idle_walk_radii,
@@ -640,8 +642,8 @@ class SynapseV3(Cylinder):
     """
 
     def __init__(self, grid_height=5, *args, **kwargs):
-        grid_height = 20
-        grid_width = 12
+        grid_height = None
+        grid_width = None
         c = kwargs.get("color")
         if c is not None:
             c = tweak_color(c, strength=0.25, min_strength=0.25)

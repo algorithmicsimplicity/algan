@@ -34,6 +34,7 @@ from algan.geometry.geometry import (
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.tensor_utils import (
     cast_to_tensor,
+    dot_product,
     squish,
     unsquish,
 )
@@ -396,6 +397,7 @@ class Mob(
         reverse: bool = False,
         direction: torch.Tensor | None = None,
         lag_duration=1,
+        samples_per_wave: int | None = 12,
         **kwargs,
     ) -> Mob:
         """Send a colour pulse travelling across the Mob.
@@ -405,11 +407,25 @@ class Mob(
         instead of flashing all at once. Parts are ordered by their position
         along ``direction``.
 
+        The colour is carried by the Mob's vertices, so a Mob sampled more
+        coarsely than the wave is wide would show the pulse as a few flat facets
+        -- a :class:`~algan.mobs.surfaces.surface.Surface` shaped like a flat
+        sheet has vertices only at its corners, and a filled
+        :class:`~algan.mobs.bezier_circuit.BezierCircuitCubic` has a single
+        colour sample by default. Such Mobs are re-sampled finely enough to draw
+        the wave and dropped back to their original resolution once the block
+        containing the wave is over; see ``samples_per_wave``.
+
         Animation
         ---------
         Recorded as an animation. The total duration is ``lag_duration`` plus one
         part's pulse, so it is set by these parameters rather than by the current
-        context's duration.
+        context's duration. Re-sampling a part is a topology change, so it splits
+        that Mob's history the way
+        :meth:`~algan.animatable_base.mob.Mob.detach_history` does, at the start
+        of the wave and again when the enclosing block ends; the split is
+        invisible, but it is why the resolution only drops back at the end of the
+        block rather than at the end of the wave.
 
         Parameters
         ----------
@@ -429,6 +445,14 @@ class Mob(
         lag_duration
             Seconds between the first part starting its pulse and the last one
             starting theirs. Defaults to ``1``.
+        samples_per_wave
+            How many colour samples to fit across the width of the travelling
+            band. Parts already sampled at least this finely along ``direction``
+            are left alone; coarser ones are temporarily refined. Defaults to
+            ``12`` -- a pulse is two straight ramps, which colour interpolation
+            reproduces exactly, so this only has to round off the peak between
+            them and raising it buys geometry rather than smoothness. Pass
+            ``None`` to leave every part's resolution exactly as it is.
         **kwargs
             Passed to :meth:`~.Mob.pulse_color` for each part -- notably
             ``opacity`` and ``new_color``.
@@ -440,25 +464,169 @@ class Mob(
         """
         if direction is None:
             direction = self.get_upwards_direction()
+        direction = direction * (-1 if reverse else 1)
+        # What each part's pulse actually writes, which decides whether a finer
+        # sampling can show the wave at all (see pulse_color).
+        pulsed_attrs = frozenset(
+            name
+            for name, value in (("color", color), ("opacity", kwargs.get("opacity")))
+            if value is not None
+        )
+        restores = self._refine_parts_for_color_wave(
+            direction, wave_length, lag_duration, samples_per_wave, pulsed_attrs
+        )
         with AnimationContext(
             run_time_unit=wave_length / lag_duration,
             animation_manager=self.animation_manager,
-        ):
-            # Filters for primitive parts to ensure the wave animates on individual rendering elements
+        ) as wave_context:
             # TODO change this to use non_recursive set
-            primitive_mobs = [
-                _
-                for _ in self.get_descendants()
-                if (_.is_primitive and not _.ignore_wave_animations)
-            ]
+            primitive_mobs = self._wave_pulsed_parts()
             kwargs["recursive"] = False
             animate_lagged_by_location(
                 primitive_mobs,
                 lambda x: x.pulse_color(color, **kwargs),
-                direction * (-1 if reverse else 1),
+                direction,
                 lag_duration=lag_duration,
             )
+        if restores:
+            self._schedule_wave_resolution_restore(restores, wave_context)
         return self
+
+    def _wave_pulsed_parts(self):
+        """Internal: the parts :meth:`~.Mob.wave_color` pulses one colour each.
+
+        Only primitive parts, so the wave animates on individual rendering
+        elements rather than on the containers holding them.
+        """
+        return [
+            _
+            for _ in self.get_descendants()
+            if (_.is_primitive and not _.ignore_wave_animations)
+        ]
+
+    def _refine_parts_for_color_wave(
+        self, direction, wave_length, lag_duration, samples_per_wave, pulsed_attrs
+    ):
+        """Internal: raise the sampling of any part too coarse to draw the wave.
+
+        The pulse a part plays starts ``t * lag_duration`` seconds in, where
+        ``t`` is its position along ``direction`` normalized over every pulsed
+        part, and lasts ``wave_length / lag_duration`` seconds. So at any instant
+        the band of parts mid-pulse spans ``wave_length / lag_duration ** 2`` of
+        that normalized range: divide by ``samples_per_wave`` and we have the
+        largest gap between neighbouring samples that still renders the band
+        smoothly.
+
+        Returns
+        -------
+        list
+            Callables restoring each refined Mob's original resolution, in the
+            order they were refined.
+        """
+        if (
+            samples_per_wave is None
+            or samples_per_wave <= 0
+            or lag_duration <= 0
+            or not pulsed_attrs
+        ):
+            return []
+        if not self.animation_manager.context.record_funcs:
+            # Nothing is being animated (an Off block, say), so there is no wave
+            # to draw and no reason to pay for the geometry.
+            return []
+        pulsed = self._wave_pulsed_parts()
+        if not pulsed:
+            return []
+        projections = torch.cat(
+            [dot_product(direction, _.location, dim=-1).reshape(-1) for _ in pulsed], -1
+        )
+        band = (projections.amax() - projections.amin()).item() * (
+            wave_length / lag_duration**2
+        )
+        if not band > 0:
+            return []
+        max_spacing = band / samples_per_wave
+
+        def guarded(mob, restore):
+            # Restoring re-spawns the Mob at the split it records (see
+            # detach_history), so a Mob that despawns during the wave keeps the
+            # refined rows it is no longer showing rather than being resurrected
+            # by its own clean-up.
+            def guarded_restore():
+                if not mob.is_despawned():
+                    restore()
+
+            return guarded_restore
+
+        restores = []
+        for mob in list(self.get_descendants()):
+            if mob.is_despawned():
+                continue
+            restore = mob._refine_sampling_for_color_wave(
+                direction, max_spacing, pulsed_attrs
+            )
+            if restore is not None:
+                restores.append(guarded(mob, restore))
+        return restores
+
+    def _refine_sampling_for_color_wave(self, direction, max_spacing, pulsed_attrs):
+        """Internal: temporarily re-sample this Mob to render a colour wave.
+
+        Does nothing by default. Mobs that can rebuild themselves at a different
+        resolution -- :class:`~algan.mobs.surfaces.surface.Surface` from its
+        ``coord_function``, :class:`~algan.mobs.bezier_circuit.BezierCircuitCubic`
+        from its texture grid -- override this.
+
+        Parameters
+        ----------
+        direction
+            Direction the wave travels, shape ``(*, 3)``. Not normalized:
+            distances are measured by projecting onto it, exactly as the wave's
+            own lag is.
+        max_spacing
+            Largest projected gap between neighbouring colour samples that still
+            draws the wave smoothly, in the units ``direction`` projects to.
+        pulsed_attrs
+            Names of the attributes the wave writes on each part -- ``"color"``,
+            ``"opacity"``, or both. A Mob that stores one of them per sample and
+            the other per object refines only for the former.
+
+        Returns
+        -------
+        callable or None
+            A zero-argument callable restoring the original resolution, or None
+            if this Mob was left as it is.
+        """
+        return None
+
+    def _schedule_wave_resolution_restore(self, restores, wave_context):
+        """Internal: put a refined Mob back to its own resolution after the wave.
+
+        Restoring is a topology change, so it goes through
+        :meth:`~.Mob.detach_history`: everything recorded on the refined rows
+        stays with a frozen clone that despawns at that instant. Anything
+        recorded *afterwards* therefore lands on rows that only become visible
+        then -- which is fine at the top level, where the cursor has already
+        advanced past the wave, but not inside a ``with`` block, where a sibling
+        animation recorded after this call still starts back at the block's own
+        cursor. So inside a block the restore waits for the outermost open block
+        to finish, by which point everything timed alongside the wave has been
+        recorded against the refined Mob.
+        """
+        context = self.animation_manager.context
+        outermost = None
+        while context.prev_context is not None:
+            outermost, context = context, context.prev_context
+        if outermost is not None:
+            outermost.add_exit_callback(lambda: [restore() for restore in restores])
+            return
+        cursor = context.timespan.current_time
+        context.timespan.current_time = max(cursor, wave_context.timespan.end)
+        try:
+            for restore in restores:
+                restore()
+        finally:
+            context.timespan.current_time = cursor
 
     def _prepare_buffers(self, key, value):
         tm = self.scene.timeline_manager

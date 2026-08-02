@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import animated_function
@@ -16,6 +18,10 @@ from algan.utils.tensor_utils import *
 # Three.js's fixed dielectric F0 = 0.04 corresponds to IOR 1.5; MeshStandard
 # has no ``ior`` of its own, so that is the default a circuit falls back to.
 DIELECTRIC_IOR = 1.5
+
+# Ceiling on the texture-grid size ``wave_color`` will refine a circuit to. A
+# wave tighter than this can afford is drawn as smoothly as the budget allows.
+_MAX_WAVE_TEXTURE_RESOLUTION = 64
 
 
 def _border_width_in_render_pixels(border_width, video_settings):
@@ -39,6 +45,19 @@ def _circuit_ior(ior, metalness):
     anyway.
     """
     return torch.where(metalness >= 0.0, ior.abs(), torch.zeros_like(ior))
+
+
+def _resample_texture_grid(value, old_size, new_size):
+    """Resample per-texel circuit values from an ``old_size`` to a ``new_size``
+    square grid, for every circuit packed into ``value`` ``[..., N * old, C]``.
+    """
+    leading = value.shape[:-2]
+    channels = value.shape[-1]
+    image = value.reshape(-1, old_size, old_size, channels).permute(0, 3, 1, 2)
+    resized = F.interpolate(
+        image, size=(new_size, new_size), mode="bilinear", align_corners=True
+    )
+    return resized.permute(0, 2, 3, 1).reshape(*leading, -1, channels)
 
 
 def _circuit_location_and_basis(control_points):
@@ -234,6 +253,124 @@ class BezierCircuitCubic(Mob):
             mob.parent_batch_sizes = torch.tensor((count,), dtype=torch.long)
             mob.singleton_batch_indexing = True
         return mob
+
+    def _refine_sampling_for_color_wave(self, direction, max_spacing, pulsed_attrs):
+        """Refine the texture grid so a colour wave crosses the fill smoothly.
+
+        A circuit's fill is coloured by bilinearly sampling the grid of
+        ``texture_points`` laid across it, and that grid is a single sample
+        unless ``texture_grid_size`` was raised by hand -- so a filled shape
+        flashes as one flat colour instead of showing the wave travelling over
+        it. Lay down a grid fine enough that neighbouring samples are no further
+        than ``max_spacing`` apart along the wave (see
+        :meth:`~.Mob._refine_sampling_for_color_wave`).
+        """
+        if "color" not in pulsed_attrs:
+            # Only colour is stored per texture point. A circuit's opacity is a
+            # single shader parameter for the whole fill, so an opacity wave --
+            # the fade Text and Tex spawn with, for one -- cannot be made any
+            # smoother by adding texels.
+            return None
+        if self.empty or not self.filled:
+            # Only the fill reads the texture grid; an unfilled circuit is drawn
+            # entirely from its single ``border_color``.
+            return None
+        size = self.grid_width
+        if (
+            self.num_texture_points < 1
+            or size != self.grid_height
+            or self.data_sub_inds is not None
+            or self.texture_points.data_sub_inds is not None
+        ):
+            return None
+        objects = self.location.shape[-2]
+        if self.texture_points.location.shape[-2] != objects * self.num_texture_points:
+            return None
+
+        # The grid spans the full width of the circuit's own frame along each of
+        # its two basis vectors, so each axis covers twice the projected length
+        # of its basis vector, with ``size`` samples over it.
+        def projected_span(basis):
+            return 2 * dot_product(direction, basis, dim=-1).abs().amax().item()
+
+        span = max(
+            projected_span(self.basis[..., :3]), projected_span(self.basis[..., 3:6])
+        )
+        spacing = span if size < 2 else span / (size - 1)
+        if not span > 0 or spacing <= max_spacing:
+            return None
+        required = int(math.ceil(span / max_spacing)) + 1
+        new_size = max(size, min(required, _MAX_WAVE_TEXTURE_RESOLUTION))
+        if new_size == size:
+            return None
+        self._set_texture_grid_resolution(new_size)
+
+        def restore():
+            self._set_texture_grid_resolution(size)
+
+        return restore
+
+    def _set_texture_grid_resolution(self, size):
+        """Internal: rebuild the texture grid at ``size x size`` per circuit.
+
+        The grid is laid out exactly as the constructor lays it out, so the
+        renderer's texture lookup is unchanged: ``size`` samples along the first
+        basis vector, each holding ``size`` samples along the second. Existing
+        per-texel values are resampled onto the new grid. Row counts change, so
+        callers must be prepared for the history split this performs.
+        """
+        old_points = self.num_texture_points
+        objects = self.location.shape[-2]
+        old_values = {}
+        for attr in dict.fromkeys(self.texture_points.animatable_attrs):
+            try:
+                old_values[attr] = getattr(self.texture_points, attr).clone()
+            except AttributeError:
+                continue
+
+        # A different number of texture points cannot be interpolated from the
+        # old ones, so the recorded history stays behind on a frozen clone.
+        if self.is_spawned():
+            self.detach_history()
+        self.grid_width = self.grid_height = size
+        self.num_texture_points = size * size
+
+        location = self.location
+        offsets = (
+            torch.linspace(-1, 1, size, device=location.device, dtype=location.dtype)
+            * (1 + 1e-5)
+        )
+        first = self.basis[..., :3].unsqueeze(-2).unsqueeze(-2)
+        second = self.basis[..., 3:6].unsqueeze(-2).unsqueeze(-2)
+        points = (
+            offsets.view(-1, 1, 1) * first
+            + offsets.view(1, -1, 1) * second
+            + location.unsqueeze(-2).unsqueeze(-2)
+        )
+        self.texture_points.setattr_and_rebatch_without_record(
+            "location", points.reshape(*points.shape[:-4], -1, 3)
+        )
+
+        # Every attribute that was stored one value per texture point has to
+        # follow the new grid; leaving one of them behind desynchronizes the
+        # texture point's rows, and a later write to it can no longer broadcast.
+        old_size = int(round(old_points**0.5))
+        for attr, value in old_values.items():
+            if attr == "location" or value.shape[-2] != objects * old_points:
+                continue
+            self.texture_points.setattr_and_rebatch_without_record(
+                attr, _resample_texture_grid(value, old_size, size)
+            )
+
+        if self.texture_points.parent_batch_sizes is not None:
+            self.texture_points.parent_batch_sizes = torch.full(
+                (objects,),
+                self.num_texture_points,
+                dtype=self.texture_points.parent_batch_sizes.dtype,
+            )
+        self.texture_points.batch_size = objects * self.num_texture_points
+        self._memory_per_timestep_cache = None
+        return self
 
     def get_animatable_attrs(self):
         return {"border_width", "border_color"}.union(super().get_animatable_attrs())
