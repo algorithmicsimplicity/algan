@@ -55,7 +55,12 @@ def animate_lagged_by_location(mobs, animation_func, direction, lag_duration=1):
     old_max_time = amc.timespan.original_end
     # amc.max_max_time = max(amc.max_time, start_time + (run_time + lag_duration))
     for i in range(len(mobs)):
-        amc.timespan.current_time = (start_time + ts[i].amin()).item()
+        # ``rf`` already delays every attribute row by its normalized spatial
+        # position.  Starting each primitive at its own minimum position would
+        # apply that offset a second time, so a composite wave would travel
+        # faster across one wide primitive than across many small ones (for
+        # example, a Code panel versus its separately represented glyphs).
+        amc.timespan.current_time = start_time
 
         def rf(x, t=ts[i], r=run_time, lag=lag_duration):
             return rfd(

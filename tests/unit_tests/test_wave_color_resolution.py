@@ -19,8 +19,10 @@ import torch
 
 from algan.animation_timeline.animation_contexts import Off, Seq, Sync
 from algan.constants.color import PURE_BLUE, YELLOW
+from algan.constants.rate_funcs import identity
 from algan.constants.spatial import RIGHT, UP
-from algan.mobs.shapes_2d import Square
+from algan.mobs.group import Group
+from algan.mobs.shapes_2d import Rectangle, Square
 from algan.mobs.surfaces.surface import Surface
 from algan.scene_manager import SceneManager
 
@@ -196,6 +198,72 @@ def test_circuit_wave_color_animates_fill_and_border_texture_grids():
 
     assert not torch.allclose(fill_colors, static)
     assert not torch.allclose(border_colors, static)
+    timeline.clear_buffers()
+
+
+def test_composite_wave_has_one_speed_across_wide_and_split_parts():
+    """A panel and separately represented glyphs share one spatial wave."""
+    panel = Rectangle(
+        width=6,
+        height=1,
+        color=YELLOW,
+        texture_grid_size=33,
+    )
+    glyphs = [
+        Square(
+            side_length=0.25,
+            color=YELLOW,
+            texture_grid_size=3,
+        ).move(RIGHT * x)
+        for x in (-2.0, -1.0, 0.0, 1.0, 2.0)
+    ]
+    composite = Group([panel, *glyphs]).spawn(animate=False)
+
+    with Sync(run_time=1.5, rate_func=identity):
+        composite.wave_color(
+            PURE_BLUE,
+            wave_length=0.5,
+            direction=RIGHT,
+            samples_per_wave=None,
+        )
+
+    times = torch.linspace(0.0, 1.5, 301)
+    timeline = composite.scene.timeline_manager
+    timeline.set_state_to_times(times)
+
+    def positions_and_peak_times(part):
+        positions = part.location[0, :, 0]
+        color_distance = (
+            part.color[..., :3] - PURE_BLUE.rgb.view(1, 1, 3)
+        ).square().sum(-1)
+        return positions, times[color_distance.argmin(0)]
+
+    panel_positions, panel_peak_times = positions_and_peak_times(
+        panel.texture_points
+    )
+    glyph_positions, glyph_peak_times = zip(
+        *(positions_and_peak_times(glyph.texture_points) for glyph in glyphs)
+    )
+    glyph_positions = torch.cat(glyph_positions)
+    glyph_peak_times = torch.cat(glyph_peak_times)
+
+    # Fit the panel's timing line, then require the glyph samples at the same
+    # world positions to land on it. Previously each glyph's event start also
+    # carried its spatial offset, approximately halving the text-wave speed.
+    centered_positions = panel_positions - panel_positions.mean()
+    panel_speed = (
+        centered_positions
+        * (panel_peak_times - panel_peak_times.mean())
+    ).sum() / centered_positions.square().sum()
+    predicted_glyph_times = panel_peak_times.mean() + panel_speed * (
+        glyph_positions - panel_positions.mean()
+    )
+    torch.testing.assert_close(
+        glyph_peak_times,
+        predicted_glyph_times,
+        atol=times.diff().max().item() * 2,
+        rtol=0,
+    )
     timeline.clear_buffers()
 
 
