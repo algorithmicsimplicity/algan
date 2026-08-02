@@ -555,7 +555,7 @@ class NeuralNetMLP(Mob):
 
     def activate(
         self,
-            output_generator=None,
+        output_generator=None,
         color=PURE_RED * k + (1 - k) * WHITE,
         run_time=1,
         reverse=False,
@@ -622,17 +622,35 @@ class NeuralNetMLP(Mob):
                             self.get_forward_direction(),
                             buffer=0,
                         )
-                        for _ in output.get_descendants():
-                            if not _.is_primitive:
-                                continue
-                            _.opacity = 0
+                        output_colors = {
+                            id(part): part.color.clone()
+                            for part in output._wave_pulsed_parts()
+                        }
+                        for part in output._wave_pulsed_parts():
+                            # Hide through the per-sample color alpha, not the
+                            # primitive's scalar opacity. A filled circuit can
+                            # then materialize behind the same spatial wave as
+                            # its glow instead of globally brightening as its
+                            # one opacity value ramps up.
+                            part.color = part.color.set_opacity(0)
                         output.spawn(animate=False)
+
                     with Seq(run_time=3, animation_manager=self.animation_manager):
                         output.wave_color(
                             color + GLOW,
                             direction=self.get_forward_direction(),
-                            opacity=1,
                             wave_length=1.5,
+                            # The output can be a multi-colored composite. Each
+                            # part must settle to its own authored color, while
+                            # the shared pulse supplies the uniform glow peak.
+                            new_color=lambda part: output_colors[id(part)],
+                            # Restoring a refined Code panel creates a second
+                            # coplanar incarnation in a different render batch.
+                            # It can cover already-materialized glyphs until the
+                            # handoff frame. This output is newly created, so
+                            # retain its modestly refined color grid as its
+                            # stable topology and avoid the handoff altogether.
+                            restore_resolution=False,
                         )
                     return output
 

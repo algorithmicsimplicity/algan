@@ -403,6 +403,7 @@ class Mob(
         direction: torch.Tensor | None = None,
         lag_duration=1,
         samples_per_wave: int | None = 12,
+        restore_resolution: bool = True,
         **kwargs,
     ) -> Mob:
         """Send a colour pulse travelling across the Mob.
@@ -418,8 +419,9 @@ class Mob(
         sheet has vertices only at its corners, and a filled
         :class:`~algan.mobs.bezier_circuit.BezierCircuitCubic` has a single
         colour sample by default. Such Mobs are re-sampled finely enough to draw
-        the wave and dropped back to their original resolution once the block
-        containing the wave is over; see ``samples_per_wave``.
+        the wave and, by default, dropped back to their original resolution once
+        the block containing the wave is over; see ``samples_per_wave`` and
+        ``restore_resolution``.
 
         Animation
         ---------
@@ -428,9 +430,10 @@ class Mob(
         context's duration. Re-sampling a part is a topology change, so it splits
         that Mob's history the way
         :meth:`~algan.animatable_base.mob.Mob.detach_history` does, at the start
-        of the wave and again when the enclosing block ends; the split is
-        invisible, but it is why the resolution only drops back at the end of the
-        block rather than at the end of the wave.
+        of the wave and, when ``restore_resolution`` is True, again when the
+        enclosing block ends. The split is invisible, but it is why the
+        resolution only drops back at the end of the block rather than at the
+        end of the wave.
 
         Parameters
         ----------
@@ -458,9 +461,16 @@ class Mob(
             reproduces exactly, so this only has to round off the peak between
             them and raising it buys geometry rather than smoothness. Pass
             ``None`` to leave every part's resolution exactly as it is.
+        restore_resolution
+            Whether refined colour grids return to their original resolution
+            when the enclosing animation block ends. Defaults to True. Set to
+            False when a newly spawned object must retain one stable topology
+            throughout and after its materialization wave.
         **kwargs
             Passed to :meth:`~.Mob.pulse_color` for each part -- notably
-            ``opacity`` and ``new_color``.
+            ``opacity`` and ``new_color``. ``new_color`` may also be a callable
+            receiving the primitive part being pulsed; this lets a composite
+            settle to each part's own target color after one shared wave.
 
         Returns
         -------
@@ -486,13 +496,21 @@ class Mob(
         ) as wave_context:
             primitive_mobs = self._wave_pulsed_parts()
             kwargs["recursive"] = False
+
+            def pulse_part(part):
+                part_kwargs = kwargs
+                new_color = kwargs.get("new_color")
+                if callable(new_color):
+                    part_kwargs = {**kwargs, "new_color": new_color(part)}
+                part.pulse_color(color, **part_kwargs)
+
             animate_lagged_by_location(
                 primitive_mobs,
-                lambda x: x.pulse_color(color, **kwargs),
+                pulse_part,
                 direction,
                 lag_duration=lag_duration,
             )
-        if restores:
+        if restores and restore_resolution:
             self._schedule_wave_resolution_restore(restores, wave_context)
         return self
 
