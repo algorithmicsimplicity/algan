@@ -403,6 +403,7 @@ class Mob(
         direction: torch.Tensor | None = None,
         lag_duration=1,
         samples_per_wave: int | None = 12,
+        refine_resolution: bool = True,
         restore_resolution: bool = True,
         **kwargs,
     ) -> Mob:
@@ -461,6 +462,14 @@ class Mob(
             reproduces exactly, so this only has to round off the peak between
             them and raising it buys geometry rather than smoothness. Pass
             ``None`` to leave every part's resolution exactly as it is.
+        refine_resolution
+            Whether parts sampled too coarsely to show the wave may be refined
+            at all. Defaults to True. False leaves every part exactly as
+            authored, however coarse -- the explicit form of
+            ``samples_per_wave=None``. Worth setting for small on-screen mobs:
+            the refinement is judged in world units relative to the mob's own
+            extent, never in pixels, so a mob a few dozen pixels wide is refined
+            as heavily as a full-screen one.
         restore_resolution
             Whether refined colour grids return to their original resolution
             when the enclosing animation block ends. Defaults to True. Set to
@@ -487,8 +496,12 @@ class Mob(
             for name, value in (("color", color), ("opacity", kwargs.get("opacity")))
             if value is not None
         )
-        restores = self._refine_parts_for_color_wave(
-            direction, wave_length, lag_duration, samples_per_wave, pulsed_attrs
+        restores = (
+            self._refine_parts_for_color_wave(
+                direction, wave_length, lag_duration, samples_per_wave, pulsed_attrs
+            )
+            if refine_resolution
+            else []
         )
         with AnimationContext(
             run_time_unit=wave_length / lag_duration,

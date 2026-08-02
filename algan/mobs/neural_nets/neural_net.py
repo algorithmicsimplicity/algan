@@ -646,9 +646,25 @@ class NeuralNetMLP(Mob):
                             # primitive's scalar opacity. A filled circuit can
                             # then materialize behind the same spatial wave as
                             # its glow instead of globally brightening as its
-                            # one opacity value ramps up.
-                            part.color = part.color.set_opacity(0)
+                            # one opacity value ramps up. Written non-recursively,
+                            # like the wave that restores it: a part whose helper
+                            # children carry colour rows of their own (a Text's
+                            # texture points) has more rows under a recursive set
+                            # than its own colour getter returns.
+                            part.set_non_recursive(color=part.color.set_opacity(0))
                         output.spawn(animate=False)
+
+                    def authored_color(part):
+                        # wave_color refines a part that is sampled too coarsely
+                        # to show the wave (a Surface's vertex grid, say), which
+                        # leaves the color captured above indexed by the old
+                        # sampling. Its first row still broadcasts over the new
+                        # one, which is exactly right for the uniformly colored
+                        # parts that refinement applies to.
+                        authored = output_colors[id(part)]
+                        if authored.shape[-2] != part.color.shape[-2]:
+                            authored = authored.reshape(-1, authored.shape[-1])[:1]
+                        return authored
 
                     with Seq(run_time=1.5, animation_manager=self.animation_manager):
                         output.wave_color(
@@ -658,13 +674,22 @@ class NeuralNetMLP(Mob):
                             # The output can be a multi-colored composite. Each
                             # part must settle to its own authored color, while
                             # the shared pulse supplies the uniform glow peak.
-                            new_color=lambda part: output_colors[id(part)],
+                            new_color=authored_color,
+                            # An output materializes at whatever resolution it
+                            # was authored with. Refining it here judges the
+                            # sampling against the output's own extent rather
+                            # than its size on screen, so a mob a few dozen
+                            # pixels wide is pushed to the 64-per-axis ceiling
+                            # for a wave that spans a handful of pixels -- and
+                            # with restore_resolution False it keeps that
+                            # geometry for the rest of the video.
+                            refine_resolution=False,
                             # Restoring a refined Code panel creates a second
                             # coplanar incarnation in a different render batch.
                             # It can cover already-materialized glyphs until the
                             # handoff frame. This output is newly created, so
-                            # retain its modestly refined color grid as its
-                            # stable topology and avoid the handoff altogether.
+                            # retain its authored color grid as its stable
+                            # topology and avoid the handoff altogether.
                             restore_resolution=False,
                         )
                     return output
