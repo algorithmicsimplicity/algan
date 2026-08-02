@@ -1,8 +1,34 @@
 import torch
 
 from algan.animation_timeline.animation_contexts import Off
-from algan.mobs.neural_nets.neural_net import NeuralNetMLPV3
+from algan.geometry.geometry import map_global_to_local_coords
+from algan.mobs.neural_nets.neural_net import (
+    _IDLE_PARALLEL_RADIUS_FRACTION,
+    NeuralNetMLPV3,
+)
 from algan.scene_manager import SceneManager
+
+
+def test_idle_waypoints_are_squished_along_network_direction():
+    SceneManager.reset()
+    direction = torch.tensor([1.0, 2.0, -3.0])
+    direction = direction / direction.norm()
+    network = NeuralNetMLPV3([2, 3, 2], direction=direction)
+
+    local_direction = map_global_to_local_coords(
+        network.location, network.basis, network.location + direction
+    )
+    local_direction = local_direction / local_direction.norm()
+    normalized_waypoints = network._idle_waypoints / network._idle_walk_radii.view(
+        -1, 1, 1
+    )
+    parallel = (normalized_waypoints * local_direction).sum(dim=-1, keepdim=True)
+    perpendicular = normalized_waypoints - parallel * local_direction
+
+    assert parallel.abs().max() <= _IDLE_PARALLEL_RADIUS_FRACTION + 1e-6
+    assert perpendicular.norm(dim=-1).max() <= 1 + 1e-6
+    assert perpendicular.norm(dim=-1).amax() > parallel.abs().amax()
+    SceneManager.reset()
 
 
 def test_activated_idle_synapse_follows_its_moving_neurons():
