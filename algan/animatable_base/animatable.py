@@ -844,6 +844,17 @@ class Animatable:
         if inds is None:
             return inds
         descendants = self.get_descendants(include_self=True)
+        # A structural child can opt out of inheriting selected attributes
+        # from its ancestors while remaining in the hierarchy for transforms,
+        # lifespan, cloning, and direct animation.  Bezier border texture
+        # points use this for ``color``: changing a circuit's fill color must
+        # not overwrite its independently-authored border texture.
+        descendants = [
+            mob
+            for mob in descendants
+            if mob is self
+            or key not in getattr(mob, "_excluded_from_parent_attrs", ())
+        ]
         # Each mob's own rows are a cached single-run RowRanges; merge those
         # integer runs directly (RowRanges.from_runs) instead of re-deriving
         # each run from its index tensor. Fall back to concatenation only if a

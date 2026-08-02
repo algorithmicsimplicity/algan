@@ -89,23 +89,19 @@ class BezierCircuitPrimitive(RenderPrimitive):
                 self.next_segment_inds.shape[-3], device=self.next_segment_inds.device
             ).view(-1, 1, 1)
 
-            (
-                self.normals,
-                self.border_width,
-                self.border_color,
-            ) = (
-                (torch.cat(list(_), -2)).to(device)
-                for _ in zip(
-                    *(
-                        (
-                            triangle.normals,
-                            triangle.border_width,
-                            triangle.border_color,
-                        )
-                        for triangle in triangle_collection
-                    )
-                )
-            )
+            self.normals = torch.cat(
+                [triangle.normals for triangle in triangle_collection], -2
+            ).to(device)
+            self.border_width = torch.cat(
+                [triangle.border_width for triangle in triangle_collection], -2
+            ).to(device)
+            border_colors = [
+                triangle.border_color.unsqueeze(-2)
+                if triangle.border_color.dim() == 3
+                else triangle.border_color
+                for triangle in triangle_collection
+            ]
+            self.border_color = torch.cat(border_colors, -3).to(device)
 
             (
                 self.mob_center,
@@ -133,24 +129,28 @@ class BezierCircuitPrimitive(RenderPrimitive):
             )
             if self.num_texture_points > 0:
                 self.colors = self.colors[..., (-self.num_texture_points) :, :]
+                self.border_color = self.border_color[
+                    ..., (-self.num_texture_points) :, :
+                ]
             return
         self.corners = corners
         self.next_segment_inds = next_segment_inds
         self.num_segments_per_circuit = num_segments_per_circuit
-        border_color, opacity, glow = broadcast_all(
-            [border_color, opacity, glow], ignored_dims=[-1]
-        )
         self.colors = colors.clone()
         self.colors[..., -2:-1] += glow.unsqueeze(-2)
         self.colors[..., -1:] *= opacity.unsqueeze(-2)
         self.normals = normals
-        self.border_width, self.border_color, self.glow = (
-            border_width,
-            border_color,
-            glow,
+        if border_color.dim() == 3:
+            border_color = border_color.unsqueeze(-2)
+        border_color, border_opacity, border_glow = broadcast_all(
+            [border_color, opacity.unsqueeze(-2), glow.unsqueeze(-2)],
+            ignored_dims=[-1],
         )
-        self.border_color[..., -2:-1] += glow
-        self.border_color[..., -1:] *= opacity
+        self.border_width = border_width
+        self.border_color = border_color.clone()
+        self.glow = glow
+        self.border_color[..., -2:-1] += border_glow
+        self.border_color[..., -1:] *= border_opacity
         self.mob_center = mob_center
         self.grid_width = grid_width
         self.grid_height = grid_height

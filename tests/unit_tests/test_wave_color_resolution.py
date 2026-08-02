@@ -5,9 +5,9 @@ Run directly: .venv/Scripts/python.exe -m pytest tests/unit_tests/test_wave_colo
 A colour wave is carried by vertex colours, so a Mob sampled more coarsely than
 the wave's band is wide draws it as a few flat facets. ``wave_color`` therefore
 refines any part too coarse to show the wave -- a Surface by re-running its
-``coord_function`` over a denser ``(u, v)`` grid, a filled bezier circuit by
-laying down a finer texture grid -- and drops the resolution again once the block
-containing the wave is over.
+``coord_function`` over a denser ``(u, v)`` grid, a bezier circuit by laying down
+finer fill and border texture grids -- and drops the resolution again once the
+block containing the wave is over.
 
 These are logic-level checks (no rendering): scenes are recorded, resolutions are
 read at each stage, and the timeline is materialized exactly as the render loop
@@ -145,6 +145,8 @@ def test_filled_circuit_texture_grid_is_refined_for_a_colour_wave():
     assert resolutions["after"] == (1, 1, 1)
     assert square.texture_points.location.shape[-2] == 1
     assert square.texture_points.color.shape[-2] == 1
+    assert square.border_texture_points.location.shape[-2] == 1
+    assert square.border_texture_points.color.shape[-2] == 1
 
 
 def test_refined_circuit_texture_points_stay_inside_the_shape_and_replay():
@@ -155,8 +157,12 @@ def test_refined_circuit_texture_points_stay_inside_the_shape_and_replay():
         square.wave_color(PURE_BLUE, direction=RIGHT + UP)
         points = square.texture_points.location
         colors = square.texture_points.color
+        border_points = square.border_texture_points.location
+        border_colors = square.border_texture_points.color
         assert points.shape[-2] == square.num_texture_points
         assert colors.shape[-2] == square.num_texture_points
+        assert torch.equal(border_points, points)
+        assert border_colors.shape[-2] == square.num_texture_points
         # The refined grid spans the circuit's own frame, so it still contains
         # the corner the single original sample sat at.
         distances = (points.reshape(-1, 3) - corner.reshape(1, 3)).norm(dim=-1)
@@ -165,6 +171,31 @@ def test_refined_circuit_texture_points_stay_inside_the_shape_and_replay():
     timeline = square.scene.timeline_manager
     timeline.set_state_to_times(torch.linspace(0.0, 4.0, 9))
     assert square.texture_points.color.shape == (9, 1, 5)
+    assert square.border_texture_points.color.shape == (9, 1, 5)
+    timeline.clear_buffers()
+
+
+def test_circuit_wave_color_animates_fill_and_border_texture_grids():
+    square = Square(
+        color=YELLOW,
+        border_color=YELLOW,
+        texture_grid_size=2,
+    ).spawn(animate=False)
+
+    square.wave_color(
+        PURE_BLUE,
+        direction=RIGHT + UP,
+        samples_per_wave=None,
+    )
+
+    timeline = square.scene.timeline_manager
+    timeline.set_state_to_times(torch.linspace(0.0, 3.0, 13))
+    fill_colors = square.texture_points.color
+    border_colors = square.border_texture_points.color
+    static = YELLOW.view(1, 1, -1).expand_as(fill_colors)
+
+    assert not torch.allclose(fill_colors, static)
+    assert not torch.allclose(border_colors, static)
     timeline.clear_buffers()
 
 
@@ -182,7 +213,7 @@ def test_opacity_only_wave_leaves_a_circuit_alone():
     assert resolutions["during"] == (1, 1)
 
 
-def test_unfilled_circuit_is_left_alone():
+def test_unfilled_circuit_refines_its_border_texture_for_a_color_wave():
     square = Square(color=YELLOW, filled=False).spawn(animate=False)
 
     resolutions = refined_resolutions(
@@ -191,7 +222,8 @@ def test_unfilled_circuit_is_left_alone():
         lambda: square.wave_color(PURE_BLUE, direction=RIGHT + UP),
     )
 
-    assert resolutions["during"] == (1, 1)
+    assert resolutions["during"][0] > 1
+    assert resolutions["during"][1] == resolutions["during"][0] ** 2
 
 
 def test_restore_waits_for_the_outermost_block_so_siblings_stay_visible():

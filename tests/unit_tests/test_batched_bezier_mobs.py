@@ -4,7 +4,7 @@ import manim as mn
 import torch
 
 from algan.animation_timeline.animation_contexts import Off
-from algan.constants.color import WHITE
+from algan.constants.color import BLUE, GREEN, RED, WHITE, YELLOW
 from algan.mobs.bezier_circuit import BezierCircuitCubic
 from algan.mobs.text import Tex, Text, TexTriangulated, TextTriangulated
 from algan.mobs.triangulated_bezier_circuit import TriangulatedBezierCircuit
@@ -56,6 +56,14 @@ def test_direct_bezier_batch_matches_object_batch():
         assert torch.equal(getattr(actual, attr), getattr(expected, attr))
     assert torch.equal(actual.control_points.location, expected.control_points.location)
     assert torch.equal(
+        actual.border_texture_points.location,
+        expected.border_texture_points.location,
+    )
+    assert torch.equal(
+        actual.border_texture_points.color,
+        expected.border_texture_points.color,
+    )
+    assert torch.equal(
         actual.control_points.parent_batch_sizes,
         expected.control_points.parent_batch_sizes,
     )
@@ -79,6 +87,39 @@ def test_direct_bezier_batch_matches_object_batch():
         ), attr
 
 
+def test_border_texture_grid_is_independent_from_fill_texture_grid():
+    SceneManager.reset()
+    mob = BezierCircuitCubic(
+        _square(0.0),
+        color=WHITE,
+        border_color=YELLOW,
+        border_width=8,
+        texture_grid_size=2,
+        add_to_scene=False,
+    )
+    fill_colors = torch.stack((RED, RED, BLUE, BLUE)).unsqueeze(0)
+    border_colors = torch.stack((GREEN, BLUE, GREEN, BLUE)).unsqueeze(0)
+
+    mob.texture_points.color = fill_colors
+    mob.border_texture_points.color = border_colors
+    primitive = mob.get_render_primitives()
+
+    assert torch.allclose(primitive.colors, fill_colors.unsqueeze(-3))
+    assert torch.allclose(primitive.border_color, border_colors.unsqueeze(-3))
+    assert torch.allclose(mob.border_color, border_colors)
+
+    # The circuit's ordinary color remains the fill API and must not overwrite
+    # the independently-authored border child.
+    mob.color = YELLOW
+    assert torch.allclose(mob.border_texture_points.color, border_colors)
+
+    # The compatibility-facing border_color property now aliases the border
+    # texture child, so a uniform write still works as it did before.
+    mob.border_color = RED
+    assert torch.allclose(mob.texture_points.color, YELLOW.expand(1, 4, 5))
+    assert torch.allclose(mob.border_texture_points.color, RED.expand(1, 4, 5))
+
+
 def test_batched_views_are_lazy_cached_and_isolated():
     SceneManager.reset()
     packed = BezierCircuitCubic.from_batches(
@@ -92,6 +133,7 @@ def test_batched_views_are_lazy_cached_and_isolated():
     assert list(views._views) == [0]
     assert first.location.shape[-2] == 1
     assert first.control_points.location.shape[-2] == 16
+    assert first.border_texture_points.location.shape[-2] == 1
 
     second = views[1]
     second_before = second.location.clone()

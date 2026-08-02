@@ -508,16 +508,11 @@ def test_static_off_scene_gets_one_frame_before_final_despawn(monkeypatch, tmp_p
 
 
 def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
-    """Mobs whose border_color is a plain tensor must animate too.
-
-    Color exposes set_opacity; a border color assigned as a raw tensor (as
-    Square does) does not, so the animation has to write the alpha channel
-    directly rather than assuming a Color.
-    """
+    """Border-textured Mobs still animate when supplied through any iterable."""
     from algan.animations.manim_animations import draw_border_then_fill
 
     squares = [Square(add_to_scene=True).spawn(animate=False) for _ in range(3)]
-    assert not hasattr(squares[0].border_color, "set_opacity")
+    assert squares[0].border_color.shape[-1] == 5
 
     animated = draw_border_then_fill(squares)
 

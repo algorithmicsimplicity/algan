@@ -1754,7 +1754,7 @@ def _merge_scene(primitives):
     else:
         scene["circuit_meta"] = torch.zeros((1, 1, _M_WIDTH), device=device)
         scene["circuit_colors"] = torch.zeros((1, 1, 1, 5), device=device)
-        scene["circuit_border_colors"] = torch.zeros((1, 1, 5), device=device)
+        scene["circuit_border_colors"] = torch.zeros((1, 1, 1, 5), device=device)
         scene["edges_2d"] = torch.zeros((1, 1, 5), device=device)
         scene["edge_accel"] = torch.zeros((1,), dtype=torch.int32, device=device)
         scene["bez_bvh"] = _empty_scene_part(device)

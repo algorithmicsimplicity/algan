@@ -117,7 +117,7 @@ def _make_idle_waypoints(walk_radii, direction, *, dtype, device):
         [torch.zeros((shape[0], 1, 3), dtype=dtype, device=device), random_points],
         dim=1,
     )
-    unit_waypoints = unit_waypoints - dot_product(unit_waypoints, direction) * direction * 0.8
+    unit_waypoints = unit_waypoints - dot_product(unit_waypoints, direction) * direction
     return unit_waypoints * walk_radii.view(-1, 1, 1)
 
 

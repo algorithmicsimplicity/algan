@@ -135,7 +135,7 @@ def _dummy_bezier_parts():
         bvh,
         torch.zeros((1, 1, 20), device=DEVICE),
         torch.zeros((1, 1, 1, 5), device=DEVICE),
-        torch.zeros((1, 1, 5), device=DEVICE),
+        torch.zeros((1, 1, 1, 5), device=DEVICE),
         torch.zeros((1, 1, 4), device=DEVICE),
         torch.zeros((2,), dtype=torch.int32, device=DEVICE),
     )

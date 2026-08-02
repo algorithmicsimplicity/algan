@@ -1169,7 +1169,6 @@ class RenderLoopMixin:
                 "basis",
                 "glow",
                 "border_width",
-                "border_color",
                 "location",
             ):
                 if (
@@ -1181,6 +1180,9 @@ class RenderLoopMixin:
             if loc_inds[actor.control_points.id].numel() % 4 != 0:
                 return False
             timeline.attr_to_timeline["color"].mob_id_to_inds[actor.texture_points.id]
+            timeline.attr_to_timeline["color"].mob_id_to_inds[
+                actor.border_texture_points.id
+            ]
         except (KeyError, AttributeError):
             return False
         return True
@@ -1196,11 +1198,17 @@ class RenderLoopMixin:
             .mob_id_to_inds[actor.texture_points.id]
             .numel()
         )
+        border_tex_rows = (
+            timeline.attr_to_timeline["color"]
+            .mob_id_to_inds[actor.border_texture_points.id]
+            .numel()
+        )
         return (
             BezierCircuitPrimitive.batch_identifier_for(
                 actor.num_texture_points, actor.filled
             ),
             tex_rows,
+            border_tex_rows,
             actor.render_primitive,
         )
 

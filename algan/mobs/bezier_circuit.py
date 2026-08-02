@@ -137,7 +137,7 @@ class BezierCircuitCubic(Mob):
         super().__init__(**kwargs2)
         kwargs["scene"] = self.scene
         self.register_attrs_as_animatable(
-            ["border_width", "border_color", "portion_of_curve_drawn"],
+            ["border_width", "portion_of_curve_drawn"],
             BezierCircuitCubic,
         )
         self.filled = filled
@@ -166,20 +166,39 @@ class BezierCircuitCubic(Mob):
 
             # control_points = torch.cat((control_points, texture_triangle_vertices), -2)
         self.border_width = cast_to_tensor(border_width)
-        self.border_color = cast_to_tensor(
-            border_color if not self.empty else border_color.set_opacity(0)
-        )
-        kwargs["color"] = self.color if self.filled else self.border_color
-        self.texture_points = Mob(texture_triangle_vertices, **kwargs)
+        border_color = cast_to_tensor(border_color)
+        if self.empty:
+            border_color = border_color.as_subclass(Color).set_opacity(0)
+
+        fill_texture_kwargs = dict(kwargs)
+        fill_texture_kwargs["color"] = self.color if self.filled else border_color
+        self.texture_points = Mob(texture_triangle_vertices, **fill_texture_kwargs)
         self.texture_points.exclude_from_boundary = True
         self.texture_points.is_primitive = True
         self.add_children(self.texture_points)
 
-        self.control_points = Mob(control_points, **kwargs)
+        border_texture_kwargs = dict(kwargs)
+        border_texture_kwargs["color"] = border_color
+        self.border_texture_points = Mob(
+            texture_triangle_vertices, **border_texture_kwargs
+        )
+        self.border_texture_points.exclude_from_boundary = True
+        self.border_texture_points.is_primitive = True
+        # ``color`` on the circuit means fill color.  The border grid remains a
+        # child so it follows transforms and participates in waves/cloning, but
+        # it must not inherit ordinary fill-color writes from an ancestor.
+        self.border_texture_points._excluded_from_parent_attrs = frozenset({"color"})
+        self.add_children(self.border_texture_points)
+
+        self.control_points = Mob(control_points, **fill_texture_kwargs)
         self.control_points.is_primitive = True
         self.add_children(self.control_points)
         self.control_points.num_points_per_object = 4
-        self.components = [self.texture_points, self.control_points]
+        self.components = [
+            self.texture_points,
+            self.border_texture_points,
+            self.control_points,
+        ]
 
         self.normals = normals
         self.is_primitive = True
@@ -235,19 +254,53 @@ class BezierCircuitCubic(Mob):
                     ).contiguous()
                 mob.setattr_and_rebatch_without_record(attr, value)
 
-            mob.texture_points.parent_batch_sizes = torch.ones(count, dtype=torch.long)
-            for attr in mob.texture_points.animatable_attrs:
-                try:
-                    value = getattr(mob.texture_points, attr)
-                except AttributeError:
-                    continue
-                if attr == "location":
-                    value = locations
-                elif value.shape[-2] == 1:
-                    value = value.expand(
-                        *value.shape[:-2], count, value.shape[-1]
-                    ).contiguous()
-                mob.texture_points.setattr_and_rebatch_without_record(attr, value)
+            texture_point_count = max(mob.num_texture_points, 1)
+            grid_locations = (
+                torch.linspace(
+                    -1,
+                    1,
+                    mob.grid_height,
+                    device=locations.device,
+                    dtype=locations.dtype,
+                ).view(1, 1, -1, 1, 1)
+                * (1 + 1e-5)
+                * bases[..., :3].unsqueeze(-2).unsqueeze(-2)
+                + torch.linspace(
+                    -1,
+                    1,
+                    mob.grid_width,
+                    device=locations.device,
+                    dtype=locations.dtype,
+                ).view(1, 1, 1, -1, 1)
+                * (1 + 1e-5)
+                * bases[..., 3:6].unsqueeze(-2).unsqueeze(-2)
+                + locations.unsqueeze(-2).unsqueeze(-2)
+            ).reshape(1, count * texture_point_count, 3)
+            for texture_mob in (
+                mob.texture_points,
+                mob.border_texture_points,
+            ):
+                texture_mob.parent_batch_sizes = torch.full(
+                    (count,), texture_point_count, dtype=torch.long
+                )
+                for attr in texture_mob.animatable_attrs:
+                    try:
+                        value = getattr(texture_mob, attr)
+                    except AttributeError:
+                        continue
+                    if attr == "location":
+                        value = grid_locations
+                    elif value.shape[-2] == 1:
+                        value = value.expand(
+                            *value.shape[:-2],
+                            count * texture_point_count,
+                            value.shape[-1],
+                        ).contiguous()
+                    elif value.shape[-2] == texture_point_count and count > 1:
+                        value = value.repeat(
+                            *([1] * (value.dim() - 2)), count, 1
+                        ).contiguous()
+                    texture_mob.setattr_and_rebatch_without_record(attr, value)
 
             mob.control_points.parent_batch_sizes = point_counts
             mob.parent_batch_sizes = torch.tensor((count,), dtype=torch.long)
@@ -255,14 +308,15 @@ class BezierCircuitCubic(Mob):
         return mob
 
     def _refine_sampling_for_color_wave(self, direction, max_spacing, pulsed_attrs):
-        """Refine the texture grid so a colour wave crosses the fill smoothly.
+        """Refine the texture grids so a colour wave crosses the shape smoothly.
 
-        A circuit's fill is coloured by bilinearly sampling the grid of
-        ``texture_points`` laid across it, and that grid is a single sample
-        unless ``texture_grid_size`` was raised by hand -- so a filled shape
-        flashes as one flat colour instead of showing the wave travelling over
-        it. Lay down a grid fine enough that neighbouring samples are no further
-        than ``max_spacing`` apart along the wave (see
+        A circuit's fill and border are coloured by bilinearly sampling the
+        independent ``texture_points`` and ``border_texture_points`` grids laid
+        across it. Those grids are a single sample unless
+        ``texture_grid_size`` was raised by hand, so a shape flashes as one flat
+        colour instead of showing the wave travelling over it. Lay down a grid
+        fine enough that neighbouring samples are no further than
+        ``max_spacing`` apart along the wave (see
         :meth:`~.Mob._refine_sampling_for_color_wave`).
         """
         if "color" not in pulsed_attrs:
@@ -271,9 +325,7 @@ class BezierCircuitCubic(Mob):
             # the fade Text and Tex spawn with, for one -- cannot be made any
             # smoother by adding texels.
             return None
-        if self.empty or not self.filled:
-            # Only the fill reads the texture grid; an unfilled circuit is drawn
-            # entirely from its single ``border_color``.
+        if self.empty:
             return None
         size = self.grid_width
         if (
@@ -281,10 +333,15 @@ class BezierCircuitCubic(Mob):
             or size != self.grid_height
             or self.data_sub_inds is not None
             or self.texture_points.data_sub_inds is not None
+            or self.border_texture_points.data_sub_inds is not None
         ):
             return None
         objects = self.location.shape[-2]
-        if self.texture_points.location.shape[-2] != objects * self.num_texture_points:
+        expected_points = objects * self.num_texture_points
+        if (
+            self.texture_points.location.shape[-2] != expected_points
+            or self.border_texture_points.location.shape[-2] != expected_points
+        ):
             return None
 
         # The grid spans the full width of the circuit's own frame along each of
@@ -322,11 +379,14 @@ class BezierCircuitCubic(Mob):
         old_points = self.num_texture_points
         objects = self.location.shape[-2]
         old_values = {}
-        for attr in dict.fromkeys(self.texture_points.animatable_attrs):
-            try:
-                old_values[attr] = getattr(self.texture_points, attr).clone()
-            except AttributeError:
-                continue
+        for texture_mob in (self.texture_points, self.border_texture_points):
+            values = {}
+            for attr in dict.fromkeys(texture_mob.animatable_attrs):
+                try:
+                    values[attr] = getattr(texture_mob, attr).clone()
+                except AttributeError:
+                    continue
+            old_values[texture_mob] = values
 
         # A different number of texture points cannot be interpolated from the
         # old ones, so the recorded history stays behind on a frozen clone.
@@ -347,33 +407,41 @@ class BezierCircuitCubic(Mob):
             + offsets.view(1, -1, 1) * second
             + location.unsqueeze(-2).unsqueeze(-2)
         )
-        self.texture_points.setattr_and_rebatch_without_record(
-            "location", points.reshape(*points.shape[:-4], -1, 3)
-        )
-
-        # Every attribute that was stored one value per texture point has to
-        # follow the new grid; leaving one of them behind desynchronizes the
-        # texture point's rows, and a later write to it can no longer broadcast.
         old_size = int(round(old_points**0.5))
-        for attr, value in old_values.items():
-            if attr == "location" or value.shape[-2] != objects * old_points:
-                continue
-            self.texture_points.setattr_and_rebatch_without_record(
-                attr, _resample_texture_grid(value, old_size, size)
-            )
+        new_locations = points.reshape(*points.shape[:-4], -1, 3)
+        for texture_mob in (self.texture_points, self.border_texture_points):
+            texture_mob.setattr_and_rebatch_without_record("location", new_locations)
 
-        if self.texture_points.parent_batch_sizes is not None:
-            self.texture_points.parent_batch_sizes = torch.full(
-                (objects,),
-                self.num_texture_points,
-                dtype=self.texture_points.parent_batch_sizes.dtype,
-            )
-        self.texture_points.batch_size = objects * self.num_texture_points
+            # Every attribute stored one value per texture point has to follow
+            # the new grid; otherwise later writes can no longer broadcast.
+            for attr, value in old_values[texture_mob].items():
+                if attr == "location" or value.shape[-2] != objects * old_points:
+                    continue
+                texture_mob.setattr_and_rebatch_without_record(
+                    attr, _resample_texture_grid(value, old_size, size)
+                )
+
+            if texture_mob.parent_batch_sizes is not None:
+                texture_mob.parent_batch_sizes = torch.full(
+                    (objects,),
+                    self.num_texture_points,
+                    dtype=texture_mob.parent_batch_sizes.dtype,
+                )
+            texture_mob.batch_size = objects * self.num_texture_points
         self._memory_per_timestep_cache = None
         return self
 
     def get_animatable_attrs(self):
-        return {"border_width", "border_color"}.union(super().get_animatable_attrs())
+        return {"border_width"}.union(super().get_animatable_attrs())
+
+    @property
+    def border_color(self):
+        """Per-vertex colors sampled across the circuit's border texture grid."""
+        return self.border_texture_points.color
+
+    @border_color.setter
+    def border_color(self, value):
+        self.border_texture_points.color = value
 
     def get_default_color(self):
         return PURPLE
@@ -390,12 +458,22 @@ class BezierCircuitCubic(Mob):
             return cache[1]
         n_ctrl = self.control_points.location.shape[-2]
         n_tex = self.texture_points.location.shape[-2]
+        n_border_tex = self.border_texture_points.location.shape[-2]
         n_loc = self.location.shape[-2]
         n_segments = max(n_ctrl // 4, 1)  # cubic beziers have 4 control points each
-        # Animation state: control points (3 floats), texture (5), location (6).
-        animation_bytes = (n_ctrl * 3 + n_tex * 5 + n_loc * 6) * 4
-        # Primitive output: control point corners, colors, normals, border data.
-        primitive_bytes = n_segments * 4 * 3 * 4 + n_tex * 5 * 4 + n_loc * 12
+        # Animation state: control points (3 floats), two color textures (5
+        # each), location/basis (6). Texture positions are structural sampling
+        # data used by wave animation and are charged alongside their colors.
+        animation_bytes = (
+            n_ctrl * 3 + (n_tex + n_border_tex) * (3 + 5) + n_loc * 6
+        ) * 4
+        # Primitive output: control points, fill texture, border texture, and
+        # per-circuit normals/border data.
+        primitive_bytes = (
+            n_segments * 4 * 3 * 4
+            + (n_tex + n_border_tex) * 5 * 4
+            + n_loc * 12
+        )
         # Sampled edges, metadata and the content-dependent STBVH are charged
         # exactly by the final scene upload instead of guessed here (the old
         # fixed 100-sample estimate was wrong for the actual 1..512 range).
@@ -431,7 +509,6 @@ class BezierCircuitCubic(Mob):
                 _border_width_in_render_pixels(
                     self.border_width, self.scene.video_settings
                 ),
-                self.border_color,
                 metalness,
                 roughness,
                 ior,
@@ -444,18 +521,21 @@ class BezierCircuitCubic(Mob):
             return self._get_render_primitives(
                 unsquish(self.control_points.location, -2, num_control_points),
                 self.texture_points.color,
+                self.border_texture_points.color,
                 self.location,
                 self.basis,
                 *shader_vars,
             )
         x = self.control_points.location
         tpc = self.texture_points.color
+        border_tpc = self.border_texture_points.color
         num_segments_per_circuit = (
             self.control_points.parent_batch_sizes // num_control_points
         )
         return self._get_render_primitives(
             unsquish((x), -2, num_control_points),
             (tpc),
+            (border_tpc),
             self.location,
             self.basis,
             *shader_vars,
@@ -466,13 +546,13 @@ class BezierCircuitCubic(Mob):
         self,
         x,
         tpc,
+        border_tpc,
         loc,
         basis,
         o,
         n,
         g,
         bw,
-        bc,
         reflectivity,
         roughness,
         refractive_index,
@@ -534,10 +614,18 @@ class BezierCircuitCubic(Mob):
                 [x.shape[-3]], device=x.device, dtype=torch.long
             )
             c = tpc.unsqueeze(-3)
-            if self.num_texture_points > c.shape[-2]:
-                c = c.expand([-1, -1, self.num_texture_points, -1])
+            border_c = border_tpc.unsqueeze(-3)
+            texture_point_count = max(self.num_texture_points, 1)
+            if texture_point_count > c.shape[-2]:
+                c = c.expand([-1, -1, texture_point_count, -1])
+            if texture_point_count > border_c.shape[-2]:
+                border_c = border_c.expand(
+                    [-1, -1, texture_point_count, -1]
+                )
         else:
-            c = unsquish(tpc, -2, self.num_texture_points)
+            texture_point_count = max(self.num_texture_points, 1)
+            c = unsquish(tpc, -2, texture_point_count)
+            border_c = unsquish(border_tpc, -2, texture_point_count)
 
         prim = self.render_primitive(
             x,
@@ -547,7 +635,7 @@ class BezierCircuitCubic(Mob):
             o,
             basis[..., -3:],
             bw,
-            bc,
+            border_c,
             loc,
             cast_to_tensor(self.grid_width).expand(-1, loc.shape[1], -1),
             cast_to_tensor(self.grid_height).expand(-1, loc.shape[1], -1),
@@ -746,8 +834,8 @@ def build_render_primitives_batched(actors, scene):
     Callers must guarantee (see ``RenderLoopMixin._is_batchable_bezier`` and
     ``_build_deferred_beziers``): stock ``BezierCircuitCubic`` build methods,
     not ``empty``, un-batched control points, singleton rows for the scalar
-    attributes, and uniform ``num_texture_points`` / ``filled`` /
-    texture-color row count / primitive class across the group.
+    attributes, and uniform ``num_texture_points`` / ``filled`` / fill and
+    border texture-color row counts / primitive class across the group.
     """
     from algan.animation_timeline.timeline import RowRanges
 
@@ -806,11 +894,11 @@ def build_render_primitives_batched(actors, scene):
     bw = _border_width_in_render_pixels(
         read("border_width", actors), scene.video_settings
     )
-    bc = read("border_color", actors)
     loc = read("location", actors)
-    o, basis, g, bw, bc = broadcast_all([o, basis, g, bw, bc], ignored_dims=[-1])
+    o, basis, g, bw = broadcast_all([o, basis, g, bw], ignored_dims=[-1])
     cp = read("location", [a.control_points for a in actors])
     tpc = read("color", [a.texture_points for a in actors])
+    border_tpc = read("color", [a.border_texture_points for a in actors])
 
     # --- circuit topology (mirrors _get_render_primitives) ---
     loc_inds = timeline.attr_to_timeline["location"].mob_id_to_inds
@@ -855,19 +943,32 @@ def build_render_primitives_batched(actors, scene):
     next_segment_inds_offset = next_segment_inds - local_col  # [T, S, 1, 1]
 
     # --- texture colors (mirrors the ``c`` construction) ---
-    c = unsquish(tpc, -2, tpc.shape[-2] // M)  # [T, M, P, 5]
-    if ntp > c.shape[-2]:
-        c = c.expand([-1, -1, ntp, -1])
+    texture_point_count = max(ntp, 1)
+
+    def texture_colors(values):
+        colors = unsquish(values, -2, values.shape[-2] // M)
+        if texture_point_count > colors.shape[-2]:
+            colors = colors.expand([-1, -1, texture_point_count, -1])
+        return colors
+
+    c = texture_colors(tpc)  # [T, M, P, 5]
+    bc = texture_colors(border_tpc)
 
     # --- per-primitive color/border math (mirrors
     # BezierCircuitPrimitive.__init__'s scalar path) ---
     normals = basis[..., -3:]
-    bc, o, g = broadcast_all([bc, o, g], ignored_dims=[-1])
-    colors = c.clone()
-    colors[..., -2:-1] += g.unsqueeze(-2)
-    colors[..., -1:] *= o.unsqueeze(-2)
-    bc[..., -2:-1] += g
-    bc[..., -1:] *= o
+    colors, fill_opacity, fill_glow = broadcast_all(
+        [c, o.unsqueeze(-2), g.unsqueeze(-2)], ignored_dims=[-1]
+    )
+    colors = colors.clone()
+    colors[..., -2:-1] += fill_glow
+    colors[..., -1:] *= fill_opacity
+    bc, border_opacity, border_glow = broadcast_all(
+        [bc, o.unsqueeze(-2), g.unsqueeze(-2)], ignored_dims=[-1]
+    )
+    bc = bc.clone()
+    bc[..., -2:-1] += border_glow
+    bc[..., -1:] *= border_opacity
 
     # --- collection-level assembly (mirrors the triangle_collection branch
     # of BezierCircuitPrimitive.__init__) ---

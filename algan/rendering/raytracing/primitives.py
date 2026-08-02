@@ -1853,9 +1853,10 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         if colors.dim() == 3:  # plain fills: a 1x1 "texture" grid
             colors = colors.unsqueeze(-2)
         self._rt_circuit_colors = colors.contiguous().as_subclass(Color)
-        self._rt_circuit_border_colors = (
-            self.border_color.float().contiguous().as_subclass(Color)
-        )
+        border_colors = self.border_color.float()
+        if border_colors.dim() == 3:
+            border_colors = border_colors.unsqueeze(-2)
+        self._rt_circuit_border_colors = border_colors.contiguous().as_subclass(Color)
         self._rt_border_width = border_width
 
     def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h):
@@ -1883,7 +1884,9 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         fill_min = self._rt_circuit_colors.opacity.squeeze(-1).amin(-1)
         if not self.filled:
             fill_alpha = torch.zeros_like(fill_alpha)
-        border_alpha = self._rt_circuit_border_colors.opacity.squeeze(-1)
+        border_alpha_grid = self._rt_circuit_border_colors.opacity.squeeze(-1)
+        border_alpha = border_alpha_grid.amax(-1)
+        border_min = border_alpha_grid.amin(-1)
         border_on = self._rt_border_width > 1e-3
         glow_alpha = self._rt_circuit_colors[..., 3].amax(-1)
         visible = (
@@ -1894,7 +1897,16 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # Alpha is pure coverage, so it alone decides presence (see
         # ``_pack_frame_visibility``); transmission only bears on opacity.
         transmissive = self.transmission[..., 0] > 1e-6
-        (lo, hi, visible, fill_min, border_alpha, border_on, transmissive), _ = (
+        (
+            lo,
+            hi,
+            visible,
+            fill_min,
+            border_alpha,
+            border_min,
+            border_on,
+            transmissive,
+        ), _ = (
             _unify_time(
                 [
                     lo,
@@ -1902,6 +1914,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
                     visible.unsqueeze(-1),
                     fill_min.unsqueeze(-1),
                     border_alpha.unsqueeze(-1),
+                    border_min.unsqueeze(-1),
                     border_on.unsqueeze(-1),
                     transmissive.unsqueeze(-1),
                 ],
@@ -1913,7 +1926,7 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # every region a hit can land in -- the fill/texture and, when shown,
         # the border -- is fully opaque.
         opaque = (fill_min.squeeze(-1) >= 1.0 - 1e-6) & (
-            (~border_on.squeeze(-1)) | (border_alpha.squeeze(-1) >= 1.0 - 1e-6)
+            (~border_on.squeeze(-1)) | (border_min.squeeze(-1) >= 1.0 - 1e-6)
         )
         # A transmissive circuit lets light through even at full coverage, so
         # it can never prune hits behind it.

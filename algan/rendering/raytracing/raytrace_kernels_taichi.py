@@ -56,8 +56,8 @@ separate from cold data (what only confirmed hits touch):
   width, fill flag, texture grid transform and four surface-transport
   channels), 2D polyline ``edges_2d`` with packed scanline/spatial tables
   ``edge_accel``, fill/texture colors ``circuit_colors [Tf, C, P, 5]``
-  (bilinearly sampled; P = 1 for plain fills) and
-  ``circuit_border_colors [Tb, C, 5]``.
+  and border/texture colors ``circuit_border_colors [Tb, C, P, 5]``
+  (both bilinearly sampled; P = 1 for plain colors).
 
 Coplanar-surface layer order is bezier circuits < triangles < PN patches,
 with each type's primitive index breaking ties within the type.
@@ -1564,27 +1564,14 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
 
 
 @ti.func
-def _circuit_border_color(circuit, f, circuit_border_colors: ti.template()):
-    """A circuit's flat border color/alpha."""
-    tb = f % circuit_border_colors.shape[0]
-    return ti.math.vec4(circuit_border_colors[tb, circuit, 0],
-                        circuit_border_colors[tb, circuit, 1],
-                        circuit_border_colors[tb, circuit, 2],
-                        circuit_border_colors[tb, circuit, 3]), \
-        circuit_border_colors[tb, circuit, 4]
-
-
-@ti.func
-def _circuit_fill_color(circuit, f, u, v,
-                        circuit_meta: ti.template(),
-                        circuit_colors: ti.template()):
-    """A circuit's fill color/alpha, bilinearly sampled from its texture grid
-    (plain fills are 1x1 grids, which degenerate to the single fill color).
-    """
+def _circuit_texture_color(circuit, f, u, v,
+                           circuit_meta: ti.template(),
+                           texture_colors: ti.template()):
+    """Bilinearly sample one of a circuit's color texture grids."""
     color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     alpha = 0.0
     tm = f % circuit_meta.shape[0]
-    tc = f % circuit_colors.shape[0]
+    tc = f % texture_colors.shape[0]
     grid_w = circuit_meta[tm, circuit, _M_GRID_W]
     grid_h = circuit_meta[tm, circuit, _M_GRID_H]
     # Map plane (u, v) to texture-grid coordinates via the precomputed
@@ -1595,7 +1582,7 @@ def _circuit_fill_color(circuit, f, u, v,
                 + v * circuit_meta[tm, circuit, _M_TEX + 3]) + 0.5
     x = ti.math.clamp(c2 * grid_h, 0.0, ti.max(grid_h - 1.0, 0.0))
     y = ti.math.clamp(c1 * grid_w, 0.0, ti.max(grid_w - 1.0, 0.0))
-    num_points = circuit_colors.shape[2]
+    num_points = texture_colors.shape[2]
     x_floor = ti.floor(x)
     y_floor = ti.floor(y)
     xr = x - x_floor
@@ -1608,15 +1595,33 @@ def _circuit_fill_color(circuit, f, u, v,
             yr if (corner // 2) == 1 else 1.0 - yr)
         p = ti.cast(cx + cy * grid_h, ti.i32)
         p = ti.math.clamp(p, 0, num_points - 1)
-        color += w * ti.math.vec4(circuit_colors[tc, circuit, p, 0],
-                                  circuit_colors[tc, circuit, p, 1],
-                                  circuit_colors[tc, circuit, p, 2],
-                                  circuit_colors[tc, circuit, p, 3])
-        alpha += w * circuit_colors[tc, circuit, p, 4]
+        color += w * ti.math.vec4(texture_colors[tc, circuit, p, 0],
+                                  texture_colors[tc, circuit, p, 1],
+                                  texture_colors[tc, circuit, p, 2],
+                                  texture_colors[tc, circuit, p, 3])
+        alpha += w * texture_colors[tc, circuit, p, 4]
         sum_w += w
     color /= ti.max(sum_w, 1e-6)
     alpha /= ti.max(sum_w, 1e-6)
     return color, alpha
+
+
+@ti.func
+def _circuit_border_color(circuit, f, u, v,
+                          circuit_meta: ti.template(),
+                          circuit_border_colors: ti.template()):
+    """A circuit's border color/alpha sampled from its texture grid."""
+    return _circuit_texture_color(
+        circuit, f, u, v, circuit_meta, circuit_border_colors)
+
+
+@ti.func
+def _circuit_fill_color(circuit, f, u, v,
+                        circuit_meta: ti.template(),
+                        circuit_colors: ti.template()):
+    """A circuit's fill color/alpha sampled from its texture grid."""
+    return _circuit_texture_color(
+        circuit, f, u, v, circuit_meta, circuit_colors)
 
 
 @ti.func
@@ -1631,7 +1636,7 @@ def _sample_circuit_color(circuit, f, u, v, in_border,
     alpha = 0.0
     if in_border == 1:
         color, alpha = _circuit_border_color(
-            circuit, f, circuit_border_colors)
+            circuit, f, u, v, circuit_meta, circuit_border_colors)
     else:
         color, alpha = _circuit_fill_color(
             circuit, f, u, v, circuit_meta, circuit_colors)
@@ -1658,7 +1663,8 @@ def _sample_circuit_color_blend(circuit, f, u, v, border_frac,
     cf = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
     af = 0.0
     if border_frac > 0.0:
-        cb, ab = _circuit_border_color(circuit, f, circuit_border_colors)
+        cb, ab = _circuit_border_color(
+            circuit, f, u, v, circuit_meta, circuit_border_colors)
     if border_frac < 1.0:
         cf, af = _circuit_fill_color(
             circuit, f, u, v, circuit_meta, circuit_colors)
@@ -1681,6 +1687,40 @@ def _sample_circuit_color_blend(circuit, f, u, v, border_frac,
 
 
 @ti.func
+def _circuit_texture_alpha(circuit, f, u, v,
+                           circuit_meta: ti.template(),
+                           texture_colors: ti.template()) -> ti.f32:
+    """Alpha-only bilinear sample from one circuit color texture grid."""
+    alpha = 0.0
+    tm = f % circuit_meta.shape[0]
+    tc = f % texture_colors.shape[0]
+    grid_w = circuit_meta[tm, circuit, _M_GRID_W]
+    grid_h = circuit_meta[tm, circuit, _M_GRID_H]
+    c1 = 0.5 * (u * circuit_meta[tm, circuit, _M_TEX]
+                + v * circuit_meta[tm, circuit, _M_TEX + 1]) + 0.5
+    c2 = 0.5 * (u * circuit_meta[tm, circuit, _M_TEX + 2]
+                + v * circuit_meta[tm, circuit, _M_TEX + 3]) + 0.5
+    x = ti.math.clamp(c2 * grid_h, 0.0, ti.max(grid_h - 1.0, 0.0))
+    y = ti.math.clamp(c1 * grid_w, 0.0, ti.max(grid_w - 1.0, 0.0))
+    num_points = texture_colors.shape[2]
+    x_floor = ti.floor(x)
+    y_floor = ti.floor(y)
+    xr = x - x_floor
+    yr = y - y_floor
+    sum_w = 0.0
+    for corner in ti.static(range(4)):
+        cx = x_floor + (corner % 2)
+        cy = y_floor + (corner // 2)
+        w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
+            yr if (corner // 2) == 1 else 1.0 - yr)
+        p = ti.cast(cx + cy * grid_h, ti.i32)
+        p = ti.math.clamp(p, 0, num_points - 1)
+        alpha += w * texture_colors[tc, circuit, p, 4]
+        sum_w += w
+    return alpha / ti.max(sum_w, 1e-6)
+
+
+@ti.func
 def _circuit_alpha(circuit, f, u, v, in_border,
                    circuit_meta: ti.template(),
                    circuit_colors: ti.template(),
@@ -1690,35 +1730,11 @@ def _circuit_alpha(circuit, f, u, v, in_border,
     """
     alpha = 0.0
     if in_border == 1:
-        tb = f % circuit_border_colors.shape[0]
-        alpha = circuit_border_colors[tb, circuit, 4]
+        alpha = _circuit_texture_alpha(
+            circuit, f, u, v, circuit_meta, circuit_border_colors)
     else:
-        tm = f % circuit_meta.shape[0]
-        tc = f % circuit_colors.shape[0]
-        grid_w = circuit_meta[tm, circuit, _M_GRID_W]
-        grid_h = circuit_meta[tm, circuit, _M_GRID_H]
-        c1 = 0.5 * (u * circuit_meta[tm, circuit, _M_TEX]
-                    + v * circuit_meta[tm, circuit, _M_TEX + 1]) + 0.5
-        c2 = 0.5 * (u * circuit_meta[tm, circuit, _M_TEX + 2]
-                    + v * circuit_meta[tm, circuit, _M_TEX + 3]) + 0.5
-        x = ti.math.clamp(c2 * grid_h, 0.0, ti.max(grid_h - 1.0, 0.0))
-        y = ti.math.clamp(c1 * grid_w, 0.0, ti.max(grid_w - 1.0, 0.0))
-        num_points = circuit_colors.shape[2]
-        x_floor = ti.floor(x)
-        y_floor = ti.floor(y)
-        xr = x - x_floor
-        yr = y - y_floor
-        sum_w = 0.0
-        for corner in ti.static(range(4)):
-            cx = x_floor + (corner % 2)
-            cy = y_floor + (corner // 2)
-            w = (xr if (corner % 2) == 1 else 1.0 - xr) * (
-                yr if (corner // 2) == 1 else 1.0 - yr)
-            p = ti.cast(cx + cy * grid_h, ti.i32)
-            p = ti.math.clamp(p, 0, num_points - 1)
-            alpha += w * circuit_colors[tc, circuit, p, 4]
-            sum_w += w
-        alpha /= ti.max(sum_w, 1e-6)
+        alpha = _circuit_texture_alpha(
+            circuit, f, u, v, circuit_meta, circuit_colors)
     return alpha
 
 
