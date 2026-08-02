@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from algan.constants.color import BLUE
-from algan.mobs.shapes_3d import Sphere
+from algan.mobs.shapes_3d import Cone, Cylinder, Sphere, Torus
 from algan.rendering.logical_pn import (
     evaluate_logical_pn,
     evaluate_logical_pn_normals,
@@ -505,6 +505,56 @@ def test_geometry_tolerance_is_absolute_at_construction_scale():
     assert doubled_error <= tolerance
     assert doubled.grid_width >= unit.grid_width
     assert doubled.grid_height >= unit.grid_height
+
+
+def _dense_implicit_surface_error(shape):
+    primitive = shape.get_render_primitives()
+    controls = logical_pn_control_points(
+        primitive.corners.reshape(-1, 3, 3),
+        primitive.normals.reshape(-1, 3, 3),
+    )
+    dense_uv = subdivision_vertex_uvs(
+        5,
+        device=primitive.corners.device,
+        dtype=primitive.corners.dtype,
+    )
+    dense_points = evaluate_logical_pn(controls, dense_uv)
+    return shape._pn_geometry_deviation(dense_points, None, None).max()
+
+
+def test_default_sphere_uses_compact_geometry_accurate_logical_topology():
+    sphere = Sphere()
+
+    error = sphere._compute_pn_geometry_error(
+        sphere.coord_function_active,
+        sphere.grid_width,
+        sphere.grid_height,
+    )
+
+    dense_error = _dense_implicit_surface_error(sphere)
+
+    assert sphere.grid_width * sphere.grid_height < 500
+    assert error <= sphere.geometry_tolerance
+    assert dense_error <= sphere.geometry_tolerance
+
+
+@pytest.mark.parametrize(
+    ("shape_type", "vertex_limit"),
+    [
+        pytest.param(Cylinder, 100, id="cylinder"),
+        pytest.param(Cone, 800, id="cone"),
+        pytest.param(Torus, 1000, id="torus"),
+    ],
+)
+def test_other_analytic_surfaces_use_compact_geometry_accurate_topology(
+    shape_type,
+    vertex_limit,
+):
+    shape = shape_type()
+
+    assert shape._geometry_auto_resolution_enabled
+    assert shape.grid_width * shape.grid_height < vertex_limit
+    assert _dense_implicit_surface_error(shape) <= shape.geometry_tolerance
 
 
 def test_surface_builds_new_logical_pn_primitive_with_both_tolerances():

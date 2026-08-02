@@ -624,7 +624,7 @@ class NeuralNetMLP(Mob):
                         for _ in output.get_descendants():
                             if not _.is_primitive:
                                 continue
-                            _.set_opacity(0)
+                            _.set(color=_.color.set_opacity(0))
                         output.spawn(animate=False)
                     with Seq(run_time=3, animation_manager=self.animation_manager):
                         output.wave_color(

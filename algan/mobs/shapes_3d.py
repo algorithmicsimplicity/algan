@@ -53,6 +53,20 @@ def _surface_resolution_kwargs(resolution, kwargs):
     return kwargs
 
 
+def _radial_and_axial_coordinates(points, center, axis):
+    """Return distances parallel and perpendicular to a shape's main axis."""
+    center = center.reshape(-1, 3)[0].to(device=points.device, dtype=points.dtype)
+    axis = F.normalize(
+        axis.reshape(-1, 3)[0].to(device=points.device, dtype=points.dtype),
+        p=2,
+        dim=-1,
+    )
+    relative = points - center
+    axial = (relative * axis).sum(dim=-1)
+    radial = (relative - axial.unsqueeze(-1) * axis).norm(dim=-1)
+    return radial, axial
+
+
 class Sphere(Surface):
     """A 3-D sphere with Manim-compatible constructor arguments."""
 
@@ -94,6 +108,16 @@ class Sphere(Surface):
     def normal_function(self, uv):
         return self.coord_function(uv)
 
+    def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
+        """Exact distance from each PN sample to this sphere's surface."""
+        center = self.location.reshape(-1, 3)[0]
+        radius = torch.as_tensor(
+            self.radius,
+            device=pn_points.device,
+            dtype=pn_points.dtype,
+        ).abs()
+        return ((pn_points - center).norm(dim=-1) - radius).abs()
+
 
 class Cone(Surface):
     """A circular cone with Manim-compatible constructor arguments."""
@@ -124,8 +148,6 @@ class Cone(Surface):
         self.direction = cast_to_tensor(direction)
         self.u_min = u_min
         kwargs["checkerboard_colors"] = checkerboard_colors
-        if resolution is None:
-            resolution = 32
         kwargs = _surface_resolution_kwargs(resolution, kwargs)
         kwargs.setdefault("grid_aspect_ratio", 1 / PI)
         super().__init__(*args, v_range=v_range, **kwargs)
@@ -165,6 +187,40 @@ class Cone(Surface):
         radial = xyz.clone()
         radial[..., 1] = self.radius / max(float(self.height), 1e-10)
         return radial
+
+    def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
+        """Exact distance from each PN sample to the finite conical side."""
+        radial, axial = _radial_and_axial_coordinates(
+            pn_points,
+            self.location,
+            self.get_upwards_direction(),
+        )
+        radius = torch.as_tensor(
+            self.radius,
+            device=pn_points.device,
+            dtype=pn_points.dtype,
+        ).abs()
+        height = torch.as_tensor(
+            self.height,
+            device=pn_points.device,
+            dtype=pn_points.dtype,
+        )
+        start_radial = radius
+        start_axial = -height * 0.5
+        radial_delta = -radius
+        axial_delta = height
+        length_squared = (radius * radius + height * height).clamp_min(
+            torch.finfo(pn_points.dtype).eps
+        )
+        interpolation = (
+            (radial - start_radial) * radial_delta + (axial - start_axial) * axial_delta
+        ) / length_squared
+        interpolation = interpolation.clamp(0, 1)
+        closest_radial = start_radial + interpolation * radial_delta
+        closest_axial = start_axial + interpolation * axial_delta
+        return torch.sqrt(
+            (radial - closest_radial).square() + (axial - closest_axial).square()
+        )
 
     def get_start(self):
         return self.start_point
@@ -241,6 +297,20 @@ class Cylinder(Surface):
         return project_onto_basis(
             xyz, [self.get_right_direction(), self.get_forward_direction()]
         )
+
+    def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
+        """Exact distance from each PN sample to the cylindrical side."""
+        radial, _ = _radial_and_axial_coordinates(
+            pn_points,
+            self.location,
+            self.get_upwards_direction(),
+        )
+        radius = torch.as_tensor(
+            self.radius,
+            device=pn_points.device,
+            dtype=pn_points.dtype,
+        ).abs()
+        return (radial - radius).abs()
 
     def set_direction(self, direction):
         direction = F.normalize(cast_to_tensor(direction), p=2, dim=-1)
@@ -492,12 +562,11 @@ class Torus(Surface):
     ):
         self.major_radius = self.R = major_radius
         self.minor_radius = self.r = minor_radius
-        if resolution is None:
-            resolution = (24, 24)
-        if isinstance(resolution, int):
-            resolution = (resolution, resolution)
-        kwargs.setdefault("grid_width", int(resolution[0]))
-        kwargs.setdefault("grid_height", int(resolution[1]))
+        if resolution is not None:
+            if isinstance(resolution, int):
+                resolution = (resolution, resolution)
+            kwargs.setdefault("grid_width", int(resolution[0]))
+            kwargs.setdefault("grid_height", int(resolution[1]))
         super().__init__(
             coord_function=self.coord_function,
             u_range=u_range,
@@ -525,6 +594,26 @@ class Torus(Surface):
             (-torch.cos(v) * torch.cos(u), -torch.cos(v) * torch.sin(u), -torch.sin(v)),
             -1,
         )
+
+    def _pn_geometry_deviation(self, pn_points, _analytic_points, _analytic_uv):
+        """Exact distance from each PN sample to this torus's surface."""
+        radial, axial = _radial_and_axial_coordinates(
+            pn_points,
+            self.location,
+            self.get_forward_direction(),
+        )
+        major_radius = torch.as_tensor(
+            self.major_radius,
+            device=pn_points.device,
+            dtype=pn_points.dtype,
+        ).abs()
+        minor_radius = torch.as_tensor(
+            self.minor_radius,
+            device=pn_points.device,
+            dtype=pn_points.dtype,
+        ).abs()
+        tube_distance = torch.sqrt((radial - major_radius).square() + axial.square())
+        return (tube_distance - minor_radius).abs()
 
     def func(self, u, v):
         u = torch.as_tensor(u)

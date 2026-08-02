@@ -341,8 +341,10 @@ class Surface(Mob):
     grid_aspect_ratio
         If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio.
     geometry_tolerance
-        Maximum sampled world-space deviation (as percentage of geometry height),
-        between the analytic surface and its PN-triangle approximation at construction time.
+        Maximum sampled world-space distance between the analytic surface and its
+        PN-triangle approximation at construction time. Shapes with a known exact
+        surface-distance expression use it; general parametric surfaces use the
+        conservative distance between matching parameter samples.
     render_tolerance
         Maximum sampled output-pixel deviation (as percentage of screen height) used
         when each PN triangle is dynamically diced into ordinary flat render triangles.
@@ -1012,7 +1014,22 @@ class Surface(Mob):
         )
         analytic_uv = torch.einsum("sk,pka->psa", barycentric, triangle_uvs)
         analytic_points = coord_function(analytic_uv.clone())
-        return (pn_points - analytic_points).norm(dim=-1).max()
+        return self._pn_geometry_deviation(
+            pn_points,
+            analytic_points,
+            analytic_uv,
+        ).max()
+
+    def _pn_geometry_deviation(self, pn_points, analytic_points, analytic_uv):
+        """Return sampled distance from PN points to the analytic surface.
+
+        The general parametric surface has no inverse mapping or implicit
+        distance function, so its conservative fallback compares points at the
+        same parameter coordinates. Shapes with an exact surface-distance
+        expression can override this hook and avoid treating harmless
+        tangential reparameterization as geometric error.
+        """
+        return (pn_points - analytic_points).norm(dim=-1)
 
     def _find_geometry_resolution(self, surface_function):
         """Choose the stable construction-time logical PN grid dimensions."""
