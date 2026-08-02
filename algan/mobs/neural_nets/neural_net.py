@@ -117,7 +117,6 @@ def _make_idle_waypoints(walk_radii, direction, *, dtype, device):
         [torch.zeros((shape[0], 1, 3), dtype=dtype, device=device), random_points],
         dim=1,
     )
-    unit_waypoints = unit_waypoints - dot_product(unit_waypoints, direction) * direction
     return unit_waypoints * walk_radii.view(-1, 1, 1)
 
 
@@ -626,7 +625,7 @@ class NeuralNetMLP(Mob):
                         for _ in output.get_descendants():
                             if not _.is_primitive:
                                 continue
-                            _.set(color=_.color.set_opacity(0))
+                            _.opacity = 0
                         output.spawn(animate=False)
                     with Seq(run_time=3, animation_manager=self.animation_manager):
                         output.wave_color(

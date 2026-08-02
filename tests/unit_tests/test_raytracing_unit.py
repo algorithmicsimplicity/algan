@@ -39,6 +39,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     path_trace_physical_stbvh,
     path_trace_scene_stbvh,
 )
+from algan.rendering.raytracing.scene_builder import _cat_circuit_color_grids
 from algan.rendering.raytracing.stbvh import (
     EMPTY_HI,
     EMPTY_LO,
@@ -47,6 +48,18 @@ from algan.rendering.raytracing.stbvh import (
 )
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def test_circuit_color_grid_merge_pads_mixed_resolutions():
+    plain = torch.full((1, 1, 1, 5), 1.0)
+    textured = torch.full((1, 1, 64, 5), 2.0)
+
+    merged = _cat_circuit_color_grids([plain, textured])
+
+    assert merged.shape == (1, 2, 64, 5)
+    assert torch.equal(merged[:, 0, :1], plain[:, 0])
+    assert torch.count_nonzero(merged[:, 0, 1:]) == 0
+    assert torch.equal(merged[:, 1], textured[:, 0])
 
 
 def test_morton_spread():

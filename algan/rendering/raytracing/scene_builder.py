@@ -41,6 +41,29 @@ from algan.utils.memory_utils import (
 _STBVH_TENSOR_FIELDS = ("nodes", "blocks", "node_miss", "leaf_prim", "leaf_tspan")
 
 
+def _cat_circuit_color_grids(grids, error_context="bezier color-grid merge"):
+    """Merge ``[T, C, P, 5]`` circuit grids with different resolutions.
+
+    A scene can contain separately batched circuit collections whose texture
+    grids have different point counts.  The Taichi kernels need one rectangular
+    scene tensor, so pad the unused tail of each collection before concatenating
+    its circuit axis.  Circuit metadata keeps the actual grid width/height, and
+    the sampler therefore never reads these padding texels.
+    """
+    max_points = max(grid.shape[2] for grid in grids)
+    padded = []
+    for grid in grids:
+        if grid.shape[2] < max_points:
+            pad = torch.zeros(
+                (*grid.shape[:2], max_points - grid.shape[2], grid.shape[3]),
+                dtype=grid.dtype,
+                device=grid.device,
+            )
+            grid = torch.cat((grid, pad), 2)
+        padded.append(grid)
+    return _cat_collections(padded, 1, error_context)
+
+
 class _DeferredBackground:
     """Callback plus the metadata needed to fill the render output."""
 
@@ -1693,21 +1716,12 @@ def _merge_scene(primitives):
         scene["circuit_meta"] = _cat_collections(
             [p._rt_circuit_meta for p in beziers], 1, "bezier merge"
         )
-        scene["circuit_border_colors"] = _cat_collections(
-            [p._rt_circuit_border_colors for p in beziers], 1, "bezier merge"
+        scene["circuit_border_colors"] = _cat_circuit_color_grids(
+            [p._rt_circuit_border_colors for p in beziers]
         )
-        max_points = max(p._rt_circuit_colors.shape[2] for p in beziers)
-        padded = []
-        for p in beziers:
-            c = p._rt_circuit_colors
-            if c.shape[2] < max_points:
-                pad = torch.zeros(
-                    (c.shape[0], c.shape[1], max_points - c.shape[2], c.shape[3]),
-                    device=c.device,
-                )
-                c = torch.cat((c, pad), 2)
-            padded.append(c)
-        scene["circuit_colors"] = _cat_collections(padded, 1, "bezier merge")
+        scene["circuit_colors"] = _cat_circuit_color_grids(
+            [p._rt_circuit_colors for p in beziers]
+        )
         scene["edges_2d"] = _cat_collections(
             [p._rt_edges for p in beziers], 1, "bezier merge"
         )
