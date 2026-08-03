@@ -502,12 +502,13 @@ class NeuralNetMLP(Mob):
         forward_color=PURE_RED * k + (1 - k) * WHITE,
         backward_color=PURE_BLUE * k + (1 - k) * WHITE,
     ):
-        o = self.forward(
-            input_values, output_generator, run_time, reset=False, color=forward_color
-        )  # .get_component_mobs())
-        # o.move_next_to(label, -self.get_right_direction())
-        self.backward(o, label, color=backward_color, run_time=run_time)
-        o.despawn()
+        with Seq():
+            o = self.forward(
+                input_values, output_generator, run_time, reset=False, color=forward_color
+            )  # .get_component_mobs())
+            # o.move_next_to(label, -self.get_right_direction())
+            self.backward(o, label, color=backward_color, run_time=run_time)
+            o.despawn()
         return self
 
     def forward(self, inputs, output_generator=None, run_time=3, reset=True, **kwargs):
@@ -556,16 +557,22 @@ class NeuralNetMLP(Mob):
     def backward(
         self, output=None, label=None, color=PURE_BLUE * k + (1 - k) * WHITE, run_time=3
     ):
-        with Seq(run_time=run_time, animation_manager=self.animation_manager):
+        #with Seq():
+        #    self.activate(reverse=True, color=color, run_time=run_time)
+        #    self.reset_input_synapses()
+        #return self
+        #with Seq(run_time=run_time, animation_manager=self.animation_manager):
+        with Lag(0.9, run_time=run_time):
             if label is not None:
-                with Lag(0.65, run_time=6, animation_manager=self.animation_manager):
+                with Lag(0.65, run_time=1, animation_manager=self.animation_manager):
                     zap(label, output, color=color)
                     zap(output, self.layers[-1][0].shell, color=color)
-                self.animation_manager.context.timespan.current_time = (
-                    self.animation_manager.context.timespan.current_time - 1.5
-                )
-            self.activate(reverse=True, color=color, run_time=run_time)
-            self.reset_input_synapses()
+            #self.animation_manager.context.timespan.current_time = (
+            #    self.animation_manager.context.timespan.current_time - 1.5
+            #)
+            with Seq():
+                self.activate(reverse=True, color=color)
+                self.reset_input_synapses()
         return self
 
     def activate(
@@ -588,6 +595,14 @@ class NeuralNetMLP(Mob):
                         reverse,
                         direction=self.get_forward_direction(),
                         new_color=tweak_color(synapse.color, 0.33) if reverse else None,
+                        refine_resolution=False,
+                        # Restoring a refined Code panel creates a second
+                        # coplanar incarnation in a different render batch.
+                        # It can cover already-materialized glyphs until the
+                        # handoff frame. This output is newly created, so
+                        # retain its authored color grid as its stable
+                        # topology and avoid the handoff altogether.
+                        restore_resolution=False,
                     )
 
         def pulse_neuron(neuron):
@@ -607,6 +622,14 @@ class NeuralNetMLP(Mob):
                             reverse,
                             lag_duration=0.5,
                             direction=self.get_forward_direction(),
+                            refine_resolution=False,
+                            # Restoring a refined Code panel creates a second
+                            # coplanar incarnation in a different render batch.
+                            # It can cover already-materialized glyphs until the
+                            # handoff frame. This output is newly created, so
+                            # retain its authored color grid as its stable
+                            # topology and avoid the handoff altogether.
+                            restore_resolution=False,
                         )
                         n.wait(w)
 

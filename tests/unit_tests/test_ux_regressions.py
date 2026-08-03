@@ -7,6 +7,7 @@ import pytest
 import torch
 
 import algan
+from algan import render_loop
 from algan.animation_timeline.animation_contexts import Sync
 from algan.errors import (
     AlganConfigurationError,
@@ -108,6 +109,172 @@ def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
     assert scene.num_pixels_screen_width == before["width"]
     assert scene.num_pixels_screen_height == before["height"]
     assert saved == [((4, 13, 17), str(tmp_path / "still.png"))]
+
+
+def _stub_out_frame_writing(monkeypatch, scene, on_render=None):
+    """Make save_frame go through its full body without a real render."""
+
+    def fake_frames(*_args, **_kwargs):
+        if on_render is not None:
+            on_render()
+        yield torch.zeros(
+            (1, scene.num_pixels_screen_height, scene.num_pixels_screen_width, 4),
+            dtype=torch.uint8,
+        )
+
+    monkeypatch.setattr(scene, "get_frames", fake_frames)
+    import torchvision.utils
+
+    monkeypatch.setattr(torchvision.utils, "save_image", lambda frame, path: None)
+
+
+def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
+    monkeypatch, tmp_path
+):
+    # A render resolves every edit's replay window by snapshotting its
+    # context-rescaled end time into a plain float. Called from inside a
+    # context that has not exited yet, those ends are pre-rescale, and nothing
+    # invalidates them once the block is rescaled -- so a later render replayed
+    # the animations against stale, too-early ends and cut them short.
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(PREVIEW)
+    timeline = scene.timeline_manager
+    _stub_out_frame_writing(
+        monkeypatch, scene, on_render=timeline._resolve_replay_windows
+    )
+
+    square = Square().spawn()
+    with algan.Seq(run_time=8):
+        square.move(algan.RIGHT)
+        square.move(algan.UP)
+        # Last statement in the block: nothing after it records an edit, so
+        # nothing would invalidate a resolution left behind here.
+        scene.save_frame(tmp_path / "still")
+
+    timeline._resolve_replay_windows()
+    edits = [edit for t in timeline.attr_to_timeline.values() for edit in t.edits]
+    assert edits
+    # The block really was rescaled on exit: its two moves span 8 seconds from
+    # t=1 (the spawn ahead of it) rather than the 2 they were recorded at.
+    assert max(float(edit.time.end) for edit in edits) == pytest.approx(9.0)
+    for edit in edits:
+        assert edit.replay_end == pytest.approx(float(edit.time.end))
+
+
+def test_save_frame_leaves_a_finished_scene_s_replay_windows_alone(
+    monkeypatch, tmp_path
+):
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(PREVIEW)
+    timeline = scene.timeline_manager
+    _stub_out_frame_writing(
+        monkeypatch, scene, on_render=timeline._resolve_replay_windows
+    )
+
+    square = Square().spawn()
+    with algan.Seq(run_time=8):
+        square.move(algan.RIGHT)
+
+    # Timings are final here, so resolving is legitimate and must survive.
+    timeline._resolve_replay_windows()
+    before = [
+        (edit, edit.replay_end)
+        for t in timeline.attr_to_timeline.values()
+        for edit in t.edits
+    ]
+    known_lifespans = dict(timeline.mob_id_to_lifespan)
+
+    scene.save_frame(tmp_path / "still")
+
+    assert timeline._replay_windows_resolved
+    assert [(edit, edit.replay_end) for edit, _ in before] == before
+    assert timeline.mob_id_to_lifespan == known_lifespans
+
+
+def _stub_out_video_writing(monkeypatch, scene, on_render=None):
+    """Drive render_to_video without ffmpeg. Returns the recorded windows."""
+    windows = []
+
+    def fake_frames(start_ind, end_ind, **_kwargs):
+        windows.append((start_ind, end_ind))
+        if on_render is not None:
+            on_render()
+        return iter(())
+
+    monkeypatch.setattr(scene, "get_frames", fake_frames)
+    monkeypatch.setattr(
+        render_loop,
+        "write_frames_from_queue",
+        lambda queue, _writer: [None for _ in iter(queue.get, None)],
+    )
+    return windows
+
+
+def _render_to_video(scene, tmp_path, name="clip"):
+    source = tmp_path / f"{name}_temp.mp4"
+    source.write_bytes(b"")
+    scene.render_to_video(
+        SimpleNamespace(close=lambda: None),
+        str(source),
+        str(tmp_path / f"{name}.mp4"),
+        despawn_camera_and_lights=False,
+        preserve_authoring_state=True,
+    )
+
+
+def test_render_window_covers_the_whole_open_context_chain(monkeypatch, tmp_path):
+    # Mid-block the active context is the innermost open one, and its window
+    # covers only its own block. An enclosing Sync can already hold animations
+    # running well past it, which a preview must not cut off.
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(PREVIEW)
+    windows = _stub_out_video_writing(monkeypatch, scene)
+
+    square = Square().spawn()
+    with algan.Sync():
+        with algan.Seq(run_time=5):
+            square.move(algan.RIGHT)
+            square.move(algan.UP)
+        with algan.Seq():
+            square.move(algan.DOWN)
+            assert scene.animation_manager.context.timespan.original_end == (
+                pytest.approx(2.0)
+            )
+            _render_to_video(scene, tmp_path)
+
+    assert windows == [(0, round(6.0 * scene.frames_per_second))]
+
+
+def test_save_video_reset_false_rolls_back_derived_state_mid_block(
+    monkeypatch, tmp_path
+):
+    # Same defect as save_frame, reached through the video path: a render from
+    # inside an unfinished block must leave nothing behind that a later render
+    # would replay against.
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(PREVIEW)
+    timeline = scene.timeline_manager
+    _stub_out_video_writing(
+        monkeypatch, scene, on_render=timeline._resolve_replay_windows
+    )
+    scene_times_before = [list(pair) for pair in scene.scene_times]
+
+    square = Square().spawn()
+    with algan.Seq(run_time=8):
+        square.move(algan.RIGHT)
+        square.move(algan.UP)
+        # Last statement in the block, so nothing afterwards invalidates a
+        # resolution left behind here.
+        _render_to_video(scene, tmp_path)
+
+    assert scene.scene_times == scene_times_before
+
+    timeline._resolve_replay_windows()
+    edits = [edit for t in timeline.attr_to_timeline.values() for edit in t.edits]
+    assert edits
+    assert max(float(edit.time.end) for edit in edits) == pytest.approx(9.0)
+    for edit in edits:
+        assert edit.replay_end == pytest.approx(float(edit.time.end))
 
 
 def test_overwrite_false_checks_final_suffixed_path_and_preserves_scene(tmp_path):

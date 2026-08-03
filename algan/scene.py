@@ -837,9 +837,12 @@ class Scene(RenderLoopMixin):
             )
         time_ind = self._frame_index_for_timestamp(time_stamp)
         frames = []
-        for frame in self.get_frames(time_ind, time_ind + 1):
-            frame = frame.float() / 255
-            frames.append(frame.squeeze(0).permute(-1, 0, 1))
+        # See Scene.save_frame: a render that leaves the Scene re-renderable
+        # must not leave its replay-window resolution behind for the next one.
+        with self.timeline_manager.preserving_authoring_state():
+            for frame in self.get_frames(time_ind, time_ind + 1):
+                frame = frame.float() / 255
+                frames.append(frame.squeeze(0).permute(-1, 0, 1))
         for frame in frames:
             plot_tensor(frame)
 
@@ -960,15 +963,21 @@ class Scene(RenderLoopMixin):
                 self.set_video_settings(video_settings)
             if background_color is not None:
                 self.set_background_color(background_color)
-            for target, time_stamp in targets:
-                if target.exists() and not overwrite:
-                    results.append(RenderResult("skipped", target))
-                    continue
-                started = time.perf_counter()
-                self._render_still(target, time_stamp)
-                results.append(
-                    RenderResult("rendered", target, time.perf_counter() - started)
-                )
+            # Rendering resolves replay windows against the timings as they
+            # stand. Mid-authoring those are not final -- an enclosing context
+            # with a run_time rescales its block when it exits -- so the
+            # resolution is restored rather than left on the timeline for the
+            # next render to reuse.
+            with self.timeline_manager.preserving_authoring_state():
+                for target, time_stamp in targets:
+                    if target.exists() and not overwrite:
+                        results.append(RenderResult("skipped", target))
+                        continue
+                    started = time.perf_counter()
+                    self._render_still(target, time_stamp)
+                    results.append(
+                        RenderResult("rendered", target, time.perf_counter() - started)
+                    )
         finally:
             # set_video_settings restores every derived cache (dimensions,
             # fps, frame size, pixel count), not merely the settings reference.
@@ -1100,7 +1109,10 @@ class Scene(RenderLoopMixin):
             animation, despawn its mobs and rebuild its timeline, animation and
             audio managers. Mobs created before the render become unusable.
             Defaults to False, which leaves the Scene exactly as authored, so you
-            can keep animating and render again.
+            can keep animating and render again -- including from inside a
+            ``with`` block that has not finished yet. A mid-block render covers
+            everything recorded so far and changes nothing, so the final render
+            is the same as if the preview had never happened.
         background_color
             A color, image, or procedural callable ``(x, y, time) -> color``.
             Python callables receive broadcastable Torch tensors. A Taichi

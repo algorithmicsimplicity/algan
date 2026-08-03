@@ -1188,6 +1188,62 @@ class AnimationTimeline:
                 event.replay_end = end
             i = j
 
+    @contextlib.contextmanager
+    def preserving_authoring_state(self):
+        """Render frames without leaving derived state on the timeline.
+
+        Materializing frames resolves replay windows
+        (:meth:`_resolve_replay_windows`), which freezes every edit's and
+        event's context-rescaled end time into a plain ``replay_end`` float.
+        That is correct once authoring is finished, but a render started from
+        *inside* an unfinished context bakes in timestamps the enclosing
+        contexts have not rescaled yet (a ``run_time`` rescales its block
+        retroactively, on exit). Nothing invalidates those floats afterwards --
+        only recording a new edit does -- so the stale, too-early ends survive
+        into the next render, where :meth:`AttributeTimeline.prepare_for_queries`
+        uses them verbatim as edit timestamps and the affected animations stop
+        advancing early.
+
+        Every render that leaves the Scene re-renderable wraps itself in this:
+        :meth:`~algan.scene.Scene.save_frame`,
+        :meth:`~algan.scene.Scene.show_frame`, and
+        :meth:`~algan.scene.Scene.save_video` with ``reset=False``. The frames
+        come out of the timeline as it stands, and the Scene carries nothing
+        away from the render, so authoring can continue and render again --
+        including from inside a block that has not finished yet. Lifespans
+        created for the transient mobs a render builds are dropped for the same
+        reason.
+        """
+        resolved = self._replay_windows_resolved
+        edit_windows = [
+            (edit, edit.replay_end)
+            for timeline in self.attr_to_timeline.values()
+            for edit in timeline.edits
+        ]
+        event_windows = [
+            (event, event.replay_end)
+            for event in self.function_timeline.function_applications
+        ]
+        known_mob_ids = frozenset(self.mob_id_to_lifespan)
+        try:
+            yield self
+        finally:
+            for edit, replay_end in edit_windows:
+                edit.replay_end = replay_end
+            for event, replay_end in event_windows:
+                event.replay_end = replay_end
+            self._replay_windows_resolved = resolved
+            # Any edit or event recorded during the render (there should be
+            # none) is outside the snapshot, so drop the cached window tensors
+            # rather than trust them.
+            self.function_timeline.invalidate_window_cache()
+            for mob_id in [
+                mob_id
+                for mob_id in self.mob_id_to_lifespan
+                if mob_id not in known_mob_ids
+            ]:
+                del self.mob_id_to_lifespan[mob_id]
+
     @staticmethod
     def _collect_mob_ids(values):
         """Collect mob ids reachable from roots/event arguments.

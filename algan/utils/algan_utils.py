@@ -271,6 +271,10 @@ def _render_scene_to_file(
             str(destination),
             background_color=frame_background_override,
             despawn_camera_and_lights=scene_finalized,
+            # reset=False leaves the Scene re-renderable, so the render must
+            # not consume the derived state a later render depends on. With
+            # reset=True the timeline is rebuilt anyway.
+            preserve_authoring_state=not reset,
             **kwargs,
         )
         duration = time.perf_counter() - start_time

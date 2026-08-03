@@ -2069,6 +2069,24 @@ class RenderLoopMixin:
         writer_process.join()
         file_writer.close()
 
+    def _recorded_end_time_for_render(self):
+        """End of everything recorded so far, in seconds.
+
+        Ordinarily this is the root context's end, because a render happens
+        with every block closed. Called from inside an unfinished block the
+        active context is the innermost open one, whose window covers only its
+        own block -- an enclosing :class:`~.Sync` can already hold animations
+        running past it -- so the whole open chain is consulted. Every open
+        context shares one timeframe (a ``run_time`` rescales its block
+        retroactively, on exit), so their ends are directly comparable.
+        """
+        end = 0.0
+        context = self.animation_manager.context
+        while context is not None:
+            end = max(end, context.timespan.original_end)
+            context = context.prev_context
+        return end
+
     def render_to_video(
         self,
         file_writer,
@@ -2077,15 +2095,28 @@ class RenderLoopMixin:
         post_processes=(bloom_filter,),
         background_color=None,
         despawn_camera_and_lights=True,
+        preserve_authoring_state=False,
     ):
-        """Stream rendered frame batches to the configured video writer."""
+        """Stream rendered frame batches to the configured video writer.
+
+        ``preserve_authoring_state`` is set for a render that leaves the Scene
+        re-renderable (``save_video(reset=False)``): the frame window and the
+        replay-window resolution the render derives are rolled back afterwards,
+        so authoring can continue -- including inside a block that has not
+        finished yet -- and render again. See
+        :meth:`~algan.animation_timeline.timeline.AnimationTimeline.preserving_authoring_state`.
+        """
+        previous_scene_times = (
+            [list(pair) for pair in self.scene_times]
+            if preserve_authoring_state
+            else None
+        )
         self.scene_times.append(
             [
                 self.scene_times[-1][0],
                 (
                     round(
-                        self.animation_manager.context.timespan.original_end
-                        * self.frames_per_second
+                        self._recorded_end_time_for_render() * self.frames_per_second
                     )
                 ),
             ]
@@ -2119,15 +2150,28 @@ class RenderLoopMixin:
         writer_process.start()
 
         self.frame_queue = frame_queue
-        # Wait for the writer process to complete
-        for frame_batch in self.get_frames(
-            *self.scene_times[-1],
-            background_color=background_color,
-            post_processes=post_processes,
-            manual_memory=True,
-        ):
-            for frame in frame_batch:
-                frame_queue.put(frame)
+        # The snapshot is taken here rather than around the whole render call:
+        # the fade-out and the zero-duration guard record on the timeline
+        # first, and edits made after a snapshot would fall outside it.
+        preserve = (
+            self.timeline_manager.preserving_authoring_state()
+            if preserve_authoring_state
+            else contextlib.nullcontext()
+        )
+        try:
+            # Wait for the writer process to complete
+            with preserve:
+                for frame_batch in self.get_frames(
+                    *self.scene_times[-1],
+                    background_color=background_color,
+                    post_processes=post_processes,
+                    manual_memory=True,
+                ):
+                    for frame in frame_batch:
+                        frame_queue.put(frame)
+        finally:
+            if previous_scene_times is not None:
+                self.scene_times[:] = previous_scene_times
 
         self._drain_video_writer(frame_queue, writer_process, file_writer)
 

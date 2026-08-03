@@ -41,6 +41,9 @@ class AlganSettings:
         object.__setattr__(self, "skip_save_frame", False)
 
     def __setattr__(self, name, value):
+        if name == 'skip_save_frame':
+            object.__setattr__(self, "skip_save_frame", value)
+            return
         if name in self.__slots__:
             raise AlganConfigurationError(
                 f"SETTINGS.{name} has stable identity; call SETTINGS.{name}.set(...)"
