@@ -36,6 +36,25 @@ from algan.utils.tensor_utils import (
 # rather than tessellating the surface into millions of triangles.
 _MAX_WAVE_GRID_RESOLUTION = 64
 
+# Budget for the nearest-surface-point search that turns the general geometry
+# metric from a same-parameter comparison into a true distance (see
+# ``Surface._refine_geometry_deviation``). The search only ever runs on samples
+# that are still above tolerance, and it runs in batches of
+# ``_PROJECTION_BATCH`` so its cost stays bounded no matter how fine the probed
+# grid is. ``_PROJECTION_BOX_CELLS`` limits how far, in grid cells, a sample may
+# travel in parameter space: the metric wants the distance to the piece of
+# surface the patch is meant to approximate, not to whatever fold of the shape
+# happens to pass nearby.
+_PROJECTION_BATCH = 1 << 16
+_PROJECTION_STEPS = 12
+_PROJECTION_BOX_CELLS = 2.0
+# Backtracking ladder tried at every step. A Gauss-Newton step overshoots badly
+# where the parameterization is strongly nonlinear (its Jacobian collapses at a
+# pole and grows again within the same cell), and letting the damping alone
+# walk the step back down costs one iteration per rejection. All scales are
+# evaluated in one batch instead, so each iteration lands on the best of them.
+_PROJECTION_SCALES = (1.0, 0.5, 0.25, 0.1, 0.03, 0.01)
+
 
 def _call_parametric_function(function, u, v):
     """Evaluate a Manim-style ``func(u, v)`` on a tensor UV grid.
@@ -342,9 +361,13 @@ class Surface(Mob):
         If not None, set the grid_height to be equal to grid_width * grid_aspect_ratio.
     geometry_tolerance
         Maximum sampled world-space distance between the analytic surface and its
-        PN-triangle approximation at construction time. Shapes with a known exact
-        surface-distance expression use it; general parametric surfaces use the
-        conservative distance between matching parameter samples.
+        PN-triangle approximation at construction time, in world units. It measures
+        how far the approximation strays *off* the surface, not how the surface is
+        parameterized, so a coordinate function that stretches or collapses its
+        parameters (a polar cap, a superellipse meridian) costs no extra vertices.
+        Shapes with a known exact surface-distance expression use it directly;
+        general parametric surfaces search for each sample's nearest analytic
+        point.
     render_tolerance
         Maximum sampled output-pixel deviation (as percentage of screen height) used
         when each PN triangle is dynamically diced into ordinary flat render triangles.
@@ -973,7 +996,15 @@ class Surface(Mob):
         )
 
     def _compute_pn_geometry_error(self, coord_function, width, height):
-        """Sample construction-time world error of a logical PN grid."""
+        """Sample construction-time world error of a logical PN grid.
+
+        Exact at the decision that uses it: the result exceeds
+        ``geometry_tolerance`` if and only if some sampled point really is
+        further than that from the surface. Below the tolerance it is only an
+        upper bound, because samples that are already inside it are not worth
+        the cost of measuring precisely (see
+        :meth:`_refine_geometry_deviation`).
+        """
         device = self.location.device
         dtype = self.location.dtype
         grid_u = torch.linspace(0, 1, width, device=device, dtype=dtype)
@@ -1014,35 +1045,256 @@ class Surface(Mob):
         )
         analytic_uv = torch.einsum("sk,pka->psa", barycentric, triangle_uvs)
         analytic_points = coord_function(analytic_uv.clone())
-        return self._pn_geometry_deviation(
+        deviation = self._pn_geometry_deviation(
             pn_points,
             analytic_points,
             analytic_uv,
-        ).max()
+        )
+        if self._geometry_deviation_is_same_parameter():
+            deviation = self._refine_geometry_deviation(
+                coord_function,
+                pn_points,
+                analytic_uv,
+                deviation,
+                width,
+                height,
+            )
+        return deviation.max()
 
     def _pn_geometry_deviation(self, pn_points, analytic_points, analytic_uv):
         """Return sampled distance from PN points to the analytic surface.
 
         The general parametric surface has no inverse mapping or implicit
-        distance function, so its conservative fallback compares points at the
-        same parameter coordinates. Shapes with an exact surface-distance
-        expression can override this hook and avoid treating harmless
-        tangential reparameterization as geometric error.
+        distance function, so its fallback compares points at the same
+        parameter coordinates. That is only an *upper bound* on the geometric
+        distance; :meth:`_refine_geometry_deviation` tightens it to the real
+        one. Shapes with an exact surface-distance expression override this
+        hook instead, and are then used as-is.
         """
         return (pn_points - analytic_points).norm(dim=-1)
+
+    @classmethod
+    def _geometry_deviation_is_same_parameter(cls):
+        """True when this shape uses the generic same-parameter fallback."""
+        return cls._pn_geometry_deviation is Surface._pn_geometry_deviation
+
+    def _refine_geometry_deviation(
+        self, coord_function, pn_points, analytic_uv, deviation, width, height
+    ):
+        """Turn same-parameter deviations into true surface distances.
+
+        Comparing points at matching parameters counts tangential
+        reparameterization as geometric error. Wherever the parameterization
+        stretches -- a polar cap, a superellipse meridian, any pole or crease
+        -- that term dominates and decays only as fast as the parameter
+        spacing, so no attainable grid meets an absolute world tolerance even
+        though the mesh itself sits on the surface to within microns. That is
+        what drove arbitrary shapes to ``max_grid_resolution``.
+
+        Measure instead the distance from each PN sample to the *nearest*
+        analytic point, found by a local search seeded at the matching
+        parameter. Only samples still above tolerance can change the outcome,
+        so the rest keep their (upper-bound) same-parameter value, and the
+        search stops as soon as one refined sample is still out of tolerance.
+        """
+        tolerance = self._geometry_tolerance
+        flat_deviation = deviation.reshape(-1)
+        candidates = (flat_deviation > tolerance).nonzero(as_tuple=False).squeeze(-1)
+        if candidates.numel() == 0:
+            return deviation
+
+        # Worst first, so the common "this grid is nowhere near good enough"
+        # verdict is reached in the first batch.
+        candidates = candidates[flat_deviation[candidates].argsort(descending=True)]
+        targets = pn_points.reshape(-1, 3)
+        seeds = analytic_uv.reshape(-1, 2)
+        box = torch.tensor(
+            (
+                _PROJECTION_BOX_CELLS / max(width - 1, 1),
+                _PROJECTION_BOX_CELLS / max(height - 1, 1),
+            ),
+            device=seeds.device,
+            dtype=seeds.dtype,
+        )
+
+        refined = flat_deviation.clone()
+        for start in range(0, candidates.numel(), _PROJECTION_BATCH):
+            batch = candidates[start : start + _PROJECTION_BATCH]
+            distances = self._nearest_surface_distance(
+                coord_function, targets[batch], seeds[batch], box, tolerance
+            )
+            refined[batch] = distances
+            if bool((distances > tolerance).any()):
+                break
+        return refined.reshape(deviation.shape)
+
+    @staticmethod
+    def _nearest_surface_distance(coord_function, targets, uv, box, tolerance):
+        """Distance from each target to the closest point on the surface.
+
+        ``uv`` seeds a damped Gauss-Newton search for the parameters
+        minimizing ``|coord_function(uv) - target|``, confined to ``box``
+        (per-axis half-widths in parameter units) around each seed and to the
+        unit parameter square. Derivatives are finite differences, since the
+        package runs under ``inference_mode`` and user coordinate functions
+        need not be differentiable.
+
+        A step is kept only where it reduces the distance, so the result is
+        never larger than the seed's. The refined metric is therefore never
+        *looser* than the same-parameter one, and a search that fails to
+        converge -- a degenerate Jacobian at a pole, a non-smooth coordinate
+        function -- degrades to the old conservative answer instead of an
+        optimistic one.
+
+        Samples drop out of the iteration as soon as they are within
+        ``tolerance``: the caller only needs to know which side of it the
+        worst sample lands on, and on a stretched parameterization the great
+        majority of samples get there in the first two or three steps.
+        """
+        eps = torch.finfo(targets.dtype).eps
+        difference_step = (box * 0.05).clamp_min(1e-5)
+
+        def evaluate(parameters):
+            # Surface functions built by ``_find_geometry_resolution`` add the
+            # mob's ``[1, 1, 3]`` location, which broadcasts a flat ``[N, 2]``
+            # parameter list up to ``[1, N, 3]``. Keep the sample axis aligned
+            # with the caller's so every quantity below stays ``[N, ...]``.
+            values = coord_function(parameters.clone())
+            return values.reshape(*parameters.shape[:-1], values.shape[-1])
+
+        points = evaluate(uv)
+        result = (points - targets).norm(dim=-1)
+
+        active = (result > tolerance).nonzero(as_tuple=False).squeeze(-1)
+        current = uv[active]
+        points = points[active]
+        targets = targets[active]
+        distance = result[active]
+        lower = torch.clamp(current - box, 0.0, 1.0)
+        upper = torch.clamp(current + box, 0.0, 1.0)
+        damping = torch.full_like(distance, 1e-3)
+
+        for _ in range(_PROJECTION_STEPS):
+            if active.numel() == 0:
+                break
+            residual = points - targets
+            jacobian = []
+            for axis in (0, 1):
+                offset = torch.zeros_like(current)
+                offset[..., axis] = difference_step[axis]
+                plus = (current + offset).clamp(0.0, 1.0)
+                minus = (current - offset).clamp(0.0, 1.0)
+                spacing = (plus[..., axis] - minus[..., axis]).clamp_min(eps)
+                jacobian.append(
+                    (evaluate(plus) - evaluate(minus)) / spacing.unsqueeze(-1)
+                )
+            du, dv = jacobian
+
+            # Levenberg normal equations for the 2 unknowns. The damping is
+            # *added* to the diagonal rather than scaling it: a parameter
+            # derivative that vanishes -- the collapsed axis of a polar cap,
+            # any axis at the edge of a domain it approaches with zero speed --
+            # leaves a zero on the diagonal, and scaling it leaves the system
+            # singular, which would freeze the well-conditioned direction too.
+            u_norm = (du * du).sum(-1)
+            v_norm = (dv * dv).sum(-1)
+            regularizer = damping * torch.maximum(u_norm, v_norm).clamp_min(eps)
+            uu = u_norm + regularizer
+            uv_dot = (du * dv).sum(-1)
+            vv = v_norm + regularizer
+            gradient_u = (du * residual).sum(-1)
+            gradient_v = (dv * residual).sum(-1)
+            # The system is a Gram matrix plus a positive diagonal, so its
+            # determinant is non-negative and only vanishes when the two
+            # parameter directions become collinear. Test that *relatively*:
+            # a stretched parameterization has a small Jacobian and hence a
+            # determinant of order ``|J|^4``, which an absolute epsilon rejects
+            # as unsolvable even though the system is perfectly conditioned.
+            determinant = uu * vv - uv_dot * uv_dot
+            reference = (uu * vv).clamp_min(torch.finfo(targets.dtype).tiny)
+            solvable = determinant > reference * eps
+            safe = torch.where(solvable, determinant, determinant.new_ones(()))
+            step = torch.stack(
+                (
+                    (uv_dot * gradient_v - vv * gradient_u) / safe,
+                    (uv_dot * gradient_u - uu * gradient_v) / safe,
+                ),
+                dim=-1,
+            )
+            step = torch.where(solvable.unsqueeze(-1), step, torch.zeros_like(step))
+            step = step.clamp(-box, box)
+
+            # Backtracking line search, all scales in one evaluation.
+            scales = step.new_tensor(_PROJECTION_SCALES).view(1, -1, 1)
+            ladder = torch.minimum(
+                torch.maximum(
+                    current.unsqueeze(-2) + step.unsqueeze(-2) * scales,
+                    lower.unsqueeze(-2),
+                ),
+                upper.unsqueeze(-2),
+            )
+            ladder_points = evaluate(ladder)
+            ladder_distance = (ladder_points - targets.unsqueeze(-2)).norm(dim=-1)
+            best_distance, best = ladder_distance.min(dim=-1)
+            best_index = best.unsqueeze(-1).unsqueeze(-1)
+
+            improved = best_distance < distance
+            if not bool(improved.any()):
+                break
+            keep = improved.unsqueeze(-1)
+            current = torch.where(
+                keep,
+                ladder.gather(-2, best_index.expand(-1, -1, 2)).squeeze(-2),
+                current,
+            )
+            points = torch.where(
+                keep,
+                ladder_points.gather(-2, best_index.expand(-1, -1, 3)).squeeze(-2),
+                points,
+            )
+            distance = torch.where(improved, best_distance, distance)
+            result[active] = distance
+
+            # Retire everything that has come inside tolerance, and trust the
+            # linearization more where it worked, less where it did not.
+            damping = torch.where(
+                improved, (damping * 0.5).clamp_min(1e-6), damping * 4.0
+            )
+            unresolved = distance > tolerance
+            if not bool(unresolved.all()):
+                active = active[unresolved]
+                current = current[unresolved]
+                points = points[unresolved]
+                targets = targets[unresolved]
+                distance = distance[unresolved]
+                damping = damping[unresolved]
+                lower = lower[unresolved]
+                upper = upper[unresolved]
+        return result
 
     def _find_geometry_resolution(self, surface_function):
         """Choose the stable construction-time logical PN grid dimensions."""
         minimum = self._min_grid_resolution
         maximum = self._max_grid_resolution
         tolerance = self._geometry_tolerance
+        measured = {}
 
         def acceptable(width, height):
+            # The per-axis searches, the trim pass and the final check all
+            # revisit grids their neighbours already measured, and measuring
+            # one is far more expensive than remembering it.
+            key = (width, height)
+            if key in measured:
+                return measured[key]
             try:
                 error = self._compute_pn_geometry_error(surface_function, width, height)
+                verdict = bool(
+                    torch.isfinite(error).item() and error.item() <= tolerance
+                )
             except Exception:
-                return False
-            return bool(torch.isfinite(error).item() and error.item() <= tolerance)
+                verdict = False
+            measured[key] = verdict
+            return verdict
 
         def first_acceptable(other, vary_width):
             low, high = minimum, maximum
@@ -1056,6 +1308,35 @@ class Surface(Mob):
                 else:
                     low = middle + 1
             return best
+
+        def trim(width, height):
+            """Shrink each axis as far as the *joint* measurement allows.
+
+            Each axis was sized on its own with the other axis at
+            ``max_grid_resolution``, and the growth loop raises both when the
+            pair falls short. Both leave slack: an axis measured against a
+            near-exact partner is asked to carry error that the partner will in
+            fact share. Re-searching each axis against its real partner
+            recovers it, and since every probe measures the grid that would
+            actually be built, the pair stays within tolerance throughout.
+            """
+            if not acceptable(width, height):
+                return width, height
+            for vary_width in (True, False):
+                low = minimum
+                high = width if vary_width else height
+                while low < high:
+                    middle = (low + high) // 2
+                    candidate = (middle, height) if vary_width else (width, middle)
+                    if acceptable(*candidate):
+                        high = middle
+                    else:
+                        low = middle + 1
+                if vary_width:
+                    width = high
+                else:
+                    height = high
+            return width, height
 
         if self._grid_aspect_ratio is not None:
             ratio = float(self._grid_aspect_ratio)
@@ -1089,7 +1370,7 @@ class Surface(Mob):
                     width = min(maximum, max(width + 1, int(width * 1.25)))
                 if height < maximum:
                     height = min(maximum, max(height + 1, int(height * 1.25)))
-            result = width, height
+            result = trim(width, height)
 
         if not acceptable(*result):
             warnings.warn(

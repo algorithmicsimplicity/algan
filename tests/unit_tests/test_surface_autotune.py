@@ -1,7 +1,46 @@
+import math
+import warnings
+
+import pytest
 import torch
 
 from algan.mobs.shapes_3d import Cylinder, Sphere
 from algan.mobs.surfaces.surface import Surface
+
+
+def _stretched_plane(uv):
+    """A flat plane whose parameterization bunches up towards one corner.
+
+    Every PN patch of a plane *is* the plane, so the geometric error is zero at
+    any resolution; only a same-parameter comparison sees the stretching.
+    """
+    u = uv[..., :1] ** 3
+    v = uv[..., 1:] ** 3
+    return torch.cat((u * 2 - 1, v * 2 - 1, torch.zeros_like(u)), -1)
+
+
+class _Superellipsoid(Surface):
+    """A Go-stone-like solid of revolution: poles and rim are both singular.
+
+    ``exponent`` below 1 gives the meridian an infinite parameter derivative at
+    the equator and collapses the polar caps, so the parameterization stretches
+    without bound near ``v = 0``, ``0.5`` and ``1``.
+    """
+
+    def __init__(self, thickness=0.36, exponent=2 / 2.6, **kwargs):
+        self.thickness = thickness
+        self.exponent = exponent
+        super().__init__(**kwargs)
+
+    def coord_function(self, uv):
+        theta = uv[..., :1] * (2 * math.pi)
+        alpha = (uv[..., 1:] - 0.5) * math.pi
+        radius = torch.cos(alpha).clamp_min(0) ** self.exponent
+        z = torch.sin(alpha)
+        z = z.sign() * z.abs() ** self.exponent * self.thickness
+        return torch.cat(
+            (radius * torch.cos(theta), radius * torch.sin(theta), z), -1
+        )
 
 
 def test_surface_autotune_default():
@@ -83,3 +122,47 @@ def test_error_constraint():
     )
     print(f"Sphere actual error: {error.item():.6f}, threshold: 0.010000")
     assert error <= sphere.geometry_tolerance
+
+
+def test_reparameterization_alone_is_not_geometric_error():
+    # A plane is reproduced exactly by PN triangles at any resolution, so a
+    # stretched parameterization must not cost a single extra vertex.
+    surf = Surface(coord_function=_stretched_plane, geometry_tolerance=0.001)
+    assert surf.grid_width == surf._min_grid_resolution
+    assert surf.grid_height == surf._min_grid_resolution
+
+
+def test_singular_parameterization_does_not_exhaust_the_grid_budget():
+    # The metric used to compare points at matching parameters, which counts
+    # tangential slip as error. Near a collapsed pole that term never falls
+    # below tolerance, so shapes like this one ran to max_grid_resolution.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        stone = _Superellipsoid(geometry_tolerance=0.001)
+
+    assert stone.grid_width * stone.grid_height < 2000
+    assert max(stone.grid_width, stone.grid_height) < stone._max_grid_resolution
+
+
+@pytest.mark.parametrize("tolerance", [0.01, 0.001])
+def test_chosen_grid_is_within_tolerance_and_not_oversized(tolerance):
+    stone = _Superellipsoid(geometry_tolerance=tolerance)
+    width, height = stone.grid_width, stone.grid_height
+
+    def error(w, h):
+        return stone._compute_pn_geometry_error(
+            stone.coord_function_active, w, h
+        ).item()
+
+    assert error(width, height) <= tolerance
+    # And it is not paying for resolution it does not need. Halving is a coarse
+    # probe deliberately: the metric samples a finite set of points per
+    # triangle, so a one-step-smaller grid can measure marginally either way.
+    assert error(max(4, width // 2), max(4, height // 2)) > tolerance
+
+
+def test_unreachable_tolerance_still_warns():
+    with pytest.warns(RuntimeWarning, match="max_grid_resolution"):
+        surf = _Superellipsoid(geometry_tolerance=1e-7, max_grid_resolution=8)
+    assert surf.grid_width == 8
+    assert surf.grid_height == 8

@@ -15,7 +15,7 @@ def fresh_scene():
     SceneManager.reset()
 
 
-def test_activation_materializes_output_without_ramping_scalar_opacity():
+def activation_materializes_output_without_ramping_scalar_opacity():
     scene = SceneManager.instance().current_scene
     network = NeuralNetMLP([1, 1]).spawn(animate=False)
     output = network.activate(lambda: Square(color=GRAY_E), color=PURE_RED)
