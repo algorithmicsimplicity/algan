@@ -30,7 +30,7 @@ class AlganSettings:
     always observe the current values.
     """
 
-    __slots__ = ("computing", "paths", "style", "video", "raytracing")
+    __slots__ = ("computing", "paths", "style", "video", "raytracing", "skip_save_frame")
 
     def __init__(self):
         object.__setattr__(self, "computing", ComputingSettings())
@@ -38,6 +38,7 @@ class AlganSettings:
         object.__setattr__(self, "style", StyleSettings())
         object.__setattr__(self, "video", LD.as_mutable())
         object.__setattr__(self, "raytracing", RayTracingSettings())
+        object.__setattr__(self, "skip_save_frame", False)
 
     def __setattr__(self, name, value):
         if name in self.__slots__:

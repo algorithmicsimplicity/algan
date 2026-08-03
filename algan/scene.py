@@ -929,6 +929,8 @@ class Scene(RenderLoopMixin):
             Scene.save_frame("shot.png", at=2.5)
             Scene.save_frame("contact_sheet", at=[0, 1, 2])
         """
+        if SETTINGS.skip_save_frame:
+            return []
         # Import lazily to avoid the Scene/algan_utils import cycle during
         # package initialization while sharing video output's exact resolver.
         from algan.utils.algan_utils import RenderResult, _resolve_output_destination
