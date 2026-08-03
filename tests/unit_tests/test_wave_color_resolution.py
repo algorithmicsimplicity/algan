@@ -23,6 +23,7 @@ from algan.constants.rate_funcs import identity
 from algan.constants.spatial import RIGHT, UP
 from algan.mobs.group import Group
 from algan.mobs.shapes_2d import Rectangle, Square
+from algan.mobs.shapes_3d import Cylinder
 from algan.mobs.surfaces.surface import Surface
 from algan.scene_manager import SceneManager
 
@@ -360,6 +361,62 @@ def test_updater_keeps_moving_the_visible_surface_across_history_splits():
     assert torch.equal(visible.sum(0), torch.ones_like(times))
     assert torch.allclose(shown, times, atol=1e-4)
     timeline.clear_buffers()
+
+
+def thin_cylinder():
+    """A synapse-shaped Cylinder: long, thin, and obliquely oriented."""
+    cylinder = Cylinder(color=YELLOW).scale(0.02)
+    cylinder.move_between_points(
+        torch.tensor([-0.5, -0.25, 0.0]), torch.tensor([0.5, 0.25, 0.0])
+    )
+    return cylinder.spawn(animate=False)
+
+
+def test_detached_history_preserves_the_surface_function():
+    # Surface._change_resolution builds its surface function before calling
+    # detach_history and evaluates it afterwards, and that evaluator re-reads
+    # live Mob state (a Cylinder's coord_function is built from its basis). So
+    # detach_history has to leave the transform alone: when a bug in the basis
+    # setter let it inflate the basis instead, the refined grid came out scaled
+    # by the inflation, while the fit's own residual stayed zero and reported
+    # nothing wrong. Repeat the detach, because that failure amplified.
+    cylinder = thin_cylinder()
+    base_grid = cylinder.get_base_grid().clone()
+    # coord_function normalizes its argument in place, so hand it a fresh copy.
+    original_points = cylinder.coord_function_active(base_grid.clone())
+    original_basis = cylinder.basis.clone()
+    original_location = cylinder.location.clone()
+
+    for _ in range(10):
+        cylinder.detach_history()
+
+    torch.testing.assert_close(cylinder.basis, original_basis, atol=1e-6, rtol=0)
+    torch.testing.assert_close(cylinder.location, original_location, atol=1e-6, rtol=0)
+    torch.testing.assert_close(
+        cylinder.coord_function_active(base_grid.clone()),
+        original_points,
+        atol=1e-6,
+        rtol=0,
+    )
+
+
+def test_repeated_waves_leave_a_thin_cylinder_the_size_it_was():
+    # Refining and restoring each hand the surface to a detach_history clone,
+    # which re-assigns its basis. That round trip used to amplify the basis's
+    # float-noise shear, so a neural net's synapses -- thin Cylinders waved
+    # once per activation -- grew until they stretched across the screen.
+    synapse = thin_cylinder()
+    points = synapse.grid.location.reshape(-1, 3)
+    original_extent = points.amax(0) - points.amin(0)
+
+    for _ in range(20):
+        with Sync(run_time=1):
+            synapse.wave_color(PURE_BLUE, wave_length=0.7)
+
+    points = synapse.grid.location.reshape(-1, 3)
+    torch.testing.assert_close(
+        points.amax(0) - points.amin(0), original_extent, atol=1e-4, rtol=0
+    )
 
 
 def test_top_level_wave_restores_immediately_after_itself():

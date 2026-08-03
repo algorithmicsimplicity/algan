@@ -919,7 +919,28 @@ class Surface(Mob):
         )
 
     def _current_surface_function(self):
-        """Return a continuous evaluator for the current world-space surface."""
+        """Return a continuous evaluator for the current world-space surface.
+
+        **Only valid while this Mob's transform is unchanged.** The evaluator is
+        half snapshot, half live read: ``affine`` is fitted once, here, against
+        the Mob's state at this moment, while ``coord_function_active`` is called
+        afresh every time and reads live state -- a Cylinder's is built from
+        ``radius``, ``height`` and the Mob's own basis vectors. Move, rotate or
+        rescale the Mob in between and the canonical points come from the new
+        transform while the correction mapping them into the world still
+        describes the old one, so the result is wrong by the difference.
+
+        Not a theoretical concern: :meth:`_change_resolution` builds the
+        evaluator before ``detach_history`` and calls it afterwards, so a bug
+        that let ``detach_history`` inflate a Cylinder's basis (see
+        :func:`~algan.geometry.geometry.get_rotation_between_bases`) surfaced
+        here as a grid scaled by that inflation. It is a punishing failure to
+        diagnose, because the fit is self-consistent by construction: the
+        residual measured *here* is zero no matter how wrong the later
+        evaluation turns out to be. ``detach_history`` preserving the transform
+        is what closes that gap today, and
+        ``test_detached_history_preserves_the_surface_function`` guards it.
+        """
         base_grid = self.get_base_grid()
         canonical = self.coord_function_active(base_grid.clone()).reshape(-1, 3)
         current = self.grid.location.reshape(-1, self.grid_width * self.grid_height, 3)[
@@ -1733,6 +1754,10 @@ class Surface(Mob):
         if (grid_width, grid_height) == (self.grid_width, self.grid_height):
             return self
         if surface_function is None:
+            # Built here and evaluated below, on the far side of
+            # detach_history. That is only sound because nothing in between
+            # touches this Mob's transform, which the evaluator reads live --
+            # see _current_surface_function.
             surface_function = self._current_surface_function()
 
         old_width, old_height = self.grid_width, self.grid_height

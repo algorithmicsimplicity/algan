@@ -595,14 +595,6 @@ class NeuralNetMLP(Mob):
                         reverse,
                         direction=self.get_forward_direction(),
                         new_color=tweak_color(synapse.color, 0.33) if reverse else None,
-                        refine_resolution=False,
-                        # Restoring a refined Code panel creates a second
-                        # coplanar incarnation in a different render batch.
-                        # It can cover already-materialized glyphs until the
-                        # handoff frame. This output is newly created, so
-                        # retain its authored color grid as its stable
-                        # topology and avoid the handoff altogether.
-                        restore_resolution=False,
                     )
 
         def pulse_neuron(neuron):
@@ -622,14 +614,6 @@ class NeuralNetMLP(Mob):
                             reverse,
                             lag_duration=0.5,
                             direction=self.get_forward_direction(),
-                            refine_resolution=False,
-                            # Restoring a refined Code panel creates a second
-                            # coplanar incarnation in a different render batch.
-                            # It can cover already-materialized glyphs until the
-                            # handoff frame. This output is newly created, so
-                            # retain its authored color grid as its stable
-                            # topology and avoid the handoff altogether.
-                            restore_resolution=False,
                         )
                         n.wait(w)
 

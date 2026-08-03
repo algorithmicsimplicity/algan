@@ -203,13 +203,51 @@ def normalize(x, dim=-1, p=2, memory=None):
     return x
 
 
+def invert_row_basis(basis):
+    """Invert a batch of row-major 3x3 bases, shape ``(*, 3, 3)``.
+
+    Built from the adjugate (three cross products and a determinant) rather than
+    ``torch.linalg.inv``: at this size it is cheaper, it batches without a LAPACK
+    call, and it lets a degenerate basis be handled rather than raised on.
+
+    A basis whose rows are coplanar -- a Mob scaled flat along an axis, say --
+    has no inverse at all. Those return the identity, i.e. "no change", so that
+    a basis assignment leaves such a Mob as it is instead of turning its
+    geometry into inf or NaN.
+    """
+    r0, r1, r2 = basis.unbind(-2)
+    # Columns of the adjugate: each is orthogonal to two of the rows, so
+    # ``basis @ stack(columns) == determinant * I``.
+    c0 = torch.linalg.cross(r1, r2, dim=-1)
+    c1 = torch.linalg.cross(r2, r0, dim=-1)
+    c2 = torch.linalg.cross(r0, r1, dim=-1)
+    determinant = (r0 * c0).sum(-1, keepdim=True).unsqueeze(-1)
+    inverse = torch.stack((c0, c1, c2), dim=-1) / determinant
+    # |determinant| is the product of the row norms exactly when the rows are
+    # orthogonal and falls to zero as they become coplanar, so comparing the two
+    # tests degeneracy free of scale: a Mob scaled to a millionth inverts fine,
+    # a flattened one does not invert at any scale.
+    volume = basis.norm(p=2, dim=-1).prod(-1).unsqueeze(-1).unsqueeze(-1)
+    identity = torch.eye(3, dtype=basis.dtype, device=basis.device).expand_as(inverse)
+    return torch.where(determinant.abs() > 1e-9 * volume, inverse, identity)
+
+
 def get_rotation_between_bases(basis1, basis2):
-    """Return the right-side transform taking row basis1 to row basis2."""
-    n1 = torch.diag_embed(1 / basis1.norm(p=2, dim=-1))
-    n2 = torch.diag_embed(basis2.norm(p=2, dim=-1))
-    o1 = F.normalize(basis1, p=2, dim=-1)
-    o2 = F.normalize(basis2, p=2, dim=-1)
-    return o1.transpose(-2, -1) @ (n1 @ (n2 @ o2))
+    """Return the right-side transform taking row basis1 to row basis2.
+
+    That is, ``basis1 @ get_rotation_between_bases(basis1, basis2) == basis2``.
+
+    This has to be the exact inverse of ``basis1``, not the transpose of its
+    normalized form. Mob.basis's setter turns an absolute basis into a relative
+    change through this function and applies it with a right-multiply (so that
+    concurrent writers compose), which means any error here is re-applied on top
+    of the value it was measured from. On a sheared basis -- where the rows are
+    not orthogonal -- the normalized transpose left a residual that the
+    round-trip *amplified* roughly threefold, so float-noise shear grew into
+    total collapse over a couple of dozen assignments (each ``detach_history``
+    clone performs one). The two forms agree exactly for an orthogonal basis.
+    """
+    return invert_row_basis(basis1) @ basis2
 
 
 def get_rotation_between_orthonormal_bases(basis1, basis2):
