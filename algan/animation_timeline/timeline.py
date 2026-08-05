@@ -6,10 +6,6 @@ import math
 
 import torch
 
-from algan.animation_timeline.utils_taichi import (
-    _query_selected_state_from_edits,
-    _query_state_from_edits,
-)
 from algan.utils.tensor_utils import cast_to_tensor
 
 #: Name of the special kwarg that animated functions receive the per-frame
@@ -73,8 +69,8 @@ _OPT_DISABLED = None
 
 
 def _opt_disabled(name):
-    """Bisect aid: ALGAN_OPT_DISABLE=fastpath,ranges,desccache,windows disables
-    individual animation-prep optimizations (read once, first use).
+    """Bisect aid: ALGAN_OPT_DISABLE=fastpath,ranges,desccache,windows,torchquery
+    disables individual animation-prep optimizations (read once, first use).
     """
     global _OPT_DISABLED
     if _OPT_DISABLED is None:
@@ -243,8 +239,57 @@ def _replay_window_end(f):
     return max(f.replay_end, end)
 
 
+class EditQueryIndex:
+    """Search structure over one attribute's edit log, on ``times``' device.
+
+    ``head``/``sorted_edit_ids``/``sorted_values`` are the CSR form of the edit
+    table: the edits touching row ``j`` occupy ``[head[j], head[j+1])``, in
+    execution order (and therefore in non-decreasing ``edit_timestamps`` order,
+    which :meth:`AttributeTimeline.prepare_for_queries` guarantees).
+    Materializing a row's state at time ``t`` is an upper-bound search for
+    ``t`` inside that row's segment.
+
+    ``keys`` linearizes those per-row searches into a single globally sorted
+    array so one :func:`torch.searchsorted` answers all of them:
+    ``keys[m] = row(m) * n_ranks + rank(timestamp(m))``, where ``rank`` indexes
+    the sorted unique timestamps. Integer ranks (rather than the timestamps
+    themselves) keep the composite key exact, and the key is sorted because
+    ``row`` is non-decreasing across the table and the rank is non-decreasing
+    within every row.
+
+    The edit log is immutable while frames are rendered, so this is built once
+    per attribute per render job and cached (:meth:`AttributeTimeline._prepared_queries`).
+    """
+
+    __slots__ = (
+        "head",
+        "sorted_edit_ids",
+        "edit_timestamps",
+        "sorted_values",
+        "unique_timestamps",
+        "keys",
+    )
+
+    def __init__(
+        self,
+        head,
+        sorted_edit_ids,
+        edit_timestamps,
+        sorted_values,
+        unique_timestamps,
+        keys,
+    ):
+        self.head = head
+        self.sorted_edit_ids = sorted_edit_ids
+        self.edit_timestamps = edit_timestamps
+        self.sorted_values = sorted_values
+        self.unique_timestamps = unique_timestamps
+        self.keys = keys
+
+
 def _prepare_array_state_queries(times, N, edits):
-    """Build the device-side CSR representation of an attribute's edits.
+    """Build the CSR representation of an attribute's edits, plus the sorted
+    composite search key described on :class:`EditQueryIndex`.
 
     The edit log is immutable while frames are rendered.  Keeping this work
     separate from the actual time query lets :class:`AttributeTimeline` cache
@@ -267,10 +312,83 @@ def _prepare_array_state_queries(times, N, edits):
     sorted_values = flat_values[perm]
     grid = torch.arange(N + 1, dtype=torch.int64, device=device)
     head = torch.searchsorted(sorted_indices, grid)
-    return head, sorted_edit_ids, edit_timestamps, sorted_values
+
+    unique_timestamps = torch.unique(edit_timestamps)
+    # rank(timestamp) is exact: every edit timestamp is present in the sorted
+    # unique values, so searchsorted returns its index there.
+    edit_ranks = torch.searchsorted(unique_timestamps, edit_timestamps)
+    row_of = torch.repeat_interleave(head[1:] - head[:-1])
+    keys = row_of.mul_(unique_timestamps.shape[0]).add_(
+        edit_ranks[sorted_edit_ids.to(torch.int64)]
+    )
+    return EditQueryIndex(
+        head,
+        sorted_edit_ids,
+        edit_timestamps,
+        sorted_values,
+        unique_timestamps,
+        keys,
+    )
 
 
-def generate_array_states_taichi(times, N, edits, *, active_rows=None, prepared=None):
+#: Cap on the temporary index buffer one :func:`_query_row_states` chunk builds
+#: (bytes). Frame windows are split so the composite-key gather stays cache
+#: friendly and its peak is bounded independently of the window size.
+_QUERY_CHUNK_BYTES = 32 << 20
+
+
+def _query_row_states(times, index, rows=None):
+    """Materialize ``rows`` (all rows when None) of one attribute at ``times``.
+
+    Returns the compact ``[T, R, D]`` result; the caller places it in whatever
+    layout it needs. See :class:`EditQueryIndex` for the search key.
+    """
+    head = index.head
+    keys = index.keys
+    sorted_values = index.sorted_values
+    T = times.shape[0]
+    N = head.shape[0] - 1
+    U = keys.shape[0]
+    D = sorted_values.shape[1]
+    R = N if rows is None else rows.shape[0]
+
+    if U == 0 or R == 0 or T == 0:
+        return torch.zeros((T, R, D), dtype=sorted_values.dtype, device=head.device)
+    # Every element is written by the loop below.
+    out = torch.empty((T, R, D), dtype=sorted_values.dtype, device=head.device)
+
+    if rows is None:
+        ends = head[1:]
+        bases = torch.arange(N, dtype=torch.int64, device=head.device)
+    else:
+        ends = head[rows + 1]
+        bases = rows
+    # Row j's keys live in [j * n_ranks, (j + 1) * n_ranks), so searching for
+    # j * n_ranks + rank lands inside row j's segment (or on its end).
+    bases = bases * index.unique_timestamps.shape[0]
+    # Number of distinct timestamps <= t; an edit outlives t exactly when its
+    # rank is >= this, which is what the composite-key search finds.
+    query_ranks = torch.searchsorted(
+        index.unique_timestamps, times.contiguous(), right=True
+    )
+
+    chunk = max(1, min(T, _QUERY_CHUNK_BYTES // max(1, R * 8)))
+    for start in range(0, T, chunk):
+        stop = min(start + chunk, T)
+        low = torch.searchsorted(
+            keys, (bases.unsqueeze(0) + query_ranks[start:stop].unsqueeze(1)).view(-1)
+        ).view(stop - start, R)
+        empty = low >= ends
+        values = sorted_values[low.clamp_(max=U - 1)]
+        # Rows with no edit still live at t read as zero, exactly as the
+        # kernel wrote them (masked_fill, not a multiply, so non-finite
+        # recorded values cannot leak in as NaN).
+        values.masked_fill_(empty.unsqueeze(-1), 0.0)
+        out[start:stop] = values
+    return out
+
+
+def generate_array_states(times, N, edits, *, active_rows=None, prepared=None):
     """
     Generates the state of an array given its history of edits.
 
@@ -285,9 +403,9 @@ def generate_array_states_taichi(times, N, edits, *, active_rows=None, prepared=
         [0, N-1]), 'values' (tensor of shape [M_i, D]) and 'timestamp'
         (float scalar). Timestamps must be non-decreasing along every row
         (i.e. among the edits containing any given index) — the per-row
-        binary search in _query_state_from_edits relies on it.
-        prepare_for_queries guarantees this by passing edits in execution
-        order with their replay-extended end times.
+        upper-bound search relies on it. prepare_for_queries guarantees this
+        by passing edits in execution order with their replay-extended end
+        times.
     """
     device = times.device
     T = times.shape[0]
@@ -297,32 +415,67 @@ def generate_array_states_taichi(times, N, edits, *, active_rows=None, prepared=
 
     if prepared is None:
         prepared = _prepare_array_state_queries(times, N, edits)
-    head, sorted_edit_ids, edit_timestamps, sorted_values = prepared
-    D = sorted_values.shape[1]
-    dtype = sorted_values.dtype
+    D = prepared.sorted_values.shape[1]
+    dtype = prepared.sorted_values.dtype
+
+    if active_rows is not None:
+        active_rows = active_rows.to(device=device, dtype=torch.int64)
+
+    if _opt_disabled("torchquery"):
+        return _generate_array_states_taichi(
+            times, N, prepared, active_rows, T, D, dtype, device
+        )
+
+    if active_rows is None:
+        return _query_row_states(times, prepared)
+    # Keep the full global row layout for animated-function replay. Rows
+    # outside this window's working set stay zero and are never consumed by
+    # primitive preparation for this batch.
+    out = torch.zeros((T, N, D), dtype=dtype, device=device)
+    if active_rows.numel():
+        out.index_copy_(
+            1, active_rows, _query_row_states(times, prepared, active_rows)
+        )
+    return out
+
+
+def _generate_array_states_taichi(times, N, prepared, active_rows, T, D, dtype, device):
+    """Original Taichi implementation of :func:`generate_array_states`, kept as
+    the A/B reference for the torch query (``ALGAN_OPT_DISABLE=torchquery``).
+
+    Not used by default: Taichi's arch is the *render* device, so launching
+    these kernels with the CPU animation tensors makes Taichi stage every
+    argument -- including the whole ``[T, N, D]`` result -- through VRAM, on
+    the batch-prep worker thread that is deliberately kept off the GPU. The
+    import is deferred so the animation timeline no longer pulls Taichi in.
+    """
+    from algan.animation_timeline.utils_taichi import (
+        _query_selected_state_from_edits,
+        _query_state_from_edits,
+    )
 
     if active_rows is None:
         out = torch.empty((T, N, D), dtype=dtype, device=device)
         _query_state_from_edits(
-            times, head, sorted_edit_ids, edit_timestamps, sorted_values, out
+            times,
+            prepared.head,
+            prepared.sorted_edit_ids,
+            prepared.edit_timestamps,
+            prepared.sorted_values,
+            out,
         )
     else:
-        # Keep the full global row layout for animated-function replay. Rows
-        # outside this window's working set stay zero and are never consumed by
-        # primitive preparation for this batch.
         out = torch.zeros((T, N, D), dtype=dtype, device=device)
-        active_rows = active_rows.to(device=device, dtype=torch.int64)
         if active_rows.numel():
             _query_selected_state_from_edits(
                 times,
                 active_rows,
-                head,
-                sorted_edit_ids,
-                edit_timestamps,
-                sorted_values,
+                prepared.head,
+                prepared.sorted_edit_ids,
+                prepared.edit_timestamps,
+                prepared.sorted_values,
                 out,
             )
-
     return out
 
 
@@ -580,7 +733,7 @@ class AttributeTimeline:
                 active_rows = torch.unique(
                     torch.cat((active_rows, extra_rows)), sorted=True
                 )
-        self.active_state = generate_array_states_taichi(
+        self.active_state = generate_array_states(
             times,
             self.pointer + 1,
             self._edits_sorted,
@@ -617,15 +770,22 @@ class AttributeTimeline:
         if rows.numel() == 0 or self.active_state is self.current_state:
             return self
         self.prepare_for_queries()
-        queried = generate_array_states_taichi(
-            times,
-            self.pointer + 1,
-            self._edits_sorted,
-            active_rows=rows,
-            prepared=self._prepared_queries(times),
-        )
-        device_rows = rows.to(self.active_state.device)
-        self.active_state[:, device_rows] = queried[:, device_rows]
+        device_rows = rows.to(device=self.active_state.device, dtype=torch.long)
+        if _opt_disabled("torchquery"):
+            queried = generate_array_states(
+                times,
+                self.pointer + 1,
+                self._edits_sorted,
+                active_rows=rows,
+                prepared=self._prepared_queries(times),
+            )[:, device_rows]
+        else:
+            # Only these rows are wanted, so query them compactly instead of
+            # materializing (and discarding) the whole global-row buffer.
+            queried = _query_row_states(
+                times, self._prepared_queries(times), device_rows
+            )
+        self.active_state[:, device_rows] = queried
         if self.record_end_points:
             t = times.view(-1, 1)
             endpoint = self._end_points[:, rows].to(self.active_state.device)
