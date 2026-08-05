@@ -38,9 +38,28 @@ class _Superellipsoid(Surface):
         radius = torch.cos(alpha).clamp_min(0) ** self.exponent
         z = torch.sin(alpha)
         z = z.sign() * z.abs() ** self.exponent * self.thickness
-        return torch.cat(
-            (radius * torch.cos(theta), radius * torch.sin(theta), z), -1
-        )
+        return torch.cat((radius * torch.cos(theta), radius * torch.sin(theta), z), -1)
+
+
+class _CachedSurface(Surface):
+    search_calls = 0
+
+    def __init__(self, curvature=1.0, **kwargs):
+        self.curvature = curvature
+        super().__init__(**kwargs)
+
+    def coord_function(self, uv):
+        u = uv[..., :1] * 2 - 1
+        v = uv[..., 1:] * 2 - 1
+        return torch.cat((u, v, (u.square() + v.square()) * self.curvature), -1)
+
+    def _find_geometry_resolution(self, _surface_function):
+        type(self).search_calls += 1
+        return 5 + int(self.curvature), 5
+
+
+class _OtherCachedSurface(_CachedSurface):
+    pass
 
 
 def test_surface_autotune_default():
@@ -55,6 +74,76 @@ def test_surface_autotune_default():
     assert surf.grid_height >= 4
     assert surf.grid_width >= 4
     print(f"Flat Surface auto-tuned to: {surf.grid_width}x{surf.grid_height}")
+
+
+def test_auto_resolution_reuses_each_subclass_cache():
+    _CachedSurface.clear_geometry_resolution_cache()
+    _CachedSurface.search_calls = 0
+
+    first = _CachedSurface(curvature=1.0)
+    second = _CachedSurface(curvature=1.0)
+
+    assert _CachedSurface.search_calls == 1
+    assert (first.grid_width, first.grid_height) == (6, 5)
+    assert (second.grid_width, second.grid_height) == (6, 5)
+    assert len(_CachedSurface._geometry_resolution_cache) == 1
+
+
+def test_builtin_surface_subclass_skips_repeated_resolution_search(monkeypatch):
+    Sphere.clear_geometry_resolution_cache()
+    search_calls = 0
+    original_search = Sphere._find_geometry_resolution
+
+    def counting_search(self, surface_function):
+        nonlocal search_calls
+        search_calls += 1
+        return original_search(self, surface_function)
+
+    monkeypatch.setattr(Sphere, "_find_geometry_resolution", counting_search)
+
+    first = Sphere(radius=1.5, geometry_tolerance=0.05, max_grid_resolution=80)
+    second = Sphere(
+        center=torch.tensor((3.0, -2.0, 1.0)),
+        radius=1.5,
+        geometry_tolerance=0.05,
+        max_grid_resolution=80,
+    )
+
+    assert search_calls == 1
+    assert (first.grid_width, first.grid_height) == (
+        second.grid_width,
+        second.grid_height,
+    )
+    Sphere.clear_geometry_resolution_cache()
+
+
+def test_auto_resolution_cache_distinguishes_geometry_and_fitting_policy():
+    _CachedSurface.clear_geometry_resolution_cache()
+    _CachedSurface.search_calls = 0
+
+    _CachedSurface(curvature=1.0, geometry_tolerance=0.01)
+    _CachedSurface(curvature=2.0, geometry_tolerance=0.01)
+    _CachedSurface(curvature=1.0, geometry_tolerance=0.005)
+
+    assert _CachedSurface.search_calls == 3
+    assert len(_CachedSurface._geometry_resolution_cache) == 3
+
+
+def test_auto_resolution_caches_are_isolated_between_subclasses():
+    _CachedSurface.clear_geometry_resolution_cache()
+    _OtherCachedSurface.clear_geometry_resolution_cache()
+    _CachedSurface.search_calls = 0
+    _OtherCachedSurface.search_calls = 0
+
+    _CachedSurface(curvature=1.0)
+    _OtherCachedSurface(curvature=1.0)
+
+    assert _CachedSurface.search_calls == 1
+    assert _OtherCachedSurface.search_calls == 1
+    assert (
+        _CachedSurface._geometry_resolution_cache
+        is not _OtherCachedSurface._geometry_resolution_cache
+    )
 
 
 def test_sphere_autotune():

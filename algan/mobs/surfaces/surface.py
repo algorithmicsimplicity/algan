@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import threading
 import warnings
 
 import numpy as np
@@ -116,6 +117,71 @@ def _surface_resolution_pair(resolution):
         return int(resolution), int(resolution)
     u_resolution, v_resolution = resolution
     return int(u_resolution), int(v_resolution)
+
+
+def _resolution_cache_callable_key(function):
+    """Return a stable in-process identity for a geometry callable."""
+    function = getattr(function, "__func__", function)
+    code = getattr(function, "__code__", None)
+    if code is not None:
+        return ("python", code)
+    return (
+        "callable",
+        type(function),
+        getattr(function, "__module__", None),
+        getattr(function, "__qualname__", None),
+        id(function),
+    )
+
+
+def _freeze_resolution_cache_value(value):
+    """Make common subclass construction state suitable for a cache key."""
+    if isinstance(value, torch.Tensor):
+        tensor = value.detach().contiguous().cpu()
+        return (
+            "tensor",
+            str(tensor.dtype),
+            tuple(tensor.shape),
+            tensor.reshape(-1).view(torch.uint8).numpy().tobytes(),
+        )
+    if isinstance(value, np.ndarray):
+        array = np.ascontiguousarray(value)
+        return ("ndarray", str(array.dtype), array.shape, array.tobytes())
+    if isinstance(value, dict):
+        return (
+            "dict",
+            tuple(
+                sorted(
+                    (
+                        repr(key),
+                        _freeze_resolution_cache_value(item),
+                    )
+                    for key, item in value.items()
+                )
+            ),
+        )
+    if isinstance(value, (list, tuple)):
+        return (
+            type(value).__name__,
+            tuple(_freeze_resolution_cache_value(item) for item in value),
+        )
+    if isinstance(value, (set, frozenset)):
+        return (
+            type(value).__name__,
+            tuple(
+                sorted(
+                    (_freeze_resolution_cache_value(item) for item in value),
+                    key=repr,
+                )
+            ),
+        )
+    if callable(value):
+        return _resolution_cache_callable_key(value)
+    try:
+        hash(value)
+    except TypeError:
+        return (type(value), repr(value))
+    return value
 
 
 _grid_triangle_indices_cache = {}
@@ -368,6 +434,9 @@ class Surface(Mob):
         Shapes with a known exact surface-distance expression use it directly;
         general parametric surfaces search for each sample's nearest analytic
         point.
+        The selected grid is cached per concrete Surface subclass and geometry
+        configuration, so constructing the same shape again does not repeat
+        the resolution search.
     render_tolerance
         Maximum sampled output-pixel deviation (as percentage of screen height) used
         when each PN triangle is dynamically diced into ordinary flat render triangles.
@@ -409,6 +478,28 @@ class Surface(Mob):
 
     """
 
+    # Every concrete Surface type gets its own dictionary via
+    # ``__init_subclass__``. Entries are keyed by both the fitting policy and a
+    # compact signature of the construction-time geometry, so parameterized
+    # subclasses (Sphere(radius=...), user-defined shapes, etc.) do not share
+    # incompatible resolutions.
+    _geometry_resolution_cache = {}
+    _geometry_resolution_warning_keys = set()
+    _geometry_resolution_cache_lock = threading.RLock()
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls._geometry_resolution_cache = {}
+        cls._geometry_resolution_warning_keys = set()
+        cls._geometry_resolution_cache_lock = threading.RLock()
+
+    @classmethod
+    def clear_geometry_resolution_cache(cls):
+        """Clear construction-time resolution entries for this exact class."""
+        with cls._geometry_resolution_cache_lock:
+            cls._geometry_resolution_cache.clear()
+            cls._geometry_resolution_warning_keys.clear()
+
     def __init__(
         self,
         coord_function=None,
@@ -444,6 +535,12 @@ class Surface(Mob):
         pre_function_handle_to_anchor_scale_factor=1e-5,
         **kwargs,
     ):
+        # User-defined subclasses conventionally store their geometry
+        # parameters before calling ``super().__init__``. Preserve that small
+        # pre-Surface state for the cache identity before Mob construction adds
+        # scene/timeline bookkeeping that differs for every instance.
+        resolution_cache_state = dict(self.__dict__)
+
         # ``Surface`` predates this compatibility layer in Algan and accepts a
         # vectorized ``coord_function(uv)``.  Manim instead accepts
         # ``func(u, v)``.  Support both forms without weakening the native API.
@@ -567,8 +664,10 @@ class Surface(Mob):
             def initial_surface_function(uv):
                 return coord_function(uv.clone()) + initial_location
 
-            grid_width, grid_height = self._find_geometry_resolution(
-                initial_surface_function
+            grid_width, grid_height = self._get_cached_geometry_resolution(
+                initial_surface_function,
+                coord_function,
+                resolution_cache_state,
             )
         else:
             if grid_width is None:
@@ -1393,7 +1492,8 @@ class Surface(Mob):
                     height = min(maximum, max(height + 1, int(height * 1.25)))
             result = trim(width, height)
 
-        if not acceptable(*result):
+        self._geometry_resolution_limit_reached = not acceptable(*result)
+        if self._geometry_resolution_limit_reached:
             warnings.warn(
                 "Logical PN construction reached max_grid_resolution before "
                 "meeting geometry_tolerance.",
@@ -1401,6 +1501,104 @@ class Surface(Mob):
                 stacklevel=3,
             )
         return result
+
+    def _geometry_resolution_fingerprint(self, coord_function):
+        """Cheaply fingerprint geometry without repeating the sizing search."""
+        device = self.location.device
+        dtype = self.location.dtype
+        # Include domain boundaries plus nonuniform interior points. The
+        # instance's pre-Surface state is also part of the key; this sample
+        # catches closure, global, class-attribute, and Mob-basis inputs that
+        # are not represented there.
+        sample_uv = torch.tensor(
+            [
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [1.0, 1.0],
+                [0.5, 0.5],
+                [0.2113248654, 0.7886751346],
+                [0.7886751346, 0.2113248654],
+                [0.1270166538, 0.3819660113],
+                [0.6180339887, 0.8729833462],
+            ],
+            device=device,
+            dtype=dtype,
+        )
+        try:
+            points = coord_function(sample_uv.clone())
+            points = torch.as_tensor(points, device=device, dtype=dtype)
+            points = points.detach().contiguous().cpu()
+        except Exception:
+            # Callable identity and explicit subclass state still provide a
+            # conservative key. Unsupported functions will take the normal
+            # search path on their first distinct key.
+            return None
+        return (
+            str(points.dtype),
+            tuple(points.shape),
+            points.reshape(-1).view(torch.uint8).numpy().tobytes(),
+        )
+
+    def _geometry_resolution_cache_key(
+        self,
+        coord_function,
+        resolution_cache_state,
+    ):
+        """Build the cache key; subclasses may override for custom state."""
+        geometry_fingerprint = self._geometry_resolution_fingerprint(coord_function)
+        coord_function_key = _resolution_cache_callable_key(coord_function)
+        if geometry_fingerprint is None:
+            # If the cheap probe is incompatible with an unusual coordinate
+            # function, prefer a harmless cache miss over sharing a result for
+            # geometry that could not be identified.
+            coord_function_key = (coord_function_key, id(self))
+        return (
+            self._geometry_tolerance,
+            self._min_grid_resolution,
+            self._max_grid_resolution,
+            _freeze_resolution_cache_value(self._grid_aspect_ratio),
+            str(self.location.device),
+            str(self.location.dtype),
+            _freeze_resolution_cache_value(self.u_range),
+            _freeze_resolution_cache_value(self.v_range),
+            _freeze_resolution_cache_value(resolution_cache_state),
+            coord_function_key,
+            _resolution_cache_callable_key(self._compute_pn_geometry_error),
+            _resolution_cache_callable_key(self._pn_geometry_deviation),
+            geometry_fingerprint,
+        )
+
+    def _get_cached_geometry_resolution(
+        self,
+        surface_function,
+        coord_function,
+        resolution_cache_state,
+    ):
+        """Return this geometry's cached grid or run and memoize the search."""
+        cache_key = self._geometry_resolution_cache_key(
+            coord_function,
+            resolution_cache_state,
+        )
+        cls = type(self)
+        with cls._geometry_resolution_cache_lock:
+            cached = cls._geometry_resolution_cache.get(cache_key)
+            if cached is not None:
+                if cache_key in cls._geometry_resolution_warning_keys:
+                    warnings.warn(
+                        "Logical PN construction reached max_grid_resolution before "
+                        "meeting geometry_tolerance.",
+                        RuntimeWarning,
+                        stacklevel=3,
+                    )
+                return cached
+
+            self._geometry_resolution_limit_reached = False
+            result = tuple(self._find_geometry_resolution(surface_function))
+            cls._geometry_resolution_cache[cache_key] = result
+            if self._geometry_resolution_limit_reached:
+                cls._geometry_resolution_warning_keys.add(cache_key)
+            return result
 
     def _find_screen_space_resolution(self, surface_function):
         minimum = self._min_grid_resolution

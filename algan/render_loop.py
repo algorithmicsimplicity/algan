@@ -2106,72 +2106,73 @@ class RenderLoopMixin:
         finished yet -- and render again. See
         :meth:`~algan.animation_timeline.timeline.AnimationTimeline.preserving_authoring_state`.
         """
-        previous_scene_times = (
-            [list(pair) for pair in self.scene_times]
-            if preserve_authoring_state
-            else None
-        )
-        self.scene_times.append(
-            [
-                self.scene_times[-1][0],
-                (
-                    round(
-                        self._recorded_end_time_for_render() * self.frames_per_second
-                    )
-                ),
-            ]
-        )
-        self.initialize_frames()
-
-        # Closing the camera/light lifespans is only meaningful when the scene
-        # is being finalized; skipping it leaves the scene re-renderable after
-        # a save_video(reset=False). Both lifespans stay open past the last
-        # rendered frame index either way, so the output is unaffected.
-        if despawn_camera_and_lights:
-            self.camera.despawn(animate=False)
-            for light in self.light_sources:
-                light.despawn(animate=False)
-
-        if not self._scene_has_renderable_actors(*self.scene_times[-1]):
-            warnings.warn(
-                "You are rendering an empty scene! Did you forget to spawn() your Mobs?",
-                EmptySceneWarning,
-                stacklevel=2,
+        with torch.inference_mode():
+            previous_scene_times = (
+                [list(pair) for pair in self.scene_times]
+                if preserve_authoring_state
+                else None
             )
+            self.scene_times.append(
+                [
+                    self.scene_times[-1][0],
+                    (
+                        round(
+                            self._recorded_end_time_for_render() * self.frames_per_second
+                        )
+                    ),
+                ]
+            )
+            self.initialize_frames()
 
-        self.file_path = file_path
-        self.file_writer = file_writer
+            # Closing the camera/light lifespans is only meaningful when the scene
+            # is being finalized; skipping it leaves the scene re-renderable after
+            # a save_video(reset=False). Both lifespans stay open past the last
+            # rendered frame index either way, so the output is unaffected.
+            if despawn_camera_and_lights:
+                self.camera.despawn(animate=False)
+                for light in self.light_sources:
+                    light.despawn(animate=False)
 
-        frame_queue = Queue(maxsize=8)
-        writer_process = threading.Thread(
-            target=write_frames_from_queue, args=(frame_queue, file_writer)
-        )
-        writer_process.daemon = True
-        writer_process.start()
+            if not self._scene_has_renderable_actors(*self.scene_times[-1]):
+                warnings.warn(
+                    "You are rendering an empty scene! Did you forget to spawn() your Mobs?",
+                    EmptySceneWarning,
+                    stacklevel=2,
+                )
 
-        self.frame_queue = frame_queue
-        # The snapshot is taken here rather than around the whole render call:
-        # the fade-out and the zero-duration guard record on the timeline
-        # first, and edits made after a snapshot would fall outside it.
-        preserve = (
-            self.timeline_manager.preserving_authoring_state()
-            if preserve_authoring_state
-            else contextlib.nullcontext()
-        )
-        try:
-            # Wait for the writer process to complete
-            with preserve:
-                for frame_batch in self.get_frames(
-                    *self.scene_times[-1],
-                    background_color=background_color,
-                    post_processes=post_processes,
-                    manual_memory=True,
-                ):
-                    for frame in frame_batch:
-                        frame_queue.put(frame)
-        finally:
-            if previous_scene_times is not None:
-                self.scene_times[:] = previous_scene_times
+            self.file_path = file_path
+            self.file_writer = file_writer
+
+            frame_queue = Queue(maxsize=8)
+            writer_process = threading.Thread(
+                target=write_frames_from_queue, args=(frame_queue, file_writer)
+            )
+            writer_process.daemon = True
+            writer_process.start()
+
+            self.frame_queue = frame_queue
+            # The snapshot is taken here rather than around the whole render call:
+            # the fade-out and the zero-duration guard record on the timeline
+            # first, and edits made after a snapshot would fall outside it.
+            preserve = (
+                self.timeline_manager.preserving_authoring_state()
+                if preserve_authoring_state
+                else contextlib.nullcontext()
+            )
+            try:
+                # Wait for the writer process to complete
+                with preserve:
+                    for frame_batch in self.get_frames(
+                        *self.scene_times[-1],
+                        background_color=background_color,
+                        post_processes=post_processes,
+                        manual_memory=True,
+                    ):
+                        for frame in frame_batch:
+                            frame_queue.put(frame)
+            finally:
+                if previous_scene_times is not None:
+                    self.scene_times[:] = previous_scene_times
 
         self._drain_video_writer(frame_queue, writer_process, file_writer)
 
