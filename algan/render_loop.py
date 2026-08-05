@@ -2117,7 +2117,8 @@ class RenderLoopMixin:
                     self.scene_times[-1][0],
                     (
                         round(
-                            self._recorded_end_time_for_render() * self.frames_per_second
+                            self._recorded_end_time_for_render()
+                            * self.frames_per_second
                         )
                     ),
                 ]
@@ -2155,7 +2156,11 @@ class RenderLoopMixin:
             # the fade-out and the zero-duration guard record on the timeline
             # first, and edits made after a snapshot would fall outside it.
             preserve = (
-                self.timeline_manager.preserving_authoring_state()
+                self.timeline_manager.preserving_authoring_state(
+                    preserve_replay_resolution=(
+                        self.animation_manager.context.prev_context is not None
+                    )
+                )
                 if preserve_authoring_state
                 else contextlib.nullcontext()
             )

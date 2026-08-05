@@ -55,9 +55,7 @@ def test_context_is_restored_after_user_exception():
 
 
 def test_kernel_compile_notice_ignores_offline_cache_hits():
-    assert _loaded_from_offline_cache(
-        b"Create kernel 'wavefront_shade' from cache"
-    )
+    assert _loaded_from_offline_cache(b"Create kernel 'wavefront_shade' from cache")
     assert not _loaded_from_offline_cache(b"Cache kernel 'wavefront_shade'")
 
 
@@ -86,15 +84,7 @@ def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
             dtype=torch.uint8,
         )
 
-    saved = []
     monkeypatch.setattr(scene, "get_frames", fake_frames)
-    import torchvision.utils
-
-    monkeypatch.setattr(
-        torchvision.utils,
-        "save_image",
-        lambda frame, path: saved.append((tuple(frame.shape), path)),
-    )
 
     scene.save_frame(tmp_path / "still", temporary)
 
@@ -108,7 +98,11 @@ def test_save_frame_restores_all_derived_render_state(monkeypatch, tmp_path):
     assert scene.num_pixels == before["num_pixels"]
     assert scene.num_pixels_screen_width == before["width"]
     assert scene.num_pixels_screen_height == before["height"]
-    assert saved == [((4, 13, 17), str(tmp_path / "still.png"))]
+    from PIL import Image
+
+    with Image.open(tmp_path / "still.png") as still:
+        assert still.size == (17, 13)
+        assert still.mode == "RGBA"
 
 
 def _stub_out_frame_writing(monkeypatch, scene, on_render=None):
@@ -123,9 +117,6 @@ def _stub_out_frame_writing(monkeypatch, scene, on_render=None):
         )
 
     monkeypatch.setattr(scene, "get_frames", fake_frames)
-    import torchvision.utils
-
-    monkeypatch.setattr(torchvision.utils, "save_image", lambda frame, path: None)
 
 
 def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
@@ -139,9 +130,14 @@ def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
     scene = SceneManager.instance().current_scene
     scene.set_video_settings(PREVIEW)
     timeline = scene.timeline_manager
-    _stub_out_frame_writing(
-        monkeypatch, scene, on_render=timeline._resolve_replay_windows
-    )
+
+    def prepare_transient_queries():
+        timeline._resolve_replay_windows()
+        for attr_timeline in timeline.attr_to_timeline.values():
+            attr_timeline.prepare_for_queries()
+            attr_timeline._prepared_queries(torch.tensor([0.0]))
+
+    _stub_out_frame_writing(monkeypatch, scene, on_render=prepare_transient_queries)
 
     square = Square().spawn()
     with algan.Seq(run_time=8):
@@ -150,6 +146,10 @@ def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
         # Last statement in the block: nothing after it records an edit, so
         # nothing would invalidate a resolution left behind here.
         scene.save_frame(tmp_path / "still")
+        for attr_timeline in timeline.attr_to_timeline.values():
+            assert not attr_timeline._is_ready_for_queries
+            assert not attr_timeline._query_cache
+            assert not attr_timeline._edits_sorted
 
     timeline._resolve_replay_windows()
     edits = [edit for t in timeline.attr_to_timeline.values() for edit in t.edits]
@@ -159,6 +159,20 @@ def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(
     assert max(float(edit.time.end) for edit in edits) == pytest.approx(9.0)
     for edit in edits:
         assert edit.replay_end == pytest.approx(float(edit.time.end))
+    # Query dictionaries cache replay_end as plain timestamps too.  The ones
+    # prepared by the mid-context render must have been discarded rather than
+    # carrying the pre-rescale two-second block into this final resolution.
+    for attr_timeline in timeline.attr_to_timeline.values():
+        attr_timeline.prepare_for_queries()
+        edit_timestamps = [
+            edit["timestamp"] for edit in attr_timeline._edits_sorted[:-1]
+        ]
+        assert edit_timestamps == pytest.approx(
+            [
+                edit.replay_end if edit.replay_end is not None else float(edit.time.end)
+                for edit in attr_timeline.edits
+            ]
+        )
 
 
 def test_save_frame_leaves_a_finished_scene_s_replay_windows_alone(

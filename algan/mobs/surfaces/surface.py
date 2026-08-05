@@ -1904,6 +1904,7 @@ class Surface(Mob):
                     )
                     pending_records.append(
                         (
+                            attr,
                             attr_timeline,
                             edit["source"],
                             edit["indexes"][internal_old_mask],
@@ -1925,6 +1926,7 @@ class Surface(Mob):
                 continue
 
             for (
+                attr,
                 attr_timeline,
                 source,
                 historical_indexes,
@@ -1938,13 +1940,11 @@ class Surface(Mob):
                 source.indexes = historical_indexes
                 source.values = historical_values
                 source.replay_end = None
-                attr_timeline.edits.append(record)
-                attr_timeline._is_ready_for_queries = False
-                attr_timeline._query_cache.clear()
+                timeline.register_migrated_edit(attr, attr_timeline, source, record)
+                attr_timeline.invalidate_prepared_queries()
             event.recorded_edits = migrated_edits
             event.caller = captured_event["caller"]
             event.replay_end = None
-            timeline._replay_windows_resolved = False
 
     def _change_resolution(self, grid_width, grid_height, surface_function=None):
         grid_width = int(grid_width)

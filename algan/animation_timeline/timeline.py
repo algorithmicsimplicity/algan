@@ -46,6 +46,12 @@ HIERARCHY_VERSION = [0]
 #: whose answer can only change when the hierarchy changes or something spawns.
 SPAWN_VERSION = [0]
 
+#: Global timing version, bumped whenever a TimelineSpan is rescaled or a
+#: lifespan endpoint is reassigned. Opacity timelines use it to retain their
+#: materialized spawn/despawn tensor until one of the live TimelineEvent
+#: values it contains can actually have changed.
+TIMING_VERSION = [0]
+
 
 def bump_structure_version():
     STRUCTURE_VERSION[0] += 1
@@ -53,6 +59,10 @@ def bump_structure_version():
 
 def bump_spawn_version():
     SPAWN_VERSION[0] += 1
+
+
+def bump_timing_version():
+    TIMING_VERSION[0] += 1
 
 
 def bump_hierarchy_version():
@@ -178,11 +188,11 @@ class Lifespan:
     (:meth:`AnimationTimeline.get_lifespan`), keyed by mob id.
     """
 
-    __slots__ = ("_start", "end")
+    __slots__ = ("_start", "_end")
 
     def __init__(self):
         self._start = _never
-        self.end = _never
+        self._end = _never
 
     @property
     def start(self):
@@ -196,6 +206,16 @@ class Lifespan:
         # TimelineManager.register_spawn -- bumps the global spawn version.
         self._start = value
         bump_spawn_version()
+        bump_timing_version()
+
+    @property
+    def end(self):
+        return self._end
+
+    @end.setter
+    def end(self, value):
+        self._end = value
+        bump_timing_version()
 
 
 class EditRecord:
@@ -285,6 +305,19 @@ class EditQueryIndex:
         self.sorted_values = sorted_values
         self.unique_timestamps = unique_timestamps
         self.keys = keys
+
+
+class _EndpointLayout:
+    """Mutable, over-allocated row ownership table for lifespan endpoints."""
+
+    __slots__ = ("lifespans", "rows", "owners", "blocks", "used")
+
+    def __init__(self, lifespans, rows, owners, blocks, used):
+        self.lifespans = lifespans
+        self.rows = rows
+        self.owners = owners
+        self.blocks = blocks
+        self.used = used
 
 
 def _prepare_array_state_queries(times, N, edits):
@@ -433,9 +466,7 @@ def generate_array_states(times, N, edits, *, active_rows=None, prepared=None):
     # primitive preparation for this batch.
     out = torch.zeros((T, N, D), dtype=dtype, device=device)
     if active_rows.numel():
-        out.index_copy_(
-            1, active_rows, _query_row_states(times, prepared, active_rows)
-        )
+        out.index_copy_(1, active_rows, _query_row_states(times, prepared, active_rows))
     return out
 
 
@@ -509,17 +540,74 @@ class AttributeTimeline:
         self.pointer = 0
         self.edits = []
         self._is_ready_for_queries = False
+        self._prepared_edit_count = 0
+        self._edits_sorted = []
         self._query_cache = {}
         self.mob_id_to_inds = {}
         self.mob_id_to_ranges = {}
         self.mob_id_to_starts = {}
         self.mob_id_to_ends = {}
+        self._endpoint_layout_revision = 0
+        self._endpoint_layout_cache = None
+        self._pending_start_endpoints = []
+        self._pending_end_endpoints = []
+        self._dirty_endpoint_rows = set()
+        self._dirty_start_endpoints = set()
+        self._dirty_end_endpoints = set()
+        self._end_points = None
+        self._end_points_version = None
 
     def set_start_point(self, mob, starts):
+        replacing = mob.id in self.mob_id_to_starts
         self.mob_id_to_starts[mob.id] = starts
+        if replacing:
+            self._dirty_start_endpoints.add(mob.id)
+            self._invalidate_endpoint_values()
+        else:
+            self._pending_start_endpoints.append((mob.id, starts))
+            self._invalidate_endpoint_values()
 
     def set_end_point(self, mob, ends):
+        replacing = mob.id in self.mob_id_to_ends
         self.mob_id_to_ends[mob.id] = ends
+        if replacing:
+            self._dirty_end_endpoints.add(mob.id)
+            self._invalidate_endpoint_values()
+        else:
+            self._pending_end_endpoints.append((mob.id, ends))
+            self._invalidate_endpoint_values()
+
+    def invalidate_prepared_queries(self, *, retain_edit_prefix=False):
+        """Drop data derived from the recorded edit log.
+
+        The temporary ``active_state`` produced while rendering is deliberately
+        not part of this cache.  Normal recording-time writes, row allocation,
+        topology migration, and rollback of transient replay-window timestamps
+        call this method; merely returning to ``current_state`` does not.
+
+        Ordinary recording and row growth are append-only, so they can retain
+        the already-normalized edit dictionaries. Topology migration and
+        replay-window rollback mutate earlier records and request a full reset.
+        """
+        self._is_ready_for_queries = False
+        self._query_cache.clear()
+        if not retain_edit_prefix:
+            self._prepared_edit_count = 0
+            self._edits_sorted.clear()
+
+    def _invalidate_endpoint_layout(self):
+        self._endpoint_layout_revision += 1
+        self._endpoint_layout_cache = None
+        self._pending_start_endpoints.clear()
+        self._pending_end_endpoints.clear()
+        self._dirty_endpoint_rows.clear()
+        self._dirty_start_endpoints.clear()
+        self._dirty_end_endpoints.clear()
+        self._end_points_version = None
+
+    def _invalidate_endpoint_values(self):
+        self._endpoint_layout_revision += 1
+        self._end_points_version = None
 
     def get_current_values(self):
         return self.current_state[:, : self.pointer]
@@ -551,8 +639,7 @@ class AttributeTimeline:
         # CSR query data here made every frame batch rebuild and re-sort the
         # identical edit history. Recording-time writes still invalidate it.
         if self.active_state is self.current_state:
-            self._is_ready_for_queries = False
-            self._query_cache.clear()
+            self.invalidate_prepared_queries(retain_edit_prefix=True)
         if isinstance(key, RowRanges):
             if (
                 not _opt_disabled("ranges")
@@ -582,12 +669,16 @@ class AttributeTimeline:
         """
         self.mob_id_to_inds[mob_id] = inds
         self.mob_id_to_ranges.pop(mob_id, None)
+        self._dirty_endpoint_rows.add(mob_id)
+        self._invalidate_endpoint_values()
         bump_structure_version()
 
     def drop_mob(self, mob_id):
         """Forget ``mob_id``'s rows and cached ranges."""
         self.mob_id_to_inds.pop(mob_id, None)
         self.mob_id_to_ranges.pop(mob_id, None)
+        self._dirty_endpoint_rows.add(mob_id)
+        self._invalidate_endpoint_values()
         bump_structure_version()
 
     def ranges_for(self, mob_id):
@@ -614,11 +705,11 @@ class AttributeTimeline:
 
     def add(self, mob, values, overwrite=False):
         mob_id = mob.id
-        if (not overwrite) and (mob_id in self.mob_id_to_inds):
+        replacing_rows = mob_id in self.mob_id_to_inds
+        if (not overwrite) and replacing_rows:
             return
 
-        self._is_ready_for_queries = False
-        self._query_cache.clear()
+        self.invalidate_prepared_queries(retain_edit_prefix=True)
 
         # New (or re-allocated) rows invalidate cached concatenated row
         # indexes.
@@ -642,6 +733,14 @@ class AttributeTimeline:
         # conversions) on the first ranges_for() query.
         self.mob_id_to_ranges[mob_id] = RowRanges([(self.pointer, new_pointer)])
         self.pointer = new_pointer
+        if replacing_rows or (
+            mob_id in self.mob_id_to_starts or mob_id in self.mob_id_to_ends
+        ):
+            self._dirty_endpoint_rows.add(mob_id)
+        # Existing endpoint ownership is unchanged for an ordinary new Mob;
+        # register_spawn appends it to the start layout later. Until then the
+        # new rows retain the default "not visible" bounds.
+        self._invalidate_endpoint_values()
         return inds
 
     def prepare_for_queries(self):
@@ -657,14 +756,23 @@ class AttributeTimeline:
         # same (extended) time, the search returns the earliest-executed one,
         # whose pre-modification value is the correct base for re-applying
         # all of them in execution order.
-        self._edits_sorted = [
+        # Normal authoring only appends edits. Retain the normalized prefix
+        # (including its flattened index/value views) and normalize only the
+        # suffix recorded since the previous still. The old final-state
+        # sentinel is the one entry after ``_prepared_edit_count``.
+        if self._prepared_edit_count > len(self.edits):
+            self._prepared_edit_count = 0
+            self._edits_sorted.clear()
+        del self._edits_sorted[self._prepared_edit_count :]
+        self._edits_sorted.extend(
             {
                 "indexes": e.indexes.view(-1),
                 "values": e.values.squeeze(0),
                 "timestamp": e.replay_end if e.replay_end is not None else e.time.end,
             }
-            for e in self.edits
-        ]
+            for e in self.edits[self._prepared_edit_count :]
+        )
+        self._prepared_edit_count = len(self.edits)
         self._edits_sorted.append(
             {
                 "indexes": torch.arange(self.pointer),
@@ -674,15 +782,230 @@ class AttributeTimeline:
         )
         self._query_cache.clear()
 
-        if not self.record_end_points:
+        return self
+
+    @staticmethod
+    def _build_endpoint_layout(endpoint_map, mob_id_to_inds):
+        lifespans = []
+        row_blocks = []
+        row_counts = []
+        blocks = {}
+        row_start = 0
+        for mob_id, lifespan in endpoint_map.items():
+            inds = mob_id_to_inds.get(mob_id)
+            if inds is None or inds.numel() == 0:
+                continue
+            lifespans.append(lifespan)
+            row_blocks.append(inds.view(-1))
+            row_counts.append(inds.numel())
+            blocks[mob_id] = (
+                len(lifespans) - 1,
+                row_start,
+                row_start + inds.numel(),
+            )
+            row_start += inds.numel()
+        if not row_blocks:
+            empty = torch.empty((0,), dtype=torch.long)
+            return _EndpointLayout(lifespans, empty, empty, blocks, 0)
+        flat_rows = torch.cat(row_blocks)
+        flat_owners = torch.repeat_interleave(
+            torch.arange(len(row_blocks), dtype=torch.long),
+            torch.tensor(row_counts, dtype=torch.long),
+        )
+        used = flat_rows.numel()
+        capacity = max(16, 1 << (used - 1).bit_length())
+        rows = torch.empty((capacity,), dtype=torch.long)
+        owners = torch.empty((capacity,), dtype=torch.long)
+        rows[:used] = flat_rows
+        owners[:used] = flat_owners
+        return _EndpointLayout(lifespans, rows, owners, blocks, used)
+
+    def _endpoint_layouts(self):
+        cached = self._endpoint_layout_cache
+        if (
+            cached is not None
+            and not self._pending_start_endpoints
+            and not self._pending_end_endpoints
+            and not self._dirty_endpoint_rows
+            and not self._dirty_start_endpoints
+            and not self._dirty_end_endpoints
+        ):
+            return cached
+        if cached is None:
+            starts = self._build_endpoint_layout(
+                self.mob_id_to_starts, self.mob_id_to_inds
+            )
+            ends = self._build_endpoint_layout(self.mob_id_to_ends, self.mob_id_to_inds)
+        else:
+            starts, ends = cached
+            starts = self._patch_endpoint_layout(
+                starts,
+                self.mob_id_to_starts,
+                self._pending_start_endpoints,
+                self._dirty_start_endpoints,
+                self._dirty_endpoint_rows,
+                self.mob_id_to_inds,
+            )
+            ends = self._patch_endpoint_layout(
+                ends,
+                self.mob_id_to_ends,
+                self._pending_end_endpoints,
+                self._dirty_end_endpoints,
+                self._dirty_endpoint_rows,
+                self.mob_id_to_inds,
+            )
+            if starts is None or ends is None:
+                starts = self._build_endpoint_layout(
+                    self.mob_id_to_starts, self.mob_id_to_inds
+                )
+                ends = self._build_endpoint_layout(
+                    self.mob_id_to_ends, self.mob_id_to_inds
+                )
+        self._pending_start_endpoints.clear()
+        self._pending_end_endpoints.clear()
+        self._dirty_endpoint_rows.clear()
+        self._dirty_start_endpoints.clear()
+        self._dirty_end_endpoints.clear()
+        if cached is None or starts is not cached[0] or ends is not cached[1]:
+            self._endpoint_layout_cache = (starts, ends)
+        return starts, ends
+
+    @classmethod
+    def _patch_endpoint_layout(
+        cls,
+        layout,
+        endpoint_map,
+        pending,
+        dirty_values,
+        dirty_rows,
+        mob_id_to_inds,
+    ):
+        """Apply same-sized history row swaps to a cached endpoint layout.
+
+        ``detach_history`` changes thousands of Mob-to-row mappings between
+        stills, but almost all are swaps of equal-sized blocks. Patching those
+        blocks lazily avoids rebuilding every unchanged Mob's layout. A true
+        row-count change returns ``None`` and lets the caller use the safe full
+        rebuild path.
+        """
+        lifespans = layout.lifespans
+        rows = layout.rows
+        blocks = layout.blocks
+        additions = dict(pending)
+        for mob_id in dirty_values:
+            block = blocks.get(mob_id)
+            lifespan = endpoint_map.get(mob_id)
+            if block is None:
+                if lifespan is not None:
+                    additions[mob_id] = lifespan
+            elif lifespan is None:
+                return None
+            else:
+                lifespans[block[0]] = lifespan
+
+        for mob_id in dirty_rows:
+            block = blocks.get(mob_id)
+            inds = mob_id_to_inds.get(mob_id)
+            lifespan = endpoint_map.get(mob_id)
+            if block is None:
+                if lifespan is not None and inds is not None and inds.numel():
+                    additions[mob_id] = lifespan
+                continue
+            _, start, stop = block
+            if inds is None or inds.numel() != stop - start:
+                return None
+            rows[start:stop] = inds.view(-1)
+
+        return cls._extend_endpoint_layout(layout, additions.items(), mob_id_to_inds)
+
+    @staticmethod
+    def _extend_endpoint_layout(layout, pending, mob_id_to_inds):
+        entries = []
+        lifespans = []
+        row_blocks = []
+        row_counts = []
+        for mob_id, lifespan in pending:
+            block = layout.blocks.get(mob_id)
+            if block is not None:
+                layout.lifespans[block[0]] = lifespan
+                continue
+            inds = mob_id_to_inds.get(mob_id)
+            if inds is None or inds.numel() == 0:
+                continue
+            entries.append((mob_id, lifespan))
+            lifespans.append(lifespan)
+            row_blocks.append(inds.view(-1))
+            row_counts.append(inds.numel())
+        if not row_blocks:
+            return layout
+
+        new_rows = torch.cat(row_blocks)
+        old_lifespan_count = len(layout.lifespans)
+        new_owners = torch.repeat_interleave(
+            torch.arange(
+                old_lifespan_count,
+                old_lifespan_count + len(lifespans),
+                dtype=torch.long,
+            ),
+            torch.tensor(row_counts, dtype=torch.long),
+        )
+        new_used = layout.used + new_rows.numel()
+        if new_used > layout.rows.numel():
+            capacity = max(16, 1 << (new_used - 1).bit_length())
+            rows = torch.empty((capacity,), dtype=torch.long)
+            owners = torch.empty((capacity,), dtype=torch.long)
+            rows[: layout.used] = layout.rows[: layout.used]
+            owners[: layout.used] = layout.owners[: layout.used]
+            layout.rows = rows
+            layout.owners = owners
+        layout.rows[layout.used : new_used] = new_rows
+        layout.owners[layout.used : new_used] = new_owners
+
+        row_start = layout.used
+        for offset, ((mob_id, _lifespan), row_count) in enumerate(
+            zip(entries, row_counts)
+        ):
+            layout.blocks[mob_id] = (
+                old_lifespan_count + offset,
+                row_start,
+                row_start + row_count,
+            )
+            row_start += row_count
+        layout.lifespans.extend(lifespans)
+        layout.used = new_used
+        return layout
+
+    def _refresh_end_points(self):
+        """Materialize live spawn/despawn bounds for the next state query.
+
+        Lifespans contain :class:`TimelineEvent` callables whose values can be
+        rescaled after a still is rendered from inside an open animation
+        context. A global timing revision catches that rescaling; a local
+        layout revision catches row ownership and endpoint-map changes. The
+        expensive row expansion is cached and each column is written in one
+        vectorized operation rather than one indexed assignment per Mob.
+        """
+        version = (TIMING_VERSION[0], self._endpoint_layout_revision)
+        if self._end_points_version == version:
             return self
+
         self._end_points = torch.full((1, self.pointer + 1, 2), 1e12)
-        for mob_id in self.mob_id_to_starts:
-            inds = self.mob_id_to_inds[mob_id]
-            self._end_points[:, inds, 0] = self.mob_id_to_starts[mob_id].start()
-        for mob_id in self.mob_id_to_ends:
-            inds = self.mob_id_to_inds[mob_id]
-            self._end_points[:, inds, 1] = self.mob_id_to_ends[mob_id].end()
+        starts, ends = self._endpoint_layouts()
+        for column, endpoint_name, layout in (
+            (0, "start", starts),
+            (1, "end", ends),
+        ):
+            if layout.used == 0:
+                continue
+            lifespans = layout.lifespans
+            rows = layout.rows[: layout.used]
+            owners = layout.owners[: layout.used]
+            values = torch.tensor(
+                [getattr(lifespan, endpoint_name)() for lifespan in lifespans],
+                dtype=self._end_points.dtype,
+            )
+            self._end_points[0, rows, column] = values[owners]
+        self._end_points_version = version
         return self
 
     def rows_for_mob_ids(self, mob_ids):
@@ -724,6 +1047,8 @@ class AttributeTimeline:
 
     def rematerialize_state_at_times(self, times, active_mob_ids=None, extra_rows=None):
         self.prepare_for_queries()
+        if self.record_end_points:
+            self._refresh_end_points()
         active_rows = (
             None if active_mob_ids is None else self.rows_for_mob_ids(active_mob_ids)
         )
@@ -797,8 +1122,6 @@ class AttributeTimeline:
         self.active_state = self.current_state
         self.active_time_inds = slice(None, None, None)
         self.rematerialized_times = None
-        self._is_ready_for_queries = False
-        self._query_cache.clear()
         return self
 
 
@@ -857,6 +1180,7 @@ class TimelineSpan:
     @start.setter
     def start(self, value):
         self._rescaled_start = value
+        bump_timing_version()
 
     @property
     def end(self):
@@ -865,6 +1189,7 @@ class TimelineSpan:
     @end.setter
     def end(self, value):
         self._rescaled_end = value
+        bump_timing_version()
 
 
 class FunctionApplicationEvent:
@@ -1072,6 +1397,21 @@ class AnimationTimeline:
         # recently recorded function application (consumed by the
         # animated_function wrapper to scope the former).
         self._edit_seq = 0
+        # Global edit order, maintained as edits are recorded.  Attribute
+        # timelines keep their own per-attribute logs for state queries, but
+        # replay-window resolution needs the interleaved execution order.  A
+        # central list avoids rebuilding and sorting that order for every
+        # still render.
+        self._edits_in_order = []
+        self._edit_order_dirty = False
+        # A resolved prefix is immutable once all contexts containing it have
+        # exited: later edits depend on its per-row ends, but can never change
+        # an earlier edit's replay window.  Reusing this checkpoint turns a
+        # sequence of save_frame calls from a repeated full-history scan into
+        # an incremental suffix scan.
+        self._resolved_prefix_count = 0
+        self._resolved_prefix_seq = -1
+        self._resolved_row_ends = {}
         self._active_edit_event = None
         self.last_recorded_event = None
         self._replay_windows_resolved = True
@@ -1248,12 +1588,33 @@ class AnimationTimeline:
         self._edit_seq += 1
         event = self._active_edit_event
         edit = timeline.record(mob_inds, new_value, time, self._edit_seq, event)
+        self._edits_in_order.append((edit.seq, attr_name, edit))
         if event is not None:
             event.recorded_edits.append(
                 (attr_name, mob_id, include_descendants, edit.indexes)
             )
         self._replay_windows_resolved = False
         return self
+
+    def register_migrated_edit(
+        self, attr_name, attr_timeline, source_edit, migrated_edit
+    ):
+        """Register an edit created by a historical-topology migration.
+
+        Surface resolution changes can split an already-recorded edit and add
+        a replacement carrying the same execution sequence.  That is the only
+        path that inserts into (rather than appends to) global edit order, so
+        it marks the order dirty and invalidates a resolved checkpoint only
+        when the changed source lies inside that checkpoint.
+        """
+        attr_timeline.edits.append(migrated_edit)
+        self._edits_in_order.append((migrated_edit.seq, attr_name, migrated_edit))
+        self._edit_order_dirty = True
+        if source_edit.seq <= self._resolved_prefix_seq:
+            self._resolved_prefix_count = 0
+            self._resolved_prefix_seq = -1
+            self._resolved_row_ends = {}
+        self._replay_windows_resolved = False
 
     def replay_inds(self, attr_name, mob_id, include_descendants, consume=False):
         """Return the next recorded row set while replaying one function."""
@@ -1310,19 +1671,38 @@ class AnimationTimeline:
         # Replay-window ends feed the cached event-window tensors.
         self.function_timeline.invalidate_window_cache()
 
-        all_edits = []
-        for attr, timeline in self.attr_to_timeline.items():
-            all_edits.extend((e.seq, attr, e) for e in timeline.edits)
-        all_edits.sort(key=lambda x: x[0])
+        if self._edit_order_dirty:
+            # Migration records reuse their source edit's sequence number and
+            # therefore have to be inserted beside it. Python's stable sort
+            # preserves source-before-migration order for the tie, matching
+            # the former per-attribute gather-and-sort implementation.
+            self._edits_in_order.sort(key=lambda x: x[0])
+            self._edit_order_dirty = False
+        all_edits = self._edits_in_order
 
         # Latest replay-window end per buffer row, per attribute (float64 so
         # timestamps round-trip exactly).
-        row_ends = {
-            attr: torch.full((timeline.pointer,), -math.inf, dtype=torch.float64)
-            for attr, timeline in self.attr_to_timeline.items()
-        }
+        row_ends = {}
+        for attr, timeline in self.attr_to_timeline.items():
+            cached = self._resolved_row_ends.get(attr)
+            if cached is None:
+                rows = torch.full((timeline.pointer,), -math.inf, dtype=torch.float64)
+            else:
+                rows = cached.clone()
+                if rows.shape[0] < timeline.pointer:
+                    rows = torch.cat(
+                        (
+                            rows,
+                            torch.full(
+                                (timeline.pointer - rows.shape[0],),
+                                -math.inf,
+                                dtype=torch.float64,
+                            ),
+                        )
+                    )
+            row_ends[attr] = rows
 
-        i = 0
+        i = min(self._resolved_prefix_count, len(all_edits))
         while i < len(all_edits):
             # Edits recorded by one function application are consecutive in
             # execution order; group them so they share one window.
@@ -1348,8 +1728,12 @@ class AnimationTimeline:
                 event.replay_end = end
             i = j
 
+        self._resolved_prefix_count = len(all_edits)
+        self._resolved_prefix_seq = all_edits[-1][0] if all_edits else -1
+        self._resolved_row_ends = row_ends
+
     @contextlib.contextmanager
-    def preserving_authoring_state(self):
+    def preserving_authoring_state(self, preserve_replay_resolution=True):
         """Render frames without leaving derived state on the timeline.
 
         Materializing frames resolves replay windows
@@ -1375,28 +1759,49 @@ class AnimationTimeline:
         reason.
         """
         resolved = self._replay_windows_resolved
-        edit_windows = [
-            (edit, edit.replay_end)
-            for timeline in self.attr_to_timeline.values()
-            for edit in timeline.edits
-        ]
-        event_windows = [
-            (event, event.replay_end)
-            for event in self.function_timeline.function_applications
-        ]
+        edit_windows = []
+        event_windows = []
+        prefix_state = None
+        if preserve_replay_resolution:
+            edit_windows = [
+                (edit, edit.replay_end)
+                for timeline in self.attr_to_timeline.values()
+                for edit in timeline.edits
+            ]
+            event_windows = [
+                (event, event.replay_end)
+                for event in self.function_timeline.function_applications
+            ]
+            prefix_state = (
+                self._resolved_prefix_count,
+                self._resolved_prefix_seq,
+                self._resolved_row_ends,
+            )
         known_mob_ids = frozenset(self.mob_id_to_lifespan)
         try:
             yield self
         finally:
-            for edit, replay_end in edit_windows:
-                edit.replay_end = replay_end
-            for event, replay_end in event_windows:
-                event.replay_end = replay_end
-            self._replay_windows_resolved = resolved
-            # Any edit or event recorded during the render (there should be
-            # none) is outside the snapshot, so drop the cached window tensors
-            # rather than trust them.
-            self.function_timeline.invalidate_window_cache()
+            if preserve_replay_resolution:
+                for edit, replay_end in edit_windows:
+                    edit.replay_end = replay_end
+                for event, replay_end in event_windows:
+                    event.replay_end = replay_end
+                self._replay_windows_resolved = resolved
+                (
+                    self._resolved_prefix_count,
+                    self._resolved_prefix_seq,
+                    self._resolved_row_ends,
+                ) = prefix_state
+                # Prepared edit dictionaries and CSR indexes embed the
+                # transient replay_end values resolved by this render.  They
+                # must not survive after those values are rolled back; the
+                # next render will rebuild them from the final rescaled times.
+                for timeline in self.attr_to_timeline.values():
+                    timeline.invalidate_prepared_queries()
+                # Any edit or event recorded during the render (there should
+                # be none) is outside the snapshot, so drop cached windows
+                # rather than trust them.
+                self.function_timeline.invalidate_window_cache()
             for mob_id in [
                 mob_id
                 for mob_id in self.mob_id_to_lifespan
@@ -1423,8 +1828,13 @@ class AnimationTimeline:
             seen.add(oid)
             if hasattr(value, "lifespan") and hasattr(value, "id"):
                 mob_ids.add(value.id)
-                get_descendants = getattr(value, "get_descendants", None)
-                if get_descendants is not None:
+                children = getattr(value, "children", None)
+                if children is not None:
+                    stack.extend(children)
+                else:
+                    get_descendants = getattr(value, "get_descendants", None)
+                    if get_descendants is None:
+                        continue
                     with contextlib.suppress(AttributeError, TypeError):
                         stack.extend(get_descendants(include_self=False))
                 continue

@@ -80,6 +80,83 @@ def test_sequential_edits():
     _assert_matches(offs, actual, expected)
 
 
+def test_replay_window_resolution_extends_a_cached_prefix():
+    """Appending edits after a completed resolution must match a cold replay.
+
+    Still-heavy authoring workflows resolve the timeline repeatedly.  The
+    incremental path starts from the prior per-row end checkpoint; resetting
+    that checkpoint here forces the original full-history algorithm and gives
+    a direct result-by-result reference.
+    """
+    m = Mob().spawn(animate=False)
+    with Sync(rate_func=rate_funcs.identity):
+        with Seq(run_time=2):
+            m.move(R * 2)
+        with Seq(run_time=1):
+            m.move(U * 2)
+
+    timeline = m.scene.timeline_manager
+    timeline._resolve_replay_windows()
+    prefix_count = timeline._resolved_prefix_count
+    assert prefix_count > 0
+
+    with Sync(rate_func=rate_funcs.identity):
+        with Seq(run_time=3):
+            m.move(OUT * 2)
+        with Seq(run_time=0.5):
+            m.move(R)
+    timeline._resolve_replay_windows()
+    assert timeline._resolved_prefix_count > prefix_count
+    incremental = [
+        edit.replay_end
+        for attr_timeline in timeline.attr_to_timeline.values()
+        for edit in attr_timeline.edits
+    ]
+
+    timeline._resolved_prefix_count = 0
+    timeline._resolved_prefix_seq = -1
+    timeline._resolved_row_ends = {}
+    timeline._replay_windows_resolved = False
+    for attr_timeline in timeline.attr_to_timeline.values():
+        for edit in attr_timeline.edits:
+            edit.replay_end = None
+    for event in timeline.function_timeline.function_applications:
+        event.replay_end = None
+    timeline._resolve_replay_windows()
+    cold = [
+        edit.replay_end
+        for attr_timeline in timeline.attr_to_timeline.values()
+        for edit in attr_timeline.edits
+    ]
+
+    assert cold == pytest.approx(incremental)
+
+
+def test_clear_buffers_retains_query_indexes_until_recording_changes_history():
+    """Finishing a render must not discard indexes over an unchanged edit log."""
+    m = Mob().spawn(animate=False)
+    t0 = _now()
+    m.move(R)
+
+    _materialize([t0 + 0.5], [m])
+    attr_timeline = m.scene.timeline_manager.attr_to_timeline["location"]
+    assert attr_timeline._is_ready_for_queries
+    assert attr_timeline._query_cache
+    key, prepared = next(iter(attr_timeline._query_cache.items()))
+    first_edit_descriptor = attr_timeline._edits_sorted[0]
+
+    _materialize([t0 + 0.75], [m])
+    assert attr_timeline._query_cache[key] is prepared
+
+    m.move(U)
+    assert not attr_timeline._is_ready_for_queries
+    assert not attr_timeline._query_cache
+
+    _materialize([t0 + 1.5], [m])
+    assert attr_timeline._edits_sorted[0] is first_edit_descriptor
+    assert attr_timeline._prepared_edit_count == len(attr_timeline.edits)
+
+
 def test_edits_ending_at_same_time():
     """Two edits of the same rows ending at the same time: the base must be
     the pre-value of the first-executed one, and both must replay in order.

@@ -839,7 +839,10 @@ class Scene(RenderLoopMixin):
         frames = []
         # See Scene.save_frame: a render that leaves the Scene re-renderable
         # must not leave its replay-window resolution behind for the next one.
-        with self.timeline_manager.preserving_authoring_state():
+        with self.timeline_manager.preserving_authoring_state(
+            preserve_replay_resolution=self.animation_manager.context.prev_context
+            is not None
+        ):
             for frame in self.get_frames(time_ind, time_ind + 1):
                 frame = frame.float() / 255
                 frames.append(frame.squeeze(0).permute(-1, 0, 1))
@@ -864,16 +867,20 @@ class Scene(RenderLoopMixin):
                 + 1.5 / self.video_settings.frames_per_second
             )
         time_ind = self._frame_index_for_timestamp(time_stamp)
-        frames = []
+        frame = None
         with torch.inference_mode():
-            for frame in self.get_frames(time_ind, time_ind + 1):
-                frame = frame.float() / 255
-                frames.append(frame.squeeze(0).permute(-1, 0, 1))
-        if not frames:
+            for batch in self.get_frames(time_ind, time_ind + 1):
+                if batch.shape[0]:
+                    frame = batch[-1]
+        if frame is None:
             raise RuntimeError("No frame was produced for the requested timestamp")
-        import torchvision.utils  # deferred: ~0.2 s of import algan
+        # The render loop already returns a CPU uint8 HWC image.  Passing it
+        # through torchvision converted it to float CHW and, on first use,
+        # imported torchvision's datasets/models/ops packages solely to reach
+        # ``save_image``.  Pillow can write the finished pixels directly.
+        from PIL import Image
 
-        torchvision.utils.save_image(frames[-1], str(destination))
+        Image.fromarray(frame.contiguous().numpy()).save(str(destination))
         return destination
 
     @active_scene_method
@@ -968,7 +975,10 @@ class Scene(RenderLoopMixin):
             # with a run_time rescales its block when it exits -- so the
             # resolution is restored rather than left on the timeline for the
             # next render to reuse.
-            with self.timeline_manager.preserving_authoring_state():
+            with self.timeline_manager.preserving_authoring_state(
+                preserve_replay_resolution=self.animation_manager.context.prev_context
+                is not None
+            ):
                 for target, time_stamp in targets:
                     if target.exists() and not overwrite:
                         results.append(RenderResult("skipped", target))

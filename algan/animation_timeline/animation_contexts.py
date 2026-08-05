@@ -11,7 +11,6 @@ from algan.animation_timeline.timeline import TimelineSpan
 from algan.constants import rate_funcs
 from algan.scene_manager import SceneManager
 from algan.sound.audio_effect import AudioEffect
-from algan.utils.python_utils import traverse
 
 DEFAULT_RUN_TIME = 1
 DEFAULT_RATE_FUNC = rate_funcs.smooth
@@ -425,14 +424,20 @@ class AnimationContext:
         list[:class:`~.AnimationContext`]
             This context (unless excluded) followed by all nested contexts.
         """
-        return list(
-            traverse(
-                [
-                    *([self] if include_self else []),
-                    [c.get_descendants() for c in self.child_contexts],
-                ]
-            )
-        )
+        # Context trees can be both broad and deeply nested (a neural-network
+        # activation records tens of thousands of small contexts).  Building
+        # one recursively nested list per child and then feeding it through
+        # the generic ``traverse`` helper made each query visit the tree twice
+        # and perform an ``Iterable``/tensor check for every intermediate
+        # list.  A stack gives the same depth-first, authoring-order result in
+        # one pass without recursion or temporary trees.
+        descendants = []
+        stack = [self] if include_self else list(reversed(self.child_contexts))
+        while stack:
+            context = stack.pop()
+            descendants.append(context)
+            stack.extend(reversed(context.child_contexts))
+        return descendants
 
     def rewind(self, num_frames: float):
         """Move the authoring cursor backwards, so what follows is recorded earlier.

@@ -4,6 +4,7 @@ import torch
 
 from algan import Mob
 from algan.animation_timeline.animation_contexts import Off, Seq
+from algan.animation_timeline.timeline import AttributeTimeline, Lifespan, TimelineSpan
 from algan.constants import rate_funcs
 from algan.constants.spatial import RIGHT
 from algan.scene_manager import SceneManager
@@ -51,3 +52,110 @@ def test_updaters_contribute_traced_mobs_to_active_materialization():
     updaters = timeline.function_timeline.get_updaters_for_times(times)
     assert timeline._active_mob_ids([mob], functions, updaters) == {mob.id}
     mob.remove_updater(updater_id)
+
+
+def test_active_mob_collection_walks_each_hierarchy_edge_once():
+    SceneManager.reset()
+    root = Mob()
+    child = Mob()
+    grandchild = Mob()
+    child.add_children(grandchild)
+    root.add_children(child)
+
+    assert root.scene.timeline_manager._collect_mob_ids([root]) == {
+        root.id,
+        child.id,
+        grandchild.id,
+    }
+
+
+def test_endpoint_materialization_reuses_layout_and_tracks_live_timing():
+    class StubMob:
+        def __init__(self, mob_id):
+            self.id = mob_id
+
+    timeline = AttributeTimeline(1, record_end_points=True)
+    first = StubMob(1)
+    second = StubMob(2)
+    first_rows = timeline.add(first, torch.ones((3, 1)))
+    second_rows = timeline.add(second, torch.ones((2, 1)))
+
+    first_span = TimelineSpan(0, 2)
+    first_lifespan = Lifespan()
+    first_lifespan.start = first_span.get_time(0.5)
+    first_lifespan.end = first_span.get_time(1.5)
+    second_span = TimelineSpan(0, 4)
+    second_lifespan = Lifespan()
+    second_lifespan.start = second_span.get_time(2)
+    timeline.set_start_point(first, first_lifespan)
+    timeline.set_end_point(first, first_lifespan)
+    timeline.set_start_point(second, second_lifespan)
+
+    timeline._refresh_end_points()
+    initial = timeline._end_points
+    assert torch.all(initial[0, first_rows, 0] == 0.5)
+    assert torch.all(initial[0, first_rows, 1] == 1.5)
+    assert torch.all(initial[0, second_rows, 0] == 2)
+    assert torch.all(initial[0, second_rows, 1] == 1e12)
+
+    timeline._refresh_end_points()
+    assert timeline._end_points is initial
+
+    # A new Mob extends only the pending part of the row-owner layout. The
+    # already-expanded prefix remains identical, including uneven row counts.
+    old_layout = timeline._endpoint_layout_cache
+    old_start_rows = old_layout[0].rows[: old_layout[0].used].clone()
+    old_start_owners = old_layout[0].owners[: old_layout[0].used].clone()
+    third = StubMob(3)
+    third_rows = timeline.add(third, torch.ones((4, 1)))
+    third_lifespan = Lifespan()
+    third_lifespan.start = TimelineSpan(0, 6).get_time(3)
+    timeline.set_start_point(third, third_lifespan)
+    timeline._refresh_end_points()
+    extended_layout = timeline._endpoint_layout_cache
+    assert extended_layout is old_layout
+    assert torch.equal(
+        extended_layout[0].rows[: old_start_rows.numel()], old_start_rows
+    )
+    assert torch.equal(
+        extended_layout[0].owners[: old_start_owners.numel()], old_start_owners
+    )
+    assert torch.all(timeline._end_points[0, third_rows, 0] == 3)
+
+    # TimelineEvents are live: rescaling their span invalidates values but not
+    # the cached row-owner layout.
+    layout = timeline._endpoint_layout_cache
+    first_span.end = 4
+    timeline._refresh_end_points()
+    assert timeline._end_points is not initial
+    assert timeline._endpoint_layout_cache is layout
+    assert torch.all(timeline._end_points[0, first_rows, 0] == 1)
+    assert torch.all(timeline._end_points[0, first_rows, 1] == 3)
+
+    # Replacing a lifespan or handing a Mob an equal-sized history block can
+    # patch the cached layout in place.
+    replacement_lifespan = Lifespan()
+    replacement_lifespan.start = TimelineSpan(0, 5).get_time(2)
+    layout = timeline._endpoint_layout_cache
+    timeline.set_start_point(first, replacement_lifespan)
+    timeline._refresh_end_points()
+    assert timeline._endpoint_layout_cache is layout
+    assert torch.all(timeline._end_points[0, first_rows, 0] == 2)
+
+    spare = StubMob(4)
+    spare_rows = timeline.add(spare, torch.ones((3, 1)))
+    timeline.reassign_inds(first.id, spare_rows)
+    timeline._refresh_end_points()
+    assert timeline._endpoint_layout_cache is layout
+    assert torch.all(timeline._end_points[0, spare_rows, 0] == 2)
+    assert torch.all(timeline._end_points[0, first_rows, 0] == 1e12)
+
+    # Reallocation is not append-only: overwrite moves the Mob to new rows and
+    # therefore has to discard, then rebuild, the full cached layout.
+    layout = timeline._endpoint_layout_cache
+    replacement_rows = timeline.add(first, torch.ones((1, 1)), overwrite=True)
+    assert timeline._endpoint_layout_cache is layout
+    timeline._refresh_end_points()
+    assert timeline._endpoint_layout_cache is not layout
+    assert torch.all(timeline._end_points[0, replacement_rows, 0] == 2)
+    assert torch.all(timeline._end_points[0, first_rows, 0] == 1e12)
