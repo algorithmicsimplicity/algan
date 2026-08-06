@@ -8,7 +8,7 @@ from algan.animatable_base.animatable import animated_function
 from algan.animatable_base.mob import Mob
 from algan.animation_timeline.animation_contexts import Off
 from algan.constants.color import *
-from algan.constants.spatial import OUT, RIGHT
+from algan.constants.spatial import OUT, RIGHT, UP
 from algan.geometry.geometry import rotate_vector_around_axis
 from algan.rendering.raytracing.utils import _unify_time
 from algan.settings.renderer_settings import RENDERER_REGISTRY
@@ -61,7 +61,26 @@ def _resample_texture_grid(value, old_size, new_size):
 
 
 def _circuit_location_and_basis(control_points):
-    """Return the same local frame used by a standalone bezier circuit."""
+    """Return the same local frame used by a standalone bezier circuit.
+
+    Row 2 is the circuit's plane normal. Rows 0 and 1 span that plane and always
+    share a length, so the frame is orthogonal with a square in-plane footprint
+    -- which is what the texture grid, laid out along those two rows, relies on.
+
+    Within the plane the rows are aligned to the world axes, not to the
+    circuit's own geometry. They used to point at the control point furthest
+    from the centre, i.e. at a *corner*: a ``Rectangle(4, 1)`` came out with row
+    0 = ``(-2, 0.5, 0)``. Since a shape-``(*, 3)`` factor to
+    :meth:`~.Mob.scale` scales the Mob's own right, up and forward axes, that
+    made ``rect.scale([4, 1, 1])`` stretch along the diagonal and render the
+    rectangle as a parallelogram. Row lengths are unchanged by the alignment, so
+    ``scale_coefficient`` and anything derived from it (``Circle.radius``) keep
+    their old values; only the in-plane rotation of the frame moves.
+
+    A straight Line is the exception and keeps the geometry-derived frame: its
+    control points are collinear, so there is no plane to align to, and the
+    extremal displacement genuinely is the shape's own axis.
+    """
     control_points = control_points.reshape(-1, 3)
     mn = control_points.amin(-2)
     mx = control_points.amax(-2)
@@ -84,16 +103,36 @@ def _circuit_location_and_basis(control_points):
     second_basis = planar_disps[
         ..., dists.argmax(-2, keepdim=True).squeeze(), :
     ].unsqueeze(-2)
-    if second_basis.norm(p=2, dim=-1) <= 1e-4:
+    scale = first_basis.norm(p=2, dim=-1, keepdim=True)
+    degenerate = bool(second_basis.norm(p=2, dim=-1).max() <= 1e-4)
+    if degenerate:
         second_basis = rotate_vector_around_axis(first_basis, 90, OUT, -1)
-    second_basis = (
-        second_basis
-        * first_basis.norm(p=2, dim=-1, keepdim=True)
-        / second_basis.norm(p=2, dim=-1, keepdim=True)
-    )
+    second_basis = second_basis * scale / second_basis.norm(p=2, dim=-1, keepdim=True)
     third_basis_n = F.normalize(
         broadcast_cross_product(first_basis_n, second_basis), p=2, dim=-1
     )
+
+    if not degenerate:
+        # Swing the in-plane pair round to the world axes, keeping the plane and
+        # both row lengths exactly as derived above. Row 0 takes whichever world
+        # axis the plane admits, preferring x; row 1 follows from the plane's
+        # orientation, so on a plane whose normal faces the camera it comes out
+        # along -y. Only one of the three world axes can be parallel to the
+        # normal, so the loop always settles.
+        for reference in (RIGHT, UP, OUT):
+            candidate = reference.to(third_basis_n) - (
+                dot_product(reference.to(third_basis_n), third_basis_n) * third_basis_n
+            )
+            if bool(candidate.norm(p=2, dim=-1).min() > 1e-4):
+                first_basis_n = F.normalize(candidate, p=2, dim=-1)
+                first_basis = first_basis_n * scale
+                # cross(first, cross(third, first)) == third, so the frame keeps
+                # the handedness the plane normal was computed with.
+                second_basis = (
+                    broadcast_cross_product(third_basis_n, first_basis_n) * scale
+                )
+                break
+
     basis = torch.cat((first_basis, second_basis, third_basis_n), -1)
     return location, basis.reshape(-1)
 
