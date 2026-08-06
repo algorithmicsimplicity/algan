@@ -446,6 +446,24 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # un-spawned or faded out is absent, while clear glass keeps its
         # coverage and stays visible (see _derive_material_surface_params).
         visible = alpha.amax(-1) > MIN_ALPHA
+        # ...except where a colour texture, not the corner colours, is what
+        # supplies coverage. Every cut-out image (a PNG sticker, an ImageMob)
+        # has transparent corner texels, and a textured quad's corners ARE its
+        # triangles' corners, so this test culled whole triangles out of an
+        # otherwise perfectly visible picture -- chopping it along the quad
+        # diagonal. The texture's own alpha decides instead.
+        texture = getattr(self, "_rt_texture_map", None)
+        if texture is not None:
+            texture_visible = (
+                texture.reshape(texture.shape[0], -1, texture.shape[-1])[..., -1].amax(
+                    -1, keepdim=True
+                )
+                > MIN_ALPHA
+            )
+            (visible, texture_visible), _ = _unify_time(
+                [visible, texture_visible], error_context
+            )
+            visible = visible | texture_visible
         # ...but full coverage is not enough to prune hits behind: a
         # transmissive surface still lets light through at alpha 1.
         opaque = alpha.amin(-1) >= 1.0 - 1e-6

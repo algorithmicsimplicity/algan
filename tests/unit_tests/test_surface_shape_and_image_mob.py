@@ -128,3 +128,26 @@ def test_image_mob_remains_texture_backed_by_default():
     assert (image.grid_width, image.grid_height) == (2, 2)
     assert image.color_texture is not None
     assert image.get_render_primitives().texture_map is not None
+
+
+def test_textured_primitive_visible_when_only_its_texture_is_opaque():
+    """A cut-out image must not be culled by its own transparent corners.
+
+    A textured quad is two triangles whose corners are the image's corners, and
+    every cut-out PNG is transparent there. Deciding visibility from the corner
+    colours alone dropped whichever triangle had no opaque corner, chopping the
+    picture along the quad's diagonal; the texture's alpha decides instead.
+    """
+    pixels = torch.zeros((4, 4, 4))
+    pixels[1:3, 1:3, :] = 1.0  # opaque only in the middle
+
+    image = ImageMob(pixels, add_to_scene=False)
+    primitive = image.get_render_primitives()
+    primitive._stash_texture_maps()
+    corners = primitive.corners.float()
+    primitive._pack_frame_visibility(
+        corners.amin(-2), corners.amax(-2), primitive.colors.float(), "test"
+    )
+
+    assert float(primitive.colors[..., -1].amax()) == 0.0
+    assert bool((primitive._rt_frame_hi >= primitive._rt_frame_lo).all())
