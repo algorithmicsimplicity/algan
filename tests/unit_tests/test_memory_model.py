@@ -130,6 +130,31 @@ def test_plan_returns_one_when_nothing_fits():
     assert model.plan(SIG, 100, 1 << 20) == 1
 
 
+def test_capacity_bound_chunks_never_price_one_frame_at_the_whole_arena():
+    # Chunks are planned to fill the arena, so batches of different density --
+    # which share a signature, since geometry counts are bucketed -- both peak
+    # just under capacity. A line through two nearly equal peaks at different
+    # frame counts is almost flat, with an intercept that swallows the arena.
+    # Read literally it says a *single* frame needs more memory than the whole
+    # arena, which pins every chunk to one frame and makes render_loop's
+    # preflight reject batches until it gives up with OutOfRenderMemory.
+    arena = 1_204_000_000
+    model = ChunkMemoryModel()
+    model.observe(SIG, 1, 70_000_000)
+    model.observe(SIG, 8, 560_000_000)
+    model.observe(SIG, 15, 1_190_000_000)
+    model.observe(SIG, 20, 1_203_000_000)
+
+    intercept, _slope = model._line(SIG)
+    # The intercept is the frame-independent cost; a chunk that was measured in
+    # full bounds it, so it can never exceed the smallest measured peak.
+    assert intercept <= min(model._samples(SIG).values())
+    assert model.predict(SIG, 1) < arena
+    assert model.plan(SIG, 100, arena) > 1
+    # Still conservative: no sample is read as cheaper than it measured.
+    assert model.predict(SIG, 15) >= 1_190_000_000
+
+
 def test_a_flat_measurement_falls_back_to_per_frame_cost():
     # If the peak does not grow with frames the slope is meaningless; charging
     # the whole peak per frame is the safe reading.

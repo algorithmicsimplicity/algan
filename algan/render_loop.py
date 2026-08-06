@@ -415,6 +415,9 @@ class RenderLoopMixin:
                 candidate_state,
                 post_processes,
                 transparent_background,
+                # A single frame is the smallest thing that can be rendered, so
+                # only the exact terms may reject it (see the preflight).
+                require_estimates_fit=duration > 1,
             )
             if fits:
                 return candidate, candidate_state
@@ -496,6 +499,8 @@ class RenderLoopMixin:
         render_state,
         post_processes,
         transparent_background,
+        *,
+        require_estimates_fit=True,
     ):
         """Whether the prepared scene and at least one frame fit exactly.
 
@@ -503,6 +508,15 @@ class RenderLoopMixin:
         output, wavefront state and post-processing grow the forward pointer.
         Preflighting both sides lets the outer batching loop binary-search a
         maximum fitting prepared duration without rendering speculative frames.
+
+        Two of the terms are exact (the scene's arena bytes, and an actual
+        out-of-memory raised by the projection or the merge) and the rest are
+        estimates -- the modelled per-frame cost and the transient peaks of the
+        out-of-arena builds. ``require_estimates_fit=False`` drops the estimated
+        terms, leaving only the exact ones. Callers pass it for a single-frame
+        batch: there is no smaller window to retreat to, so a rejection there
+        aborts the render outright, and a *guess* must never be what does that.
+        The render's own out-of-memory retry remains the backstop.
         """
         self._last_arena_preflight = None
         if not getattr(self.memory, "managed", False):
@@ -537,7 +551,10 @@ class RenderLoopMixin:
             estimated_project_peak = int(
                 self._project_peak_ratio.factor() * project_inputs
             )
-            if estimated_project_peak > self._gpu_merge_headroom_bytes():
+            if (
+                require_estimates_fit
+                and estimated_project_peak > self._gpu_merge_headroom_bytes()
+            ):
                 logger.debug(
                     "GPU projection peak estimate %.1f MB exceeds pool "
                     "headroom %.1f MB [%s]; shrinking frame window.",
@@ -568,6 +585,7 @@ class RenderLoopMixin:
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
             empty_cache(force_gc=False)
+            logger.debug("Arena preflight: projection ran out of memory (%r).", exc)
             return False
         if not all(
             getattr(primitive, "_rt_projected", False) for primitive in primitive_batch
@@ -589,7 +607,10 @@ class RenderLoopMixin:
             # Read now: merging nulls the packed _rt_* arrays this sums.
             merge_inputs = gpu_merge_input_bytes(primitive_batch)
             estimated_merge_peak = int(self._merge_peak_ratio.factor() * merge_inputs)
-            if estimated_merge_peak > self._gpu_merge_headroom_bytes():
+            if (
+                require_estimates_fit
+                and estimated_merge_peak > self._gpu_merge_headroom_bytes()
+            ):
                 logger.debug(
                     "GPU merge peak estimate %.1f MB exceeds pool headroom "
                     "%.1f MB; shrinking frame window.",
@@ -611,6 +632,7 @@ class RenderLoopMixin:
             primitive_batch[0]._rt_merged_scene = None
             primitive_batch[0]._rt_prepared_host_scene = None
             empty_cache(force_gc=False)
+            logger.debug("Arena preflight: scene merge ran out of memory (%r).", exc)
             return False
         scene_bytes = get_merged_scene_arena_nbytes(
             merged_host, self.memory, persist=True
@@ -633,6 +655,15 @@ class RenderLoopMixin:
                 )
         bytes_remaining = self.memory.get_num_bytes_remaining()
         if scene_bytes > bytes_remaining:
+            logger.debug(
+                "Arena preflight: scene %.1f MB exceeds the %.1f MB remaining "
+                "in the %.1f MB arena (tris=%s circuits=%s).",
+                scene_bytes / 1e6,
+                bytes_remaining / 1e6,
+                len(self.memory) / 1e6,
+                merged_host.get("num_triangles", 0),
+                merged_host.get("num_circuits", 0),
+            )
             return False
 
         class _LightSnapshot:
@@ -683,7 +714,39 @@ class RenderLoopMixin:
         need_bytes = scene_bytes + forward_bytes
         self._last_arena_preflight = (need_bytes, bytes_remaining)
         margin = int(getattr(self, "_arena_unmodeled_bytes", 0))
-        return need_bytes <= bytes_remaining - margin
+        fits = need_bytes <= bytes_remaining - margin
+        if not (fits or require_estimates_fit):
+            # Single-frame batch: the modelled frame cost is the only thing
+            # rejecting it, and there is no smaller window left to retreat to.
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "Arena preflight: modelled frame cost %.1f MB does not fit "
+                    "alongside the %.1f MB scene in %.1f MB [%s]; rendering the "
+                    "frame anyway rather than failing on an estimate.",
+                    forward_bytes / 1e6,
+                    scene_bytes / 1e6,
+                    bytes_remaining / 1e6,
+                    self._chunk_memory_model.describe(signature),
+                )
+            return True
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "Arena preflight %s: scene %.1f + frame %.1f = %.1f MB vs "
+                "%.1f MB remaining - %.1f MB margin (aa=%s, %sx%s, tris=%s, "
+                "circuits=%s).",
+                "fits" if fits else "rejects",
+                scene_bytes / 1e6,
+                forward_bytes / 1e6,
+                need_bytes / 1e6,
+                bytes_remaining / 1e6,
+                margin / 1e6,
+                aa,
+                render_width,
+                render_height,
+                merged_host.get("num_triangles", 0),
+                merged_host.get("num_circuits", 0),
+            )
+        return fits
 
     def _note_render_arena_underestimate(self):
         """Grow the preflight safety margin after a batch that passed the
@@ -1860,6 +1923,10 @@ class RenderLoopMixin:
                                 render_state,
                                 post_processes,
                                 transparent_background,
+                                # Nothing smaller than one frame can be
+                                # attempted, so estimates lose their vote here
+                                # rather than aborting the render.
+                                require_estimates_fit=duration > 1,
                             )
                         )
                     if not batch_fits:

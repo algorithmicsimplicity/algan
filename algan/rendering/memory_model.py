@@ -110,6 +110,16 @@ class ChunkMemoryModel:
                 samples[num_frames] = peak
         return samples
 
+    @staticmethod
+    def _per_frame_line(samples):
+        """Conservative reading: charge the worst observed rate to every frame.
+
+        Never under-reads any sample (``max(peak/n) * n_i >= peak_i`` for every
+        i) and has no intercept to get wrong, which is what makes it the safe
+        answer whenever the samples refuse to lie on one line.
+        """
+        return 0.0, max(peak / count for count, peak in samples.items())
+
     def _line(self, signature):
         """``(a, b)`` for a signature, or ``None`` while under-determined."""
         samples = self._samples(signature)
@@ -128,13 +138,26 @@ class ChunkMemoryModel:
         # of them tilts the slope downwards, which is the unsafe direction.
         low, high = counts[-2], counts[-1]
         slope = (samples[high] - samples[low]) / (high - low)
-        intercept = samples[low] - slope * low
+        intercept = max(0.0, samples[low] - slope * low)
         if slope <= 0:
             # Peak did not grow with frames: the measurement is dominated by
             # something that does not scale. Fall back to the conservative
             # per-frame reading rather than planning an unbounded chunk.
-            return 0.0, max(samples[c] / c for c in counts)
-        return max(0.0, intercept), slope
+            return self._per_frame_line(samples)
+        if intercept > min(samples.values()):
+            # The line claims a frame-independent cost larger than a chunk that
+            # was measured in full -- which that chunk disproves. It happens
+            # when the two largest counts come from batches of different
+            # density (the signature buckets geometry, so a fit can mix them)
+            # and both ran near the arena's capacity: two nearly equal peaks at
+            # different frame counts define an almost flat line whose intercept
+            # swallows the arena. Left alone it predicts that a *single* frame
+            # needs more memory than the whole arena, which pins chunks to one
+            # frame and makes the caller's preflight reject every batch it is
+            # offered. The samples are simply not affine, so read them the
+            # conservative way instead of trusting the fit.
+            return self._per_frame_line(samples)
+        return intercept, slope
 
     def is_calibrated(self, signature):
         """Whether anything has been measured for this signature yet.
