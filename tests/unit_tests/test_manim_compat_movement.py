@@ -182,3 +182,52 @@ def test_batched_algan_points_are_accepted_where_manim_wants_one_point(name):
     before = _center(mob)
     assert mob.shift(anchor.location) is mob
     torch.testing.assert_close(_center(mob) - before, anchor_point, atol=2e-5, rtol=0)
+
+
+# ---------------------------------------------------------------------------
+# Known defect: a parent-driven transform desynchronizes the backing Mobject.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("name", sorted(COMPAT_MOBS))
+def test_a_direct_move_keeps_the_backing_mobject_in_step(name):
+    """The supported path: the compat overrides shift the Manim object too."""
+    mob = COMPAT_MOBS[name]()
+    mob.move(UP * 1.35)
+    torch.testing.assert_close(_center(mob), _backing_center(mob), atol=2e-5, rtol=0)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "A Group.move() updates the Algan rows of its children directly, "
+        "bypassing ManimCompatMob.move, so the child's backing Manim object "
+        "stays where it was. The next delegated call rebuilds the Algan "
+        "geometry from that stale object and teleports the Mob back."
+    ),
+)
+@pytest.mark.parametrize("name", sorted(COMPAT_MOBS))
+def test_a_parent_group_move_keeps_the_backing_mobject_in_step(name):
+    from algan import Group
+
+    mob = COMPAT_MOBS[name]()
+    Group(mob).move(UP * 1.35)
+    torch.testing.assert_close(_center(mob), _backing_center(mob), atol=2e-5, rtol=0)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Same defect observed through its user-visible symptom: rotating a "
+        "compatibility Mob after its parent Group moved snaps it back to where "
+        "the parent found it."
+    ),
+)
+def test_rotating_after_a_parent_move_does_not_teleport_the_mob():
+    from algan import Group
+
+    star = Star()
+    Group(star).move(UP * 1.35)
+    before = _center(star).clone()
+    star.rotate(math.pi / 5)
+    # An in-place rotation may shift a Mob whose anchor is off its visual
+    # centre, but never by most of the displacement the parent just applied.
+    assert float((_center(star) - before).norm()) < 0.2

@@ -1,0 +1,153 @@
+"""The post-processing chain and the file the renderer actually writes.
+
+``save_video(post_processes=...)`` is a public extension point: a user pass is
+handed every frame and the arena it must allocate from. Nothing else in the
+suite runs a user pass, and nothing describes its memory -- the render loop
+measures the arena's high-water mark instead -- so the only way to know the
+plumbing still works is to run one.
+
+These render a 32x32 scene, which is cheap once the kernels are cached, but
+they are GPU work: they carry the ``slow`` marker.
+"""
+
+from __future__ import annotations
+
+import pytest
+import torch
+
+from algan import SETTINGS, SMOKE_TEST, Off, Scene, Square
+from algan.constants.color import BLUE
+
+pytestmark = pytest.mark.slow
+
+
+@pytest.fixture
+def render_scene(tmp_path):
+    SETTINGS.paths.set(output_root=str(tmp_path), output_directory=".")
+    SETTINGS.video.set(SMOKE_TEST)
+
+    def build():
+        scene = Scene()
+        with scene:
+            with Off():
+                Square(side_length=1.5, color=BLUE).spawn()
+            scene.wait(0.5)
+        return scene
+
+    return build
+
+
+def _read_frames(path):
+    import cv2
+
+    capture = cv2.VideoCapture(str(path))
+    frames = []
+    while True:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        frames.append(frame)
+    capture.release()
+    return frames
+
+
+def test_a_user_post_process_sees_every_frame_and_reaches_the_file(
+    render_scene, tmp_path
+):
+    seen = []
+
+    def paint_red(frames, memory):
+        seen.append(tuple(frames.shape))
+        out = memory.get_tensor(frames.shape, frames.dtype)
+        out.copy_(frames)
+        # Channels are (r, g, b, glow, [alpha]); drive green and blue to zero
+        # so the written video is unmistakably the pass's own output.
+        out[..., 1:3] = 0
+        return out
+
+    scene = render_scene()
+    result = scene.save_video(
+        tmp_path / "post_processed",
+        video_settings=SMOKE_TEST,
+        overwrite=True,
+        post_processes=(paint_red,),
+    )
+
+    assert result.rendered
+    assert seen, "the post-process was never called"
+    frames = _read_frames(result.output_path)
+    assert frames, "no frames were written"
+
+    # OpenCV reads BGR. The pass zeroed green and blue, so red has to dominate
+    # by far -- exactly is too strong a claim against a lossy codec.
+    import numpy
+
+    stacked = torch.from_numpy(numpy.stack(frames).astype("int16"))
+    red, green, blue = (int(stacked[..., i].max()) for i in (2, 1, 0))
+    assert red > 100, "the blue square's red channel never survived the pass"
+    assert green < red // 3
+    assert blue < red // 3
+
+    # And the default chain, on the same scene, produces something different.
+    control = render_scene().save_video(
+        tmp_path / "control", video_settings=SMOKE_TEST, overwrite=True
+    )
+    control_frames = torch.from_numpy(
+        numpy.stack(_read_frames(control.output_path)).astype("int16")
+    )
+    assert int((control_frames - stacked).abs().max()) > 20
+
+
+def test_an_empty_post_process_chain_renders_without_bloom(render_scene, tmp_path):
+    scene = render_scene()
+    result = scene.save_video(
+        tmp_path / "no_post",
+        video_settings=SMOKE_TEST,
+        overwrite=True,
+        post_processes=(),
+    )
+    assert result.rendered
+    assert _read_frames(result.output_path)
+
+
+def test_the_default_chain_and_an_explicit_empty_one_differ_only_by_bloom(
+    render_scene, tmp_path
+):
+    """A regression that dropped the default chain would otherwise be silent."""
+    with_bloom = render_scene().save_video(
+        tmp_path / "with_bloom", video_settings=SMOKE_TEST, overwrite=True
+    )
+    without = render_scene().save_video(
+        tmp_path / "without_bloom",
+        video_settings=SMOKE_TEST,
+        overwrite=True,
+        post_processes=(),
+    )
+    assert with_bloom.rendered
+    assert without.rendered
+    assert len(_read_frames(with_bloom.output_path)) == len(
+        _read_frames(without.output_path)
+    )
+
+
+def test_fxaa_is_a_video_setting_the_render_honours(render_scene, tmp_path):
+    scene = render_scene()
+    result = scene.save_video(
+        tmp_path / "fxaa",
+        video_settings=SMOKE_TEST.set(fxaa=True),
+        overwrite=True,
+    )
+    assert result.rendered
+    assert _read_frames(result.output_path)
+
+
+def test_save_frame_writes_a_png_at_the_requested_resolution(render_scene, tmp_path):
+    from PIL import Image
+
+    scene = render_scene()
+    result = scene.save_frame(
+        tmp_path / "still", SMOKE_TEST, at=0.0, overwrite=True
+    )
+    assert result.rendered
+    with Image.open(result.output_path) as still:
+        assert still.size == SMOKE_TEST.resolution

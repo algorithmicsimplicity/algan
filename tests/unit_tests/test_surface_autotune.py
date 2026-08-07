@@ -62,20 +62,6 @@ class _OtherCachedSurface(_CachedSurface):
     pass
 
 
-def test_surface_autotune_default():
-    # Test that default instantiation of Surface performs auto-tuning
-    surf = Surface(
-        coord_function=lambda uv: torch.cat(
-            ((uv - 0.5) * 2, torch.zeros_like(uv[..., :1])), -1
-        )
-    )
-    # The default tolerance is 0.01. Since the surface is completely flat, a very low resolution
-    # (like 4x4) is enough because flat triangles match the shape function exactly.
-    assert surf.grid_height >= 4
-    assert surf.grid_width >= 4
-    print(f"Flat Surface auto-tuned to: {surf.grid_width}x{surf.grid_height}")
-
-
 def test_auto_resolution_reuses_each_subclass_cache():
     _CachedSurface.clear_geometry_resolution_cache()
     _CachedSurface.search_calls = 0
@@ -146,32 +132,16 @@ def test_auto_resolution_caches_are_isolated_between_subclasses():
     )
 
 
-def test_sphere_autotune():
-    # Geometry tolerance is an absolute world-space construction constraint.
-    sphere_coarse = Sphere(geometry_tolerance=0.05)
-    sphere_fine = Sphere(geometry_tolerance=0.005)
-
-    # Check that finer tolerance results in higher resolution grid
-    assert sphere_fine.grid_width > sphere_coarse.grid_width
-    assert sphere_fine.grid_height > sphere_coarse.grid_height
-    print(
-        f"Sphere auto-tuned (tolerance=0.05) to: {sphere_coarse.grid_width}x{sphere_coarse.grid_height}"
-    )
-    print(
-        f"Sphere auto-tuned (tolerance=0.005) to: {sphere_fine.grid_width}x{sphere_fine.grid_height}"
-    )
-
-
-def test_cylinder_autotune():
-    # Test construction-time logical PN topology selection.
-    cyl_coarse = Cylinder(geometry_tolerance=0.05)
-    cyl_fine = Cylinder(geometry_tolerance=0.01)
-    assert cyl_fine.grid_width >= cyl_coarse.grid_width
-    print(
-        f"Cylinder auto-tuned (tolerance=0.05) to: {cyl_coarse.grid_width}x{cyl_coarse.grid_height}"
-    )
-    print(
-        f"Cylinder auto-tuned (tolerance=0.01) to: {cyl_fine.grid_width}x{cyl_fine.grid_height}"
+@pytest.mark.parametrize("shape", [Sphere, Cylinder], ids=["Sphere", "Cylinder"])
+def test_a_finer_tolerance_buys_a_finer_grid(shape):
+    """Geometry tolerance is an absolute world-space construction constraint."""
+    coarse = shape(geometry_tolerance=0.05)
+    fine = shape(geometry_tolerance=0.005)
+    assert fine.grid_width >= coarse.grid_width
+    assert fine.grid_height >= coarse.grid_height
+    assert (fine.grid_width, fine.grid_height) != (
+        coarse.grid_width,
+        coarse.grid_height,
     )
 
 
@@ -202,20 +172,11 @@ def test_manual_resolution_override():
     assert sphere.grid_width == 30
 
 
-def test_error_constraint():
-    sphere = Sphere(geometry_tolerance=0.01)
-    error = sphere._compute_pn_geometry_error(
-        sphere.coord_function_active,
-        sphere.grid_width,
-        sphere.grid_height,
-    )
-    print(f"Sphere actual error: {error.item():.6f}, threshold: 0.010000")
-    assert error <= sphere.geometry_tolerance
-
-
 def test_reparameterization_alone_is_not_geometric_error():
     # A plane is reproduced exactly by PN triangles at any resolution, so a
-    # stretched parameterization must not cost a single extra vertex.
+    # stretched parameterization must not cost a single extra vertex. This is
+    # also the "auto-tuning happened at all" check: without it the default
+    # search would not have settled on the minimum grid.
     surf = Surface(coord_function=_stretched_plane, geometry_tolerance=0.001)
     assert surf.grid_width == surf._min_grid_resolution
     assert surf.grid_height == surf._min_grid_resolution
@@ -234,8 +195,13 @@ def test_singular_parameterization_does_not_exhaust_the_grid_budget():
 
 
 @pytest.mark.parametrize("tolerance", [0.01, 0.001])
-def test_chosen_grid_is_within_tolerance_and_not_oversized(tolerance):
-    stone = _Superellipsoid(geometry_tolerance=tolerance)
+@pytest.mark.parametrize(
+    "build",
+    [_Superellipsoid, lambda **kwargs: Sphere(**kwargs)],
+    ids=["superellipsoid", "sphere"],
+)
+def test_chosen_grid_is_within_tolerance_and_not_oversized(build, tolerance):
+    stone = build(geometry_tolerance=tolerance)
     width, height = stone.grid_width, stone.grid_height
 
     def error(w, h):

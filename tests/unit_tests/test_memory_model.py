@@ -273,16 +273,19 @@ def test_affine_frame_cost_keeps_the_worst_cost_seen_at_a_frame_count():
     assert cost.max_frames_for() == 33
 
 
-def test_peak_ratio_uses_the_seed_until_something_is_measured():
-    ratio = PeakRatioModel(seed=6.0)
+def test_peak_ratio_uses_the_seed_until_a_usable_sample_arrives():
+    # Before anything is measured the seed is the whole model; a degenerate
+    # sample must not be mistaken for evidence; a real one supersedes the seed.
+    ratio = PeakRatioModel(seed=6.0, safety=1.25)
     assert not ratio.is_calibrated()
     assert ratio.predict(1_000_000) == 6_000_000
 
+    ratio.observe(0, 5_000_000)
+    assert not ratio.is_calibrated()
+    assert ratio.predict(1_000_000) == 6_000_000
 
-def test_peak_ratio_supersedes_the_seed_once_measured():
-    # The seeded guesses were far off: the merge's real peak measures well
-    # under the inputs the guess multiplied by six.
-    ratio = PeakRatioModel(seed=6.0, safety=1.25)
+    # The seeded guess was far off: the merge's real peak measures well under
+    # the inputs the guess multiplied by six.
     ratio.observe(1_000_000, 470_000)
     assert ratio.is_calibrated()
     assert ratio.predict(1_000_000) < 6_000_000
@@ -307,13 +310,6 @@ def test_peak_ratio_forgets_a_heavy_build():
     for _ in range(HISTORY):
         ratio.observe(1_000, 1_000)
     assert ratio.predict(10_000) == steady
-
-
-def test_peak_ratio_ignores_degenerate_samples():
-    ratio = PeakRatioModel(seed=3.0)
-    ratio.observe(0, 5_000_000)
-    assert not ratio.is_calibrated()
-    assert ratio.predict(1_000_000) == 3_000_000
 
 
 def test_peak_ratio_does_not_charge_a_small_builds_fixed_cost_per_byte():
