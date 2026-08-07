@@ -1,8 +1,9 @@
 import pytest
 import torch
 
-from algan import LEFT, RIGHT, Group, Mob, SceneManager, Square
+from algan import LEFT, ORIGIN, RIGHT, UP, Cube, Group, Mob, Off, SceneManager, Square
 from algan.errors import AlganConfigurationError
+from algan.utils.tensor_utils import unsquish
 
 
 @pytest.fixture(autouse=True)
@@ -113,6 +114,67 @@ def test_screen_rectangle_fit_can_preserve_aspect_ratio():
         group.get_width(), (target_upper - target_lower)[..., 0:1]
     )
     torch.testing.assert_close(group.get_center(), (target_lower + target_upper) * 0.5)
+
+
+def _rendered_screen_coords(scene, points):
+    """Normalized screen coords of world points, via the *renderer's* projection.
+
+    Deliberately built from ``get_render_screen_basis`` -- what the ray generator
+    inverts -- rather than from the layout code's own screen frame, so these
+    tests check the fit against what actually ends up on screen.
+    """
+    camera = scene.camera
+    right, up, forward = unsquish(camera.get_render_screen_basis(), -1, 3).reshape(3, 3)
+    screen = camera.screen.location.reshape(-1)
+    eye = camera.location.reshape(-1)
+    aspect = (
+        scene.video_settings.resolution[0] / scene.video_settings.resolution[1]
+    )
+    ray = points.reshape(-1, 3) - eye
+    on_plane = eye + ray * (torch.dot(screen - eye, forward) / (ray @ forward)).unsqueeze(
+        -1
+    )
+    offset = on_plane - screen
+    return torch.stack(((offset @ right) / aspect + 1, (offset @ up) + 1), -1) * 0.5
+
+
+@pytest.mark.parametrize("camera_rotation", [0, 25])
+def test_screen_rectangle_fit_keeps_a_mob_with_depth_inside_the_frame(camera_rotation):
+    # Perspective magnifies whatever ends up nearest the camera, so fitting the
+    # depth-less middle slice of a Cube used to leave half of it off-screen.
+    scene = SceneManager.instance().current_scene
+    if camera_rotation:
+        with Off():
+            scene.camera.rotate(camera_rotation, UP, about_point=ORIGIN)
+    cube = Cube(add_to_scene=False)
+
+    cube.fit_to_screen_rectangle()
+
+    screen = _rendered_screen_coords(scene, cube.get_bounding_box())
+    assert float(screen.amin(0).min()) >= -1e-3
+    assert float(screen.amax(0).max()) <= 1 + 1e-3
+    # ... and it fills the frame rather than shrinking away from the overflow.
+    assert float(screen.amax(0).max()) > 0.99
+
+
+def test_screen_rectangle_fit_measures_the_rectangle_in_the_cameras_frame():
+    # The rectangle is the camera's, so it must follow the camera's right and up
+    # axes; measuring it along the world x and y axes collapsed the Mob as the
+    # camera turned away from them.
+    scene = SceneManager.instance().current_scene
+    with Off():
+        scene.camera.rotate(30, UP, about_point=ORIGIN)
+    square = Square(add_to_scene=False)
+
+    square.fit_to_screen_rectangle((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
+
+    screen = _rendered_screen_coords(scene, square.get_bounding_box())
+    torch.testing.assert_close(
+        screen.amin(0), torch.tensor([0.1, 0.2]), atol=1e-3, rtol=0
+    )
+    torch.testing.assert_close(
+        screen.amax(0), torch.tensor([0.6, 0.7]), atol=1e-3, rtol=0
+    )
 
 
 def test_layout_size_scale_and_center_helpers_are_chainable():
