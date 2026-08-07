@@ -37,8 +37,9 @@ def scene_function(function=None, *, name=None):
     def decorate(func):
         if not callable(func):
             raise TypeError("@scene can only decorate callables")
+        func.name = name or func.__name__
         func.__algan_scene__ = True
-        func.__algan_scene_name__ = name or func.__name__
+        func.__algan_scene_name__ = func.name
         return func
 
     if function is None:
@@ -249,10 +250,11 @@ def _render_scene_to_file(
             codec="pcm_s32le",
         )
         if audiofile is not None:
-            script_file_path.write_text(
-                scene.audio_manager.video_transcript,
-                encoding="utf-8",
-            )
+            if not getattr(scene, "_suppress_automatic_transcript", False):
+                script_file_path.write_text(
+                    scene.audio_manager.video_transcript,
+                    encoding="utf-8",
+                )
             logger.info("Audio rendered, now rendering video")
 
         file_writer = get_file_writer(
@@ -448,6 +450,7 @@ def concatenate_videos(
     threads: int = None,
     reencode: bool = False,
     output_file="output.mp4",
+    input_files=None,
 ):
     """
     Concatenate all .mp4 files in a directory into output.mp4.
@@ -460,6 +463,9 @@ def concatenate_videos(
         threads: Number of threads for ffmpeg (default: CPU count)
         reencode: If True, re-encode videos with multithreading.
                  If False, use stream copy (faster, no re-encoding)
+        input_files: Optional explicit iterable of videos to concatenate. Paths
+                     default to ``directory`` when relative. When omitted, all
+                     MP4 files directly inside ``directory`` are used.
 
     Returns:
         Path to output file if successful, None otherwise
@@ -470,8 +476,28 @@ def concatenate_videos(
 
     dir_path = Path(directory).resolve()
 
-    # Find all .mp4 files (excluding output.mp4 if it exists)
-    mp4_files = [f for f in dir_path.glob("*.mp4") if f.name != output_file]
+    output_path = Path(output_file)
+    if not output_path.is_absolute():
+        output_path = dir_path / output_path
+    output_path = output_path.resolve()
+
+    # Find all .mp4 files, excluding the combined output when it lives in the
+    # same directory as its inputs. Project passes its exact scene manifest so
+    # unrelated MP4 files in the output directory cannot join the final video.
+    if input_files is None:
+        candidates = dir_path.glob("*.mp4")
+    else:
+        candidates = (
+            path if (path := Path(file)).is_absolute() else dir_path / path
+            for file in input_files
+        )
+    mp4_files = [
+        path
+        for path in candidates
+        if path.suffix.lower() == ".mp4"
+        and path.exists()
+        and path.resolve() != output_path
+    ]
 
     if not mp4_files:
         logger.warning(f"No .mp4 files found in {directory}")
@@ -498,8 +524,6 @@ def concatenate_videos(
                 f.write(f"file '{abs_path}'\n")
 
         # Build ffmpeg command
-        output_path = dir_path / output_file
-
         cmd = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", str(concat_file)]
 
         if reencode:

@@ -35,16 +35,19 @@ def make_manim_dir():
     """Create manim's tex/text output directories if they don't exist yet.
 
     Touching ``mn.config`` loads manim, and with it
-    :mod:`algan.utils.manim_svg_cache`, which first redirects these
-    directories into ``SETTINGS.paths.cache_directory``.
+    :mod:`algan.utils.manim_svg_cache`. The paths are resolved again here so a
+    runtime change to ``SETTINGS.paths.cache_directory`` is honored and Manim
+    never creates its default ``media`` tree beside the user's script.
 
     Called lazily on first :class:`Tex` construction (manim errors if they are
     missing) rather than at ``import algan`` time, so importing the package
     doesn't write to disk.
     """
-    for tex_dir in [mn.config.get_dir("tex_dir"), mn.config.get_dir("text_dir")]:
-        if not tex_dir.exists():
-            tex_dir.mkdir(parents=True)
+    config = mn.config
+    from algan.utils.manim_svg_cache import _configure_manim_dirs
+
+    for tex_dir in _configure_manim_dirs(config):
+        tex_dir.mkdir(parents=True, exist_ok=True)
 
 
 class Tex(Mob):

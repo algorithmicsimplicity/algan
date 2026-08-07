@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -117,6 +118,57 @@ def _stub_out_frame_writing(monkeypatch, scene, on_render=None):
         )
 
     monkeypatch.setattr(scene, "get_frames", fake_frames)
+
+
+def test_save_frame_resolves_negative_at_from_current_context_time(
+    monkeypatch, tmp_path
+):
+    scene = SceneManager.instance().current_scene
+    scene.set_video_settings(VideoSettings((17, 13), 10, anti_alias_level=1))
+    scene.animation_manager.context.timespan.current_time = 3.0
+    requested_windows = []
+
+    def fake_frames(start_ind, end_ind, **_kwargs):
+        requested_windows.append((start_ind, end_ind))
+        yield torch.zeros((1, 13, 17, 4), dtype=torch.uint8)
+
+    monkeypatch.setattr(scene, "get_frames", fake_frames)
+
+    scene.save_frame(tmp_path / "earlier", at=-0.5)
+
+    assert requested_windows == [(25, 26)]
+
+
+def test_save_frame_rejects_negative_at_before_scene_start(monkeypatch, tmp_path):
+    scene = SceneManager.instance().current_scene
+    scene.animation_manager.context.timespan.current_time = 0.25
+    _stub_out_frame_writing(monkeypatch, scene)
+
+    with pytest.raises(AlganConfigurationError, match="non-negative"):
+        scene.save_frame(tmp_path / "before_start", at=-0.5)
+
+
+def test_text_creates_manim_directories_inside_algan_cache(monkeypatch, tmp_path):
+    from algan.mobs import text as text_module
+
+    class FakeManimConfig:
+        tex_dir = "{media_dir}/Tex"
+        text_dir = "{media_dir}/texts"
+
+        def get_dir(self, name):
+            return Path(getattr(self, name))
+
+    config = FakeManimConfig()
+    monkeypatch.setattr(text_module, "mn", SimpleNamespace(config=config))
+    algan_cache = tmp_path / "algan_cache"
+
+    with algan.SETTINGS.paths.override(cache_directory=algan_cache):
+        text_module.make_manim_dir()
+
+    assert Path(config.tex_dir) == algan_cache / "manim" / "Tex"
+    assert Path(config.text_dir) == algan_cache / "manim" / "texts"
+    assert Path(config.tex_dir).is_dir()
+    assert Path(config.text_dir).is_dir()
 
 
 def test_save_frame_does_not_freeze_replay_windows_of_an_open_context(

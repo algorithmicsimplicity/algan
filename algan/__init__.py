@@ -19,6 +19,12 @@ def __getattr__(name):
 import os
 import sys
 
+from algan.environment import (
+    warn_for_unknown_algan_environment_variables as _warn_for_unknown_algan_environment_variables,
+)
+
+_warn_for_unknown_algan_environment_variables()
+
 # The project vendors the subset of Manim Community used for SVG/Tex and
 # compatibility Mobs.  Expose it under Manim's normal top-level package name
 # before importing any Algan mob modules; those modules intentionally use the
@@ -88,6 +94,7 @@ from algan.mobs.shapes_3d import *
 from algan.mobs.surfaces.surface import *
 from algan.mobs.text import *
 from algan.mobs.three_d_models import ThreeDModelMob, TriangleMesh
+from algan.project import Project
 from algan.rendering import camera
 
 # Manim names its root class Mobject; Algan's native equivalent is Mob.  Its

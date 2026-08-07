@@ -258,8 +258,7 @@ def _redirect_manim_dirs() -> None:
     ``{media_dir}/texts`` -- relative to the *current working directory* by
     default, so every project re-pays every LaTeX compile. Redirect both into
     ``SETTINGS.paths.cache_directory`` (content-hashed filenames make the
-    cache safely shareable across projects), unless the user already pointed
-    them somewhere custom.
+    cache safely shareable across projects).
 
     Done here (this module rides along on Algan's first manim import) rather
     than in the ``Tex``/``Text`` mobs so that raw manim mobjects wrapped in
@@ -268,11 +267,7 @@ def _redirect_manim_dirs() -> None:
     from manim import config
     from manim.utils import tex_file_writing
 
-    manim_cache_dir = os.path.join(SETTINGS.paths.cache_directory, "manim")
-    if config.tex_dir == "{media_dir}/Tex":  # manim's stock default
-        config.tex_dir = os.path.join(manim_cache_dir, "Tex")
-    if config.text_dir == "{media_dir}/texts":  # manim's stock default
-        config.text_dir = os.path.join(manim_cache_dir, "texts")
+    _configure_manim_dirs(config)
 
     # Manim's Text path creates ``text_dir`` with mkdir(parents=True), but its
     # Tex path (``generate_tex_file``) uses a *single-level* mkdir, which
@@ -286,6 +281,19 @@ def _redirect_manim_dirs() -> None:
         return _orig_generate_tex_file(*args, **kwargs)
 
     tex_file_writing.generate_tex_file = _generate_tex_file_with_dir
+
+
+def _configure_manim_dirs(config) -> tuple[Path, Path]:
+    """Keep Manim's Text/Tex scratch files inside Algan's cache tree.
+
+    This is also called by :func:`algan.mobs.text.make_manim_dir`, because the
+    runtime-adjustable content-cache setting may have moved since Manim was
+    first imported.
+    """
+    manim_dir = Path(SETTINGS.paths.cache_directory) / "manim"
+    config.tex_dir = os.fspath(manim_dir / "Tex")
+    config.text_dir = os.fspath(manim_dir / "texts")
+    return Path(config.get_dir("tex_dir")), Path(config.get_dir("text_dir"))
 
 
 def install() -> None:

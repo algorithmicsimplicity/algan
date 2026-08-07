@@ -168,6 +168,8 @@ class Scene(RenderLoopMixin):
         self.allow_new_actors = True
         self.animate_scene_clear = False
         self.memory = memory
+        self._project_run = None
+        self._suppress_automatic_transcript = False
 
         # Every Scene is a self-contained authoring universe.  Mobs always use
         # these references after construction rather than consulting globals.
@@ -859,13 +861,21 @@ class Scene(RenderLoopMixin):
             )
         return round(time_stamp * self.video_settings.frames_per_second)
 
-    def _render_still(self, destination, time_stamp):
-        """Render one frame at ``time_stamp`` and write it to ``destination``."""
+    def _resolve_still_timestamp(self, time_stamp):
+        """Resolve a still timestamp against the current authoring cursor."""
         if time_stamp is None:
-            time_stamp = (
+            return (
                 self.animation_manager.context.timespan.current_time
                 + 1.5 / self.video_settings.frames_per_second
             )
+        time_stamp = float(time_stamp)
+        if time_stamp < 0:
+            time_stamp += self.animation_manager.context.timespan.current_time
+        return time_stamp
+
+    def _render_still(self, destination, time_stamp):
+        """Render one frame at ``time_stamp`` and write it to ``destination``."""
+        time_stamp = self._resolve_still_timestamp(time_stamp)
         time_ind = self._frame_index_for_timestamp(time_stamp)
         frame = None
         with torch.inference_mode():
@@ -913,9 +923,12 @@ class Scene(RenderLoopMixin):
             current settings.
         at
             Timestamp in seconds to capture, or a sequence of timestamps to
-            capture several stills in one call. Each timestamp must be finite
-            and non-negative. Defaults to ``None``, capturing just after the
-            current authoring time -- i.e. the scene as it stands.
+            capture several stills in one call. A negative timestamp is an
+            offset backwards from the current authoring time, so ``-0.5``
+            captures half a second before the current context's cursor.
+            Resolved timestamps must be finite and non-negative. Defaults to
+            ``None``, capturing just after the current authoring time -- i.e.
+            the scene as it stands.
         overwrite
             Whether an existing file at the destination is replaced. Defaults to
             True; False leaves it alone and reports ``"skipped"``.
@@ -937,8 +950,18 @@ class Scene(RenderLoopMixin):
 
             Scene.save_frame("thumbnail", HD)
             Scene.save_frame("shot.png", at=2.5)
+            Scene.save_frame("previous.png", at=-0.5)
             Scene.save_frame("contact_sheet", at=[0, 1, 2])
         """
+        project_run = self._project_run
+        if project_run is None:
+            from algan.project import _get_active_project_run
+
+            project_run = _get_active_project_run()
+        if project_run is not None:
+            file_path = project_run.prepare_frame_path(file_path)
+            if not project_run.render_screenshots:
+                return []
         if SETTINGS.skip_save_frame:
             return []
         # Import lazily to avoid the Scene/algan_utils import cycle during
@@ -999,7 +1022,10 @@ class Scene(RenderLoopMixin):
                 self.background_is_set,
             ) = previous_background
 
-        return results if returns_list else results[0]
+        result = results if returns_list else results[0]
+        if project_run is not None:
+            project_run.record_frame_results(result)
+        return result
 
     @active_scene_method
     def set_background_color(self, background_color, overwrite: bool = True):
@@ -1157,6 +1183,21 @@ class Scene(RenderLoopMixin):
             Scene.save_video("my_video", HD)  # one-off quality override
             Scene.save_video("renders/final.mov")  # explicit directory
         """
+        project_run = self._project_run
+        if project_run is None:
+            from algan.project import _get_active_project_run
+
+            project_run = _get_active_project_run()
+        if project_run is not None and not project_run.allow_video_render:
+            from algan.utils.algan_utils import (
+                RenderResult,
+                _resolve_output_destination,
+            )
+
+            default_extension = ".mov" if self.background_is_transparent() else ".mp4"
+            destination = _resolve_output_destination(file_path, default_extension)
+            return RenderResult("skipped", destination)
+
         from algan.utils.algan_utils import _render_scene_to_file
 
         # render_to_video owns the post-processing default, so only forward an
