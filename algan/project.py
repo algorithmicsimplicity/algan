@@ -50,7 +50,8 @@ class _ProjectSceneRun:
         return self.mode == "screenshots"
 
     def prepare_frame_path(self, file_path) -> Path:
-        frame_id = self.project.frame_id(self.scene.id, self.next_frame_index)
+        scene_id = self.scene.id
+        frame_id = self.next_frame_index#self.project.frame_id(self.scene.id, self.next_frame_index)
         self.next_frame_index += 1
 
         if file_path is None:
@@ -59,7 +60,7 @@ class _ProjectSceneRun:
         requested = Path(raw_path)
         if requested.suffix == "":
             requested = requested.with_suffix(".png")
-        requested = requested.with_name(f"{frame_id}_{requested.name}")
+        requested = requested.with_name(f"{scene_id}_{frame_id}_{requested.name}")
 
         # Match Scene's path contract: a bare name uses the configured project
         # screenshot directory, while an explicit parent remains explicit.

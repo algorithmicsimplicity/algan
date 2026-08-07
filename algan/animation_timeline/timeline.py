@@ -1635,6 +1635,47 @@ class AnimationTimeline:
             self._active_replay_edit_index += 1
         return inds
 
+    def peek_replay_inds(self, attr_name, mob_id, include_descendants):
+        """Rows a *read* must use while replaying one function.
+
+        A replayed function has to read the same rows it will write, or the
+        value it computes is indexed differently from the buffer slots it
+        lands in. :meth:`replay_inds` only answers for the edit at the cursor,
+        which is right for writes -- they consume the recorded edits in
+        order -- but wrong for reads, because a function need not read its
+        attributes in the order it writes them.
+        :meth:`~algan.animatable_base.mob.Mob._apply_basis_change` reads the
+        recursive ``basis`` before writing the recursive ``location``, so an
+        at-the-cursor match misses and the read silently falls back to the
+        *current* hierarchy's rows.
+
+        That fallback is only harmless while the two agree. They stop
+        agreeing as soon as anything reallocates a descendant's rows after the
+        function was recorded -- ``detach_history`` (and so every
+        :meth:`~.Mob.wave_color` auto-resolution restore) hands the old rows
+        to a clone and appends fresh ones at the end of the buffer, which
+        reorders the sorted descendant union. The read then returns some other
+        Mob's values, and the write scatters them across unrelated rows.
+
+        So search forward from the cursor for the edit this read pairs with,
+        without consuming it. Returns ``None`` when the function records no
+        matching write, in which case the caller's live-topology rows are the
+        correct answer.
+        """
+        event = self._active_replay_event
+        if event is None:
+            return None
+        recorded_edits = event.recorded_edits
+        for index in range(self._active_replay_edit_index, len(recorded_edits)):
+            edit_attr, edit_mob_id, edit_recursive, inds = recorded_edits[index]
+            if (
+                edit_attr == attr_name
+                and edit_mob_id == mob_id
+                and edit_recursive == include_descendants
+            ):
+                return inds
+        return None
+
     def modify_attribute(self, attr_name, mob_inds, new_value):
         timeline = self.attr_to_timeline[attr_name]
         timeline.modify(mob_inds, new_value)

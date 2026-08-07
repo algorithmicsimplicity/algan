@@ -931,7 +931,10 @@ class Animatable:
             The attribute's current value.
         """
         timeline = self.scene.timeline_manager
-        replay_inds = timeline.replay_inds(key, self.id, include_descendants)
+        # A read must land on the rows the replayed function will write, which
+        # are not necessarily the ones at the replay cursor -- see
+        # AnimationTimeline.peek_replay_inds.
+        replay_inds = timeline.peek_replay_inds(key, self.id, include_descendants)
         if default is not None and replay_inds is None:
             self._prepare_buffers(key, default)
         inds = (

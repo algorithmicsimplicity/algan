@@ -419,6 +419,52 @@ def test_repeated_waves_leave_a_thin_cylinder_the_size_it_was():
     )
 
 
+def test_group_transform_recorded_before_a_restore_keeps_every_member_intact():
+    # A wave's restore hands the refined rows to a clone and appends fresh ones
+    # at the end of the attribute buffer, which reorders the *sorted* union of a
+    # Group's descendant rows. A group transform recorded earlier in the same
+    # block replays afterwards, so anything it reads from the live hierarchy is
+    # now indexed differently from the rows it writes: every member past the
+    # refined Surface picked up a neighbour's basis, shrinking Tex glyphs to
+    # nothing and inflating a neural net's synapses into blobs. Replay reads the
+    # rows it will write (AnimationTimeline.peek_replay_inds), so the members'
+    # bases must stay untouched by whether a sibling was refined at all.
+    sheet = flat_sheet()
+
+    with Seq(run_time=4, rate_func=identity):
+        with Sync():
+            sheet.wave_color(PURE_BLUE, wave_length=0.5)
+        # Allocated between the refine and the restore, so the restore moving
+        # the sheet's rows to the end of the buffer shifts these along -- the
+        # position the output distribution's ``p_w(y)`` label was in.
+        markers = [
+            Square(color=YELLOW).scale(scale).move(RIGHT * index).spawn(animate=False)
+            for index, scale in enumerate((0.2, 0.7, 1.6))
+        ]
+        original = [marker.basis.clone() for marker in markers]
+        group = Group([sheet, *markers])
+        group.scale(3.0)
+    assert (sheet.grid_width, sheet.grid_height) == (4, 4)
+
+    timeline = sheet.scene.timeline_manager
+    # Part way through the scale, where the corruption showed: both endpoints of
+    # an interpolated transform can look right while everything between is wrong.
+    timeline.set_state_to_times(torch.tensor([3.5]))
+    # One uniform scale multiplies every member's basis by one shared factor, so
+    # every non-zero basis entry, in every member, scales by the same amount.
+    factors = []
+    for marker, before in zip(markers, original):
+        nonzero = before.reshape(-1) != 0
+        factors.append((marker.basis.reshape(-1) / before.reshape(-1))[nonzero])
+    shared = torch.cat(factors)
+    torch.testing.assert_close(
+        shared, torch.full_like(shared, float(shared[0])), atol=1e-5, rtol=0
+    )
+    # And it is genuinely mid-animation rather than parked at either endpoint.
+    assert 1.0 < float(shared[0]) < 3.0
+    timeline.clear_buffers()
+
+
 def test_top_level_wave_restores_immediately_after_itself():
     sheet = flat_sheet()
     sheet.wave_color(PURE_BLUE, wave_length=0.5)
