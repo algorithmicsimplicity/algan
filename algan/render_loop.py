@@ -31,6 +31,7 @@ import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
 from algan.logging.logger import get_logger
 from algan.rendering.memory_model import (
+    AffineFrameCost,
     ChunkMemoryModel,
     PeakRatioModel,
     chunk_signature,
@@ -59,6 +60,14 @@ logger = get_logger("scene")
 #: finished collections (merged bezier groups) rather than per-actor
 #: primitives awaiting concatenation.
 _PREBUILT_COLLECTION = object()
+
+#: Share of a budget that a batch's *actor set* must take -- the part no frame
+#: count can shrink -- before the window stops being the right lever and the
+#: loop retreats behind a spawn to carry fewer actors instead (see
+#: RenderLoopMixin._batch_actor_share). At half the budget, halving the frames
+#: can at best halve the other half, so a shorter window buys little; below it
+#: the batch is frame-bound and the ordinary search is the cheaper answer.
+_ACTOR_SHARE_RETREAT = 0.5
 
 
 class EmptySceneWarning(Warning):
@@ -292,12 +301,34 @@ class RenderLoopMixin:
             return float("inf")
         return int(get_num_available_bytes(device) * 0.9)
 
+    @staticmethod
+    def _may_slice_across_spawns():
+        """Whether a fetched batch may be sliced when a mob spawns inside it.
+
+        The prefix then carries actors that have not spawned by the time it
+        ends. Their geometry is inert: materialization zeroes a mob's opacity
+        outside its lifespan, and ``_pack_frame_visibility`` gives a primitive
+        empty per-frame bounds wherever its alpha is below ``MIN_ALPHA``, so it
+        never enters the BVH on those frames -- nothing un-spawned is drawn.
+
+        It is not byte-identical to re-fetching the prefix, though: carrying
+        the extra primitives reorders the merged arrays and the STBVH, so
+        shared-edge depth ties and interpolation boundaries land differently.
+        The residual is edge-local and a couple of levels deep (see
+        ``benchmarks/_prespawn_invisibility_check.py``); both renders are
+        correct, and re-fetching costs a full rematerialization per batch.
+        Set ``ALGAN_SLICE_ACROSS_SPAWNS=0`` to rematerialize instead.
+        """
+        return os.environ.get("ALGAN_SLICE_ACROSS_SPAWNS", "1") != "0"
+
     def _fetched_window_has_stable_actor_set(self, actors, start_ind, end_ind):
         """Whether no renderable actor spawns inside a fetched frame window.
 
-        Prefix slicing is exactly equivalent to fetching that prefix only when
-        the actor set is unchanged.  Actors that despawn inside the window are
-        safe: their already-materialized opacity becomes zero.
+        Only consulted under ``ALGAN_SLICE_ACROSS_SPAWNS=0`` (see
+        :meth:`_may_slice_across_spawns`), where prefix slicing is restricted
+        to windows for which it is exactly equivalent to fetching the prefix.
+        Actors that despawn inside the window are safe either way: their
+        already-materialized opacity becomes zero.
         """
         start_time = start_ind / self.frames_per_second
         end_time = end_ind / self.frames_per_second
@@ -418,6 +449,7 @@ class RenderLoopMixin:
                 # A single frame is the smallest thing that can be rendered, so
                 # only the exact terms may reject it (see the preflight).
                 require_estimates_fit=duration > 1,
+                num_frames=duration,
             )
             if fits:
                 return candidate, candidate_state
@@ -448,7 +480,7 @@ class RenderLoopMixin:
         high = upper - 1
         best = 0
         while low <= high:
-            duration = (low + high + 1) // 2
+            duration = self._next_probe_duration(low, high)
             result = probe(duration)
             if result is None:
                 high = duration - 1
@@ -493,6 +525,113 @@ class RenderLoopMixin:
         )
         return result[0], best, result[1]
 
+    def _begin_batch_cost_measurement(self):
+        """Start a fresh cost fit for a newly fetched batch.
+
+        Each term is affine in the frame count, with an intercept fixed by the
+        batch's *actor set* -- so a new fetch, which selects a different set,
+        starts a new line (see :class:`AffineFrameCost`).
+        """
+        self._batch_costs = collections.defaultdict(AffineFrameCost)
+
+    def _note_batch_cost(self, term, num_frames, needed_bytes, usable_bytes):
+        """Record what one preflight term cost this batch, and its budget."""
+        if not num_frames or needed_bytes <= 0 or usable_bytes <= 0:
+            return
+        self._batch_costs[term].observe(num_frames, needed_bytes, usable_bytes)
+
+    def _batch_frame_capacity(self):
+        """Frames the tightest measured term leaves room for, or ``None``.
+
+        Zero means no window is short enough: the actor set alone overruns some
+        term's budget, and only a batch carrying fewer actors will fit.
+        """
+        capacities = [
+            capacity
+            for cost in self._batch_costs.values()
+            if (capacity := cost.max_frames_for()) is not None
+        ]
+        return min(capacities) if capacities else None
+
+    def _batch_actor_share(self):
+        """Largest share of a term's cost this batch's actor set fixes.
+
+        The part no frame count can shrink, as a fraction of what the term
+        costs over the whole fetched window. Near 1.0 the window is the wrong
+        lever entirely; well below it the batch is frame-bound and the ordinary
+        frame search is the cheaper answer.
+        """
+        shares = [
+            share
+            for cost in self._batch_costs.values()
+            if (share := cost.actor_share()) is not None
+        ]
+        return max(shares) if shares else None
+
+    def _describe_batch_costs(self):
+        return ", ".join(
+            f"{term} {cost.describe()} of {(cost.budget or 0) / 1e6:.1f} MB"
+            for term, cost in sorted(self._batch_costs.items())
+        )
+
+    def _previous_spawn_boundary(self, actors, start_ind, end_ind):
+        """Largest window end that admits strictly fewer actors than ``end_ind``.
+
+        Batch preparation selects the actors that have spawned by the window's
+        end, so what decides how much *actor* geometry a batch carries is the
+        window's reach over the spawn schedule -- not its length. Shortening a
+        window inside a stretch with no spawn in it drops no actor at all,
+        which is why a frame-count search cannot relieve an actor-bound batch.
+
+        ``None`` when there is no spawn to retreat behind.
+        """
+        fps = self.frames_per_second
+        start_time = start_ind / fps
+        end_time = end_ind / fps
+        latest = None
+        for actor in actors:
+            if not hasattr(actor, "get_render_primitives"):
+                continue
+            try:
+                spawn_time = float(actor.lifespan.start())
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if start_time < spawn_time <= end_time and (
+                latest is None or spawn_time > latest
+            ):
+                latest = spawn_time
+        if latest is None:
+            return None
+        # Selection is ``spawn <= end / fps``, so the window has to end
+        # strictly before that spawn for its actor to be left out.
+        boundary = math.ceil(latest * fps) - 1
+        while boundary > start_ind and boundary / fps >= latest:
+            boundary -= 1
+        return boundary if boundary > start_ind else None
+
+    def _next_probe_duration(self, low, high, use_hint=True):
+        """Next frame count to try within ``[low, high]``.
+
+        The last preflight measured what its batch actually consumed, so it can
+        say roughly how many frames there is room for. Aiming at that lands on
+        the answer in one probe where halving takes several. It may only pull
+        the target *below* the halving point, never above it, so the search
+        keeps its guaranteed halving progress when the estimate is useless (on
+        a batch that overflowed it overshoots, by the frame-independent part of
+        whichever term rejected it).
+
+        ``use_hint=False`` for callers whose next window will be materialized
+        afresh after a *sliced* measurement: the slice carried the whole
+        fetched window's actor set, so its estimate describes a batch the
+        caller is no longer proposing to build, and following it would repeat
+        the degenerate window it is retreating from.
+        """
+        midpoint = (low + high + 1) // 2
+        hint = self._batch_frame_capacity() if use_hint else None
+        if hint is None or hint >= midpoint:
+            return midpoint
+        return max(low, hint)
+
     def _prepared_batch_fits_render_arena(
         self,
         primitive_batch,
@@ -501,6 +640,7 @@ class RenderLoopMixin:
         transparent_background,
         *,
         require_estimates_fit=True,
+        num_frames=None,
     ):
         """Whether the prepared scene and at least one frame fit exactly.
 
@@ -517,6 +657,12 @@ class RenderLoopMixin:
         batch: there is no smaller window to retreat to, so a rejection there
         aborts the render outright, and a *guess* must never be what does that.
         The render's own out-of-memory retry remains the backstop.
+
+        ``num_frames`` is the batch's frame count. Given it, each term's cost
+        is recorded against it (see ``_note_batch_cost``), which is what lets
+        the caller separate what the frame count buys from what the batch's
+        actor set costs regardless -- and so aim its next window, or decide
+        that no window is short enough and fewer actors are needed.
         """
         self._last_arena_preflight = None
         if not getattr(self.memory, "managed", False):
@@ -548,18 +694,23 @@ class RenderLoopMixin:
         if rt_settings.project_on_gpu_active():
             # Read now: projecting releases the source geometry this sums.
             project_inputs = gpu_project_input_bytes(primitive_batch)
-            estimated_project_peak = int(
-                self._project_peak_ratio.factor() * project_inputs
+            estimated_project_peak = self._project_peak_ratio.predict(project_inputs)
+            headroom = self._gpu_merge_headroom_bytes()
+            # Scale the window by the *inputs* the window controls, not by the
+            # predicted peak: the build's fixed part does not shrink with the
+            # frame count, so dividing it in would pin the window where it is.
+            self._note_batch_cost(
+                "projection",
+                num_frames,
+                project_inputs,
+                self._project_peak_ratio.max_inputs_for(headroom),
             )
-            if (
-                require_estimates_fit
-                and estimated_project_peak > self._gpu_merge_headroom_bytes()
-            ):
+            if require_estimates_fit and estimated_project_peak > headroom:
                 logger.debug(
                     "GPU projection peak estimate %.1f MB exceeds pool "
                     "headroom %.1f MB [%s]; shrinking frame window.",
                     estimated_project_peak / 1e6,
-                    self._gpu_merge_headroom_bytes() / 1e6,
+                    headroom / 1e6,
                     self._project_peak_ratio.describe(),
                 )
                 return False
@@ -606,16 +757,22 @@ class RenderLoopMixin:
         if gpu_merge:
             # Read now: merging nulls the packed _rt_* arrays this sums.
             merge_inputs = gpu_merge_input_bytes(primitive_batch)
-            estimated_merge_peak = int(self._merge_peak_ratio.factor() * merge_inputs)
-            if (
-                require_estimates_fit
-                and estimated_merge_peak > self._gpu_merge_headroom_bytes()
-            ):
+            estimated_merge_peak = self._merge_peak_ratio.predict(merge_inputs)
+            headroom = self._gpu_merge_headroom_bytes()
+            # See the projection term: scale by inputs, not by predicted peak.
+            self._note_batch_cost(
+                "merge",
+                num_frames,
+                merge_inputs,
+                self._merge_peak_ratio.max_inputs_for(headroom),
+            )
+            if require_estimates_fit and estimated_merge_peak > headroom:
                 logger.debug(
                     "GPU merge peak estimate %.1f MB exceeds pool headroom "
-                    "%.1f MB; shrinking frame window.",
+                    "%.1f MB [%s]; shrinking frame window.",
                     estimated_merge_peak / 1e6,
-                    self._gpu_merge_headroom_bytes() / 1e6,
+                    headroom / 1e6,
+                    self._merge_peak_ratio.describe(),
                 )
                 return False
         try:
@@ -654,6 +811,10 @@ class RenderLoopMixin:
                     scene_bytes / 1e6,
                 )
         bytes_remaining = self.memory.get_num_bytes_remaining()
+        margin = int(getattr(self, "_arena_unmodeled_bytes", 0))
+        self._note_batch_cost(
+            "arena", num_frames, scene_bytes, bytes_remaining - margin
+        )
         if scene_bytes > bytes_remaining:
             logger.debug(
                 "Arena preflight: scene %.1f MB exceeds the %.1f MB remaining "
@@ -713,7 +874,11 @@ class RenderLoopMixin:
         forward_bytes = self._chunk_memory_model.predict(signature, 1) or 0
         need_bytes = scene_bytes + forward_bytes
         self._last_arena_preflight = (need_bytes, bytes_remaining)
-        margin = int(getattr(self, "_arena_unmodeled_bytes", 0))
+        # Refine the arena term now that the frame cost is known: it is the
+        # scene, not the frame buffers, that the frame count scales.
+        self._note_batch_cost(
+            "arena", num_frames, scene_bytes, bytes_remaining - margin - forward_bytes
+        )
         fits = need_bytes <= bytes_remaining - margin
         if not (fits or require_estimates_fit):
             # Single-frame batch: the modelled frame cost is the only thing
@@ -747,6 +912,30 @@ class RenderLoopMixin:
                 merged_host.get("num_circuits", 0),
             )
         return fits
+
+    def _observed_chunk_frames(self, duration):
+        """Frame count to credit a rendered chunk's measured arena peak to.
+
+        Normally the chunk that was planned. When the renderer had to
+        sub-divide it -- an out-of-memory split, or the Monte Carlo path budget
+        -- the high-water mark belongs to the largest sub-window it actually
+        launched, and crediting it to the planned count reads the per-frame
+        cost as roughly half of what it is. The model then plans the same
+        over-large chunk again and splits again, for chunk after chunk, with
+        nothing in the loop ever learning: the split is recovered inside the
+        tracer, so the outer render-failure path never sees it either.
+        """
+        launched = getattr(self.memory, "last_launch_frames", None)
+        if not launched or launched >= duration:
+            return duration
+        logger.debug(
+            "chunk of %d frames was rendered in sub-windows of at most %d; "
+            "attributing its arena peak to %d frames",
+            duration,
+            launched,
+            launched,
+        )
+        return int(launched)
 
     def _note_render_arena_underestimate(self):
         """Grow the preflight safety margin after a batch that passed the
@@ -1003,6 +1192,7 @@ class RenderLoopMixin:
                 # rather than the whole job's.
                 chunk_base = render_pointers[0] + len(self.memory) - render_pointers[1]
                 self.memory.max_pointer = chunk_base
+                self.memory.last_launch_frames = None
                 yield primitive_batch[0].render(
                     primitive_batch,
                     self,
@@ -1027,7 +1217,7 @@ class RenderLoopMixin:
                 if getattr(self.memory, "managed", False):
                     model.observe(
                         signature,
-                        duration,
+                        self._observed_chunk_frames(duration),
                         max(0, self.memory.max_pointer - chunk_base),
                     )
 
@@ -1771,6 +1961,11 @@ class RenderLoopMixin:
         # at least this much slack (see _note_render_arena_underestimate).
         self._arena_unmodeled_bytes = 0
         self._last_arena_preflight = None
+        self._begin_batch_cost_measurement()
+        # Frames the arena had room for in the last accepted batch, used to size
+        # the next fetch (see fetch_end_for). None until a batch has been
+        # measured: the first fetch of a job has nothing to go on.
+        self._arena_fetch_frame_cap = None
         # Measured chunk-peak model, carried across every batch of this job so
         # only the first one pays to probe.
         self._chunk_memory_model = ChunkMemoryModel()
@@ -1854,12 +2049,32 @@ class RenderLoopMixin:
                             )
                     return batch
 
+            def fetch_end_for(time_ind):
+                """End index to materialize up to, given what the arena took.
+
+                The animation-device budget alone routinely asks for far more
+                frames than the render arena can hold, and materializing them
+                is the expensive half of a batch. Capping the request at the
+                arena's own measured capacity (``_arena_fetch_frame_cap``,
+                refreshed from every accepted batch) means the common case
+                fetches once instead of fetching, being rejected, and
+                rematerializing. The cap is a hint only: it grows straight back
+                whenever the scene thins out, because the capacity it is
+                refreshed from is measured against the whole arena rather than
+                against the previous window.
+                """
+                cap = self._arena_fetch_frame_cap
+                if not cap:
+                    return end_time_ind
+                return min(end_time_ind, time_ind + int(cap))
+
             executor = (
                 ThreadPoolExecutor(max_workers=1, thread_name_prefix="algan-batch-prep")
                 if prefetch_enabled
                 else None
             )
             pending = None
+            pending_end_ind = end_time_ind
             retry_end_ind = None
             retry_lower_duration = 0
             retry_upper_duration = None
@@ -1867,25 +2082,35 @@ class RenderLoopMixin:
                 while True:
                     _sync_devices()
                     s = time.time()
-                    fetch_end_ind = (
-                        retry_end_ind if retry_end_ind is not None else end_time_ind
-                    )
-                    logger.info(f"Fetching batch {current_time_ind}:{fetch_end_ind}.")
                     if retry_end_ind is not None:
+                        logger.info(
+                            f"Fetching batch {current_time_ind}:{retry_end_ind}."
+                        )
                         primitives, new_time_ind, render_state = fetch_batch(
                             current_time_ind, retry_end_ind
                         )
                         retry_end_ind = None
                     elif pending is not None:
+                        logger.info(
+                            f"Fetching batch {current_time_ind}:{pending_end_ind}."
+                        )
                         primitives, new_time_ind, render_state = pending.result()
                         pending = None
                     else:
+                        fetch_end_ind = fetch_end_for(current_time_ind)
+                        logger.info(
+                            f"Fetching batch {current_time_ind}:{fetch_end_ind}."
+                        )
                         primitives, new_time_ind, render_state = fetch_batch(
-                            current_time_ind
+                            current_time_ind, fetch_end_ind
                         )
                     _sync_devices()
                     e = time.time()
                     logger.info(f"Batch fetch took {e - s} seconds")
+                    # A fresh fetch selects a different actor set, and the
+                    # actor set is what fixes the intercept of every cost the
+                    # preflight weighs. Start its measurements over.
+                    self._begin_batch_cost_measurement()
                     if new_time_ind <= current_time_ind:
                         raise OutOfRenderMemory(
                             "Insufficient memory to render this scene,"
@@ -1897,8 +2122,11 @@ class RenderLoopMixin:
                     if (
                         retry_upper_duration is None
                         and primitives
-                        and self._fetched_window_has_stable_actor_set(
-                            actors, current_time_ind, new_time_ind
+                        and (
+                            self._may_slice_across_spawns()
+                            or self._fetched_window_has_stable_actor_set(
+                                actors, current_time_ind, new_time_ind
+                            )
                         )
                     ):
                         planned_prefix = self._select_largest_fitting_fetched_prefix(
@@ -1908,6 +2136,53 @@ class RenderLoopMixin:
                             post_processes,
                             transparent_background,
                         )
+
+                    # Two budgets, one arena. What the frame count buys is
+                    # bounded above by _batch_frame_capacity; what the batch's
+                    # actor set costs regardless is _batch_actor_share, and no
+                    # frame count touches it. When the actor set is what
+                    # dominates, shortening the window relieves nothing --
+                    # slicing keeps every actor the fetch selected, and even a
+                    # rematerialized shorter window keeps them unless it also
+                    # reaches back past a spawn. Retreat behind the last spawn
+                    # instead: that is the only lever on the actor term.
+                    actor_share = self._batch_actor_share()
+                    spawn_boundary = None
+                    if (
+                        primitives
+                        and actor_share is not None
+                        and actor_share >= _ACTOR_SHARE_RETREAT
+                    ):
+                        spawn_boundary = self._previous_spawn_boundary(
+                            actors, current_time_ind, new_time_ind
+                        )
+                    if spawn_boundary is not None:
+                        logger.info(
+                            "Batch is actor-bound (%.0f%% of a term's cost is "
+                            "fixed by its actor set: %s); refetching %s:%s to "
+                            "carry fewer actors.",
+                            actor_share * 100,
+                            self._describe_batch_costs(),
+                            current_time_ind,
+                            spawn_boundary,
+                        )
+                        if planned_prefix is not None:
+                            self._release_preflight_candidate(planned_prefix[0])
+                        retry_upper_duration = min(
+                            duration,
+                            retry_upper_duration
+                            if retry_upper_duration is not None
+                            else duration,
+                        )
+                        if primitives:
+                            primitives[0]._rt_device_scene = None
+                            primitives[0]._rt_prepared_host_scene = None
+                            primitives[0]._rt_merged_scene = None
+                        del primitives, planned_prefix
+                        self.memory.reset()
+                        empty_cache(force_gc=False)
+                        retry_end_ind = spawn_boundary
+                        continue
 
                     if planned_prefix is not None:
                         fetched_primitives = primitives
@@ -1927,6 +2202,7 @@ class RenderLoopMixin:
                                 # attempted, so estimates lose their vote here
                                 # rather than aborting the render.
                                 require_estimates_fit=duration > 1,
+                                num_frames=duration,
                             )
                         )
                     if not batch_fits:
@@ -1954,9 +2230,9 @@ class RenderLoopMixin:
                         del primitives
                         self.memory.reset()
                         empty_cache(force_gc=False)
-                        target_duration = max(
-                            1,
-                            (retry_lower_duration + retry_upper_duration) // 2,
+                        target_duration = self._next_probe_duration(
+                            max(1, retry_lower_duration),
+                            max(1, retry_upper_duration - 1),
                         )
                         retry_end_ind = current_time_ind + target_duration
                         continue
@@ -1980,11 +2256,30 @@ class RenderLoopMixin:
                             retry_end_ind = current_time_ind + target_duration
                             continue
 
+                    # Carry the arena's verdict on this batch into the next
+                    # fetch. Materializing a batch costs seconds, and without
+                    # this every batch re-derives the same window from scratch:
+                    # it fetches whatever the animation-device budget allows,
+                    # the arena rejects it, and the timeline is rematerialized
+                    # at half the size -- for every batch of the job, not just
+                    # the first.
+                    if primitives:
+                        arena_frames = (
+                            self._batch_frame_capacity() or 0
+                        )
+                        # Never below what just fit: the estimate reads the
+                        # scene's frame-independent bytes as if they scaled, so
+                        # it under-shoots (harmlessly) on a batch that fit.
+                        self._arena_fetch_frame_cap = max(1, duration, arena_frames)
+
                     # Only prefetch the successor once the current duration is
                     # final. A speculative successor would start at the wrong
                     # boundary while the binary preflight search is active.
                     if executor is not None and new_time_ind < end_time_ind:
-                        pending = executor.submit(fetch_batch, new_time_ind)
+                        pending_end_ind = fetch_end_for(new_time_ind)
+                        pending = executor.submit(
+                            fetch_batch, new_time_ind, pending_end_ind
+                        )
                     if len(primitives) > 0:
                         s = time.time()
                         logger.info(

@@ -14,6 +14,7 @@ from algan.rendering.memory_model import (
     HISTORY,
     PROBE_GROWTH,
     PROBE_SAFETY,
+    AffineFrameCost,
     ChunkMemoryModel,
     PeakRatioModel,
     chunk_signature,
@@ -219,47 +220,175 @@ def test_signatures_separate_batches_on_different_lines():
     assert small != exploded
 
 
+def test_affine_frame_cost_reads_one_sample_as_a_pure_per_frame_cost():
+    cost = AffineFrameCost()
+    assert cost.max_frames_for() is None
+    assert cost.actor_share() is None
+
+    cost.observe(10, 100, budget_bytes=250)
+    assert cost.fixed_bytes() == 0.0
+    assert cost.max_frames_for() == 25
+    # One sample cannot separate the two parts at all.
+    assert cost.actor_share() is None
+
+
+def test_affine_frame_cost_separates_the_actor_set_from_the_frames():
+    # 900 units of actor set + 1 per frame. Read as if it all scaled, 10 frames
+    # costing 910 of a 1000 budget looks like room for 10 more; in fact there
+    # is room for 90.
+    cost = AffineFrameCost()
+    cost.observe(10, 910, budget_bytes=1_000)
+    cost.observe(20, 920, budget_bytes=1_000)
+
+    assert cost.fixed_bytes() == pytest.approx(900.0)
+    assert cost.max_frames_for() == 100
+    # 900 fixed of the 920 spent at the widest window measured.
+    assert cost.actor_share() == pytest.approx(900 / 920)
+
+
+def test_affine_frame_cost_reports_zero_when_no_window_is_short_enough():
+    # The fixed part alone overruns the budget: shortening the window cannot
+    # help, and the caller has to build a batch with fewer actors instead.
+    cost = AffineFrameCost()
+    cost.observe(10, 1_100, budget_bytes=1_000)
+    cost.observe(20, 1_200, budget_bytes=1_000)
+
+    assert cost.max_frames_for() == 0
+    assert cost.actor_share() == pytest.approx(1000 / 1200)
+
+
+def test_affine_frame_cost_intercept_cannot_exceed_a_measured_cost():
+    # Same guard as the other fits: a batch measured in full below the claimed
+    # fixed cost disproves it.
+    cost = AffineFrameCost()
+    cost.observe(100, 1_000, budget_bytes=10_000)
+    cost.observe(101, 1_000_000, budget_bytes=10_000)
+    assert cost.fixed_bytes() <= 1_000
+
+
+def test_affine_frame_cost_keeps_the_worst_cost_seen_at_a_frame_count():
+    cost = AffineFrameCost()
+    cost.observe(10, 100, budget_bytes=1_000)
+    cost.observe(10, 300, budget_bytes=1_000)
+    assert cost.max_frames_for() == 33
+
+
 def test_peak_ratio_uses_the_seed_until_something_is_measured():
     ratio = PeakRatioModel(seed=6.0)
     assert not ratio.is_calibrated()
-    assert ratio.factor() == 6.0
+    assert ratio.predict(1_000_000) == 6_000_000
 
 
 def test_peak_ratio_supersedes_the_seed_once_measured():
-    # The seeded guesses were far off: the merge's real ratio measures well
-    # under 1x against inputs the guess multiplied by six.
+    # The seeded guesses were far off: the merge's real peak measures well
+    # under the inputs the guess multiplied by six.
     ratio = PeakRatioModel(seed=6.0, safety=1.25)
     ratio.observe(1_000_000, 470_000)
     assert ratio.is_calibrated()
-    assert ratio.factor() < 6.0
+    assert ratio.predict(1_000_000) < 6_000_000
 
 
-def test_peak_ratio_never_drops_below_one():
+def test_peak_ratio_never_drops_below_the_inputs():
     # A build cannot peak below the inputs it has already materialised, and a
-    # sub-1x multiplier would under-reserve on a batch whose inputs are not
-    # already resident.
+    # sub-1x bound would under-reserve on a batch whose inputs are not already
+    # resident.
     ratio = PeakRatioModel(seed=6.0, safety=1.25)
     ratio.observe(1_000_000, 10_000)
-    assert ratio.factor() >= 1.0
+    assert ratio.predict(1_000_000) >= 1_000_000
 
 
 def test_peak_ratio_forgets_a_heavy_build():
     ratio = PeakRatioModel(seed=2.0, safety=1.0)
     for _ in range(HISTORY):
         ratio.observe(1_000, 1_000)
-    steady = ratio.factor()
+    steady = ratio.predict(10_000)
     ratio.observe(1_000, 9_000)
-    assert ratio.factor() > steady
+    assert ratio.predict(10_000) > steady
     for _ in range(HISTORY):
         ratio.observe(1_000, 1_000)
-    assert ratio.factor() == steady
+    assert ratio.predict(10_000) == steady
 
 
 def test_peak_ratio_ignores_degenerate_samples():
     ratio = PeakRatioModel(seed=3.0)
     ratio.observe(0, 5_000_000)
     assert not ratio.is_calibrated()
-    assert ratio.factor() == 3.0
+    assert ratio.predict(1_000_000) == 3_000_000
+
+
+def test_peak_ratio_does_not_charge_a_small_builds_fixed_cost_per_byte():
+    # A job's first merge is typically its smallest, and it pays the whole
+    # fixed cost (kernel workspace, allocator growth) on tiny inputs. Read as a
+    # pure ratio that measured over 20x, and it then throttled every batch for
+    # the rest of the window to a twentieth of the headroom it really had --
+    # which is exactly what a real render was doing.
+    ratio = PeakRatioModel(seed=6.0, safety=1.25)
+    ratio.observe(10_000_000, 217_000_000)  # 21.7x, nearly all fixed
+    ratio.observe(56_000_000, 100_000_000)  # 1.8x once the fixed part is paid
+
+    big = 1_000_000_000
+    assert ratio.predict(big) < 4 * big
+    # The fixed part is still carried: it is charged once, not dropped.
+    assert ratio.predict(big) > 1.8 * big
+
+
+def test_peak_ratio_separates_the_fixed_part_from_the_rate():
+    ratio = PeakRatioModel(seed=6.0, safety=1.0)
+    # peak = 100 MB + 2 * inputs.
+    ratio.observe(50_000_000, 200_000_000)
+    ratio.observe(100_000_000, 300_000_000)
+    assert ratio.predict(200_000_000) == pytest.approx(500_000_000, rel=1e-6)
+
+
+def test_peak_ratio_reads_a_budget_back_as_an_input_size():
+    # Callers size frame windows, and input bytes scale with frames while the
+    # fixed part does not. Dividing a budget by the whole prediction would pin
+    # a window at whatever size it already had, however much room the fixed
+    # part left for more frames.
+    ratio = PeakRatioModel(seed=6.0, safety=1.0)
+    # peak = 900 MB + 1 * inputs.
+    ratio.observe(100_000_000, 1_000_000_000)
+    ratio.observe(200_000_000, 1_100_000_000)
+
+    assert ratio.max_inputs_for(1_500_000_000) == pytest.approx(600_000_000, rel=1e-6)
+    # A budget below the fitted fixed part still admits what the rate the
+    # builds actually demonstrated allows -- reporting zero there is how a
+    # render ends up rejecting every window however short.
+    assert ratio.max_inputs_for(500_000_000) == pytest.approx(50_000_000, rel=1e-6)
+
+
+def test_peak_ratio_never_reads_worse_than_the_plain_ratio():
+    # The affine fit and the pure ratio fail in opposite directions, and both
+    # have pinned a render to single frames: a ratio charges a small build's
+    # fixed cost to every byte, while an intercept fitted from a run of large
+    # builds approaches the headroom and rejects every window however short.
+    # The fit may only improve on the ratio, never inflate it.
+    ratio = PeakRatioModel(seed=6.0, safety=1.0)
+    ratio.observe(1_000_000_000, 1_700_000_000)
+    ratio.observe(1_010_000_000, 1_701_000_000)
+
+    # A near-flat pair fits an intercept close to the whole measured peak.
+    assert ratio.fixed_for_test() > 1_000_000_000
+    # ...but a tiny build is still predicted from the rate it demonstrated.
+    assert ratio.predict(7_000_000) < 100_000_000
+    # ...and the budget still admits a usable input size.
+    assert ratio.max_inputs_for(1_800_000_000) > 100_000_000
+
+
+def test_peak_ratio_intercept_cannot_exceed_a_measured_peak():
+    # Two heavy builds whose peaks barely differ fit a nearly flat line whose
+    # intercept swallows the whole pool. Left alone it rejects every window
+    # however small -- a render collapsed to single frames on it -- yet a build
+    # that peaked at 4 MB has already disproved a gigabyte of fixed cost.
+    ratio = PeakRatioModel(seed=6.0, safety=1.0)
+    ratio.observe(120_000_000, 2_000_000_000)
+    ratio.observe(123_000_000, 2_004_000_000)
+    ratio.observe(300_000, 4_000_000)
+
+    # A tiny build is predicted near the tiny peak already seen, not near the
+    # two-gigabyte intercept the heavy pair fits.
+    assert ratio.predict(300_000) < 5_000_000
+    assert ratio.predict(0) <= 4_000_000
 
 
 def test_model_is_isolated_per_signature():

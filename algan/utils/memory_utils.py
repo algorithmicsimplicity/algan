@@ -526,6 +526,14 @@ class ManualMemory:
             device = _RENDER_DEVICE
         self.current_pointer = 0
         self.max_pointer = 0
+        # Largest frame window a render kernel actually launched for the chunk
+        # in progress. The tracer sets it when it has to sub-divide a chunk (an
+        # out-of-memory split, or the Monte Carlo path budget); the batching
+        # loop resets it before each chunk and reads it afterwards so the
+        # measured peak is attributed to the window that produced it rather
+        # than to the larger window that was planned. ``None`` means the chunk
+        # rendered whole.
+        self.last_launch_frames = None
         self.stack = []
         self.managed = managed
         # Off by default: production pays one ``is not None`` test per

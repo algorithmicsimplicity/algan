@@ -1148,6 +1148,14 @@ def render_batch_raytraced(
         light_col.zero_()
         num_lights = 0
 
+    # Frame counts of the windows that were actually launched. They differ from
+    # the requested window whenever a chunk had to be sub-divided below, and the
+    # batching loop's memory model needs the difference: it measures the arena's
+    # high-water mark over this call and would otherwise credit a sub-divided
+    # chunk's (smaller) peak to the frame count it planned, under-reading the
+    # per-frame cost and planning the same over-large chunk again.
+    launched_frames = []
+
     def render_chunk(start, end):
         # The Monte Carlo kernels launch one thread per (frame, pixel,
         # sample) path; keep the flattened index within int32 range. (The
@@ -1335,6 +1343,7 @@ def render_batch_raytraced(
                 apply_fxaa=scene.video_settings.fxaa,
             )
             memory.set_pointers(entry_pointers)
+            launched_frames.append(end - start)
             return [frames]
         except (InsufficientMemoryException, RuntimeError) as exc:
             # A Taichi kernel launch (e.g. the post-process tonemap) exhausts
@@ -1364,6 +1373,8 @@ def render_batch_raytraced(
             return render_chunk(start, middle) + render_chunk(middle, end)
 
     chunks = render_chunk(time_start, time_end)
+    if memory is not None and launched_frames:
+        memory.last_launch_frames = max(launched_frames)
     if len(chunks) == 1:
         return chunks[0]
     return torch.cat(chunks, 0)
