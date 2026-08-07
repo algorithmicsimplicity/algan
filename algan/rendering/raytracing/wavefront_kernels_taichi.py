@@ -60,6 +60,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
+    _orient_hit_normals,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 
@@ -1909,14 +1910,7 @@ def wavefront_shadow(
                                                                   12 + ci]
                                               + a * pn_ctrl[tp, prim, 15 + ci])
                                 fnrm = su.cross(sv)
-                            if snrm.norm() > 1e-9:
-                                snrm = snrm.normalized()
-                            if snrm.dot(rd) > 0.0:
-                                snrm = -snrm
-                            if fnrm.norm() > 1e-9:
-                                fnrm = fnrm.normalized()
-                            if fnrm.dot(snrm) < 0.0:
-                                fnrm = -fnrm
+                            snrm, fnrm = _orient_hit_normals(snrm, fnrm, rd)
                             spos = ro + t_hit * rd
                             sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
                             for li in range(num_lights):
@@ -2280,19 +2274,7 @@ def wavefront_shade(
                                                                   12 + ci]
                                               + a * pn_ctrl[tp, prim, 15 + ci])
                                 fnrm = su.cross(sv)
-                            if snrm.norm() > 1e-9:
-                                snrm = snrm.normalized()
-                            if snrm.dot(rd) > 0.0:
-                                snrm = -snrm
-                            # Orient the geometric normal outward (same
-                            # hemisphere as the shading normal) so a shadow ray
-                            # fired near the terminator doesn't graze the
-                            # adjacent uphill facet and report a spurious
-                            # self-shadow. PN patches are curved (fnrm ~ snrm).
-                            if fnrm.norm() > 1e-9:
-                                fnrm = fnrm.normalized()
-                            if fnrm.dot(snrm) < 0.0:
-                                fnrm = -fnrm
+                            snrm, fnrm = _orient_hit_normals(snrm, fnrm, rd)
                             spos = ro + t_hit * rd
                             sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
                             tl = f % light_pos.shape[0]

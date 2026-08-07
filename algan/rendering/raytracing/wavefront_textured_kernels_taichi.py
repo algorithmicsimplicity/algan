@@ -65,6 +65,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_PHONG,
     _MID_PHYSICAL,
     _MID_STANDARD,
+    _orient_hit_normals,
     _stage_default,
     _stage_lambert,
     _stage_phong,
@@ -395,14 +396,7 @@ def wf_shade_textured(
                         # shadow ray per light from the offset hit point.
                         vis = ti.Vector([1.0] * MAX_SHADOW_LIGHTS)
                         if ti.static(feat_shadows != 0):
-                            snf = sn.normalized()
-                            if snf.dot(rd) > 0.0:
-                                snf = -snf
-                            fn = face_n
-                            if fn.norm() > 1e-9:
-                                fn = fn.normalized()
-                            if fn.dot(snf) < 0.0:
-                                fn = -fn
+                            snf, fn = _orient_hit_normals(sn, face_n, rd)
                             sorigin = pos + fn * (10.0 * MIN_HIT_DISTANCE)
                             tl = f % light_pos.shape[0]
                             for li in range(num_lights):

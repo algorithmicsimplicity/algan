@@ -77,6 +77,9 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _sample_circuit_color,
     _shadow_occluded,
 )
+from algan.rendering.raytracing.shading_taichi import (
+    _orient_hit_normals,
+)
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
     _DONE,
@@ -402,16 +405,7 @@ def wf_shadow_event(
         pixel_size_per_t = pixel_world_scale[f]
         snrm = ti.math.vec3(rs_hit[r, 0], rs_hit[r, 1], rs_hit[r, 2])
         fnrm = ti.math.vec3(rs_hit[r, 3], rs_hit[r, 4], rs_hit[r, 5])
-        if snrm.norm() > 1e-9:
-            snrm = snrm.normalized()
-        if snrm.dot(rd) > 0.0:
-            snrm = -snrm
-        # Orient the geometric normal into the shading normal's hemisphere so
-        # a terminator-adjacent shadow ray doesn't graze the uphill facet.
-        if fnrm.norm() > 1e-9:
-            fnrm = fnrm.normalized()
-        if fnrm.dot(snrm) < 0.0:
-            fnrm = -fnrm
+        snrm, fnrm = _orient_hit_normals(snrm, fnrm, rd)
         spos = ro + t_hit * rd
         sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
         tl = f % light_pos.shape[0]

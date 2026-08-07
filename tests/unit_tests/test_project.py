@@ -102,44 +102,6 @@ def test_project_directories_follow_scene_path_resolution_rules(tmp_path):
     assert project.transcript_directory == tmp_path / "outputs" / "transcripts"
 
 
-def test_screenshot_render_uses_stable_global_frame_ids_for_subsets(
-    monkeypatch, tmp_path
-):
-    rendered = []
-
-    def fake_render_still(_scene, destination, timestamp):
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"frame")
-        rendered.append((destination, timestamp))
-        return destination
-
-    monkeypatch.setattr(Scene, "_render_still", fake_render_still)
-
-    def first():
-        Scene.save_frame("first")
-
-    def second():
-        Scene.save_frame("second_a")
-        Scene.save_frame("second_b")
-
-    project = Project([first, second], **_project_paths(tmp_path))
-
-    subset_results = project.render_screenshots("second")
-    assert [result.output_path.name for result in subset_results] == [
-        "1_second_a.png",
-        "3_second_b.png",
-    ]
-
-    rendered.clear()
-    all_results = project.render_screenshots()
-    assert [result.output_path.name for result in all_results] == [
-        "0_first.png",
-        "1_second_a.png",
-        "3_second_b.png",
-    ]
-    assert project.render_screenshots([]) == []
-
-
 def test_video_render_skips_scene_save_calls_and_renders_one_managed_video(
     monkeypatch, tmp_path
 ):

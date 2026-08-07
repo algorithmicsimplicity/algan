@@ -76,7 +76,10 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shade_tri_hit,
     _shadow_occluded,
 )
-from algan.rendering.raytracing.shading_taichi import _MID_UNLIT
+from algan.rendering.raytracing.shading_taichi import (
+    _MID_UNLIT,
+    _orient_hit_normals,
+)
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _ACTIVE,
@@ -1898,9 +1901,8 @@ def _tri_shadow_normals(f, prim, a, b, rd,
                         tri_uvs: ti.template(), tri_tex_meta: ti.template(),
                         textures: ti.template(), num_colored_triangles):
     """Shading + geometric face normals of a triangle hit, oriented for a
-    shadow-ray origin exactly as ``wavefront_shade``'s inline shadow block: the
-    shading normal faces the viewer, the geometric normal shares its hemisphere
-    (so a grazing shadow ray does not self-shadow on an adjacent uphill facet).
+    shadow-ray origin exactly as ``wavefront_shade``'s inline shadow block (both
+    defer to :func:`_orient_hit_normals`).
     """
     w0 = 1.0 - a - b
     snrm = _tri_normal_g(0, f, prim, w0, a, b, tri_norm, tri_pos, tri_uvs,
@@ -1913,15 +1915,7 @@ def _tri_shadow_normals(f, prim, a, b, rd,
     v2 = ti.math.vec3(tri_pos[tp, prim, 6], tri_pos[tp, prim, 7],
                       tri_pos[tp, prim, 8])
     fnrm = (v1 - v0).cross(v2 - v0)
-    if snrm.norm() > 1e-9:
-        snrm = snrm.normalized()
-    if snrm.dot(rd) > 0.0:
-        snrm = -snrm
-    if fnrm.norm() > 1e-9:
-        fnrm = fnrm.normalized()
-    if fnrm.dot(snrm) < 0.0:
-        fnrm = -fnrm
-    return snrm, fnrm
+    return _orient_hit_normals(snrm, fnrm, rd)
 
 
 @ti.kernel

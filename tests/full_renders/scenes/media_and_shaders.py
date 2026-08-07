@@ -83,4 +83,3 @@ with Seq():
     model_label.color = ORANGE
     Scene.wait(0.35)
 
-Scene.save_frame("algan_outputs/checkpoints/media_and_shaders.png")

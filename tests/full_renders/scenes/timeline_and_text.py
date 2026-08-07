@@ -55,7 +55,7 @@ with Seq():
     counter.spawn()
     with Sync(run_time=1.4):
         shapes.rotate(25, OUT)
-        counter.change_value(42)
+        counter.set_value(42)
         context_label.color = BLUE_A
     with Lag(0.22, run_time=2.0):
         Indicate(shapes[0], color=YELLOW, run_time=0.55)
@@ -107,5 +107,3 @@ with Seq():
     parent.remove_updater(updater_id)
     Blink(morph, time_on=0.18, time_off=0.12, blinks=2)
     Scene.wait(0.35)
-
-Scene.save_frame("algan_outputs/checkpoints/timeline_and_text.png")

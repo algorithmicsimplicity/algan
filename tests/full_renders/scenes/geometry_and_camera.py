@@ -120,5 +120,3 @@ with Seq():
         axes.scale(0.9)
         phase_label.color = TEAL_A
     Scene.wait(0.3)
-
-Scene.save_frame("algan_outputs/checkpoints/geometry_and_camera.png")

@@ -123,6 +123,53 @@ def _shading_normal(n_interp, face_n, flat):
 
 
 @ti.func
+def _faces_viewer(n, face_n, view_dir):
+    """Whether the surface at a hit faces ``view_dir``, read off the GEOMETRIC
+    normal rather than the shading normal ``n``.
+
+    The shading normal is a smooth field interpolated INDEPENDENTLY of the
+    surface it decorates -- a PN patch carries a quadratic normal field over a
+    quadratic position patch, a smooth-shaded mesh carries per-vertex normals
+    over flat facets -- so along a silhouette, where the surface turns away from
+    the camera, ``n . view_dir`` crosses zero a little before or after the
+    geometry does, and at a different sub-pixel place on every patch. Testing it
+    made the scattered rim fragments that landed the wrong side of that crossing
+    read as backfaces, and the callers' 180-degree flip then turned ``n . light``
+    from negative to positive: the UNLIT limb of a smooth surface came out lit
+    in single pixels -- bright speckle beading along the dark edge of a sphere,
+    crawling between frames as adaptive dicing re-cut the patches.
+
+    The geometric normal has no such freedom: for a ray that hits the front of a
+    surface it faces the viewer by construction, and it is constant across a
+    facet, so the test fires only where the surface genuinely faces away and
+    never partway along a lit-to-unlit gradient.
+
+    Its own sign carries no orientation intent (it comes from the winding or the
+    parameterisation), so it is aligned to the shading normal first: the question
+    is whether the surface AS THE VERTEX NORMALS ORIENT IT points away. That is
+    what makes the inward-frame case below still flip.
+
+    The alignment is also the credibility test. A fold in the parameterisation
+    (a Surface pole, where the two tangents collapse onto each other) leaves a
+    cross product whose direction is rounding noise, and a coin-flip side test
+    would be worse than the one this replaces -- so a geometric normal that is
+    nowhere near its own vertex normals, or has no length at all, is discarded
+    and the old shading-normal test stands. Any real facet agrees with its
+    vertex normals to far inside this margin.
+    """
+    side = n.dot(view_dir)
+    fl = face_n.norm()
+    if fl > 1e-12:
+        fn = face_n * (1.0 / fl)
+        d = fn.dot(n)
+        if ti.abs(d) > 0.1:
+            side = fn.dot(view_dir)
+            if d < 0.0:
+                side = -side
+    return side >= 0.0
+
+
+@ti.func
 def _prep_normal(n_interp, face_n, flat, view_dir):
     """Shading normal (optionally flat-blended) flipped to the visible side.
 
@@ -132,11 +179,43 @@ def _prep_normal(n_interp, face_n, flat, view_dir):
     pointing inward; without flipping them toward the viewer they shade as unlit
     backfaces (black), so a thin tube's apparent lighting would depend on its
     (incidental) frame orientation instead of just its shape.
+
+    Which side that is comes from :func:`_faces_viewer` -- see there for why it
+    must not be read off the shading normal.
     """
     n = _shading_normal(n_interp, face_n, flat)
-    if n.dot(view_dir) < 0.0:
+    if not _faces_viewer(n, face_n, view_dir):
         n = -n
     return n
+
+
+@ti.func
+def _orient_hit_normals(snrm, fnrm, rd):
+    """Shading + geometric normals of a hit, oriented for a shadow-ray origin:
+    returned normalized, sharing a hemisphere, and facing back along ``rd``
+    toward where the ray came from.
+
+    The geometric normal is put in the shading normal's hemisphere so a shadow
+    ray fired near the terminator does not graze the adjacent uphill facet and
+    report a spurious self-shadow. Which hemisphere that is comes from
+    :func:`_faces_viewer`, the same decision :func:`_prep_normal` makes, and for
+    the same reason -- with the extra bite that these two must AGREE. Deciding
+    the side here off the shading normal flipped exactly the silhouette
+    fragments described there, which pushed the shadow-ray origin offset INTO
+    the surface and inverted the facing-the-light cull: the shadow ray was
+    skipped for a fragment the material stage then went on to light, so a
+    silhouette pixel rendered unshadowed.
+    """
+    if snrm.norm() > 1e-9:
+        snrm = snrm.normalized()
+    if fnrm.norm() > 1e-9:
+        fnrm = fnrm.normalized()
+    if fnrm.dot(snrm) < 0.0:
+        fnrm = -fnrm
+    if not _faces_viewer(snrm, fnrm, -rd):
+        snrm = -snrm
+        fnrm = -fnrm
+    return snrm, fnrm
 
 
 @ti.func

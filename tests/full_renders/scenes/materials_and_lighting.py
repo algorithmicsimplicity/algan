@@ -110,4 +110,3 @@ with Seq():
     Scene.get_camera().rotate(-12, UP, about_point=ORIGIN)
     Scene.wait(0.3)
 
-Scene.save_frame("algan_outputs/checkpoints/materials_and_lighting.png")

@@ -60,7 +60,7 @@ class _ProjectSceneRun:
         requested = Path(raw_path)
         if requested.suffix == "":
             requested = requested.with_suffix(".png")
-        requested = requested.with_name(f"{scene_id}_{frame_id}_{requested.name}")
+        requested = requested.with_name(f"s{scene_id}_f{frame_id}_{requested.name}")
 
         # Match Scene's path contract: a bare name uses the configured project
         # screenshot directory, while an explicit parent remains explicit.
