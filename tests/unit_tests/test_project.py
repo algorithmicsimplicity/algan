@@ -248,6 +248,64 @@ def test_project_concatenates_to_its_resolved_file_path(monkeypatch, tmp_path):
     ]
 
 
+def test_project_run_cli_dispatches_project_actions(monkeypatch, tmp_path):
+    def first():
+        pass
+
+    def second():
+        pass
+
+    project = Project([first, second], **_project_paths(tmp_path))
+    calls = []
+    monkeypatch.setattr(
+        project,
+        "render_screenshots",
+        lambda scenes=None: calls.append(("screenshots", scenes)),
+    )
+    monkeypatch.setattr(
+        project,
+        "render_video",
+        lambda scenes=None: calls.append(("video", scenes)),
+    )
+    monkeypatch.setattr(
+        project,
+        "concatenate_videos",
+        lambda: calls.append(("concatenate", None)),
+    )
+
+    assert project.run_cli(["--render-screenshots", "0", "second"]) is True
+    assert project.run_cli(["--render-video"]) is True
+    assert project.run_cli(["--concatenate-videos"]) is True
+    assert calls == [
+        ("screenshots", (0, "second")),
+        ("video", None),
+        ("concatenate", None),
+    ]
+
+
+def test_project_run_cli_uses_process_args_and_ignores_unrecognized_args(
+    monkeypatch, tmp_path
+):
+    def scene():
+        pass
+
+    project = Project([scene], **_project_paths(tmp_path))
+    rendered = []
+    monkeypatch.setattr(
+        project,
+        "render_video",
+        lambda scenes=None: rendered.append(scenes),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["project_script.py", "--external-option", "--render-video", "scene"],
+    )
+
+    assert project.run_cli() is True
+    assert rendered == [("scene",)]
+    assert project.run_cli(["--external-option", "value"]) is False
+
+
 def test_project_rejects_invalid_scene_selectors_and_has_no_public_render(tmp_path):
     def first():
         pass

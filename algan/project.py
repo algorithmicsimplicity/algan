@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import inspect
 import os
 import re
@@ -332,6 +333,64 @@ class Project:
             scenes,
             mode="screenshots",
             video_settings=video_settings,
+        )
+
+    def run_cli(self, argv=None) -> bool:
+        """Run the project action requested by command-line arguments.
+
+        ``argv`` defaults to the current process arguments (excluding the
+        executable/script name). The recognized arguments are::
+
+            --render-screenshots [SCENE ...]
+            --render-video [SCENE ...]
+            --concatenate-videos
+
+        Scene values accept the same IDs and names as :meth:`render_video` and
+        :meth:`render_screenshots`. Omitting them renders every scene. Unknown
+        arguments are ignored so this can be called from scripts launched by
+        tools that add their own command-line options.
+
+        Returns ``True`` after dispatching a recognized action and ``False``
+        when no project action was present.
+        """
+        parser = argparse.ArgumentParser(add_help=False)
+        actions = parser.add_mutually_exclusive_group()
+        actions.add_argument(
+            "--render-screenshots",
+            nargs="*",
+            metavar="SCENE",
+        )
+        actions.add_argument(
+            "--render-video",
+            nargs="*",
+            metavar="SCENE",
+        )
+        actions.add_argument(
+            "--concatenate-videos",
+            action="store_true",
+        )
+        arguments, _unknown = parser.parse_known_args(argv)
+
+        if arguments.render_screenshots is not None:
+            scenes = self._parse_cli_scene_selectors(arguments.render_screenshots)
+            self.render_screenshots(scenes)
+            return True
+        if arguments.render_video is not None:
+            scenes = self._parse_cli_scene_selectors(arguments.render_video)
+            self.render_video(scenes)
+            return True
+        if arguments.concatenate_videos:
+            self.concatenate_videos()
+            return True
+        return False
+
+    @staticmethod
+    def _parse_cli_scene_selectors(selectors):
+        if not selectors:
+            return None
+        return tuple(
+            int(selector) if re.fullmatch(r"\d+", selector) else selector
+            for selector in selectors
         )
 
     def render_video(
