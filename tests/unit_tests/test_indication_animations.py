@@ -196,16 +196,6 @@ def test_indicate_flashes_the_colour_in_the_middle(scene):
     assert not torch.allclose(square.color[0], square.color[1], atol=1e-3)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Indicate drives 'scale_coefficient' through "
-        "setattr_and_record_modification, which writes a timeline row directly "
-        "instead of going through the property setter that turns a scale into "
-        "a basis. The renderer reads 'basis', so the scale half of Indicate is "
-        "a no-op and only the colour flash is visible."
-    ),
-)
 def test_indicate_grows_the_mob_in_the_middle(scene):
     with Off():
         square = Square(color=BLUE).spawn()
@@ -214,6 +204,23 @@ def test_indicate_grows_the_mob_in_the_middle(scene):
 
     scene.timeline_manager.set_state_to_times(torch.tensor([start, start + 0.5]))
     assert float(square.basis[1].abs().max()) > float(square.basis[0].abs().max())
+
+
+def test_indicate_scales_a_composite_around_its_anchor(scene):
+    with Off():
+        group = Group(
+            Square().move(torch.tensor([-1.0, 0.0, 0.0])),
+            Square().move(torch.tensor([1.0, 0.0, 0.0])),
+        ).spawn()
+    start = _elapsed(scene)
+    Indicate(group, scale_factor=1.5, run_time=1.0)
+
+    scene.timeline_manager.set_state_to_times(torch.tensor([start, start + 0.5]))
+    left = group[0].location[:, 0, 0]
+    right = group[1].location[:, 0, 0]
+    assert right[1] - left[1] == pytest.approx(
+        1.5 * float(right[0] - left[0]), abs=1e-4
+    )
 
 
 def _alpha(mob):

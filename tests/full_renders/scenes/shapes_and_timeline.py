@@ -365,3 +365,74 @@ with Seq():
         raw_circuit.rotate(45, OUT)
         quad.rotate(-30, OUT)
     Scene.wait(0.3)
+
+# --------------------------------------------------------------------------
+# Act 7 -- point-cloud APIs, rendered through packed native sphere geometry.
+# PGroup's members are intentionally not separate Scene actors: this exercises
+# the composite's own primitive delegation as well as the three leaf classes.
+# --------------------------------------------------------------------------
+with Sync(run_time=0.6):
+    gradient_triangle.despawn()
+    raw_circuit.despawn()
+    quad.despawn()
+    quad_triangulated.despawn()
+    surrounding.despawn()
+    primitive_labels.despawn()
+
+with Off():
+    dot_cloud = DotCloud(
+        points=torch.stack(
+            (
+                LEFT * 0.55 + DOWN * 0.45,
+                RIGHT * 0.55 + DOWN * 0.45,
+                UP * 0.55,
+                ORIGIN,
+            )
+        ),
+        stroke_width=10,
+        color=YELLOW,
+    ).move(LEFT * 4.2 + UP * 0.55)
+    point_cloud_dot = PointCloudDot(
+        radius=0.62,
+        density=5,
+        stroke_width=7,
+        color=BLUE_A,
+    ).move(LEFT * 1.4 + UP * 0.55)
+    true_dot = TrueDot(stroke_width=16, color=GREEN_A).move(RIGHT * 1.4 + UP * 0.55)
+    point_group = PGroup(
+        DotCloud(
+            points=torch.stack((LEFT * 0.42, RIGHT * 0.42, UP * 0.5)),
+            stroke_width=9,
+            color=ORANGE,
+            add_to_scene=False,
+        ),
+        TrueDot(
+            center=DOWN * 0.48,
+            stroke_width=14,
+            color=PURPLE,
+            add_to_scene=False,
+        ),
+    ).move(RIGHT * 4.2 + UP * 0.55)
+    point_labels = Group(
+        Text("DotCloud", font_size=20, color=GRAY_A).move(LEFT * 4.2 + DOWN * 0.75),
+        Text("PointCloudDot", font_size=20, color=GRAY_A).move(
+            LEFT * 1.4 + DOWN * 0.75
+        ),
+        Text("TrueDot", font_size=20, color=GRAY_A).move(RIGHT * 1.4 + DOWN * 0.75),
+        Text("PGroup", font_size=20, color=GRAY_A).move(RIGHT * 4.2 + DOWN * 0.75),
+    )
+
+with Seq():
+    with Lag(0.15, run_time=1.2):
+        dot_cloud.spawn()
+        point_cloud_dot.spawn()
+        true_dot.spawn()
+        point_group.spawn()
+    with Sync(run_time=0.5):
+        point_labels.spawn()
+    with Sync(run_time=1.2):
+        dot_cloud.rotate(90, OUT)
+        point_cloud_dot.scale(1.25)
+        true_dot.move(UP * 0.35)
+        point_group.rotate(-90, OUT)
+    Scene.wait(0.3)

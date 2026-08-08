@@ -141,7 +141,33 @@ class PMobject(Group):
     def _rebuild_geometry(self):
         geometry = self._build_geometry()
         self.replace_children([] if geometry is None else [geometry])
+        if geometry is not None and self.is_spawned() and not self.is_despawned():
+            geometry._create_recursive(animate=False)
         return self
+
+    def _primitive_children(self):
+        """Return hidden geometry not already rendered as its own Scene actor."""
+        registered = {id(actor) for actor in self.scene.actors}
+        return [
+            child
+            for child in self.children
+            if id(child) not in registered and hasattr(child, "get_render_primitives")
+        ]
+
+    def get_memory_used_per_timestep(self):
+        return sum(
+            child.get_memory_used_per_timestep() for child in self._primitive_children()
+        )
+
+    def get_render_primitives(self):
+        """Build the native sphere primitives representing this point cloud."""
+        primitives = []
+        for child in self._primitive_children():
+            primitive = child.get_render_primitives()
+            if primitive is None:
+                continue
+            primitives.extend(primitive if isinstance(primitive, list) else [primitive])
+        return primitives or None
 
     def reset_points(self):
         self.points = self.points.new_empty((0, 3))

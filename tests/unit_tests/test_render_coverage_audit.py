@@ -57,17 +57,9 @@ EXEMPT = {
     "TriangleVertices": "internal vertex holder for TriangleTriangulated",
     "TriangulatedBezierCircuit": "base class; covered through Text/TexTriangulated",
     "BezierCurveCubic": "single-segment view of BezierCircuitCubic, which is covered",
-    # The point-cloud family builds points but defines no
-    # ``get_render_primitives``, so nothing in it can reach the renderer today.
-    # tests/unit_tests/test_point_cloud_rendering.py pins that gap; when it is
-    # closed, that test starts XPASSing and these exemptions must go.
-    "PMobject": "no render primitives yet -- see test_point_cloud_rendering.py",
-    "Mobject1D": "no render primitives yet -- see test_point_cloud_rendering.py",
-    "Mobject2D": "no render primitives yet -- see test_point_cloud_rendering.py",
-    "PGroup": "no render primitives yet -- see test_point_cloud_rendering.py",
-    "DotCloud": "no render primitives yet -- see test_point_cloud_rendering.py",
-    "PointCloudDot": "no render primitives yet -- see test_point_cloud_rendering.py",
-    "TrueDot": "no render primitives yet -- see test_point_cloud_rendering.py",
+    "PMobject": "point-cloud base; covered through its concrete subclasses",
+    "Mobject1D": "point-cloud base; covered through PointCloudDot",
+    "Mobject2D": "point-cloud base; covered through its concrete subclasses",
     # Manim's OpenGL renderer aliases. Algan has one renderer; these exist so
     # that Manim code that names them keeps importing.
     "OpenGLPMobject": "OpenGL-renderer alias",

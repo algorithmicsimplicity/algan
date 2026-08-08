@@ -68,6 +68,19 @@ def wiggle(t, wiggles: int = 2):
     return there_and_back(t) * val
 
 
+@animated_function(animated_args={"interpolation": 0.0})
+def _indicate_scale_step(mobject, scale_factor, interpolation=1.0):
+    """Apply one frame of Indicate's relative there-and-back scale pulse."""
+    interpolation = cast_to_tensor(interpolation)
+    scale_factor = cast_to_tensor(scale_factor).to(interpolation)
+    pulse = 1.0 - (2.0 * interpolation - 1.0).abs()
+    # Go through Mob.scale rather than writing the derived scale_coefficient
+    # timeline directly. The scale property ultimately updates basis (the
+    # renderer's source of truth) and carries descendant locations with it.
+    mobject.scale(1.0 + (scale_factor - 1.0) * pulse)
+    return mobject
+
+
 def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, run_time: float = 1.0):
     """Draw attention to a Mob by briefly growing and recolouring it.
 
@@ -101,12 +114,7 @@ def Indicate(mobject, scale_factor: float = 1.2, color=YELLOW, run_time: float =
     scale_factor = cast_to_tensor(scale_factor)
     with Sync(run_time=run_time, animation_manager=animation_manager_for(mobject)):
         mobject.pulse_color(color)
-        # relative mode: pulse each part to scale_factor times its own current
-        # scale and back. Using the parent's scale_coefficient as an absolute
-        # target would clobber any child that was scaled independently.
-        mobject.apply_absolute_change_two(
-            "scale_coefficient", scale_factor, relative=True
-        )
+        _indicate_scale_step(mobject, scale_factor)
     return mobject
 
 

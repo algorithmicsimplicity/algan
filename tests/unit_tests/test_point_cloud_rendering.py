@@ -1,20 +1,13 @@
-"""The point-cloud family is exported but cannot currently reach the renderer.
+"""The exported point-cloud family reaches the renderer as packed spheres.
 
 ``DotCloud``, ``PointCloudDot``, ``TrueDot`` and ``PGroup`` construct their
-points and register as actors, but none of them defines
-``get_render_primitives``, which is the method the render loop calls to turn an
-actor into geometry.  A scene built out of them therefore renders empty frames
-with no error.
-
-The construction tests below pass today.  The rendering test is an expected
-failure that pins the gap: if someone implements the primitives, it XPASSes and
-fails the suite, which is the signal to move these classes out of ``EXEMPT`` in
-``test_render_coverage_audit.py`` and into a full-render scene.
+points and register as actors. They delegate rendering to a hidden batched
+``Dot3D`` collection, retaining the point-array API without requiring a separate
+point-sprite path in the renderer.
 
 The whole module is marked ``slow`` and so sits outside the fast suite. It
-costs about three seconds to re-confirm a defect that is already known and is
-not going to be fixed by accident, which is not worth paying on every change;
-the full suite still runs it, and that is where the XPASS signal will land.
+constructs several dense packed sphere collections, which is not worth paying
+for on every unrelated change; the full suite still runs it.
 """
 
 from __future__ import annotations
@@ -36,9 +29,13 @@ from algan import (
 pytestmark = pytest.mark.slow
 
 BUILDERS = {
-    "DotCloud": lambda: DotCloud(color=YELLOW, radius=0.6, density=12),
-    "PointCloudDot": lambda: PointCloudDot(radius=0.5, density=14, color=BLUE_A),
-    "TrueDot": lambda: TrueDot(color=GREEN_A),
+    "DotCloud": lambda **kwargs: DotCloud(
+        color=YELLOW, radius=0.6, density=12, **kwargs
+    ),
+    "PointCloudDot": lambda **kwargs: PointCloudDot(
+        radius=0.5, density=14, color=BLUE_A, **kwargs
+    ),
+    "TrueDot": lambda **kwargs: TrueDot(color=GREEN_A, **kwargs),
 }
 
 
@@ -59,23 +56,19 @@ def test_point_cloud_mob_builds_points_and_registers_as_an_actor(scene, name):
 
 def test_pgroup_collects_point_clouds(scene):
     with Off():
-        group = PGroup(*(builder() for builder in BUILDERS.values()))
+        group = PGroup(
+            *(builder(add_to_scene=False) for builder in BUILDERS.values())
+        ).spawn()
     assert len(group.children) == len(BUILDERS)
+    assert group.get_render_primitives()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "point-cloud Mobs define no get_render_primitives, so they render "
-        "nothing; remove this xfail and the EXEMPT entries in "
-        "test_render_coverage_audit.py once they do"
-    ),
-)
 @pytest.mark.parametrize("name", sorted(BUILDERS))
 def test_point_cloud_mob_produces_render_primitives(scene, name):
     with Off():
         cloud = BUILDERS[name]().spawn()
-    assert hasattr(cloud, "get_render_primitives"), (
-        f"{name} cannot reach the renderer"
-    )
-    assert cloud.get_render_primitives()
+    assert hasattr(cloud, "get_render_primitives"), f"{name} cannot reach the renderer"
+    primitives = cloud.get_render_primitives()
+    assert primitives
+    assert sum(primitive.corners.numel() for primitive in primitives) > 0
+    assert cloud.get_memory_used_per_timestep() > 0
