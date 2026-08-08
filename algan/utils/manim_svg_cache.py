@@ -33,6 +33,7 @@ import contextlib
 import hashlib
 import importlib
 import os
+from functools import wraps
 from pathlib import Path
 
 import numpy as np
@@ -274,13 +275,32 @@ def _redirect_manim_dirs() -> None:
     # crashes whenever the cache directory tree has been removed (e.g.
     # ``clear_cache()``, or the test suite's per-test wipe). Wrap it to
     # guarantee the directory exists, whole tree included, on every call.
-    _orig_generate_tex_file = tex_file_writing.generate_tex_file
+    #
+    # Algan exposes its vendored Manim package through the top-level ``manim``
+    # alias. Python can consequently load ``tex_file_writing`` under both
+    # module names; MathTex may hold the vendored instance while this redirect
+    # imported the aliased instance. Patch both so a later cache wipe is safe
+    # regardless of which module owns ``tex_to_svg_file``.
+    tex_modules = [tex_file_writing]
+    with contextlib.suppress(ImportError):
+        from algan.external_libraries.manim.utils import (
+            tex_file_writing as vendored_tex_file_writing,
+        )
 
-    def _generate_tex_file_with_dir(*args, **kwargs):
-        Path(config.get_dir("tex_dir")).mkdir(parents=True, exist_ok=True)
-        return _orig_generate_tex_file(*args, **kwargs)
+        tex_modules.append(vendored_tex_file_writing)
 
-    tex_file_writing.generate_tex_file = _generate_tex_file_with_dir
+    for module in dict.fromkeys(tex_modules):
+        original = module.generate_tex_file
+        if getattr(original, "_algan_ensures_tex_dir", False):
+            continue
+
+        @wraps(original)
+        def generate_tex_file_with_dir(*args, _original=original, **kwargs):
+            Path(config.get_dir("tex_dir")).mkdir(parents=True, exist_ok=True)
+            return _original(*args, **kwargs)
+
+        generate_tex_file_with_dir._algan_ensures_tex_dir = True
+        module.generate_tex_file = generate_tex_file_with_dir
 
 
 def _configure_manim_dirs(config) -> tuple[Path, Path]:
@@ -293,7 +313,12 @@ def _configure_manim_dirs(config) -> tuple[Path, Path]:
     manim_dir = Path(SETTINGS.paths.cache_directory) / "manim"
     config.tex_dir = os.fspath(manim_dir / "Tex")
     config.text_dir = os.fspath(manim_dir / "texts")
-    return Path(config.get_dir("tex_dir")), Path(config.get_dir("text_dir"))
+
+    tex_dir = Path(config.get_dir("tex_dir"))
+    text_dir = Path(config.get_dir("text_dir"))
+    tex_dir.mkdir(parents=True, exist_ok=True)
+    text_dir.mkdir(parents=True, exist_ok=True)
+    return tex_dir, text_dir
 
 
 def install() -> None:

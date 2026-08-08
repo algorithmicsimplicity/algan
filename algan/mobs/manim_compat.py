@@ -83,7 +83,181 @@ def _algan_bezier_to_manim(mob: BezierCircuitCubic):
     return result
 
 
+def _row_backed_animatable_state(mob: Mob) -> dict[str, torch.Tensor]:
+    """Snapshot this Mob's concrete timeline-backed animatable attributes.
+
+    ``animatable_attrs`` also contains derived properties such as
+    ``scale_coefficient`` whose value is computed from another timeline-backed
+    attribute.  Those properties must not be copied independently when merging
+    a Manim edit back into Algan, otherwise one semantic change can be applied
+    twice.  Restricting the snapshot to attributes with rows owned by ``mob``
+    gives us the actual state that ``become`` can overwrite.
+    """
+
+    timeline_manager = mob.scene.timeline_manager
+    state = {}
+    for attr in dict.fromkeys(mob.animatable_attrs):
+        timeline = timeline_manager.attr_to_timeline.get(attr)
+        if timeline is None or mob.id not in timeline.mob_id_to_inds:
+            continue
+        state[attr] = mob.get_animated_attribute(
+            attr, include_descendants=False, copy=True
+        )
+    return state
+
+
+def _same_tensor_value(left: torch.Tensor, right: torch.Tensor) -> bool:
+    if left.shape != right.shape or left.dtype != right.dtype:
+        return False
+    return bool(torch.equal(left, right))
+
+
+def _preserve_algan_state_unchanged_by_manim(
+    current: Mob,
+    before: Mob,
+    after: Mob,
+):
+    """Three-way merge native Algan state into a converted Manim result.
+
+    ``before`` and ``after`` are conversions of the backing Manim object before
+    and after one compatibility operation.  Whenever Manim left an animatable
+    attribute unchanged, copy the exact current Algan value onto ``after``.
+    This preserves recursive parent edits to *all* timeline-backed attributes,
+    including state that Manim has no representation for (for example glow),
+    while still allowing a delegated Manim operation to intentionally change
+    attributes it owns.
+
+    The merge is structural and only pairs nodes that existed before the Manim
+    operation.  Newly-added Manim submobjects retain the state produced by Manim,
+    which is the same behavior as adding a new Algan child after a previous
+    recursive parent edit: that historical edit is not retroactively replayed on
+    the new child.
+    """
+
+    current_state = _row_backed_animatable_state(current)
+    before_state = _row_backed_animatable_state(before)
+    after_state = _row_backed_animatable_state(after)
+
+    for attr, current_value in current_state.items():
+        before_value = before_state.get(attr)
+        after_value = after_state.get(attr)
+        if before_value is None or after_value is None:
+            continue
+        if not _same_tensor_value(before_value, after_value):
+            continue
+        if current_value.shape != after_value.shape:
+            # A structural Manim operation can change a point batch.  Do not
+            # force old per-point state onto a differently-sized new geometry.
+            continue
+        after.setattr_without_record(attr, current_value)
+
+    for current_child, before_child, after_child in zip(
+        current.children, before.children, after.children
+    ):
+        _preserve_algan_state_unchanged_by_manim(
+            current_child, before_child, after_child
+        )
+
+
+def _uniform_color_and_opacity(color, opacity):
+    """Return one Manim-compatible RGB string and effective opacity."""
+
+    color = color.reshape(-1, color.shape[-1])[0]
+    opacity = opacity.reshape(-1)[0]
+    rgb = "#" + "".join(
+        f"{round(float(x) * 255):02X}" for x in color[:3].detach().cpu().clamp(0, 1)
+    )
+    alpha = float((color[-1] * opacity).detach().cpu())
+    return rgb, alpha
+
+
+def _sync_image_geometry_to_manim(algan_mob: ImageMob, manim_mob):
+    """Push an ImageMob's current affine pose into its Manim ImageMobject."""
+
+    location = algan_mob.location.reshape(-1, 3)[0].detach().cpu().numpy()
+    basis = algan_mob.basis.reshape(-1, 3, 3)[0].detach().cpu().numpy()
+    right, up = basis[0], basis[1]
+    # Manim ImageMobject point order is top-left, top-right, bottom-left,
+    # bottom-right.  Algan's ImageMob basis rows are its half-width/half-height
+    # axes, so this preserves translation, rotation and non-uniform scale.
+    manim_mob.points = np.stack(
+        (
+            location - right + up,
+            location + right + up,
+            location - right - up,
+            location + right - up,
+        )
+    )
+    if hasattr(manim_mob, "set_opacity"):
+        opacity = float(algan_mob.opacity.reshape(-1)[0].detach().cpu())
+        manim_mob.set_opacity(opacity)
+
+
+def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
+    """Mutate one retained Manim node to match its current Algan counterpart.
+
+    The object itself is deliberately retained: replacing it with a generic
+    VMobject would discard semantic state used by APIs such as ``Axes.plot``.
+    We therefore update only geometry/style fields in place and recurse through
+    the already-corresponding subobject graph.
+    """
+
+    if isinstance(manim_mob, _manim.ImageMobject) and isinstance(
+        algan_mob, ImageMob
+    ):
+        _sync_image_geometry_to_manim(algan_mob, manim_mob)
+        return
+
+    if isinstance(algan_mob, ManimMob):
+        if len(manim_mob.points) > 0:
+            points = (
+                algan_mob.control_points.location.reshape(-1, 3)
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            # Parent transforms cannot change a Manim path's point count.  If
+            # an Algan-only structural morph has done so, keeping the semantic
+            # Manim object's original topology is safer than assigning an
+            # incompatible point layout to a class such as NumberLine/Axes.
+            if len(points) == len(manim_mob.points):
+                manim_mob.points = points.copy()
+
+        if hasattr(manim_mob, "set_fill"):
+            fill_color, fill_opacity = _uniform_color_and_opacity(
+                algan_mob.color, algan_mob.opacity
+            )
+            manim_mob.set_fill(
+                fill_color,
+                opacity=fill_opacity if algan_mob.filled else 0.0,
+                family=False,
+            )
+
+        if hasattr(manim_mob, "set_stroke"):
+            border_color = algan_mob.border_color
+            border_opacity_source = algan_mob.border_texture_points.opacity
+            stroke_color, stroke_opacity = _uniform_color_and_opacity(
+                border_color, border_opacity_source
+            )
+            stroke_width = float(
+                algan_mob.border_width.reshape(-1)[0].detach().cpu()
+            ) * 2
+            manim_mob.set_stroke(
+                stroke_color,
+                width=stroke_width,
+                opacity=stroke_opacity,
+                family=False,
+            )
+
+        for algan_child, manim_child in zip(
+            algan_mob.submobjects, manim_mob.submobjects
+        ):
+            _sync_manim_node_from_algan(algan_child, manim_child)
+
+
 def _algan_mob_to_manim(mob: Mob):
+    if isinstance(mob, ManimCompatMob):
+        return mob._sync_manim_from_algan()
     source = getattr(mob, "manim_mobject", None)
     if source is not None:
         return source
@@ -237,6 +411,7 @@ class ManimCompatMob(ManimMob):
 
     def _initialize_from_manim(self, source, *, batch=False, **kwargs):
         self.manim_mobject = source
+        self._exposed_manim_baseline = None
         super().__init__(source, batch=batch, **kwargs)
 
     @classmethod
@@ -247,15 +422,52 @@ class ManimCompatMob(ManimMob):
 
     def get_manim_mobject(self):
         """Return the backing Manim object used for compatibility operations."""
+        self._sync_manim_from_algan()
+        # If callers directly mutate the exposed Manim object and then call
+        # ``sync_from_manim()``, this gives the three-way merge a before-state
+        # without retaining a permanent duplicate of every compatibility Mob.
+        self._exposed_manim_baseline = self.manim_mobject.copy()
         return self.manim_mobject
 
-    def _animate_to_manim(self, source):
-        """Record an Algan morph to an edited copy of the backing Mobject."""
+    def _sync_manim_from_algan(self):
+        """Lazily push current Algan geometry/style into the retained Manim graph.
+
+        Recursive parent transforms write descendant timeline rows directly and
+        therefore bypass this class's method overrides.  Before any Manim API is
+        consulted, synchronize from those rows in place so semantic objects such
+        as Axes keep their class-specific state while observing the current Algan
+        pose and style.
+        """
+
+        _sync_manim_node_from_algan(self, self.manim_mobject)
+        return self.manim_mobject
+
+    def _prepare_manim_edit(self):
+        """Return independent before/edit copies from a synchronized backing Mob."""
+
+        self._sync_manim_from_algan()
+        before = self.manim_mobject.copy()
+        return before, before.copy()
+
+    def _animate_to_manim(self, source, *, before_source=None):
+        """Record an Algan morph to an edited copy of the backing Mobject.
+
+        Native Algan state that the Manim edit did not touch is merged into the
+        target before ``become``.  This is what makes parent changes to opacity,
+        glow, colors and any other timeline-backed attribute survive a later
+        delegated geometry operation.
+        """
+
+        if before_source is None:
+            self._sync_manim_from_algan()
+            before_source = self.manim_mobject.copy()
         self.manim_mobject = source
         # Purely intermediate: ``become`` reads the target's state into this
         # Mob's existing rows and nothing of the target survives the call, so
         # none of it may be registered as an actor.
         target = ManimMob(source, scene=self.scene, add_to_scene=False)
+        before = ManimMob(before_source, scene=self.scene, add_to_scene=False)
+        _preserve_algan_state_unchanged_by_manim(self, before, target)
         return self.become(target, detach_history=False)
 
     # These names also exist on Algan's Mob.  Override them so compatibility
@@ -266,13 +478,13 @@ class ManimCompatMob(ManimMob):
         aligned_edge=_manim.ORIGIN,
         coor_mask=np.array([1, 1, 1]),
     ):
-        source = self.manim_mobject.copy()
+        before, source = self._prepare_manim_edit()
         source.move_to(
             to_manim(point_or_mobject),
             aligned_edge=to_manim(aligned_edge),
             coor_mask=to_manim(coor_mask),
         )
-        return self._animate_to_manim(source)
+        return self._animate_to_manim(source, before_source=before)
 
     def move(self, displacement, path_arc_angle=None, recursive=True, **kwargs):
         """Move by a displacement, applying it as a Manim ``shift``.
@@ -289,8 +501,8 @@ class ManimCompatMob(ManimMob):
         displacement = cast_to_tensor(displacement)
         if path_arc_angle is not None or not recursive or kwargs:
             # Curved paths and non-recursive moves have no Manim equivalent.
-            # Let Algan record the motion, then bring the backing Mobject to
-            # the same final position so delegated queries stay accurate.
+            # Let Algan record the motion, then derive the backing geometry from
+            # the resulting rows rather than trying to mirror the operation.
             target = self.location + displacement
             if path_arc_angle is None:
                 self.set_location(target, recursive=recursive, **kwargs)
@@ -298,29 +510,29 @@ class ManimCompatMob(ManimMob):
                 self.move_to_point_along_arc(
                     target, path_arc_angle, recursive=recursive, **kwargs
                 )
-            self.manim_mobject = self.manim_mobject.copy().shift(to_manim(displacement))
+            self._sync_manim_from_algan()
             return self
-        source = self.manim_mobject.copy()
+        before, source = self._prepare_manim_edit()
         source.shift(to_manim(displacement))
-        return self._animate_to_manim(source)
+        return self._animate_to_manim(source, before_source=before)
 
     def scale(self, scale_factor, **kwargs):
-        source = self.manim_mobject.copy()
+        before, source = self._prepare_manim_edit()
         source.scale(
             scale_factor,
             **{key: to_manim(value) for key, value in kwargs.items()},
         )
-        return self._animate_to_manim(source)
+        return self._animate_to_manim(source, before_source=before)
 
     def rotate(self, angle, axis=_manim.OUT, about_point=None, **kwargs):
-        source = self.manim_mobject.copy()
+        before, source = self._prepare_manim_edit()
         source.rotate(
             angle,
             axis=to_manim(axis),
             about_point=None if about_point is None else to_manim(about_point),
             **{key: to_manim(value) for key, value in kwargs.items()},
         )
-        return self._animate_to_manim(source)
+        return self._animate_to_manim(source, before_source=before)
 
     def set(self, **kwargs):
         # Algan's internal morphing path calls ``set`` with animatable state
@@ -328,24 +540,30 @@ class ManimCompatMob(ManimMob):
         # updates such as ``set(width=...)`` to the backing object.
         if set(kwargs).issubset(set(self.animatable_attrs)):
             return Mob.set(self, **kwargs)
-        source = self.manim_mobject.copy()
+        before, source = self._prepare_manim_edit()
         source.set(**{key: to_manim(value) for key, value in kwargs.items()})
-        return self._animate_to_manim(source)
+        return self._animate_to_manim(source, before_source=before)
 
     def copy(self):
         # Matches :meth:`~.Animatable.clone`, which registers the copy: a copy
         # you cannot render is of no use to the caller.
-        return _wrapper_type_for(self.manim_mobject)._from_manim(
-            self.manim_mobject.copy(), scene=self.scene, add_to_scene=True
+        source = self.get_manim_mobject()
+        return _wrapper_type_for(source)._from_manim(
+            source.copy(), scene=self.scene, add_to_scene=True
         )
 
-    def sync_from_manim(self):
+    def sync_from_manim(self, *, before_source=None):
         """Refresh converted geometry after directly editing the backing object."""
+        if before_source is None:
+            before_source = self._exposed_manim_baseline
         # Unlike ``_animate_to_manim``'s morph target, part of this conversion is
         # grafted into this Mob's hierarchy below and has to render, so it is
         # built as a registered subtree.  Only the target's own root is
         # discarded, and an unspawned actor never reaches the renderer.
         target = ManimMob(self.manim_mobject, scene=self.scene, add_to_scene=True)
+        if before_source is not None:
+            before = ManimMob(before_source, scene=self.scene, add_to_scene=False)
+            _preserve_algan_state_unchanged_by_manim(self, before, target)
         if self.is_spawned():
             target = target.spawn(animate=False)
         with Off(animation_manager=self.animation_manager):
@@ -359,6 +577,7 @@ class ManimCompatMob(ManimMob):
         target_non_components = target.get_non_component_children()
         self.children = list(self.components) + target_non_components
         self.submobjects = target_non_components
+        self._exposed_manim_baseline = None
         bump_hierarchy_version()
         return self
 
@@ -387,8 +606,13 @@ class ManimCompatMob(ManimMob):
     def __getattr__(self, name):
         # Normal Mob/Animatable attribute lookup gets first chance.  This method
         # is reached only for Manim-specific APIs.
-        if name.startswith("_") or "manim_mobject" not in self.__dict__:
+        if (
+            name.startswith("_")
+            or "manim_mobject" not in self.__dict__
+            or "control_points" not in self.__dict__
+        ):
             raise AttributeError(name)
+        self._sync_manim_from_algan()
         attribute = getattr(self.manim_mobject, name)
         if not callable(attribute):
             # Reading an attribute is a query, not construction: it must stay
@@ -399,15 +623,22 @@ class ManimCompatMob(ManimMob):
 
         @wraps(attribute)
         def delegated(*args, **kwargs):
-            result = attribute(
+            # A delegated method can be saved and called later.  Parent edits may
+            # happen between attribute lookup and invocation, so synchronize and
+            # re-bind the Manim method at call time rather than relying on the
+            # bound method captured by ``__getattr__``.
+            self._sync_manim_from_algan()
+            before_source = self.manim_mobject.copy()
+            current_attribute = getattr(self.manim_mobject, name)
+            result = current_attribute(
                 *(to_manim(arg) for arg in args),
                 **{key: to_manim(value) for key, value in kwargs.items()},
             )
             if result is self.manim_mobject:
-                self.sync_from_manim()
+                self.sync_from_manim(before_source=before_source)
                 return self
             if result is None:
-                self.sync_from_manim()
+                self.sync_from_manim(before_source=before_source)
                 return None
             return self._convert_delegated_result(result)
 
