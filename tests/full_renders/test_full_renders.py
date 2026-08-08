@@ -45,6 +45,19 @@ UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
 # byte-identity across re-windowed state is unattainable.
 MAX_CHANNEL_DIFFERENCE = 2
 
+# Free VRAM is what the render loop sizes its frame windows from, and it is not
+# reproducible: it shrinks as the Torch and Taichi allocators warm up, so the
+# same scene split differently depending on how many scenes had rendered before
+# it in the process. That is not a tolerable drift -- a different split carries
+# a different set of not-yet-spawned actors into the batch and pads the merged
+# arrays to a different width, which reorders them and the STBVH, and
+# silhouettes moved by up to 54 channel values between two splits of this very
+# suite. Pinning the measurement makes each scene render the same way every
+# time. The figure has to be affordable on the device (it replaces the
+# measurement, it does not cap it); 1.5 GiB leaves a 600 MB arena, which every
+# scene here renders inside.
+AVAILABLE_MEMORY_OVERRIDE = 1536 * 1024 * 1024
+
 SCENE_FILES = sorted(
     path for path in SCENES_DIR.glob("*.py") if not path.name.startswith("_")
 )
@@ -59,6 +72,9 @@ def render_environment(monkeypatch):
     The working directory becomes ``tests/full_renders`` so a scene can name its
     assets relative to itself -- ``resolve_asset_path`` tries the working
     directory first.
+
+    ``available_memory_override`` pins the frame-window split; see
+    ``AVAILABLE_MEMORY_OVERRIDE``.
     """
     snapshot = SETTINGS.snapshot()
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -69,6 +85,7 @@ def render_environment(monkeypatch):
         output_directory=OUTPUT_DIR.name,
         cache_directory=str(CACHE_DIR),
     )
+    SETTINGS.computing.set(available_memory_override=AVAILABLE_MEMORY_OVERRIDE)
     SceneManager.reset()
     try:
         yield

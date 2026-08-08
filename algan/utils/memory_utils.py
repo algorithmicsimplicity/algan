@@ -43,6 +43,13 @@ def is_cuda_oom(exc):
 
 def get_num_available_bytes(device=torch.device("cuda")):
     device = torch.device(device)
+    # A pinned figure stands in for the *measured* branches only. The CPU
+    # branch already returns a setting, so it is deterministic as it is, and
+    # routing it through this override too would silently retune animation
+    # batch sizing along with the render arena.
+    override = SETTINGS.computing.available_memory_override
+    if override is not None and device.type in ("cuda", "mps"):
+        return int(override)
     if device.type == "cuda":
         # ``empty_cache`` acts on PyTorch's current CUDA device.  The render
         # arena may target a different indexed device, so make that device

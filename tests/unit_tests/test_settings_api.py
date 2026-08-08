@@ -9,6 +9,7 @@ wrong thing, which is exactly the failure mode these tests exist to prevent.
 from __future__ import annotations
 
 import pytest
+import torch
 
 from algan import (
     HD,
@@ -62,6 +63,33 @@ def test_out_of_range_values_are_rejected():
         SETTINGS.computing.set(animation_memory_fraction=0.0)
     with pytest.raises(AlganConfigurationError):
         SETTINGS.style.set(buffer=-1)
+
+
+def test_available_memory_override_replaces_the_measured_device_figure():
+    """The knob that makes a render's frame-window split reproducible.
+
+    Free device memory moves with allocator warmth, and the render loop sizes
+    its frame windows from it, so an unpinned measurement makes the same scene
+    split -- and therefore render -- differently from run to run.
+    """
+    from algan.utils.memory_utils import get_num_available_bytes
+
+    assert SETTINGS.computing.available_memory_override is None
+    with SETTINGS.computing.override(available_memory_override=1234567):
+        assert get_num_available_bytes(torch.device("cuda")) == 1234567
+        assert get_num_available_bytes(torch.device("mps")) == 1234567
+        # The CPU branch already returns a setting, so it stays put.
+        assert (
+            get_num_available_bytes(torch.device("cpu"))
+            == SETTINGS.computing.max_cpu_memory_used
+        )
+    assert SETTINGS.computing.available_memory_override is None
+
+
+def test_available_memory_override_rejects_values_that_cannot_size_an_arena():
+    for value in (0, -1, 2.5, True):
+        with pytest.raises(AlganConfigurationError, match="available_memory_override"):
+            SETTINGS.computing.set(available_memory_override=value)
 
 
 def test_device_selection_answers_with_the_environment_variable_to_set():
