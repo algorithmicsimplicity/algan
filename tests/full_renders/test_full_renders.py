@@ -24,8 +24,6 @@ import shutil
 import sys
 from pathlib import Path
 
-import cv2
-import numpy as np
 import pytest
 import torch
 
@@ -40,10 +38,9 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EXPECTED_DIR = HERE / f"expected_outputs_{DEVICE}"
 UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
 
-# Small per-pixel drift is expected and tolerated: torch CPU rate-function
-# evaluation rounds differently depending on the materialization window, so
-# byte-identity across re-windowed state is unattainable.
-MAX_CHANNEL_DIFFERENCE = 2
+# Frames are compared by the ``assert_video_matches_baseline`` fixture in
+# ``tests/conftest.py``, which both render suites share so they cannot drift
+# apart on tolerance.
 
 # Free VRAM is what the render loop sizes its frame windows from, and it is not
 # reproducible: it shrinks as the Torch and Taichi allocators warm up, so the
@@ -108,64 +105,6 @@ def _load_scene(scene_path: Path) -> None:
         sys.modules.pop(module_name, None)
 
 
-def _compare_videos(actual_path: Path, expected_path: Path, diff_path: Path) -> None:
-    actual = cv2.VideoCapture(str(actual_path))
-    expected = cv2.VideoCapture(str(expected_path))
-    expected_fps = expected.get(cv2.CAP_PROP_FPS) or PREVIEW.frames_per_second
-    writer = None
-    frame_count = 0
-    max_difference = 0
-    worst_frame = -1
-
-    try:
-        while True:
-            actual_ok, actual_frame = actual.read()
-            expected_ok, expected_frame = expected.read()
-            if not actual_ok or not expected_ok:
-                assert actual_ok == expected_ok, (
-                    f"{actual_path.name} has a different frame count from its "
-                    f"baseline (diverged at frame {frame_count})"
-                )
-                break
-
-            assert actual_frame.shape == expected_frame.shape, (
-                f"{actual_path.name} rendered at {actual_frame.shape}, expected "
-                f"{expected_frame.shape}"
-            )
-            difference = np.abs(
-                actual_frame.astype(np.int16) - expected_frame.astype(np.int16)
-            ).astype(np.uint8)
-            frame_difference = int(difference.max())
-            if frame_difference > max_difference:
-                max_difference = frame_difference
-                worst_frame = frame_count
-            frame_count += 1
-
-            if frame_difference > MAX_CHANNEL_DIFFERENCE:
-                if writer is None:
-                    diff_path.parent.mkdir(parents=True, exist_ok=True)
-                    height, width = difference.shape[:2]
-                    writer = cv2.VideoWriter(
-                        str(diff_path),
-                        cv2.VideoWriter_fourcc(*"mp4v"),
-                        expected_fps,
-                        (width, height),
-                    )
-                writer.write(difference)
-    finally:
-        actual.release()
-        expected.release()
-        if writer is not None:
-            writer.release()
-
-    assert frame_count > 0, f"{actual_path.name} did not contain any frames"
-    assert max_difference <= MAX_CHANNEL_DIFFERENCE, (
-        f"{actual_path.name} differs from its baseline by up to "
-        f"{max_difference} channel values (worst at frame {worst_frame}); "
-        f"see {diff_path}"
-    )
-
-
 def test_there_is_at_least_one_full_render_scene():
     """A silently empty scene directory would make the whole suite vacuous."""
     assert SCENE_FILES, f"no full-render scenes found in {SCENES_DIR}"
@@ -173,7 +112,9 @@ def test_there_is_at_least_one_full_render_scene():
 
 @pytest.mark.slow
 @pytest.mark.parametrize("scene_path", SCENE_FILES, ids=lambda path: path.stem)
-def test_full_render_scene(scene_path: Path, render_environment):
+def test_full_render_scene(
+    scene_path: Path, render_environment, assert_video_matches_baseline
+):
     output_path = OUTPUT_DIR / f"{scene_path.stem}.mp4"
     output_path.unlink(missing_ok=True)
 
@@ -203,8 +144,9 @@ def test_full_render_scene(scene_path: Path, render_environment):
         f"Missing baseline for {scene_path.name}. Re-run with "
         "ALGAN_UPDATE_FULL_RENDER_BASELINES=1 after reviewing the render."
     )
-    _compare_videos(
+    assert_video_matches_baseline(
         output_path,
         expected_path,
         HERE / "output_errors" / output_path.name,
+        fallback_fps=PREVIEW.frames_per_second,
     )

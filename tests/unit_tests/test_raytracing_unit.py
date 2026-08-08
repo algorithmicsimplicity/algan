@@ -16,6 +16,18 @@ Validates, without the full scene pipeline:
    paraboloid reference (including rays that pierce a patch twice),
    watertight seams between sub-patches, and mirror/Monte Carlo/physical
    smoke tests.
+
+The whole module is ``slow`` and so sits outside the fast suite. Every test
+here drives a Taichi megakernel, and the dominant cost is Taichi specialising
+one on the geometry and features a test happens to use -- tens of seconds,
+charged to whichever test reaches a given variant first. Marking individual
+tests therefore does not reduce the bill, it moves it: excluding the slowest
+Monte Carlo test simply made the next one that needed that kernel take its
+time. The group has to leave together or not at all.
+
+What the fast suite gets instead is ``tests/fast``, which renders a scene and
+compares every pixel. That pins the same tracer output end to end, in one
+kernel variant, for about the cost of two tests here.
 """
 
 import pytest
@@ -46,6 +58,8 @@ from algan.rendering.raytracing.stbvh import (
     _spread_bits_4,
     build_stbvh,
 )
+
+pytestmark = pytest.mark.slow
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -21,16 +21,18 @@ Always use the local venv: `.venv/Scripts/python.exe`. The default system Python
 
 ### Testing
 ```
-.venv/Scripts/python.exe -m pytest tests/unit_tests -q                        # fast, no rendering
-.venv/Scripts/python.exe -m pytest tests/run_test.py -q                       # render regression suite
-.venv/Scripts/python.exe -m pytest tests/run_test.py -q -k "test_basic_py"   # one test file
+.venv/Scripts/python.exe -m pytest -q --fast    # THE development loop: 88-106s
+.venv/Scripts/python.exe -m pytest -q           # everything, ~12 min, before pushing
 ```
-- `tests/unit_tests/` is the fast behavioral suite; run it after every change.
-- Each file in `tests/test_files/` defines demo scenes and ends with `render_all_funcs(__name__)`; importing the module renders its scenes at `PREVIEW` settings into `tests/algan_outputs/`.
-- Rendered videos are compared **pixel-wise** against `tests/expected_outputs_cuda/` (or `expected_outputs_cpu/` when CUDA is unavailable). Any pixel deviation > 2 fails; diff videos are written to `tests/output_errors/`.
+- **`--fast` is the suite to run after every change.** It is everything not marked `slow`, held to a two-minute budget, and it prints where it landed (`fast suite: 88s of its 120s budget (73%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
+- It covers the whole behavioural suite (`tests/unit_tests/`) plus **one real render compared pixel-wise** (`tests/fast/`). That render is the only thing in the loop that can see a renderer regression, and it is half the budget.
+- Run the **full** suite after touching the renderer, and before pushing. `tests/README.md` has the table of what `--fast` leaves out and where each item is covered instead.
+- `slow` means **outside the fast suite** — a budget decision, not a description. When the fast suite reports itself over budget, mark the *newly added* expensive test, not an old one.
+- **Taichi cost is per kernel variant, not per test**, charged to whichever test hits that variant first. Marking one test `slow` can just move its seconds to the next test that needs the same kernel (this happened with `test_raytracing_unit.py`, hence its module-level mark). A group sharing a kernel leaves together or not at all. Adding PN geometry (`Sphere`/`Cylinder`/`Cone`/`Torus`/`Surface`) to `tests/fast/scene.py` costs ~20s on its own — use a `Polyhedron` subclass there.
+- Renders are compared **pixel-wise** against `expected_outputs_cuda/` (or `expected_outputs_cpu/`) in each render suite's own directory. Any channel deviation > 2 fails; diff videos land in that suite's `output_errors/`.
 - Small (≤2) pixel differences across runs are expected and tolerated: torch CPU rate-function evaluation rounds differently depending on materialization window, so exact byte-identity across re-windowed state is unattainable.
 - On Windows, run render work **one process at a time**: killed/timed-out background runs orphan child processes that keep output mp4s locked.
-- When a legitimate rendering change alters output, re-baseline by copying the new videos into `expected_outputs_cuda/` (this is normal practice here).
+- When a legitimate rendering change alters output, re-baseline with `ALGAN_UPDATE_FAST_BASELINE=1` / `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` and **look at the result** before committing (this is normal practice here).
 - **Cap any script whose tensor sizes come from parameters** rather than from a real scene: `benchmarks/_memory_cap.py`'s `cap_process_memory(gb)` (call it *before* importing torch). A mis-sized synthetic generator has exhausted system RAM and blue-screened this machine. Do **not** cap a real render — WDDM charges the VRAM arena against process commit, so a capped render segfaults inside CUDA instead of raising.
 
 ### Documentation
@@ -169,6 +171,6 @@ Core: torch, torchvision, taichi, numpy, opencv-python, moviepy, scipy, svgeleme
 - `algan/settings/` — `SETTINGS` sections, presets, startup-only env configuration
 - `algan/utils/` — tensor helpers, memory arena, profiling, doc-build tooling
 - `algan/external_libraries/` — vendored manim/ground/sect (do not modify)
-- `tests/unit_tests/` — fast behavioral tests; `tests/run_test.py` — pixel-comparison renders
+- `tests/unit_tests/` — behavioural tests; `tests/fast/` — the fast suite's one pixel-compared render; `tests/full_renders/` — five dense pixel-compared scenes (see `tests/README.md`)
 - `benchmarks/` — ad-hoc A/B, parity-check and profiling scripts
 - `docs/` — Sphinx docs with rendered examples

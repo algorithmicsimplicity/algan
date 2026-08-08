@@ -26,11 +26,15 @@ On the normal Windows development checkout, use the repository virtual environme
 ### Tests
 
 ```text
-.venv/Scripts/python.exe -m pytest tests/run_test.py -q
-.venv/Scripts/python.exe -m pytest tests/run_test.py -q -k "test_basic_py"
+.venv/Scripts/python.exe -m pytest -q --fast
+.venv/Scripts/python.exe -m pytest -q
 ```
 
-The render regression suite imports scene files under `tests/test_files/`, writes outputs under `tests/algan_outputs/`, and compares rendered pixels against the expected CPU or CUDA baselines. Small platform-dependent pixel differences are tolerated. Legitimate renderer changes may require deliberate baseline updates.
+The first command is the development loop and the one to run after every change: everything not marked `slow`, held to a two-minute budget (88–106 s on CUDA over consecutive runs), reporting where it landed against that budget when it finishes. It is the behavioural suite under `tests/unit_tests/` plus one pixel-compared render under `tests/fast/`. The second is everything, about twelve minutes, and adds the five dense render scenes under `tests/full_renders/` and the expensive references the budget excludes. Run it after touching the renderer and before pushing.
+
+`slow` marks a test as outside the fast suite; it is a budget decision rather than a description. Note that Taichi's cost is per kernel variant and is charged to whichever test reaches that variant first, so marking a single test `slow` can move its cost to the next test needing the same kernel rather than removing it. `tests/README.md` holds the full coverage table, the re-baselining commands and the rules for editing the fast scene.
+
+Both render suites compare rendered pixels against expected CPU or CUDA baselines in their own directory, through one shared fixture in `tests/conftest.py`. Small platform-dependent pixel differences are tolerated. Legitimate renderer changes may require deliberate baseline updates.
 
 Do not run multiple render tests concurrently on Windows. Killed render processes can leave child processes alive and output files locked.
 

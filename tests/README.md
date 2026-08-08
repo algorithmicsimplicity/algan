@@ -1,27 +1,80 @@
 # Algan test suites
 
-Two suites, with different jobs:
+Three directories, two suites. Always run them with the project venv — the
+system Python has no taichi.
 
-| Suite | What it protects | Cost |
+## The fast suite — run this one
+
+```bash
+.venv/Scripts/python.exe -m pytest -q --fast
+```
+
+**This is the suite to run after every change.** It is everything *not* marked
+`slow`, and it holds itself to two minutes so it stays inside a development
+loop (measured 88–106 s on CUDA over consecutive runs, of which the render is
+40–47 s). It prints where it landed against that budget when it finishes:
+
+```
+fast suite: 88s of its 120s budget (73%)
+```
+
+That figure moves by a good fraction between runs, because most of the render's
+cost is Taichi specialising a kernel and that is sensitive to what the process
+did beforehand. It is reported rather than enforced for exactly that reason: a
+timing assertion here would be a flake.
+
+Give it no path, so it uses the `testpaths` from `pyproject.toml`.
+
+What it covers: the whole behavioural suite — the timeline and its replay, the
+transform hierarchy, layout, actor registration, settings, batch sizing and the
+arena, materials, the animations, the public API surface — plus **one real
+render, compared pixel-wise** (`tests/fast/`), which is the only thing in the
+loop that can see a renderer regression.
+
+What it gives up, and where that is covered instead:
+
+| Left out | Why | Covered by |
 | --- | --- | --- |
-| `tests/unit_tests/` | Behaviour that can break without raising: the timeline, the transform hierarchy, settings, batch sizing, materials, the public API surface. | Seconds to a few minutes |
-| `tests/full_renders/` | What the renderer actually draws, compared pixel-wise against checked-in baselines. | ~10 minutes on CUDA |
+| The other four render scenes | ~2 minutes each | `tests/full_renders/` |
+| Brute-force tracer references | Taichi specialises a megakernel per test's geometry; tens of seconds each | `tests/unit_tests/test_raytracing_unit.py` |
+| PN surfaces *in the render* | ~20 s of kernel specialisation on its own | `test_logical_pn_tessellation.py` and `test_surface_autotune.py` behaviourally; `full_renders/solids_and_camera` for pixels |
+| Shadows, refraction, glow, Monte Carlo, glTF, camera moves | Another kernel variant or tracer path each | `tests/full_renders/` |
+| Point clouds, the `import algan` subprocess check | Re-confirm a known defect / a second interpreter | The full suite |
 
-Always run them with the project venv — the system Python has no taichi:
+## The full suite
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/unit_tests -q
+.venv/Scripts/python.exe -m pytest -q
 ```
 
-```bash
-.venv/Scripts/python.exe -m pytest -q --skip-slow
-```
+Everything, about twelve minutes on CUDA. Run it before pushing, after touching
+the renderer, and whenever the fast suite's coverage table above says the thing
+you changed lives here.
 
-The second command is the fast feedback loop: it skips the GPU renders and the
-pixel comparisons, which are the only tests marked `slow`. Give it no path so it
-uses the `testpaths` from `pyproject.toml` — passing `tests` collects the legacy
-`tests/test_files/` scenes too, which *render on import* and collide with the
-unit-test module names.
+| Directory | What it protects | Cost |
+| --- | --- | --- |
+| `tests/unit_tests/` | Behaviour that can break without raising: the timeline, the transform hierarchy, settings, batch sizing, materials, the public API surface. | ~60 s (~90 s including the `slow` ones) |
+| `tests/fast/` | One dense scene, rendered and compared pixel-wise: the renderer coverage the fast loop can afford. | 40–47 s |
+| `tests/full_renders/` | What the renderer actually draws across five dense scenes, compared pixel-wise against checked-in baselines. | ~10 minutes on CUDA |
+
+## What `slow` means
+
+`slow` marks a test as **outside the fast suite** — it is a budget decision, not
+a description. Renders, pixel comparisons and anything that costs more than
+about a second earn it.
+
+Mark a new test `slow` when the fast suite reports itself over budget. Prefer
+marking the *newly added* expensive test over an old one: the budget is a
+first-come constraint, and silently evicting existing coverage to fit a new
+test is how a fast suite stops being worth running.
+
+One trap when choosing what to mark: with Taichi, **the cost is per kernel
+variant, not per test**, and it is charged to whichever test reaches that
+variant first. Excluding the slowest Monte Carlo test in
+`test_raytracing_unit.py` did not save its seven seconds — it moved them to the
+next test that needed the same kernel. A group that shares a kernel has to
+leave together or not at all, which is why that module is marked at module
+level.
 
 ## The full-render suite
 
@@ -58,19 +111,37 @@ albedo, metallic/roughness and normal textures. Keeping the fixture small is
 deliberate: it keeps the render inside the arena without weakening importer or
 material coverage.
 
-### Re-baselining
+## The fast suite's render
 
-A change that legitimately alters output is re-baselined by rendering with the
-baselines writable, then **looking at the result** before committing:
+`tests/fast/scene.py` is a sixth scene under the same conventions, kept apart
+from the five above so that the full-render suite and its coverage audit stay
+what they are. Its docstring is worth reading before editing it: it is shaped
+by the kernel-variant cost, which is why it is one scene rather than several
+and why it contains no `Surface` geometry.
+
+## Re-baselining
+
+Both render suites are re-baselined by rendering with the baselines writable,
+then **looking at the result** before committing:
 
 ```bash
 ALGAN_UPDATE_FULL_RENDER_BASELINES=1 .venv/Scripts/python.exe -m pytest tests/full_renders -q
 ```
 
-Frames are compared channel-wise with a tolerance of 2. That is not slack for
-sloppiness: torch's CPU rate-function evaluation rounds differently depending on
-the materialization window, so byte-identity across re-windowed state is
-unattainable. A failure writes a diff video to `tests/full_renders/output_errors/`.
+```bash
+ALGAN_UPDATE_FAST_BASELINE=1 .venv/Scripts/python.exe -m pytest tests/fast -q
+```
+
+Both variables are read by the harnesses rather than by the package, so
+`import algan` warns that it does not recognise them. That is expected.
+
+Frames are compared channel-wise with a tolerance of 2 by the
+`assert_video_matches_baseline` fixture in `tests/conftest.py`, which both
+suites share so they cannot drift apart on tolerance. That tolerance is not
+slack for sloppiness: torch's CPU rate-function evaluation rounds differently
+depending on the materialization window, so byte-identity across re-windowed
+state is unattainable. A failure writes a diff video to the suite's
+`output_errors/`.
 
 On Windows, run render work **one process at a time** — a killed or timed-out
 run orphans children that keep the output mp4s locked.

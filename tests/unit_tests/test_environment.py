@@ -67,6 +67,7 @@ def test_all_registered_algan_environment_variables_are_accepted():
     assert not caught
 
 
+@pytest.mark.slow
 def test_import_algan_warns_for_an_unknown_environment_variable(tmp_path):
     environ = {
         name: value

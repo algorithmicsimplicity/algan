@@ -1,6 +1,7 @@
 import copy
 
 import manim as mn
+import pytest
 import torch
 
 from algan.animation_timeline.animation_contexts import Off
@@ -175,6 +176,7 @@ def test_batched_view_wave_expands_shared_attribute_for_full_owner():
     views[1].wave_color(WHITE)
 
 
+@pytest.mark.slow
 def test_direct_triangulated_text_batch_matches_object_batch():
     SceneManager.reset()
     manim_text = mn.Text("Hi")

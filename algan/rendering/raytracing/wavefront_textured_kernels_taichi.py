@@ -66,6 +66,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_PHYSICAL,
     _MID_STANDARD,
     _orient_hit_normals,
+    _reflect_frame,
     _stage_default,
     _stage_lambert,
     _stage_phong,
@@ -441,12 +442,30 @@ def wf_shade_textured(
 
                 if ti.static(feat_scatter == 0):
                     normal = ti.math.vec3(0.0, 0.0, 0.0)
+                    # Geometric normal beside the shading one: what the
+                    # reflection has to leave (see
+                    # ``shading_taichi._reflect_frame``). A circuit is flat, so
+                    # its two normals coincide.
+                    geo_normal = ti.math.vec3(0.0, 0.0, 0.0)
                     if is_tri:
                         normal = _triangle_normal(
                             f, prim, w0, a, b, tri_norm, tri_pos)
+                        gp = f % tri_pos.shape[0]
+                        g0 = ti.math.vec3(tri_pos[gp, prim, 0],
+                                          tri_pos[gp, prim, 1],
+                                          tri_pos[gp, prim, 2])
+                        g1 = ti.math.vec3(tri_pos[gp, prim, 3],
+                                          tri_pos[gp, prim, 4],
+                                          tri_pos[gp, prim, 5])
+                        g2 = ti.math.vec3(tri_pos[gp, prim, 6],
+                                          tri_pos[gp, prim, 7],
+                                          tri_pos[gp, prim, 8])
+                        geo_normal = (g1 - g0).cross(g2 - g0)
                     elif ti.static(feat_bez != 0):
                         normal = _bezier_normal(f, prim, circuit_meta)
                     normal = normal.normalized()
+                    if not is_tri:
+                        geo_normal = normal
                     R, diel_pass = _material_reflectance(
                         rd, normal, reflectivity, ior, albedo3)
                     if bounces_left <= 0:
@@ -543,11 +562,8 @@ def wf_shade_textured(
                         # coverage-miss (see ``_scatter_impl``).
                         if ((refl_max > MIN_ALPHA)
                                 and (refl_max >= cover_pass)):
-                            nref = normal
-                            if nref.dot(rd) > 0.0:
-                                nref = -nref
                             hit_point = ro + t_hit * rd
-                            rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                            rd, nref = _reflect_frame(rd, normal, geo_normal)
                             ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
                             weight *= refl_energy
                             base_dist += t_hit
@@ -568,11 +584,8 @@ def wf_shade_textured(
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
-                                nref = normal
-                                if nref.dot(rd) > 0.0:
-                                    nref = -nref
-                                rdr = (rd - 2.0 * rd.dot(nref)
-                                       * nref).normalized()
+                                rdr, nref = _reflect_frame(rd, normal,
+                                                           geo_normal)
                                 hp = ro + t_hit * rd
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = (hp[k] + nref[k]
@@ -599,11 +612,8 @@ def wf_shade_textured(
                     # outweighs what shows through (see ``default_scatter``).
                     elif ((refl_max > MIN_ALPHA)
                           and (refl_max >= cover_pass)):
-                        nref = normal
-                        if nref.dot(rd) > 0.0:
-                            nref = -nref
                         hit_point = ro + t_hit * rd
-                        rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                        rd, nref = _reflect_frame(rd, normal, geo_normal)
                         ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
                         weight *= refl_energy
                         base_dist += t_hit

@@ -10,6 +10,11 @@ The construction tests below pass today.  The rendering test is an expected
 failure that pins the gap: if someone implements the primitives, it XPASSes and
 fails the suite, which is the signal to move these classes out of ``EXEMPT`` in
 ``test_render_coverage_audit.py`` and into a full-render scene.
+
+The whole module is marked ``slow`` and so sits outside the fast suite. It
+costs about three seconds to re-confirm a defect that is already known and is
+not going to be fixed by accident, which is not worth paying on every change;
+the full suite still runs it, and that is where the XPASS signal will land.
 """
 
 from __future__ import annotations
@@ -27,6 +32,8 @@ from algan import (
     Scene,
     TrueDot,
 )
+
+pytestmark = pytest.mark.slow
 
 BUILDERS = {
     "DotCloud": lambda: DotCloud(color=YELLOW, radius=0.6, density=12),

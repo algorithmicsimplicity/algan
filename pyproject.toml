@@ -114,8 +114,8 @@ exclude = [
 ]
 
 [tool.pytest.ini_options]
-markers = "slow: Mark the test as slow. Can be skipped with --skip_slow"
-testpaths = ["tests/unit_tests", "tests/full_renders"]
+markers = "slow: Exclude from the fast suite (renders, pixel comparisons, expensive references). Skipped by --fast."
+testpaths = ["tests/unit_tests", "tests/fast", "tests/full_renders"]
 
 [tool.isort]
 profile = "black"

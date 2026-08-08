@@ -61,6 +61,7 @@ from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
+    _reflect_frame,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 
@@ -1027,10 +1028,7 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
             hit_point, rdt, face_n, normal)
         trans_w = trans_energy * tint
         if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
-            nref = normal
-            if nref.dot(rd) > 0.0:
-                nref = -nref
-            refl_dir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+            refl_dir, nref = _reflect_frame(rd, normal, face_n)
             refl_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
             refl_w = refl_energy
         else:
@@ -1040,19 +1038,13 @@ def _scatter_impl(rd, n_interp, face_n, hit_point, shaded, albedo, alpha,
         # is unbent and merges into the pass-through (the depth-layer walk,
         # which spends no bounce) along with the coverage-miss. Only the
         # reflection needs a ray of its own, so it takes the split slot.
-        nref = normal
-        if nref.dot(rd) > 0.0:
-            nref = -nref
-        trans_dir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+        trans_dir, nref = _reflect_frame(rd, normal, face_n)
         trans_orig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
         trans_w = refl_energy
         pass_w = cover3 + trans_energy * tint
     elif split_refl or ((refl_max > MIN_ALPHA)
                         and (refl_max >= cover_pass)):
-        nref = normal
-        if nref.dot(rd) > 0.0:
-            nref = -nref
-        rdir = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+        rdir, nref = _reflect_frame(rd, normal, face_n)
         rorig = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
         if split_refl:
             # Reflection into the split slot; the pass-through stays the
@@ -2477,18 +2469,50 @@ def wavefront_shade(
                     # so skip its cross-product + normalize entirely.  Byte-
                     # identical: when the guard is false the normal is dead.
                     normal = ti.math.vec3(0.0, 0.0, 0.0)
+                    # The GEOMETRIC normal beside the shading one. Both the
+                    # refracted origin offset and the reflection frame need it
+                    # (a shading normal tipped past the silhouette aims the
+                    # mirror ray into the solid -- see
+                    # ``shading_taichi._reflect_frame``), so it is built once
+                    # here under the same guard rather than per branch. A
+                    # circuit is flat, so its two normals coincide.
+                    geo_normal = ti.math.vec3(0.0, 0.0, 0.0)
                     if (reflectivity >= 0.0) or (T > 1e-4):
                         if htype == 1:
                             normal = _tri_normal_g(
                                 mem_trim, f, prim, 1.0 - a - b, a, b, tri_norm,
                                 tri_pos, tri_uvs, tri_tex_meta, textures,
                                 num_colored_triangles)
+                            gp = f % tri_pos.shape[0]
+                            g0 = ti.math.vec3(tri_pos[gp, prim, 0],
+                                              tri_pos[gp, prim, 1],
+                                              tri_pos[gp, prim, 2])
+                            g1 = ti.math.vec3(tri_pos[gp, prim, 3],
+                                              tri_pos[gp, prim, 4],
+                                              tri_pos[gp, prim, 5])
+                            g2 = ti.math.vec3(tri_pos[gp, prim, 6],
+                                              tri_pos[gp, prim, 7],
+                                              tri_pos[gp, prim, 8])
+                            geo_normal = (g1 - g0).cross(g2 - g0)
                         elif htype == 2:
                             normal = _pn_hit_normal(f, prim, a, b, pn_norm,
                                                     pn_ctrl, pn_extra, textures)
+                            gp = f % pn_ctrl.shape[0]
+                            gsu = ti.math.vec3(0.0, 0.0, 0.0)
+                            gsv = ti.math.vec3(0.0, 0.0, 0.0)
+                            for ci in ti.static(range(3)):
+                                gsu[ci] = (pn_ctrl[gp, prim, 3 + ci]
+                                           + 2.0 * a * pn_ctrl[gp, prim, 9 + ci]
+                                           + b * pn_ctrl[gp, prim, 15 + ci])
+                                gsv[ci] = (pn_ctrl[gp, prim, 6 + ci]
+                                           + 2.0 * b * pn_ctrl[gp, prim, 12 + ci]
+                                           + a * pn_ctrl[gp, prim, 15 + ci])
+                            geo_normal = gsu.cross(gsv)
                         else:
                             normal = _bezier_normal(f, prim, circuit_meta)
                         normal = normal.normalized()
+                        if htype != 1 and htype != 2:
+                            geo_normal = normal
 
                     R, diel_pass = _material_reflectance(
                         rd, normal, reflectivity, ior, albedo3)
@@ -2558,40 +2582,8 @@ def wavefront_shade(
                             if have_slot:
                                 rdt = _refract_ray(rd, normal, ior)
                                 hp = ro + t_hit * rd
-                                face_normal = normal
-                                if htype == 1:
-                                    tp = f % tri_pos.shape[0]
-                                    v0 = ti.math.vec3(
-                                        tri_pos[tp, prim, 0],
-                                        tri_pos[tp, prim, 1],
-                                        tri_pos[tp, prim, 2])
-                                    v1 = ti.math.vec3(
-                                        tri_pos[tp, prim, 3],
-                                        tri_pos[tp, prim, 4],
-                                        tri_pos[tp, prim, 5])
-                                    v2 = ti.math.vec3(
-                                        tri_pos[tp, prim, 6],
-                                        tri_pos[tp, prim, 7],
-                                        tri_pos[tp, prim, 8])
-                                    face_normal = (v1 - v0).cross(v2 - v0)
-                                elif htype == 2:
-                                    tp = f % pn_ctrl.shape[0]
-                                    su = ti.math.vec3(0.0, 0.0, 0.0)
-                                    sv = ti.math.vec3(0.0, 0.0, 0.0)
-                                    for ci in ti.static(range(3)):
-                                        su[ci] = (
-                                            pn_ctrl[tp, prim, 3 + ci]
-                                            + 2.0 * a
-                                            * pn_ctrl[tp, prim, 9 + ci]
-                                            + b * pn_ctrl[tp, prim, 15 + ci])
-                                        sv[ci] = (
-                                            pn_ctrl[tp, prim, 6 + ci]
-                                            + 2.0 * b
-                                            * pn_ctrl[tp, prim, 12 + ci]
-                                            + a * pn_ctrl[tp, prim, 15 + ci])
-                                    face_normal = su.cross(sv)
                                 rorig = _offset_transmitted_origin(
-                                    hp, rdt, face_normal, normal)
+                                    hp, rdt, geo_normal, normal)
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = rorig[k]
                                     rs_rd[c, k] = rdt[k]
@@ -2616,11 +2608,8 @@ def wavefront_shade(
                         # coverage the miss is empty, so it always reflects.
                         if (refl_max > MIN_ALPHA) \
                                 and (refl_max >= cover_pass):
-                            nref = normal
-                            if nref.dot(rd) > 0.0:
-                                nref = -nref
                             hit_point = ro + t_hit * rd
-                            rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                            rd, nref = _reflect_frame(rd, normal, geo_normal)
                             ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
                             weight *= refl_energy
                             base_dist += t_hit
@@ -2644,11 +2633,8 @@ def wavefront_shade(
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
-                                nref = normal
-                                if nref.dot(rd) > 0.0:
-                                    nref = -nref
-                                rdr = (rd - 2.0 * rd.dot(nref)
-                                       * nref).normalized()
+                                rdr, nref = _reflect_frame(rd, normal,
+                                                           geo_normal)
                                 hp = ro + t_hit * rd
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = (hp[k] + nref[k]
@@ -2680,11 +2666,8 @@ def wavefront_shade(
                             c, have_slot = _reserve_continuation_slot(
                                 rs_alloc, rs_ro.shape[0])
                             if have_slot:
-                                nref = normal
-                                if nref.dot(rd) > 0.0:
-                                    nref = -nref
-                                rdr = (rd - 2.0 * rd.dot(nref)
-                                       * nref).normalized()
+                                rdr, nref = _reflect_frame(rd, normal,
+                                                           geo_normal)
                                 hp = ro + t_hit * rd
                                 for k in ti.static(range(3)):
                                     rs_ro[c, k] = (hp[k] + nref[k]
@@ -2713,11 +2696,8 @@ def wavefront_shade(
                     # outweighs what shows through (see ``default_scatter``).
                     elif ((refl_max > MIN_ALPHA)
                           and (refl_max >= cover_pass)):
-                        nref = normal
-                        if nref.dot(rd) > 0.0:
-                            nref = -nref
                         hit_point = ro + t_hit * rd
-                        rd = (rd - 2.0 * rd.dot(nref) * nref).normalized()
+                        rd, nref = _reflect_frame(rd, normal, geo_normal)
                         ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
                         weight *= refl_energy
                         base_dist += t_hit

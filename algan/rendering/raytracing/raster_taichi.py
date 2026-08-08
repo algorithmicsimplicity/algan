@@ -79,6 +79,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
 from algan.rendering.raytracing.shading_taichi import (
     _MID_UNLIT,
     _orient_hit_normals,
+    _reflect_frame,
 )
 from algan.settings._startup import _SOFT_SHADOW_SAMPLES as SOFT_SHADOW_SAMPLES
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
@@ -2879,15 +2880,29 @@ def raster_first_shade(
             T = ti.math.clamp(T, 0.0, 1.0)
 
             normal = ti.math.vec3(0.0, 0.0, 0.0)
+            # The GEOMETRIC normal beside the shading one: what the secondary
+            # rays have to leave (see shading_taichi._reflect_frame -- a shading
+            # normal tipped past the silhouette aims the mirror ray into the
+            # solid). A circuit is flat, so its two normals coincide.
+            geo_normal = ti.math.vec3(0.0, 0.0, 0.0)
             if (reflectivity >= 0.0) or (T > 1e-4):
                 if fetched_bez:
                     normal = _bezier_normal(
                         f, circuit, circuit_meta).normalized()
+                    geo_normal = normal
                 else:
                     normal = _tri_normal_g(
                         0, f, prim, w0, a, b, tri_norm, tri_pos, tri_uvs,
                         tri_tex_meta, textures, num_colored_triangles
                     ).normalized()
+                    gp = f % tri_pos.shape[0]
+                    g0 = ti.math.vec3(tri_pos[gp, prim, 0], tri_pos[gp, prim, 1],
+                                      tri_pos[gp, prim, 2])
+                    g1 = ti.math.vec3(tri_pos[gp, prim, 3], tri_pos[gp, prim, 4],
+                                      tri_pos[gp, prim, 5])
+                    g2 = ti.math.vec3(tri_pos[gp, prim, 6], tri_pos[gp, prim, 7],
+                                      tri_pos[gp, prim, 8])
+                    geo_normal = (g1 - g0).cross(g2 - g0)
 
             R, diel_pass = _material_reflectance(surf_rd, normal,
                                                  reflectivity,
@@ -2992,9 +3007,7 @@ def raster_first_shade(
                             rdt, wt, base_dist + t_hit,
                             bounces_left - 1, processed, pixel, r, compact)
                 if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
-                    nref = normal
-                    if nref.dot(surf_rd) > 0.0:
-                        nref = -nref
+                    refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                     hit_point = surf_pos
                     if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
                             and (sec_n > 1):
@@ -3022,10 +3035,7 @@ def raster_first_shade(
                                         num_colored_triangles,
                                         cam_origin, screen_point,
                                         pixel_basis_x, pixel_basis_y)
-                                if nj.dot(rdj) > 0.0:
-                                    nj = -nj
-                                rdr = (rdj - 2.0 * rdj.dot(nj)
-                                       * nj).normalized()
+                                rdr, nj = _reflect_frame(rdj, nj, geo_normal)
                                 if ti.static(glossy != 0):
                                     if rough > _GLOSSY_MIN_ROUGHNESS:
                                         rdr = _glossy_reflect(
@@ -3044,8 +3054,7 @@ def raster_first_shade(
                                     ro = org
                                     placed = True
                     else:
-                        rd = (surf_rd - 2.0 * surf_rd.dot(nref)
-                              * nref).normalized()
+                        rd = refl_rd
                         ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
                         weight *= refl_energy
                     base_dist += t_hit
@@ -3068,9 +3077,7 @@ def raster_first_shade(
                 wt = weight * refl_energy
                 wt_max = ti.max(wt[0], ti.max(wt[1], wt[2]))
                 if wt_max > MIN_WEIGHT:
-                    nref = normal
-                    if nref.dot(surf_rd) > 0.0:
-                        nref = -nref
+                    refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                     hp = surf_pos
                     if ti.static(sec_aa > 1) and (wt_max > sec_min_energy) \
                             and (sec_n > 1):
@@ -3089,10 +3096,7 @@ def raster_first_shade(
                                         num_colored_triangles,
                                         cam_origin, screen_point,
                                         pixel_basis_x, pixel_basis_y)
-                                if nj.dot(rdj) > 0.0:
-                                    nj = -nj
-                                rdr = (rdj - 2.0 * rdj.dot(nj)
-                                       * nj).normalized()
+                                rdr, nj = _reflect_frame(rdj, nj, geo_normal)
                                 if ti.static(glossy != 0):
                                     if rough > _GLOSSY_MIN_ROUGHNESS:
                                         rdr = _glossy_reflect(
@@ -3111,8 +3115,7 @@ def raster_first_shade(
                             rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
                             rs_alloc,
                             hp + nref * (10.0 * MIN_HIT_DISTANCE),
-                            (surf_rd - 2.0 * surf_rd.dot(nref)
-                             * nref).normalized(),
+                            refl_rd,
                             wt, base_dist + t_hit, bounces_left - 1,
                             processed, pixel, r, compact)
                 if ti.static(aa_grp):
@@ -3138,9 +3141,7 @@ def raster_first_shade(
                 else:
                     weight *= cover3 + trans_energy * tint
             elif (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
-                nref = normal
-                if nref.dot(surf_rd) > 0.0:
-                    nref = -nref
+                refl_rd, nref = _reflect_frame(surf_rd, normal, geo_normal)
                 hit_point = surf_pos
                 if ti.static(sec_aa > 1) and (refl_max > sec_min_energy) \
                         and (sec_n > 1):
@@ -3162,9 +3163,7 @@ def raster_first_shade(
                                 textures, num_colored_triangles,
                                 cam_origin, screen_point,
                                 pixel_basis_x, pixel_basis_y)
-                            if nj.dot(rdj) > 0.0:
-                                nj = -nj
-                            rdr = (rdj - 2.0 * rdj.dot(nj) * nj).normalized()
+                            rdr, nj = _reflect_frame(rdj, nj, geo_normal)
                             if ti.static(glossy != 0):
                                 if rough > _GLOSSY_MIN_ROUGHNESS:
                                     rdr = _glossy_reflect(
@@ -3183,8 +3182,7 @@ def raster_first_shade(
                                 ro = org
                                 placed = True
                 else:
-                    rd = (surf_rd - 2.0 * surf_rd.dot(nref)
-                          * nref).normalized()
+                    rd = refl_rd
                     ro = hit_point + nref * (10.0 * MIN_HIT_DISTANCE)
                     weight *= refl_energy
                 base_dist += t_hit

@@ -219,6 +219,61 @@ def _orient_hit_normals(snrm, fnrm, rd):
 
 
 @ti.func
+def _reflect_frame(rd, snrm, fnrm):
+    """Mirror direction for a ray ``rd`` reflecting off a hit, plus the outward
+    normal its new origin must be offset along. Returns ``(dir, offset_n)``.
+
+    Reflecting about the SHADING normal is what makes a smooth-shaded mesh
+    mirror like the surface it approximates rather than like its facets, so
+    that is the normal used. But it is interpolated independently of the
+    geometry it decorates (see :func:`_faces_viewer`), and near a silhouette it
+    tips past that geometry: ``snrm . rd`` turns positive on fragments the ray
+    genuinely hit from the front. Reading the side off it there -- ``if
+    snrm.dot(rd) > 0: snrm = -snrm``, which every one of these call sites used
+    to do -- inverts the whole frame. The mirror ray is then launched INTO the
+    solid, from an origin offset inside it, and immediately hits the object's
+    own far side; because Fresnel at grazing incidence weights that hit at
+    nearly 1, the far side is composited over the silhouette at close to full
+    strength. On a coarsely tessellated sphere that is a dashed fringe of the
+    opposite side's colour beading along the rim, brighter than both the
+    surface and the background, and it moves as the tessellation turns.
+
+    So the side comes from the geometric normal, via :func:`_orient_hit_normals`
+    -- the same decision the material stages and the shadow rays already share,
+    which is what keeps a fragment from reflecting as one side while it lights
+    as the other.
+
+    That alone does not make the reflection leave the surface: a shading normal
+    tipped past the silhouette mirrors ``rd`` to a direction below the facet's
+    own horizon even when the side is right. Such a direction is not a
+    reflection of anything -- it points into the solid -- so the facet's own
+    mirror direction is used instead, which provably leaves it. At a silhouette
+    the facet is nearly edge-on, so that direction grazes away along the
+    surface, which is what the smooth surface being approximated does there.
+    The origin offset follows the geometric normal for the same reason.
+
+    A hit with no usable geometric normal (a degenerate facet, a fold in a
+    parameterisation) keeps the shading normal for both, i.e. the old
+    behaviour: there is nothing better to appeal to.
+
+    The origin offset only switches to the geometric normal where the direction
+    did. Away from a silhouette the two normals agree on which side they are
+    and the mirror direction clears the facet anyway, so offsetting along the
+    shading normal is both harmless and what every reflective hit already did:
+    keeping it there leaves ordinary reflective surfaces bit-for-bit unchanged
+    and confines this fix to the fragments that were actually wrong.
+    """
+    sn, fn = _orient_hit_normals(snrm, fnrm, rd)
+    out = (rd - 2.0 * rd.dot(sn) * sn).normalized()
+    offset_n = sn
+    if fnrm.norm() > 1e-9:
+        if out.dot(fn) <= 0.0:
+            out = (rd - 2.0 * rd.dot(fn) * fn).normalized()
+            offset_n = fn
+    return out, offset_n
+
+
+@ti.func
 def _light(light_pos: ti.template(), light_col: ti.template(), f, li):
     """Point-light world position and RGB colour for light ``li`` at frame ``f``."""
     tl = f % light_pos.shape[0]
