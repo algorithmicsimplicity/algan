@@ -104,7 +104,7 @@ def generate_tex_file(
 
     tex_dir = config.get_dir("tex_dir")
     if not tex_dir.exists():
-        tex_dir.mkdir()
+        tex_dir.mkdir(parents=True, exist_ok=True)
 
     result = tex_dir / (tex_hash(output) + ".tex")
     if not result.exists():
