@@ -1823,7 +1823,7 @@ def wavefront_shadow(
         rs_sca: ti.types.ndarray(), rs_int: ti.types.ndarray(),
         hit_f: ti.types.ndarray(), hit_i: ti.types.ndarray(),
         rs_pix: ti.types.ndarray(), rs_vis: ti.types.ndarray()):
-    """Deferred binary hard-shadow stage for the general wavefront (currently
+    """Legacy deferred binary shadow stage for the general wavefront (currently
     unused: the tracer always compiles ``wavefront_shade`` with
     ``deferred_shadows == 0`` -- the split measured slower than inline
     shadows; kept for a future occupancy-bound workload): for each active ray,
@@ -1832,10 +1832,14 @@ def wavefront_shadow(
     shade kernel reads visibility bits instead of inlining the heavy
     ``_shadow_occluded`` -> ``_nearest_surface_g`` -> PN-solver call graph
     (register-pressure relief -> higher shade-kernel occupancy). The per-hit
-    shadow geometry mirrors ``wavefront_shade``'s inline block exactly, so the
-    bits drive byte-identical shading. Because ``_collect_hits`` stops gathering
-    at the first opaque hit, the K-buffer holds (almost) exactly the hits shade
-    consumes, so few bits are computed and never read.
+    shadow geometry mirrors ``wavefront_shade``'s inline block. Before shadows
+    accumulated opacity, the bits drove byte-identical shading. Because
+    ``_collect_hits`` stops gathering at the first opaque hit, the K-buffer
+    holds (almost) exactly the hits shade consumes, so few bits are computed
+    and never read.
+
+    Opacity-weighted shadows no longer fit in these bits, so this stage must be
+    converted to a floating-point visibility buffer before it can be revived.
 
     HOST CONTRACT if this kernel is ever revived: like ``hit_f``/``hit_i``,
     ``rs_vis`` is indexed by *active-queue ordinal* (``rs_vis[i]``, not the
@@ -1980,9 +1984,9 @@ def wavefront_shade(
         # Two floats packed into one ndarray to free an arg slot for ``col_row``
         # (this kernel is at Taichi's 64 runtime-arg ceiling): [tri, pn].
         layer_offsets: ti.types.ndarray(),
-        # Fragment shading + binary hard shadows (compile-time templates, both
-        # 0 on the default vertex-shaded path so the whole block below
-        # compiles out) and their data.
+        # Fragment shading + deterministic hard shadows (compile-time
+        # templates, both 0 on the default vertex-shaded path so the whole
+        # block below compiles out) and their data.
         # ``refraction`` (also compile-time) enables Snell-law bending of the
         # transmitted ray for surfaces with a refractive index (extra cols 6-8).
         frag_shading: ti.template(), frag_pipelines: ti.template(),
@@ -2031,9 +2035,9 @@ def wavefront_shade(
 
     When ``frag_shading`` is enabled, triangle/PN hits are material-shaded per
     fragment from the raw albedo (bezier circuits keep their sampled colour),
-    and when ``shadows`` is also enabled each such fragment fires one binary
-    shadow ray per light through all three BVHs inside the per-fragment
-    lighting model.
+    and when ``shadows`` is also enabled each such fragment fires one
+    opacity-accumulating shadow ray per light through all three BVHs inside the
+    per-fragment lighting model.
 
     When ``refraction`` is enabled, a transparent refractive surface (glass)
     reflects AND refracts at once. The reflected branch continues in this ray
@@ -2205,8 +2209,8 @@ def wavefront_shade(
                 # Compiled out entirely on the default (vertex-shaded) path via
                 # ti.static.
                 if ti.static(frag_shading != 0):
-                    # Per-light shadow visibility for this hit (all-lit unless a
-                    # binary shadow ray finds an opaque blocker). Compiled out
+                    # Per-light shadow visibility for this hit (all-lit unless
+                    # shadow rays accumulate blocker opacity). Compiled out
                     # when shadows are off; only triangle/PN hits cast/receive
                     # shadows. The light loop is a *runtime* loop (not
                     # ti.static-unrolled) so the heavy ``_shadow_occluded`` ->
@@ -2214,10 +2218,12 @@ def wavefront_shade(
                     # once, not once per light.
                     vis = ti.Vector([1.0] * MAX_SHADOW_LIGHTS)
                     if ti.static((shadows != 0) and (deferred_shadows != 0)):
-                        # Deferred shadows: read the per-(hit, light) occlusion
-                        # bits precomputed by ``wavefront_shadow`` for this hit's
-                        # K-buffer slot (``sel``). Byte-identical to the inline
-                        # path below; just relocated to a lean kernel.
+                        # Legacy deferred shadows: read the per-(hit, light)
+                        # binary occlusion bits precomputed by
+                        # ``wavefront_shadow`` for this hit's K-buffer slot
+                        # (``sel``). This mode is currently never enabled and
+                        # must use floats before it can support the active
+                        # opacity-weighted shadow contract.
                         sbits = rs_vis[i]
                         for li in range(num_lights):
                             if li < _DEFERRED_SHADOW_LIGHTS:

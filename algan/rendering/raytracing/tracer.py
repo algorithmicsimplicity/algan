@@ -1785,8 +1785,8 @@ def raytrace_render_wavefront(
     across bounces.
 
     ``frag_flag``/``shadow_flag`` select the deterministic per-fragment shading
-    and binary hard-shadow paths (compile-time templates of the shade kernel);
-    ``light_pos``/``light_col`` feed both.
+    and opacity-weighted hard-shadow paths (compile-time templates of the shade
+    kernel); ``light_pos``/``light_col`` feed both.
 
     ``frag_scatters`` is the per-pipeline custom ray-continuation (scatter) tuple
     (empty when no scene pipeline overrides bouncing); a non-empty tuple switches

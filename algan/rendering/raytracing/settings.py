@@ -1086,14 +1086,14 @@ def set_fragment_shading(enabled):
     FRAGMENT_SHADING = bool(enabled)
 
 
-# When True, the deterministic ray tracer casts binary hard shadows: each
-# shaded triangle/PN fragment fires one shadow ray per point light and an
-# opaque occluder (alpha >= SHADOW_ALPHA_THRESHOLD) fully blocks that light's
-# direct contribution. Implies per-fragment shading (shadows are evaluated in
-# the lighting model) and forces the general kernel. Lights with a non-zero
-# ``shadow_radius`` / ``shadow_angle`` (and area lights) get *soft* shadows: a
-# fixed deterministic fan of SOFT_SHADOW_SAMPLES rays is traced across the
-# emitter instead of a single ray. Off by default.
+# When True, the deterministic ray tracer casts hard shadows: each shaded
+# triangle/PN fragment fires one shadow ray per point light and multiplies the
+# light that remains through every occluder's transparency. Fully opaque
+# occluders block the direct contribution. Implies per-fragment shading
+# (shadows are evaluated in the lighting model) and forces the general kernel.
+# Lights with a non-zero ``shadow_radius`` / ``shadow_angle`` (and area lights)
+# get *soft* shadows: a fixed deterministic fan of SOFT_SHADOW_SAMPLES rays is
+# traced across the emitter instead of a single ray. Off by default.
 SHADOWS = False
 
 # Number of shadow rays in the deterministic soft-shadow fan (per light with a
@@ -1103,20 +1103,21 @@ SHADOWS = False
 
 
 def set_ray_traced_shadows(enabled):
-    """Toggle binary hard shadows in the *deterministic* ray tracer.
+    """Toggle hard shadows in the *deterministic* ray tracer.
 
     When enabled, every shaded triangle/PN fragment traces one shadow ray per
-    scene point light; a light is occluded (its direct diffuse/specular term
-    dropped, ambient/emissive kept) when an opaque surface lies between the
-    fragment and the light. Shadows are evaluated inside the wavefront shade
-    kernel's per-fragment lighting model, so this implies
-    :func:`set_fragment_shading` for the render. Shadows are binary and ignore
-    partial transparency; lights with a non-zero ``shadow_radius`` /
-    ``shadow_angle`` (and area lights) get *soft* shadows via a deterministic
-    fan of ``SOFT_SHADOW_SAMPLES`` rays, while glass shadows need the physical
-    path tracer (``set_samples_per_pixel(n)`` with ``n > 1``). Only the
-    deterministic renderer (``set_samples_per_pixel(1)``, non-physical) is
-    affected. Set before rendering.
+    scene point light. Every partially opaque surface between the fragment and
+    light attenuates its direct diffuse/specular term by ``1 - opacity``;
+    stacked surfaces multiply, while a fully opaque surface blocks it. Ambient
+    and emissive terms remain unchanged. Shadows are evaluated inside the
+    wavefront shade kernel's per-fragment lighting model, so this implies
+    :func:`set_fragment_shading` for the render. Lights with a non-zero
+    ``shadow_radius`` / ``shadow_angle`` (and area lights) get *soft* shadows
+    via a deterministic fan of ``SOFT_SHADOW_SAMPLES`` rays. Refractive glass
+    transport still needs the physical path tracer
+    (``set_samples_per_pixel(n)`` with ``n > 1``). Only the deterministic
+    renderer (``set_samples_per_pixel(1)``, non-physical) is affected. Set
+    before rendering.
     """
     global SHADOWS
     SHADOWS = bool(enabled)

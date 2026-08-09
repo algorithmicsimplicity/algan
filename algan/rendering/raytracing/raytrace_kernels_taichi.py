@@ -116,13 +116,6 @@ INV_DEPTH_TIE_EPSILON = 1.0 / DEPTH_TIE_EPSILON
 MIN_ALPHA = 1e-3
 # Marching stops once the remaining transmittance drops below this.
 MIN_WEIGHT = 1e-3
-# A surface this opaque (or more) casts a deterministic hard shadow; more
-# transparent surfaces are ignored by the binary shadow test (no glass
-# shadows -- those need the physical path tracer; lights with a shadow
-# radius get a deterministic soft-shadow sample fan instead, see
-# settings.SOFT_SHADOW_SAMPLES). Picked at one-half so a surface shadows
-# exactly when it covers most of the light it occludes.
-SHADOW_ALPHA_THRESHOLD = 0.5
 # Hard cap on blended surfaces per ray, to bound worst-case stacked geometry.
 MAX_SURFACES_PER_RAY = 256
 # Tolerance of the point-in-triangle test, in barycentric units. Adjacent
@@ -2875,20 +2868,17 @@ def _shadow_occluded(refit: ti.template(), ro, rd, f, ff, max_t,
                      circuit_colors: ti.template(),
                      circuit_border_colors: ti.template(),
                      edges_2d: ti.template(), edge_accel: ti.template()):
-    """Binary hard-shadow test for the deterministic renderer: returns 1.0 if
-    a sufficiently opaque surface lies between the shaded point and the light
-    (within ``max_t`` along ``rd``), else 0.0.
+    """Fraction of light occluded along a deterministic shadow ray.
 
-    Cheaper than the physical kernel's :func:`_transmittance`: it stops at the
-    *first* blocker whose alpha reaches :data:`SHADOW_ALPHA_THRESHOLD` (so a lit
-    point usually costs a single BVH traversal) and ignores more transparent
-    surfaces entirely -- no transmittance accumulation, so no glass/soft
-    shadows (use the physical path tracer for those). Mesh seams still merge
-    their duplicate edge hit so a thin opaque seam can't double-count.
+    Every surface between the shaded point and the light attenuates the
+    remaining light by its opacity, matching the physical path tracer's
+    transmittance calculation. A fully opaque hit exits immediately. Mesh
+    seams still merge their duplicate edge hit so a thin surface cannot
+    attenuate twice along a shared edge.
     """
     inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                           _safe_inverse(rd[2]))
-    occluded = 0.0
+    transmitted = 1.0
     t_prev = 0.0
     layer_prev = 1e30
     seam_t = -1e30
@@ -2925,12 +2915,13 @@ def _shadow_occluded(refit: ti.template(), ro, rd, f, ff, max_t,
         else:
             alpha = _circuit_alpha(prim, f, a, b, border, circuit_meta,
                                    circuit_colors, circuit_border_colors)
-        if alpha >= SHADOW_ALPHA_THRESHOLD:
-            occluded = 1.0
+        alpha = ti.math.clamp(alpha, 0.0, 1.0)
+        transmitted *= 1.0 - alpha
+        if alpha >= 1.0:
             break
         t_prev = t_hit
         layer_prev = hit_layer
-    return occluded
+    return 1.0 - transmitted
 
 
 @ti.kernel

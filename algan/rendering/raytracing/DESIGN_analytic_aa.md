@@ -1176,9 +1176,11 @@ against ~40s for N=1. Time warm runs only.
     after the walk, so it could discard and delegate. Not built. Coverage already
     beats the aliased render on the translucent config (§16.2), so this is a
     refinement, not a hole.
-  * **Shadow edges** — still one binary shadow ray per shading point (§7). The
-    same idea applies (2x2 jittered rays per shadow event in
-    `raster_shadow_trace`) and is the next-most-visible item.
+  * **Shadow edges** — still one shadow ray per shading point (§7). Its
+    visibility accumulates every blocker's opacity, but the silhouette itself
+    remains a single spatial sample. The same idea applies (2x2 jittered rays
+    per shadow event in `raster_shadow_trace`) and is the next-most-visible
+    item.
   * **Specular crawl and texture minification** — unchanged, and unaddressable by
     ray count alone at reasonable cost.
   * **The classic wavefront primary path.** These jittered spawns live in
