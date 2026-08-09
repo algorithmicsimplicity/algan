@@ -960,7 +960,9 @@ class Scene(RenderLoopMixin):
             project_run = _get_active_project_run()
         if project_run is not None:
             file_path = project_run.prepare_frame_path(file_path)
-            if not project_run.render_screenshots:
+            # False in video mode, and for a frame the project run's selection
+            # has filtered out.
+            if not project_run.should_render_frame():
                 return []
         if SETTINGS.skip_save_frame:
             return []

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import inspect
 import os
 import re
 import textwrap
+from contextlib import suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +17,7 @@ from typing import Literal
 from algan.errors import AlganConfigurationError
 from algan.logging.logger import get_logger
 from algan.settings import SETTINGS
-from algan.settings.video_settings import VideoSettings
+from algan.settings.video_settings import _PRESETS_BY_NAME, VideoSettings
 
 logger = get_logger()
 _ACTIVE_PROJECT_RUN = ContextVar("algan_active_project_run", default=None)
@@ -23,6 +25,46 @@ _ACTIVE_PROJECT_RUN = ContextVar("algan_active_project_run", default=None)
 
 def _get_active_project_run():
     return _ACTIVE_PROJECT_RUN.get()
+
+
+class _StopSceneEarly(BaseException):
+    """Abandon a scene function once every requested frame has been rendered.
+
+    Derived from BaseException rather than Exception on purpose. It unwinds
+    through arbitrary user scene code, and a scene that wraps its own work in
+    ``except Exception`` would otherwise swallow the abort and carry on
+    authoring the rest of itself -- which is the one thing this exists to avoid.
+    """
+
+
+def _frame_pattern_matches(pattern, frame_id: int, local_name: str, full_name: str) -> bool:
+    """Does one frame-selection pattern pick out this save-frame call?
+
+    An all-digit pattern is the frame's index within its scene -- the ``3`` in
+    ``s1_f3_thing.png``. A pattern holding a glob metacharacter is matched with
+    fnmatch. Anything else is a plain substring, so ``perturbed`` finds
+    ``s1_f4_s05_perturbed_output_distance`` without anyone having to spell out
+    the prefix. Names are matched with and without that prefix, and case is
+    ignored throughout.
+    """
+    if pattern.isdigit():
+        return int(pattern) == frame_id
+    pattern = pattern.lower()
+    names = (local_name.lower(), full_name.lower())
+    if any(character in pattern for character in "*?["):
+        return any(fnmatch.fnmatchcase(name, pattern) for name in names)
+    return any(pattern in name for name in names)
+
+
+def _video_settings_for_name(name: str) -> VideoSettings:
+    """Resolve a ``--video-settings`` preset name, case-insensitively."""
+    try:
+        return _PRESETS_BY_NAME[str(name).strip().upper()]
+    except KeyError:
+        raise AlganConfigurationError(
+            f"Unknown video settings preset: {name!r}. Choose one of: "
+            f"{', '.join(_PRESETS_BY_NAME)}"
+        ) from None
 
 
 @dataclass(frozen=True)
@@ -44,6 +86,12 @@ class _ProjectSceneRun:
     next_frame_index: int = 0
     frame_results: list = field(default_factory=list)
     allow_video_render: bool = False
+    frame_patterns: tuple[str, ...] = ()
+    stop_early: bool = False
+    matched_patterns: set = field(default_factory=set)
+    stopped_early: bool = False
+    last_frame_name: str = ""
+    _render_current_frame: bool = False
 
     @property
     def render_screenshots(self) -> bool:
@@ -60,7 +108,16 @@ class _ProjectSceneRun:
         requested = Path(raw_path)
         if requested.suffix == "":
             requested = requested.with_suffix(".png")
+        local_name = requested.stem
         requested = requested.with_name(f"s{scene_id}_f{frame_id}_{requested.name}")
+
+        # Whether this frame survives the selection is settled here, where its
+        # index and both spellings of its name are all in hand. save_frame only
+        # has to ask the answer.
+        self.last_frame_name = requested.stem
+        self._render_current_frame = self.render_screenshots and self._frame_selected(
+            frame_id, local_name, requested.stem
+        )
 
         # Match Scene's path contract: a bare name uses the configured project
         # screenshot directory, while an explicit parent remains explicit.
@@ -68,11 +125,35 @@ class _ProjectSceneRun:
             requested = self.project.screenshot_directory / requested
         return requested
 
+    def _frame_selected(self, frame_id, local_name, full_name) -> bool:
+        if not self.frame_patterns:
+            return True
+        selected = False
+        for pattern in self.frame_patterns:
+            if _frame_pattern_matches(pattern, frame_id, local_name, full_name):
+                self.matched_patterns.add(pattern)
+                selected = True
+        return selected
+
+    def should_render_frame(self) -> bool:
+        """Whether the save-frame call being served should actually render."""
+        return self._render_current_frame
+
     def record_frame_results(self, result) -> None:
         if isinstance(result, list):
             self.frame_results.extend(result)
         else:
             self.frame_results.append(result)
+        if (
+            self.stop_early
+            and self.frame_patterns
+            and len(self.matched_patterns) == len(self.frame_patterns)
+        ):
+            # Every pattern has now been served, so nothing later in this scene
+            # can be wanted. Unwinding here rather than at the next save_frame
+            # is what skips authoring the whole tail of a long scene.
+            self.stopped_early = True
+            raise _StopSceneEarly
 
 
 class Project:
@@ -322,6 +403,8 @@ class Project:
         self,
         scenes=None,
         *,
+        frames=None,
+        stop_early: bool = False,
         video_settings: VideoSettings | None = None,
     ):
         """Run save-frame calls for one, many, or all project scenes.
@@ -329,10 +412,30 @@ class Project:
         No scene videos are rendered. ``scenes`` accepts an ID, an unprefixed
         name, a full prefixed name, an iterable mixing those forms, or ``None``
         for all scenes.
+
+        Parameters
+        ----------
+        frames
+            Which save-frame calls to render, as a pattern or an iterable of
+            them. A pattern is a frame index within its scene (``3``), a glob
+            (``"s05_*"``), or a plain substring (``"perturbed"``); names match
+            with or without the ``s<scene>_f<index>_`` prefix, case-insensitively.
+            Frames that match nothing are skipped without being rendered, which
+            saves the render but not the authoring. Defaults to ``None``, meaning
+            every frame.
+        stop_early
+            Whether to abandon each scene as soon as every ``frames`` pattern has
+            matched at least once, rather than authoring the rest of it. This is
+            what makes iterating on an early frame of a long scene quick, but it
+            leaves the scene half-run: its transcript is not synced and its later
+            frames on disk stay as an earlier run left them. Requires ``frames``.
+            Defaults to False.
         """
         return self._render(
             scenes,
             mode="screenshots",
+            frames=frames,
+            stop_early=stop_early,
             video_settings=video_settings,
         )
 
@@ -342,43 +445,103 @@ class Project:
         ``argv`` defaults to the current process arguments (excluding the
         executable/script name). The recognized arguments are::
 
-            --render-screenshots [SCENE ...]
+            --render-screenshots [SCENE ...] [--frames PATTERN ...] [--stop-early]
             --render-video [SCENE ...]
             --concatenate-videos
+            --video-settings PRESET
+            --help
 
         Scene values accept the same IDs and names as :meth:`render_video` and
         :meth:`render_screenshots`. Omitting them renders every scene. Unknown
         arguments are ignored so this can be called from scripts launched by
-        tools that add their own command-line options.
+        tools that add their own command-line options -- but ``-h``/``--help``
+        is now handled here, so a script that wants its own help must parse it
+        before calling this.
 
         Returns ``True`` after dispatching a recognized action and ``False``
         when no project action was present.
         """
-        parser = argparse.ArgumentParser(add_help=False)
+        parser = argparse.ArgumentParser(
+            description="Render this Algan project.",
+            epilog=textwrap.dedent(
+                """\
+                Scenes are named by ID (0), name (intro), or stem (0_intro).
+                Omit them to render every scene.
+
+                examples:
+                  --render-screenshots
+                  --render-screenshots 1 --frames perturbed,initial_output
+                  --render-screenshots 1 --frames "s05_*" --stop-early
+                  --render-video intro --video-settings HD
+                """
+            ),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
         actions = parser.add_mutually_exclusive_group()
         actions.add_argument(
             "--render-screenshots",
             nargs="*",
             metavar="SCENE",
+            help="Render the save-frame stills of these scenes.",
         )
         actions.add_argument(
             "--render-video",
             nargs="*",
             metavar="SCENE",
+            help="Render videos of these scenes.",
         )
         actions.add_argument(
             "--concatenate-videos",
             action="store_true",
+            help="Join the already-rendered scene videos into one file.",
+        )
+        parser.add_argument(
+            "--frames",
+            nargs="+",
+            metavar="PATTERN",
+            help="Screenshots only: render only the save-frame calls matching these "
+            "patterns. A pattern is a frame index within its scene (3), a glob "
+            "(s05_*), or a substring (perturbed). Comma-separated lists are "
+            "accepted. Skipping a frame saves its render, not its authoring.",
+        )
+        parser.add_argument(
+            "--stop-early",
+            action="store_true",
+            help="Screenshots only: abandon each scene once every --frames pattern "
+            "has matched, instead of authoring the rest of it. Much faster when "
+            "iterating on an early frame, but it leaves the scene's transcript "
+            "and later frames stale, and says so loudly when it happens.",
+        )
+        parser.add_argument(
+            "--video-settings",
+            metavar="PRESET",
+            help="Render at this preset instead of the project's own. One of: "
+            f"{', '.join(_PRESETS_BY_NAME)} (case-insensitive).",
         )
         arguments, _unknown = parser.parse_known_args(argv)
 
+        # Only forward what was actually asked for, so a project that overrides
+        # render_screenshots/render_video with a narrower signature still works.
+        shared = {}
+        if arguments.video_settings is not None:
+            shared["video_settings"] = _video_settings_for_name(arguments.video_settings)
+
         if arguments.render_screenshots is not None:
+            options = dict(shared)
+            if arguments.frames:
+                options["frames"] = tuple(arguments.frames)
+            if arguments.stop_early:
+                options["stop_early"] = True
             scenes = self._parse_cli_scene_selectors(arguments.render_screenshots)
-            self.render_screenshots(scenes)
+            self.render_screenshots(scenes, **options)
             return True
         if arguments.render_video is not None:
+            if arguments.frames or arguments.stop_early:
+                raise AlganConfigurationError(
+                    "--frames and --stop-early only apply to --render-screenshots"
+                )
             scenes = self._parse_cli_scene_selectors(arguments.render_video)
-            self.render_video(scenes)
+            self.render_video(scenes, **shared)
             return True
         if arguments.concatenate_videos:
             self.concatenate_videos()
@@ -416,6 +579,33 @@ class Project:
             **save_video_kwargs,
         )
 
+    @staticmethod
+    def _normalized_frame_patterns(frames) -> tuple[str, ...]:
+        """Flatten a frame selection into de-duplicated pattern strings."""
+        if frames is None:
+            return ()
+        if isinstance(frames, (str, int)) and not isinstance(frames, bool):
+            frames = (frames,)
+        try:
+            raw = tuple(frames)
+        except TypeError as exc:
+            raise AlganConfigurationError(
+                f"Invalid Project frame selection: {frames!r}"
+            ) from exc
+        patterns = []
+        for item in raw:
+            if isinstance(item, bool) or not isinstance(item, (str, int)):
+                raise AlganConfigurationError(
+                    f"Invalid Project frame selector: {item!r}"
+                )
+            for part in str(item).split(","):
+                part = part.strip()
+                if part and part not in patterns:
+                    patterns.append(part)
+        if not patterns:
+            raise AlganConfigurationError("Project frame selection cannot be empty")
+        return tuple(patterns)
+
     def _render(
         self,
         scenes=None,
@@ -423,28 +613,53 @@ class Project:
         mode: Literal["screenshots", "video"],
         video_settings: VideoSettings | None = None,
         overwrite: bool = True,
+        frames=None,
+        stop_early: bool = False,
         **save_video_kwargs,
     ):
         """Shared implementation for screenshot and video project renders."""
         selected = self._selected_scenes(scenes)
+        frame_patterns = self._normalized_frame_patterns(frames)
+        if mode != "screenshots" and (frame_patterns or stop_early):
+            raise AlganConfigurationError(
+                "frames and stop_early only apply to screenshot renders"
+            )
+        if stop_early and not frame_patterns:
+            raise AlganConfigurationError(
+                "stop_early needs a frames selection to know what to stop after"
+            )
         effective_settings = video_settings or self.video_settings or SETTINGS.video
         results = []
+        matched_anywhere = set()
 
         from algan.scene import Scene
 
         for project_scene in selected:
             with Scene(video_settings=effective_settings) as active_scene:
-                run = _ProjectSceneRun(self, project_scene, mode)
+                run = _ProjectSceneRun(
+                    self,
+                    project_scene,
+                    mode,
+                    frame_patterns=frame_patterns,
+                    stop_early=stop_early,
+                )
                 active_scene._project_run = run
                 active_scene._suppress_automatic_transcript = True
                 active_scene.audio_manager.set_speech_source(self.speech_source)
                 run_token = _ACTIVE_PROJECT_RUN.set(run)
                 try:
-                    project_scene.function()
-                    self._sync_scene_transcript(
-                        project_scene,
-                        active_scene.audio_manager.video_transcript,
-                    )
+                    with suppress(_StopSceneEarly):
+                        project_scene.function()
+                    matched_anywhere |= run.matched_patterns
+                    if run.stopped_early:
+                        # The scene never finished, so its transcript would be a
+                        # truncated copy of the real one. Leave the file alone.
+                        self._warn_partial_scene(project_scene, run)
+                    else:
+                        self._sync_scene_transcript(
+                            project_scene,
+                            active_scene.audio_manager.video_transcript,
+                        )
                     if mode == "video":
                         run.allow_video_render = True
                         try:
@@ -463,10 +678,32 @@ class Project:
                     _ACTIVE_PROJECT_RUN.reset(run_token)
                     active_scene._project_run = None
                     active_scene._suppress_automatic_transcript = False
-            logger.info(
-                f"Finished rendering project scene {project_scene.stem} in {mode} mode"
+            verb = "Stopped early in" if run.stopped_early else "Finished rendering"
+            logger.info(f"{verb} project scene {project_scene.stem} in {mode} mode")
+
+        unmatched = tuple(
+            pattern for pattern in frame_patterns if pattern not in matched_anywhere
+        )
+        if unmatched:
+            logger.warning(
+                f"No frame matched {', '.join(repr(_) for _ in unmatched)} in any "
+                f"selected scene, so nothing was rendered for "
+                f"{'them' if len(unmatched) > 1 else 'it'}. Frame patterns are "
+                f"matched against the save-frame name, not the file on disk."
             )
         return results
+
+    @staticmethod
+    def _warn_partial_scene(project_scene: _ProjectScene, run: _ProjectSceneRun) -> None:
+        """Say plainly that a stop_early scene is not a render of that scene."""
+        logger.warning(
+            f"PARTIAL RENDER: scene {project_scene.stem} was abandoned after frame "
+            f"{run.last_frame_name} because every frame pattern had matched. The "
+            f"rest of the scene was never authored, so its transcript has been "
+            f"left untouched and every later frame of it on disk is whatever an "
+            f"earlier run wrote. This is a preview, not a render of the scene -- "
+            f"re-run it without stop_early before trusting the output."
+        )
 
     def concatenate_videos(self, *, threads: int | None = None, reencode=False):
         """Concatenate the project's scene videos into ``file_path``."""

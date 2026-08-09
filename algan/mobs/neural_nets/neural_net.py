@@ -36,9 +36,9 @@ _color_rng = torch.Generator(device=_ANIMATION_DEVICE).manual_seed(COLOR_JITTER_
 # invocation would make the path depend on batching and render order.
 _IDLE_WALK_SEED = 0x1D1E
 _IDLE_WAYPOINT_COUNT = 16
-_IDLE_SECONDS_PER_WAYPOINT = 4
-_IDLE_DESIRED_RADIUS_PER_SPACING = 1
-_IDLE_CLEARANCE_RADIUS_FRACTION = 1
+_IDLE_SECONDS_PER_WAYPOINT = 8
+_IDLE_DESIRED_RADIUS_PER_SPACING = 0.5
+_IDLE_CLEARANCE_RADIUS_FRACTION = 0.5
 _IDLE_PARALLEL_RADIUS_FRACTION = 0.2
 _idle_rng = torch.Generator(device=_ANIMATION_DEVICE).manual_seed(_IDLE_WALK_SEED)
 
@@ -182,14 +182,16 @@ def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
     forward = net.get_forward_direction()
     for neuron in net.layers[0]:
         for synapse in neuron.synapses:
-            synapse.move_between_points(
-                neuron.location + forward * net.input_synapse_offset,
-                neuron.location,
-            )
+            synapse.set_end_point(neuron.location)
+
     for previous_layer, layer in zip(net.layers[:-1], net.layers[1:-1]):
         for neuron in layer:
             for source, synapse in zip(previous_layer, neuron.synapses):
                 synapse.move_between_points(source.location, neuron.location)
+
+    for neuron in net.layers[-1]:
+        for source, synapse in zip(net.layers[-2], neuron.synapses):
+            synapse.set_start_point(source.location)
     return net
 
 

@@ -331,6 +331,17 @@ class Cylinder(Surface):
         return self
 
     @animated_function(animated_args={"interpolation": 0})
+    def set_end_point(self, point, interpolation=1):
+        offset = self.get_upwards_basis() * 0.5
+        current_end = self.location + offset
+        current_start = self.location - offset
+        point = current_end * (1 - interpolation) + interpolation * cast_to_tensor(
+            point
+        )
+        self._move_between_points(current_start, point)
+        return self
+
+    @animated_function(animated_args={"interpolation": 0})
     def move_between_points(self, start, end, interpolation=1):
         start = cast_to_tensor(start)
         end = cast_to_tensor(end)

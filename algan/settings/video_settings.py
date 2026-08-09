@@ -71,6 +71,20 @@ HD = _preset((1920, 1080), 30)
 PRODUCTION = _preset((2560, 1440), 60)
 UHD = _preset((3840, 2160), 60)
 
+# Name -> preset, used by Project's command line to turn --video-settings into
+# a preset. Keyed by the name user code writes; the CLI upper-cases what it is
+# given. Not part of the public API: user code names the presets directly.
+_PRESETS_BY_NAME: dict[str, VideoSettings] = {
+    "THUMBNAIL": THUMBNAIL,
+    "SMOKE_TEST": SMOKE_TEST,
+    "PREVIEW": PREVIEW,
+    "LD": LD,
+    "MD": MD,
+    "HD": HD,
+    "PRODUCTION": PRODUCTION,
+    "UHD": UHD,
+}
+
 # Name -> preset, used by the documentation directive's :quality: option.
 # Not part of the public API: user code names the presets directly.
 _QUALITIES: dict[str, VideoSettings] = {
