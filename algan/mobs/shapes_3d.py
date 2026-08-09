@@ -469,7 +469,7 @@ class Dot3D(Sphere):
         point=torch.zeros(3),
         radius=0.08,
         color=None,
-        resolution=(8, 8),
+        resolution=None,
         **kwargs,
     ):
         if color is not None:

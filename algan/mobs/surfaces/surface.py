@@ -392,7 +392,7 @@ def get_render_primitives_batched(surfaces):
     ``grid.location`` shape.
     """
     grids = torch.stack(
-        [unsquish(s.grid.location, -2, s.grid_height) for s in surfaces]
+        [s._reshape_grid_for_render(s.grid.location) for s in surfaces]
     )
     vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grids))
     corners = grid_to_triangle_vertices(grids)
@@ -2330,10 +2330,17 @@ class Surface(Mob):
         # animated-attribute machinery, which is the expensive part.
         names = tuple(getattr(self, "shader_specific_param_names", ()))
         n_grid = self.grid.location.shape[-2]
+        packed_grid_count = self._packed_grid_count()
+        rendered_grid_count = 1 if packed_grid_count is None else packed_grid_count
         cache = getattr(self, "_memory_per_timestep_cache", None)
-        if cache is not None and cache[0] == (n_grid, names):
+        if cache is not None and cache[0] == (n_grid, rendered_grid_count, names):
             return cache[1]
-        n_tri = 2 * max(self.grid_height - 1, 1) * max(self.grid_width - 1, 1)
+        n_tri = (
+            rendered_grid_count
+            * 2
+            * max(self.grid_height - 1, 1)
+            * max(self.grid_width - 1, 1)
+        )
         n_v = n_tri * 3
         # Grid animation state: location(3*4) + color(5*4) = 32 bytes per grid point.
         # Normal computation intermediates (grid rolls, stack, cross products):
@@ -2350,8 +2357,61 @@ class Surface(Mob):
         for _ in self.get_shader_params().values():
             shader_bytes += n_v * _.shape[-1] * 4
         result = int(animation_and_intermediates + primitive_bytes + shader_bytes)
-        self._memory_per_timestep_cache = ((n_grid, names), result)
+        self._memory_per_timestep_cache = (
+            (n_grid, rendered_grid_count, names),
+            result,
+        )
         return result
+
+    def _packed_grid_count(self):
+        """Number of independent grids concatenated into ``self.grid``.
+
+        ``batch_mobs`` keeps child ownership in ``parent_batch_sizes`` while
+        concatenating the child's animatable rows.  For a packed collection of
+        surfaces (point-cloud spheres are the main example), every entry must
+        therefore describe exactly one complete surface grid.  Treating the
+        concatenation as a single wider grid creates triangles between adjacent
+        objects.
+        """
+        batch_sizes = self.grid.parent_batch_sizes
+        if batch_sizes is None:
+            return None
+
+        points_per_grid = self.grid_width * self.grid_height
+        flat_sizes = batch_sizes.detach().cpu().reshape(-1)
+        if flat_sizes.numel() == 0:
+            raise ValueError("packed surface grid has no parent batch sizes")
+        if bool((flat_sizes != points_per_grid).any()):
+            raise ValueError(
+                "packed surface grid entries must each contain exactly "
+                f"grid_width * grid_height = {points_per_grid} points, got "
+                f"{flat_sizes.tolist()}"
+            )
+        if int(flat_sizes.sum()) != self.grid.location.shape[-2]:
+            raise ValueError(
+                "packed surface grid sizes do not match the materialized grid: "
+                f"{int(flat_sizes.sum())} != {self.grid.location.shape[-2]}"
+            )
+        return flat_sizes.numel()
+
+    def _reshape_grid_for_render(self, values):
+        """Restore flat grid rows to one or more independent surface grids."""
+        packed_grid_count = self._packed_grid_count()
+        if packed_grid_count is None:
+            return unsquish(values, -2, self.grid_height)
+        return values.reshape(
+            *values.shape[:-2],
+            packed_grid_count,
+            self.grid_width,
+            self.grid_height,
+            values.shape[-1],
+        )
+
+    def _flatten_packed_triangle_vertices(self, values):
+        """Merge the packed-grid and triangle-vertex axes after gathering."""
+        if self._packed_grid_count() is None:
+            return values
+        return values.flatten(-3, -2)
 
     def get_render_primitives(self):
         """Build the triangles the renderer draws this surface from.
@@ -2365,7 +2425,7 @@ class Surface(Mob):
         :class:`~algan.rendering.primitives.triangle_primitive.TrianglePrimitive`
             The surface's triangles for every frame of the batch.
         """
-        grid = unsquish(self.grid.location, -2, self.grid_height)
+        grid = self._reshape_grid_for_render(self.grid.location)
         if not self.ignore_normals:
             vertex_normals = grid_to_triangle_vertices(
                 compute_grid_vertex_normals(grid)
@@ -2385,11 +2445,11 @@ class Surface(Mob):
 
         def expand_grid_to_verts(x):
             if x.shape[-2] == 1:
-                x = x.expand(
-                    [*[-1 for _ in x.shape[:-2]], grid.shape[-2] * grid.shape[-3], -1]
-                )
-            x = unsquish(x, -2, self.grid_height)
-            return grid_to_triangle_vertices(x)
+                x = x.expand(*x.shape[:-2], self.grid.location.shape[-2], -1)
+            x = self._reshape_grid_for_render(x)
+            return self._flatten_packed_triangle_vertices(
+                grid_to_triangle_vertices(x)
+            )
 
         def compute_grid_color():
             grid_color = self.grid.color.clone()
@@ -2409,9 +2469,15 @@ class Surface(Mob):
         ):
             # Generate UV coordinates for the triangle corners from the base grid
             base_grid = self.get_base_grid()
-            uvs = grid_to_triangle_vertices(base_grid).unsqueeze(
-                0
-            )  # [1, num_triangles * 3, 2]
+            uvs = grid_to_triangle_vertices(base_grid)
+            packed_grid_count = self._packed_grid_count()
+            if packed_grid_count is not None:
+                uvs = (
+                    uvs.unsqueeze(0)
+                    .expand(packed_grid_count, -1, -1)
+                    .flatten(0, 1)
+                )
+            uvs = uvs.unsqueeze(0)  # [1, num_triangles * 3, 2]
         if self.color_texture is not None:
             texture_map = (
                 (self.color_texture)
@@ -2426,12 +2492,16 @@ class Surface(Mob):
             )
 
         colors = expand_grid_to_verts(compute_grid_color())
-        corners = (
+        corners = self._flatten_packed_triangle_vertices(
             grid_to_triangle_vertices(grid)
             if precomputed_corners is None
             else precomputed_corners
         )
-        normals = vertex_normals
+        normals = (
+            None
+            if vertex_normals is None
+            else self._flatten_packed_triangle_vertices(vertex_normals)
+        )
 
         from algan.rendering.raytracing.primitives import (
             LogicalPNTrianglePrimitive,

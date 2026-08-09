@@ -125,7 +125,7 @@ class PMobject(Group):
             Dot3D(
                 point=point,
                 radius=self.point_radius,
-                resolution=(4, 4),
+                resolution=None,
                 color=_rgba_to_color(rgba),
                 add_to_scene=False,
                 scene=scene,
