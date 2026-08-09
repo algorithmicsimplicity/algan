@@ -70,19 +70,32 @@ class MobLayoutMixin:
                     )
         return out
 
-    def _get_bounding_box_recursive(self, lower_corner, upper_corner):
+    def _get_bounding_box_recursive(self, lower_corner, upper_corner, axes=None):
+        location = self.location
+        if axes is not None:
+            location = location @ axes.transpose(-1, -2)
         if not self.exclude_from_boundary:
-            lower_corner = torch.minimum(
-                lower_corner, self.get_axis_aligned_lower_corner()
-            )
-            upper_corner = torch.maximum(
-                upper_corner, self.get_axis_aligned_upper_corner()
-            )
+            lower_corner = torch.minimum(lower_corner, location.amin(-2, keepdim=True))
+            upper_corner = torch.maximum(upper_corner, location.amax(-2, keepdim=True))
         for c in self.children:
             lower_corner, upper_corner = c._get_bounding_box_recursive(
-                lower_corner, upper_corner
+                lower_corner, upper_corner, axes
             )
         return lower_corner, upper_corner
+
+    def _get_bounding_box_aligned_to(self, axes=None) -> torch.Tensor:
+        """Get this hierarchy's bounding box aligned to ``axes``' rows."""
+        location = self.location
+        if axes is not None:
+            location = location @ axes.transpose(-1, -2)
+        corners = self._box_corners(
+            *self._get_bounding_box_recursive(
+                location.amin(-2, keepdim=True),
+                location.amax(-2, keepdim=True),
+                axes,
+            )
+        )
+        return corners if axes is None else corners @ axes
 
     def get_bounding_box(self) -> torch.Tensor:
         """Get the eight corners of the box enclosing this Mob and its children.
@@ -95,12 +108,7 @@ class MobLayoutMixin:
         torch.Tensor
             The eight corner points, shape ``(*, 8, 3)``.
         """
-        return self._box_corners(
-            *self._get_bounding_box_recursive(
-                self.location.amin(-2, keepdim=True),
-                self.location.amax(-2, keepdim=True),
-            )
-        )
+        return self._get_bounding_box_aligned_to()
 
     def get_boundary_points(self) -> torch.Tensor:
         """Get the points that define this Mob's own outline.
@@ -412,7 +420,7 @@ class MobLayoutMixin:
     def _solve_screen_rectangle_fit(
         self, bbox, source_center, bottom_left, top_right, preserve_aspect_ratio, axes
     ):
-        """Solve for the scale and world center that land ``bbox`` on a rectangle.
+        """Land a camera-aligned ``bbox`` on a screen rectangle.
 
         Iterative rather than closed-form because the projection is perspective:
         the screen size of a Mob with any depth depends on where its near face
@@ -435,7 +443,6 @@ class MobLayoutMixin:
         target_size = top_right - bottom_left
         target_center = (bottom_left + top_right) * 0.5
         offsets = bbox - source_center
-        rotated_stretch = axes is not None and not preserve_aspect_ratio
         tiny = torch.finfo(offsets.dtype).eps
         frame = self._resolved_screen_frame()
         camera_location, normal, origin, edge_x, edge_y = frame
@@ -455,14 +462,6 @@ class MobLayoutMixin:
         def measure(log_scale, center):
             """Log excess over the target size, and the center's screen drift."""
             points = center + scaled(as_scale(log_scale))
-            if rotated_stretch:
-                # A stretch along the camera's axes shears the world-aligned
-                # bounding box into a parallelepiped, so the Mob's new bounding
-                # box is not the old one scaled. Re-enclose it, which keeps the
-                # fit a bound on every point of the Mob.
-                points = self._box_corners(
-                    points.amin(-2, keepdim=True), points.amax(-2, keepdim=True)
-                )
             screen = self._project_to_screen_coords(points, frame)
             lower = screen.amin(-2, keepdim=True)
             upper = screen.amax(-2, keepdim=True)
@@ -725,10 +724,11 @@ class MobLayoutMixin:
     ) -> MobLayoutMixin:
         """Scale and move the Mob to fill a rectangle of the screen.
 
-        Works on the bounding box of the whole hierarchy, so calling it on a
-        :class:`~algan.mobs.group.Group` lays out the entire collection at once and keeps its
-        members' relative positions. Handy for "put this diagram in the left half
-        of the frame" without hand-tuning coordinates.
+        Works on the camera-screen-aligned bounding box of the whole hierarchy,
+        so its near face is parallel to the screen. Calling it on a
+        :class:`~algan.mobs.group.Group` lays out the entire collection at once
+        and keeps its members' relative positions. Handy for "put this diagram
+        in the left half of the frame" without hand-tuning coordinates.
 
         Animation
         ---------
@@ -769,35 +769,31 @@ class MobLayoutMixin:
 
         Notes
         -----
-        The fit is measured on the Mob's *projection*, so it holds for a Mob with
-        depth under perspective (the near face of a Cube is bigger on screen than
-        its center slice) and for a rotated camera (the rectangle follows the
-        camera's right and up axes, not the world x and y axes).
+        The fit is measured on the projection of a camera-screen-aligned AABB,
+        so it holds for a Mob with depth under perspective (the near face of a
+        Cube is bigger on screen than its center slice) and for a rotated camera
+        (the box follows the camera's right, up and forward axes, not the world
+        axes).
         """
         bottom_left, top_right = self._validate_screen_rectangle(bottom_left, top_right)
-        bbox = self.get_bounding_box()
-        source_center = (bbox.amin(-2, keepdim=True) + bbox.amax(-2, keepdim=True)) * 0.5
         axes = self._screen_axes()
+        bbox = self._get_bounding_box_aligned_to(axes)
+        source_center = (
+            bbox.amin(-2, keepdim=True) + bbox.amax(-2, keepdim=True)
+        ) * 0.5
         scale, target_center = self._solve_screen_rectangle_fit(
             bbox, source_center, bottom_left, top_right, preserve_aspect_ratio, axes
         )
 
         with Sync(animation_manager=self.animation_manager):
-            if preserve_aspect_ratio:
-                # A uniform scale is frame-independent, and it carries the
-                # bounding-box center with it, so move_center_to lands exactly
-                # on the solved center.
-                self.scale(scale)
-                self.move_center_to(target_center)
-            else:
-                self._scale_about_point_along_world_axes(
-                    scale, source_center, axes=axes
-                )
-                # Scaling about source_center leaves that point where it is, so
-                # translating by the residual is exact -- unlike move_center_to,
-                # whose world-axis-aligned center is not preserved by a scale
-                # along a rotated frame.
-                self.move(target_center - source_center)
+            self._scale_about_point_along_world_axes(
+                scale,
+                source_center,
+                axes=None if preserve_aspect_ratio else axes,
+            )
+            # Scaling about the camera-aligned box center leaves that point
+            # fixed, so translating by the solved residual is exact.
+            self.move(target_center - source_center)
         return self
 
     def get_boundary_in_direction(self, direction: torch.Tensor) -> torch.Tensor:

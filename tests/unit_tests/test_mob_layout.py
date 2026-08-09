@@ -150,11 +150,15 @@ def test_screen_rectangle_fit_keeps_a_mob_with_depth_inside_the_frame(camera_rot
 
     cube.fit_to_screen_rectangle()
 
-    screen = _rendered_screen_coords(scene, cube.get_bounding_box())
+    screen = _rendered_screen_coords(scene, cube.get_boundary_points_recursive())
     assert float(screen.amin(0).min()) >= -1e-3
     assert float(screen.amax(0).max()) <= 1 + 1e-3
-    # ... and it fills the frame rather than shrinking away from the overflow.
-    assert float(screen.amax(0).max()) > 0.99
+    # ... and its fitted camera-aligned enclosure fills the frame rather than
+    # shrinking away from the overflow.
+    bbox_screen = _rendered_screen_coords(
+        scene, cube._get_bounding_box_aligned_to(cube._screen_axes())
+    )
+    assert float(bbox_screen.amax(0).max()) > 0.99
 
 
 def test_screen_rectangle_fit_measures_the_rectangle_in_the_cameras_frame():
@@ -168,7 +172,28 @@ def test_screen_rectangle_fit_measures_the_rectangle_in_the_cameras_frame():
 
     square.fit_to_screen_rectangle((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
 
-    screen = _rendered_screen_coords(scene, square.get_bounding_box())
+    screen = _rendered_screen_coords(
+        scene, square._get_bounding_box_aligned_to(square._screen_axes())
+    )
+    torch.testing.assert_close(
+        screen.amin(0), torch.tensor([0.1, 0.2]), atol=1e-3, rtol=0
+    )
+    torch.testing.assert_close(
+        screen.amax(0), torch.tensor([0.6, 0.7]), atol=1e-3, rtol=0
+    )
+
+
+def test_screen_rectangle_fit_uses_a_camera_aligned_bounding_box():
+    scene = SceneManager.instance().current_scene
+    with Off():
+        scene.camera.rotate(30, UP, about_point=ORIGIN)
+    square = Square(add_to_scene=False)
+    with Off():
+        square.rotate(30, UP, about_point=ORIGIN)
+
+    square.fit_to_screen_rectangle((0.1, 0.2), (0.6, 0.7), preserve_aspect_ratio=False)
+
+    screen = _rendered_screen_coords(scene, square.get_boundary_points_recursive())
     torch.testing.assert_close(
         screen.amin(0), torch.tensor([0.1, 0.2]), atol=1e-3, rtol=0
     )
