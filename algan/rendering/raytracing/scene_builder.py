@@ -1151,7 +1151,6 @@ def _merge_scene(primitives):
         return cached
 
     _rts = SETTINGS.raytracing
-    exact_coverage = _rts.analytic_aa_exact_active()
 
     # By default the merge + STBVH build run on the render device (much faster
     # than the CPU build) rather than on the projected primitives' source
@@ -1301,24 +1300,6 @@ def _merge_scene(primitives):
             promo_idx[id(p)] = pr
             promo_meta[id(p)] = meta
 
-        # Source component ids are local to a primitive.  Give every primitive
-        # a disjoint global range before the material-driven triangle reorder;
-        # the same _geom selection below then keeps topology exactly aligned
-        # with tri_pos through kept, textured, and promoted tiers.  Negative ids
-        # are padded logical-PN rows and stay invalid.
-        if exact_coverage:
-            component_base = 0
-            for p in triangles:
-                ids = p._rt_tri_component.to(device=device, dtype=torch.int32)
-                valid_ids = ids >= 0
-                if bool(valid_ids.any()):
-                    local_min = ids[valid_ids].min()
-                    ids = torch.where(valid_ids, ids - local_min + component_base, ids)
-                    component_base += (
-                        int(ids[valid_ids].max().item()) - component_base + 1
-                    )
-                p._rt_tri_component_global = ids.contiguous()
-
         def _sel(arr, idx):
             # Index the primitive axis (dim 1) by ``idx``. Only an *identity*
             # selection (every prim, in order) may return the original tensor
@@ -1355,17 +1336,6 @@ def _merge_scene(primitives):
         num_colored = sum(int(keep_idx[id(p)].numel()) for p in plain_triangles)
         scene["num_colored_triangles"] = num_colored
         scene["tri_pos"] = _cat_collections(_geom("_rt_tri_pos"), 1, "triangle merge")
-        if exact_coverage:
-            scene["tri_component"] = _cat_collections(
-                _geom("_rt_tri_component_global"), 1, "triangle topology merge"
-            )
-        else:
-            # The development gate must be storage-neutral: topology is not
-            # consumed by the shipping mask path, and retaining it in the
-            # merged scene changes arena preflight and therefore batch splits.
-            scene["tri_component"] = torch.full(
-                (1, 1), -1, dtype=torch.int32, device=device
-            )
         scene["tri_norm"] = _cat_collections(_geom("_rt_tri_norm"), 1, "triangle merge")
         scene["tri_mat_id"] = _cat_collections(
             _geom("_rt_tri_mat_id"), 1, "triangle merge"
@@ -1508,9 +1478,6 @@ def _merge_scene(primitives):
             _build_mem_trim(scene, lo, hi, opaque, num_frames, device)
     else:
         scene["tri_pos"] = torch.zeros((1, 1, 9), device=device)
-        scene["tri_component"] = torch.full(
-            (1, 1), -1, dtype=torch.int32, device=device
-        )
         scene["tri_norm"] = torch.zeros((1, 1, 9), device=device)
         scene["tri_extra"] = torch.zeros((1, 1, 15), device=device)
         scene["tri_colors"] = torch.zeros((1, 1, 3, 5), device=device)
@@ -1758,62 +1725,6 @@ def _merge_scene(primitives):
         scene["edges_2d"] = _cat_collections(
             [p._rt_edges for p in beziers], 1, "bezier merge"
         )
-        if exact_coverage:
-            scene["circuit_exact_origins"] = _cat_collections(
-                [p._rt_exact_origins for p in beziers], 1, "exact bezier origins"
-            )
-            scene["circuit_exact_reasons"] = _cat_collections(
-                [p._rt_exact_reasons for p in beziers], 1, "exact bezier reasons"
-            )
-
-            def _merge_exact_boundaries(edge_name, offset_name, label):
-                packed = _cat_collections(
-                    [getattr(p, edge_name) for p in beziers], 1, label
-                )
-                offsets = [torch.zeros((1,), dtype=torch.int32, device=device)]
-                shift = 0
-                for primitive in beziers:
-                    local = getattr(primitive, offset_name)
-                    offsets.append(local[1:].long() + shift)
-                    shift += int(getattr(primitive, edge_name).shape[1])
-                merged_offsets = torch.cat(
-                    [value.to(torch.int32) for value in offsets]
-                ).contiguous()
-                # Taichi ndarrays cannot be zero-width. A zero offset range
-                # keeps this sentinel row unreachable for every circuit.
-                if packed.shape[1] == 0:
-                    packed = torch.zeros((1, 1, 4), device=device)
-                return packed, merged_offsets
-
-            (
-                scene["circuit_exact_total_edges"],
-                scene["circuit_exact_total_offsets"],
-            ) = _merge_exact_boundaries(
-                "_rt_exact_total_edges",
-                "_rt_exact_total_offsets",
-                "exact bezier total boundaries",
-            )
-            (
-                scene["circuit_exact_fill_edges"],
-                scene["circuit_exact_fill_offsets"],
-            ) = _merge_exact_boundaries(
-                "_rt_exact_fill_edges",
-                "_rt_exact_fill_offsets",
-                "exact bezier fill boundaries",
-            )
-        else:
-            scene["circuit_exact_total_edges"] = torch.zeros((1, 1, 4), device=device)
-            scene["circuit_exact_total_offsets"] = torch.zeros(
-                (2,), dtype=torch.int32, device=device
-            )
-            scene["circuit_exact_fill_edges"] = torch.zeros((1, 1, 4), device=device)
-            scene["circuit_exact_fill_offsets"] = torch.zeros(
-                (2,), dtype=torch.int32, device=device
-            )
-            scene["circuit_exact_origins"] = torch.zeros((1, 1, 2), device=device)
-            scene["circuit_exact_reasons"] = torch.zeros(
-                (1, 1), dtype=torch.int32, device=device
-            )
         # Degenerate sampled edges use the exact sentinel row installed by
         # BezierCircuitPrimitives._build_circuit_geometry.  A batch containing
         # no other edge cannot pass the circuit intersection/winding test even
@@ -1860,18 +1771,6 @@ def _merge_scene(primitives):
         scene["circuit_border_colors"] = torch.zeros((1, 1, 1, 5), device=device)
         scene["edges_2d"] = torch.zeros((1, 1, 5), device=device)
         scene["edge_accel"] = torch.zeros((1,), dtype=torch.int32, device=device)
-        scene["circuit_exact_total_edges"] = torch.zeros((1, 1, 4), device=device)
-        scene["circuit_exact_total_offsets"] = torch.zeros(
-            (2,), dtype=torch.int32, device=device
-        )
-        scene["circuit_exact_fill_edges"] = torch.zeros((1, 1, 4), device=device)
-        scene["circuit_exact_fill_offsets"] = torch.zeros(
-            (2,), dtype=torch.int32, device=device
-        )
-        scene["circuit_exact_origins"] = torch.zeros((1, 1, 2), device=device)
-        scene["circuit_exact_reasons"] = torch.zeros(
-            (1, 1), dtype=torch.int32, device=device
-        )
         scene["bez_bvh"] = _empty_scene_part(device)
         scene["bez_opaque_bvh"] = scene["bez_bvh"]
         scene["bez_frame_valid"] = torch.zeros((1, 1), dtype=torch.bool, device=device)
@@ -1942,7 +1841,6 @@ def _merge_scene(primitives):
     # originals so peak GPU memory stays close to one copy of the scene.
     for p in triangles:
         p._rt_tri_pos = p._rt_tri_norm = None
-        p._rt_tri_component = p._rt_tri_component_global = None
         p._rt_tri_extra = p._rt_tri_colors = None
         p._rt_tri_mat_id = p._rt_tri_mat = None
         p._rt_tri_uvs = p._rt_texture_map = None
@@ -1959,10 +1857,6 @@ def _merge_scene(primitives):
     for p in beziers:
         p._rt_circuit_meta = p._rt_circuit_colors = None
         p._rt_circuit_border_colors = p._rt_edges = None
-        p._rt_exact_total_edges = p._rt_exact_fill_edges = None
-        p._rt_exact_total_offsets = p._rt_exact_fill_offsets = None
-        p._rt_exact_origins = p._rt_exact_reasons = None
-        p._rt_edge_circuit = None
         p._rt_frame_lo = p._rt_frame_hi = p._rt_frame_opaque = None
 
     if device.type != "cpu":

@@ -27,7 +27,6 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
 )
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.rendering.raytracing import pn_control_points, pn_patch_coefficients
-from algan.rendering.raytracing.exact_coverage import build_exact_circuit_contours
 from algan.rendering.raytracing.pn_patch import pn_obb
 from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_ALPHA
 from algan.rendering.raytracing.settings import (
@@ -114,7 +113,6 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         material_texture_map=None,
         material_texture_flags=0,
         normal_texture_map=None,
-        component_ids=None,
         **shader_kwargs,
     ):
         if triangle_collection is not None:
@@ -133,7 +131,6 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 material_texture_map=material_texture_map,
                 material_texture_flags=material_texture_flags,
                 normal_texture_map=normal_texture_map,
-                component_ids=component_ids,
                 **shader_kwargs,
             )
             # Gather per-mob surface params with the same broadcast/cat
@@ -184,7 +181,6 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 material_texture_map=material_texture_map,
                 material_texture_flags=material_texture_flags,
                 normal_texture_map=normal_texture_map,
-                component_ids=component_ids,
                 **shader_kwargs,
             )
             self._derive_material_surface_params()
@@ -552,15 +548,6 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_tri_extra = self._pack_surface_extra("triangle surface params")
         self._rt_tri_colors = self.colors.float().contiguous()
         self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
-        components = self.component_ids.to(device=corners.device, dtype=torch.int32)
-        if components.ndim == 1:
-            components = components.unsqueeze(0)
-        if components.shape[-1] != corners.shape[1]:
-            raise ValueError(
-                "component_ids must remain aligned with packed triangles "
-                f"({components.shape[-1]} vs {corners.shape[1]})"
-            )
-        self._rt_tri_component = components.contiguous()
         self._rt_num_frames = camera.ray_origin.shape[0]
 
         uvs = self._stash_texture_maps()
@@ -1160,20 +1147,6 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         }
         diced_shader_params = [allocate(v) for v in shader_sources]
         diced_uvs = allocate(uv_source) if uv_source is not None else None
-        source_components = self.component_ids.to(device=device, dtype=torch.int32)
-        if (
-            source_components.ndim != 1
-            or source_components.numel() != source_corners.shape[1]
-        ):
-            raise ValueError(
-                "logical PN component_ids must contain one id per source patch"
-            )
-        diced_components = torch.full(
-            (num_frames, max_triangles),
-            -1,
-            dtype=torch.int32,
-            device=device,
-        )
         padding = torch.ones(
             (num_frames, max_triangles),
             dtype=torch.bool,
@@ -1247,9 +1220,6 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                             uv_source[frames, patches], corner_uv
                         )
                     )
-                diced_components[target_rows, target_columns] = source_components[
-                    patches
-                ].unsqueeze(1)
                 padding[target_rows, target_columns] = False
 
         self.corners = diced_corners
@@ -1259,7 +1229,6 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             setattr(self, name, values)
         self.shader_param_values = diced_shader_params
         self.uvs = diced_uvs
-        self.component_ids = diced_components
         self._logical_pn_padding = padding
         self._logical_pn_subdivision_levels = levels
         self._logical_pn_edge_levels = edge_levels
@@ -1536,14 +1505,6 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             bool(getattr(camera, "analytic_raster", False)),
         )
         self._build_circuit_geometry(corners, num_samples)
-        self._build_exact_coverage_geometry(
-            cam_o,
-            sp,
-            sb,
-            int(camera.screen_width),
-            int(camera.screen_height),
-            bool(getattr(camera, "analytic_raster", False)),
-        )
         self._build_frame_bounds(corners, cam_o, sp, sb, camera.screen_height)
 
         # The polylines/metadata now carry everything the renderer needs;
@@ -1816,7 +1777,6 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         edge_offsets = torch.zeros((C + 1,), dtype=torch.long, device=device)
         edge_offsets[1:] = samples_per_circuit.cumsum(0)
         self._rt_edge_offsets = edge_offsets.to(torch.int32).contiguous()
-        self._rt_edge_circuit = vert_circuit.to(torch.int32).contiguous()
         self._rt_circuit_of_segment = circuit_of_segment
 
         # Texture-grid transform: maps plane (u, v) displacements to the
@@ -1916,68 +1876,6 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             border_colors = border_colors.unsqueeze(-2)
         self._rt_circuit_border_colors = border_colors.contiguous().as_subclass(Color)
         self._rt_border_width = border_width
-
-    def _build_exact_coverage_geometry(
-        self,
-        cam_origin,
-        screen_point,
-        screen_basis,
-        screen_width,
-        screen_height,
-        analytic_raster,
-    ):
-        """Build projected, explicitly offset boundaries for exact AA.
-
-        The development gate is captured during projection, just like the
-        chord tolerance.  Every circuit still receives a well-shaped set of
-        empty placeholders so scene batching remains independent of routing.
-        """
-        circuits = int(self._rt_circuit_meta.shape[1])
-        device = self._rt_edges.device
-        if (
-            analytic_raster
-            and rt_settings.analytic_aa_exact_active()
-            and rt_settings.analytic_aa_bez_active()
-        ):
-            exact = build_exact_circuit_contours(
-                self._rt_edges,
-                self._rt_edge_offsets,
-                self._rt_edge_circuit,
-                self._rt_circuit_meta,
-                cam_origin,
-                screen_point,
-                screen_basis,
-                screen_width,
-                screen_height,
-                rt_settings.ANALYTIC_AA_BEZ_MIN_HALF_WIDTH,
-                rt_settings.ANALYTIC_AA_CHORD_TOLERANCE,
-            )
-            self._rt_exact_total_edges = exact.total_edges
-            self._rt_exact_total_offsets = exact.total_offsets
-            self._rt_exact_fill_edges = exact.fill_edges
-            self._rt_exact_fill_offsets = exact.fill_offsets
-            self._rt_exact_origins = exact.origins
-            self._rt_exact_reasons = exact.reasons
-            return
-
-        self._rt_exact_total_edges = torch.empty(
-            (1, 0, 4), dtype=torch.float32, device=device
-        )
-        self._rt_exact_total_offsets = torch.zeros(
-            (circuits + 1,), dtype=torch.int32, device=device
-        )
-        self._rt_exact_fill_edges = torch.empty(
-            (1, 0, 4), dtype=torch.float32, device=device
-        )
-        self._rt_exact_fill_offsets = torch.zeros(
-            (circuits + 1,), dtype=torch.int32, device=device
-        )
-        self._rt_exact_origins = torch.zeros(
-            (1, circuits, 2), dtype=torch.float32, device=device
-        )
-        self._rt_exact_reasons = torch.zeros(
-            (1, circuits), dtype=torch.int32, device=device
-        )
 
     def _build_frame_bounds(self, corners, cam_o, sp, sb, screen_h):
         """Per-frame circuit AABBs (from control-point hulls, inflated by the

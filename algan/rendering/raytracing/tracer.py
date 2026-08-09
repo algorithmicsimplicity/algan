@@ -42,7 +42,6 @@ from algan.errors import UnsupportedFeatureError
 from algan.rendering.post_processing.post_process import post_process_frames
 from algan.rendering.primitives.primitive import OutOfRenderMemory
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    _M_BORDER_W,
     KBUF,
     MAX_SURFACES_PER_RAY,
     finalize_samples,
@@ -78,11 +77,6 @@ _MEM_TRIM_ENGAGED = [0]
 # Number of tile attempts discarded and retried after the shared continuation
 # allocator reported overflow. Kept as a list for low-overhead in-process tests.
 _WAVEFRONT_POOL_RETRIES = [0]
-# Number of complete primary camera paths launched by exact-AA fallback.  Tests
-# reset/read the one-element list to assert precisely ``aa_level ** 2`` paths
-# per fallback pixel without adding a public setting or render-plan field.
-_EXACT_AA_FALLBACK_PRIMARY_PATHS = [0]
-_EXACT_AA_FALLBACK_PIXELS = [0]
 from algan.logging.logger import get_logger
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 
@@ -91,17 +85,14 @@ from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixe
 # package __init__ -> primitives).
 from algan.rendering.raytracing.wavefront_kernels_taichi import (
     compact_ray_slots,
-    wavefront_generate_indexed_rays,
     wavefront_generate_rays,
     wavefront_shade,
     wavefront_traverse,
     wavefront_traverse_events,
-    wf_accumulate_sparse_sample,
     wf_composite_accum,
     wf_composite_accum_aa,
     wf_composite_accum_sparse,
     wf_finalize_aa,
-    wf_finalize_sparse_samples,
 )
 from algan.utils.memory_utils import (
     InsufficientMemoryException,
@@ -413,19 +404,6 @@ def analytic_raster_route_active(
     if num_tri > 0 and not rt_settings.analytic_aa_tri_active():
         return False
     if num_bez > 0 and not rt_settings.analytic_aa_bez_active():
-        return False
-
-    # Exact scalar coverage relies on pre-truncation classification and a
-    # compact list of unresolved pixels.  Those exist only on the fully sparse
-    # A-buffer lifecycle; any unsupported batch keeps the requested whole-frame
-    # SSAA route instead of silently dropping the fallback.
-    if rt_settings.analytic_aa_exact_active() and (
-        not rt_settings.RASTER_SPARSE_COVERAGE
-        or not rt_settings.RASTER_EMPTY_SKIP
-        or not rt_settings.RASTER_COVERED_SHADE
-        or _get_tonemap_t_val() != 3
-        or environment_map is not None
-    ):
         return False
 
     shadow = bool(rt_settings.SHADOWS)
@@ -1014,24 +992,7 @@ def render_batch_raytraced(
     # at output stride silently scrolls a different slice of itself into every
     # frame. (Solid colors are resolution-free and pass through untouched.)
     background_aa = max(1, int(anti_alias_level))
-    fallback_background = background_color
-    fallback_background_aa = 1
     if background_aa > 1 and width == screen_width and height == screen_height:
-        if hasattr(background_color, "anti_alias_level"):
-            fallback_background_aa = int(background_color.anti_alias_level)
-        elif torch.is_tensor(background_color) and background_color.dim() > 1:
-            body_rows = int(
-                background_color.reshape(-1, background_color.shape[-1]).shape[0] - 1
-            )
-            supersampled_rows = (
-                (time_end - time_start)
-                * screen_height
-                * screen_width
-                * background_aa
-                * background_aa
-            )
-            if body_rows == supersampled_rows:
-                fallback_background_aa = background_aa
         background_color = _downsample_background(
             background_color,
             background_aa,
@@ -1364,10 +1325,6 @@ def render_batch_raytraced(
                             near_clip=near_clip,
                             far_clip=far_clip,
                             analytic_raster=analytic_raster,
-                            analytic_fallback_aa=max(1, int(anti_alias_level)),
-                            fallback_background=fallback_background,
-                            fallback_background_aa=fallback_background_aa,
-                            fallback_background_frame_offset=start - time_start,
                         )
             frames = out.view(end - start, height, width, C_out)
             # Post-processing launches Taichi kernels (the tonemap in particular)
@@ -1816,10 +1773,6 @@ def raytrace_render_wavefront(
     near_clip=0.0,
     far_clip=0.0,
     analytic_raster=False,
-    analytic_fallback_aa=1,
-    fallback_background=None,
-    fallback_background_aa=1,
-    fallback_background_frame_offset=0,
 ):
     """Wavefront orchestration for the general triangle/PN/bezier path.
 
@@ -2206,30 +2159,13 @@ def raytrace_render_wavefront(
                 )
 
     def _drain_sparse_secondary(
-        active,
-        state,
-        rs_pix,
-        pix_accum,
-        rs_alloc,
-        compactor,
-        rs_vis,
-        initial_iteration=1,
-        trace_pixel_world_scale=None,
-        trace_circuit_meta=None,
-        trace_refraction_flag=None,
+        active, state, rs_pix, pix_accum, rs_alloc, compactor, rs_vis
     ):
-        """Run classic transport for compact real-pixel/accumulator mappings.
+        """Run iterations >= 1 for compact raster primaries.
 
         ``rs_pix`` contains the real window-local pixel while
         ``rs_int[:, 4]`` contains the compact accumulator row.  A zero
         ``ray_offset`` therefore addresses the full prepared frame window.
-        Raster continuations enter at iteration 1; indexed fallback primaries
-        enter at 0 after :func:`wavefront_generate_indexed_rays`.
-
-        Indexed subpixel primaries may override the pixel scale and circuit
-        metadata.  Circuit borders are authored in output pixels, while the
-        small anti-crack outline is one *sample* pixel; sparse fallback needs
-        the former unchanged and the latter divided by its AA grid size.
         """
         (
             rs_ro,
@@ -2244,13 +2180,7 @@ def raytrace_render_wavefront(
             _rs_kp,
             _rs_kf,
         ) = state
-        if trace_pixel_world_scale is None:
-            trace_pixel_world_scale = pixel_world_scale
-        if trace_circuit_meta is None:
-            trace_circuit_meta = merged["circuit_meta"]
-        if trace_refraction_flag is None:
-            trace_refraction_flag = refraction_flag
-        it = int(initial_iteration)
+        it = 1
         while active.numel() > 0 and it < max_iters:
             na = int(active.numel())
             with memory.temp():
@@ -2277,7 +2207,7 @@ def raytrace_render_wavefront(
                     bez_bvh.leaf_prim,
                     bez_bvh.leaf_tspan,
                     int(bez_bvh.first_leaf),
-                    trace_circuit_meta,
+                    merged["circuit_meta"],
                     merged["edges_2d"],
                     merged["edge_accel"],
                     merged["tri_opaque_bvh"].blocks,
@@ -2295,7 +2225,7 @@ def raytrace_render_wavefront(
                     merged["bez_opaque_bvh"].leaf_prim,
                     merged["bez_opaque_bvh"].leaf_tspan,
                     int(merged["bez_opaque_bvh"].first_leaf),
-                    trace_pixel_world_scale,
+                    pixel_world_scale,
                     float(layer_offset_triangles),
                     float(layer_offset_pn),
                     bvh_refit,
@@ -2354,18 +2284,18 @@ def raytrace_render_wavefront(
                     bez_bvh.leaf_prim,
                     bez_bvh.leaf_tspan,
                     int(bez_bvh.first_leaf),
-                    trace_circuit_meta,
+                    merged["circuit_meta"],
                     merged["circuit_colors"],
                     merged["circuit_border_colors"],
                     merged["edges_2d"],
                     merged["edge_accel"],
-                    trace_pixel_world_scale,
+                    pixel_world_scale,
                     layer_offsets_t,
                     int(frag_flag),
                     frag_pipelines,
                     frag_scatters,
                     int(shadow_flag),
-                    int(trace_refraction_flag),
+                    int(refraction_flag),
                     bvh_refit,
                     int(has_tri),
                     int(has_pn),
@@ -2635,308 +2565,6 @@ def raytrace_render_wavefront(
                     memory.set_pointers(state_ptrs)
                     covered_start += attempt_primary
                     break
-
-            # Pixels whose ordered subpixel regions cannot be represented by
-            # scalar coverage are absent from the raster resolve above.  Trace
-            # only that compact list through the complete classic path at the
-            # user-requested AA grid, average premultiplied linear transport,
-            # then composite once over the prefilled background.
-            num_fallback = int(coverage.get("num_fallback", 0))
-            if num_fallback:
-                _EXACT_AA_FALLBACK_PIXELS[0] += num_fallback
-                _ensure_bvhs()
-                fallback_idx = coverage["fallback_idx"]
-                fallback_aa = max(1, int(analytic_fallback_aa))
-                fallback_samples = fallback_aa * fallback_aa
-                inv_fallback_aa = 1.0 / fallback_aa
-                fallback_pixel_world_scale = pixel_world_scale
-                fallback_circuit_meta = merged["circuit_meta"]
-                # The analytic scalar path compiles split-capable transport for
-                # every reflector so a partial-coverage fragment can preserve
-                # both reflection and coverage miss.  A fallback primary is a
-                # true point sample: it must use the classic route's flag,
-                # otherwise an ordinary mirror follows different scattering
-                # semantics from whole-frame SSAA even at AA=1.
-                fallback_refraction_flag = int(
-                    bool(
-                        merged.get("has_refractive")
-                        or merged.get("has_refl_transparent")
-                        or frag_scatters
-                    )
-                )
-                if fallback_aa > 1 and has_bez:
-                    # The classic whole-frame SSAA route evaluates the
-                    # anti-crack circuit outline using one supersample pixel,
-                    # but keeps authored border widths constant in output
-                    # pixels by scaling the packed border metadata.  Recreate
-                    # precisely that pair of units for sparse indexed rays.
-                    with memory.scope(
-                        "exact_aa_fallback_geometry",
-                        pixel_scale_cells=int(pixel_world_scale.numel()),
-                        circuit_meta_cells=int(merged["circuit_meta"].numel()),
-                    ):
-                        fallback_pixel_world_scale = memory.get_tensor(
-                            pixel_world_scale.shape, pixel_world_scale.dtype
-                        )
-                        fallback_circuit_meta = memory.get_tensor(
-                            merged["circuit_meta"].shape,
-                            merged["circuit_meta"].dtype,
-                        )
-                    fallback_pixel_world_scale.copy_(
-                        pixel_world_scale * inv_fallback_aa
-                    )
-                    fallback_circuit_meta.copy_(merged["circuit_meta"])
-                    fallback_circuit_meta[..., _M_BORDER_W].mul_(fallback_aa)
-                fallback_pool_ratio = _split_pool_ratio(
-                    fallback_refraction_flag,
-                    merged,
-                    analytic_raster=False,
-                    custom_scatter=bool(frag_scatters),
-                )
-                fallback_primary_hint = max(
-                    1, rt_settings.WAVEFRONT_TILE_RAYS // fallback_pool_ratio
-                )
-                fallback_primary = _auto_primary_per_tile(
-                    memory,
-                    fallback_pool_ratio,
-                    fallback_primary_hint,
-                    fixed_bytes=2 * torch.int32.itemsize,
-                )
-                fallback_capacity = min(max(1, int(fallback_primary)), num_fallback)
-                fallback_pool_capacity = _shared_pool_slots(
-                    fallback_capacity,
-                    fallback_primary,
-                    fallback_pool_ratio,
-                    False,
-                )
-                learned_fallback_cap = fallback_capacity
-                fallback_channels = int(out.shape[-1])
-                fallback_super_background = None
-                fallback_background_rows = None
-                if (
-                    fallback_aa > 1
-                    and int(fallback_background_aa) == fallback_aa
-                    and fallback_background is not None
-                ):
-                    if hasattr(fallback_background, "callback"):
-                        with memory.scope(
-                            "exact_aa_fallback_background",
-                            fallback_background_cells=(
-                                (int(time_end) - int(time_start))
-                                * int(width)
-                                * int(height)
-                                * fallback_samples
-                                * fallback_channels
-                            ),
-                        ):
-                            fallback_super_background = memory.get_tensor(
-                                (
-                                    int(time_end) - int(time_start),
-                                    int(width) * int(height) * fallback_samples,
-                                    fallback_channels,
-                                ),
-                                torch.uint8,
-                            )
-                        _prefill_background(
-                            fallback_super_background,
-                            fallback_background,
-                            int(fallback_background_frame_offset),
-                            out.device,
-                        )
-                    elif (
-                        torch.is_tensor(fallback_background)
-                        and fallback_background.dim() > 1
-                    ):
-                        fallback_background_rows = fallback_background.reshape(
-                            -1, fallback_background.shape[-1]
-                        )[1:]
-
-                fallback_background_source = out.reshape(-1, fallback_channels)
-                fallback_source_aa = 1
-                fallback_source_frame_offset = 0
-                if fallback_super_background is not None:
-                    fallback_background_source = fallback_super_background.reshape(
-                        -1, fallback_channels
-                    )
-                    fallback_source_aa = fallback_aa
-                elif fallback_background_rows is not None:
-                    fallback_background_source = fallback_background_rows
-                    fallback_source_aa = fallback_aa
-                    fallback_source_frame_offset = int(fallback_background_frame_offset)
-
-                with memory.scope(
-                    "exact_aa_fallback_accum", fallback_pixels=num_fallback
-                ):
-                    fallback_sample_accum = memory.get_tensor(
-                        (num_fallback, 5), torch.float32
-                    )
-                fallback_sample_accum.zero_()
-
-                for sample_y in range(fallback_aa):
-                    for sample_x in range(fallback_aa):
-                        jitter_x = (sample_x + 0.5) * inv_fallback_aa
-                        jitter_y = (sample_y + 0.5) * inv_fallback_aa
-                        fallback_start = 0
-                        while fallback_start < num_fallback:
-                            remaining = num_fallback - fallback_start
-                            attempt_primary = min(learned_fallback_cap, remaining)
-                            pool = (
-                                fallback_pool_capacity
-                                if fallback_pool_ratio > 1
-                                else attempt_primary
-                            )
-                            while True:
-                                state_ptrs = memory.get_pointers()
-                                try:
-                                    with memory.scope(
-                                        "wavefront_state",
-                                        pool=pool,
-                                        primary=attempt_primary,
-                                        global_hits=0,
-                                        sparse=2,
-                                    ):
-                                        state = _alloc_wavefront_state(
-                                            memory, pool, 7, global_hits=False
-                                        )
-                                        rs_pix = memory.get_tensor((pool,), i32)
-                                        pix_accum = memory.get_tensor(
-                                            (attempt_primary, 7), f32
-                                        )
-                                        rs_alloc = memory.get_tensor((2,), i32)
-                                        rs_vis = memory.get_tensor((1,), i32)
-                                        compactor = _ArenaRayCompactor(
-                                            memory, pool, i32
-                                        )
-                                    pix_accum.zero_()
-                                    indexed = fallback_idx[
-                                        fallback_start : fallback_start
-                                        + attempt_primary
-                                    ]
-                                    wavefront_generate_indexed_rays(
-                                        indexed,
-                                        cam_origin,
-                                        screen_point,
-                                        pixel_basis_x,
-                                        pixel_basis_y,
-                                        int(time_start),
-                                        int(width),
-                                        int(height),
-                                        float(half_screen_w),
-                                        float(half_screen_h),
-                                        int(max_bounces),
-                                        float(jitter_x),
-                                        float(jitter_y),
-                                        state[0],
-                                        state[1],
-                                        state[2],
-                                        state[3],
-                                        state[4],
-                                        rs_pix,
-                                        rs_alloc,
-                                    )
-                                    active = compactor.select(
-                                        state[4],
-                                        0,
-                                        source=compactor.current,
-                                        scan_pool=True,
-                                    )
-                                    _drain_sparse_secondary(
-                                        active,
-                                        state,
-                                        rs_pix,
-                                        pix_accum,
-                                        rs_alloc,
-                                        compactor,
-                                        rs_vis,
-                                        initial_iteration=0,
-                                        trace_pixel_world_scale=(
-                                            fallback_pixel_world_scale
-                                        ),
-                                        trace_circuit_meta=fallback_circuit_meta,
-                                        trace_refraction_flag=(
-                                            fallback_refraction_flag
-                                        ),
-                                    )
-                                except (
-                                    InsufficientMemoryException,
-                                    RuntimeError,
-                                ) as exc:
-                                    if not isinstance(
-                                        exc, InsufficientMemoryException
-                                    ) and not is_cuda_oom(exc):
-                                        raise
-                                    memory.set_pointers(state_ptrs)
-                                    if torch.cuda.is_available():
-                                        torch.cuda.empty_cache()
-                                    if attempt_primary <= 1:
-                                        raise OutOfRenderMemory(
-                                            "Exact-AA fallback state did not "
-                                            "fit for one pixel. Lower the "
-                                            "resolution or transparency "
-                                            "complexity."
-                                        ) from exc
-                                    next_primary = max(1, attempt_primary // 2)
-                                    _WAVEFRONT_POOL_RETRIES[0] += 1
-                                    learned_fallback_cap = min(
-                                        learned_fallback_cap, next_primary
-                                    )
-                                    attempt_primary = next_primary
-                                    continue
-
-                                if (
-                                    fallback_pool_ratio > 1
-                                    and int(rs_alloc[1].item()) != 0
-                                ):
-                                    memory.set_pointers(state_ptrs)
-                                    if attempt_primary <= 1:
-                                        raise OutOfRenderMemory(
-                                            "A single exact-AA fallback pixel's "
-                                            "ray tree exceeded the shared pool "
-                                            f"of {pool} slots."
-                                        )
-                                    next_primary = _overflow_retry_primary(
-                                        attempt_primary,
-                                        int(rs_alloc[0].item()),
-                                        pool,
-                                    )
-                                    _WAVEFRONT_POOL_RETRIES[0] += 1
-                                    learned_fallback_cap = min(
-                                        learned_fallback_cap, next_primary
-                                    )
-                                    attempt_primary = next_primary
-                                    continue
-
-                                wf_accumulate_sparse_sample(
-                                    int(width),
-                                    int(height),
-                                    int(fallback_source_aa),
-                                    int(sample_x),
-                                    int(sample_y),
-                                    int(fallback_source_frame_offset),
-                                    1 if transparent else 0,
-                                    indexed,
-                                    pix_accum,
-                                    fallback_background_source,
-                                    fallback_sample_accum[
-                                        fallback_start : fallback_start
-                                        + attempt_primary
-                                    ],
-                                )
-                                _EXACT_AA_FALLBACK_PRIMARY_PATHS[0] += attempt_primary
-                                memory.set_pointers(state_ptrs)
-                                fallback_start += attempt_primary
-                                break
-
-                wf_finalize_sparse_samples(
-                    int(width),
-                    int(height),
-                    1 if transparent else 0,
-                    1.0 / fallback_samples,
-                    fallback_idx,
-                    fallback_sample_accum,
-                    float(rt_settings.TONEMAP_EXPOSURE),
-                    out,
-                )
         return
 
     def run_tile(tile_start, tn_primary, pool, state, rs_pix, pix_accum, rs_alloc):

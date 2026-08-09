@@ -2511,14 +2511,6 @@ class Surface(Mob):
             corners=corners,
             colors=colors,
             normals=normals,
-            # One Surface is one source-topology component.  Adaptive PN
-            # dicing propagates this id to every generated microtriangle so
-            # analytic AA can recognise internal partition edges.
-            component_ids=torch.zeros(
-                corners.shape[-2] // 3,
-                dtype=torch.int32,
-                device=corners.device,
-            ),
             glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             shader=self.shader,
             uvs=uvs,

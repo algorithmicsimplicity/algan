@@ -1169,20 +1169,11 @@ class RenderLoopMixin:
                     if background_color is None
                     else background_color
                 )
-                # Exact analytic AA renders its scalar path at output
-                # resolution, but unresolved pixels must composite each
-                # indexed primary against the matching requested-grid
-                # background sample.  Preserve that source here; the tracer
-                # downsamples a separate scalar view before prefill.  Legacy
-                # analytic AA keeps its existing resolution-free preparation.
-                background_aa = aa
-                if aa == 1 and rt_settings.analytic_aa_exact_active():
-                    background_aa = max(1, int(self.video_settings.anti_alias_level))
                 bgf = _prepare_background_for_chunk(
                     background_source,
                     screen_width=self.num_pixels_screen_width,
                     screen_height=self.num_pixels_screen_height,
-                    anti_alias_level=background_aa,
+                    anti_alias_level=aa,
                     current_ind=current_ind,
                     new_ind=new_ind,
                     frames_per_second=(

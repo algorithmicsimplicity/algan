@@ -22,22 +22,16 @@ from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raster_taichi import (
-    _AA_EXACT_MODE,
+    _AA_MASK_ALL as AA_MASK_ALL,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _BEZ_BORDER_BITS,
-    AA_FALLBACK_COMPLEXITY_CAP,
-    AA_FALLBACK_DEPTH_UNCERTAINTY,
-    AA_FALLBACK_MULTIPLE_PARTIAL_GROUPS,
-    AA_FALLBACK_PROJECTION_FAILURE,
-    AA_FALLBACK_SELF_OVERLAP,
     AA_FULL_COVERAGE,
     RASTER_CHUNK,
     Z_SENTINEL,
     raster_bez_count,
-    raster_bez_exact_count,
-    raster_bez_exact_write,
     raster_bez_write,
     raster_bez_z,
-    raster_classify_exact_overlap,
     raster_first_shade,
     raster_shadow_event_build,
     raster_shadow_trace,
@@ -45,36 +39,9 @@ from algan.rendering.raytracing.raster_taichi import (
     raster_tri_write,
     raster_tri_z,
 )
-from algan.rendering.raytracing.raster_taichi import (
-    _AA_MASK_ALL as AA_MASK_ALL,
-)
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
-    _M_CENTER,
-    _M_NORMAL,
-    _M_REFLECTIVITY,
-    _M_TRANSMISSION,
     DEPTH_TIE_EPSILON,
 )
-
-EXACT_AA_FALLBACK_REASONS = {
-    "multiple_partial_groups": AA_FALLBACK_MULTIPLE_PARTIAL_GROUPS,
-    "depth_uncertainty": AA_FALLBACK_DEPTH_UNCERTAINTY,
-    "self_overlap": AA_FALLBACK_SELF_OVERLAP,
-    "projection_failure": AA_FALLBACK_PROJECTION_FAILURE,
-    "complexity_cap": AA_FALLBACK_COMPLEXITY_CAP,
-}
-EXACT_AA_FALLBACK_COUNTS = dict.fromkeys(EXACT_AA_FALLBACK_REASONS, 0)
-
-
-def reset_exact_aa_fallback_counts():
-    """Reset process-local exact-AA classifier diagnostics."""
-    for name in EXACT_AA_FALLBACK_COUNTS:
-        EXACT_AA_FALLBACK_COUNTS[name] = 0
-
-
-def get_exact_aa_fallback_counts():
-    """Snapshot process-local exact-AA fallback counts by reason."""
-    return dict(EXACT_AA_FALLBACK_COUNTS)
 
 
 def precompute_triangle_projection(
@@ -976,477 +943,6 @@ def _exact_fragment_order(frag_key, frag_ref, layer_offset_triangles):
     return layer_order.index_select(0, depth_order)
 
 
-def _exact_fragment_depth_intervals(
-    frag_ref,
-    frag_pixel,
-    merged,
-    cam_origin,
-    screen_point,
-    pixel_basis_x,
-    pixel_basis_y,
-    time_start,
-    width,
-    height,
-    half_w,
-    half_h,
-):
-    """Conservative primary-ray parameter interval over each whole pixel.
-
-    For a plane hit, using the unnormalised camera-to-screen-point ray gives
-    ``lambda = dot(P0-ro,n) / dot(screen-ro,n)``.  The denominator is affine in
-    pixel position and cannot have an interior extremum while it keeps one
-    sign, so evaluating all four pixel corners bounds lambda everywhere in the
-    square.  Normalising the ray multiplies every surface at a given subpixel
-    by the same positive factor; strict lambda ordering is therefore exactly
-    strict depth ordering.
-    """
-    device = frag_ref.device
-    ppf = int(width) * int(height)
-    frame_rel = torch.div(frag_pixel, ppf, rounding_mode="floor")
-    frame = frame_rel + int(time_start)
-    p = frag_pixel - frame_rel * ppf
-    py = torch.div(p, int(width), rounding_mode="floor")
-    px = p - py * int(width)
-
-    ro = cam_origin.index_select(0, frame % cam_origin.shape[0])
-    sp = screen_point.index_select(0, frame % screen_point.shape[0])
-    pbx = pixel_basis_x.index_select(0, frame % pixel_basis_x.shape[0])
-    pby = pixel_basis_y.index_select(0, frame % pixel_basis_y.shape[0])
-    corner = torch.tensor(
-        ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)),
-        dtype=ro.dtype,
-        device=device,
-    )
-    u = (px.to(ro.dtype).unsqueeze(1) + corner[:, 0] - float(half_w)) / float(half_h)
-    v = (py.to(ro.dtype).unsqueeze(1) + corner[:, 1] - float(half_h)) / float(half_h)
-    screen = (
-        sp.unsqueeze(1)
-        + u.unsqueeze(-1) * pbx.unsqueeze(1)
-        + v.unsqueeze(-1) * pby.unsqueeze(1)
-    )
-    ray = screen - ro.unsqueeze(1)
-
-    count = frag_ref.numel()
-    numerator = torch.zeros((count,), dtype=ro.dtype, device=device)
-    denominator = torch.zeros((count, 4), dtype=ro.dtype, device=device)
-    plane_valid = torch.ones((count,), dtype=torch.bool, device=device)
-
-    tri = frag_ref >= 0
-    if bool(tri.any()):
-        rows = tri.nonzero(as_tuple=True)[0]
-        prim = frag_ref.index_select(0, rows).long()
-        f = frame.index_select(0, rows)
-        tri_pos = merged["tri_pos"]
-        verts = tri_pos[f % tri_pos.shape[0], prim].view(-1, 3, 3)
-        normal = torch.linalg.cross(
-            verts[:, 1] - verts[:, 0], verts[:, 2] - verts[:, 0]
-        )
-        ro_t = ro.index_select(0, rows)
-        numerator[rows] = ((verts[:, 0] - ro_t) * normal).sum(-1)
-        denominator[rows] = (ray.index_select(0, rows) * normal.unsqueeze(1)).sum(-1)
-        plane_valid[rows] = normal.square().sum(-1) > 1e-20
-
-    bez = ~tri
-    if bool(bez.any()):
-        rows = bez.nonzero(as_tuple=True)[0]
-        code = (-frag_ref.index_select(0, rows) - 1).long()
-        circuit = code >> _BEZ_BORDER_BITS
-        f = frame.index_select(0, rows)
-        meta = merged["circuit_meta"]
-        m = meta[f % meta.shape[0], circuit]
-        center = m[:, _M_CENTER : _M_CENTER + 3]
-        normal = m[:, _M_NORMAL : _M_NORMAL + 3]
-        ro_b = ro.index_select(0, rows)
-        numerator[rows] = ((center - ro_b) * normal).sum(-1)
-        denominator[rows] = (ray.index_select(0, rows) * normal.unsqueeze(1)).sum(-1)
-        plane_valid[rows] = normal.square().sum(-1) > 1e-20
-
-    safe_den = torch.where(
-        denominator.abs() > 1e-12, denominator, torch.ones_like(denominator)
-    )
-    depth = numerator.unsqueeze(1) / safe_den
-    valid = (
-        plane_valid
-        & torch.isfinite(depth).all(1)
-        & (denominator.abs() > 1e-12).all(1)
-        & (depth > 0.0).all(1)
-    )
-    lo = depth.amin(1)
-    hi = depth.amax(1)
-    lo = torch.where(valid, lo, torch.full_like(lo, -torch.inf))
-    hi = torch.where(valid, hi, torch.full_like(hi, torch.inf))
-    return lo, hi, valid
-
-
-def _classify_exact_fragments(
-    key_s,
-    ref_s,
-    cov_s,
-    opaque_s,
-    covered,
-    counts,
-    merged,
-    tri_screen,
-    cam_origin,
-    screen_point,
-    pixel_basis_x,
-    pixel_basis_y,
-    time_start,
-    width,
-    height,
-    half_w,
-    half_h,
-):
-    """Classify exact scalar pixels before opaque truncation.
-
-    Returns the fragment group ids, conditionally normalised resolve coverage,
-    one fallback-reason bitset per covered pixel, and CSR offsets.  Multiple
-    opaque triangles from one certified-disjoint topology partition are kept on
-    the scalar path: their raw areas ``c_i`` become conditional areas
-    ``c_i / (1-sum_{j<i} c_j)`` so ordinary front-to-back alpha compositing
-    evaluates their *sum* rather than repeatedly multiplying disjoint regions.
-    Translucent partitions require spatially varying transport and therefore
-    fall back to rays.
-    """
-    device = ref_s.device
-    num_fragments = int(ref_s.numel())
-    num_covered = int(covered.numel())
-    ppf = int(width) * int(height)
-    frag_pixel = key_s >> 32
-    frame = torch.div(frag_pixel, ppf, rounding_mode="floor") + int(time_start)
-
-    tri_mask = ref_s >= 0
-    num_triangles = int(merged.get("num_triangles", 0))
-    component_span = max(1, 2 * num_triangles)
-    group = torch.empty((num_fragments,), dtype=torch.int64, device=device)
-    projection_ok = torch.ones((num_fragments,), dtype=torch.bool, device=device)
-    if bool(tri_mask.any()):
-        rows = tri_mask.nonzero(as_tuple=True)[0]
-        prim = ref_s.index_select(0, rows).long()
-        f = frame.index_select(0, rows)
-        components = merged["tri_component"]
-        comp = components[f % components.shape[0], prim].to(torch.int64)
-        screen = tri_screen[f % tri_screen.shape[0], prim]
-        area2 = (screen[:, 1] - screen[:, 0]) * (screen[:, 5] - screen[:, 3]) - (
-            screen[:, 4] - screen[:, 3]
-        ) * (screen[:, 2] - screen[:, 0])
-        facing = (area2 < 0.0).to(torch.int64)
-        # Keep the key non-negative even for an invalid/padded topology id;
-        # ``projection_ok`` below still sends that fragment to fallback.  A
-        # negative group would make integer division recover the previous pixel
-        # from ``pair_key`` before the invalid row could be classified.
-        group[rows] = comp.clamp_min(0) * 2 + facing
-        projection_ok[rows] = (screen[:, 9] > 0.5) & (comp >= 0)
-    if bool((~tri_mask).any()):
-        rows = (~tri_mask).nonzero(as_tuple=True)[0]
-        code = (-ref_s.index_select(0, rows) - 1).to(torch.int64)
-        circuit = code >> _BEZ_BORDER_BITS
-        group[rows] = component_span + circuit
-
-    group_span = component_span + int(merged.get("num_circuits", 0)) + 1
-    pair_key = frag_pixel * group_span + group
-    unique_pair, inverse, pair_counts = torch.unique(
-        pair_key, sorted=True, return_inverse=True, return_counts=True
-    )
-    num_pairs = int(unique_pair.numel())
-    pair_pixel = torch.div(unique_pair, group_span, rounding_mode="floor")
-    pair_row = torch.searchsorted(covered, pair_pixel)
-
-    reasons = torch.zeros((num_covered,), dtype=torch.int32, device=device)
-
-    def mark_pair(mask, bit):
-        if not bool(mask.any()):
-            return
-        hits = torch.zeros((num_covered,), dtype=torch.int32, device=device)
-        hits.scatter_add_(
-            0, pair_row[mask], torch.ones_like(pair_row[mask], dtype=torch.int32)
-        )
-        reasons.bitwise_or_(torch.where(hits > 0, bit, 0))
-
-    def mark_fragment(mask, bit):
-        if not bool(mask.any()):
-            return
-        rows = torch.searchsorted(covered, frag_pixel[mask])
-        hits = torch.zeros((num_covered,), dtype=torch.int32, device=device)
-        hits.scatter_add_(0, rows, torch.ones_like(rows, dtype=torch.int32))
-        reasons.bitwise_or_(torch.where(hits > 0, bit, 0))
-
-    coverage_valid = torch.isfinite(cov_s) & (cov_s >= 0.0) & (cov_s <= 1.00001)
-    encoded_reason = torch.where(
-        cov_s < 0.0,
-        (-cov_s).round().to(torch.int32),
-        torch.zeros_like(cov_s, dtype=torch.int32),
-    )
-    for bit in EXACT_AA_FALLBACK_REASONS.values():
-        mark_fragment((encoded_reason & bit) != 0, bit)
-    mark_fragment(
-        ~coverage_valid & (encoded_reason == 0), AA_FALLBACK_PROJECTION_FAILURE
-    )
-    projection_ok &= coverage_valid | (encoded_reason != 0)
-
-    # Invalid encoded rows are discarded with their fallback pixels.  Keeping
-    # their sentinel values out of reductions avoids corrupting correlation and
-    # conditional-coverage diagnostics before that discard happens.
-    cov_class = torch.where(coverage_valid, cov_s.clamp(0.0, 1.0), 0.0)
-    partial = cov_class < AA_FULL_COVERAGE
-
-    # Scalar area has no spatial correlation with the direction launched by a
-    # reflective/refractive continuation.  A full-cover hit still has one
-    # unambiguous primary point (the pixel centre), but a partial transport hit
-    # represents a continuum of possible origins/directions; one centroid ray
-    # is not the matching box-filtered result.  Route only those edge pixels to
-    # the complete primary grid.  Reuse DEPTH_UNCERTAINTY because it is the
-    # secondary depth/order relation, rather than primary area, that cannot be
-    # certified from the scalar fragment.
-    transport_fragment = torch.zeros((num_fragments,), dtype=torch.bool, device=device)
-    if bool(tri_mask.any()):
-        rows = tri_mask.nonzero(as_tuple=True)[0]
-        extra = merged.get("tri_extra")
-        if (
-            extra is not None
-            and extra.shape[-1] >= 12
-            and extra.shape[1] >= num_triangles
-        ):
-            prim = ref_s.index_select(0, rows).long()
-            f = frame.index_select(0, rows)
-            surface = extra[f % extra.shape[0], prim]
-            pbr = (surface[..., 0:6:2] >= 0.0).any(-1)
-            transmitting = (surface[..., 9:12] > 1e-6).any(-1)
-            transport_fragment[rows] = pbr | transmitting
-        if merged.get("tex_has_reflective") or merged.get("tex_has_refractive"):
-            # Material maps are sampled at the fragment centroid; conservatively
-            # treat every partial textured triangle as transport-dependent.
-            transport_fragment[rows] = True
-    if bool((~tri_mask).any()):
-        rows = (~tri_mask).nonzero(as_tuple=True)[0]
-        code = (-ref_s.index_select(0, rows) - 1).to(torch.int64)
-        circuit = code >> _BEZ_BORDER_BITS
-        f = frame.index_select(0, rows)
-        meta = merged["circuit_meta"]
-        surface = meta[f % meta.shape[0], circuit]
-        transport_fragment[rows] = (surface[..., _M_REFLECTIVITY] >= 0.0) | (
-            surface[..., _M_TRANSMISSION] > 1e-6
-        )
-    fragment_row = torch.searchsorted(covered, frag_pixel)
-    partial_hits = torch.zeros((num_covered,), dtype=torch.int32, device=device)
-    transport_hits = torch.zeros((num_covered,), dtype=torch.int32, device=device)
-    partial_hits.scatter_add_(0, fragment_row, partial.to(torch.int32))
-    transport_hits.scatter_add_(0, fragment_row, transport_fragment.to(torch.int32))
-    reasons.bitwise_or_(
-        torch.where(
-            (partial_hits > 0) & (transport_hits > 0),
-            AA_FALLBACK_DEPTH_UNCERTAINTY,
-            0,
-        )
-    )
-
-    pair_partial_count = torch.zeros((num_pairs,), dtype=torch.int32, device=device)
-    pair_partial_count.scatter_add_(0, inverse, partial.to(torch.int32))
-    pair_has_partial = pair_partial_count > 0
-    partial_groups = torch.zeros((num_covered,), dtype=torch.int32, device=device)
-    partial_groups.scatter_add_(0, pair_row, pair_has_partial.to(torch.int32))
-    reasons.bitwise_or_(
-        torch.where(partial_groups > 1, AA_FALLBACK_MULTIPLE_PARTIAL_GROUPS, 0)
-    )
-
-    pair_partial_area = torch.zeros((num_pairs,), dtype=cov_s.dtype, device=device)
-    pair_partial_area.scatter_add_(0, inverse, torch.where(partial, cov_class, 0.0))
-    pair_nonopaque_partial = torch.zeros((num_pairs,), dtype=torch.int32, device=device)
-    pair_nonopaque_partial.scatter_add_(
-        0, inverse, (partial & ~opaque_s).to(torch.int32)
-    )
-
-    block_start = torch.ones((num_fragments,), dtype=torch.bool, device=device)
-    if num_fragments > 1:
-        block_start[1:] = pair_key[1:] != pair_key[:-1]
-    pair_blocks = torch.zeros((num_pairs,), dtype=torch.int32, device=device)
-    pair_blocks.scatter_add_(
-        0,
-        inverse[block_start],
-        torch.ones_like(inverse[block_start], dtype=torch.int32),
-    )
-    multi_partial = pair_partial_count > 1
-    mark_pair(
-        multi_partial & (pair_nonopaque_partial > 0),
-        AA_FALLBACK_MULTIPLE_PARTIAL_GROUPS,
-    )
-    mark_pair(
-        multi_partial & (pair_partial_area > 1.0 + 1e-5),
-        AA_FALLBACK_SELF_OVERLAP,
-    )
-    mark_pair(pair_blocks > 1, AA_FALLBACK_DEPTH_UNCERTAINTY)
-    mark_fragment(~projection_ok, AA_FALLBACK_PROJECTION_FAILURE)
-
-    depth_lo, depth_hi, depth_valid = _exact_fragment_depth_intervals(
-        ref_s,
-        frag_pixel,
-        merged,
-        cam_origin,
-        screen_point,
-        pixel_basis_x,
-        pixel_basis_y,
-        time_start,
-        width,
-        height,
-        half_w,
-        half_h,
-    )
-    mark_fragment(~depth_valid, AA_FALLBACK_PROJECTION_FAILURE)
-    pair_lo = torch.full((num_pairs,), torch.inf, dtype=depth_lo.dtype, device=device)
-    pair_hi = torch.full((num_pairs,), -torch.inf, dtype=depth_hi.dtype, device=device)
-    pair_lo.scatter_reduce_(0, inverse, depth_lo, reduce="amin", include_self=True)
-    pair_hi.scatter_reduce_(0, inverse, depth_hi, reduce="amax", include_self=True)
-    positions = torch.arange(num_fragments, dtype=torch.int64, device=device)
-    pair_first = torch.full(
-        (num_pairs,), num_fragments, dtype=torch.int64, device=device
-    )
-    pair_first.scatter_reduce_(0, inverse, positions, reduce="amin", include_self=True)
-    pair_order = torch.argsort(pair_first)
-    ordered_pixel = pair_pixel.index_select(0, pair_order)
-    ordered_lo = pair_lo.index_select(0, pair_order)
-    ordered_hi = pair_hi.index_select(0, pair_order)
-    if num_pairs > 1:
-        same_pixel = ordered_pixel[1:] == ordered_pixel[:-1]
-        scale = torch.maximum(ordered_hi[:-1].abs(), ordered_lo[1:].abs())
-        epsilon = 1e-6 * torch.maximum(scale, torch.ones_like(scale))
-        uncertain = same_pixel & (ordered_hi[:-1] + epsilon >= ordered_lo[1:])
-        if bool(uncertain.any()):
-            bad_pixels = ordered_pixel[1:][uncertain]
-            rows = torch.searchsorted(covered, bad_pixels)
-            hits = torch.zeros((num_covered,), dtype=torch.int32, device=device)
-            hits.scatter_add_(0, rows, torch.ones_like(rows, dtype=torch.int32))
-            reasons.bitwise_or_(torch.where(hits > 0, AA_FALLBACK_DEPTH_UNCERTAINTY, 0))
-
-    run_offsets = torch.empty((num_covered + 1,), dtype=torch.int32, device=device)
-    run_offsets[0] = 0
-    run_offsets[1:] = torch.cumsum(counts.to(torch.int32), 0)
-    raster_classify_exact_overlap(
-        num_covered,
-        run_offsets,
-        ref_s,
-        cov_s,
-        group,
-        covered.to(torch.int32),
-        tri_screen,
-        int(time_start),
-        int(width),
-        int(height),
-        reasons,
-    )
-
-    # Conditional coverage makes a certified opaque partition additive under
-    # the existing front-to-back scalar resolve.  Never rewrite a fallback
-    # pixel: its fragments are discarded and full rays own the result.
-    prefix = torch.cumsum(cov_class, 0)
-    base = prefix.index_select(0, pair_first) - cov_class.index_select(0, pair_first)
-    previous = prefix - cov_class - base.index_select(0, inverse)
-    pair_safe = reasons.index_select(0, pair_row) == 0
-    conditional_pair = (
-        multi_partial
-        & (pair_nonopaque_partial == 0)
-        & (pair_partial_area <= 1.0 + 1e-5)
-        & (pair_blocks == 1)
-        & pair_safe
-    )
-    use_conditional = conditional_pair.index_select(0, inverse) & partial
-    conditional = cov_class / (1.0 - previous).clamp_min(1e-8)
-    resolve_cov = torch.where(use_conditional, conditional.clamp(0.0, 1.0), cov_class)
-
-    totals = (
-        torch.stack(
-            [((reasons & bit) != 0).sum() for bit in EXACT_AA_FALLBACK_REASONS.values()]
-        )
-        .detach()
-        .cpu()
-        .tolist()
-    )
-    for name, value in zip(EXACT_AA_FALLBACK_REASONS, totals):
-        EXACT_AA_FALLBACK_COUNTS[name] += int(value)
-
-    return group, resolve_cov, reasons, run_offsets
-
-
-def _drop_exact_occluded_tails(
-    key_s,
-    ref_s,
-    cov_s,
-    opaque_s,
-    covered,
-    counts,
-    merged,
-    cam_origin,
-    screen_point,
-    pixel_basis_x,
-    pixel_basis_y,
-    time_start,
-    width,
-    height,
-    half_w,
-    half_h,
-):
-    """Ignore complexity strictly behind a nearest full opaque fragment.
-
-    This is not the ordinary optimistic opaque truncation.  The first fragment
-    must cover the complete pixel, be material-opaque, and have a conservative
-    plane-depth interval strictly in front of every remaining fragment in that
-    pixel.  Only then are those tails irrelevant to scalar resolvability.
-    """
-    num_fragments = int(key_s.numel())
-    num_pixels = int(covered.numel())
-    if num_fragments == 0 or num_pixels == 0:
-        return torch.ones_like(key_s, dtype=torch.bool)
-    offsets = torch.empty((num_pixels + 1,), dtype=torch.int64, device=key_s.device)
-    offsets[0] = 0
-    offsets[1:] = torch.cumsum(counts.to(torch.int64), 0)
-    first = offsets[:-1]
-    candidate = opaque_s.index_select(0, first) & (
-        cov_s.index_select(0, first) >= AA_FULL_COVERAGE
-    )
-    if not bool(candidate.any()):
-        return torch.ones_like(key_s, dtype=torch.bool)
-
-    frag_pixel = key_s >> 32
-    depth_lo, depth_hi, valid = _exact_fragment_depth_intervals(
-        ref_s,
-        frag_pixel,
-        merged,
-        cam_origin,
-        screen_point,
-        pixel_basis_x,
-        pixel_basis_y,
-        time_start,
-        width,
-        height,
-        half_w,
-        half_h,
-    )
-    pixel_row = torch.repeat_interleave(
-        torch.arange(num_pixels, dtype=torch.int64, device=key_s.device), counts
-    )
-    is_first = torch.zeros((num_fragments,), dtype=torch.bool, device=key_s.device)
-    is_first[first] = True
-    tail_min = torch.full(
-        (num_pixels,), torch.inf, dtype=depth_lo.dtype, device=key_s.device
-    )
-    if num_fragments > num_pixels:
-        tail_min.scatter_reduce_(
-            0,
-            pixel_row[~is_first],
-            depth_lo[~is_first],
-            reduce="amin",
-            include_self=True,
-        )
-    first_hi = depth_hi.index_select(0, first)
-    first_valid = valid.index_select(0, first)
-    epsilon = 1e-6 * torch.maximum(first_hi.abs(), torch.ones_like(first_hi))
-    safe = candidate & first_valid & (first_hi + epsilon < tail_min)
-    if not bool(safe.any()):
-        return torch.ones_like(key_s, dtype=torch.bool)
-    keep = torch.ones((num_fragments,), dtype=torch.bool, device=key_s.device)
-    keep &= ~(safe.index_select(0, pixel_row) & ~is_first)
-    return keep
-
-
 def prepare_sparse_raster_coverage(
     merged,
     tri_screen,
@@ -1589,21 +1085,8 @@ def prepare_sparse_raster_coverage(
     # kernels see, so each policy compiles (and caches) its own _ss_pixel. The
     # resolve and the shadow-event build keep the plain 0/1 flag: the policy
     # reaches them as a per-fragment mask bit, so they compile once.
-    aa_exact = (
-        1 if ((aa_tri or aa_bez) and rt_settings.analytic_aa_exact_active()) else 0
-    )
-    aa_tri_ss = (
-        _AA_EXACT_MODE
-        if (aa_exact and aa_tri)
-        else aa_tri * (1 + rt_settings.analytic_aa_sliver_mode())
-    )
-    # Exact scalar fragments are classified before resolve.  A sample-set seam
-    # walk would re-quantize their integrated areas, so it is restricted to the
-    # legacy rollout arm.
-    if aa_exact:
-        aa_grp = 2  # exact scalar partition mode (no sample-set transmittance)
-    else:
-        aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
+    aa_tri_ss = aa_tri * (1 + rt_settings.analytic_aa_sliver_mode())
+    aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     geo_args = (
@@ -1631,17 +1114,6 @@ def prepare_sparse_raster_coverage(
         merged["edges_2d"],
         merged["edge_accel"],
     )
-    bez_exact_geom = (
-        merged["circuit_meta"],
-        merged["circuit_colors"],
-        merged["circuit_border_colors"],
-        merged["circuit_exact_total_edges"],
-        merged["circuit_exact_total_offsets"],
-        merged["circuit_exact_fill_edges"],
-        merged["circuit_exact_fill_offsets"],
-        merged["circuit_exact_origins"],
-        merged["circuit_exact_reasons"],
-    )
     _check_circuit_ref_capacity(merged)
 
     # All forward allocations in this scope are discovery scratch.  Only the
@@ -1661,29 +1133,19 @@ def prepare_sparse_raster_coverage(
         for kind, pairs, opaque in specs:
             counts = _arena_tensor(memory, (pairs.shape[0],), torch.int32, 0)
             if kind == "bez":
-                if aa_exact and aa_bez:
-                    raster_bez_exact_count(
-                        pairs,
-                        int(pairs.shape[0]),
-                        *cam_args,
-                        *bez_exact_geom,
-                        *geo_args,
-                        counts,
-                    )
-                else:
-                    raster_bez_count(
-                        pairs,
-                        int(pairs.shape[0]),
-                        *cam_args,
-                        *bez_geom,
-                        *geo_args,
-                        0,
-                        dummy_z,
-                        aa_bez,
-                        aa_hw,
-                        0,
-                        counts,
-                    )
+                raster_bez_count(
+                    pairs,
+                    int(pairs.shape[0]),
+                    *cam_args,
+                    *bez_geom,
+                    *geo_args,
+                    0,
+                    dummy_z,
+                    aa_bez,
+                    aa_hw,
+                    0,
+                    counts,
+                )
             else:
                 raster_tri_count(
                     pairs,
@@ -1721,12 +1183,7 @@ def prepare_sparse_raster_coverage(
 
         frag_key_u = _arena_tensor(memory, (num_frags,), torch.int64)
         frag_ref_u = _arena_tensor(memory, (num_frags,), torch.int32)
-        # Exact circuits retain two independent first-moment sample positions
-        # plus the unquantized border-area fraction.  The packed ref still has
-        # its legacy low bits so its circuit id/layer ABI stays unchanged, but
-        # exact resolve never uses those eight bits as coverage data.
-        frag_ab_width = 5 if (aa_exact and aa_bez) else 2
-        frag_ab_u = _arena_tensor(memory, (num_frags, frag_ab_width), torch.float32)
+        frag_ab_u = _arena_tensor(memory, (num_frags, 2), torch.float32)
         # Coverage lane + sub-pixel sample mask, pre-filled full-coverage /
         # all-samples. Only triangles under analytic AA write the mask;
         # circuits never group (unique key) so an all-samples mask leaves their
@@ -1741,37 +1198,23 @@ def prepare_sparse_raster_coverage(
             offsets = prefix[pair_cursor : pair_cursor + npairs].to(torch.int32)
             n_spec = int(counts.to(torch.int64).sum().item())
             if kind == "bez":
-                if aa_exact and aa_bez:
-                    raster_bez_exact_write(
-                        pairs,
-                        npairs,
-                        offsets,
-                        *cam_args,
-                        *bez_exact_geom,
-                        *geo_args,
-                        frag_key_u,
-                        frag_ref_u,
-                        frag_ab_u,
-                        frag_cov_u,
-                    )
-                else:
-                    raster_bez_write(
-                        pairs,
-                        npairs,
-                        offsets,
-                        *cam_args,
-                        *bez_geom,
-                        *geo_args,
-                        0,
-                        dummy_z,
-                        aa_bez,
-                        aa_hw,
-                        0,
-                        frag_key_u,
-                        frag_ref_u,
-                        frag_ab_u,
-                        frag_cov_u,
-                    )
+                raster_bez_write(
+                    pairs,
+                    npairs,
+                    offsets,
+                    *cam_args,
+                    *bez_geom,
+                    *geo_args,
+                    0,
+                    dummy_z,
+                    aa_bez,
+                    aa_hw,
+                    0,
+                    frag_key_u,
+                    frag_ref_u,
+                    frag_ab_u,
+                    frag_cov_u,
+                )
             else:
                 raster_tri_write(
                     pairs,
@@ -1805,116 +1248,14 @@ def prepare_sparse_raster_coverage(
         ab_s = frag_ab_u.index_select(0, order)
         cov_s = frag_cov_u.index_select(0, order)
         msk_s = frag_msk_u.index_select(0, order)
-        material_opaque_s = opaque_u.index_select(0, order)
+        opaque_s = opaque_u.index_select(0, order)
+        if aa_bez or aa_tri:
+            # A partially covering opaque hit does not hide what is behind it,
+            # so it must not terminate its pixel's run: it stays an ordinary
+            # alpha fragment (its alpha already carries the coverage).
+            opaque_s = opaque_s & (cov_s >= AA_FULL_COVERAGE)
         pix_s = key_s >> 32
         covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
-
-        if aa_exact:
-            visible_prefix = _drop_exact_occluded_tails(
-                key_s,
-                ref_s,
-                cov_s,
-                material_opaque_s,
-                covered,
-                counts,
-                merged,
-                cam_origin,
-                screen_point,
-                pixel_basis_x,
-                pixel_basis_y,
-                time_start,
-                width,
-                height,
-                half_w,
-                half_h,
-            )
-            if not bool(visible_prefix.all()):
-                visible_idx = visible_prefix.nonzero(as_tuple=True)[0]
-                key_s = key_s.index_select(0, visible_idx)
-                ref_s = ref_s.index_select(0, visible_idx)
-                ab_s = ab_s.index_select(0, visible_idx)
-                cov_s = cov_s.index_select(0, visible_idx)
-                msk_s = msk_s.index_select(0, visible_idx)
-                material_opaque_s = material_opaque_s.index_select(0, visible_idx)
-                pix_s = key_s >> 32
-                covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
-                num_frags = int(key_s.numel())
-
-        fallback = torch.zeros((covered.numel(),), dtype=torch.bool, device=device)
-        fallback_reasons_s = torch.zeros(
-            (covered.numel(),), dtype=torch.int32, device=device
-        )
-        if aa_exact:
-            _frag_group, cov_s, fallback_reasons_s, _class_offsets = (
-                _classify_exact_fragments(
-                    key_s,
-                    ref_s,
-                    cov_s,
-                    material_opaque_s,
-                    covered,
-                    counts,
-                    merged,
-                    tri_screen,
-                    cam_origin,
-                    screen_point,
-                    pixel_basis_x,
-                    pixel_basis_y,
-                    time_start,
-                    width,
-                    height,
-                    half_w,
-                    half_h,
-                )
-            )
-            fallback = fallback_reasons_s != 0
-            force_all_fallback = rt_settings.analytic_aa_force_fallback_active()
-            if force_all_fallback:
-                fallback.fill_(True)
-        else:
-            force_all_fallback = False
-
-        if force_all_fallback:
-            # Validation mode means *every* output pixel, including pixels
-            # with no emitted scalar fragment.  Restricting this list to
-            # ``covered`` makes a regular-grid subpixel hit just outside the
-            # analytic candidate set disappear and cannot be compared to the
-            # existing whole-frame SSAA path.
-            fallback_values = torch.arange(
-                (int(time_end) - int(time_start)) * int(width) * int(height),
-                dtype=torch.int64,
-                device=device,
-            )
-            fallback_reason_values = torch.zeros(
-                fallback_values.shape, dtype=torch.int32, device=device
-            )
-        else:
-            fallback_values = covered[fallback]
-            fallback_reason_values = fallback_reasons_s[fallback]
-        if bool(fallback.any()):
-            source_num_covered = int(covered.numel())
-            segments = torch.repeat_interleave(
-                torch.arange(source_num_covered, dtype=torch.int64, device=device),
-                counts,
-            )
-            scalar_fragment = ~fallback.index_select(0, segments)
-            keep_idx = scalar_fragment.nonzero(as_tuple=True)[0]
-            key_s = key_s.index_select(0, keep_idx)
-            ref_s = ref_s.index_select(0, keep_idx)
-            ab_s = ab_s.index_select(0, keep_idx)
-            cov_s = cov_s.index_select(0, keep_idx)
-            msk_s = msk_s.index_select(0, keep_idx)
-            material_opaque_s = material_opaque_s.index_select(0, keep_idx)
-            covered = covered[~fallback]
-            counts = counts[~fallback]
-            pix_s = key_s >> 32
-            num_frags = int(key_s.shape[0])
-
-        opaque_s = material_opaque_s
-        if aa_bez or aa_tri:
-            # Classification has already seen every material-opaque surface.
-            # Only now may a fully covering (or conditionally final partition)
-            # fragment terminate its scalar run.
-            opaque_s = opaque_s & (cov_s >= AA_FULL_COVERAGE)
 
         # The dense z-buffer retained only the nearest opaque hit and discarded
         # every transparent/opaque record behind it.  Reproduce that relation
@@ -1953,21 +1294,14 @@ def prepare_sparse_raster_coverage(
                 num_frags = int(key_s.shape[0])
 
         num_covered = int(covered.numel())
-        num_fallback = int(fallback_values.numel())
         frag_key = _arena_tensor(memory, (num_frags,), torch.int64, persist=True)
         frag_ref = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
-        frag_ab = _arena_tensor(
-            memory, (num_frags, frag_ab_width), torch.float32, persist=True
-        )
+        frag_ab = _arena_tensor(memory, (num_frags, 2), torch.float32, persist=True)
         frag_cov = _arena_tensor(memory, (num_frags,), torch.float32, persist=True)
         frag_msk = _arena_tensor(memory, (num_frags,), torch.int32, persist=True)
         covered_idx = _arena_tensor(memory, (num_covered,), torch.int32, persist=True)
         run_offsets = _arena_tensor(
             memory, (num_covered + 1,), torch.int32, 0, persist=True
-        )
-        fallback_idx = _arena_tensor(memory, (num_fallback,), torch.int32, persist=True)
-        fallback_reason = _arena_tensor(
-            memory, (num_fallback,), torch.int32, persist=True
         )
         frag_key.copy_(key_s)
         frag_ref.copy_(ref_s)
@@ -1976,8 +1310,6 @@ def prepare_sparse_raster_coverage(
         frag_msk.copy_(msk_s)
         covered_idx.copy_(covered.to(torch.int32))
         run_offsets[1:].copy_(torch.cumsum(counts.to(torch.int32), 0))
-        fallback_idx.copy_(fallback_values.to(torch.int32))
-        fallback_reason.copy_(fallback_reason_values)
 
         # Recorded for calibration: the fragment/covered counts are this
         # scope's value-dependent drivers and are only known once the COUNT
@@ -1987,23 +1319,16 @@ def prepare_sparse_raster_coverage(
             discovery_frags=int(discovery_frags),
             num_fragments=int(num_frags),
             num_covered=int(num_covered),
-            num_fallback=int(num_fallback),
             pixels=int(width) * int(height),
         )
 
     # Reserve for the next chunk's discovery peak: the pre-truncation scratch
-    # (frag_*_u: 8+4+(4*frag_ab_width)+4+4+1 B/frag) plus the persistent
-    # compact result (frag_key/ref/ab/cov/msk:
-    # 8+4+(4*frag_ab_width)+4+4 B/frag; covered_idx/run_offsets:
+    # (frag_*_u: 8+4+8+4+4+1 B/frag) plus the persistent compact result
+    # (frag_key/ref/ab/cov/msk: 8+4+8+4+4 B/frag; covered_idx/run_offsets:
     # 4+4 B/covered) coexist in the arena at the copy. Amortized per output
     # frame so the render-chunk preflight sizes later chunks to fit it instead
     # of over-committing.
-    discovery_bytes = (
-        discovery_frags * (21 + 4 * frag_ab_width)
-        + num_frags * (20 + 4 * frag_ab_width)
-        + num_covered * 8
-        + num_fallback * 8
-    )
+    discovery_bytes = discovery_frags * 29 + num_frags * 28 + num_covered * 8
     rt_settings.note_sparse_discovery_footprint(
         discovery_bytes, int(time_end) - int(time_start)
     )
@@ -2016,17 +1341,13 @@ def prepare_sparse_raster_coverage(
         "frag_msk": frag_msk,
         "covered_idx": covered_idx,
         "run_offsets": run_offsets,
-        "fallback_idx": fallback_idx,
-        "fallback_reason": fallback_reason,
         "num_fragments": num_frags,
         "num_covered": num_covered,
-        "num_fallback": num_fallback,
         # Pinned here so the resolve compiles for the mode the fragments were
         # emitted in, whatever the live toggle says by then.
         "aa_bez": aa_bez,
         "aa_tri": aa_tri,
         "aa_grp": aa_grp,
-        "aa_exact": aa_exact,
     }
 
 
