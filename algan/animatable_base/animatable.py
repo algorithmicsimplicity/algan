@@ -469,20 +469,40 @@ class Animatable:
         with Off(
             record_funcs=False, animation_manager=self.animation_manager
         ) as context:
-            timeline.end_updater(updater_id, context)
-            # Record the updater's final state as an ordinary attribute
-            # modification at the removal time, so the mob keeps it afterwards.
-            elapsed = event.time.end_event() - event.time.start_event()
-            previous_trace = timeline.begin_updater_dependency_trace(event)
+            # Materialize the whole updater chain at the removal boundary before
+            # ending this event. A removed updater may read state written by an
+            # earlier updater (a satellite following a rotating hub); replaying
+            # only this event against authoring-time state would make it read the
+            # hub's stale initial orientation and snap backwards on the last frame.
+            previous_capture, writes = timeline.begin_updater_write_capture(event)
             try:
-                event.function(
-                    event.caller,
-                    cast_to_tensor(elapsed),
-                    *event.args,
-                    **event.kwargs,
-                )
+                with Off(
+                    record_attr_modifications=False,
+                    record_funcs=False,
+                    priority_level=float("inf"),
+                    animation_manager=self.animation_manager,
+                ):
+                    timeline.set_state_to_times(
+                        cast_to_tensor(context.timespan.current_time).reshape(1)
+                    )
             finally:
-                timeline.end_updater_dependency_trace(previous_trace)
+                timeline.end_updater_write_capture(previous_capture)
+                timeline.clear_buffers()
+
+            span = timeline.end_updater(updater_id, context)
+            # Preserve only the removed updater's boundary writes. Other active
+            # updaters were materialized so dependency reads were current, but
+            # recording their state here would make later frames apply them on
+            # top of an already-advanced base state.
+            for attr_name, indexes, value in writes:
+                timeline.modify_attribute_and_record(
+                    attr_name,
+                    event.caller.id,
+                    False,
+                    indexes,
+                    value,
+                    span.end_event,
+                )
 
     def remove_all_updaters(self):
         """Remove every updater attached to this Mob.
@@ -775,6 +795,7 @@ class Animatable:
             if replay_inds is not None
             else self._get_attr_ranges(key, include_descendants=include_descendants)
         )
+        timeline.capture_updater_write(key, inds, value)
 
         context = self.animation_manager.context
         if (
@@ -852,8 +873,7 @@ class Animatable:
         descendants = [
             mob
             for mob in descendants
-            if mob is self
-            or key not in getattr(mob, "_excluded_from_parent_attrs", ())
+            if mob is self or key not in getattr(mob, "_excluded_from_parent_attrs", ())
         ]
         # Each mob's own rows are a cached single-run RowRanges; merge those
         # integer runs directly (RowRanges.from_runs) instead of re-deriving

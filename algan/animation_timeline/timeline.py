@@ -1418,6 +1418,7 @@ class AnimationTimeline:
         self._active_replay_event = None
         self._active_replay_edit_index = 0
         self._active_updater_trace = None
+        self._active_updater_write_capture = None
         self._materialization_times = None
         self._materialized_mob_ids = None
         self._updater_history_clones = {}
@@ -1439,6 +1440,25 @@ class AnimationTimeline:
 
     def end_updater_dependency_trace(self, previous):
         self._active_updater_trace = previous
+
+    def begin_updater_write_capture(self, event):
+        """Capture attribute writes made by one updater during replay."""
+        previous = self._active_updater_write_capture
+        writes = []
+        self._active_updater_write_capture = (event, writes)
+        return previous, writes
+
+    def end_updater_write_capture(self, previous):
+        self._active_updater_write_capture = previous
+
+    def capture_updater_write(self, attr_name, indexes, value):
+        """Save one replayed write when its updater is being finalized."""
+        capture = self._active_updater_write_capture
+        if capture is None or capture[0] is not self._active_updater_trace:
+            return
+        if isinstance(indexes, RowRanges):
+            indexes = indexes.tensor()
+        capture[1].append((attr_name, indexes.detach().clone(), value.detach().clone()))
 
     def trace_updater_mob_access(self, mob, include_descendants=False):
         """Record one updater Mob access and materialize newly seen rows.

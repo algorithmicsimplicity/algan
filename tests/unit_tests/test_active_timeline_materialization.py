@@ -2,11 +2,11 @@ import math
 
 import torch
 
-from algan import Mob
+from algan import Mob, Scene
 from algan.animation_timeline.animation_contexts import Off, Seq
 from algan.animation_timeline.timeline import AttributeTimeline, Lifespan, TimelineSpan
 from algan.constants import rate_funcs
-from algan.constants.spatial import RIGHT
+from algan.constants.spatial import OUT, RIGHT
 from algan.scene_manager import SceneManager
 
 
@@ -52,6 +52,48 @@ def test_updaters_contribute_traced_mobs_to_active_materialization():
     updaters = timeline.function_timeline.get_updaters_for_times(times)
     assert timeline._active_mob_ids([mob], functions, updaters) == {mob.id}
     mob.remove_updater(updater_id)
+
+
+def test_removing_dependent_updater_holds_boundary_state_without_reversal():
+    scene = SceneManager.reset()
+    hub = Mob().spawn(animate=False)
+    satellite = Mob().spawn(animate=False)
+
+    with Seq():
+        spin_id = hub.add_updater(
+            lambda mob, time_elapsed: mob.rotate(time_elapsed * 90, OUT)
+        )
+        orbit_id = satellite.add_updater(
+            lambda mob, _time_elapsed: mob.move_to(
+                hub.get_center() + hub.get_right_direction()
+            )
+        )
+        Scene.wait(1)
+        removal_time = scene.animation_manager.context.timespan.current_time
+
+        # The dependent updater is deliberately removed first, matching the
+        # shapes_and_timeline scene that exposed the one-frame reversal.
+        satellite.remove_updater(orbit_id)
+        hub.remove_updater(spin_id)
+        Scene.wait(0.1)
+
+    times = torch.tensor([removal_time - 0.01, removal_time, removal_time + 0.01])
+    timeline = scene.timeline_manager
+    with Off(
+        record_attr_modifications=False, record_funcs=False, priority_level=math.inf
+    ):
+        timeline.set_state_to_times(times)
+        satellite_locations = satellite.location[:, 0].clone()
+        hub_directions = hub.get_right_direction()[:, 0].clone()
+        timeline.clear_buffers()
+
+    expected_boundary = torch.tensor([0.0, 1.0, 0.0])
+    torch.testing.assert_close(satellite_locations[1], expected_boundary)
+    torch.testing.assert_close(satellite_locations[1], hub_directions[1])
+    torch.testing.assert_close(satellite_locations[2], satellite_locations[1])
+    assert (
+        torch.linalg.vector_norm(satellite_locations[1] - satellite_locations[0]) < 0.02
+    )
 
 
 def test_active_mob_collection_walks_each_hierarchy_edge_once():
