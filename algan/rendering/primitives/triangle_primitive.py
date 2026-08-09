@@ -14,6 +14,15 @@ from algan.utils.tensor_utils import (
 )
 
 
+def _triangle_count(corners):
+    """Number of triangles in flat ``[...,3F,3]`` or grouped ``[...,F,3,3]``."""
+    if corners.ndim >= 4 and corners.shape[-2:] == (3, 3):
+        return int(corners.shape[-3])
+    if corners.shape[-2] % 3:
+        raise ValueError("triangle corners must contain a multiple of three vertices")
+    return int(corners.shape[-2] // 3)
+
+
 class TrianglePrimitive(RenderPrimitive):
     def __init__(
         self,
@@ -31,6 +40,7 @@ class TrianglePrimitive(RenderPrimitive):
         material_texture_map=None,
         material_texture_flags=0,
         normal_texture_map=None,
+        component_ids=None,
         **shader_kwargs,
     ):
         device = _ANIMATION_DEVICE
@@ -54,6 +64,7 @@ class TrianglePrimitive(RenderPrimitive):
         self.material_texture_map = None
         self.material_texture_flags = 0
         self.normal_texture_map = None
+        self.component_ids = None
 
         if triangle_collection is not None:
             self.shader = triangle_collection[0].shader
@@ -130,6 +141,32 @@ class TrianglePrimitive(RenderPrimitive):
                 if tex is not None:
                     self.normal_texture_map = tex.to(self.corners.device)
                     break
+
+            # Component ids are renderer-internal topology, local to each
+            # source primitive.  Offset each source's id range while batching
+            # so disconnected mobs can never alias merely because both called
+            # their first component zero.  A primitive with no topology marks
+            # every face independent, which is conservative for scalar AA.
+            component_parts = []
+            component_base = 0
+            for triangle in triangle_collection:
+                num_faces = _triangle_count(triangle.corners)
+                ids = getattr(triangle, "component_ids", None)
+                if ids is None:
+                    ids = torch.arange(
+                        num_faces, dtype=torch.int32, device=self.corners.device
+                    )
+                else:
+                    ids = ids.to(device=self.corners.device, dtype=torch.int32).view(-1)
+                    if ids.numel() != num_faces:
+                        raise ValueError(
+                            "component_ids must contain one id per triangle "
+                            f"({ids.numel()} vs {num_faces})"
+                        )
+                    ids = ids - ids.min()
+                component_parts.append(ids + component_base)
+                component_base += int(ids.max().item()) + 1 if ids.numel() else 0
+            self.component_ids = torch.cat(component_parts).contiguous()
             return
 
         self.corners = corners
@@ -166,6 +203,21 @@ class TrianglePrimitive(RenderPrimitive):
             if normal_texture_map is not None
             else None
         )
+
+        num_faces = _triangle_count(corners)
+        if component_ids is None:
+            component_ids = torch.arange(num_faces, device=corners.device)
+        component_ids = (
+            cast_to_tensor(component_ids)
+            .to(device=corners.device, dtype=torch.int32)
+            .view(-1)
+        )
+        if component_ids.numel() != num_faces:
+            raise ValueError(
+                "component_ids must contain one id per triangle "
+                f"({component_ids.numel()} vs {num_faces})"
+            )
+        self.component_ids = component_ids.contiguous()
 
         if shader is None:
             shader = SETTINGS.style.default_shader

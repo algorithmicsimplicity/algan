@@ -37,6 +37,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     NODE_ARG,
     PN_SEAM_DEPTH_EPSILON,
     _M_IOR,
+    _M_REFLECTIVITY,
     _M_TRANSMISSION,
     _PN_META,
     _PN_UV,
@@ -1296,6 +1297,76 @@ def wf_composite_accum_sparse(
 
 
 @ti.kernel
+def wf_accumulate_sparse_sample(
+        width: int, height: int, background_aa: int,
+        sample_column: int, sample_row: int, background_frame_offset: int,
+        transparent: int, pixel_idx: ti.types.ndarray(),
+        pix_accum: ti.types.ndarray(), background: ti.types.ndarray(),
+        sample_accum: ti.types.ndarray()):
+    """Composite one indexed primary sample against its matching background.
+
+    Exact-AA fallback must average ``C_i + W_i * B_i``.  Averaging transport
+    first and multiplying by an already averaged background loses the
+    correlation between subpixel visibility ``W_i`` and a varying background.
+    This kernel preserves that correlation while the data is still per sample.
+    """
+    pixels_per_frame = width * height
+    super_width = width * background_aa
+    samples_per_pixel = background_aa * background_aa
+    for r in range(pix_accum.shape[0]):
+        pixel = pixel_idx[r]
+        f_rel = pixel // pixels_per_frame
+        p = pixel - f_rel * pixels_per_frame
+        py = p // width
+        px = p - py * width
+        source_index = pixel
+        if background_aa > 1:
+            super_pixel = (
+                (py * background_aa + sample_row) * super_width
+                + px * background_aa + sample_column)
+            source_index = (
+                (f_rel + background_frame_offset)
+                * pixels_per_frame * samples_per_pixel + super_pixel)
+        weight = ti.math.vec4(
+            pix_accum[r, 4], pix_accum[r, 5], pix_accum[r, 6], 0.0)
+        weight[3] = ti.max(weight[0], ti.max(weight[1], weight[2]))
+        for ci in ti.static(range(4)):
+            source_channel = ti.min(ci, background.shape[1] - 1)
+            bg = ti.cast(background[source_index, source_channel], ti.f32)
+            sample_accum[r, ci] += pix_accum[r, ci] * 255.0 + weight[ci] * bg
+        if transparent != 0:
+            alpha_channel = ti.min(4, background.shape[1] - 1)
+            bg_alpha = ti.cast(background[source_index, alpha_channel], ti.f32)
+            sample_accum[r, 4] += (
+                (1.0 - weight[3]) * 255.0 + weight[3] * bg_alpha
+            )
+
+
+@ti.kernel
+def wf_finalize_sparse_samples(
+        width: int, height: int, transparent: int, inv_samples: ti.f32,
+        pixel_idx: ti.types.ndarray(), sample_accum: ti.types.ndarray(),
+        tonemap_exposure: ti.f32, out: ti.types.ndarray()):
+    """Average already-composited indexed samples into their real pixels."""
+    pixels_per_frame = width * height
+    for r in range(sample_accum.shape[0]):
+        local_pixel = pixel_idx[r]
+        f_rel = local_pixel // pixels_per_frame
+        p = local_pixel - f_rel * pixels_per_frame
+        value = ti.math.vec4(
+            sample_accum[r, 0], sample_accum[r, 1],
+            sample_accum[r, 2], sample_accum[r, 3])
+        color_final = finalize_pixel_color(
+            value, inv_samples, 3, tonemap_exposure)
+        for ci in ti.static(range(4)):
+            out[f_rel, p, ci] = color_final[ci]
+        if transparent != 0:
+            alpha = sample_accum[r, 4] * inv_samples
+            out[f_rel, p, 4] = ti.cast(
+                ti.math.clamp(alpha + 0.5, 0.0, 255.0), ti.u8)
+
+
+@ti.kernel
 def wf_composite_accum_aa(
         time_start: int, width: int, height: int, transparent: int,
         ray_offset: int,
@@ -1442,6 +1513,65 @@ def wavefront_generate_rays(
             # (pool > num_primary), which always uses ``write_const != 0``.
             if write_const != 0:
                 rs_int[r, 2] = _DONE
+        if r == 0:
+            rs_alloc[0] = num_primary
+            rs_alloc[1] = 0
+
+
+@ti.kernel
+def wavefront_generate_indexed_rays(
+        pixel_idx: ti.types.ndarray(),
+        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
+        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
+        time_start: int, width: int, height: int,
+        half_screen_w: float, half_screen_h: float, max_bounces: int,
+        jitter_x: float, jitter_y: float,
+        rs_ro: ti.types.ndarray(), rs_rd: ti.types.ndarray(),
+        rs_acc: ti.types.ndarray(), rs_sca: ti.types.ndarray(),
+        rs_int: ti.types.ndarray(),
+        rs_pix: ti.types.ndarray(), rs_alloc: ti.types.ndarray()):
+    """Generate complete primary state for a compact list of real pixels.
+
+    ``rs_pix`` retains the window-local pixel used for frame/ray addressing,
+    while ``rs_int[:, 4]`` stores the compact accumulator row.  This is the
+    indexed counterpart of :func:`wavefront_generate_rays` used only by exact
+    AA's sparse fallback; every generated path then runs the unchanged classic
+    traverse/shade transport.
+    """
+    pixels_per_frame = width * height
+    num_primary = pixel_idx.shape[0]
+    for r in range(rs_ro.shape[0]):
+        if r < num_primary:
+            pixel = pixel_idx[r]
+            f_rel = pixel // pixels_per_frame
+            p = pixel - f_rel * pixels_per_frame
+            f = time_start + f_rel
+            py = p // width
+            px = p - py * width
+            ro, rd = _generate_ray(
+                f, px, py, jitter_x, jitter_y,
+                half_screen_w, half_screen_h,
+                cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
+            for k in ti.static(range(3)):
+                rs_ro[r, k] = ro[k]
+                rs_rd[r, k] = rd[k]
+                rs_acc[r, k] = 0.0
+            rs_acc[r, 3] = 0.0
+            rs_sca[r, 0] = 1.0
+            rs_sca[r, 1] = 0.0
+            rs_sca[r, 2] = 1e30
+            rs_sca[r, 3] = -1e30
+            rs_sca[r, 4] = 0.0
+            rs_sca[r, 5] = 1.0
+            rs_sca[r, 6] = 1.0
+            rs_int[r, 0] = max_bounces
+            rs_int[r, 1] = 0
+            rs_int[r, 2] = _ACTIVE
+            rs_int[r, 3] = 0
+            rs_int[r, 4] = r
+            rs_pix[r] = pixel
+        else:
+            rs_int[r, 2] = _DONE
         if r == 0:
             rs_alloc[0] = num_primary
             rs_alloc[1] = 0
@@ -2194,7 +2324,7 @@ def wavefront_shade(
                         prim, f, a, b, border,
                         circuit_meta, circuit_colors, circuit_border_colors)
                     cm = f % circuit_meta.shape[0]
-                    reflectivity = circuit_meta[cm, prim, 21]
+                    reflectivity = circuit_meta[cm, prim, _M_REFLECTIVITY]
 
                 # Raw surface colour, saved before fragment shading replaces
                 # ``color`` with the lit result: the colour transport tints

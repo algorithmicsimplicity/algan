@@ -1680,6 +1680,41 @@ def _sample_circuit_color_blend(circuit, f, u, v, border_frac,
 
 
 @ti.func
+def _sample_circuit_color_blend_regions(
+        circuit, f, fill_u, fill_v, border_u, border_v, border_frac,
+        circuit_meta: ti.template(), circuit_colors: ti.template(),
+        circuit_border_colors: ti.template()):
+    """Area blend sampled at each region's own first-moment centroid."""
+    cb = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    ab = 0.0
+    cf = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
+    af = 0.0
+    if border_frac > 0.0:
+        cb, ab = _circuit_border_color(
+            circuit, f, border_u, border_v, circuit_meta,
+            circuit_border_colors)
+    if border_frac < 1.0:
+        cf, af = _circuit_fill_color(
+            circuit, f, fill_u, fill_v, circuit_meta, circuit_colors)
+    color = cb
+    alpha = ab
+    if border_frac <= 0.0:
+        color = cf
+        alpha = af
+    elif border_frac < 1.0:
+        wb = border_frac * ab
+        wf = (1.0 - border_frac) * af
+        alpha = wb + wf
+        inv = 1.0 / ti.max(alpha, 1e-6)
+        color = ti.math.vec4(
+            (wb * cb[0] + wf * cf[0]) * inv,
+            (wb * cb[1] + wf * cf[1]) * inv,
+            (wb * cb[2] + wf * cf[2]) * inv,
+            border_frac * cb[3] + (1.0 - border_frac) * cf[3])
+    return color, alpha
+
+
+@ti.func
 def _circuit_texture_alpha(circuit, f, u, v,
                            circuit_meta: ti.template(),
                            texture_colors: ti.template()) -> ti.f32:

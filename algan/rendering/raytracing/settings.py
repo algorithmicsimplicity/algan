@@ -648,6 +648,23 @@ ANALYTIC_AA_BEZ = os.environ.get("ALGAN_ANALYTIC_AA_BEZ", "1") == "1"
 # against 608). See DESIGN_analytic_aa.md ss14-ss16.
 ANALYTIC_AA_TRI = os.environ.get("ALGAN_ANALYTIC_AA_TRI", "1") == "1"
 
+# Development gate for the replacement analytic-AA implementation.  This is
+# intentionally not a RayTracingSettings field: the rollout runs beside the
+# shipped sample-mask path until its classifier and sparse-ray parity corpus
+# pass, then the gate and the obsolete mask controls are deleted together.
+# ``1`` selects mathematically clipped scalar triangle footprints and enables
+# the exact-coverage diagnostics/fallback plumbing in the sparse A-buffer.
+ANALYTIC_AA_EXACT_COVERAGE = (
+    os.environ.get("ALGAN_ANALYTIC_AA_EXACT_COVERAGE", "0") == "1"
+)
+# Internal validation switch, deliberately absent from RayTracingSettings.  It
+# sends every output pixel through the indexed primary path so the fallback can
+# be compared directly with whole-frame SSAA.  It is not a fallback reason and
+# therefore does not contaminate engagement diagnostics.
+ANALYTIC_AA_FORCE_FALLBACK = (
+    os.environ.get("ALGAN_ANALYTIC_AA_FORCE_FALLBACK", "0") == "1"
+)
+
 # The seam rule itself. Off, coverage still scales alpha but consecutive
 # fragments of one object composite multiplicatively instead of unioning their
 # disjoint sub-areas -- which is the lattice this exists to remove. Kept as a
@@ -852,6 +869,16 @@ def analytic_aa_bez_active():
 def analytic_aa_tri_active():
     """Live effective value of flat-triangle analytic coverage."""
     return ANALYTIC_AA and ANALYTIC_AA_TRI
+
+
+def analytic_aa_exact_active():
+    """Internal rollout gate for exact scalar coverage plus sparse fallback."""
+    return ANALYTIC_AA and ANALYTIC_AA_EXACT_COVERAGE
+
+
+def analytic_aa_force_fallback_active():
+    """Whether exact-AA validation sends every output pixel to primary rays."""
+    return analytic_aa_exact_active() and ANALYTIC_AA_FORCE_FALLBACK
 
 
 # UNSUPPORTED legacy "textured surface" wavefront (Surface / flat-triangle

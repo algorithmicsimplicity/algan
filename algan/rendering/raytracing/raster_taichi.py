@@ -16,17 +16,14 @@ Important implementation properties:
   buffer.  The packed key contains depth bin and inverted layer, so coplanar
   layer semantics are respected before transparent culling.
 * Transparent triangle/circuit COUNT and WRITE kernels fetch sampled alpha and
-  discard alpha-zero texels before sorting.  Records contain only exact-distance
-  key, typed primitive reference (including the circuit border/fill blend
-  weight), two intersection parameters, and an analytic coverage lane.
-* Analytic anti-aliasing (``ALGAN_ANALYTIC_AA``, see DESIGN_analytic_aa.md):
-  each circuit fragment carries the fraction of the pixel square its drawn
-  region covers -- a box filter of the outline signed-distance field that
-  ``_bezier_point_metrics`` already computes -- and the resolve folds that into
-  the fragment's alpha, so circuit silhouettes resolve continuously at
-  ``anti_alias_level = 1`` instead of all-or-nothing.  Flat triangles keep
-  coverage 1.0 (phase 2), so the coverage lane is host-pre-filled and only the
-  circuit kernels write it.
+  discard alpha-zero texels before sorting.  Exact-mode records additionally
+  retain scalar clipped area and the first-moment coordinates needed to shade
+  the represented footprint without extrapolating past a silhouette.
+* The internal exact-AA rollout mode clips projected triangles to the pixel
+  square and integrates explicitly projected circuit contours.  Pixels whose
+  ordered subpixel regions cannot be represented by those scalars are tagged
+  for indexed primary-ray fallback.  The older signed-distance/sample-mask arm
+  remains only while the development gate is off.
 * :func:`raster_shadow_event_build` performs the same ordered transport/seam
   decisions as final resolve and emits only accepted triangle lighting events.
   :func:`raster_shadow_trace` traces that separate sparse any-hit queue and
@@ -73,6 +70,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _circuit_query_radius,
     _generate_ray,
     _sample_circuit_color_blend,
+    _sample_circuit_color_blend_regions,
     _shade_tri_hit,
     _shadow_occluded,
 )
@@ -128,6 +126,17 @@ _AA_FILTER_RADIUS = 0.7071067811865476
 # whole pixel: it may occupy the opaque z-prepass and truncate a sorted run.
 AA_FULL_COVERAGE = 1.0 - 1e-6
 
+# Exact-AA fallback diagnostics.  The host retains one bitset per classified
+# pixel and aggregates these into counters after each sparse discovery pass.
+# Keep the values stable while the development gate exists so benchmark logs
+# from different revisions remain comparable.
+AA_FALLBACK_MULTIPLE_PARTIAL_GROUPS = 1 << 0
+AA_FALLBACK_DEPTH_UNCERTAINTY = 1 << 1
+AA_FALLBACK_SELF_OVERLAP = 1 << 2
+AA_FALLBACK_PROJECTION_FAILURE = 1 << 3
+AA_FALLBACK_COMPLEXITY_CAP = 1 << 4
+AA_EXACT_CLASSIFY_MAX_FRAGMENTS = 32
+
 # Mask word layout: bits 0..N-1 the sample set, then the flags below, which sit
 # at a FIXED shift above the widest supported sample set so that changing the
 # sample count cannot silently collide with them. One sample set suffices for
@@ -162,6 +171,13 @@ _AA_SLIVER_EXACT = 1
 _AA_SLIVER_DROP = 2
 _AA_SLIVER_EXACT_OCC = 3
 
+# Internal rollout mode for the exact scalar-coverage path.  The legacy mask
+# modes occupy template values 1..4 (``1 + ANALYTIC_AA_SLIVER_MODES.index``),
+# so the exact path uses a disjoint value.  Keeping this encoded in the
+# compile-time ``aa`` argument lets the geometry kernels share their public
+# ABI while producing a separate Taichi cache specialization.
+_AA_EXACT_MODE = 5
+
 # Sub-pixel sample set. TRIANGLE coverage is the fraction of these points the
 # triangle contains -- set arithmetic, not an area formula.
 #
@@ -184,8 +200,8 @@ _AA_SLIVER_EXACT_OCC = 3
 # and still ONE shading per fragment, not one per sample, which is the whole
 # point versus supersampling.
 #
-# Bezier circuits keep their continuous SDF coverage: they never group, so the
-# set machinery buys them nothing, and the SDF is exact.
+# In the legacy arm Bezier circuits keep continuous SDF coverage.  The exact
+# rollout arm bypasses both this set and that slope-dependent SDF approximation.
 
 # Sub-pixel lattice for the exact coverage test: 1/4096 of a pixel. An edge
 # function is a product of two coordinate differences, so at a 4096-wide screen
@@ -240,9 +256,14 @@ def _sliver_mode(aa):
     return max(int(aa) - 1, 0)
 
 
+def _exact_coverage_mode(aa):
+    """Whether a compile-time triangle-AA value selects scalar integration."""
+    return int(aa) == _AA_EXACT_MODE
+
+
 @ti.func
-def _pixel_clip_area(vx, vy):
-    """Exact area of (triangle n pixel square), the pixel centre at the origin.
+def _pixel_clip_moments(vx, vy):
+    """Exact area and centroid of ``triangle intersect pixel square``.
 
     ``vx``/``vy`` are the triangle's projected vertices in pixels, already
     translated so the pixel square is [-0.5, 0.5]^2. Returns a value in [0, 1]
@@ -266,9 +287,15 @@ def _pixel_clip_area(vx, vy):
 
     This is equivalent to Sutherland-Hodgman clipping followed by a shoelace,
     but keeps no vertex list -- hence no dynamically indexed local array, which
-    Taichi handles poorly -- only a running accumulator.
+    Taichi handles poorly -- only running shoelace accumulators.  In addition
+    to twice the signed area, the walk accumulates the polygon first moments
+    ``sum((x0+x1)*cross)`` and ``sum((y0+y1)*cross)``.  Their ratios give the
+    centroid of the *actual clipped footprint*, which is the only safe point at
+    which to evaluate a partial fragment's depth and interpolation parameters.
     """
     acc = 0.0
+    mx = 0.0
+    my = 0.0
     for k in ti.static(range(3)):
         ax = vx[ti.static(k)]
         ay = vy[ti.static(k)]
@@ -303,15 +330,131 @@ def _pixel_clip_area(vx, vy):
             tt = tv[ti.static(s)]
             nx = ti.math.clamp(ax + dx * tt, -0.5, 0.5)
             ny = ti.math.clamp(ay + dy * tt, -0.5, 0.5)
-            acc += cx * ny - nx * cy
+            cross = cx * ny - nx * cy
+            acc += cross
+            mx += (cx + nx) * cross
+            my += (cy + ny) * cross
             cx = nx
             cy = ny
         ex = ti.math.clamp(bx, -0.5, 0.5)
         ey = ti.math.clamp(by, -0.5, 0.5)
-        acc += cx * ey - ex * cy
-    # Sign follows the projected winding, which the caller knows from the exact
-    # integer area; the magnitude is the same either way.
-    return ti.min(ti.abs(acc) * 0.5, 1.0)
+        cross = cx * ey - ex * cy
+        acc += cross
+        mx += (cx + ex) * cross
+        my += (cy + ey) * cross
+    # Sign follows the projected winding.  The moment sums carry the same sign,
+    # so their ratio is orientation-independent.  A zero-area intersection has
+    # no centroid; return the pixel centre, which callers ignore when area=0.
+    area = ti.min(ti.abs(acc) * 0.5, 1.0)
+    cx = 0.0
+    cy = 0.0
+    if ti.abs(acc) > 1e-20:
+        cx = mx / (3.0 * acc)
+        cy = my / (3.0 * acc)
+    return area, cx, cy
+
+
+@ti.func
+def _pixel_clip_area(vx, vy):
+    """Exact scalar area of ``triangle intersect pixel square``.
+
+    Kept as the small public math primitive used by the existing validation
+    harness; the rasterizer itself consumes :func:`_pixel_clip_moments`.
+    """
+    area, _cx, _cy = _pixel_clip_moments(vx, vy)
+    return area
+
+
+@ti.func
+def _projected_triangles_overlap_positive(f, a, b, tri_screen: ti.template()):
+    """Conservative positive-area overlap test for two projected triangles.
+
+    Separating-axis tests use the six triangle-edge normals.  Touching at a
+    shared edge or vertex has zero width on at least one axis and is certified
+    disjoint; a genuine overlap has positive width on every axis.  The test is
+    deliberately against the whole projected triangles rather than their
+    pixel-clipped pieces: overlap outside the current pixel can cause a harmless
+    extra fallback, while failing to notice overlap inside it would be wrong.
+    """
+    ts = f % tri_screen.shape[0]
+    overlap = True
+    for source in ti.static(range(2)):
+        prim = a
+        if source == 1:
+            prim = b
+        for edge in ti.static(range(3)):
+            j = ti.static((edge + 1) % 3)
+            x0 = tri_screen[ts, prim, edge]
+            y0 = tri_screen[ts, prim, 3 + edge]
+            x1 = tri_screen[ts, prim, j]
+            y1 = tri_screen[ts, prim, 3 + j]
+            ax = -(y1 - y0)
+            ay = x1 - x0
+            axis_len = ti.sqrt(ax * ax + ay * ay)
+            if axis_len <= 1e-12:
+                overlap = False
+            else:
+                amin = 1e30
+                amax = -1e30
+                bmin = 1e30
+                bmax = -1e30
+                for k in ti.static(range(3)):
+                    # Translation-invariant projections avoid cancellation
+                    # between O(screen-coordinate) products. On a shared edge
+                    # the intervals then meet at bitwise zero instead of a few
+                    # float32 ulps of spurious positive width.
+                    pa = ((tri_screen[ts, a, k] - x0) * ax
+                          + (tri_screen[ts, a, 3 + k] - y0) * ay)
+                    pb = ((tri_screen[ts, b, k] - x0) * ax
+                          + (tri_screen[ts, b, 3 + k] - y0) * ay)
+                    amin = ti.min(amin, pa)
+                    amax = ti.max(amax, pa)
+                    bmin = ti.min(bmin, pb)
+                    bmax = ti.max(bmax, pb)
+                width = ti.min(amax, bmax) - ti.max(amin, bmin)
+                if width <= 1e-6 * axis_len:
+                    overlap = False
+    return overlap
+
+
+@ti.kernel
+def raster_classify_exact_overlap(
+        num_pixels: int,
+        run_offsets: ti.types.ndarray(),
+        frag_ref: ti.types.ndarray(), frag_cov: ti.types.ndarray(),
+        frag_group: ti.types.ndarray(),
+        covered_idx: ti.types.ndarray(),
+        tri_screen: ti.types.ndarray(),
+        time_start: int, width: int, height: int,
+        reasons: ti.types.ndarray()):
+    """Add self-overlap/complexity reasons to exact-AA pixel diagnostics."""
+    pixels_per_frame = width * height
+    for row in range(num_pixels):
+        start = run_offsets[row]
+        end = run_offsets[row + 1]
+        count = end - start
+        reason = reasons[row]
+        if count > AA_EXACT_CLASSIFY_MAX_FRAGMENTS:
+            reason |= AA_FALLBACK_COMPLEXITY_CAP
+        else:
+            pixel = covered_idx[row]
+            f = time_start + pixel // pixels_per_frame
+            for ia in range(AA_EXACT_CLASSIFY_MAX_FRAGMENTS):
+                aidx = start + ia
+                if aidx < end:
+                    aref = frag_ref[aidx]
+                    if (aref >= 0) and (frag_cov[aidx] > 0.0):
+                        for ib in range(ia + 1, AA_EXACT_CLASSIFY_MAX_FRAGMENTS):
+                            bidx = start + ib
+                            if bidx < end:
+                                bref = frag_ref[bidx]
+                                if ((bref >= 0)
+                                        and (frag_cov[bidx] > 0.0)
+                                        and (frag_group[aidx] == frag_group[bidx])):
+                                    if _projected_triangles_overlap_positive(
+                                            f, aref, bref, tri_screen):
+                                        reason |= AA_FALLBACK_SELF_OVERLAP
+        reasons[row] = reason
 
 
 @ti.func
@@ -424,7 +567,7 @@ def _ss_setup(f, prim, ss_enabled: ti.template(), tri_pos: ti.template(),
 
 
 @ti.func
-def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
+def _ss_pixel_sample_mask(px, py, sm, vm, cam_o, il, aa: ti.template()):
     """Screen-space test of one pixel against the pre-projected triangle.
 
     Edge functions give the 2D barycentric weights; the perspective-correct 3D
@@ -751,6 +894,78 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
 
 
 @ti.func
+def _ss_pixel_exact_area(px, py, sm, vm, cam_o):
+    """Integrate a projected triangle over one pixel exactly.
+
+    Coverage is the shoelace area of the triangle clipped to the pixel square,
+    not the population of a sample pattern.  Interpolation and depth are
+    evaluated at that clipped polygon's area centroid.  Because the centroid
+    lies in both convex operands, this never extrapolates the triangle plane
+    past a silhouette and remains well-defined for arbitrarily thin positive-
+    area triangles.
+    """
+    qx = ti.cast(px, ti.f32) + 0.5
+    qy = ti.cast(py, ti.f32) + 0.5
+    sx0, sx1, sx2 = sm[0, 0], sm[0, 1], sm[0, 2]
+    sy0, sy1, sy2 = sm[1, 0], sm[1, 1], sm[1, 2]
+    area, dcx, dcy = _pixel_clip_moments(
+        ti.math.vec3(sx0 - qx, sx1 - qx, sx2 - qx),
+        ti.math.vec3(sy0 - qy, sy1 - qy, sy2 - qy),
+    )
+
+    ok = 0
+    t = 0.0
+    w1 = 0.0
+    w2 = 0.0
+    if area > 0.0:
+        # Screen edge functions at the integrated footprint centroid.
+        cx = qx + dcx
+        cy = qy + dcy
+        e0 = (sx2 - sx1) * (cy - sy1) - (sy2 - sy1) * (cx - sx1)
+        e1 = (sx0 - sx2) * (cy - sy2) - (sy0 - sy2) * (cx - sx2)
+        e2 = (sx1 - sx0) * (cy - sy0) - (sy1 - sy0) * (cx - sx0)
+        n0 = e0 * sm[2, 0]
+        n1 = e1 * sm[2, 1]
+        n2 = e2 * sm[2, 2]
+        denom = n0 + n1 + n2
+        if ti.abs(denom) > 1e-30:
+            inv = 1.0 / denom
+            b0 = n0 * inv
+            b1 = n1 * inv
+            b2 = n2 * inv
+            # Round-off at a clipped vertex can put a barycentric a few ulps
+            # outside the simplex.  Project it back before texture/normal reads.
+            cb0 = ti.max(b0, 0.0)
+            cb1 = ti.max(b1, 0.0)
+            cb2 = ti.max(b2, 0.0)
+            bsum = cb0 + cb1 + cb2
+            if bsum > 1e-20:
+                inv_b = 1.0 / bsum
+                cb0 *= inv_b
+                cb1 *= inv_b
+                cb2 *= inv_b
+                v0 = ti.math.vec3(vm[0, 0], vm[0, 1], vm[0, 2])
+                v1 = ti.math.vec3(vm[1, 0], vm[1, 1], vm[1, 2])
+                v2 = ti.math.vec3(vm[2, 0], vm[2, 1], vm[2, 2])
+                hp = cb0 * v0 + cb1 * v1 + cb2 * v2
+                th = (hp - cam_o).norm()
+                if th > MIN_HIT_DISTANCE:
+                    ok = 1
+                    t = th
+                    w1 = cb1
+                    w2 = cb2
+    return ok, t, w1, w2, area, _AA_MASK_ALL
+
+
+@ti.func
+def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
+    """Dispatch the legacy sample-set or exact scalar triangle footprint."""
+    if ti.static(_exact_coverage_mode(aa)):
+        return _ss_pixel_exact_area(px, py, sm, vm, cam_o)
+    return _ss_pixel_sample_mask(px, py, sm, vm, cam_o, il, aa)
+
+
+@ti.func
 def _raycast_pixel(px, py, f, vm, half_w, half_h,
                    cam_origin: ti.template(), screen_point: ti.template(),
                    pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
@@ -916,9 +1131,19 @@ def _pair_pixel(prim, f, x0, y0, bw, bh, off, j,
                 hit, th, b1, b2, cv, mk = _ss_pixel(
                     px, py, sm, vm, cam_o, il, aa)
             else:
-                hit, th, b1, b2, cv, mk = _raycast_pixel(
-                    px, py, f, vm, half_w, half_h, cam_origin, screen_point,
-                    pixel_basis_x, pixel_basis_y, aa)
+                if ti.static(_exact_coverage_mode(aa)):
+                    # A camera-plane straddler has no finite three-vertex
+                    # screen projection.  Emit its conservative candidate box
+                    # as tagged complex pixels; the indexed primary fallback
+                    # owns them at the requested AA grid.  Exact mode never
+                    # drops back to the obsolete eight-point coverage mask.
+                    hit = 1
+                    th = 1e20
+                    cv = -ti.cast(AA_FALLBACK_PROJECTION_FAILURE, ti.f32)
+                else:
+                    hit, th, b1, b2, cv, mk = _raycast_pixel(
+                        px, py, f, vm, half_w, half_h, cam_origin, screen_point,
+                        pixel_basis_x, pixel_basis_y, aa)
             if hit != 0:
                 ok = 1
                 lp = lpi
@@ -1242,13 +1467,27 @@ def raster_tri_count(
                 if ti.static(z_cull):
                     before_z = _order_key(t, layer) < zbuf[lp]
                 if keep and before_z:
-                    w0 = 1.0 - w1 - w2
-                    _color, alpha = _tri_color_g(
-                        0, f, prim, w0, w1, w2, tri_colors, col_row, tri_uvs,
-                        tri_tex_meta, textures, num_colored_triangles)
-                    if ti.static(aa):
-                        alpha *= cov
-                    if alpha > MIN_ALPHA:
+                    emit = False
+                    if ti.static(_exact_coverage_mode(aa)):
+                        emit = cov < 0.0
+                    if not emit:
+                        w0 = 1.0 - w1 - w2
+                        _color, alpha = _tri_color_g(
+                            0, f, prim, w0, w1, w2, tri_colors, col_row,
+                            tri_uvs, tri_tex_meta, textures,
+                            num_colored_triangles)
+                        if ti.static(_exact_coverage_mode(aa)):
+                            # Coverage is geometry, not material opacity.  Keep
+                            # every positive clipped footprint whose authored
+                            # material is visible; multiplying by coverage here
+                            # discarded all regions smaller than MIN_ALPHA and
+                            # broke area conservation at thin silhouettes.
+                            emit = (cov > 0.0) and (alpha > MIN_ALPHA)
+                        else:
+                            if ti.static(aa):
+                                alpha *= cov
+                            emit = alpha > MIN_ALPHA
+                    if emit:
                         cnt += 1
         pair_count[p] = cnt
 
@@ -1302,14 +1541,22 @@ def raster_tri_write(
                 if ti.static(z_cull):
                     before_z = _order_key(t, layer) < zbuf[lp]
                 if keep and before_z:
-                    w0 = 1.0 - w1 - w2
-                    _color, alpha = _tri_color_g(
-                        0, f, prim, w0, w1, w2, tri_colors, col_row,
-                        tri_uvs, tri_tex_meta, textures,
-                        num_colored_triangles)
-                    if ti.static(aa):
-                        alpha *= cov
-                    if alpha > MIN_ALPHA:
+                    emit = False
+                    if ti.static(_exact_coverage_mode(aa)):
+                        emit = cov < 0.0
+                    if not emit:
+                        w0 = 1.0 - w1 - w2
+                        _color, alpha = _tri_color_g(
+                            0, f, prim, w0, w1, w2, tri_colors, col_row,
+                            tri_uvs, tri_tex_meta, textures,
+                            num_colored_triangles)
+                        if ti.static(_exact_coverage_mode(aa)):
+                            emit = (cov > 0.0) and (alpha > MIN_ALPHA)
+                        else:
+                            if ti.static(aa):
+                                alpha *= cov
+                            emit = alpha > MIN_ALPHA
+                    if emit:
                         tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
                         frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
                         frag_ref[w] = prim
@@ -1377,6 +1624,303 @@ def raster_bez_count(
                     if alpha > MIN_ALPHA:
                         cnt += 1
         pair_count[p] = cnt
+
+
+@ti.func
+def _exact_circuit_boundary_moments(
+        circuit, f, px, py,
+        boundary_edges: ti.template(), boundary_offsets: ti.template(),
+        origins: ti.template()):
+    """Integrate one oriented circuit boundary over a pixel square.
+
+    Every directed boundary edge forms a signed fan triangle with a stable
+    per-circuit origin.  Clipping and first moments are linear over that signed
+    fan, so their sum is exactly the concave/holed region bounded by the edge
+    set without triangulating it or retaining subpixel masks.
+    """
+    te = f % boundary_edges.shape[0]
+    to = f % origins.shape[0]
+    ox = origins[to, circuit, 0] - ti.cast(px, ti.f32) - 0.5
+    oy = origins[to, circuit, 1] - ti.cast(py, ti.f32) - 0.5
+    area_sum = 0.0
+    moment_x = 0.0
+    moment_y = 0.0
+    start = boundary_offsets[circuit]
+    end = boundary_offsets[circuit + 1]
+    for edge in range(start, end):
+        ax = boundary_edges[te, edge, 0] - ti.cast(px, ti.f32) - 0.5
+        ay = boundary_edges[te, edge, 1] - ti.cast(py, ti.f32) - 0.5
+        bx = boundary_edges[te, edge, 2] - ti.cast(px, ti.f32) - 0.5
+        by = boundary_edges[te, edge, 3] - ti.cast(py, ti.f32) - 0.5
+        winding = (ax - ox) * (by - oy) - (ay - oy) * (bx - ox)
+        if ti.abs(winding) > 1e-20:
+            vx = ti.math.vec3(ox, ax, bx)
+            vy = ti.math.vec3(oy, ay, by)
+            area, cx, cy = _pixel_clip_moments(vx, vy)
+            sign = 1.0
+            if winding < 0.0:
+                sign = -1.0
+            area_sum += sign * area
+            moment_x += sign * area * cx
+            moment_y += sign * area * cy
+    area = ti.math.clamp(area_sum, 0.0, 1.0)
+    cx = 0.0
+    cy = 0.0
+    if area_sum > 1e-12:
+        cx = moment_x / area_sum
+        cy = moment_y / area_sum
+    return area, cx, cy
+
+
+@ti.func
+def _circuit_plane_uv_at_pixel(
+        circuit, f, px, py, jitter_x, jitter_y, half_w, half_h,
+        cam_origin: ti.template(), screen_point: ti.template(),
+        pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
+        circuit_meta: ti.template()):
+    """Intersect one subpixel position with a circuit plane."""
+    ok = 0
+    t = 0.0
+    u = 0.0
+    v = 0.0
+    ro, rd = _generate_ray(
+        f, px, py, jitter_x, jitter_y, half_w, half_h,
+        cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
+    tm = f % circuit_meta.shape[0]
+    normal = ti.math.vec3(
+        circuit_meta[tm, circuit, _M_NORMAL],
+        circuit_meta[tm, circuit, _M_NORMAL + 1],
+        circuit_meta[tm, circuit, _M_NORMAL + 2])
+    denominator = rd.dot(normal)
+    if ti.abs(denominator) > 1e-9:
+        center = ti.math.vec3(
+            circuit_meta[tm, circuit, _M_CENTER],
+            circuit_meta[tm, circuit, _M_CENTER + 1],
+            circuit_meta[tm, circuit, _M_CENTER + 2])
+        th = (center - ro).dot(normal) / denominator
+        if th > MIN_HIT_DISTANCE:
+            hit = ro + th * rd - center
+            basis_u = ti.math.vec3(
+                circuit_meta[tm, circuit, _M_BASIS_U],
+                circuit_meta[tm, circuit, _M_BASIS_U + 1],
+                circuit_meta[tm, circuit, _M_BASIS_U + 2])
+            basis_v = ti.math.vec3(
+                circuit_meta[tm, circuit, _M_BASIS_V],
+                circuit_meta[tm, circuit, _M_BASIS_V + 1],
+                circuit_meta[tm, circuit, _M_BASIS_V + 2])
+            ok = 1
+            t = th
+            u = hit.dot(basis_u)
+            v = hit.dot(basis_v)
+    return ok, t, u, v
+
+
+@ti.func
+def _bez_exact_pair_pixel(
+        circuit, f, x0, y0, bw, bh, off, j,
+        time_start, width, height, tile_start, tile_pixels,
+        half_w, half_h,
+        cam_origin: ti.template(), screen_point: ti.template(),
+        pixel_basis_x: ti.template(), pixel_basis_y: ti.template(),
+        circuit_meta: ti.template(),
+        total_edges: ti.template(), total_offsets: ti.template(),
+        fill_edges: ti.template(), fill_offsets: ti.template(),
+        origins: ti.template(), exact_reasons: ti.template()):
+    """Exact oriented-area hit, or a tagged fallback candidate."""
+    ok = 0
+    invalid = 0
+    lp = 0
+    t = 0.0
+    fill_u = 0.0
+    fill_v = 0.0
+    border_u = 0.0
+    border_v = 0.0
+    border_frac = 0.0
+    coverage = 0.0
+    o = off + j
+    if o < bw * bh:
+        px = x0 + o % bw
+        py = y0 + o // bw
+        lpi = ((f - time_start) * (width * height) + py * width + px
+               - tile_start)
+        if (lpi >= 0) and (lpi < tile_pixels):
+            tr = f % exact_reasons.shape[0]
+            reason = exact_reasons[tr, circuit]
+            if reason != 0:
+                # The host could not certify this projected contour. Emit the
+                # whole conservative candidate box so classification hands
+                # every possibly affected pixel to primary rays.
+                ok = 1
+                invalid = reason
+                lp = lpi
+                t = 1e20
+                coverage = -ti.cast(reason, ti.f32)
+            else:
+                area, cx, cy = _exact_circuit_boundary_moments(
+                    circuit, f, px, py, total_edges, total_offsets, origins)
+                if area > 0.0:
+                    fill_area, fill_cx, fill_cy = (
+                        _exact_circuit_boundary_moments(
+                            circuit, f, px, py, fill_edges, fill_offsets, origins)
+                    )
+                    fill_area = ti.math.clamp(fill_area, 0.0, area)
+                    border_area = ti.max(area - fill_area, 0.0)
+                    border_cx = cx
+                    border_cy = cy
+                    if border_area > 1e-20:
+                        border_cx = (area * cx - fill_area * fill_cx) / border_area
+                        border_cy = (area * cy - fill_area * fill_cy) / border_area
+                    total_ok, th, total_u, total_v = _circuit_plane_uv_at_pixel(
+                        circuit, f, px, py, cx + 0.5, cy + 0.5, half_w,
+                        half_h, cam_origin, screen_point, pixel_basis_x,
+                        pixel_basis_y, circuit_meta)
+                    projection_ok = total_ok
+                    if total_ok != 0:
+                        fill_u = total_u
+                        fill_v = total_v
+                        border_u = total_u
+                        border_v = total_v
+                        if fill_area > 1e-20:
+                            fill_ok, _fill_t, fill_u, fill_v = (
+                                _circuit_plane_uv_at_pixel(
+                                    circuit, f, px, py, fill_cx + 0.5,
+                                    fill_cy + 0.5, half_w, half_h, cam_origin,
+                                    screen_point, pixel_basis_x, pixel_basis_y,
+                                    circuit_meta)
+                            )
+                            projection_ok &= fill_ok
+                        if border_area > 1e-20:
+                            border_ok, _border_t, border_u, border_v = (
+                                _circuit_plane_uv_at_pixel(
+                                    circuit, f, px, py, border_cx + 0.5,
+                                    border_cy + 0.5, half_w, half_h, cam_origin,
+                                    screen_point, pixel_basis_x, pixel_basis_y,
+                                    circuit_meta)
+                            )
+                            projection_ok &= border_ok
+                    if projection_ok != 0:
+                        ok = 1
+                        lp = lpi
+                        t = th
+                        border_frac = ti.math.clamp(
+                            border_area / ti.max(area, 1e-30), 0.0, 1.0)
+                        coverage = area
+                    else:
+                        # An exact projected footprint exists, but its plane
+                        # centroid is not a valid forward camera hit.  Omitting
+                        # the fragment would punch a hole; tag the pixel so the
+                        # indexed complete-path fallback owns it instead.
+                        ok = 1
+                        invalid = AA_FALLBACK_PROJECTION_FAILURE
+                        lp = lpi
+                        t = 1e20
+                        coverage = -ti.cast(invalid, ti.f32)
+    return (ok, invalid, lp, t, fill_u, fill_v, border_u, border_v,
+            border_frac, coverage)
+
+
+@ti.kernel
+def raster_bez_exact_count(
+        pairs: ti.types.ndarray(), num_pairs: int,
+        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
+        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
+        circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
+        circuit_border_colors: ti.types.ndarray(),
+        total_edges: ti.types.ndarray(), total_offsets: ti.types.ndarray(),
+        fill_edges: ti.types.ndarray(), fill_offsets: ti.types.ndarray(),
+        origins: ti.types.ndarray(), exact_reasons: ti.types.ndarray(),
+        time_start: int, width: int, height: int,
+        half_w: ti.f32, half_h: ti.f32,
+        tile_start: int, tile_pixels: int,
+        pair_count: ti.types.ndarray()):
+    """Count exact-area fragments and conservative invalid-contour pixels."""
+    for p in range(num_pairs):
+        circuit = pairs[p, 0]
+        f = pairs[p, 1]
+        x0 = pairs[p, 2]
+        y0 = pairs[p, 3]
+        bw = pairs[p, 4]
+        bh = pairs[p, 5]
+        off = pairs[p, 6]
+        cnt = 0
+        for j in range(RASTER_CHUNK):
+            (ok, invalid, _lp, _t, fill_u, fill_v, border_u, border_v,
+             border_frac, coverage) = (
+                _bez_exact_pair_pixel(
+                    circuit, f, x0, y0, bw, bh, off, j, time_start, width,
+                    height, tile_start, tile_pixels, half_w, half_h, cam_origin,
+                    screen_point, pixel_basis_x, pixel_basis_y, circuit_meta,
+                    total_edges, total_offsets, fill_edges, fill_offsets,
+                    origins, exact_reasons)
+            )
+            if ok != 0:
+                keep = invalid != 0
+                if invalid == 0:
+                    _color, alpha = _sample_circuit_color_blend_regions(
+                        circuit, f, fill_u, fill_v, border_u, border_v,
+                        border_frac, circuit_meta, circuit_colors,
+                        circuit_border_colors)
+                    keep = (coverage > 0.0) and (alpha > MIN_ALPHA)
+                if keep:
+                    cnt += 1
+        pair_count[p] = cnt
+
+
+@ti.kernel
+def raster_bez_exact_write(
+        pairs: ti.types.ndarray(), num_pairs: int,
+        pair_offset: ti.types.ndarray(),
+        cam_origin: ti.types.ndarray(), screen_point: ti.types.ndarray(),
+        pixel_basis_x: ti.types.ndarray(), pixel_basis_y: ti.types.ndarray(),
+        circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
+        circuit_border_colors: ti.types.ndarray(),
+        total_edges: ti.types.ndarray(), total_offsets: ti.types.ndarray(),
+        fill_edges: ti.types.ndarray(), fill_offsets: ti.types.ndarray(),
+        origins: ti.types.ndarray(), exact_reasons: ti.types.ndarray(),
+        time_start: int, width: int, height: int,
+        half_w: ti.f32, half_h: ti.f32,
+        tile_start: int, tile_pixels: int,
+        frag_key: ti.types.ndarray(), frag_ref: ti.types.ndarray(),
+        frag_ab: ti.types.ndarray(), frag_cov: ti.types.ndarray()):
+    """Write exact circuit coverage, centroid coordinates, and fallback tags."""
+    for p in range(num_pairs):
+        circuit = pairs[p, 0]
+        f = pairs[p, 1]
+        x0 = pairs[p, 2]
+        y0 = pairs[p, 3]
+        bw = pairs[p, 4]
+        bh = pairs[p, 5]
+        off = pairs[p, 6]
+        write = pair_offset[p]
+        for j in range(RASTER_CHUNK):
+            (ok, invalid, lp, t, fill_u, fill_v, border_u, border_v,
+             border_frac, coverage) = (
+                _bez_exact_pair_pixel(
+                    circuit, f, x0, y0, bw, bh, off, j, time_start, width,
+                    height, tile_start, tile_pixels, half_w, half_h, cam_origin,
+                    screen_point, pixel_basis_x, pixel_basis_y, circuit_meta,
+                    total_edges, total_offsets, fill_edges, fill_offsets,
+                    origins, exact_reasons)
+            )
+            if ok != 0:
+                keep = invalid != 0
+                if invalid == 0:
+                    _color, alpha = _sample_circuit_color_blend_regions(
+                        circuit, f, fill_u, fill_v, border_u, border_v,
+                        border_frac, circuit_meta, circuit_colors,
+                        circuit_border_colors)
+                    keep = (coverage > 0.0) and (alpha > MIN_ALPHA)
+                if keep:
+                    tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
+                    frag_key[write] = (ti.cast(lp, ti.i64) << 32) | tb
+                    frag_ref[write] = _pack_bez_ref(circuit, border_frac)
+                    frag_ab[write, 0] = fill_u
+                    frag_ab[write, 1] = fill_v
+                    frag_ab[write, 2] = border_u
+                    frag_ab[write, 3] = border_v
+                    frag_ab[write, 4] = border_frac
+                    frag_cov[write] = coverage
+                    write += 1
 
 
 @ti.kernel
@@ -1807,6 +2351,25 @@ def _tri_surface_point(f, prim, w0, a, b, tri_pos: ti.template()):
 
 
 @ti.func
+def _circuit_surface_point(f, circuit, u, v, circuit_meta: ti.template()):
+    """Reconstruct a circuit-plane point from its local coordinates."""
+    tm = f % circuit_meta.shape[0]
+    center = ti.math.vec3(
+        circuit_meta[tm, circuit, _M_CENTER],
+        circuit_meta[tm, circuit, _M_CENTER + 1],
+        circuit_meta[tm, circuit, _M_CENTER + 2])
+    basis_u = ti.math.vec3(
+        circuit_meta[tm, circuit, _M_BASIS_U],
+        circuit_meta[tm, circuit, _M_BASIS_U + 1],
+        circuit_meta[tm, circuit, _M_BASIS_U + 2])
+    basis_v = ti.math.vec3(
+        circuit_meta[tm, circuit, _M_BASIS_V],
+        circuit_meta[tm, circuit, _M_BASIS_V + 1],
+        circuit_meta[tm, circuit, _M_BASIS_V + 2])
+    return center + u * basis_u + v * basis_v
+
+
+@ti.func
 def _spawn_pool_ray(rs_ro: ti.template(), rs_rd: ti.template(),
                     rs_acc: ti.template(), rs_sca: ti.template(),
                     rs_int: ti.template(), rs_pix: ti.template(),
@@ -2061,7 +2624,7 @@ def raster_shadow_event_build(
                 seam_t = t_hit if edge_hit == 1 else -1e30
 
             eff = cov
-            if ti.static(aa_grp):
+            if ti.static(aa_grp == 1):
                 sliver = (msk & _AA_SLIVER_BIT) != 0
                 msk &= _AA_MASK_ALL
                 areal = is_bez or sliver
@@ -2083,12 +2646,24 @@ def raster_shadow_event_build(
             reflectivity = 0.0
             ior = 0.0
             transmission = 0.0
+            color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
             albedo = ti.math.vec3(0.0, 0.0, 0.0)
             normal = ti.math.vec3(0.0, 0.0, 0.0)
             if is_bez:
-                color, alpha = _sample_circuit_color_blend(
-                    ref, f, a, b, in_border, circuit_meta, circuit_colors,
-                    circuit_border_colors)
+                if ti.static(aa_grp == 2):
+                    border_u = a
+                    border_v = b
+                    if not from_z:
+                        border_u = frag_ab[idx, 2]
+                        border_v = frag_ab[idx, 3]
+                        in_border = frag_ab[idx, 4]
+                    color, alpha = _sample_circuit_color_blend_regions(
+                        ref, f, a, b, border_u, border_v, in_border,
+                        circuit_meta, circuit_colors, circuit_border_colors)
+                else:
+                    color, alpha = _sample_circuit_color_blend(
+                        ref, f, a, b, in_border, circuit_meta, circuit_colors,
+                        circuit_border_colors)
                 albedo = ti.math.vec3(color[0], color[1], color[2])
                 cm = f % circuit_meta.shape[0]
                 reflectivity = circuit_meta[cm, ref, _M_REFLECTIVITY]
@@ -2127,7 +2702,9 @@ def raster_shadow_event_build(
                 srd = rd
                 if ti.static(aa_tri):
                     hp = _tri_surface_point(f, ref, w0, a, b, tri_pos)
-                    if cov < AA_FULL_COVERAGE:
+                    if ti.static(aa_grp == 2):
+                        srd = (hp - ro).normalized()
+                    elif cov < AA_FULL_COVERAGE:
                         srd = (hp - ro).normalized()
                 # The facing test must use the SAME ray the resolve does
                 # (``surf_rd`` in raster_first_shade). Both kernels decide which
@@ -2172,7 +2749,7 @@ def raster_shadow_event_build(
             if ti.static(aa_bez or aa_tri):
                 mat_alpha = ti.math.clamp(alpha, 0.0, 1.0)
                 alpha = mat_alpha * eff
-                if ti.static(aa_grp):
+                if ti.static(aa_grp == 1):
                     a_s = mat_alpha
                     if areal:
                         a_s = mat_alpha * cov
@@ -2208,7 +2785,7 @@ def raster_shadow_event_build(
             if is_glass:
                 if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
                     break
-                if ti.static(aa_grp):
+                if ti.static(aa_grp == 1):
                     pm = 1.0 - a_s
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
                         if areal or ((msk >> s) & 1):
@@ -2216,7 +2793,7 @@ def raster_shadow_event_build(
                 else:
                     weight *= cover_pass
             elif is_pane or split_refl:
-                if ti.static(aa_grp):
+                if ti.static(aa_grp == 1):
                     # Pass-through, per covered sample. The MAGNITUDE is
                     # per-sample; the tint is not (that would need a vec3 per
                     # sample), so a chromatic transmitter applies its colour
@@ -2241,7 +2818,7 @@ def raster_shadow_event_build(
             elif (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
                 break
             else:
-                if ti.static(aa_grp):
+                if ti.static(aa_grp == 1):
                     # Pass-through, per covered sample. The MAGNITUDE is
                     # per-sample; the tint is not (that would need a vec3 per
                     # sample), so a chromatic transmitter applies its colour
@@ -2264,7 +2841,7 @@ def raster_shadow_event_build(
                 else:
                     weight *= cover3 + trans_energy * tint
             cur_w = weight
-            if ti.static(aa_grp):
+            if ti.static(aa_grp == 1):
                 vis_all = 0.0
                 for s in ti.static(range(_AA_NUM_SAMPLES)):
                     vis_all += svis[s]
@@ -2725,7 +3302,7 @@ def raster_first_shade(
             # the sub-pixel samples it covers, of what is still getting through
             # each of them.
             eff = cov
-            if ti.static(aa_grp):
+            if ti.static(aa_grp == 1):
                 sliver = (msk & _AA_SLIVER_BIT) != 0
                 msk &= _AA_MASK_ALL
                 # A circuit's SDF coverage -- and a sliver's clipped area -- is a
@@ -2792,9 +3369,26 @@ def raster_first_shade(
                     circuit = prim_raw
                     cm = f % circuit_meta.shape[0]
                     # Circuits keep their sampled colour (never material-shaded).
-                    color, alpha = _sample_circuit_color_blend(
-                        circuit, f, a, b, in_border, circuit_meta,
-                        circuit_colors, circuit_border_colors)
+                    if ti.static(aa_grp == 2):
+                        border_u = a
+                        border_v = b
+                        if not from_z:
+                            border_u = frag_ab[idx, 2]
+                            border_v = frag_ab[idx, 3]
+                            in_border = frag_ab[idx, 4]
+                        color, alpha = _sample_circuit_color_blend_regions(
+                            circuit, f, a, b, border_u, border_v, in_border,
+                            circuit_meta, circuit_colors,
+                            circuit_border_colors)
+                        total_u = (1.0 - in_border) * a + in_border * border_u
+                        total_v = (1.0 - in_border) * b + in_border * border_v
+                        surf_pos = _circuit_surface_point(
+                            f, circuit, total_u, total_v, circuit_meta)
+                        surf_rd = (surf_pos - ro).normalized()
+                    else:
+                        color, alpha = _sample_circuit_color_blend(
+                            circuit, f, a, b, in_border, circuit_meta,
+                            circuit_colors, circuit_border_colors)
                     albedo3 = ti.math.vec3(color[0], color[1], color[2])
                     reflectivity = circuit_meta[cm, circuit, _M_REFLECTIVITY]
                     rough = circuit_meta[cm, circuit, _M_ROUGHNESS]
@@ -2807,7 +3401,9 @@ def raster_first_shade(
                 prim = prim_raw
                 if ti.static(aa_tri):
                     surf_pos = _tri_surface_point(f, prim, w0, a, b, tri_pos)
-                    if cov < AA_FULL_COVERAGE:
+                    if ti.static(aa_grp == 2):
+                        surf_rd = (surf_pos - ro).normalized()
+                    elif cov < AA_FULL_COVERAGE:
                         surf_rd = (surf_pos - ro).normalized()
                 color, alpha = _tri_color_g(0, f, prim, w0, a, b, tri_colors,
                                             col_row, tri_uvs, tri_tex_meta,
@@ -2872,7 +3468,7 @@ def raster_first_shade(
                 # free, and every continuation weight inherits it.
                 mat_alpha = ti.math.clamp(alpha, 0.0, 1.0)
                 alpha = mat_alpha * eff
-                if ti.static(aa_grp):
+                if ti.static(aa_grp == 1):
                     a_s = mat_alpha
                     if areal:
                         a_s = mat_alpha * cov
@@ -3063,7 +3659,7 @@ def raster_first_shade(
                     bounced = True
                     break
                 else:
-                    if ti.static(aa_grp):
+                    if ti.static(aa_grp == 1):
                         pm = 1.0 - a_s
                         for s in ti.static(range(_AA_NUM_SAMPLES)):
                             if areal or ((msk >> s) & 1):
@@ -3118,7 +3714,7 @@ def raster_first_shade(
                             refl_rd,
                             wt, base_dist + t_hit, bounces_left - 1,
                             processed, pixel, r, compact)
-                if ti.static(aa_grp):
+                if ti.static(aa_grp == 1):
                     # Pass-through, per covered sample. The MAGNITUDE is
                     # per-sample; the tint is not (that would need a vec3 per
                     # sample), so a chromatic transmitter applies its colour
@@ -3191,7 +3787,7 @@ def raster_first_shade(
                 bounced = True
                 break
             else:
-                if ti.static(aa_grp):
+                if ti.static(aa_grp == 1):
                     # Pass-through, per covered sample. The MAGNITUDE is
                     # per-sample; the tint is not (that would need a vec3 per
                     # sample), so a chromatic transmitter applies its colour
@@ -3215,7 +3811,7 @@ def raster_first_shade(
                     weight *= cover3 + trans_energy * tint
 
             cur_w = weight
-            if ti.static(aa_grp):
+            if ti.static(aa_grp == 1):
                 vis_all = 0.0
                 for s in ti.static(range(_AA_NUM_SAMPLES)):
                     vis_all += svis[s]
@@ -3224,7 +3820,7 @@ def raster_first_shade(
                 done = True
                 break
 
-        if ti.static(aa_grp):
+        if ti.static(aa_grp == 1):
             # Fold the per-sample transmittance into the pixel's leftover
             # throughput. NOT after a bounce: the reflected ray's weight already
             # went through ``refl_energy``, which carries the transmittance of

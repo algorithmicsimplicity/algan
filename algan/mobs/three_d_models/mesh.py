@@ -82,6 +82,46 @@ def image_to_normal_map(image, flip_green=True):
     return n.transpose(-3, -2).flip(-2).contiguous()
 
 
+def _face_component_ids(faces):
+    """Connected face components through shared indexed edges.
+
+    This runs once when an indexed mesh is authored, before it is flattened to
+    triangle soup.  Retaining the result is what lets the renderer distinguish
+    an internal tessellation edge from two unrelated primitive silhouettes.
+    Faces that merely touch at one vertex remain separate components: their
+    projected wedges are not an edge-to-edge partition without further proof.
+    """
+    rows = faces.detach().cpu().tolist()
+    parent = list(range(len(rows)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    owner = {}
+    for face_id, (a, b, c) in enumerate(rows):
+        for u, v in ((a, b), (b, c), (c, a)):
+            edge = (u, v) if u < v else (v, u)
+            other = owner.setdefault(edge, face_id)
+            union(face_id, other)
+
+    remap = {}
+    result = []
+    for face_id in range(len(rows)):
+        root = find(face_id)
+        if root not in remap:
+            remap[root] = len(remap)
+        result.append(remap[root])
+    return torch.tensor(result, dtype=torch.int32, device=faces.device)
+
+
 class TriangleMesh(Mob):
     """An arbitrary indexed triangle mesh with optional per-corner normals,
     UVs and a texture map.
@@ -134,6 +174,7 @@ class TriangleMesh(Mob):
     ):
         vertices = cast_to_tensor(vertices).view(-1, 3)
         faces = torch.as_tensor(faces, device=vertices.device).long().view(-1, 3)
+        face_component_ids = _face_component_ids(faces)
         # Flatten to per-corner ("triangle soup") arrays: three corners per
         # face, laid out so consecutive triples are one triangle -- exactly the
         # ordering the TrianglePrimitive / trace kernel expect.
@@ -156,6 +197,7 @@ class TriangleMesh(Mob):
         # Per-corner vertex index (into the [V] vertex array); kept for smooth
         # normal recomputation and for re-baking corners under animation.
         self.corner_index = corner_index
+        self.face_component_ids = face_component_ids.to(device)
 
         corner_positions = vertices[corner_index]  # [3F, 3]
 
@@ -325,6 +367,7 @@ class TriangleMesh(Mob):
             corners=corners,
             colors=colors,
             normals=normals,
+            component_ids=self.face_component_ids,
             glow=colors[..., -2:-1].as_subclass(torch.Tensor),
             shader=self.shader,
             uvs=self.corner_uvs,
