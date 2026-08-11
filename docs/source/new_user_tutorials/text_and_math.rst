@@ -152,15 +152,14 @@ another, for the classic "written by hand" look:
 
     from algan import *
 
-    with Off():
-        text = Text("Hand written", font_size=64).spawn()
-    text.write(run_time=3)
+    Text("Hand written", font_size=64).spawn(False).write(run_time=3)
 
     Scene.save_video()
 
-Note the ``with Off():`` around the spawn. Without it the text would first fade
-in normally and *then* be written, which looks odd -- spawning inside ``Off()``
-puts it on screen instantly so ``write()`` provides the entrance.
+Note the ``spawn(False)`` before ``write()``. Without ``False`` the text would
+first play its ordinary fade-in and *then* be written. ``write()`` deliberately
+does not change the text's spawned state; Algan keeps lifespan management
+separate from animations.
 
 ``write()`` takes ``run_time`` for the whole sequence and ``lag_ratio`` for how
 much each glyph overlaps the next (``0`` writes them all at once). It is shorthand

@@ -372,7 +372,7 @@ class Tex(Mob):
 
             from algan import *
 
-            Text('Hello World!').spawn().write()
+            Text('Hello World!').spawn(False).write()
 
             Scene.save_video()
         """
@@ -552,6 +552,7 @@ class Text(Tex):
         self.disable_ligatures = disable_ligatures
         self.use_svg_cache = use_svg_cache
         explicit_border_color = "border_color" in kwargs
+        self._write_uses_default_pango_border = not explicit_border_color
         kwargs.setdefault("opacity", fill_opacity)
         kwargs.setdefault("border_width", stroke_width / 2)
         if color is not None:
@@ -623,6 +624,21 @@ class Text(Tex):
                     self.scale(float(width) / float(current.reshape(-1)[0]))
             if should_center:
                 self.move_to(ORIGIN)
+
+    def write(self, *args, **kwargs):
+        """Write this plain text with Manim's default Pango outline style.
+
+        Manim's ``Text`` keeps a white stroke color when only its fill color is
+        changed, so a stroke-free colored word is first traced in white. ``Tex``
+        instead traces in its own color. An explicit Algan ``border_color`` keeps
+        that custom outline behavior.
+
+        Spawn the text without its ordinary entrance first:
+        ``Text(...).spawn(False).write()``.
+        """
+        if self._write_uses_default_pango_border and "border_color" not in kwargs:
+            kwargs["border_color"] = WHITE
+        return super().write(*args, **kwargs)
 
 
 class TexTriangulated(Tex):

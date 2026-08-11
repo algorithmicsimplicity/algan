@@ -754,6 +754,75 @@ def test_draw_border_then_fill_accepts_any_iterable_of_mobs():
     assert draw_border_then_fill(mob for mob in squares) == squares
 
 
+def test_draw_border_then_fill_restores_the_original_style():
+    """The temporary outline must not become the Mob's permanent style."""
+    from algan.animations.manim_animations import draw_border_then_fill
+
+    square = Square(
+        color=algan.BLUE,
+        border_color=algan.RED,
+        border_width=0.25,
+        add_to_scene=True,
+    ).spawn(False)
+    original_colors = [
+        descendant.color.clone() for descendant in square.get_descendants()
+    ]
+    original_border_width = square.border_width.clone()
+
+    draw_border_then_fill(square for _ in range(1))
+
+    assert torch.allclose(square.border_width, original_border_width)
+    assert all(
+        torch.allclose(descendant.color, original)
+        for descendant, original in zip(square.get_descendants(), original_colors)
+    )
+
+
+def test_draw_border_then_fill_can_reverse_iteration_order(monkeypatch):
+    from algan.animations.manim_animations import draw_border_then_fill
+
+    squares = [Square(add_to_scene=True).spawn(False) for _ in range(3)]
+    drawn = []
+
+    for square in squares:
+        monkeypatch.setattr(
+            square,
+            "draw",
+            lambda _t=1.0, square=square: drawn.append(square) or square,
+        )
+
+    assert draw_border_then_fill(squares, reverse=True) == list(reversed(squares))
+    assert drawn == list(reversed(squares))
+
+
+def test_text_write_materializes_manim_outline_and_fill_styles():
+    """Colored Pango text traces white, then restores its stroke-free style."""
+    text = algan.Text("A", color=algan.YELLOW, add_to_scene=True).spawn(False)
+    glyph = text.character_mobs[0]
+
+    text.write(run_time=2)
+    text.scene.timeline_manager.set_state_to_times(
+        torch.tensor([0.5, 1.5, 1.999], dtype=torch.get_default_dtype())
+    )
+
+    assert torch.allclose(
+        glyph.texture_points.color[:, 0, -1],
+        torch.tensor([0.0, 0.5, 0.999]),
+        atol=1e-4,
+    )
+    assert torch.allclose(glyph.border_color[0, 0, :3], algan.WHITE[:3])
+    assert torch.allclose(
+        glyph.border_color[1, 0, :3],
+        torch.tensor([1.0, 1.0, 0.5]),
+        atol=1e-4,
+    )
+    assert torch.allclose(
+        glyph.border_width[:, 0, 0],
+        torch.tensor([1.0, 0.5, 0.001]),
+        atol=1e-4,
+    )
+
+
 def test_draw_border_then_fill_tolerates_an_empty_iterable():
     from algan.animations.manim_animations import draw_border_then_fill
 
@@ -766,12 +835,21 @@ def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
     text = algan.Text("hi", add_to_scene=True)
     seen = {}
 
-    def fake(mobs, border_width=1, run_time=None, lag_ratio=None):
+    def fake(
+        mobs,
+        border_width=1,
+        run_time=None,
+        lag_ratio=None,
+        border_color=None,
+        **kwargs,
+    ):
         seen["mobs"] = list(mobs)
         seen["border_width"] = border_width
+        seen["border_color"] = border_color
         return seen["mobs"]
 
     monkeypatch.setattr(manim_animations, "draw_border_then_fill", fake)
 
     assert text.write() is text
     assert len(seen["mobs"]) == len(text.character_mobs)
+    assert torch.allclose(seen["border_color"], algan.WHITE)

@@ -121,8 +121,7 @@ with Off():
 with Seq():
     with Sync(run_time=0.5):
         glyphs.spawn()
-    written.spawn(animate=False)
-    written.write(run_time=1.6)
+    written.spawn(False).write(run_time=1.6)
     # Glyphs are individually addressable, so single letters animate on their
     # own while the rest of the word stays put.
     with Lag(0.25, run_time=1.4):
