@@ -160,6 +160,50 @@ def test_flash_accepts_a_bare_point_as_well_as_a_mob(scene):
     assert len(_actors_of_type(scene, Line)) - before == 5
 
 
+def test_show_passing_flash_uses_stroke_clones_and_restores_source(scene):
+    with Off():
+        circle = Circle(color=BLUE, border_width=6).spawn()
+    start = _elapsed(scene)
+    original_points = circle.control_points.location.clone()
+    original_opacity = circle.opacity.clone()
+    actors_before = set(scene.actors)
+
+    ShowPassingFlash(circle, time_width=0.2, run_time=0.5)
+    ShowPassingFlash(circle, time_width=0.2, run_time=0.5)
+    end = _elapsed(scene)
+
+    flashes = [
+        actor
+        for actor in scene.actors
+        if actor not in actors_before and type(actor) is Circle
+    ]
+    assert len(flashes) == 2
+    assert all(not flash.filled for flash in flashes)
+    assert all(flash.is_despawned() for flash in flashes)
+    for flash in flashes:
+        assert torch.allclose(flash.border_color, circle.color)
+
+    assert circle.is_spawned()
+    assert not circle.is_despawned()
+    assert torch.allclose(circle.control_points.location, original_points)
+    assert torch.allclose(circle.opacity, original_opacity)
+
+    scene.timeline_manager.set_state_to_times(
+        torch.tensor([start + 0.25, start + 0.75, end])
+    )
+    assert torch.allclose(
+        circle.control_points.location,
+        original_points.expand(3, -1, -1),
+    )
+    assert torch.allclose(circle.opacity[:2], torch.zeros_like(circle.opacity[:2]))
+    assert torch.allclose(circle.opacity[2:], original_opacity)
+    assert torch.allclose(
+        flashes[0].control_points.location[0],
+        flashes[1].control_points.location[1],
+        atol=1e-6,
+    )
+
+
 # --------------------------------------------------------------------------
 # The Mob is left as it was found
 # --------------------------------------------------------------------------

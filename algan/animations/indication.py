@@ -424,6 +424,42 @@ def undraw_step(mob, t, full_control_points):
     mob.set_control_points_to_partial(full_control_points, 0.0, 1.0 - t)
 
 
+def _show_passing_flash_on_bezier(
+    mobject, time_width: float, run_time: float, *, clone_source: bool
+):
+    animation_manager = animation_manager_for(mobject)
+    with Seq(animation_manager=animation_manager):
+        with Off(animation_manager=animation_manager):
+            source_uses_fill = mobject.filled
+            source_color = mobject.color.clone()
+            flash = mobject.clone(spawn=False) if clone_source else mobject
+            flash.filled = False
+            if source_uses_fill and torch.any(source_color[..., -1] > 0):
+                flash.border_color = source_color
+
+            full_pts = flash.control_points.location.clone()
+            flash.set_control_points_to_partial(full_pts, 0.0, 0.0)
+            flash.spawn()
+            flash.set_non_recursive(opacity=torch.ones_like(flash.opacity))
+
+            source_is_visible = (
+                clone_source and mobject.is_spawned() and not mobject.is_despawned()
+            )
+            if source_is_visible:
+                source_opacity = mobject.opacity.clone()
+                mobject.set_non_recursive(opacity=torch.zeros_like(mobject.opacity))
+        with Sync(run_time=run_time, animation_manager=animation_manager):
+            flash.animate_function(
+                passing_flash_step,
+                time_width=time_width,
+                full_control_points=full_pts,
+            )
+        with Off(animation_manager=animation_manager):
+            flash.despawn(animate=False)
+            if source_is_visible:
+                mobject.set_non_recursive(opacity=source_opacity)
+
+
 def ShowPassingFlash(mobject, time_width: float = 0.1, run_time: float = 1.0):
     """Run a bright segment along a curve, like a spark following a wire.
 
@@ -434,8 +470,9 @@ def ShowPassingFlash(mobject, time_width: float = 0.1, run_time: float = 1.0):
     Animation
     ---------
     Recorded as an animation of ``run_time`` seconds, regardless of the enclosing
-    context's duration. The Mob is spawned and despawned around the flash, so it does
-    not need to be spawned beforehand and is gone afterwards.
+    context's duration. A transient stroke-only clone is spawned and despawned
+    around the flash, so the Mob does not need to be spawned beforehand. A visible
+    source Mob is hidden during the traversal and restored exactly afterwards.
 
     Parameters
     ----------
@@ -455,23 +492,12 @@ def ShowPassingFlash(mobject, time_width: float = 0.1, run_time: float = 1.0):
     from algan.mobs.bezier_circuit import BezierCircuitCubic
 
     if isinstance(mobject, BezierCircuitCubic):
-        with Seq(animation_manager=animation_manager_for(mobject)):
-            with Off(animation_manager=animation_manager_for(mobject)):
-                full_pts = mobject.control_points.location.clone()
-                mobject.set_control_points_to_partial(full_pts, 0.0, 0.0)
-                mobject.spawn()
-                mobject.opacity = 1
-            with Sync(
-                run_time=run_time, animation_manager=animation_manager_for(mobject)
-            ):
-                mobject.animate_function(
-                    passing_flash_step,
-                    time_width=time_width,
-                    full_control_points=full_pts,
-                )
-            with Off():
-                mobject.set_control_points_to_partial(full_pts, 0, 1)
-                mobject.opacity = 0
+        _show_passing_flash_on_bezier(
+            mobject,
+            time_width=time_width,
+            run_time=run_time,
+            clone_source=True,
+        )
     else:
         beziers = [
             d for d in mobject.get_descendants() if isinstance(d, BezierCircuitCubic)
@@ -527,7 +553,12 @@ def ShowPassingFlashWithThinningStrokeWidth(
             clones.append((clone, time_w))
     with Sync(run_time=run_time, animation_manager=animation_manager_for(vmobject)):
         for clone, time_w in clones:
-            ShowPassingFlash(clone, time_width=time_w, run_time=run_time)
+            _show_passing_flash_on_bezier(
+                clone,
+                time_width=time_w,
+                run_time=run_time,
+                clone_source=False,
+            )
     return vmobject
 
 
@@ -606,7 +637,12 @@ def Flash(
             lines.append(line)
     with Sync(run_time=run_time, animation_manager=animation_manager):
         for line in lines:
-            ShowPassingFlash(line, time_width=time_width, run_time=run_time)
+            _show_passing_flash_on_bezier(
+                line,
+                time_width=time_width,
+                run_time=run_time,
+                clone_source=False,
+            )
     return point_or_mobject
 
 
@@ -741,7 +777,12 @@ def Circumscribe(
             with Off(animation_manager=animation_manager):
                 frame.despawn(animate=False)
     else:
-        ShowPassingFlash(frame, time_width=time_width, run_time=run_time)
+        _show_passing_flash_on_bezier(
+            frame,
+            time_width=time_width,
+            run_time=run_time,
+            clone_source=False,
+        )
     return mobject
 
 
