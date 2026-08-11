@@ -1668,3 +1668,148 @@ build, and so is the whole repro sweep with `ALGAN_GLOSSY_REFLECTION=0`.
     describes for the content of any minified secondary image.
   * **The classic wavefront primary path** gets none of this, like §17 before
     it: the lobe lives in `raster_first_shade`.
+
+
+================================================================================
+21. EXACT COVERAGE: WHAT IT FIXES, AND THE WALL IT HITS — 2026-08-12
+================================================================================
+
+Two defects were on the table. Circuit coverage did not take the boundary's
+ANGLE into account, and triangle coverage was a count of eight sample points
+rather than an analytic formula. The first is now fixed. The second turns out
+not to be a defect that can be fixed in isolation, and the measurement showing
+why is the most useful thing in this section.
+
+21.1 The decomposition
+----------------------
+A fragment's coverage answers two questions that had been sharing one number:
+
+    WHERE in the pixel is it   -> a set question; only a set answers it
+    HOW MUCH of the pixel      -> a measure question; a real number answers it
+
+`_coverage_density` now splits them. A fragment is `(cmsk, dens)`: the samples
+it attenuates, and the fraction of each that it covers.
+
+    eff = dens * sum(svis[s] for s in cmsk) / N
+    for s in cmsk: svis[s] *= 1 - alpha * dens
+
+This UNIFIED the two fragment kinds that previously needed separate branches at
+five sites each. A mask whose popcount is the coverage gives `dens == 1` (every
+triangle today); an areal fragment -- a circuit's SDF coverage, a sliver's
+clipped area -- gives `cmsk == all` and `dens == cov`. Both come out
+bit-identical to the branches they replaced, because `cov` is a multiple of 1/N
+in the first case and the mask is already full in the second. The `areal` flag
+is gone from both resolve walks.
+
+21.2 Circuits: exact, angle-aware coverage (SHIPPED, default ON)
+----------------------------------------------------------------
+`clamp(d + 0.5, 0, 1)` is the exact area of (half-plane n pixel) for an
+AXIS-ALIGNED boundary and for no other orientation -- it is the `b == 0` case of
+the general formula. At 45 degrees it reports full coverage at `d = 0.5` where
+the truth is `1 - (0.7071 - d)^2 = 0.957`, peaking at 0.043 of coverage.
+
+`_halfplane_clip_area(n, d)` is that general formula in closed form, and
+`_bezier_point_metrics` already had what it needs: the closest-point vector,
+formed to get `min_dist_sq` and thrown away (ss4 predicted this exact use). It
+is the local gradient of the SDF, so it turns the distance into a boundary LINE.
+Applied to the outer silhouette, the unfilled band's nearer wall, and the
+border's inner edge.
+
+Measured against an aa=4 reference, whole-frame L1:
+
+    config    box      exact     delta
+    slant    0.1188   0.1093    +8.0%     long straight 24-degree edge
+    border   0.0870   0.0850    +2.3%     the border's inner edge
+    text     0.1081   0.1155    -6.8%     glyph-scale detail
+
+The pattern is one boundary per pixel versus two. Linearizing to the NEAREST
+segment models a 1px glyph stem as a half-plane and over-covers it; the box
+filter's distance-based rounding happens to be closer there. The fix is a wedge
+(square n H1 n H2, the two nearest segments), not a return to the box filter.
+
+On the ss19 gate the exact form regresses NOTHING and improves four configs:
+shapes 0.342 -> 0.331 (1.06x -> 1.03x of aa2), flat 0.398 -> 0.393, glass
+0.153 -> 0.152, text 0.224 -> 0.223, the other seven identical. 8/11 beat aa=2 in
+both arms; the trio that falls short (shapes, flat, glass) is the same either
+way, and differs from the trio ss19.3 recorded (spec, flat, glass) through drift
+since that measurement, not through this change.
+
+**A HARNESS BIAS THAT INVERTS THE RESULT, and the reason the first run said the
+opposite.** The aa=4 reference dilates a filled circuit by `0.6 * pixel_size` at
+its own supersampled pixel = 0.15 output px; the analytic arms dilate by
+`ANALYTIC_AA_BEZ_MIN_HALF_WIDTH = 0.3` output px. Every arm is therefore scored
+against a reference whose silhouette sits 0.15 px inside it -- and a SHARPER
+filter amplifies a fixed positional error in proportion to its slope, so the
+exact form scores worse purely for being more faithful. At the shipped 0.3,
+`slant` reads -0.6%; at a matched 0.15 it reads +8.0%. Match the dilation before
+reading any circuit-coverage measurement here. The same comparison says the 0.3
+default costs about TWICE as much L1 as the choice of filter does (slant 0.26 ->
+0.12 on matching it alone) -- worth revisiting, but it is an appearance decision
+about stroke weight, not an L1 one.
+
+21.3 Triangles: exact area does NOT work (MEASURED, default OFF)
+-----------------------------------------------------------------
+Implemented behind `ALGAN_ANALYTIC_AA_EXACT_TRI`, dispatching on how many edges
+reach the pixel: none -> 1, one -> `_halfplane_clip_area`, two or more ->
+`_pixel_clip_area`. It is catastrophic, and not because of a bug:
+
+    config   notches box -> exact    ink          whole-frame L1
+    tri          13 ->  5920     1.000 -> 0.891      -730%
+    seam          5 ->  6996     1.000 -> 0.953      -655%
+    trans         7 ->  6866     1.000 -> 0.776     -1418%
+    thin          0 ->     0     0.855 -> 0.530      -157%
+
+A fragment's CLAIM and its OCCLUSION must be the same quantity, or the pixel
+stops summing to one. With eight point samples both are `|M|/N`: quantized to
+eighths, but consistent, and a tiling sums to exactly 1. That consistency was
+the sample count's real job -- it was never only an estimate standing in for an
+analytic formula, which is the framing this work started from.
+
+Take the magnitude from the exact area and the two differ by up to 1/N.
+Reconciling them needs `dens = A*N/|M|`, which EXCEEDS 1 whenever `A*N > |M|` --
+the normal state of a boundary pixel, not an edge case. Clamping it (a sample
+cannot be covered twice) can only ever lose energy, so every boundary fragment
+under-claims, a shared edge no longer sums to 1, and the background leaks
+through as interior notches. On a dense mesh every pixel is a boundary pixel for
+several triangles, so it compounds into the ink figures above.
+
+21.4 What would actually work: cells, not points
+-------------------------------------------------
+Stop sampling the pixel at POINTS. Take a small number of CELLS tiling it, each
+carrying the exact clipped area of the fragment within that cell:
+
+    c_s = area(fragment n cell_s) / area(cell_s)
+
+All three properties hold at once, which no point-set representation can manage:
+the claim sums to `A` exactly, no cell can exceed 1, and a tiling still
+partitions. `_pixel_clip_area` provably sums over a tiling already (property 3
+of `benchmarks/_aa_clip_area_check.py`), so this also RETIRES the top-left fill
+rule of ss15 -- whose entire job is to fake, for binary point ownership, the
+partition that exact areas have for free.
+
+Four quadrant cells look right: `svis` halves from 8 floats to 4 in an
+occupancy-bound resolve, and each cell area is the same `_halfplane_clip_area`
+with a shifted, scaled `d`. It costs the centroid depth evaluation of ss15 and
+`_sec_positions` some resolution, which have to be re-measured. This is a
+redesign of the mask, not an increment on it.
+
+21.5 Validation
+---------------
+Everything in ss21 is byte-identical to the pre-change renderer except the
+circuit filter itself: with `ALGAN_ANALYTIC_AA_EXACT=0` the fast suite's render
+hashes identically (SHA256) to its pre-change baseline, which covers the
+`_coverage_density` rewrite, the new `_bezier_point_metrics` arity, the
+`_sliver_mode` re-encoding and the triangle machinery at once.
+
+`_halfplane_clip_area` itself is checked standalone by
+`benchmarks/_aa_clip_area_check.py`: agreement with an f64 polygon clip to
+7.3e-08 over 1917 (normal, offset) pairs, agreement with `_pixel_clip_area` to
+3.6e-07 on single-edge triangles, bit-exact collapse to the box filter when
+axis-aligned, and `A(n,d) + A(-n,-d) == 1` bit-exactly on all 3690 boundaries
+tested -- the seam property in its smallest form.
+
+NOTE, both gates were DEAD when this work started and were repaired as part of
+it: `_analytic_aa_bez_check.py` and `_aa_match_aa2.py` both imported
+`render_to_file`/`RenderSettings`, removed from the public API, so neither had
+run since. They now use `Scene(video_settings=...)` / `save_video`, and carry
+`--exact-ab` and `--box` respectively for the arms above.

@@ -214,6 +214,14 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
   "I002",
 ]
 
+# Same hazard, without the naming convention to key on: a benchmark may define
+# its own @ti.kernel to exercise one func in isolation, and several do. The
+# import has already broken scripts here, so keep it out of the whole directory
+# rather than tracking which script currently has a kernel in it.
+"benchmarks/*" = [
+  "I002",
+]
+
 "__init__.py" = [
   "F401",
   "F403",

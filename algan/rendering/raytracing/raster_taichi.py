@@ -234,10 +234,20 @@ _AA_SORT4 = ((0, 1), (2, 3), (0, 2), (1, 3), (1, 2))
 def _sliver_mode(aa):
     """Sample-less-triangle policy carried in the ``aa`` template value.
 
-    ``aa`` is 0 (coverage off) or ``1 + mode``; a plain int at kernel-compile
-    time, so every use of this sits inside ``ti.static``.
+    ``aa`` is 0 (coverage off) or ``1 + mode + 4 * exact``; a plain int at
+    kernel-compile time, so every use of this sits inside ``ti.static``.
     """
-    return max(int(aa) - 1, 0)
+    return max(int(aa) - 1, 0) % 4
+
+
+def _tri_exact(aa):
+    """Whether triangle coverage is the exact area rather than the sample count.
+
+    Rides in the same ``aa`` template value as the sliver policy (see
+    :func:`_sliver_mode`) so that each combination compiles its own kernel and
+    gets its own offline-cache entry.
+    """
+    return (max(int(aa) - 1, 0) // 4) != 0
 
 
 @ti.func
@@ -315,6 +325,108 @@ def _pixel_clip_area(vx, vy):
 
 
 @ti.func
+def _halfplane_clip_area(nx, ny, d):
+    """Exact area of (half-plane n pixel square), the pixel centre at the origin.
+
+    The covered side is ``{p : dot(n, p) + d >= 0}`` with ``n`` pointing INTO
+    it, and ``d`` is the signed perpendicular distance from the pixel centre to
+    the boundary line, in pixels, positive when the centre is covered.
+    ``(nx, ny)`` needs no normalization -- only its direction is read.
+
+    This is the one-crossing-edge case of :func:`_pixel_clip_area` in closed
+    form.  A single straight boundary is what a pixel almost always contains, so
+    it is the exact answer for a lone triangle edge and for a flattened outline
+    segment, at a fraction of the cost of the full clip.
+
+    Writing ``a >= b`` for the sorted components of the unit normal (so
+    ``a^2 + b^2 = 1``, ``a >= 1/sqrt(2)``), the covered area is
+
+        1                      d >= (a + b) / 2      the boundary clears the
+        0                      d <= -(a + b) / 2     square entirely
+        0.5 + d / a            |d| <= (a - b) / 2    a trapezoid: two opposite
+                                                     sides of the square are cut
+        dd^2 / (2 a b)         d < -(a - b) / 2      a corner triangle, dd being
+        1 - dd^2 / (2 a b)     d >  (a - b) / 2      the normal distance from the
+                                                     nearer corner to the line
+
+    The branches meet continuously: at ``|d| = (a - b) / 2`` both forms give
+    ``b / (2 a)``, and at ``|d| = (a + b) / 2`` the corner has shrunk to nothing.
+
+    **This is the correction the circuit path needs.** For an AXIS-ALIGNED
+    boundary ``b`` is zero, the trapezoid branch spans the whole square, and the
+    result collapses to ``clamp(d + 0.5, 0, 1)`` -- which is the box filter
+    :func:`_bez_pixel_hit` applies at EVERY orientation.  That filter is
+    therefore exact for one orientation out of all of them: at 45 degrees it
+    reports full coverage at ``d = 0.5``, where the truth is ``1 - (0.7071 -
+    d)^2 = 0.957``.  The error peaks around 0.043 and is systematic in the edge's
+    ANGLE, so it presents as diagonal edges carrying visibly different weight
+    from horizontal ones rather than as noise.
+
+    Verified against brute force, against :func:`_pixel_clip_area`, and for the
+    complement property below by ``benchmarks/_aa_clip_area_check.py``.
+
+    The property the seam rule needs: the two sides of one boundary sum to the
+    whole pixel, ``A(n, d) + A(-n, -d) == 1``, and in the corner branches that
+    holds BIT-EXACTLY (the pair computes an identical ``dd^2 / (2 a b)``, one
+    returning it and the other returning one minus it).
+    """
+    ax = ti.abs(nx)
+    ay = ti.abs(ny)
+    inv_len = 1.0 / ti.max(ti.sqrt(ax * ax + ay * ay), 1e-30)
+    a = ti.max(ax, ay) * inv_len
+    b = ti.min(ax, ay) * inv_len
+    # Half-width of the square along the normal, and the |d| below which the
+    # boundary cuts two OPPOSITE sides rather than a corner.
+    reach = 0.5 * (a + b)
+    flat = 0.5 * (a - b)
+    area = 0.0
+    if d >= reach:
+        area = 1.0
+    elif d > -reach:
+        if (d >= -flat) and (d <= flat):
+            area = 0.5 + d / ti.max(a, 1e-30)
+        else:
+            # The cut corner's legs are dd/a and dd/b, so its area is
+            # dd^2/(2ab). The division is unreachable at b == 0 -- there ``flat``
+            # and ``reach`` coincide at 0.5 and the branches above take every
+            # d -- but it is guarded anyway, since a predicated lane may still
+            # evaluate it. Underflow is harmless for the same reason: dd <= b, so
+            # a b small enough to flush dd^2 to zero has a true area of zero too.
+            dd = reach - ti.abs(d)
+            corner = dd * dd / ti.max(2.0 * a * b, 1e-30)
+            if d < 0.0:
+                area = corner
+            else:
+                area = 1.0 - corner
+    return area
+
+
+@ti.func
+def _boundary_coverage(nx, ny, d, aa: ti.template()):
+    """Pixel coverage by the drawn side of one boundary, at signed distance ``d``.
+
+    ``aa == 2`` (``ANALYTIC_AA_EXACT``) takes the exact angle-aware area;
+    anything else keeps the box filter ``clamp(d + 0.5, 0, 1)``, which IS that
+    area for an axis-aligned boundary and an approximation at every other angle
+    (see :func:`_halfplane_clip_area`).  The choice is a compile-time template
+    value, so the two forms never share a compiled kernel or a cache entry.
+
+    A boundary with no direction has nothing to orient: no outline segment came
+    within the query radius, so the pixel is deep inside the shape or far outside
+    it, and ``|d| >= 0.5`` makes both forms agree on 1 or 0 anyway.
+    """
+    c = 0.0
+    if ti.static(int(aa) == 2):
+        if (nx == 0.0) and (ny == 0.0):
+            c = ti.math.clamp(d + 0.5, 0.0, 1.0)
+        else:
+            c = _halfplane_clip_area(nx, ny, d)
+    else:
+        c = ti.math.clamp(d + 0.5, 0.0, 1.0)
+    return c
+
+
+@ti.func
 def _popcount_samples(x):
     """Number of sub-pixel samples set, i.e. set bits in the low sample bits."""
     v = ti.cast(x, ti.u32) & ti.u32(_AA_MASK_ALL)
@@ -322,6 +434,56 @@ def _popcount_samples(x):
     v = (v & ti.u32(0x3333)) + ((v >> 2) & ti.u32(0x3333))
     v = (v + (v >> 4)) & ti.u32(0x0F0F)
     return ti.cast((v + (v >> 8)) & ti.u32(0x1F), ti.i32)
+
+
+@ti.func
+def _coverage_density(cov, msk, areal):
+    """Split a fragment's coverage into WHERE it sits and HOW MUCH covers it.
+
+    Returns ``(cmsk, nsm, dens)``: the sub-pixel samples this fragment
+    attenuates, how many that is, and the fraction of each one it covers.  The
+    resolve then reads a fragment as ``dens`` on ``cmsk`` and zero elsewhere::
+
+        eff = dens * sum(svis[s] for s in cmsk) / N
+        for s in cmsk: svis[s] *= 1 - alpha * dens
+
+    The two quantities are INDEPENDENT, which is the whole point.  A mask can
+    only express coverage in multiples of 1/N, so as long as it carried the
+    magnitude too, an exact area had nowhere to go; splitting them lets the mask
+    answer the set question (which part of the pixel, hence which fragment
+    occludes which) while ``cov`` answers the measure question exactly.
+
+    It also unifies the two fragment kinds that used to need separate branches
+    at five sites each:
+
+      * A mask whose popcount IS the coverage gives ``dens == 1`` -- what every
+        triangle produces today, and what the masked branch assumed.
+      * An AREAL fragment -- a circuit's SDF coverage, or a sliver's clipped
+        area, both a fraction of the pixel with no position in it -- spreads over
+        every sample, giving ``cmsk == all`` and ``dens == cov``, which is what
+        the areal branch computed.
+
+    Both come out BIT-IDENTICAL to the branches they replace (``cov`` is a
+    multiple of 1/N in the first case and the mask is already full in the
+    second), so this is a pure refactor until the geometry paths start emitting
+    exact areas.
+    """
+    cmsk = msk
+    if areal:
+        cmsk = _AA_MASK_ALL
+    nsm = _popcount_samples(cmsk)
+    dens = 0.0
+    if nsm > 0:
+        # (cov * N) / nsm, and the grouping is load-bearing: when the mask IS
+        # the coverage, cov is a multiple of 1/N, so cov * N is exact and the
+        # quotient is exactly 1.0. Written cov * (N / nsm) it would round 8/3
+        # first and land at 0.99999997, which is not the same render.
+        dens = ti.min(
+            cov * ti.static(float(_AA_NUM_SAMPLES)) / ti.cast(nsm, ti.f32), 1.0)
+    # The clamp is inert while coverage comes from the mask, and becomes load
+    # bearing with exact areas: a triangle can cover more of the pixel than its
+    # share of the samples suggests, and a sample cannot be covered twice.
+    return cmsk, nsm, dens
 
 
 @ti.func
@@ -626,6 +788,57 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                         nsm = 0
                     c = (ti.cast(_popcount_samples(m), ti.f32)
                          * _AA_SAMPLE_WEIGHT)
+                    if ti.static(_tri_exact(aa)):
+                    # EXACT AREA instead of the sample count. The mask keeps
+                    # saying WHERE in the pixel the fragment is (which is what
+                    # partitions a shared edge); this replaces only HOW MUCH,
+                    # which a set of eight points can only answer in eighths.
+                    #
+                    # Dispatch on how many edges actually reach the pixel, which
+                    # the conservative-reject distances already say. One edge is
+                    # the overwhelming case and is a half-plane in closed form;
+                    # two or three (a vertex inside the pixel, or a triangle
+                    # smaller than it) need the general clip. Zero means the
+                    # square is wholly inside or wholly outside, and the mask
+                    # already knows which.
+                        ofl = 1.0
+                        if oi < 0:
+                            ofl = -1.0
+                        od0 = ofl * d0
+                        od1 = ofl * d1
+                        od2 = ofl * d2
+                        ncross = 0
+                        exn = 0.0
+                        eyn = 0.0
+                        edn = 0.0
+                        if ti.abs(od0) < _AA_FILTER_RADIUS:
+                            ncross += 1
+                            exn = ti.cast(-gy0, ti.f32)
+                            eyn = ti.cast(gx0, ti.f32)
+                            edn = od0
+                        if ti.abs(od1) < _AA_FILTER_RADIUS:
+                            ncross += 1
+                            exn = ti.cast(-gy1, ti.f32)
+                            eyn = ti.cast(gx1, ti.f32)
+                            edn = od1
+                        if ti.abs(od2) < _AA_FILTER_RADIUS:
+                            ncross += 1
+                            exn = ti.cast(-gy2, ti.f32)
+                            eyn = ti.cast(gx2, ti.f32)
+                            edn = od2
+                        if ncross == 0:
+                            c = 0.0
+                            if m != 0:
+                                c = 1.0
+                        elif ncross == 1:
+                        # The oriented edge function increases into the
+                        # triangle, so its gradient (-ey, ex) is the inward
+                        # normal and ``od`` is the signed distance to it.
+                            c = _halfplane_clip_area(exn, eyn, edn)
+                        else:
+                            c = _pixel_clip_area(
+                                ti.math.vec3(sx0 - qx, sx1 - qx, sx2 - qx),
+                                ti.math.vec3(sy0 - qy, sy1 - qy, sy2 - qy))
                 # A triangle thinner than the sample spacing contains no sample,
                 # so the set says nothing about it. The DEFAULT policy is to let
                 # it contribute nothing, exactly as supersampling does -- sound
@@ -1016,7 +1229,7 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                 # classic path was content with "no edge within the radius".
                 query_radius += _AA_FILTER_RADIUS * pixel_size
             te = f % edges_2d.shape[0]
-            crossings, min_dist_sq = _bezier_point_metrics(
+            crossings, min_dist_sq, ccu, ccv = _bezier_point_metrics(
                 circuit, te, uu, vv, query_radius,
                 circuit_meta.shape[1], edges_2d, edge_accel)
             inside, is_border = _circuit_point_region(
@@ -1031,20 +1244,46 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                 d = ti.sqrt(ti.min(min_dist_sq, 1e30))
                 if (crossings % 2) == 0:
                     d = -d
+                # Direction in which the signed distance INCREASES, i.e. into the
+                # shape. The closest-point vector runs from the query to the
+                # outline, so it points out of the shape from inside and into it
+                # from outside; negating it in the first case makes one gradient.
+                # Plane units, but only its direction is read and the plane-to-
+                # pixel map is isotropic (the anisotropy caveat of ss4 is
+                # unchanged by this), so it needs no conversion.
+                gu = ccu
+                gv = ccv
+                if d > 0.0:
+                    gu = -gu
+                    gv = -gv
                 signed = d + outline_w
+                # Which way the DRAWN region lies from the active boundary. For a
+                # filled circuit that is always "deeper in", but an unfilled one
+                # is a band with a wall on each side, and past its middle the
+                # nearer wall is the inner one, whose covered side is outward.
+                bnu = gu
+                bnv = gv
                 if not filled:
                     # Unfilled: the drawn band is bounded on the inside too, so
                     # a stroke thinner than a pixel fades instead of vanishing.
                     half = 0.5 * border_w
-                    signed = ti.min(d + half, half - d)
-                c = ti.math.clamp(signed * inv_px + 0.5, 0.0, 1.0)
+                    if (half - d) < (d + half):
+                        signed = half - d
+                        bnu = -gu
+                        bnv = -gv
+                    else:
+                        signed = d + half
+                c = _boundary_coverage(bnu, bnv, signed * inv_px, aa)
                 bf = 0.0
                 if border_w > 0.0:
                     if filled:
                         # Everything covered, minus the part deeper than the
-                        # stroke width, is border.
-                        fill_c = ti.math.clamp(
-                            (d - border_w) * inv_px + 0.5, 0.0, 1.0)
+                        # stroke width, is border. That inner edge is a boundary
+                        # like any other and gets the same exact treatment, which
+                        # is the only edge visible at all on an outlined glyph
+                        # whose fill is invisible.
+                        fill_c = _boundary_coverage(
+                            gu, gv, (d - border_w) * inv_px, aa)
                         bf = ti.math.clamp(
                             (c - fill_c) / ti.max(c, 1e-6), 0.0, 1.0)
                     else:
@@ -2023,8 +2262,10 @@ def raster_shadow_event_build(
             # claims and occludes every sub-pixel sample.
             cov = 1.0
             msk = _AA_MASK_ALL
+            cmsk = _AA_MASK_ALL
+            nsm = _AA_NUM_SAMPLES
+            dens = 1.0
             sliver = False
-            areal = False
             a_s = 0.0
             if not from_z:
                 t_hit = _frag_t(frag_key[idx])
@@ -2064,18 +2305,12 @@ def raster_shadow_event_build(
             if ti.static(aa_grp):
                 sliver = (msk & _AA_SLIVER_BIT) != 0
                 msk &= _AA_MASK_ALL
-                areal = is_bez or sliver
+                cmsk, nsm, dens = _coverage_density(cov, msk, is_bez or sliver)
                 vis = 0.0
-                if areal:
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    if (cmsk >> s) & 1:
                         vis += svis[s]
-                    vis *= _AA_SAMPLE_WEIGHT * cov
-                else:
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        if (msk >> s) & 1:
-                            vis += svis[s]
-                    vis *= _AA_SAMPLE_WEIGHT
-                eff = vis
+                eff = vis * _AA_SAMPLE_WEIGHT * dens
                 if eff <= MIN_ALPHA:
                     continue
 
@@ -2173,9 +2408,7 @@ def raster_shadow_event_build(
                 mat_alpha = ti.math.clamp(alpha, 0.0, 1.0)
                 alpha = mat_alpha * eff
                 if ti.static(aa_grp):
-                    a_s = mat_alpha
-                    if areal:
-                        a_s = mat_alpha * cov
+                    a_s = mat_alpha * dens
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             transmission = ti.math.clamp(transmission, 0.0, 1.0)
             R, diel_pass = _material_reflectance(
@@ -2211,7 +2444,7 @@ def raster_shadow_event_build(
                 if ti.static(aa_grp):
                     pm = 1.0 - a_s
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        if areal or ((msk >> s) & 1):
+                        if (cmsk >> s) & 1:
                             svis[s] *= pm
                 else:
                     weight *= cover_pass
@@ -2226,13 +2459,10 @@ def raster_shadow_event_build(
                     ts_s = a_s * trans_share
                     pm = (1.0 - a_s) + ts_s
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        if areal or ((msk >> s) & 1):
+                        if (cmsk >> s) & 1:
                             svis[s] *= pm
                     if ts_s > 1e-6:
-                        frac = 1.0
-                        if not areal:
-                            frac = (ti.cast(_popcount_samples(msk), ti.f32)
-                                    * _AA_SAMPLE_WEIGHT)
+                        frac = ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
@@ -2251,13 +2481,10 @@ def raster_shadow_event_build(
                     ts_s = a_s * trans_share
                     pm = (1.0 - a_s) + ts_s
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        if areal or ((msk >> s) & 1):
+                        if (cmsk >> s) & 1:
                             svis[s] *= pm
                     if ts_s > 1e-6:
-                        frac = 1.0
-                        if not areal:
-                            frac = (ti.cast(_popcount_samples(msk), ti.f32)
-                                    * _AA_SAMPLE_WEIGHT)
+                        frac = ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
@@ -2663,8 +2890,10 @@ def raster_first_shade(
             # claims and occludes every sub-pixel sample.
             cov = 1.0
             msk = _AA_MASK_ALL
+            cmsk = _AA_MASK_ALL
+            nsm = _AA_NUM_SAMPLES
+            dens = 1.0
             sliver = False
-            areal = False
             a_s = 0.0
             if q < nrun:
                 t_hit = _frag_t(frag_key[idx])
@@ -2728,25 +2957,19 @@ def raster_first_shade(
             if ti.static(aa_grp):
                 sliver = (msk & _AA_SLIVER_BIT) != 0
                 msk &= _AA_MASK_ALL
-                # A circuit's SDF coverage -- and a sliver's clipped area -- is a
-                # fraction of the pixel with no POSITION in it, so it attenuates
-                # every sample uniformly instead of a subset exactly. That is
-                # what circuits already did, and it is why they need no mask.
-                areal = is_bez or sliver
-                # Per-covered-sample opacity, filled in once the material alpha
-                # is known: a masked fragment covers each of its samples fully,
-                # an areal one attenuates all of them by its coverage.
+                # Where the fragment sits (``cmsk``) and how much of each sample
+                # it covers (``dens``), which are independent -- see
+                # _coverage_density. A circuit's SDF coverage, and a sliver's
+                # clipped area, are fractions of the pixel with no POSITION in
+                # them, so they spread over every sample instead of covering a
+                # subset exactly; that is what circuits already did, and it is
+                # why they need no mask of their own.
+                cmsk, nsm, dens = _coverage_density(cov, msk, is_bez or sliver)
                 vis = 0.0
-                if areal:
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    if (cmsk >> s) & 1:
                         vis += svis[s]
-                    vis *= _AA_SAMPLE_WEIGHT * cov
-                else:
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        if (msk >> s) & 1:
-                            vis += svis[s]
-                    vis *= _AA_SAMPLE_WEIGHT
-                eff = vis
+                eff = vis * _AA_SAMPLE_WEIGHT * dens
                 if eff <= MIN_ALPHA:
                     # Nothing still reaches the samples this fragment covers:
                     # something opaque in front of it already has them.
@@ -2873,9 +3096,7 @@ def raster_first_shade(
                 mat_alpha = ti.math.clamp(alpha, 0.0, 1.0)
                 alpha = mat_alpha * eff
                 if ti.static(aa_grp):
-                    a_s = mat_alpha
-                    if areal:
-                        a_s = mat_alpha * cov
+                    a_s = mat_alpha * dens
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             T = ti.math.clamp(T, 0.0, 1.0)
 
@@ -3066,7 +3287,7 @@ def raster_first_shade(
                     if ti.static(aa_grp):
                         pm = 1.0 - a_s
                         for s in ti.static(range(_AA_NUM_SAMPLES)):
-                            if areal or ((msk >> s) & 1):
+                            if (cmsk >> s) & 1:
                                 svis[s] *= pm
                     else:
                         weight *= cover_pass
@@ -3128,13 +3349,10 @@ def raster_first_shade(
                     ts_s = a_s * trans_share
                     pm = (1.0 - a_s) + ts_s
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        if areal or ((msk >> s) & 1):
+                        if (cmsk >> s) & 1:
                             svis[s] *= pm
                     if ts_s > 1e-6:
-                        frac = 1.0
-                        if not areal:
-                            frac = (ti.cast(_popcount_samples(msk), ti.f32)
-                                    * _AA_SAMPLE_WEIGHT)
+                        frac = ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
@@ -3201,13 +3419,10 @@ def raster_first_shade(
                     ts_s = a_s * trans_share
                     pm = (1.0 - a_s) + ts_s
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        if areal or ((msk >> s) & 1):
+                        if (cmsk >> s) & 1:
                             svis[s] *= pm
                     if ts_s > 1e-6:
-                        frac = 1.0
-                        if not areal:
-                            frac = (ti.cast(_popcount_samples(msk), ti.f32)
-                                    * _AA_SAMPLE_WEIGHT)
+                        frac = ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac

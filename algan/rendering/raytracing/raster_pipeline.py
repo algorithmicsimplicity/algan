@@ -1072,7 +1072,7 @@ def prepare_sparse_raster_coverage(
         return None
 
     ss = 1 if rt_settings.RASTER_SS else 0
-    aa_bez = 1 if rt_settings.analytic_aa_bez_active() else 0
+    aa_bez = rt_settings.analytic_aa_bez_mode()
     aa_hw = float(rt_settings.ANALYTIC_AA_BEZ_MIN_HALF_WIDTH)
     # Triangle coverage needs the edge-length columns the projection table only
     # carries when the host built it wide. Gate on the width actually produced,
@@ -1085,7 +1085,14 @@ def prepare_sparse_raster_coverage(
     # kernels see, so each policy compiles (and caches) its own _ss_pixel. The
     # resolve and the shadow-event build keep the plain 0/1 flag: the policy
     # reaches them as a per-fragment mask bit, so they compile once.
-    aa_tri_ss = aa_tri * (1 + rt_settings.analytic_aa_sliver_mode())
+    # Sliver policy AND the exact-area choice ride in the geometry kernels'
+    # template value, so every combination gets its own compiled variant and
+    # its own offline-cache entry (see _sliver_mode / _tri_exact).
+    aa_tri_ss = aa_tri * (
+        1
+        + rt_settings.analytic_aa_sliver_mode()
+        + (4 if rt_settings.ANALYTIC_AA_EXACT_TRI else 0)
+    )
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
@@ -1795,7 +1802,7 @@ def raster_iteration_zero(
     zbuf = _arena_tensor(memory, (tn_primary,), torch.int64, Z_SENTINEL)
     ss = 1 if rt_settings.RASTER_SS else 0
     # Read once per tile so every kernel below compiles for the same mode.
-    aa_bez = 1 if rt_settings.analytic_aa_bez_active() else 0
+    aa_bez = rt_settings.analytic_aa_bez_mode()
     aa_hw = float(rt_settings.ANALYTIC_AA_BEZ_MIN_HALF_WIDTH)
     # Gate triangle coverage on the projection-table width the host actually
     # built, not the live toggle (see prepare_sparse_raster_coverage).
@@ -1803,7 +1810,14 @@ def raster_iteration_zero(
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
     # Policy in the geometry kernels' value only (see the sparse path).
-    aa_tri_ss = aa_tri * (1 + rt_settings.analytic_aa_sliver_mode())
+    # Sliver policy AND the exact-area choice ride in the geometry kernels'
+    # template value, so every combination gets its own compiled variant and
+    # its own offline-cache entry (see _sliver_mode / _tri_exact).
+    aa_tri_ss = aa_tri * (
+        1
+        + rt_settings.analytic_aa_sliver_mode()
+        + (4 if rt_settings.ANALYTIC_AA_EXACT_TRI else 0)
+    )
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)

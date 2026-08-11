@@ -282,13 +282,22 @@ def _circuit_point_region(border_w, outline_w, filled, crossings, min_dist_sq):
 def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
                           edges_2d: ti.template(),
                           edge_accel: ti.template()):
-    """Return even/odd crossings and nearest visible-edge distance.
+    """Return even/odd crossings, nearest visible-edge distance, and its direction.
 
     Crossing candidates come from the circuit's local-y scanline bin. Border
     candidates come from every 2D cell touched by the radius query square.
     Both candidate sets are conservative; the original exact predicates are
     still evaluated here, so the acceleration changes only the number of edges
     inspected.
+
+    ``(ccu, ccv)`` is the vector from the query point to the closest point on
+    the nearest segment -- the closest-point vector this already forms to get
+    ``min_dist_sq``, and used to discard. It is the local direction of the
+    signed distance field's gradient (pointing OUT of the shape from an interior
+    query, IN from an exterior one), which is what turns the distance into a
+    boundary LINE and so into an exact, angle-aware coverage
+    (``_halfplane_clip_area``). Zero when no edge is within the query radius, in
+    which case there is no boundary near the pixel to orient.
     """
     header = ((te * num_circuits + circuit)
               * BEZIER_ACCEL_HEADER_SIZE)
@@ -317,6 +326,8 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
                     crossings += 1
 
     min_dist_sq = 1e30
+    ccu = 0.0
+    ccv = 0.0
     if ((query_radius > 0.0) and (u + query_radius >= min_u)
             and (u - query_radius <= max_u)
             and (v + query_radius >= min_v)
@@ -357,9 +368,13 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
                     seg_t = ti.math.clamp(seg_t, 0.0, 1.0)
                     cx = x0 + seg_t * dx - u
                     cy = y0 + seg_t * dy - v
-                    min_dist_sq = ti.min(min_dist_sq, cx * cx + cy * cy)
+                    dsq = cx * cx + cy * cy
+                    if dsq < min_dist_sq:
+                        min_dist_sq = dsq
+                        ccu = cx
+                        ccv = cy
 
-    return crossings, min_dist_sq
+    return crossings, min_dist_sq, ccu, ccv
 
 
 @ti.func
@@ -1530,7 +1545,7 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                                 query_radius = _circuit_query_radius(
                                     border_w, outline_w, filled)
                                 te = f % num_edge_frames
-                                crossings, min_dist_sq = _bezier_point_metrics(
+                                crossings, min_dist_sq, _ccu, _ccv = _bezier_point_metrics(
                                     circuit, te, u, v, query_radius,
                                     circuit_meta.shape[1], edges_2d, edge_accel)
                                 inside, in_border = _circuit_point_region(
@@ -2797,7 +2812,7 @@ def _collect_hits(refit: ti.template(),
                                     query_radius = _circuit_query_radius(
                                         border_w, outline_w, filled)
                                     te = f % num_edge_frames
-                                    crossings, min_dist_sq = _bezier_point_metrics(
+                                    crossings, min_dist_sq, _ccu, _ccv = _bezier_point_metrics(
                                         circuit, te, u, v, query_radius,
                                         circuit_meta.shape[1], edges_2d, edge_accel)
                                     inside, in_border = _circuit_point_region(

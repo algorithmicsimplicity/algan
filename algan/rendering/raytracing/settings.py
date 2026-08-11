@@ -682,6 +682,53 @@ ANALYTIC_AA_SEAM = os.environ.get("ALGAN_ANALYTIC_AA_SEAM", "1") == "1"
 ANALYTIC_AA_SLIVER_MODES = ("area", "exact", "drop", "exact_occ")
 ANALYTIC_AA_SLIVER = os.environ.get("ALGAN_ANALYTIC_AA_SLIVER", "drop")
 
+# Exact, angle-aware coverage for a circuit's boundary instead of a box filter
+# of its signed distance.
+#
+# `clamp(d + 0.5, 0, 1)` is the exact area of (half-plane n pixel) for an
+# AXIS-ALIGNED boundary and for no other orientation: it is the b == 0 case of
+# the general formula (_halfplane_clip_area). At 45 degrees it reports full
+# coverage at d = 0.5 where the truth is 0.957, peaking at 0.043 of coverage in
+# between -- a systematic error in the edge's ANGLE, so diagonal edges of a glyph
+# carry visibly different weight from horizontal ones. The exact form needs the
+# boundary's DIRECTION, which _bezier_point_metrics forms as the closest-point
+# vector and used to discard.
+#
+# Rides into the kernels inside the ``aa_bez`` template value (1 box filter,
+# 2 exact) rather than as a constant, so each form gets its own compiled variant
+# and its own offline-cache entry -- the same trap the sliver policy avoids the
+# same way. See DESIGN_analytic_aa.md ss21.
+ANALYTIC_AA_EXACT = os.environ.get("ALGAN_ANALYTIC_AA_EXACT", "1") == "1"
+
+# The same exact area for FLAT TRIANGLES -- default OFF, and it must stay off
+# until the per-sample representation changes. MEASURED, do not re-enable on the
+# theory that exactness must be better:
+#
+#     config   notches box -> exact    ink      whole-frame L1
+#     tri          13 ->  5920     1.000 -> 0.891     -730%
+#     seam          5 ->  6996     1.000 -> 0.953     -655%
+#     trans         7 ->  6866     1.000 -> 0.776    -1418%
+#     thin          0 ->     0     0.855 -> 0.530     -157%
+#
+# WHY, and why it is not a bug: a fragment's claim and its occlusion have to be
+# the SAME quantity or the pixel stops summing to one. With eight point samples
+# both are |M|/N -- quantized to eighths, but consistent, and a tiling sums to
+# exactly 1. Taking the magnitude from the exact area instead makes them differ
+# by up to 1/N, and reconciling them needs a per-sample density A*N/|M| that
+# EXCEEDS 1 whenever A*N > |M| -- which is the normal state of a boundary pixel,
+# not an edge case. Clamping it (a sample cannot be covered twice) can only ever
+# lose energy, so every boundary fragment under-claims, a shared edge no longer
+# sums to 1, and the background leaks through as interior notches. On a dense
+# mesh every pixel is a boundary pixel for several triangles, so it compounds.
+#
+# The fix is not a better clamp: it is to stop sampling the pixel at POINTS. A
+# small number of CELLS tiling the pixel, each carrying the exact clipped area
+# within it, gives all three properties at once -- the claim sums to A exactly,
+# no cell exceeds 1, and a tiling still partitions -- and would retire the
+# top-left fill rule, whose whole job is to fake the partition that exact areas
+# have for free. See DESIGN_analytic_aa.md ss21.
+ANALYTIC_AA_EXACT_TRI = os.environ.get("ALGAN_ANALYTIC_AA_EXACT_TRI", "0") == "1"
+
 # Sub-pixel samples for what coverage CANNOT antialias analytically: the image
 # seen inside a reflection or through refracting glass. Coverage resolves a
 # mirror's own outline exactly, but the reflected scene is sampled by the
@@ -791,13 +838,26 @@ ANALYTIC_AA_CHORD_TOLERANCE = float(
 
 
 def set_analytic_aa(
-    enabled, *, bezier=None, triangles=None, seam=None, sliver=None, secondary=None
+    enabled,
+    *,
+    bezier=None,
+    triangles=None,
+    seam=None,
+    sliver=None,
+    secondary=None,
+    exact=None,
+    exact_tri=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
-    global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES
+    global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
+    global ANALYTIC_AA_EXACT_TRI
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
+    if exact is not None:
+        ANALYTIC_AA_EXACT = bool(exact)
+    if exact_tri is not None:
+        ANALYTIC_AA_EXACT_TRI = bool(exact_tri)
     ANALYTIC_AA = bool(enabled)
     if bezier is not None:
         ANALYTIC_AA_BEZ = bool(bezier)
@@ -847,6 +907,19 @@ def analytic_aa_bez_active():
     env-var defaults and user code flips them after import.
     """
     return ANALYTIC_AA and ANALYTIC_AA_BEZ
+
+
+def analytic_aa_bez_mode():
+    """Circuit coverage as the kernels' ``aa_bez`` template value.
+
+    0 off, 1 the box filter, 2 the exact angle-aware area (``ANALYTIC_AA_EXACT``).
+    The distinction rides in the template value so the two forms cannot share an
+    offline-cache entry; everything downstream that only asks whether circuit
+    coverage is on keeps testing it for truth.
+    """
+    if not analytic_aa_bez_active():
+        return 0
+    return 2 if ANALYTIC_AA_EXACT else 1
 
 
 def analytic_aa_tri_active():
