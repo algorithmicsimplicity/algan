@@ -100,6 +100,10 @@ class Mob(
         Scene.save_video()
     """
 
+    # Primitive-family classifier used by ``become``.  Plain Mobs are
+    # structural containers; renderable subclasses opt into a concrete family.
+    _morph_family = None
+
     def __init__(
         self,
         location: torch.Tensor = ORIGIN,
@@ -167,6 +171,37 @@ class Mob(
         self._init_default_attr("glow", cast_to_tensor(glow))
         self.num_points_per_object = 1
         self.shader = None
+
+    @property
+    def morph_kind(self):
+        """Structural primitive kind used to dispatch :meth:`become`.
+
+        The family separates genuinely different renderer primitives which may
+        otherwise happen to use the same point packing.  The remaining fields
+        retain the legacy same-kind contract for component and point layout.
+        """
+        return (
+            self._morph_family,
+            self.num_points_per_object,
+            len(self.components),
+        )
+
+    def _rebatch_structural_attrs(self, repeat_indices, *, child=None):
+        """Expand non-animatable geometry metadata alongside timeline rows.
+
+        Subclasses whose render topology contains plain tensors override this
+        hook. ``child`` identifies the component whose rows were expanded when
+        the structural metadata lives on its parent (as for ``TriangleMesh``).
+        """
+        return self
+
+    def _reorder_structural_attrs(self, permutation, *, child=None):
+        """Reorder plain geometry metadata with an object-batch permutation."""
+        return self
+
+    def _adopt_structural_attrs(self, target):
+        """Take target-side plain geometry metadata at a morph endpoint."""
+        return self
 
     def _init_default_attr(self, attr, value):
         """Allocate ``attr``'s attribute-timeline buffer directly to ``value``

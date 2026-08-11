@@ -55,7 +55,7 @@ you changed lives here.
 | --- | --- | --- |
 | `tests/unit_tests/` | Behaviour that can break without raising: the timeline, the transform hierarchy, settings, batch sizing, materials, the public API surface. | ~60 s (~90 s including the `slow` ones) |
 | `tests/fast/` | One dense scene, rendered and compared pixel-wise: the renderer coverage the fast loop can afford. | 40–47 s |
-| `tests/full_renders/` | What the renderer actually draws across five dense scenes, compared pixel-wise against checked-in baselines. | ~10 minutes on CUDA |
+| `tests/full_renders/` | What the renderer actually draws across six dense scenes, compared pixel-wise against checked-in baselines. | ~12 minutes on CUDA |
 
 ## What `slow` means
 
@@ -78,13 +78,14 @@ level.
 
 ## The full-render suite
 
-`tests/full_renders/scenes/` holds **five dense scenes**, not one scene per
+`tests/full_renders/scenes/` holds **six dense scenes**, not one scene per
 concept. Each one packs a whole subsystem into a single render while keeping
 everything laid out in labelled, non-overlapping rows, so a regression reads as
 a diff in one column rather than as a mystery.
 
 | Scene | Covers |
 | --- | --- |
+| `complex_hierarchy_become` | Arbitrary hierarchy-to-hierarchy `become`: primitive-aware pairing across different tree shapes, cubic-bezier/Surface/mesh conversion, collapsed-target growth and surplus-source collapse for unequal leaf counts, Image-only dissolve, and parent transforms after target-tree reconstruction. |
 | `shapes_and_timeline` | 2-D bezier circuits (fills, non-convex triangulation, inward borders, analytic AA), all four animation contexts and their nesting, rate functions, every indication animation, `become`, updaters, `wave_color`, `draw_border_then_fill`, `NumericDisplay`, the spawn/despawn lifecycle, and the raw primitives underneath it all. |
 | `solids_and_camera` | Analytic PN surfaces vs. flat meshes side by side, the Platonic solids, `Surface`, `Arrow3D`/`Line3D`/`Dot3D`/`ConvexHull3D`, parent-and-child transforms in one block, the movement helpers, screen-relative layout, and every camera motion. |
 | `materials_and_lighting` | All nine `Mesh*Material` classes and the presets, animated material parameters, all six light types, shadows, glow through bloom and tonemapping, opacity, and the reflection/refraction paths of the wavefront tracer. |
@@ -113,8 +114,8 @@ material coverage.
 
 ## The fast suite's render
 
-`tests/fast/scene.py` is a sixth scene under the same conventions, kept apart
-from the five above so that the full-render suite and its coverage audit stay
+`tests/fast/scene.py` is a seventh scene under the same conventions, kept apart
+from the six above so that the full-render suite and its coverage audit stay
 what they are. Its docstring is worth reading before editing it: it is shaped
 by the kernel-variant cost, which is why it is one scene rather than several
 and why it contains no `Surface` geometry.
@@ -191,5 +192,5 @@ point clouds, to move them out of the audit's `EXEMPT` list and into a scene).
 
 `tests/test_files/` and `tests/run_test.py` are the previous render suite — one
 scene per concept, with its own baselines in `tests/expected_outputs_*`. The
-five scenes above supersede it; it is already outside `testpaths` in
+six scenes above supersede it; it is already outside `testpaths` in
 `pyproject.toml` and can be deleted once you are happy with the new baselines.

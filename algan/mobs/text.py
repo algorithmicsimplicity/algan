@@ -262,8 +262,9 @@ class Tex(Mob):
         Parameters
         ----------
         other_mob
-            The Mob to morph into. Text morphs best into other text or bezier shapes,
-            since the primitive type must match.
+            The Mob to morph into. Text-to-text and text-to-bezier morphs preserve
+            the tightest correspondence; other primitive families use geometric
+            conversion or a dissolve according to ``strategy``.
         *args, **kwargs
             Passed to
             :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` -- notably
@@ -273,9 +274,11 @@ class Tex(Mob):
 
         Returns
         -------
-        :class:`~.Tex`
-            The morphed text. This is a **different object** from the one you called
-            the method on, so use the return value afterwards.
+        :class:`~algan.animatable_base.mob.Mob`
+            The morphed Mob. With the default ``detach_history=True`` this can be a
+            **different object** from the one you called the method on, so use the
+            return value afterwards. Character views are rebuilt when the result is
+            still text.
         """
         result = super().become(other_mob, *args, **kwargs)
         # ``detach_history`` returns a clone, and cubic morphing may expand the

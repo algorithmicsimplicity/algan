@@ -605,11 +605,11 @@ class Scene(RenderLoopMixin):
                     actor.despawn(**kwargs)
 
     def clear_scene(self, **kwargs):
-        """Despawn everything and forget the Mobs that have finished.
+        """Despawn everything and retain the Mobs with recorded history.
 
-        Like :meth:`~.Scene.despawn_scene`, but also drops fully despawned Mobs from
-        the Scene's actor list so later renders do not carry them. Useful between the
-        sections of a long video.
+        Like :meth:`~.Scene.despawn_scene`, then keeps the fully despawned actors
+        whose earlier lifespan still has to render. Actors which never acquired a
+        complete lifespan are discarded.
 
         Animation
         ---------

@@ -35,6 +35,8 @@ class ImageMob(Surface):
 
     """
 
+    _morph_family = "image"
+
     def __init__(
         self,
         rgba_array_or_file_path: torch.Tensor | str,

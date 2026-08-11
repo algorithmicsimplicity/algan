@@ -671,6 +671,8 @@ class _PolyhedronGraph(Group):
 class Polyhedron(Mob):
     """Polyhedron defined by vertex coordinates and indexed polygon faces."""
 
+    _morph_family = "mesh"
+
     def __init__(
         self,
         vertex_coords,

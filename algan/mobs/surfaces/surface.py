@@ -478,6 +478,8 @@ class Surface(Mob):
 
     """
 
+    _morph_family = "grid"
+
     # Every concrete Surface type gets its own dictionary via
     # ``__init_subclass__``. Entries are keyed by both the fitting policy and a
     # compact signature of the construction-time geometry, so parameterized

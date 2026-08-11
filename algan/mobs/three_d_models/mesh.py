@@ -117,6 +117,8 @@ class TriangleMesh(Mob):
         Passed to :class:`~.Mob`.
     """
 
+    _morph_family = "mesh"
+
     def __init__(
         self,
         vertices,
@@ -231,11 +233,47 @@ class TriangleMesh(Mob):
         grid_kwargs["location"] = corner_positions
         grid_kwargs["color"] = corner_colors
         self.grid = Mob(**grid_kwargs)
+        # Morphing pairs whole triangles, never individual soup corners.
+        self.grid.num_points_per_object = 3
         self.add_children(self.grid)
         self.components = [self.grid]
         self.grid.is_primitive = True
         self.is_primitive = True
         self.ignore_wave_animations = True
+
+    def _rebatch_structural_attrs(self, repeat_indices, *, child=None):
+        if child is not None and child is not self.grid:
+            return self
+        device = self.corner_index.device
+        repeat_indices = repeat_indices.to(device)
+        corner_offsets = torch.arange(3, device=device)
+        corner_indices = (repeat_indices[:, None] * 3 + corner_offsets).reshape(-1)
+        self.corner_index = self.corner_index.index_select(0, corner_indices)
+        if self.corner_normals is not None:
+            self.corner_normals = self.corner_normals.index_select(
+                0, corner_indices.to(self.corner_normals.device)
+            )
+        if self.corner_uvs is not None:
+            self.corner_uvs = self.corner_uvs.index_select(
+                -2, corner_indices.to(self.corner_uvs.device)
+            )
+        self.num_triangles = int(repeat_indices.numel())
+        return self
+
+    def _reorder_structural_attrs(self, permutation, *, child=None):
+        return self._rebatch_structural_attrs(permutation, child=child)
+
+    def _adopt_structural_attrs(self, target):
+        self.corner_index = target.corner_index.clone()
+        self.corner_normals = (
+            None if target.corner_normals is None else target.corner_normals.clone()
+        )
+        self.corner_uvs = (
+            None if target.corner_uvs is None else target.corner_uvs.clone()
+        )
+        self.num_triangles = target.num_triangles
+        self.num_vertices = target.num_vertices
+        return self
 
     def _compute_corner_normals(self, corners_flat):
         """World-space per-corner normals for the current (already

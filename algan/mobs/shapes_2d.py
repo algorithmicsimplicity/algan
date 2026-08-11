@@ -186,6 +186,8 @@ class Point(BezierCircuitCubic):
 
 
 class TriangleTriangulated(Mob):
+    _morph_family = "mesh"
+
     def __init__(self, corner_locations, vertices=None, normals=None, **kwargs):
         corner_locations = cast_to_tensor(corner_locations)
         if vertices is None:
@@ -248,6 +250,8 @@ class TriangleTriangulated(Mob):
 
 
 class TriangleVertices(Mob):
+    _morph_family = "mesh"
+
     def __init__(self, corner_locations, normals=None, **kwargs):
         corner_locations = cast_to_tensor(corner_locations)
         kwargs2 = dict(kwargs.items())
@@ -262,6 +266,22 @@ class TriangleVertices(Mob):
         self.normals = normals
         self.is_primitive = True
         self.num_points_per_object = 3
+
+    def _rebatch_structural_attrs(self, repeat_indices, *, child=None):
+        if self.normals is None:
+            return self
+        repeat_indices = repeat_indices.to(self.normals.device)
+        corner_offsets = torch.arange(3, device=self.normals.device)
+        corner_indices = (repeat_indices[:, None] * 3 + corner_offsets).reshape(-1)
+        self.normals = self.normals.index_select(-2, corner_indices)
+        return self
+
+    def _reorder_structural_attrs(self, permutation, *, child=None):
+        return self._rebatch_structural_attrs(permutation, child=child)
+
+    def _adopt_structural_attrs(self, target):
+        self.normals = None if target.normals is None else target.normals.clone()
+        return self
 
     def get_memory_used_per_timestep(self):
         n = self.location.shape[-2]

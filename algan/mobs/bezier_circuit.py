@@ -138,6 +138,8 @@ def _circuit_location_and_basis(control_points):
 
 
 class BezierCircuitCubic(Mob):
+    _morph_family = "bezier"
+
     def __init__(
         self,
         control_points,

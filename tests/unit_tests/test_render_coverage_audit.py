@@ -1,6 +1,6 @@
 """Audits that the full-render suite still covers the public rendering API.
 
-The render suite is deliberately small: five dense scenes instead of one scene
+The render suite is deliberately small: six dense scenes instead of one scene
 per concept.  That only stays trustworthy if adding a new public renderable
 class forces someone to either put it in a scene or say out loud why it does not
 need one.  This module derives the required set from ``algan.__all__`` at import
