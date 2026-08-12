@@ -15,6 +15,7 @@ from algan.errors import AlganWarning
 
 ALGAN_ENVIRONMENT_VARIABLES = frozenset(
     {
+        "ALGAN_AA_DUMP",
         "ALGAN_ADV_OPT",
         "ALGAN_ANALYTIC_AA",
         "ALGAN_ANALYTIC_AA_BEZ",

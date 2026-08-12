@@ -2775,7 +2775,7 @@ def raster_shadow_event_build(
                     d_kind += 2
                 d_sid = -1 - ref
                 if not is_bez:
-                    d_sid = tri_obj[ref]
+                    d_sid = tri_obj[f % tri_obj.shape[0], ref]
 
             eff = cov
             if ti.static(aa_grp):
@@ -2800,7 +2800,7 @@ def raster_shadow_event_build(
                     sid = -1 - ref
                     fce = 0
                     if not is_bez:
-                        sid = tri_obj[ref]
+                        sid = tri_obj[f % tri_obj.shape[0], ref]
                         if (msk & _AA_BACKFACE_BIT) != 0:
                             fce = 1
                     if sid != cur_obj:
@@ -3574,7 +3574,7 @@ def raster_first_shade(
                     d_kind += 2
                 d_sid = -1 - prim_raw
                 if not is_bez:
-                    d_sid = tri_obj[prim_raw]
+                    d_sid = tri_obj[f % tri_obj.shape[0], prim_raw]
 
             # PER-SAMPLE TRANSMITTANCE (see the docstring). ``eff`` is how much
             # of the pixel's light actually reaches this fragment: the sum, over
@@ -3610,7 +3610,7 @@ def raster_first_shade(
                     sid = -1 - prim_raw
                     fce = 0
                     if not is_bez:
-                        sid = tri_obj[prim_raw]
+                        sid = tri_obj[f % tri_obj.shape[0], prim_raw]
                         if (msk & _AA_BACKFACE_BIT) != 0:
                             fce = 1
                     if sid != cur_obj:

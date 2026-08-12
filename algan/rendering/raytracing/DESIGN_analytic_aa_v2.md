@@ -655,6 +655,23 @@ was already stale at HEAD (max dev 170, deterministic) and stays un-rebaselined
   merge order; a one-line assert in the dump proves it). Read-only, no
   behavior change.
 
+  BUILT (2026-08-13), and the assert DISPROVED the belief, twice over: the
+  scene batcher merges every same-identifier mob into ONE collection primitive
+  (two plain spheres shared sid 0), and a diced logical-PN row's patch moves
+  from frame to frame with the adaptive levels, so a time-invariant per-part
+  id cannot express the mapping at all. `tri_obj` is now built per MEMBER at
+  pack time ([1, N] for flat collections, [T, N] for diced PN via the dice's
+  own counts/offsets) and offset per primitive at merge — a primitive's kept
+  and promoted slices share its offset, so constant-property promotion cannot
+  split a surface in two. Proven by `benchmarks/_aa_dump_check.py` (golden
+  walk to 4e-9, resolve/shadow lockstep, per-sphere sids), byte-identical by
+  stashed-HEAD hash. `benchmarks/_aa_iter.py` was rebuilt (the ss21 original
+  and its cached refs were lost to a truncated write); shipped-arm baselines
+  at 320x180, refs aa=4: slant .1828/ink 1.014, stem .4011/1.315,
+  corner .2623/1.038/12n, glyph .3008/1.366, mesh .0355/1.000, thin
+  .0617/0.857 — and at the §5.5.1 matched dilation (0.15), exact vs box:
+  slant .0347/.0386, stem .1255/.1264, corner .0680/.0750, glyph .1269/.1259.
+
   Phase B — The circuit wedge (§5). Self-contained: one host column, one
   metrics arity change, one kernel branch rewrite, no resolve involvement.
   Ships on its own gates; earliest visible win (R2).

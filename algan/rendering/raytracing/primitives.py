@@ -133,6 +133,17 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 normal_texture_map=normal_texture_map,
                 **shader_kwargs,
             )
+            # Per-member primitive counts, in concatenation order. This is what
+            # lets ``tri_obj`` (the resolve's per-triangle SOURCE-SURFACE id,
+            # DESIGN_analytic_aa_v2.md ss4.2) tell the collection's mobs apart:
+            # the batcher merges every same-identifier mob into one collection,
+            # so "one part = one surface" is false the moment two spheres share
+            # a batch. For a flat collection these are triangle counts; for a
+            # logical-PN collection, PATCH counts (the dice maps them to
+            # per-frame triangle ids).
+            self._rt_obj_counts = [
+                int(t.corners.shape[1]) // 3 for t in triangle_collection
+            ]
             # Gather per-mob surface params with the same broadcast/cat
             # recipe the base class applies to corners/colors, so shapes
             # line up -- except along time: the references are sliced to a
@@ -183,6 +194,7 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                 normal_texture_map=normal_texture_map,
                 **shader_kwargs,
             )
+            self._rt_obj_counts = None
             self._derive_material_surface_params()
 
     def _derive_material_surface_params(self):
@@ -549,6 +561,34 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         self._rt_tri_colors = self.colors.float().contiguous()
         self._rt_tri_mat_id, self._rt_tri_mat = self._pack_material()
         self._rt_num_frames = camera.ray_origin.shape[0]
+
+        # Per-triangle SOURCE-SURFACE id, [1, N] (or [T, N] for diced logical
+        # PN, whose row->patch mapping moves per frame with the adaptive
+        # levels). Local member indices; the scene merge offsets them per
+        # primitive so ids are globally unique. ``_rt_tri_obj_n`` is the id
+        # count, kept beside it so the merge needs no device sync to offset.
+        pn_obj = getattr(self, "_logical_pn_tri_obj", None)
+        counts = getattr(self, "_rt_obj_counts", None)
+        if pn_obj is not None:
+            self._rt_tri_obj = pn_obj
+        elif counts:
+            self._rt_tri_obj = (
+                torch.repeat_interleave(
+                    torch.arange(
+                        len(counts), dtype=torch.int32, device=corners.device
+                    ),
+                    torch.tensor(
+                        counts, dtype=torch.int64, device=corners.device
+                    ),
+                )
+                .view(1, -1)
+                .contiguous()
+            )
+        else:
+            self._rt_tri_obj = torch.zeros(
+                (1, corners.shape[1]), dtype=torch.int32, device=corners.device
+            )
+        self._rt_tri_obj_n = len(counts) if counts else 1
 
         uvs = self._stash_texture_maps()
         self._rt_tri_uvs = uvs.to(corners.device) if uvs is not None else None
@@ -1112,6 +1152,42 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         offsets = counts.cumsum(1) - counts
         max_triangles = int(counts.sum(1).amax().item()) if counts.numel() else 0
 
+        # Per-frame triangle -> source-surface ids. A diced row's patch changes
+        # from frame to frame with the adaptive levels, so unlike a flat
+        # primitive's [1, N] ids this must be per frame: row c of frame f
+        # belongs to the patch whose [offset, end) span contains c. Padding
+        # tail rows (c >= the frame's total) clamp to the last patch; they are
+        # alpha-zero and never emit a fragment.
+        num_patches = counts.shape[1] if counts.ndim > 1 else 0
+        counts_src = getattr(self, "_rt_obj_counts", None)
+        if counts_src:
+            patch_source = torch.repeat_interleave(
+                torch.arange(len(counts_src), dtype=torch.int32, device=device),
+                torch.tensor(counts_src, dtype=torch.int64, device=device),
+            )
+        else:
+            patch_source = torch.zeros(
+                (num_patches,), dtype=torch.int32, device=device
+            )
+        if patch_source.shape[0] != num_patches:
+            raise RuntimeError(
+                "logical PN patch/source mismatch: "
+                f"{patch_source.shape[0]} vs {num_patches} patches"
+            )
+        if num_patches and max_triangles:
+            ends = counts.cumsum(1)
+            cols = torch.arange(max_triangles, device=device)
+            patch_of_col = torch.searchsorted(
+                ends, cols.unsqueeze(0).expand(num_frames, -1), right=True
+            ).clamp_max(num_patches - 1)
+            self._logical_pn_tri_obj = (
+                patch_source[patch_of_col].to(torch.int32).contiguous()
+            )
+        else:
+            self._logical_pn_tri_obj = torch.zeros(
+                (num_frames, max_triangles), dtype=torch.int32, device=device
+            )
+
         colors = self._expanded_frames(
             self.colors.float(), num_frames, "logical PN colors"
         )
@@ -1385,6 +1461,94 @@ def _bezier_connection_visibility(corners, next_segment_inds):
     gather_inds = next_segment_inds.unsqueeze(-1).expand(-1, -1, 3)
     next_starts = torch.gather(segment_starts, 1, gather_inds)
     return (segment_ends - next_starts).norm(p=2, dim=-1) <= 1e-5
+
+
+def _circuit_parity(qx, qy, ex0, ey0, ex1, ey1, same_circuit):
+    """Even-odd crossing parity of ``(qx, qy)`` against masked edges.
+
+    ``qx``/``qy`` are ``[T, Q]`` query points, the edge tensors ``[T, V]``,
+    ``same_circuit`` a ``[Q, V]`` bool restricting each query to its own
+    circuit. The predicate is exactly the kernel's
+    (``_bezier_point_metrics``): a +x ray, ``(y0 > v) != (y1 > v)`` and
+    ``x_cross > u`` -- degenerate 1e9 edges can never satisfy the y-straddle.
+    Returns ``[T, Q]`` bool (odd = inside).
+    """
+    y0 = ey0.unsqueeze(1)  # [T, 1, V]
+    y1 = ey1.unsqueeze(1)
+    v = qy.unsqueeze(-1)  # [T, Q, 1]
+    straddle = (y0 > v) != (y1 > v)
+    denom = y1 - y0
+    denom = torch.where(denom == 0, torch.ones_like(denom), denom)
+    x_cross = ex0.unsqueeze(1) + (v - y0) * (ex1.unsqueeze(1) - ex0.unsqueeze(1)) / denom
+    hit = straddle & (x_cross > qx.unsqueeze(-1)) & same_circuit.unsqueeze(0)
+    return hit.sum(-1) % 2 == 1
+
+
+def _circuit_edge_inward_signs(edges, vert_circuit):
+    """Per-edge inward sign sigma in {-1, 0, +1} for ``edges`` [T, V, >=4].
+
+    Probes the crossing parity just off each edge midpoint on both sides
+    (``mid +/- eps * |e| * leftward_normal``). The definitional invariant --
+    the two sides of an edge have opposite parity -- doubles as the validity
+    check: where it fails (the probe crossed another feature, reachable at
+    sub-pixel stems) the eps is halved and retried, and a still-inconsistent
+    edge gets sigma 0, which the kernel reads as "fall back to the single
+    half-plane". Even-odd holes come out right by construction: parity IS the
+    fill rule, so a hole's contour gets signs pointing out of the hole
+    regardless of its winding.
+
+    Pairwise per circuit, chunked over query edges to bound the [T, Q, V]
+    scratch. Lands in animate/prep; only run when the wedge is live.
+    """
+    T, V = edges.shape[0], edges.shape[1]
+    device = edges.device
+    if V == 0:
+        return torch.zeros((T, 0), device=device)
+    ex0, ey0 = edges[..., 0], edges[..., 1]
+    ex1, ey1 = edges[..., 2], edges[..., 3]
+    mx = 0.5 * (ex0 + ex1)
+    my = 0.5 * (ey0 + ey1)
+    dx = ex1 - ex0
+    dy = ey1 - ey0
+    length = torch.sqrt(dx * dx + dy * dy)
+    degen = (length < 1e-12) | (edges[..., :4].abs() >= 1e8).any(-1)
+    inv_len = 1.0 / torch.clamp(length, min=1e-12)
+    # Leftward perpendicular of the edge direction, unit length.
+    lnx = -dy * inv_len
+    lny = dx * inv_len
+    circ = vert_circuit.to(device)
+    same = circ.view(-1, 1) == circ.view(1, -1)  # [V, V]
+
+    sigma = torch.zeros((T, V), device=device)
+    unresolved = ~degen
+    # Six halvings reach eps ~1.6e-3 of the edge length: a stem's two long
+    # walls sit a fraction of the EDGE LENGTH apart (a 3-unit wall on a
+    # 0.02-unit stem needs eps*|e| < 0.01), and an unresolved wall falls back
+    # to the single half-plane exactly where the wedge was meant to help.
+    eps = 0.05
+    for _attempt in range(6):
+        idx = unresolved.any(0).nonzero(as_tuple=True)[0]
+        if idx.numel() == 0:
+            break
+        budget = 4_000_000
+        chunk = max(1, budget // max(T * V, 1))
+        for start in range(0, idx.numel(), chunk):
+            sel = idx[start : start + chunk]
+            off_x = (eps * length * lnx)[:, sel]
+            off_y = (eps * length * lny)[:, sel]
+            qx, qy = mx[:, sel], my[:, sel]
+            left = _circuit_parity(
+                qx + off_x, qy + off_y, ex0, ey0, ex1, ey1, same[sel]
+            )
+            right = _circuit_parity(
+                qx - off_x, qy - off_y, ex0, ey0, ex1, ey1, same[sel]
+            )
+            valid = (left != right) & unresolved[:, sel]
+            s = torch.where(left, 1.0, -1.0)
+            sigma[:, sel] = torch.where(valid, s, sigma[:, sel])
+            unresolved[:, sel] &= ~valid
+        eps *= 0.5
+    return sigma
 
 
 class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
@@ -1761,16 +1925,31 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         next_uv = locals_uv.roll(-1, dims=1)
         gather_inds = next_start_e.unsqueeze(-1).expand(T_geo, -1, 2)
         next_uv[:, seg_ends] = torch.gather(locals_uv, 1, gather_inds)
-        self._rt_edges = (
+        edges5 = (
             torch.cat((locals_uv, next_uv, border_visible_e.unsqueeze(-1)), -1)
             .float()
             .contiguous()
         )
-        self._rt_edges = torch.where(
+        edges5 = torch.where(
             edge_degenerate_e.unsqueeze(-1),
             torch.tensor([1e9, 1e9, 1e9, 1e9, 0.0], device=device),
-            self._rt_edges,
+            edges5,
         )
+        # Column 5: the edge's INWARD SIGN sigma (DESIGN_analytic_aa_v2.md
+        # ss5.2) -- +1 when the drawn (odd-parity) side of the edge's line is
+        # the side its leftward perpendicular points to, -1 the other way, 0
+        # unknown (degenerate, or the probe could not settle it). Computed at
+        # flatten time, where the contour is known, because the crossing
+        # parity is a property of the QUERY and can orient only the nearest
+        # wall -- recovering a second wall's side from handedness at a corner
+        # was the ss21.6 wedge failure. Per frame: a morph can flip a
+        # contour's winding mid-animation. Zeros unless the wedge is live
+        # (the only reader), so the probe costs nothing otherwise.
+        if rt_settings.analytic_aa_bez_mode() == 3:
+            sigma = _circuit_edge_inward_signs(edges5, vert_circuit)
+        else:
+            sigma = torch.zeros(edges5.shape[:2], device=device)
+        self._rt_edges = torch.cat((edges5, sigma.unsqueeze(-1)), -1).contiguous()
 
         samples_per_circuit = torch.zeros((C,), dtype=torch.long, device=device)
         samples_per_circuit.index_add_(0, circuit_of_segment, verts_per_segment)
