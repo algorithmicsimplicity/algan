@@ -340,20 +340,42 @@ def _sliver_mode(aa):
 def _tri_cells(aa_tri):
     """Whether the resolve reads packed CELLS rather than a sample mask.
 
-    Rides in the resolve's own ``aa_tri`` template (1 points, 2 cells) so the two
-    representations cannot share a compiled kernel or an offline-cache entry.
+    Rides in the resolve's own ``aa_tri`` template (1 points, 2 cells, 3
+    run-corrected) so representations cannot share a compiled kernel or an
+    offline-cache entry.
     """
     return int(aa_tri) == 2
 
 
+def _tri_run_mode(aa_tri):
+    """Whether the resolve applies the RUN rule (DESIGN_analytic_aa_v2.md ss4):
+    ownership and per-fragment magnitude from the mask, exact areas read only
+    at run level."""
+    return int(aa_tri) == 3
+
+
+def _tri_repr(aa):
+    """Triangle representation carried in the geometry kernels' ``aa`` value:
+    0 sampled points, 1 the parked cells emission, 2 run-corrected exact areas
+    (``1 + sliver_mode + 4 * repr``, see :func:`_sliver_mode`)."""
+    return max(int(aa) - 1, 0) // 4
+
+
 def _tri_exact(aa):
-    """Whether triangle coverage is the exact area rather than the sample count.
+    """Whether triangle coverage is the parked CELLS emission (repr 1).
 
     Rides in the same ``aa`` template value as the sliver policy (see
     :func:`_sliver_mode`) so that each combination compiles its own kernel and
     gets its own offline-cache entry.
     """
-    return (max(int(aa) - 1, 0) // 4) != 0
+    return _tri_repr(aa) == 1
+
+
+def _tri_run(aa):
+    """Whether the geometry kernels emit run-corrected payloads (repr 2):
+    exact clipped areas in ``frag_cov`` beside the untouched sample masks,
+    slivers emitted as area donors at their clipped centroid."""
+    return _tri_repr(aa) == 2
 
 
 @ti.func
@@ -736,7 +758,8 @@ def _unpack_cells(msk):
 
 
 @ti.func
-def _coverage_slots(cov, msk, areal, cells: ti.template()):
+def _coverage_slots(cov, msk, areal, cells: ti.template(),
+                    run: ti.template()):
     """A fragment's coverage as one value per resolve slot, both modes at once.
 
     Returns ``(slots, nsm)``: how much of each of the ``_AA_NUM_SAMPLES`` slots
@@ -760,7 +783,24 @@ def _coverage_slots(cov, msk, areal, cells: ti.template()):
     slots = ti.Vector([0.0 for _ in range(_AA_NUM_SAMPLES)])
     nsm = 0
     dens = 1.0
-    if ti.static(cells):
+    if ti.static(run and not cells):
+        # RUN mode (DESIGN_analytic_aa_v2.md ss3): a triangle fragment's
+        # ownership, occlusion AND per-fragment magnitude all come from the
+        # mask at literal density 1 -- the exact area in ``cov`` is read only
+        # by the run scan, never reconciled per fragment (the ss21.3 failure,
+        # 5920 notches). An empty mask (a sliver donor) covers no slot and so
+        # commits nothing here; circuits keep their exact areal scalar.
+        if areal:
+            for s in ti.static(range(_AA_NUM_SAMPLES)):
+                slots[s] = 1.0
+            nsm = _AA_NUM_SAMPLES
+            dens = cov
+        else:
+            for s in ti.static(range(_AA_NUM_SAMPLES)):
+                if (msk >> s) & 1:
+                    slots[s] = 1.0
+            nsm = _popcount_samples(msk)
+    elif ti.static(cells):
         if areal:
             # A circuit writes no mask lane at all, and a scalar coverage has no
             # position in the pixel, so it spreads over every cell -- the same
@@ -1139,6 +1179,59 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                         nsm = 0
                     c = (ti.cast(_popcount_samples(m), ti.f32)
                          * _AA_SAMPLE_WEIGHT)
+                    if ti.static(_tri_run(aa)):
+                    # RUN-CORRECTED payload (DESIGN_analytic_aa_v2.md ss4.1):
+                    # the mask, fill rule and owned-sample centroid stay
+                    # exactly as shipped -- ownership and occlusion never
+                    # change -- while frag_cov carries the EXACT clipped area
+                    # for the resolve's run scan to sum.
+                    #
+                    #   * A FULL mask whose edges all clear the half-diagonal
+                    #     is exactly 1.0 with no clip at all (the hot path);
+                    #     otherwise the exact area, snapped to 1.0 from
+                    #     0.9999 so interior fragments stay bit-clean for the
+                    #     cov-keyed full-coverage gates.
+                    #   * A PARTIAL mask takes the exact area, falling back to
+                    #     the sampled count if the float clip degenerates to
+                    #     zero against the lattice (a mask-owning fragment
+                    #     must never be dropped -- its samples would show the
+                    #     background through the surface).
+                    #   * An EMPTY mask (a sliver, including the
+                    #     lattice-degenerate area2 == 0 case) is EMITTED as an
+                    #     area donor: exact area, depth and barycentrics at
+                    #     the centroid of (triangle n pixel), which is inside
+                    #     the triangle, so the ss15 ordering argument holds.
+                        if m == _AA_MASK_ALL:
+                            ffl = 1.0
+                            if oi < 0:
+                                ffl = -1.0
+                            if ((ffl * d0 >= 0.7072) and (ffl * d1 >= 0.7072)
+                                    and (ffl * d2 >= 0.7072)):
+                                c = 1.0
+                            else:
+                                ca = _pixel_clip_area(
+                                    ti.math.vec3(
+                                        sx0 - qx, sx1 - qx, sx2 - qx),
+                                    ti.math.vec3(
+                                        sy0 - qy, sy1 - qy, sy2 - qy))
+                                c = ca
+                                if (c >= 0.9999) or (c <= 0.0):
+                                    c = 1.0
+                        elif m != 0:
+                            ca = _pixel_clip_area(
+                                ti.math.vec3(sx0 - qx, sx1 - qx, sx2 - qx),
+                                ti.math.vec3(sy0 - qy, sy1 - qy, sy2 - qy))
+                            if ca > 0.0:
+                                c = ca
+                        else:
+                            ca, cx_, cy_ = _pixel_clip_centroid(
+                                ti.math.vec3(sx0 - qx, sx1 - qx, sx2 - qx),
+                                ti.math.vec3(sy0 - qy, sy1 - qy, sy2 - qy))
+                            if ca > 0.0:
+                                c = ca
+                                nsm = 1
+                                sox = cx_ * ti.static(_AA_FIXED_SCALE)
+                                soy = cy_ * ti.static(_AA_FIXED_SCALE)
                     if ti.static(_tri_exact(aa)):
                     # CELLS instead of points (DESIGN_analytic_aa.md ss21.4).
                     #
@@ -1199,7 +1292,8 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                 # the pixel it covers, and mark it a sliver so the resolve treats
                 # that claim as provisional.
                     if ti.static(_sliver_mode(aa) != _AA_SLIVER_DROP
-                                 and not _tri_exact(aa)):
+                                 and not _tri_exact(aa)
+                                 and not _tri_run(aa)):
                         if m == 0:
                         # The weight must be the EXACT clipped area: the
                         # continuous product form spreads half a pixel past the
@@ -1239,6 +1333,12 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template()):
                                     c = ca
                     if ti.static(_tri_exact(aa)):
                         accept = c > 0.0
+                    elif ti.static(_tri_run(aa)):
+                        # Acceptance widens to "any exact area": a sample-less
+                        # sliver is an area donor now, not a drop.
+                        accept = c > 0.0
+                        if oi < 0:
+                            m |= _AA_BACKFACE_BIT
                     else:
                         accept = ((m & _AA_MASK_ALL) != 0) and (c > 0.0)
                         if oi < 0:
@@ -1829,13 +1929,21 @@ def raster_tri_z(
             f, prim, ss_enabled, tri_pos, tri_screen, cam_origin, aa)
         layer = ti.cast(layer_offset_triangles, ti.i32) + prim
         for j in range(RASTER_CHUNK):
-            ok, lp, t, _w1, _w2, cov, _msk = _pair_pixel(
+            ok, lp, t, _w1, _w2, cov, msk = _pair_pixel(
                 prim, f, x0, y0, bw, bh, off, j, time_start, width, height,
                 tile_start, tile_pixels, half_w, half_h, use_ss, sm, vm, cam_o,
                 il, cam_origin, screen_point, pixel_basis_x, pixel_basis_y, aa)
             if ok != 0:
                 full = True
-                if ti.static(aa):
+                if ti.static(_tri_run(aa)):
+                    # Under the run representation the prepass keys on the
+                    # SAMPLED claim, exactly as the resolve's magnitude does:
+                    # a full-mask fragment whose exact area is a hair under 1
+                    # claims 1.0 either way (it terminates runs and is never
+                    # corrected), so keeping it out of the prepass would cost
+                    # z-culling for nothing (v2 ss4.1).
+                    full = (msk & _AA_MASK_ALL) == _AA_MASK_ALL
+                elif ti.static(aa):
                     full = cov >= AA_FULL_COVERAGE
                 if full:
                     ti.atomic_min(zbuf[lp], _order_key(t, layer))
@@ -1927,7 +2035,13 @@ def raster_tri_count(
             if ok != 0:
                 keep = True
                 if ti.static(partial_only):
-                    keep = cov < AA_FULL_COVERAGE
+                    if ti.static(_tri_run(aa)):
+                        # Mirror of raster_tri_z's sampled-claim keying: only
+                        # full-MASK fragments sit in the prepass, so only they
+                        # are excluded here.
+                        keep = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
+                    else:
+                        keep = cov < AA_FULL_COVERAGE
                 before_z = True
                 if ti.static(z_cull):
                     before_z = _order_key(t, layer) < zbuf[lp]
@@ -1987,7 +2101,13 @@ def raster_tri_write(
             if ok != 0:
                 keep = True
                 if ti.static(partial_only):
-                    keep = cov < AA_FULL_COVERAGE
+                    if ti.static(_tri_run(aa)):
+                        # Mirror of raster_tri_z's sampled-claim keying: only
+                        # full-MASK fragments sit in the prepass, so only they
+                        # are excluded here.
+                        keep = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
+                    else:
+                        keep = cov < AA_FULL_COVERAGE
                 before_z = True
                 if ti.static(z_cull):
                     before_z = _order_key(t, layer) < zbuf[lp]
@@ -2846,7 +2966,8 @@ def raster_shadow_event_build(
                     eff = contrib * rem
                 else:
                     slots, nsm, dens = _coverage_slots(
-                        cov, msk, is_bez or sliver, cells)
+                        cov, msk, is_bez or sliver, cells,
+                        ti.static(_tri_run_mode(aa_tri)))
                     vis = 0.0
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
                         vis += slots[s] * svis[s]
@@ -2908,7 +3029,10 @@ def raster_shadow_event_build(
                 srd = rd
                 if ti.static(aa_tri):
                     hp = _tri_surface_point(f, ref, w0, a, b, tri_pos)
-                    if cov < AA_FULL_COVERAGE:
+                    partial = cov < AA_FULL_COVERAGE
+                    if ti.static(_tri_run_mode(aa_tri)):
+                        partial = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
+                    if partial:
                         srd = (hp - ro).normalized()
                 # The facing test must use the SAME ray the resolve does
                 # (``surf_rd`` in raster_first_shade). Both kernels decide which
@@ -2932,7 +3056,11 @@ def raster_shadow_event_build(
                 # all four as the least-biased representation of its area.
                 shadow_msk = 0xF
                 if ti.static(aa_tri):
-                    if (not from_z) and (not sliver):
+                    # An empty-mask run-mode sliver is areal like the old
+                    # sliver policies: no discrete position, so all four
+                    # sub-pixel shadow positions represent its area.
+                    if (not from_z) and (not sliver) \
+                            and ((msk & _AA_MASK_ALL) != 0):
                         shadow_msk, _shadow_n = _sec_positions(
                             msk & _AA_MASK_ALL, 4)
                 event_msk[eid] = shadow_msk
@@ -3656,7 +3784,8 @@ def raster_first_shade(
                     eff = contrib * rem
                 else:
                     slots, nsm, dens = _coverage_slots(
-                        cov, msk, is_bez or sliver, cells)
+                        cov, msk, is_bez or sliver, cells,
+                        ti.static(_tri_run_mode(aa_tri)))
                     vis = 0.0
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
                         vis += slots[s] * svis[s]
@@ -3727,7 +3856,13 @@ def raster_first_shade(
                 prim = prim_raw
                 if ti.static(aa_tri):
                     surf_pos = _tri_surface_point(f, prim, w0, a, b, tri_pos)
-                    if cov < AA_FULL_COVERAGE:
+                    partial = cov < AA_FULL_COVERAGE
+                    if ti.static(_tri_run_mode(aa_tri)):
+                        # Keyed on the mask: a full-mask fragment's centroid
+                        # IS the pixel centre whatever its exact area, and
+                        # interior fragments must stay bit-clean (v2 ss4.1).
+                        partial = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
+                    if partial:
                         surf_rd = (surf_pos - ro).normalized()
                 color, alpha = _tri_color_g(0, f, prim, w0, a, b, tri_colors,
                                             col_row, tri_uvs, tri_tex_meta,

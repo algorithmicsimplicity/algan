@@ -44,6 +44,7 @@ from algan import (  # noqa: E402
     VideoSettings,
 )
 from algan.settings import SETTINGS  # noqa: E402
+from algan.rendering.raytracing import settings as rt_settings  # noqa: E402
 import algan.rendering.raytracing.raster_pipeline as rp  # noqa: E402
 from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _AA_NUM_SAMPLES,
@@ -63,10 +64,11 @@ def check(ok, msg):
         FAILS.append(msg)
 
 
-def render(build, path, probe=None, shadows=False):
+def render(build, path, probe=None, shadows=False, run=False):
     """Render one frame; with ``probe=(px, ky)`` re-render with the dump on."""
     SceneManager.reset()
     SETTINGS.raytracing.set(shadows=shadows)
+    rt_settings.set_analytic_aa(True, run=run)
     try:
         settings = VideoSettings((W, H), frames_per_second=4, anti_alias_level=1)
         with Scene(video_settings=settings) as scene:
@@ -81,6 +83,7 @@ def render(build, path, probe=None, shadows=False):
                     del os.environ["ALGAN_AA_DUMP"]
     finally:
         SETTINGS.raytracing.set(shadows=False)
+        rt_settings.set_analytic_aa(True, run=False)
     return cv2.imread(path).astype(np.float64)
 
 
@@ -95,13 +98,15 @@ def find_silhouette(img, x_lo=0, x_hi=W):
     return px, (H - 1) - py_png
 
 
-def golden_walk(rows):
+def golden_walk(rows, run=False):
     """Recompute the per-sample transmittance walk from the dumped inputs.
 
     Returns the worst absolute error over every compared column. Mirrors the
     non-glass branches of ``raster_first_shade`` (the probe scenes carry no
-    refraction); corr multiplies both the claim and the occlusion writes when
-    Phase D lands, and the dumped corr column is used exactly as the kernel's.
+    refraction). ``run``: the run-corrected representation -- a triangle's
+    per-fragment magnitude is its mask at density 1 (the exact area is a
+    run-scan input only), an empty mask commits nothing, and the dumped corr
+    column multiplies both the claim and the occlusion writes.
     """
     svis = np.ones(N)
     worst = 0.0
@@ -117,18 +122,22 @@ def golden_walk(rows):
         msk, cov, corr = int(r[6]), float(r[7]), float(r[9])
         mat_alpha, ts = float(r[11]), float(r[13])
         sel = np.array([(msk >> s) & 1 for s in range(N)], dtype=bool)
-        areal = kind in (1, 3) or (not sel.any())
+        is_bez = kind in (1, 3)
+        areal = is_bez or ((not run) and (not sel.any()))
         if kind >= 2:
             sel[:] = True
             areal = False
         if areal:
             dens = cov
             sel = np.ones(N, dtype=bool)
+        elif run and kind < 2:
+            dens = 1.0 if sel.any() else 0.0
         else:
             pop = int(sel.sum())
             dens = min(cov * N / max(pop, 1), 1.0) if pop else 0.0
         eff = svis[sel].sum() / N * dens * corr
         if note == 1:
+            worst = max(worst, abs(eff - r[10]))
             continue  # eff-skip commits nothing
         worst = max(worst, abs(eff - r[10]))
         a_s = mat_alpha * dens
@@ -159,6 +168,14 @@ def main():
     if rows is not None and len(rows):
         err = golden_walk(rows)
         check(err < 2e-5, f"golden walk matches kernel (worst err {err:.2e})")
+
+    # -- 1b. the same walk under the run-corrected representation ------------
+    render(build_trans, path, probe=(px, ky), run=True)
+    rrows = rp.LAST_AA_DUMP.get("resolve")
+    check(rrows is not None and len(rrows) >= 2, "run-mode dump produced rows")
+    if rrows is not None and len(rrows):
+        err = golden_walk(rrows, run=True)
+        check(err < 2e-5, f"run-mode golden walk matches (worst err {err:.2e})")
 
     # -- 2. resolve/shadow walk sync ----------------------------------------
     render(build_trans, path, probe=(px, ky), shadows=True)

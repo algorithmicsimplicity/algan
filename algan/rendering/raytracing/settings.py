@@ -801,6 +801,29 @@ ANALYTIC_AA_BEZ_WEDGE = os.environ.get("ALGAN_ANALYTIC_AA_BEZ_WEDGE", "0") == "1
 # have for free. See DESIGN_analytic_aa.md ss21.
 ANALYTIC_AA_EXACT_TRI = os.environ.get("ALGAN_ANALYTIC_AA_EXACT_TRI", "0") == "1"
 
+# RUN-CORRECTED triangle coverage (DESIGN_analytic_aa_v2.md ss4): the shipped
+# 8-sample fill-rule masks stay the atomic ownership substrate for everything
+# contended, and the exact clipped area is layered on top where nothing is --
+# fragments carry ``_pixel_clip_area`` in ``frag_cov``, sample-less slivers are
+# emitted as area donors at their clipped centroid, and the resolve corrects
+# each uncontended RUN (consecutive same-(surface, facing) fragments over
+# uniform per-sample transmittance) by the single scalar ``E / Q``. Every
+# contended case falls back to the shipped per-sample behavior bit-for-bit --
+# the uniform-svis gate IS the "no overlap" predicate. Subordinate to
+# ANALYTIC_AA / ANALYTIC_AA_TRI; the sliver policy knob is inert under it
+# (sliver behavior is fixed by the design, not configurable).
+ANALYTIC_AA_RUN = os.environ.get("ALGAN_ANALYTIC_AA_RUN", "0") == "1"
+
+# The corr > 1 accounting rule (v2 ss4.4), the design's one open empirical
+# question, decided by harness: "clamp" scales the run's per-sample writes by
+# corr and clamps each at zero (claim exact, leftover keeps a bounded residual
+# of the shed error); "redistribute" additionally pushes the clamped residue
+# onto the run's unowned samples (leftover exact, weirder per-sample
+# semantics). Compile-time template value; both stay byte-identical while
+# ANALYTIC_AA_RUN is off.
+ANALYTIC_AA_RUN_RULES = ("clamp", "redistribute")
+ANALYTIC_AA_RUN_RULE = os.environ.get("ALGAN_ANALYTIC_AA_RUN_RULE", "clamp")
+
 # Sub-pixel samples for what coverage CANNOT antialias analytically: the image
 # seen inside a reflection or through refracting glass. Coverage resolves a
 # mirror's own outline exactly, but the reflected scene is sampled by the
@@ -919,17 +942,25 @@ def set_analytic_aa(
     secondary=None,
     exact=None,
     exact_tri=None,
+    run=None,
+    run_rule=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
-    global ANALYTIC_AA_EXACT_TRI
+    global ANALYTIC_AA_EXACT_TRI, ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
         ANALYTIC_AA_EXACT = bool(exact)
     if exact_tri is not None:
         ANALYTIC_AA_EXACT_TRI = bool(exact_tri)
+    if run is not None:
+        ANALYTIC_AA_RUN = bool(run)
+    if run_rule is not None:
+        if run_rule not in ANALYTIC_AA_RUN_RULES:
+            raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")
+        ANALYTIC_AA_RUN_RULE = run_rule
     ANALYTIC_AA = bool(enabled)
     if bezier is not None:
         ANALYTIC_AA_BEZ = bool(bezier)

@@ -1166,21 +1166,26 @@ def prepare_sparse_raster_coverage(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
-    # 2 selects the CELL representation in the resolve (see _tri_cells).
-    if aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
+    # 2 selects the parked CELL representation, 3 the RUN-CORRECTED one
+    # (DESIGN_analytic_aa_v2.md; see _tri_cells / _tri_run_mode). Run wins.
+    if aa_tri and rt_settings.ANALYTIC_AA_RUN:
+        aa_tri = 3
+    elif aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
         aa_tri = 2
     # The sample-less-triangle policy rides along in the value the GEOMETRY
     # kernels see, so each policy compiles (and caches) its own _ss_pixel. The
-    # resolve and the shadow-event build keep the plain 0/1 flag: the policy
-    # reaches them as a per-fragment mask bit, so they compile once.
-    # Sliver policy AND the exact-area choice ride in the geometry kernels'
-    # template value, so every combination gets its own compiled variant and
-    # its own offline-cache entry (see _sliver_mode / _tri_exact).
-    aa_tri_ss = (1 if aa_tri else 0) * (
-        1
-        + rt_settings.analytic_aa_sliver_mode()
-        + (4 if rt_settings.ANALYTIC_AA_EXACT_TRI else 0)
-    )
+    # resolve and the shadow-event build keep the plain mode value: the policy
+    # reaches them as a per-fragment mask bit, so they compile once per mode.
+    # Sliver policy AND the representation ride in the geometry kernels'
+    # template value (1 + sliver + 4 * repr), so every combination gets its
+    # own compiled variant and its own offline-cache entry (see _sliver_mode /
+    # _tri_repr). The sliver knob is INERT under run mode (v2 ss4.1): pin it
+    # to drop so it cannot fork pointless cache entries.
+    aa_tri_ss = 0
+    if aa_tri:
+        aa_tri_ss = 1 + (
+            2 if aa_tri == 3 else rt_settings.analytic_aa_sliver_mode()
+        ) + 4 * (aa_tri - 1)
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
@@ -1347,8 +1352,17 @@ def prepare_sparse_raster_coverage(
         if aa_bez or aa_tri:
             # A partially covering opaque hit does not hide what is behind it,
             # so it must not terminate its pixel's run: it stays an ordinary
-            # alpha fragment (its alpha already carries the coverage).
-            opaque_s = opaque_s & (cov_s >= AA_FULL_COVERAGE)
+            # alpha fragment (its alpha already carries the coverage). Under
+            # the run representation the test is the SAMPLED claim, matching
+            # the prepass and the resolve's magnitude (v2 ss4.1): a full-mask
+            # fragment occludes every sample whatever its exact area says.
+            if aa_tri == 3:
+                full_s = (msk_s & AA_MASK_ALL) == AA_MASK_ALL
+                opaque_s = opaque_s & torch.where(
+                    ref_s >= 0, full_s, cov_s >= AA_FULL_COVERAGE
+                )
+            else:
+                opaque_s = opaque_s & (cov_s >= AA_FULL_COVERAGE)
         pix_s = key_s >> 32
         covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
 
@@ -1918,18 +1932,16 @@ def raster_iteration_zero(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
-    # 2 selects the CELL representation in the resolve (see _tri_cells).
-    if aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
+    # 2 = parked cells, 3 = run-corrected; encoding as in the sparse path.
+    if aa_tri and rt_settings.ANALYTIC_AA_RUN:
+        aa_tri = 3
+    elif aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
         aa_tri = 2
-    # Policy in the geometry kernels' value only (see the sparse path).
-    # Sliver policy AND the exact-area choice ride in the geometry kernels'
-    # template value, so every combination gets its own compiled variant and
-    # its own offline-cache entry (see _sliver_mode / _tri_exact).
-    aa_tri_ss = (1 if aa_tri else 0) * (
-        1
-        + rt_settings.analytic_aa_sliver_mode()
-        + (4 if rt_settings.ANALYTIC_AA_EXACT_TRI else 0)
-    )
+    aa_tri_ss = 0
+    if aa_tri:
+        aa_tri_ss = 1 + (
+            2 if aa_tri == 3 else rt_settings.analytic_aa_sliver_mode()
+        ) + 4 * (aa_tri - 1)
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     dump_req = _aa_dump_request()
     tri_pos = merged["tri_pos"]
