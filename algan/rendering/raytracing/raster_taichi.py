@@ -1302,30 +1302,27 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                             if (area2 == 0) or ((ffl2 * d0 > -0.7072)
                                                 and (ffl2 * d1 > -0.7072)
                                                 and (ffl2 * d2 > -0.7072)):
-                                if ti.static(store_exact):
-                                    # WRITE needs the centroid (the donor's
-                                    # depth/barycentric point); COUNT only
-                                    # needs the acceptance bit, and the
-                                    # moment-free clip keeps its register
-                                    # footprint down.
-                                    ca, cx_, cy_ = _pixel_clip_centroid(
-                                        ti.math.vec3(
-                                            sx0 - qx, sx1 - qx, sx2 - qx),
-                                        ti.math.vec3(
-                                            sy0 - qy, sy1 - qy, sy2 - qy))
-                                    if ca > 0.0:
-                                        c = ca
-                                        nsm = 1
-                                        sox = cx_ * ti.static(_AA_FIXED_SCALE)
-                                        soy = cy_ * ti.static(_AA_FIXED_SCALE)
-                                else:
-                                    ca = _pixel_clip_area(
-                                        ti.math.vec3(
-                                            sx0 - qx, sx1 - qx, sx2 - qx),
-                                        ti.math.vec3(
-                                            sy0 - qy, sy1 - qy, sy2 - qy))
-                                    if ca > 0.0:
-                                        c = ca
+                                # BOTH count and write take the centroid form:
+                                # a donor's barycentrics move to the clipped
+                                # centroid, and the keep decision samples the
+                                # texture ALPHA at those barycentrics -- a
+                                # count-only moment-free clip left the count
+                                # kernel sampling at the pixel centre instead,
+                                # the two kernels' keep decisions diverged on
+                                # textured prims, and the write pass left
+                                # UNINITIALIZED fragment rows (the
+                                # text_and_media CUDA_ERROR_ILLEGAL_ADDRESS:
+                                # a float bit-pattern walked as a prim id).
+                                ca, cx_, cy_ = _pixel_clip_centroid(
+                                    ti.math.vec3(
+                                        sx0 - qx, sx1 - qx, sx2 - qx),
+                                    ti.math.vec3(
+                                        sy0 - qy, sy1 - qy, sy2 - qy))
+                                if ca > 0.0:
+                                    c = ca
+                                    nsm = 1
+                                    sox = cx_ * ti.static(_AA_FIXED_SCALE)
+                                    soy = cy_ * ti.static(_AA_FIXED_SCALE)
                 # A triangle thinner than the sample spacing contains no sample,
                 # so the set says nothing about it. The DEFAULT policy is to let
                 # it contribute nothing, exactly as supersampling does -- sound

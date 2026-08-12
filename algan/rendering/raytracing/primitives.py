@@ -1178,7 +1178,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             ends = counts.cumsum(1)
             cols = torch.arange(max_triangles, device=device)
             patch_of_col = torch.searchsorted(
-                ends, cols.unsqueeze(0).expand(num_frames, -1), right=True
+                ends.contiguous(),
+                cols.unsqueeze(0).expand(num_frames, -1).contiguous(),
+                right=True,
             ).clamp_max(num_patches - 1)
             self._logical_pn_tri_obj = (
                 patch_source[patch_of_col].to(torch.int32).contiguous()
@@ -1517,7 +1519,6 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     lnx = -dy * inv_len
     lny = dx * inv_len
     circ = vert_circuit.to(device)
-    same = circ.view(-1, 1) == circ.view(1, -1)  # [V, V]
 
     sigma = torch.zeros((T, V), device=device)
     unresolved = ~degen
@@ -1534,14 +1535,18 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
         chunk = max(1, budget // max(T * V, 1))
         for start in range(0, idx.numel(), chunk):
             sel = idx[start : start + chunk]
+            # The same-circuit mask is built per chunk ([Q, V]): a full [V, V]
+            # mask is ~a gigabyte on a text-heavy page (30k+ edges) and was a
+            # native OOM abort in the text_and_media full render.
+            same_sel = circ[sel].view(-1, 1) == circ.view(1, -1)
             off_x = (eps * length * lnx)[:, sel]
             off_y = (eps * length * lny)[:, sel]
             qx, qy = mx[:, sel], my[:, sel]
             left = _circuit_parity(
-                qx + off_x, qy + off_y, ex0, ey0, ex1, ey1, same[sel]
+                qx + off_x, qy + off_y, ex0, ey0, ex1, ey1, same_sel
             )
             right = _circuit_parity(
-                qx - off_x, qy - off_y, ex0, ey0, ex1, ey1, same[sel]
+                qx - off_x, qy - off_y, ex0, ey0, ex1, ey1, same_sel
             )
             valid = (left != right) & unresolved[:, sel]
             s = torch.where(left, 1.0, -1.0)

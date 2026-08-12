@@ -744,6 +744,43 @@ was already stale at HEAD (max dev 170, deterministic) and stays un-rebaselined
   default on its gates; delete the parked code (§6.3); re-baseline with eyes
   on diffs.
 
+  BUILT (2026-08-13). Both defaults ON. `_aa_match_aa2` under the flip:
+  every config the flip touches passes (mesh 0.88x of aa2's error, text
+  0.85x, thin 0.32x, trans 0.93x, shadow 0.92x, softshadow 1.00x; wall 0.91x
+  of aa2), and the one apparent shrink — `shapes` at 1.03x — is PRE-EXISTING
+  at HEAD (wedge-off measures 0.331 vs aa2's 0.322 too; the ss19 "8/11"
+  record had already drifted before this work, and spec/flat/glass keep
+  their documented minified-secondary-content shortfall). The dense tile
+  path was exercised under the defaults (`--dense` tri/text healthy). The
+  parked cells/scalar accounting is deleted per §6.3 (aa_tri value 2
+  retired, not reissued); the kill-switch matrix holds after the deletion:
+  WEDGE=0+RUN=0 is hash-identical to pre-v2 HEAD, ANALYTIC_AA=0 untouched.
+
+  ONE REAL BUG shipped between Phases D and E and was caught by the
+  full-render ladder (text_and_media died with CUDA_ERROR_ILLEGAL_ADDRESS,
+  pinned in minutes by ALGAN_TI_DEBUG=1's bounds checks: a float bit-pattern
+  walked as a primitive id, i.e. an UNINITIALIZED fragment row). The Phase D
+  perf pass had given COUNT a moment-free donor clip while WRITE kept the
+  centroid form — so a donor's barycentrics differed between the two kernels,
+  and on TEXTURED primitives the keep decision samples the texture's ALPHA at
+  those barycentrics: the decisions diverged, count's totals mis-sized
+  write's slots, and the walk read garbage. The standing rule it sharpens:
+  count/write agreement is not just "same predicate" — it is same predicate
+  over BIT-IDENTICAL inputs, and a coordinate that feeds a texture fetch is
+  such an input. Both kernels now share the centroid donor form.
+
+  The §9 sigma-probe cost question is CLOSED by measurement on a six-line
+  720p Text page: the shipped masked-with-early-exit form costs +0.26s per
+  BATCH (T=1 static text probes once per batch, so video renders amortize it
+  per frame; the level-0 pass dominates and is memory-bandwidth-bound). Two
+  rewrites measured WORSE and are not worth revisiting without new structure:
+  per-circuit slicing (+0.5s — hundreds of host syncs from .nonzero/.tolist
+  per circuit per eps round) and a sync-free all-levels form (+1.1s — the
+  early-exit compaction was load-bearing: level 0 resolves ~99% of edges, so
+  probing all six levels unconditionally sextuples the dominant pass). The
+  §9 per-(circuit, frame) cache remains the prepared follow-up if text-heavy
+  save_frame latency ever matters.
+
   Phase F (optional, separately justified) — the 4-sample arbitration
   experiment (§4.8), only after E has soaked.
 
