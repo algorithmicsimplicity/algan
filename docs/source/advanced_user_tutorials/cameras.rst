@@ -143,6 +143,51 @@ Algan also exposes the underlying perspective controls directly:
 screen plane, and the constructor's ``screen_distance`` / ``screen_scale`` set
 them up front. ``fov`` is derived from these, so use one or the other, not both.
 
+.. _camera-aspect-fov:
+
+Aspect ratio widens the horizontal field of view
+------------------------------------------------
+
+``fov`` is *vertical* (as in Three.js). The horizontal field of view is derived
+from it and the output aspect ratio, so **changing the resolution's shape changes
+how wide the camera sees** while the vertical stays fixed. The default 53 degree
+vertical fov gives roughly:
+
+=====================  ==============================
+Resolution             Horizontal field of view
+=====================  ==============================
+1920 x 1080 (16:9)     ~82 degrees
+2560 x 1080 (21:9)     ~96 degrees
+1438 x 426 (3.4:1)     ~119 degrees
+=====================  ==============================
+
+At 119 degrees the frame edge is 59 degrees off axis, and a sphere there is
+projected as an ellipse stretched by ``1 / cos(59 deg)``, about 1.9x. That is
+correct perspective -- a real 119 degree lens does the same thing -- but it is
+rarely what a wide banner or panorama still is after.
+
+For the near-orthographic look of a long lens, narrow the fov and pull the camera
+back by the same factor, so that ``distance * tan(fov / 2)`` (the visible
+half-height at the subject) is unchanged:
+
+.. code-block:: python
+
+    import math
+
+    camera = Scene.get_camera()            # starts at OUT * 7, 3.5 units of
+    camera.set_fov(math.degrees(2 * math.atan(3.5 / 70)))   # half-height at z=0
+    camera.move_to(OUT * 70)               # 10x the distance, same framing
+
+Use :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to` or
+``move`` to reposition a camera. ``move_center_to`` centres a *bounding box*, and
+a Camera's box spans both it and its internal screen plane, so the camera would
+land half the screen distance too far back.
+
+If you want no perspective at all, see :ref:`Orthographic Projection
+<camera-orthographic>` below.
+
+.. _camera-orthographic:
+
 Orthographic Projection
 =======================
 

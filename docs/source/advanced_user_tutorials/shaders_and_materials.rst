@@ -251,6 +251,43 @@ A custom stage is a Taichi ``@ti.func`` plus its parameter specs -- see
 ``cosine_color`` in ``algan/rendering/shaders/fragment_shaders.py`` for the
 template.
 
+Shipped Stage Looks
+-------------------
+
+``algan.rendering.shaders.fragment_stage_library`` collects ready-made stages,
+exported by ``from algan import *``. They are **additive** -- each adds to the
+colour it is handed rather than replacing it -- so they layer over a lit base:
+
+===============  ==============================================================
+Stage            What it adds
+===============  ==============================================================
+``fresnel_rim``  A rim light: ``rim_color * rim_gain * (1 - |N.V|) ** rim_power``.
+                 ``rim_power`` sets how tightly it hugs the silhouette.
+``glass_ball``   The studio glass-ball edge -- two Fresnel lobes, a Gaussian
+                 silhouette ring and two screen-space specular blobs.
+===============  ==============================================================
+
+.. code-block:: python
+
+    from algan import *
+
+    ball = Sphere(radius=1, color=BLUE_E)
+    ball.set_fragment_shader([standard_shader, fresnel_rim])
+    ball.rim_color = TEAL_A
+    ball.rim_power = 3.0
+    ball.spawn()
+
+A rim light is an authoring control rather than a BSDF term, which is why it
+lives here and not on
+:class:`~algan.rendering.shaders.materials.MeshPhysicalMaterial` -- Three.js,
+Unreal, Unity and Blender all keep it out of the physically-based material and
+expose it through a shader graph or custom shader instead. Note that a
+*physically* lit glass ball does not need these at all: give it
+``MeshPhysicalMaterial(transmission=...)`` plus an environment map that is bright
+in the directions the camera cannot see, and the bright rim falls out of
+refraction (see :meth:`~algan.scene.Scene.set_environment_map`). The stages are
+for when you want the look without authoring an environment, or want it stylised.
+
 Custom Ray Bouncing (Scatter Stages)
 ------------------------------------
 

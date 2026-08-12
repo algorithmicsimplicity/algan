@@ -364,6 +364,12 @@ class Scene(RenderLoopMixin):
         materials pick up their surroundings instead of reflecting a void -- the
         cheapest way to make metal look like metal.
 
+        The map is also the backdrop: rays that hit no geometry sample it, so it
+        **replaces** ``background_color`` rather than sitting behind it. Only the
+        camera's share of the map is visible (the frustum's solid angle), and the
+        map is downsampled above 2048 texels wide, so bake the backdrop into it at
+        a resolution that accounts for that if the backdrop carries detail.
+
         Animation
         ---------
         Not animated: the map applies from this point in the timeline onwards.
@@ -372,8 +378,14 @@ class Scene(RenderLoopMixin):
         ----------
         source
             Path to an image file, or an image tensor of shape
-            ``[height, width, >=3]``. Values above ``1.5`` are treated as 0-255 and
-            scaled down. ``None`` removes the current map.
+            ``[height, width, >=3]``. ``None`` removes the current map.
+
+            Byte-ranged sources -- an image file, or an integer-dtype tensor --
+            are divided by 255. A **float tensor is taken as authored**, so
+            values above 1 are kept: that is what makes a light source in the
+            map brighter than white, which is the whole point of an HDR
+            environment. Author in whatever units you like and use ``intensity``
+            to set the overall level.
         intensity
             Brightness multiplier for the map's contribution. Defaults to ``1.0``.
         ambient
@@ -396,6 +408,7 @@ class Scene(RenderLoopMixin):
             self.environment_map = None
             return self
         env = source
+        byte_ranged = False
         if isinstance(env, str):
             import cv2
 
@@ -403,15 +416,21 @@ class Scene(RenderLoopMixin):
             if img is None:
                 raise FileNotFoundError(f"Could not read environment map image: {env}")
             env = torch.from_numpy(img[..., ::-1].copy())  # BGR -> RGB
+            byte_ranged = True
         if not torch.is_tensor(env):
             env = torch.tensor(env)
+        # Only an integer-dtype source is 0-255. A float tensor is an authored
+        # map and is kept as-is: the previous "max > 1.5 means bytes" heuristic
+        # silently divided every HDR environment by 255, turning the map (and
+        # therefore the whole backdrop) black with no warning.
+        byte_ranged = byte_ranged or not torch.is_floating_point(env)
         env = env.float()
         if env.dim() != 3 or env.shape[-1] < 3:
             raise ValueError(
                 "Environment map must have shape [height, width, >=3], got "
                 f"{tuple(env.shape)}"
             )
-        if env.max() > 1.5:
+        if byte_ranged:
             env = env / 255.0
         self.environment_map = env[..., :3].contiguous()
         self.environment_intensity = float(intensity)
@@ -934,7 +953,10 @@ class Scene(RenderLoopMixin):
             True; False leaves it alone and reports ``"skipped"``.
         background_color
             A color, image, or procedural callable, applied to this still only.
-            Defaults to ``None``, meaning keep the Scene's background.
+            Defaults to ``None``, meaning keep the Scene's background. See
+            :meth:`~.Scene.set_background_color` for the callable's contract --
+            it runs on the render device and is handed broadcastable grids, not
+            scalars.
 
         Returns
         -------
@@ -1045,6 +1067,20 @@ class Scene(RenderLoopMixin):
             A colour, a path to an image (scaled to the frame), or a procedural
             callable ``(x, y, time) -> color``. A colour with alpha below 1 makes the
             output transparent. ``None`` leaves the background unchanged.
+
+            The callable is evaluated on the **render device** and receives
+            broadcastable grids, not scalars: ``x`` is ``[1, width, 1]`` and ``y``
+            is ``[height, 1, 1]``, both in ``[0, 1)`` with ``y = 0`` at the
+            *bottom* of the frame, and ``time`` is ``[frames, 1, 1, 1]`` in
+            seconds. It must return either a resolution-free colour or a tensor
+            broadcasting to ``[frames, height, width, channels]`` -- so build
+            constants with ``x.new_tensor(...)`` (not ``torch.tensor``, which
+            lands on the CPU) and keep the leading frame axis, e.g. by
+            multiplying a per-pixel term by ``torch.ones_like(time)``. Both are
+            easy to miss; the failure modes are a device-mismatch ``RuntimeError``
+            and "callable background must produce one value per supersampled
+            pixel".
+
         overwrite
             Whether to replace a background that has already been set. Defaults to
             True; False makes the call a no-op once a background exists, which is how
@@ -1054,6 +1090,17 @@ class Scene(RenderLoopMixin):
         -------
         :class:`~.Scene`
             This Scene, so calls can be chained.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            def vignette(x, y, t):
+                r2 = (x - 0.5) ** 2 + (y - 0.5) ** 2
+                fade = torch.exp(-r2 * 4) * torch.ones_like(t)
+                return x.new_tensor((0.02, 0.03, 0.08)) * fade
+
+            Scene.save_frame("shot", background_color=vignette)
         """
         if (background_color is None) or (self.background_is_set and not overwrite):
             return self
@@ -1153,11 +1200,15 @@ class Scene(RenderLoopMixin):
             is the same as if the preview had never happened.
         background_color
             A color, image, or procedural callable ``(x, y, time) -> color``.
-            Python callables receive broadcastable Torch tensors. A Taichi
-            ``@ti.func`` receives scalar normalized coordinates and time and
-            must return a color vector; it is evaluated for the whole render
-            batch by one Taichi kernel writing directly into the output buffer.
-            Defaults to ``None``, meaning keep the Scene's background.
+            Python callables run on the render device and receive broadcastable
+            Torch tensors, not scalars -- see
+            :meth:`~.Scene.set_background_color` for the exact shapes and the two
+            traps (build constants with ``x.new_tensor``; keep the leading frame
+            axis). A Taichi ``@ti.func`` receives scalar normalized coordinates
+            and time and must return a color vector; it is evaluated for the
+            whole render batch by one Taichi kernel writing directly into the
+            output buffer. Defaults to ``None``, meaning keep the Scene's
+            background.
         animate_fade_out
             Whether to fade every spawned mob out at the end of the video.
             Recorded on the timeline, so it persists even when ``reset`` is

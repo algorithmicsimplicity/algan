@@ -240,6 +240,7 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 "algan/utils/audio_utils.py" = ["E402"]
 "docs/source/conf.py" = ["E402"]
 "algan/rendering/shaders/fragment_shaders.py" = ["I002"]
+"algan/rendering/shaders/fragment_stage_library.py" = ["I002"]
 "algan/utils/taichi_utils.py" = ["I002"]
 
 [tool.ruff.lint.isort]

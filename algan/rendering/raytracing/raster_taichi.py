@@ -3746,6 +3746,68 @@ def raster_first_shade(
                     bounced = True
                     break
                 else:
+                    # The pass-through outweighs the reflection, so it keeps the
+                    # primary ray -- but the reflection is NOT therefore
+                    # droppable. Under analytic coverage ``cover_pass`` is the
+                    # share of the pixel this fragment does not cover, which the
+                    # walk picks up from the fragments behind it; it is not a
+                    # competing continuation the way material transparency is.
+                    # A dielectric reflects ~4%, so every fragment covering less
+                    # than ~96% of its pixel failed the test above and lost its
+                    # Fresnel reflection entirely -- on a mesh diced finer than
+                    # a pixel that is most of the surface, and it rendered as a
+                    # dark lattice at the tessellation's own period across
+                    # anything seen through the glass. The pool is shared and
+                    # append-only, so the reflection simply takes a slot of its
+                    # own, exactly as ``split_refl`` does for a semi-transparent
+                    # reflector below.
+                    rwt = weight * refl_energy
+                    rwt_max = ti.max(rwt[0], ti.max(rwt[1], rwt[2]))
+                    if rwt_max > MIN_WEIGHT:
+                        refl_rd, nref = _reflect_frame(surf_rd, normal,
+                                                       geo_normal)
+                        rhp = surf_pos
+                        if ti.static(sec_aa > 1) \
+                                and (rwt_max > sec_min_energy) and (sec_n > 1):
+                            rwsub = rwt * (1.0 / ti.cast(sec_n, ti.f32))
+                            jtap = 0
+                            for s in ti.static(range(sec_aa)):
+                                if (sec_pm >> s) & 1:
+                                    rdj, hpj, nj, _b1, _b2 = \
+                                        _jittered_surface_sample(
+                                            f, px, py,
+                                            ti.static(
+                                                _AA_SEC_JITTER[sec_aa][s][0]),
+                                            ti.static(
+                                                _AA_SEC_JITTER[sec_aa][s][1]),
+                                            gen_meta, fetched_bez, prim, rhp,
+                                            nref, tri_pos, tri_norm, tri_uvs,
+                                            tri_tex_meta, textures,
+                                            num_colored_triangles,
+                                            cam_origin, screen_point,
+                                            pixel_basis_x, pixel_basis_y)
+                                    rdr, nj = _reflect_frame(rdj, nj,
+                                                             geo_normal)
+                                    if ti.static(glossy != 0):
+                                        if rough > _GLOSSY_MIN_ROUGHNESS:
+                                            rdr = _glossy_reflect(
+                                                rdj, nj, rough, jtap, sec_n,
+                                                g_roff, g_aoff)
+                                    jtap += 1
+                                    _spawn_pool_ray(
+                                        rs_ro, rs_rd, rs_acc, rs_sca, rs_int,
+                                        rs_pix, rs_alloc,
+                                        hpj + nj * (10.0 * MIN_HIT_DISTANCE),
+                                        rdr, rwsub, base_dist + t_hit,
+                                        bounces_left - 1, processed, pixel, r,
+                                        compact)
+                        else:
+                            _spawn_pool_ray(
+                                rs_ro, rs_rd, rs_acc, rs_sca, rs_int, rs_pix,
+                                rs_alloc,
+                                rhp + nref * (10.0 * MIN_HIT_DISTANCE),
+                                refl_rd, rwt, base_dist + t_hit,
+                                bounces_left - 1, processed, pixel, r, compact)
                     if ti.static(aa_grp):
                         for s in ti.static(range(_AA_NUM_SAMPLES)):
                             svis[s] *= 1.0 - a_s * slots[s]

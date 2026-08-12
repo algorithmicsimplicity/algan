@@ -252,3 +252,5 @@ with Seq():
         emitters[2].opacity = 1.0
         emitters[3].opacity = 1.0
     Scene.wait(0.3)
+
+Scene.save_video()

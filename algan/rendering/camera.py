@@ -18,6 +18,38 @@ from algan.utils.tensor_utils import (
 
 
 class Camera(Mob):
+    """The Scene's viewpoint. A Mob, so it animates like one.
+
+    Positioning
+    -----------
+    Use :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to` (or
+    ``move`` for a relative step) -- they set the camera's own location and carry
+    its screen along. Do **not** use
+    :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.move_center_to`: that
+    centres a *bounding box*, and a Camera's box spans it and its internal screen
+    plane, so the camera lands half the screen distance behind where you asked.
+
+    Field of view and aspect ratio
+    ------------------------------
+    ``fov`` / :meth:`set_fov` are **vertical**, matching Three.js's
+    ``PerspectiveCamera``. The horizontal field of view is derived from it and
+    the output aspect ratio, so changing the resolution's shape changes how wide
+    the camera sees while the vertical stays put. The default 53 degree vertical
+    fov gives about 82 degrees horizontally at 16:9, but about 119 degrees on a
+    3.4:1 banner -- wide enough that an off-axis sphere is visibly projected as an
+    ellipse (stretched by ``1 / cos(angle off axis)``, so ~1.9x at that frame's
+    edge). That is correct perspective, not a bug, but it is rarely what a wide
+    still is after: for the near-orthographic look of a long lens, narrow the fov
+    and pull back by the same factor, keeping ``distance * tan(fov / 2)``
+    constant::
+
+        camera = Scene.get_camera()
+        camera.set_fov(math.degrees(2 * math.atan(3.5 / 70)))
+        camera.move_to(OUT * 70)  # was OUT * 7, so 10x the distance
+
+    Alternatively :meth:`set_to_orthographic` removes the projection entirely.
+    """
+
     def __init__(
         self,
         orthographic=False,
@@ -153,6 +185,10 @@ class Camera(Mob):
         """Set the vertical field of view (degrees). The camera stays where it
         is; its screen moves along the forward axis so that the given angle is
         spanned (small fov = telephoto, large fov = wide angle). Animatable.
+
+        The horizontal field of view follows from this and the output aspect
+        ratio, so a wide frame sees much wider than this angle -- see the
+        :class:`Camera` class docstring.
 
         Parameters
         ----------

@@ -518,7 +518,7 @@ class Surface(Mob):
         glow_texture=None,
         ignore_normals=False,
         geometry_tolerance=0.001,
-        render_tolerance=0.0001,
+        render_tolerance=0.001,
         min_grid_resolution=4,
         max_grid_resolution=200,
         resolution_shrink_margin=0.1,

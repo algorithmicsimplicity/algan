@@ -2611,8 +2611,9 @@ def wavefront_shade(
                                 if ti.static(compact):
                                     rs_int[c, 4] = accum_pix
                         # Primary carries the heavier of reflection /
-                        # coverage-miss (three continuations, two rays). At full
-                        # coverage the miss is empty, so it always reflects.
+                        # coverage-miss; the lighter one takes a pool slot, so
+                        # all three continuations are traced. At full coverage
+                        # the miss is empty and the primary always reflects.
                         if (refl_max > MIN_ALPHA) \
                                 and (refl_max >= cover_pass):
                             hit_point = ro + t_hit * rd
@@ -2627,6 +2628,45 @@ def wavefront_shade(
                             bounced = True
                             break
                         else:
+                            # The coverage-miss keeps the primary (it is the
+                            # depth-layer walk), but the reflection is not
+                            # therefore droppable: the pool is shared and
+                            # append-only, so it takes a slot of its own, the
+                            # same way ``split_refl`` does for a semi-transparent
+                            # reflector below. Dropping it cost a partially
+                            # covering glass fragment its whole Fresnel lobe --
+                            # a dielectric's ~4% never outweighs the miss (see
+                            # the matching branch in ``raster_taichi``).
+                            rwt = weight * refl_energy
+                            rwt_max = ti.max(rwt[0], ti.max(rwt[1], rwt[2]))
+                            if rwt_max > MIN_WEIGHT:
+                                c, have_slot = _reserve_continuation_slot(
+                                    rs_alloc, rs_ro.shape[0])
+                                if have_slot:
+                                    rdr, nref = _reflect_frame(rd, normal,
+                                                               geo_normal)
+                                    hp = ro + t_hit * rd
+                                    for k in ti.static(range(3)):
+                                        rs_ro[c, k] = (
+                                            hp[k] + nref[k]
+                                            * (10.0 * MIN_HIT_DISTANCE))
+                                        rs_rd[c, k] = rdr[k]
+                                    for k in ti.static(range(4)):
+                                        rs_acc[c, k] = 0.0
+                                    rs_sca[c, 0] = rwt[0]
+                                    rs_sca[c, 1] = 0.0
+                                    rs_sca[c, 2] = 1e30
+                                    rs_sca[c, 3] = -1e30
+                                    rs_sca[c, 4] = base_dist + t_hit
+                                    rs_sca[c, 5] = rwt[1]
+                                    rs_sca[c, 6] = rwt[2]
+                                    rs_int[c, 0] = bounces_left - 1
+                                    rs_int[c, 1] = processed
+                                    rs_int[c, 2] = _ACTIVE
+                                    rs_int[c, 3] = 0
+                                    rs_pix[c] = pix
+                                    if ti.static(compact):
+                                        rs_int[c, 4] = accum_pix
                             weight *= cover_pass
                             t_prev = t_hit
                             layer_prev = hit_layer

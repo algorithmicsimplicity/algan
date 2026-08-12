@@ -164,6 +164,7 @@ from algan.rendering.shaders.fragment_shaders import (
     FragmentStage,
     cosine_color,
 )
+from algan.rendering.shaders.fragment_stage_library import fresnel_rim, glass_ball
 from algan.settings.kernel_settings import KERNEL_REGISTRY
 
 KERNEL_REGISTRY.render_kernel = render_batch_raytraced
@@ -305,7 +306,9 @@ _INTERNAL_EXPORT_NAMES = frozenset(
 )
 
 # Public names that the rules above would otherwise miss.
-_EXTRA_EXPORTS = ("cosine_color", "rate_funcs")
+# FragmentStage instances are neither callable nor upper-case, so the rules
+# below do not pick them up.
+_EXTRA_EXPORTS = ("cosine_color", "fresnel_rim", "glass_ball", "rate_funcs")
 
 
 def _is_root_export(name, value):

@@ -1302,7 +1302,19 @@ def set_indirect_bounce_strength(strength):
 
 
 def set_tonemapping(enabled):
-    """Enable or disable ACES Filmic Tonemapping in the ray-tracing rendering kernels."""
+    """Enable or disable tonemapping of the rendered frame.
+
+    The curve is selected by :func:`set_tonemap_method` ("neutral", the Khronos
+    PBR Neutral mapper, or "agx") -- not ACES, whatever the old docstring said.
+
+    Disabling it makes output **linear**: an authored colour lands on the pixel
+    it names, which is what you want when matching a reference image. This flag
+    is honoured wherever the tonemap actually runs, so it works on its own --
+    with ``post_process_tonemap`` on (the default) the composite writes linear
+    HDR and the post stage simply clamps instead of applying a curve. There is
+    no need to also disable ``post_process_tonemap``, and doing so costs HDR
+    headroom (see :func:`set_post_process_tonemap`).
+    """
     global TONEMAPPING
     TONEMAPPING = bool(enabled)
 
@@ -1322,7 +1334,15 @@ def set_tonemap_method(method):
 
 
 def set_post_process_tonemap(enabled):
-    """Enable or disable post-process tonemapping instead of in-kernel tonemapping."""
+    """Enable or disable post-process tonemapping instead of in-kernel tonemapping.
+
+    Disabling it makes the composite write **uint8**, which clamps every channel
+    -- including the glow lane -- to 0-255 before bloom runs. A mob with
+    ``glow > 1`` therefore saturates and its halo comes out markedly dimmer and
+    less saturated than on the default HDR path. Turn this off only for an A/B
+    against the legacy in-kernel tonemap; to get linear output, use
+    :func:`set_tonemapping` alone, which keeps the HDR buffer.
+    """
     global POST_PROCESS_TONEMAP
     POST_PROCESS_TONEMAP = bool(enabled)
 
