@@ -337,16 +337,6 @@ def _sliver_mode(aa):
     return max(int(aa) - 1, 0) % 4
 
 
-def _tri_cells(aa_tri):
-    """Whether the resolve reads packed CELLS rather than a sample mask.
-
-    Rides in the resolve's own ``aa_tri`` template (1 points, 2 cells, 3
-    run-corrected) so representations cannot share a compiled kernel or an
-    offline-cache entry.
-    """
-    return int(aa_tri) == 2
-
-
 def _tri_run_mode(aa_tri):
     """Whether the resolve applies the RUN rule (DESIGN_analytic_aa_v2.md ss4):
     ownership and per-fragment magnitude from the mask, exact areas read only
@@ -363,19 +353,10 @@ def _tri_run_rule_b(aa_tri):
 
 def _tri_repr(aa):
     """Triangle representation carried in the geometry kernels' ``aa`` value:
-    0 sampled points, 1 the parked cells emission, 2 run-corrected exact areas
-    (``1 + sliver_mode + 4 * repr``, see :func:`_sliver_mode`)."""
+    0 sampled points, 1 retired (the deleted cells emission; the value is not
+    reissued), 2 run-corrected exact areas (``1 + sliver_mode + 4 * repr``,
+    see :func:`_sliver_mode`)."""
     return max(int(aa) - 1, 0) // 4
-
-
-def _tri_exact(aa):
-    """Whether triangle coverage is the parked CELLS emission (repr 1).
-
-    Rides in the same ``aa`` template value as the sliver policy (see
-    :func:`_sliver_mode`) so that each combination compiles its own kernel and
-    gets its own offline-cache entry.
-    """
-    return _tri_repr(aa) == 1
 
 
 def _tri_run(aa):
@@ -534,38 +515,6 @@ def _halfplane_clip_area(nx, ny, d):
             else:
                 area = 1.0 - corner
     return area
-
-
-# Pixel CELLS: a 2x2 tiling of the pixel square, each cell half a pixel across.
-#
-# This is the representation that lets an exact area drive the resolve at all.
-# Eight sample POINTS force a fragment's claim and its occlusion to be the same
-# |M|/N -- consistent, but quantized to eighths, and an exact area cannot be
-# substituted for either without breaking the other (ss21.3). A tiling of cells
-# carrying exact clipped AREAS has all three properties at once: the claim sums
-# to the true area exactly, no cell can exceed 1, and two triangles sharing an
-# edge still partition every cell between them.
-_AA_NUM_CELLS = 4
-_AA_CELL_CENTRES = ((-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25))
-_AA_CELL_HALF = 0.25
-_AA_CELL_AREA = 0.25
-
-
-@ti.func
-def _cell_clip_area(vx, vy, k: ti.template()):
-    """Exact area of (triangle n cell k), as a FRACTION of the cell.
-
-    Needs no clipping code of its own: a cell is the pixel square translated to
-    its centre and scaled by two, so mapping the triangle through that inverse
-    turns the query straight back into :func:`_pixel_clip_area` -- already exact,
-    already validated, and already known to sum over a tiling, which is the
-    property the whole cell representation rests on.
-    """
-    cx = ti.static(_AA_CELL_CENTRES[k][0])
-    cy = ti.static(_AA_CELL_CENTRES[k][1])
-    return _pixel_clip_area(
-        ti.math.vec3((vx[0] - cx) * 2.0, (vx[1] - cx) * 2.0, (vx[2] - cx) * 2.0),
-        ti.math.vec3((vy[0] - cy) * 2.0, (vy[1] - cy) * 2.0, (vy[2] - cy) * 2.0))
 
 
 @ti.func
@@ -745,28 +694,8 @@ def _popcount_samples(x):
     return ti.cast((v + (v >> 8)) & ti.u32(0x1F), ti.i32)
 
 
-# Cell coverage packs into the SAME int32 lane the sample mask used: four cells
-# at eight bits each, which is 1/255 per cell against the point set's 1/8 for the
-# whole pixel. No new per-fragment storage.
-_AA_CELL_QUANT = 255.0
-_AA_CELLS_FULL = -1  # 0xFFFFFFFF: every cell fully covered
-
-
 @ti.func
-def _unpack_cells(msk):
-    """Four packed cell coverages as a vec4 in [0, 1]."""
-    u = ti.cast(msk, ti.u32)
-    return ti.math.vec4(
-        ti.cast(u & ti.u32(0xFF), ti.f32),
-        ti.cast((u >> 8) & ti.u32(0xFF), ti.f32),
-        ti.cast((u >> 16) & ti.u32(0xFF), ti.f32),
-        ti.cast((u >> 24) & ti.u32(0xFF), ti.f32),
-    ) * ti.static(1.0 / _AA_CELL_QUANT)
-
-
-@ti.func
-def _coverage_slots(cov, msk, areal, cells: ti.template(),
-                    run: ti.template()):
+def _coverage_slots(cov, msk, areal, run: ti.template()):
     """A fragment's coverage as one value per resolve slot, both modes at once.
 
     Returns ``(slots, nsm)``: how much of each of the ``_AA_NUM_SAMPLES`` slots
@@ -779,18 +708,11 @@ def _coverage_slots(cov, msk, areal, cells: ti.template(),
 
     POINT mode fills a slot with the fragment's density where its mask is set and
     zero elsewhere, which is exactly what the masked and areal branches computed.
-
-    CELL mode has only four values but writes each into TWO slots. That is not a
-    hack for its own sake: it keeps every loop bound and the ``1/N`` in the
-    formulas above untouched, so switching representations cannot perturb the
-    point path, and the duplicated pair stays equal forever because both copies
-    are always attenuated by the same factor. ``sum(slots)/N`` then works out to
-    ``sum(cells)/4``, the fragment's true area.
     """
     slots = ti.Vector([0.0 for _ in range(_AA_NUM_SAMPLES)])
     nsm = 0
     dens = 1.0
-    if ti.static(run and not cells):
+    if ti.static(run):
         # RUN mode (DESIGN_analytic_aa_v2.md ss3): a triangle fragment's
         # ownership, occlusion AND per-fragment magnitude all come from the
         # mask at literal density 1 -- the exact area in ``cov`` is read only
@@ -807,19 +729,7 @@ def _coverage_slots(cov, msk, areal, cells: ti.template(),
                 if (msk >> s) & 1:
                     slots[s] = 1.0
             nsm = _popcount_samples(msk)
-    elif ti.static(cells):
-        if areal:
-            # A circuit writes no mask lane at all, and a scalar coverage has no
-            # position in the pixel, so it spreads over every cell -- the same
-            # reading it has always had.
-            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                slots[s] = cov
-        else:
-            cv = _unpack_cells(msk)
-            for k in ti.static(range(_AA_NUM_CELLS)):
-                slots[ti.static(2 * k)] = cv[ti.static(k)]
-                slots[ti.static(2 * k + 1)] = cv[ti.static(k)]
-        nsm = _AA_NUM_SAMPLES
+
     else:
         # An INDICATOR here, with the magnitude left in ``dens``, which is what
         # keeps the point path bit-identical: ``eff`` stays "sum the visible
@@ -1416,52 +1326,6 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                                             sy0 - qy, sy1 - qy, sy2 - qy))
                                     if ca > 0.0:
                                         c = ca
-                    if ti.static(_tri_exact(aa)):
-                    # CELLS instead of points (DESIGN_analytic_aa.md ss21.4).
-                    #
-                    # The exact area cannot simply replace the sample count: a
-                    # fragment's claim and its occlusion have to be the same
-                    # quantity, and with point samples both are |M|/N, so
-                    # substituting an area for one of them makes a boundary
-                    # pixel stop summing to 1 (ss21.3, measured at 6000 interior
-                    # notches). Cells carry an exact area PER SLOT, so claim and
-                    # occlusion are the same number again, no slot can exceed 1,
-                    # and two triangles sharing an edge still partition every
-                    # cell between them.
-                    #
-                    # The top-left fill rule above is dead weight in this mode --
-                    # it exists to make binary point ownership exact at a shared
-                    # edge, which clipped areas summing over a tiling give for
-                    # free -- but it is left running rather than compiled out
-                    # until the mode is the default, so the two paths stay
-                    # comparable.
-                        vxx = ti.math.vec3(sx0 - qx, sx1 - qx, sx2 - qx)
-                        vyy = ti.math.vec3(sy0 - qy, sy1 - qy, sy2 - qy)
-                        # The EXACT clipped area, and nothing else: the resolve
-                        # sums these within a surface, so no sub-pixel position
-                        # is needed. The mask lane carries only the facing bit,
-                        # which is what keeps a closed mesh's two sheets apart --
-                        # packing anything else into it (an earlier revision
-                        # packed per-cell areas) collides with the flag bit and
-                        # scrambles the sheet grouping.
-                        m = 0
-                        if oi < 0:
-                            m = _AA_BACKFACE_BIT
-                        # Depth and barycentrics move to the centroid of the
-                        # CLIPPED REGION, which is inside the triangle because an
-                        # intersection of convex sets is convex. The sample
-                        # centroid did the same job for the same reason (ss15);
-                        # an area-weighted average of cell CENTRES would not, and
-                        # would put the silhouette mis-sort back.
-                        #
-                        # Fed through the existing re-evaluation below by posing
-                        # as a one-sample centroid in lattice units.
-                        _ca, ox, oy = _pixel_clip_centroid(vxx, vyy)
-                        c = _ca
-                        accept = c > 0.0
-                        nsm = 1
-                        sox = ox * ti.static(_AA_FIXED_SCALE)
-                        soy = oy * ti.static(_AA_FIXED_SCALE)
                 # A triangle thinner than the sample spacing contains no sample,
                 # so the set says nothing about it. The DEFAULT policy is to let
                 # it contribute nothing, exactly as supersampling does -- sound
@@ -1476,7 +1340,6 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                 # the pixel it covers, and mark it a sliver so the resolve treats
                 # that claim as provisional.
                     if ti.static(_sliver_mode(aa) != _AA_SLIVER_DROP
-                                 and not _tri_exact(aa)
                                  and not _tri_run(aa)):
                         if m == 0:
                         # The weight must be the EXACT clipped area: the
@@ -1515,9 +1378,7 @@ def _ss_pixel(px, py, sm, vm, cam_o, il, aa: ti.template(),
                                 # occluding it (ss18).
                                     m = (1 << best_k) | _AA_SLIVER_BIT
                                     c = ca
-                    if ti.static(_tri_exact(aa)):
-                        accept = c > 0.0
-                    elif ti.static(_tri_run(aa)):
+                    if ti.static(_tri_run(aa)):
                         # Acceptance widens to "any exact area": a sample-less
                         # sliver is an area donor now, not a drop.
                         accept = c > 0.0
@@ -3012,7 +2873,6 @@ def raster_shadow_event_build(
         # per-sample transmittance (see its docstring). Any divergence here
         # desynchronizes every shadow id from its fragment.
         weight = ti.math.vec3(1.0, 1.0, 1.0)
-        cells = ti.static(_tri_cells(aa_tri))
         svis = ti.Vector([1.0 for _ in range(_AA_NUM_SAMPLES)])
         seam_t = -1e30
         cprev_t = -1e30
@@ -3031,17 +2891,6 @@ def raster_shadow_event_build(
         run_U = 0
         run_resid = 0.0
         run_pending = 0
-        # SURFACE accounting (DESIGN ss21.9). Four scalars replace the whole
-        # per-sample array: the pixel's remaining transmittance in front of the
-        # current object, how much of the pixel the current SHEET has covered,
-        # the largest sheet the current object has managed, and what the object
-        # has absorbed so far.
-        rem = 1.0
-        sheet_cov = 0.0
-        obj_cov = 0.0
-        obj_absorb = 0.0
-        cur_obj = -2147483647
-        cur_face = 0
         bounces_left = max_bounces
         processed = 0
         start = run_offsets[r]
@@ -3069,7 +2918,6 @@ def raster_shadow_event_build(
             dens = 1.0
             sliver = False
             tie = False
-            contrib = 0.0
             a_s = 0.0
             # Dump-only locals; see raster_first_shade for the scoping note.
             d_mat = 0.0
@@ -3139,136 +2987,95 @@ def raster_shadow_event_build(
 
             eff = cov
             if ti.static(aa_grp):
-                sliver = False
-                if ti.static(not cells):
-                    sliver = (msk & _AA_SLIVER_BIT) != 0
-                    msk &= _AA_MASK_ALL
-                if ti.static(cells):
-                    # WITHIN a surface, coverage ADDS; BETWEEN surfaces it
-                    # composites. That is the whole idea: a mesh's triangles are
-                    # pieces of one shape, and a 2D rasterizer never has this
-                    # problem because it rasterizes a whole closed path at once.
-                    # Summing exact clipped areas over a tiling is exact (it is
-                    # property 3 of _aa_clip_area_check), so an interior edge
-                    # stops existing rather than having to be partitioned.
-                    #
-                    # A closed mesh needs its two SHEETS kept apart, though. The
-                    # front and back of a sphere both cover a silhouette pixel,
-                    # and they cover the SAME part of it, so their areas must not
-                    # add -- the object's coverage is the larger sheet, not the
-                    # sum. The facing bit separates them exactly and for free.
-                    sid = -1 - ref
-                    fce = 0
-                    if not is_bez:
-                        sid = tri_obj[f % tri_obj.shape[0], ref]
-                        if (msk & _AA_BACKFACE_BIT) != 0:
-                            fce = 1
-                    if sid != cur_obj:
-                        rem *= 1.0 - obj_absorb
-                        obj_absorb = 0.0
-                        obj_cov = 0.0
-                        sheet_cov = 0.0
-                        cur_obj = sid
-                        cur_face = fce
-                    else:
-                        if fce != cur_face:
-                            obj_cov = ti.max(obj_cov, sheet_cov)
-                            sheet_cov = 0.0
-                            cur_face = fce
-                    old_o = ti.max(obj_cov, sheet_cov)
-                    sheet_cov = ti.min(1.0, sheet_cov + cov)
-                    new_o = ti.max(obj_cov, sheet_cov)
-                    # What this fragment newly reveals of the pixel.
-                    contrib = new_o - old_o
-                    eff = contrib * rem
-                else:
-                    # The run rule, in lockstep with raster_first_shade (any
-                    # divergence desynchronizes every shadow id; see the
-                    # kernel docstring).
-                    if ti.static(_tri_run_mode(aa_tri)):
-                        if (not is_bez) and (not from_z) \
-                                and ((q - 1) >= run_end):
-                            if ti.static(_tri_run_rule_b(aa_tri)):
-                                if run_pending != 0:
-                                    _run_redistribute(svis, run_U, run_resid)
-                                    run_pending = 0
-                                    run_resid = 0.0
-                            run_mode = 0
-                            run_end = q
-                            if (msk & _AA_MASK_ALL) != _AA_MASK_ALL:
-                                v0 = svis[0]
-                                uni_v = v0 > 0.0
-                                for s in ti.static(
-                                        range(1, _AA_NUM_SAMPLES)):
-                                    if svis[s] != v0:
-                                        uni_v = False
-                                if uni_v:
-                                    to_row = f % tri_obj.shape[0]
-                                    sid0 = tri_obj[to_row, ref]
-                                    face0 = 0
-                                    if (frag_msk[idx]
-                                            & _AA_BACKFACE_BIT) != 0:
-                                        face0 = 1
-                                    rE, rU, rj = _aa_run_scan(
-                                        q - 1, nrun, start, sid0, face0,
-                                        to_row, frag_ref, frag_cov,
-                                        frag_msk, tri_obj)
-                                    run_end = rj
-                                    if rU == _AA_MASK_ALL:
-                                        run_mode = 1
-                                        run_corr = 1.0
-                                    elif rU == 0:
-                                        run_mode = 2
-                                        run_pscale = (ti.min(rE, 1.0)
-                                                      / ti.max(rE, 1e-9))
-                                        run_vstart = v0
-                                        run_claimed = 0.0
-                                    else:
-                                        run_mode = 1
-                                        qq_r = (ti.cast(
-                                            _popcount_samples(rU), ti.f32)
-                                            * _AA_SAMPLE_WEIGHT)
-                                        # Capped by the tiling bound alone:
-                                        # within one sheet exact areas sum to
-                                        # <= 1 over the pixel, so E above 1 is
-                                        # a mis-scan (overlap double-count)
-                                        # and is capped, while E/Q well above
-                                        # 1 is REAL for a sub-pixel rod that
-                                        # owns one sample but covers several
-                                        # samples' worth of area -- the
-                                        # measured case that killed the
-                                        # designed [0.5, 2] clamp (thin ink
-                                        # stalled at 0.88). Rule B's
-                                        # redistribution keeps the occlusion
-                                        # side exact under large corr.
-                                        run_corr = ti.min(rE, 1.0) / qq_r
-                                    if ti.static(
-                                            _tri_run_rule_b(aa_tri)):
-                                        if run_mode == 1:
-                                            run_U = rU
-                                            run_resid = 0.0
-                                            run_pending = 1
-                    slots, nsm, dens = _coverage_slots(
-                        cov, msk, is_bez or sliver, cells,
-                        ti.static(_tri_run_mode(aa_tri)))
-                    vis = 0.0
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        vis += slots[s] * svis[s]
-                    eff = vis * _AA_SAMPLE_WEIGHT * dens
-                    if ti.static(_tri_run_mode(aa_tri)):
-                        if (not is_bez) and (not from_z) \
-                                and ((q - 1) < run_end):
-                            if run_mode == 1:
-                                cfac = run_corr
-                                eff *= run_corr
-                            elif run_mode == 2:
-                                run_pd = run_pscale * cov
-                                eff = run_pd * run_vstart
-                                dens = run_pd / ti.max(
-                                    1.0 - run_claimed, 1e-6)
-                                for s in ti.static(range(_AA_NUM_SAMPLES)):
-                                    slots[s] = 1.0
-                                nsm = _AA_NUM_SAMPLES
+                sliver = (msk & _AA_SLIVER_BIT) != 0
+                msk &= _AA_MASK_ALL
+                # The run rule, in lockstep with raster_first_shade (any
+                # divergence desynchronizes every shadow id; see the
+                # kernel docstring).
+                if ti.static(_tri_run_mode(aa_tri)):
+                    if (not is_bez) and (not from_z) \
+                            and ((q - 1) >= run_end):
+                        if ti.static(_tri_run_rule_b(aa_tri)):
+                            if run_pending != 0:
+                                _run_redistribute(svis, run_U, run_resid)
+                                run_pending = 0
+                                run_resid = 0.0
+                        run_mode = 0
+                        run_end = q
+                        if (msk & _AA_MASK_ALL) != _AA_MASK_ALL:
+                            v0 = svis[0]
+                            uni_v = v0 > 0.0
+                            for s in ti.static(
+                                    range(1, _AA_NUM_SAMPLES)):
+                                if svis[s] != v0:
+                                    uni_v = False
+                            if uni_v:
+                                to_row = f % tri_obj.shape[0]
+                                sid0 = tri_obj[to_row, ref]
+                                face0 = 0
+                                if (frag_msk[idx]
+                                        & _AA_BACKFACE_BIT) != 0:
+                                    face0 = 1
+                                rE, rU, rj = _aa_run_scan(
+                                    q - 1, nrun, start, sid0, face0,
+                                    to_row, frag_ref, frag_cov,
+                                    frag_msk, tri_obj)
+                                run_end = rj
+                                if rU == _AA_MASK_ALL:
+                                    run_mode = 1
+                                    run_corr = 1.0
+                                elif rU == 0:
+                                    run_mode = 2
+                                    run_pscale = (ti.min(rE, 1.0)
+                                                  / ti.max(rE, 1e-9))
+                                    run_vstart = v0
+                                    run_claimed = 0.0
+                                else:
+                                    run_mode = 1
+                                    qq_r = (ti.cast(
+                                        _popcount_samples(rU), ti.f32)
+                                        * _AA_SAMPLE_WEIGHT)
+                                    # Capped by the tiling bound alone:
+                                    # within one sheet exact areas sum to
+                                    # <= 1 over the pixel, so E above 1 is
+                                    # a mis-scan (overlap double-count)
+                                    # and is capped, while E/Q well above
+                                    # 1 is REAL for a sub-pixel rod that
+                                    # owns one sample but covers several
+                                    # samples' worth of area -- the
+                                    # measured case that killed the
+                                    # designed [0.5, 2] clamp (thin ink
+                                    # stalled at 0.88). Rule B's
+                                    # redistribution keeps the occlusion
+                                    # side exact under large corr.
+                                    run_corr = ti.min(rE, 1.0) / qq_r
+                                if ti.static(
+                                        _tri_run_rule_b(aa_tri)):
+                                    if run_mode == 1:
+                                        run_U = rU
+                                        run_resid = 0.0
+                                        run_pending = 1
+                slots, nsm, dens = _coverage_slots(
+                    cov, msk, is_bez or sliver,
+                    ti.static(_tri_run_mode(aa_tri)))
+                vis = 0.0
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    vis += slots[s] * svis[s]
+                eff = vis * _AA_SAMPLE_WEIGHT * dens
+                if ti.static(_tri_run_mode(aa_tri)):
+                    if (not is_bez) and (not from_z) \
+                            and ((q - 1) < run_end):
+                        if run_mode == 1:
+                            cfac = run_corr
+                            eff *= run_corr
+                        elif run_mode == 2:
+                            run_pd = run_pscale * cov
+                            eff = run_pd * run_vstart
+                            dens = run_pd / ti.max(
+                                1.0 - run_claimed, 1e-6)
+                            for s in ti.static(range(_AA_NUM_SAMPLES)):
+                                slots[s] = 1.0
+                            nsm = _AA_NUM_SAMPLES
                 if eff <= MIN_ALPHA:
                     if ti.static(dump):
                         if dmatch:
@@ -3436,9 +3243,7 @@ def raster_shadow_event_build(
                     # is what tinted glass almost always is.
                     ts_s = a_s * trans_share
                     pm = (1.0 - a_s) + ts_s
-                    if ti.static(cells):
-                        obj_absorb += a_s * (1.0 - trans_share) * contrib
-                    elif ti.static(_tri_run_mode(aa_tri)):
+                    if ti.static(_tri_run_mode(aa_tri)):
                         rr = _run_svis_write(
                             svis, slots, a_s, trans_share, cfac,
                             ti.static(_tri_run_rule_b(aa_tri)))
@@ -3453,11 +3258,6 @@ def raster_shadow_event_build(
                             svis[s] *= (1.0 - ak) + ak * trans_share
                     if ts_s > 1e-6:
                         frac = cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
-                        if ti.static(cells):
-                            fsum = 0.0
-                            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                                fsum += slots[s]
-                            frac = fsum * _AA_SAMPLE_WEIGHT
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
@@ -3482,9 +3282,7 @@ def raster_shadow_event_build(
                     # is what tinted glass almost always is.
                     ts_s = a_s * trans_share
                     pm = (1.0 - a_s) + ts_s
-                    if ti.static(cells):
-                        obj_absorb += a_s * (1.0 - trans_share) * contrib
-                    elif ti.static(_tri_run_mode(aa_tri)):
+                    if ti.static(_tri_run_mode(aa_tri)):
                         rr = _run_svis_write(
                             svis, slots, a_s, trans_share, cfac,
                             ti.static(_tri_run_rule_b(aa_tri)))
@@ -3499,11 +3297,6 @@ def raster_shadow_event_build(
                             svis[s] *= (1.0 - ak) + ak * trans_share
                     if ts_s > 1e-6:
                         frac = cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
-                        if ti.static(cells):
-                            fsum = 0.0
-                            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                                fsum += slots[s]
-                            frac = fsum * _AA_SAMPLE_WEIGHT
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
@@ -3518,11 +3311,8 @@ def raster_shadow_event_build(
             cur_w = weight
             if ti.static(aa_grp):
                 vis_all = 0.0
-                if ti.static(cells):
-                    vis_all = rem * (1.0 - obj_absorb) * _AA_NUM_SAMPLES
-                else:
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        vis_all += svis[s]
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    vis_all += svis[s]
                 cur_w = weight * (vis_all * _AA_SAMPLE_WEIGHT)
             if ti.max(cur_w[0], ti.max(cur_w[1], cur_w[2])) < MIN_WEIGHT:
                 break
@@ -3914,7 +3704,6 @@ def raster_first_shade(
         # Per-sample transmittance: how much light still reaches each sub-pixel
         # sample. This single array replaces the coverage-group rule, the opaque
         # sample mask and the object ids all at once -- see the docstring.
-        cells = ti.static(_tri_cells(aa_tri))
         svis = ti.Vector([1.0 for _ in range(_AA_NUM_SAMPLES)])
         seam_t = -1e30
         cprev_t = -1e30
@@ -3933,17 +3722,6 @@ def raster_first_shade(
         run_U = 0
         run_resid = 0.0
         run_pending = 0
-        # SURFACE accounting (DESIGN ss21.9). Four scalars replace the whole
-        # per-sample array: the pixel's remaining transmittance in front of the
-        # current object, how much of the pixel the current SHEET has covered,
-        # the largest sheet the current object has managed, and what the object
-        # has absorbed so far.
-        rem = 1.0
-        sheet_cov = 0.0
-        obj_cov = 0.0
-        obj_absorb = 0.0
-        cur_obj = -2147483647
-        cur_face = 0
         base_dist = 0.0
         bounces_left = max_bounces
         processed = 0
@@ -3969,7 +3747,6 @@ def raster_first_shade(
             dens = 1.0
             sliver = False
             tie = False
-            contrib = 0.0
             a_s = 0.0
             # Dump-only locals, declared unconditionally so Taichi's block
             # scoping accepts the assignments inside static-dump regions; the
@@ -4071,10 +3848,8 @@ def raster_first_shade(
             # each of them.
             eff = cov
             if ti.static(aa_grp):
-                sliver = False
-                if ti.static(not cells):
-                    sliver = (msk & _AA_SLIVER_BIT) != 0
-                    msk &= _AA_MASK_ALL
+                sliver = (msk & _AA_SLIVER_BIT) != 0
+                msk &= _AA_MASK_ALL
                 # Where the fragment sits (``cmsk``) and how much of each sample
                 # it covers (``dens``), which are independent -- see
                 # _coverage_density. A circuit's SDF coverage, and a sliver's
@@ -4082,147 +3857,108 @@ def raster_first_shade(
                 # them, so they spread over every sample instead of covering a
                 # subset exactly; that is what circuits already did, and it is
                 # why they need no mask of their own.
-                if ti.static(cells):
-                    # WITHIN a surface, coverage ADDS; BETWEEN surfaces it
-                    # composites. That is the whole idea: a mesh's triangles are
-                    # pieces of one shape, and a 2D rasterizer never has this
-                    # problem because it rasterizes a whole closed path at once.
-                    # Summing exact clipped areas over a tiling is exact (it is
-                    # property 3 of _aa_clip_area_check), so an interior edge
-                    # stops existing rather than having to be partitioned.
-                    #
-                    # A closed mesh needs its two SHEETS kept apart, though. The
-                    # front and back of a sphere both cover a silhouette pixel,
-                    # and they cover the SAME part of it, so their areas must not
-                    # add -- the object's coverage is the larger sheet, not the
-                    # sum. The facing bit separates them exactly and for free.
-                    sid = -1 - prim_raw
-                    fce = 0
-                    if not is_bez:
-                        sid = tri_obj[f % tri_obj.shape[0], prim_raw]
-                        if (msk & _AA_BACKFACE_BIT) != 0:
-                            fce = 1
-                    if sid != cur_obj:
-                        rem *= 1.0 - obj_absorb
-                        obj_absorb = 0.0
-                        obj_cov = 0.0
-                        sheet_cov = 0.0
-                        cur_obj = sid
-                        cur_face = fce
-                    else:
-                        if fce != cur_face:
-                            obj_cov = ti.max(obj_cov, sheet_cov)
-                            sheet_cov = 0.0
-                            cur_face = fce
-                    old_o = ti.max(obj_cov, sheet_cov)
-                    sheet_cov = ti.min(1.0, sheet_cov + cov)
-                    new_o = ti.max(obj_cov, sheet_cov)
-                    # What this fragment newly reveals of the pixel.
-                    contrib = new_o - old_o
-                    eff = contrib * rem
-                else:
-                    if ti.static(_tri_run_mode(aa_tri)):
-                        # THE RUN RULE (v2 ss4.2). At the first triangle
-                        # fragment past the previous run, if its mask is
-                        # partial and every per-sample transmittance is equal
-                        # (the "nothing is contended" predicate -- where it
-                        # fails, everything below stays shipped bit-for-bit),
-                        # scan the run and derive one scalar correction:
-                        # corr = E / Q, E the exact-area sum, Q the sampled
-                        # union's share. A full union means the surface tiles
-                        # the pixel: corr is exactly 1 and interior edges
-                        # cannot seam by construction. An empty union is a
-                        # pristine all-sliver run (a rod between the samples):
-                        # it CLAIMS min(E, 1) of the run-start transmittance,
-                        # distributed by area, with uniform areal writes.
-                        if (not is_bez) and (not from_z) \
-                                and ((q - 1) >= run_end):
-                            if ti.static(_tri_run_rule_b(aa_tri)):
-                                if run_pending != 0:
-                                    _run_redistribute(svis, run_U, run_resid)
-                                    run_pending = 0
-                                    run_resid = 0.0
-                            run_mode = 0
-                            run_end = q
-                            if (msk & _AA_MASK_ALL) != _AA_MASK_ALL:
-                                v0 = svis[0]
-                                uni_v = v0 > 0.0
-                                for s in ti.static(
-                                        range(1, _AA_NUM_SAMPLES)):
-                                    if svis[s] != v0:
-                                        uni_v = False
-                                if uni_v:
-                                    to_row = f % tri_obj.shape[0]
-                                    sid0 = tri_obj[to_row, prim_raw]
-                                    face0 = 0
-                                    if (frag_msk[idx]
-                                            & _AA_BACKFACE_BIT) != 0:
-                                        face0 = 1
-                                    rE, rU, rj = _aa_run_scan(
-                                        q - 1, nrun, start, sid0, face0,
-                                        to_row, frag_ref, frag_cov,
-                                        frag_msk, tri_obj)
-                                    run_end = rj
-                                    if rU == _AA_MASK_ALL:
-                                        run_mode = 1
-                                        run_corr = 1.0
-                                    elif rU == 0:
-                                        run_mode = 2
-                                        run_pscale = (ti.min(rE, 1.0)
-                                                      / ti.max(rE, 1e-9))
-                                        run_vstart = v0
-                                        run_claimed = 0.0
-                                    else:
-                                        run_mode = 1
-                                        qq_r = (ti.cast(
-                                            _popcount_samples(rU), ti.f32)
-                                            * _AA_SAMPLE_WEIGHT)
-                                        # Capped by the tiling bound alone:
-                                        # within one sheet exact areas sum to
-                                        # <= 1 over the pixel, so E above 1 is
-                                        # a mis-scan (overlap double-count)
-                                        # and is capped, while E/Q well above
-                                        # 1 is REAL for a sub-pixel rod that
-                                        # owns one sample but covers several
-                                        # samples' worth of area -- the
-                                        # measured case that killed the
-                                        # designed [0.5, 2] clamp (thin ink
-                                        # stalled at 0.88). Rule B's
-                                        # redistribution keeps the occlusion
-                                        # side exact under large corr.
-                                        run_corr = ti.min(rE, 1.0) / qq_r
-                                    if ti.static(
-                                            _tri_run_rule_b(aa_tri)):
-                                        if run_mode == 1:
-                                            run_U = rU
-                                            run_resid = 0.0
-                                            run_pending = 1
-                    slots, nsm, dens = _coverage_slots(
-                        cov, msk, is_bez or sliver, cells,
-                        ti.static(_tri_run_mode(aa_tri)))
-                    vis = 0.0
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        vis += slots[s] * svis[s]
-                    eff = vis * _AA_SAMPLE_WEIGHT * dens
-                    if ti.static(_tri_run_mode(aa_tri)):
-                        if (not is_bez) and (not from_z) \
-                                and ((q - 1) < run_end):
-                            if run_mode == 1:
-                                cfac = run_corr
-                                eff *= run_corr
-                            elif run_mode == 2:
-                                # Pristine claim: exact against the run-start
-                                # transmittance, occlusion written areally
-                                # with sequential renormalization so the
-                                # leftover lands at vstart * (1 - sum) exactly
-                                # (energy conservation; ss4.5).
-                                run_pd = run_pscale * cov
-                                eff = run_pd * run_vstart
-                                dens = run_pd / ti.max(
-                                    1.0 - run_claimed, 1e-6)
-                                for s in ti.static(range(_AA_NUM_SAMPLES)):
-                                    slots[s] = 1.0
-                                nsm = _AA_NUM_SAMPLES
+                if ti.static(_tri_run_mode(aa_tri)):
+                    # THE RUN RULE (v2 ss4.2). At the first triangle
+                    # fragment past the previous run, if its mask is
+                    # partial and every per-sample transmittance is equal
+                    # (the "nothing is contended" predicate -- where it
+                    # fails, everything below stays shipped bit-for-bit),
+                    # scan the run and derive one scalar correction:
+                    # corr = E / Q, E the exact-area sum, Q the sampled
+                    # union's share. A full union means the surface tiles
+                    # the pixel: corr is exactly 1 and interior edges
+                    # cannot seam by construction. An empty union is a
+                    # pristine all-sliver run (a rod between the samples):
+                    # it CLAIMS min(E, 1) of the run-start transmittance,
+                    # distributed by area, with uniform areal writes.
+                    if (not is_bez) and (not from_z) \
+                            and ((q - 1) >= run_end):
+                        if ti.static(_tri_run_rule_b(aa_tri)):
+                            if run_pending != 0:
+                                _run_redistribute(svis, run_U, run_resid)
+                                run_pending = 0
+                                run_resid = 0.0
+                        run_mode = 0
+                        run_end = q
+                        if (msk & _AA_MASK_ALL) != _AA_MASK_ALL:
+                            v0 = svis[0]
+                            uni_v = v0 > 0.0
+                            for s in ti.static(
+                                    range(1, _AA_NUM_SAMPLES)):
+                                if svis[s] != v0:
+                                    uni_v = False
+                            if uni_v:
+                                to_row = f % tri_obj.shape[0]
+                                sid0 = tri_obj[to_row, prim_raw]
+                                face0 = 0
+                                if (frag_msk[idx]
+                                        & _AA_BACKFACE_BIT) != 0:
+                                    face0 = 1
+                                rE, rU, rj = _aa_run_scan(
+                                    q - 1, nrun, start, sid0, face0,
+                                    to_row, frag_ref, frag_cov,
+                                    frag_msk, tri_obj)
+                                run_end = rj
+                                if rU == _AA_MASK_ALL:
+                                    run_mode = 1
+                                    run_corr = 1.0
+                                elif rU == 0:
+                                    run_mode = 2
+                                    run_pscale = (ti.min(rE, 1.0)
+                                                  / ti.max(rE, 1e-9))
+                                    run_vstart = v0
+                                    run_claimed = 0.0
+                                else:
+                                    run_mode = 1
+                                    qq_r = (ti.cast(
+                                        _popcount_samples(rU), ti.f32)
+                                        * _AA_SAMPLE_WEIGHT)
+                                    # Capped by the tiling bound alone:
+                                    # within one sheet exact areas sum to
+                                    # <= 1 over the pixel, so E above 1 is
+                                    # a mis-scan (overlap double-count)
+                                    # and is capped, while E/Q well above
+                                    # 1 is REAL for a sub-pixel rod that
+                                    # owns one sample but covers several
+                                    # samples' worth of area -- the
+                                    # measured case that killed the
+                                    # designed [0.5, 2] clamp (thin ink
+                                    # stalled at 0.88). Rule B's
+                                    # redistribution keeps the occlusion
+                                    # side exact under large corr.
+                                    run_corr = ti.min(rE, 1.0) / qq_r
+                                if ti.static(
+                                        _tri_run_rule_b(aa_tri)):
+                                    if run_mode == 1:
+                                        run_U = rU
+                                        run_resid = 0.0
+                                        run_pending = 1
+                slots, nsm, dens = _coverage_slots(
+                    cov, msk, is_bez or sliver,
+                    ti.static(_tri_run_mode(aa_tri)))
+                vis = 0.0
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    vis += slots[s] * svis[s]
+                eff = vis * _AA_SAMPLE_WEIGHT * dens
+                if ti.static(_tri_run_mode(aa_tri)):
+                    if (not is_bez) and (not from_z) \
+                            and ((q - 1) < run_end):
+                        if run_mode == 1:
+                            cfac = run_corr
+                            eff *= run_corr
+                        elif run_mode == 2:
+                            # Pristine claim: exact against the run-start
+                            # transmittance, occlusion written areally
+                            # with sequential renormalization so the
+                            # leftover lands at vstart * (1 - sum) exactly
+                            # (energy conservation; ss4.5).
+                            run_pd = run_pscale * cov
+                            eff = run_pd * run_vstart
+                            dens = run_pd / ti.max(
+                                1.0 - run_claimed, 1e-6)
+                            for s in ti.static(range(_AA_NUM_SAMPLES)):
+                                slots[s] = 1.0
+                            nsm = _AA_NUM_SAMPLES
                 if eff <= MIN_ALPHA:
                     # Nothing still reaches the samples this fragment covers:
                     # something opaque in front of it already has them.
@@ -4691,9 +4427,7 @@ def raster_first_shade(
                     # is what tinted glass almost always is.
                     ts_s = a_s * trans_share
                     pm = (1.0 - a_s) + ts_s
-                    if ti.static(cells):
-                        obj_absorb += a_s * (1.0 - trans_share) * contrib
-                    elif ti.static(_tri_run_mode(aa_tri)):
+                    if ti.static(_tri_run_mode(aa_tri)):
                         rr = _run_svis_write(
                             svis, slots, a_s, trans_share, cfac,
                             ti.static(_tri_run_rule_b(aa_tri)))
@@ -4708,11 +4442,6 @@ def raster_first_shade(
                             svis[s] *= (1.0 - ak) + ak * trans_share
                     if ts_s > 1e-6:
                         frac = cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
-                        if ti.static(cells):
-                            fsum = 0.0
-                            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                                fsum += slots[s]
-                            frac = fsum * _AA_SAMPLE_WEIGHT
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
@@ -4785,9 +4514,7 @@ def raster_first_shade(
                     # is what tinted glass almost always is.
                     ts_s = a_s * trans_share
                     pm = (1.0 - a_s) + ts_s
-                    if ti.static(cells):
-                        obj_absorb += a_s * (1.0 - trans_share) * contrib
-                    elif ti.static(_tri_run_mode(aa_tri)):
+                    if ti.static(_tri_run_mode(aa_tri)):
                         rr = _run_svis_write(
                             svis, slots, a_s, trans_share, cfac,
                             ti.static(_tri_run_rule_b(aa_tri)))
@@ -4802,11 +4529,6 @@ def raster_first_shade(
                             svis[s] *= (1.0 - ak) + ak * trans_share
                     if ts_s > 1e-6:
                         frac = cfac * ti.cast(nsm, ti.f32) * _AA_SAMPLE_WEIGHT
-                        if ti.static(cells):
-                            fsum = 0.0
-                            for s in ti.static(range(_AA_NUM_SAMPLES)):
-                                fsum += slots[s]
-                            frac = fsum * _AA_SAMPLE_WEIGHT
                         num = (ti.math.vec3(1.0, 1.0, 1.0) * (1.0 - a_s)
                                + ts_s * tint)
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
@@ -4822,11 +4544,8 @@ def raster_first_shade(
             cur_w = weight
             if ti.static(aa_grp):
                 vis_all = 0.0
-                if ti.static(cells):
-                    vis_all = rem * (1.0 - obj_absorb) * _AA_NUM_SAMPLES
-                else:
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        vis_all += svis[s]
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    vis_all += svis[s]
                 cur_w = weight * (vis_all * _AA_SAMPLE_WEIGHT)
             if ti.max(cur_w[0], ti.max(cur_w[1], cur_w[2])) < MIN_WEIGHT:
                 done = True
@@ -4845,11 +4564,8 @@ def raster_first_shade(
             # the samples that reflected, and the rest of the pixel ends here.
             if not bounced:
                 vis_all = 0.0
-                if ti.static(cells):
-                    vis_all = rem * (1.0 - obj_absorb) * _AA_NUM_SAMPLES
-                else:
-                    for s in ti.static(range(_AA_NUM_SAMPLES)):
-                        vis_all += svis[s]
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    vis_all += svis[s]
                 weight *= vis_all * _AA_SAMPLE_WEIGHT
 
         if processed >= MAX_SURFACES_PER_RAY:

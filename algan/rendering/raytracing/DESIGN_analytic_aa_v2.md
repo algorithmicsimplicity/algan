@@ -553,12 +553,14 @@ In order, because the first item inverts the sign of everything after it:
 
 6.1 New surface
 ---------------
-    ALGAN_ANALYTIC_AA_RUN (default 0)   Triangle run-corrected coverage: exact
-                                        area emission + run rule + sliver
+    ALGAN_ANALYTIC_AA_RUN (default 1    Triangle run-corrected coverage: exact
+    since the Phase E flip)             area emission + run rule + sliver
                                         donation. Subordinate to
                                         ALGAN_ANALYTIC_AA / _TRI.
+    ALGAN_ANALYTIC_AA_RUN_RULE          "redistribute" (default; rule B) or
+                                        "clamp" (rule A) for corr > 1 (§4.4).
     ALGAN_ANALYTIC_AA_BEZ_WEDGE         Existing flag, re-scoped to the
-                                        ORIENTED wedge; flips default per §5.5.
+                                        ORIENTED wedge; default ON per §5.5.
 
 Both live in `raytracing/settings.py` with setters beside `set_analytic_aa`,
 read LIVE at call time (`rt_settings.X` — importing by value freezes them

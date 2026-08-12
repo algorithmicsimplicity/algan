@@ -24,7 +24,6 @@ from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raster_taichi import (
-    _AA_CELLS_FULL as AA_CELLS_FULL,
     _AA_DUMP_COLS as AA_DUMP_COLS,
     _AA_MASK_ALL as AA_MASK_ALL,
 )
@@ -1166,13 +1165,11 @@ def prepare_sparse_raster_coverage(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
-    # 2 selects the parked CELL representation, 3/4 the RUN-CORRECTED one
-    # under rule A (clamp) / B (redistribute) for corr > 1
-    # (DESIGN_analytic_aa_v2.md ss4.4; see _tri_run_mode). Run wins.
+    # 3/4 select the RUN-CORRECTED representation under rule A (clamp) /
+    # B (redistribute) for corr > 1 (DESIGN_analytic_aa_v2.md ss4.4; see
+    # _tri_run_mode). Value 2 belonged to the deleted cells accounting.
     if aa_tri and rt_settings.ANALYTIC_AA_RUN:
         aa_tri = 4 if rt_settings.ANALYTIC_AA_RUN_RULE == "redistribute" else 3
-    elif aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
-        aa_tri = 2
     # The sample-less-triangle policy rides along in the value the GEOMETRY
     # kernels see, so each policy compiles (and caches) its own _ss_pixel. The
     # resolve and the shadow-event build keep the plain mode value: the policy
@@ -1933,11 +1930,9 @@ def raster_iteration_zero(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
-    # 2 = parked cells, 3/4 = run-corrected A/B; as in the sparse path.
+    # 3/4 = run-corrected A/B; as in the sparse path.
     if aa_tri and rt_settings.ANALYTIC_AA_RUN:
         aa_tri = 4 if rt_settings.ANALYTIC_AA_RUN_RULE == "redistribute" else 3
-    elif aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
-        aa_tri = 2
     aa_tri_ss = 0
     if aa_tri:
         aa_tri_ss = 1 + (
