@@ -821,8 +821,12 @@ ANALYTIC_AA_RUN = os.environ.get("ALGAN_ANALYTIC_AA_RUN", "0") == "1"
 # onto the run's unowned samples (leftover exact, weirder per-sample
 # semantics). Compile-time template value; both stay byte-identical while
 # ANALYTIC_AA_RUN is off.
+# Measured (v2 ss4.4, decided by harness as designed): redistribute wins --
+# tri L1 0.107 vs clamp's 0.110 with edge levels 620 against the aa=4
+# reference's own 621, seam notches 9 vs 12, trans/thin at parity. Exact
+# leftovers cost two registers and a run-end scale.
 ANALYTIC_AA_RUN_RULES = ("clamp", "redistribute")
-ANALYTIC_AA_RUN_RULE = os.environ.get("ALGAN_ANALYTIC_AA_RUN_RULE", "clamp")
+ANALYTIC_AA_RUN_RULE = os.environ.get("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 
 # Sub-pixel samples for what coverage CANNOT antialias analytically: the image
 # seen inside a reflection or through refracting glass. Coverage resolves a

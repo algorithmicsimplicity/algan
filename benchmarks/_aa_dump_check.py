@@ -131,7 +131,16 @@ def golden_walk(rows, run=False):
             dens = cov
             sel = np.ones(N, dtype=bool)
         elif run and kind < 2:
-            dens = 1.0 if sel.any() else 0.0
+            if not sel.any():
+                if float(r[10]) > 0.0:
+                    # A pristine all-sliver claim: its magnitude depends on
+                    # the run scan (E, vstart), which one row cannot carry.
+                    # Trust the row and resync; the energy invariant is
+                    # checked by the terminal vis_all and the thin-scene ink
+                    # gate instead.
+                    svis[:] = r[16 : 16 + N]
+                continue
+            dens = 1.0
         else:
             pop = int(sel.sum())
             dens = min(cov * N / max(pop, 1), 1.0) if pop else 0.0

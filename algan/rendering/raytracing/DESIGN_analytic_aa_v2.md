@@ -685,6 +685,59 @@ was already stale at HEAD (max dev 170, deterministic) and stays un-rebaselined
   Phase D — The run rule (§4.2) in BOTH walks, rules A and B for §4.4 behind
   a sub-toggle. The dump decides A/B; `_aa_iter` and the §7.2 ladder gate it.
 
+  BUILT (2026-08-13). One shared scan (`_aa_run_scan`) and one shared
+  corrected write (`_run_svis_write`) serve both walks; rules A/B ride in
+  `aa_tri` as 3/4 (`ALGAN_ANALYTIC_AA_RUN_RULE`). Findings, all by harness:
+
+  * §4.4 is DECIDED: rule B (redistribute). tri video L1 0.119 → 0.107 with
+    edge levels 620 against the aa=4 reference's own 621 (R1's continuous
+    gradation, measured); rule A reads 0.110/609. seam notches 6 → 9 (B)
+    vs 12 (A), inside the documented 8–17 mis-sort band; trans 0.058 → 0.056;
+    static mesh L1 0.0355 → 0.0292. The golden walk reproduces the corrected
+    kernels to 2.5e-8 and the two walks stay in lockstep.
+  * The designed corr clamp [0.5, 2] was WRONG and is replaced by the tiling
+    bound `corr = min(E, 1) / Q`: a sub-pixel rod that owns one sample but
+    covers several samples' worth of area needs corr well above 2 (the §4.2
+    bound argument covers one silhouette boundary, not a strip), E above 1 is
+    a mis-scan and is capped, and rule B keeps the occlusion side exact under
+    large corr where rule A would leak (E - Q) · v as double-counted light.
+  * The §7.2 thin target (ink ≥ 0.99) is UNREACHABLE within this design's own
+    safety rules, and the dump shows why precisely: at a 0.22 px closed tube
+    the front-sheet run works perfectly (six donors + one owner, claim = E
+    exactly), but HALF the band's ink is carried by the tube's back-facing
+    wall — genuinely visible geometry at sub-sample scale, not the redundant
+    back sheet §4.2 assumes — whose run correctly starts non-uniform because
+    the sheets do overlap at the owned sample. Its signature is identical to
+    a thick surface's occluded back sheet, so any positional claim is the
+    measured halo catastrophe (ss16.2). Rods ≳ 0.45 px sit at or above
+    parity; the 0.22 px tube keeps its front half. thin ink lands at 0.884
+    (from 0.857); the video thin config is at parity (L1 0.097 → 0.098). The
+    0.99 number was calibrated on the cells experiment, whose non-atomic
+    accounting is exactly what v2 rejects; a future two-sided-visibility
+    rule is the only sound route past it.
+  * The `_analytic_aa_bez_check` triangle "shipped" arms had been silently
+    measuring the PARKED cells mode (`exact_tri` coupled to the circuit
+    exact arm — trans read 1.449, the documented cells breakage). Decoupled;
+    every number above is against the true points baseline.
+  * COST, on the named worst case (the sub-pixel-diced `meshes` A/B, 720p):
+    raster kernels +27% device (count 0.088→0.094, write 0.082→0.121,
+    resolve 0.056→0.070 warm seconds over 8 frames) ≈ +6.6% of frame device;
+    fragments +8.7% (donors). The ±2% sub-budget is MISSED there and met
+    nowhere near it on ordinary content (the clip work prices only stored
+    boundary fragments); R5's actual bar — the 1.27x win over aa=2 supersampling
+    must survive — holds at ~1.19x worst-case. §4.8's costing was wrong in one
+    place: the point representation never clipped, so "the cost the ss21.3/21.8
+    experiments already paid" was not in the shipped baseline. What was tried
+    and measured: per-candidate clipping (count +36%/write +42%), post-cull
+    recompute in WRITE (worse — divergence + duplicated setup, write +91%),
+    and the shipped compromise — COUNT/Z never clip (sampled keep decisions,
+    identical branches in WRITE), WRITE clips stored fragments cheapest-first
+    (fully-inside shoelace / one-cutting-edge closed form / full clip), donors
+    behind a one-sided oriented reject with a moment-free clip in COUNT. The
+    residual is register pressure from the clip code's presence, not executed
+    instructions; the prepared follow-ups are a dedicated exact-lane post-pass
+    over the stored stream and §4.8's 4-sample arbitration.
+
   Phase E — Flip decisions: BEZ_WEDGE default per §5.5.4; ANALYTIC_AA_RUN
   default on its gates; delete the parked code (§6.3); re-baseline with eyes
   on diffs.

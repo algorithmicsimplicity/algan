@@ -290,10 +290,13 @@ def render_once(cfg, aa_level, analytic, tag, seam=True, sliver=None, exact=None
         triangles=cfg in TRI_CONFIGS,
         sliver=sliver or _SLIVER_ARG,
         exact=EXACT if exact is None else exact,
-        # The exact-area arms mean "exact everywhere", so the triangle configs
-        # exercise triangle coverage too -- which is how the negative result in
-        # settings.ANALYTIC_AA_EXACT_TRI was measured, and how to reproduce it.
-        exact_tri=EXACT if exact is None else exact,
+        # exact_tri (the parked ss21.9 cells accounting) is no longer coupled
+        # to the circuit exact arm: v2's run-corrected representation
+        # (ALGAN_ANALYTIC_AA_RUN, read from the env by the settings module)
+        # supersedes it, and coupling it in made every "shipped" triangle
+        # number in this harness silently measure the known-broken parked
+        # mode (trans L1 1.449 vs the true shipped 0.056).
+        exact_tri=False,
     )
     # The dense tile path is a genuinely different pipeline for circuits: the
     # opaque ones claim a z-prepass entry (full coverage only) and their
