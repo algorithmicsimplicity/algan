@@ -1579,8 +1579,8 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                 # classic path was content with "no edge within the radius".
                 query_radius += _AA_FILTER_RADIUS * pixel_size
             te = f % edges_2d.shape[0]
-            (crossings, min_dist_sq, ccu, ccv, e1x, e1y,
-             sec_dist_sq, scu, scv, e2x, e2y) = _bezier_point_metrics(
+            (crossings, min_dist_sq, ccu, ccv, e1x, e1y, sg1,
+             sec_dist_sq, scu, scv, e2x, e2y, sg2) = _bezier_point_metrics(
                 circuit, te, uu, vv, query_radius,
                 circuit_meta.shape[1], edges_2d, edge_accel)
             inside, is_border = _circuit_point_region(
@@ -1626,82 +1626,105 @@ def _bez_pixel_hit(circuit, f, px, py, half_w, half_h,
                         signed = d + half
                 c = _boundary_coverage(bnu, bnv, signed * inv_px, aa)
                 if ti.static(int(aa) == 3):
-                    # A THIN STROKE IS A STRIP, NOT A HALF-PLANE. One distance
-                    # describes an edge running to infinity, so a 1px glyph stem
-                    # reads as solid past its near wall and the coverage comes
-                    # out far too high -- the exact half-plane area over-covers a
-                    # stem MORE than the box filter did, which is why exactness
-                    # alone made glyphs worse (ss21.2). The second wall fixes the
-                    # MODEL, where ss21.2 fixed only the formula.
+                    # THE ORIENTED WEDGE (DESIGN_analytic_aa_v2.md ss5). A thin
+                    # stroke is a STRIP and a corner is a WEDGE; one distance
+                    # describes an edge running to infinity, so a 1px glyph
+                    # stem reads as solid past its near wall (ss21.2) and a
+                    # corner renders as its vertex's distance CIRCLE. Both
+                    # walls' inward sides come from STORAGE (edges_2d column 5,
+                    # written at flatten time where the contour is known) --
+                    # recovering the second wall's side from the contour
+                    # handedness was the ss21.6 failure: at a corner the SDF
+                    # gradient points at the vertex, so the calibration sign
+                    # was arbitrary exactly where the model mattered.
                     #
-                    # Intersecting two half-planes needs no clipping primitive:
-                    # when they face each other their complements are disjoint,
-                    # so inclusion-exclusion collapses to A1 + A2 - 1. That is
-                    # exact to 2.8e-16 for antiparallel walls and degrades
-                    # gracefully as they tilt (0.022 at 10 degrees, 0.049 at 20),
-                    # which is what sets the gate below.
-                    if filled and (sec_dist_sq < 1e29):
+                    # Validated standalone by benchmarks/_aa_wedge_check.py:
+                    # worst coverage error 0.0017 (convex) / 0.0010 (reflex)
+                    # over 600 random corners against brute-force polygons.
+                    if filled and (sec_dist_sq < 1e29) and (sg1 != 0.0) \
+                            and (sg2 != 0.0):
                         l1 = ti.sqrt(e1x * e1x + e1y * e1y)
                         l2 = ti.sqrt(e2x * e2x + e2y * e2y)
-                        gl = ti.sqrt(gu * gu + gv * gv)
-                        if (l1 > 1e-20) and (l2 > 1e-20) and (gl > 1e-20):
-                            n1x = gu / gl
-                            n1y = gv / gl
-                            # HANDEDNESS. The nearest segment is the one whose
-                            # inward normal we know (it is the SDF gradient), so
-                            # it calibrates which perpendicular of a direction
-                            # points inward for every other segment of the same
-                            # contour. Without this the second segment has no
-                            # orientation at all: the inside/outside parity is a
-                            # property of the QUERY, not of a segment, so it only
-                            # ever orients the nearest one.
-                            hh = 1.0
-                            if (e1x * n1y - e1y * n1x) < 0.0:
-                                hh = -1.0
-                            n2x = -e2y / l2 * hh
-                            n2y = e2x / l2 * hh
-                            # Signed distance to the second line along its own
-                            # inward normal, with the same outward dilation as
-                            # the first. NOTE THE SIGN: the closest point is
-                            # reached by stepping BACK along the normal, so
-                            # v2 = -s * n2 and the signed distance is MINUS the
-                            # projection. Without the negation every second
-                            # half-plane is flipped, which turns a convex corner
-                            # inside out and wrecks even a plain square.
-                            sd2 = (outline_w - (n2x * scu + n2y * scv)) * inv_px
+                        if (l1 > 1e-20) and (l2 > 1e-20):
+                            # Wall normals: sigma times the leftward
+                            # perpendicular of the stored contour direction.
+                            n1x = -e1y / l1 * sg1
+                            n1y = e1x / l1 * sg1
+                            n2x = -e2y / l2 * sg2
+                            n2y = e2x / l2 * sg2
+                            # Signed distances to the wall LINES (valid whether
+                            # the closest point is interior or an endpoint --
+                            # the endpoint lies on the line), dilated like the
+                            # single-plane path.
+                            b1p = n1x * ccu + n1y * ccv
+                            b2p = n2x * scu + n2y * scv
+                            sd1 = (outline_w - b1p) * inv_px
+                            sd2 = (outline_w - b2p) * inv_px
                             nd = n1x * n2x + n1y * n2y
                             if nd < 0.9:
-                                # nd >= 0.9 means the second segment is just the
-                                # next flattening chord of the SAME wall, whose
-                                # half-plane is the one already applied. Folding
-                                # it in would halve the coverage of every plain
-                                # edge in the scene.
-                                a1 = c
+                                # nd >= 0.9: the second segment is the next
+                                # flattening chord of the SAME wall; folding it
+                                # in would halve every plain edge's coverage.
+                                a1 = _halfplane_clip_area(n1x, n1y, sd1)
                                 a2 = _halfplane_clip_area(n2x, n2y, sd2)
                                 inter = _two_halfplane_area(
-                                    n1x, n1y, signed * inv_px,
-                                    n2x, n2y, sd2, a1, a2)
-                                # CONVEX vs CONCAVE. A convex corner's interior
-                                # is the INTERSECTION of the two half-planes, a
-                                # reflex one's is their UNION -- and applying the
-                                # wrong one is worse than using neither. The turn
-                                # direction says which, read against the
-                                # handedness above.
-                                #
-                                # Only at a real CORNER, though. Two walls of a
-                                # stem run antiparallel, so their turn is a
-                                # cross product of two opposite vectors: zero, and
-                                # its sign is noise. Taking the union branch on
-                                # that noise reports a solid pixel (a1+a2-inter
-                                # collapses to exactly 1 for a strip), so the
-                                # near-parallel case must take the intersection
-                                # unconditionally -- which is what a strip is.
+                                    n1x, n1y, sd1, n2x, n2y, sd2, a1, a2)
                                 cn = n1x * n2y - n1y * n2x
                                 c = inter
                                 if ti.abs(cn) >= 0.2:
-                                    if (hh * (e1x * e2y - e1y * e2x)) <= 0.0:
-                                        c = ti.math.clamp(
-                                            a1 + a2 - inter, 0.0, 1.0)
+                                    # CONVEX vs REFLEX is which RAY of its
+                                    # line each wall segment occupies: the
+                                    # intersection region's boundary rays
+                                    # satisfy the OTHER constraint, the
+                                    # union's violate it. Read it off the
+                                    # closest points against the apex; when a
+                                    # closest point IS the apex, the clamped
+                                    # endpoint sign (cp . d) says which way
+                                    # the segment leaves it. Parity at the
+                                    # pixel centre is the last-resort arbiter
+                                    # (undilated distances -- the dilation
+                                    # would disagree with parity in a band
+                                    # around every edge).
+                                    inv_cn = 1.0 / cn
+                                    apx = (b1p * n2y - b2p * n1y) * inv_cn
+                                    apy = (n1x * b2p - n2x * b1p) * inv_cn
+                                    scl = (ti.abs(ccu) + ti.abs(ccv)
+                                           + ti.abs(scu) + ti.abs(scv)
+                                           + pixel_size)
+                                    r1x = ccu - apx
+                                    r1y = ccv - apy
+                                    s1 = 0.0
+                                    if (ti.abs(r1x) + ti.abs(r1y)) \
+                                            > 1e-4 * scl:
+                                        s1 = n2x * r1x + n2y * r1y
+                                    else:
+                                        t1 = ccu * e1x + ccv * e1y
+                                        if ti.abs(t1) > 1e-4 * scl * l1:
+                                            sgn = 1.0 if t1 > 0.0 else -1.0
+                                            s1 = sgn * (n2x * e1x
+                                                        + n2y * e1y)
+                                    r2x = scu - apx
+                                    r2y = scv - apy
+                                    s2 = 0.0
+                                    if (ti.abs(r2x) + ti.abs(r2y)) \
+                                            > 1e-4 * scl:
+                                        s2 = n1x * r2x + n1y * r2y
+                                    else:
+                                        t2 = scu * e2x + scv * e2y
+                                        if ti.abs(t2) > 1e-4 * scl * l2:
+                                            sgn = 1.0 if t2 > 0.0 else -1.0
+                                            s2 = sgn * (n1x * e2x
+                                                        + n1y * e2y)
+                                    uni = ti.math.clamp(
+                                        a1 + a2 - inter, 0.0, 1.0)
+                                    if (s1 < 0.0) and (s2 < 0.0):
+                                        c = uni
+                                    elif not ((s1 > 0.0) and (s2 > 0.0)):
+                                        ci = (crossings % 2) == 1
+                                        in_i = (b1p < 0.0) and (b2p < 0.0)
+                                        in_u = (b1p < 0.0) or (b2p < 0.0)
+                                        if (in_u == ci) and (in_i != ci):
+                                            c = uni
                 bf = 0.0
                 if border_w > 0.0:
                     if filled:
