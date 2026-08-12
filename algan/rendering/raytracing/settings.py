@@ -700,9 +700,81 @@ ANALYTIC_AA_SLIVER = os.environ.get("ALGAN_ANALYTIC_AA_SLIVER", "drop")
 # same way. See DESIGN_analytic_aa.md ss21.
 ANALYTIC_AA_EXACT = os.environ.get("ALGAN_ANALYTIC_AA_EXACT", "1") == "1"
 
-# The same exact area for FLAT TRIANGLES -- default OFF, and it must stay off
-# until the per-sample representation changes. MEASURED, do not re-enable on the
-# theory that exactness must be better:
+# Model a circuit's local boundary with the TWO nearest segments (a strip or a
+# corner) instead of one half-plane. Default OFF -- the machinery is built and
+# its area primitive is validated, but the model is not yet correct. MEASURED
+# against the single half-plane, dilation matched:
+#
+#     config    1 segment   2 segments
+#     text        0.1155      0.1231
+#     slant       0.1093      0.2467     <- a plain square, all convex corners
+#     border      0.0850      0.1916
+#
+# WHY it is not ready: a second segment has no orientation of its own. The
+# inside/outside parity is a property of the QUERY, so it orients only the
+# NEAREST segment; every other segment's inward normal has to be recovered from
+# the contour's handedness, calibrated as sign(cross(dir1, n1)). That
+# calibration needs n1 to be segment 1's true normal -- and at a corner the
+# closest point on segment 1 is its ENDPOINT, so n1 points at the vertex
+# instead, the sign is arbitrary, and the second half-plane flips. Corners are
+# exactly the pixels this exists to fix, so restricting it to interior
+# closest-points is circular.
+#
+# What is already sound and worth keeping: `_two_halfplane_area` (validated
+# standalone to 0.0115 against an f64 polygon clip), the second-nearest tracking
+# in `_bezier_point_metrics`, and the convex/reflex and strip/nested case splits.
+# What is missing is a reliable per-segment orientation. See DESIGN ss21.6.
+ANALYTIC_AA_BEZ_WEDGE = os.environ.get("ALGAN_ANALYTIC_AA_BEZ_WEDGE", "0") == "1"
+
+# Exact-area coverage for FLAT TRIANGLES. Now selects SURFACE accounting: the
+# resolve groups fragments by source primitive (`tri_obj`, built at merge) and
+# facing, SUMS exact clipped areas within a sheet, and composites between
+# surfaces. Two earlier revisions selected a single exact area against the
+# sample mask, and then four packed per-cell areas.
+#
+# ALL THREE ARE DEFAULT OFF. The first two failed for the reason set out below;
+# the third is INCOMPLETE -- the accounting is wired end to end but has a bug
+# that has not been isolated (mesh scene: L1 1.18 against 0.16 aliased, ink
+# 0.784, 1531 interior notches). Its scaffolding is left in place because the
+# plumbing it needed -- a real per-triangle object id reaching both resolve
+# kernels -- is the part that was missing and is now built. The next step is
+# instrumentation, not another guess: dump sid / facing / cov / contrib / rem
+# per fragment for one pixel and compare against a hand-computed walk.
+#
+#   config   notches: points / exact-area / cells      ink: points / cells
+#   tri            13 /   5920 /   6942                1.000 / 0.946
+#   seam            5 /   6996 /   8308                1.000 / 0.972
+#   trans           7 /   6866 /   6734                1.000 / 0.897
+#   thin            0 /      0 /      0                0.855 / 0.999
+#
+# THE RULE BOTH BREAK: a fragment's CLAIM and its OCCLUSION must be the same
+# quantity, or the pixel stops summing to one. Only ATOMIC ownership guarantees
+# that -- a sub-pixel unit that belongs entirely to one fragment. Eight sample
+# points with a top-left fill rule are exactly that, which is why the shipped
+# representation is consistent, and quantizing the magnitude to eighths is the
+# price of it, not an oversight.
+#
+# Exact area breaks the rule directly: claim and occlusion differ by up to 1/N,
+# and reconciling them needs a per-sample density above 1 on an ordinary
+# boundary pixel, which can only be clamped away, losing energy.
+#
+# Cells look like they escape it -- their areas are exact, no cell can exceed 1,
+# and they do sum correctly -- but a cell is NOT atomic. Two triangles that split
+# one cell own DISJOINT parts of it, and fractional coverage cannot say so, so
+# they composite multiplicatively to 1 - a*b and leak the difference. Front-to-
+# back accumulation (min(coverage, remaining)) fixes exactly that and then
+# over-claims wherever fragments genuinely overlap instead of tiling; depth does
+# not separate the two cases, because each fragment's depth is measured at its
+# own clipped centroid and those sit on opposite sides of the shared edge.
+# Subdividing further only converges back to atomic units, i.e. to sample points.
+#
+# The one real gain, and it is not separable: cells fix sub-pixel erosion
+# outright (`thin` ink 0.855 -> 0.999), because a sliver's area lands in a cell
+# instead of being dropped for containing no sample. Harvesting that alone would
+# hand a sliver a claim it cannot occlude, which is the halo the sliver policies
+# already measured (ss16.2).
+#
+# Historical detail of the single-exact-area variant:
 #
 #     config   notches box -> exact    ink      whole-frame L1
 #     tri          13 ->  5920     1.000 -> 0.891     -730%
@@ -912,14 +984,18 @@ def analytic_aa_bez_active():
 def analytic_aa_bez_mode():
     """Circuit coverage as the kernels' ``aa_bez`` template value.
 
-    0 off, 1 the box filter, 2 the exact angle-aware area (``ANALYTIC_AA_EXACT``).
+    0 off, 1 the box filter, 2 the exact angle-aware area
+    (``ANALYTIC_AA_EXACT``), 3 that plus the two-segment boundary model
+    (``ANALYTIC_AA_BEZ_WEDGE``, default off -- see its comment).
     The distinction rides in the template value so the two forms cannot share an
     offline-cache entry; everything downstream that only asks whether circuit
     coverage is on keeps testing it for truth.
     """
     if not analytic_aa_bez_active():
         return 0
-    return 2 if ANALYTIC_AA_EXACT else 1
+    if not ANALYTIC_AA_EXACT:
+        return 1
+    return 3 if ANALYTIC_AA_BEZ_WEDGE else 2
 
 
 def analytic_aa_tri_active():

@@ -328,6 +328,16 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
     min_dist_sq = 1e30
     ccu = 0.0
     ccv = 0.0
+    e1x = 0.0
+    e1y = 0.0
+    # Second-nearest candidate, which is what turns a thin stroke from a
+    # half-plane into a STRIP: one distance can only describe an edge running to
+    # infinity, and a glyph stem is two walls a fraction of a pixel apart.
+    sec_dist_sq = 1e30
+    scu = 0.0
+    scv = 0.0
+    e2x = 0.0
+    e2y = 0.0
     if ((query_radius > 0.0) and (u + query_radius >= min_u)
             and (u - query_radius <= max_u)
             and (v + query_radius >= min_v)
@@ -370,11 +380,25 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
                     cy = y0 + seg_t * dy - v
                     dsq = cx * cx + cy * cy
                     if dsq < min_dist_sq:
+                        sec_dist_sq = min_dist_sq
+                        scu = ccu
+                        scv = ccv
+                        e2x = e1x
+                        e2y = e1y
                         min_dist_sq = dsq
                         ccu = cx
                         ccv = cy
+                        e1x = dx
+                        e1y = dy
+                    elif dsq < sec_dist_sq:
+                        sec_dist_sq = dsq
+                        scu = cx
+                        scv = cy
+                        e2x = dx
+                        e2y = dy
 
-    return crossings, min_dist_sq, ccu, ccv
+    return (crossings, min_dist_sq, ccu, ccv, e1x, e1y,
+            sec_dist_sq, scu, scv, e2x, e2y)
 
 
 @ti.func
@@ -1545,7 +1569,8 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                                 query_radius = _circuit_query_radius(
                                     border_w, outline_w, filled)
                                 te = f % num_edge_frames
-                                crossings, min_dist_sq, _ccu, _ccv = _bezier_point_metrics(
+                                (crossings, min_dist_sq, _ccu, _ccv, _e1x, _e1y,
+                                     _s2, _s2u, _s2v, _e2x, _e2y) = _bezier_point_metrics(
                                     circuit, te, u, v, query_radius,
                                     circuit_meta.shape[1], edges_2d, edge_accel)
                                 inside, in_border = _circuit_point_region(
@@ -2812,7 +2837,8 @@ def _collect_hits(refit: ti.template(),
                                     query_radius = _circuit_query_radius(
                                         border_w, outline_w, filled)
                                     te = f % num_edge_frames
-                                    crossings, min_dist_sq, _ccu, _ccv = _bezier_point_metrics(
+                                    (crossings, min_dist_sq, _ccu, _ccv, _e1x, _e1y,
+                                     _s2, _s2u, _s2v, _e2x, _e2y) = _bezier_point_metrics(
                                         circuit, te, u, v, query_radius,
                                         circuit_meta.shape[1], edges_2d, edge_accel)
                                     inside, in_border = _circuit_point_region(

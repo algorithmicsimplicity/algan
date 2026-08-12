@@ -1773,8 +1773,14 @@ under-claims, a shared edge no longer sums to 1, and the background leaks
 through as interior notches. On a dense mesh every pixel is a boundary pixel for
 several triangles, so it compounds into the ink figures above.
 
-21.4 What would actually work: cells, not points
--------------------------------------------------
+21.4 What looked like it would work: cells, not points  [SUPERSEDED by ss21.8]
+--------------------------------------------------------------------------------
+The reasoning below is left as written because the implementation followed it,
+but its central claim -- that cells hold all three properties at once -- is
+WRONG, and ss21.8 records the measurement that shows why. A cell is not ATOMIC:
+two triangles can split one, and fractional coverage cannot say that their parts
+are disjoint. Read ss21.8 before acting on this section.
+
 Stop sampling the pixel at POINTS. Take a small number of CELLS tiling it, each
 carrying the exact clipped area of the fragment within that cell:
 
@@ -1813,3 +1819,315 @@ it: `_analytic_aa_bez_check.py` and `_aa_match_aa2.py` both imported
 `render_to_file`/`RenderSettings`, removed from the public API, so neither had
 run since. They now use `Scene(video_settings=...)` / `save_video`, and carry
 `--exact-ab` and `--box` respectively for the arms above.
+
+21.6 The two-segment boundary model — BUILT, NOT CORRECT (default OFF)
+-----------------------------------------------------------------------
+ss21.2 diagnosed the glyph regression as the half-plane MODEL rather than the
+formula, and named the fix: take the two nearest segments. That is implemented
+behind `ALGAN_ANALYTIC_AA_BEZ_WEDGE` and does not work yet. Dilation matched,
+against the single half-plane:
+
+    config    1 segment   2 segments
+    text        0.1155      0.1231
+    slant       0.1093      0.2467      <- a plain square, all convex corners
+    border      0.0850      0.1916
+
+Three bugs were found and fixed on the way, all worth keeping:
+
+  * `a1 + a2 - 1` holds only for ANTIPARALLEL half-planes, whose complements are
+    disjoint. For CO-parallel ones the complements are nested and the answer is
+    `min(a1, a2)`; conflating them is wrong by up to 0.42.
+  * The wedge apex sits `(|d1|+|d2|)/|cross|` away, which for an unrelated
+    segment elsewhere in the shape is tens of pixels. Truncating its rays at any
+    fixed length then misses the pixel and reports zero where the answer is "the
+    first half-plane, unchanged". Short-circuit on trivial containment FIRST;
+    that also bounds the apex to ~7px, which keeps the f32 shoelace accurate.
+  * The signed distance to the second line is MINUS the projection of the
+    closest-point vector onto its normal (the closest point is reached by
+    stepping BACK along the normal). Without the negation every second
+    half-plane is flipped, which turns a convex corner inside out.
+
+What remains unsolved is ORIENTATION, and it is structural rather than a bug. A
+second segment has no inward side of its own: the crossing parity is a property
+of the QUERY, so it orients only the NEAREST segment. Every other segment's
+normal has to come from the contour's handedness, calibrated as
+`sign(cross(dir1, n1))` -- which needs `n1` to be segment 1's true normal. At a
+CORNER the closest point on segment 1 is its endpoint, so `n1` points at the
+vertex instead, the calibration sign is arbitrary, and the second half-plane
+flips. Corners are exactly the pixels the model exists to fix, so restricting it
+to interior closest-points is circular.
+
+A correct version needs a per-segment inward side that does not depend on the
+query -- most likely carried on the edge record at flatten time, where the
+contour's traversal is known, rather than recovered in the kernel. Note that
+even-odd fill means a hole's contour may be wound either way, so "left of the
+direction" is not sufficient on its own.
+
+`_two_halfplane_area` itself is sound and validated standalone (max error 0.0115
+against an f64 polygon clip, exact for the far-segment case), as is the
+second-nearest tracking in `_bezier_point_metrics`. Only the orientation is
+missing.
+
+21.7 Cell primitives for triangle coverage — VALIDATED  [wired in ss21.8]
+-----------------------------------------------------------------------
+The ss21.4 replacement for point sampling. Two primitives exist and are checked
+standalone; nothing in the pipeline consumes them yet.
+
+These primitives are sound and stay in the tree; what ss21.8 shows is that the
+REPRESENTATION built on them does not hold, not that the areas are wrong.
+
+`_cell_clip_area(vx, vy, k)` needs no clipping code of its own: a cell is the
+pixel square translated to its centre and scaled by two, so the query maps
+straight back onto `_pixel_clip_area`, which is already exact, already
+validated, and already known to sum over a tiling.
+
+`_pixel_clip_centroid(vx, vy)` carries the two first moments through the same
+clamped boundary integral. It replaces the centroid-of-owned-samples that the
+depth evaluation of ss15 depends on. Note why an area-weighted average of CELL
+CENTRES will not do: it can fall outside the triangle, which puts the silhouette
+mis-sorting of ss15 straight back. The centroid of (triangle n pixel) cannot --
+an intersection of convex sets is convex.
+
+Measured (`scratchpad/probe_cells.py`, to be folded into
+`benchmarks/_aa_clip_area_check.py`):
+
+    cell area vs brute force        max 0.0008   (240 triangles)
+    cells sum to the whole area     max 1.19e-07 <- claim == total, exactly
+    per-cell partition over a tiling max 0.0002  (200 fans)
+    centroid vs brute force         max 0.0007
+    centroid outside the triangle   0 of 130
+
+The first and third are the two properties ss21.3 proved a point set cannot hold
+at the same time.
+
+STILL TO DO, and it is the bulk of the change:
+  * pack 4 cells x 8 bits into the existing `frag_msk` int32 lane (no new
+    per-fragment storage; the flag bits at `_AA_FLAG_SHIFT` need rehoming, and
+    `_AA_SLIVER_BIT` may simply disappear -- a sub-sample sliver is a
+    point-sampling artefact, and a cell records its area like anything else)
+  * `_ss_pixel` emits cell areas + the clipped centroid instead of the
+    fixed-point sample mask; the top-left fill rule can then retire, since exact
+    areas summing over a tiling is the property it exists to fake
+  * `_coverage_density` and both resolve walks move from 8 samples to 4 cells;
+    `svis` halves, which the occupancy-bound resolve should like
+  * `_sec_positions` and the shadow mask already think in 4 positions
+  * the host prefill (`AA_MASK_ALL`) becomes an all-cells-full packed value
+  * circuits emit per-cell areas too, so the two geometry types interoperate
+
+21.8 Cells, built and measured — and why ss21.4 was wrong
+-----------------------------------------------------------
+Implemented behind `ALGAN_ANALYTIC_AA_EXACT_TRI` (which now selects the cell
+representation): four exact per-cell areas packed 8 bits each into the existing
+`frag_msk` lane, the clipped centroid replacing the sample centroid for depth,
+and the resolve reading one coverage value per slot. Each cell is written into
+TWO of the eight resolve slots, which keeps every loop bound and the 1/N
+normalisation untouched -- the point path came out bit-identical through the
+whole refactor, verified by SHA256 on the fast render.
+
+    config   notches: points / cells      ink: points / cells
+    tri            13 /   6942            1.000 / 0.946
+    seam            5 /   8308            1.000 / 0.972
+    trans           7 /   6734            1.000 / 0.897
+    thin            0 /      0            0.855 / 0.999
+
+WHY ss21.4 WAS WRONG. It claimed cells give exact magnitude, capacity AND the
+partition. The first two hold. The third does not, and the reason is that a cell
+is not ATOMIC. Two triangles that split one cell own DISJOINT parts of it;
+fractional per-cell coverage cannot express that, so the resolve composites them
+as independent and gets 1 - a*b (0.75 for an even split) where the answer is 1.
+That is precisely the coverage-as-alpha lattice of ss5, reproduced one level
+down. A sparse mesh hides it -- two cubes measured 13 notches -- and a
+subdivided one, with many partial fragments per cell, does not.
+
+Front-to-back accumulation, `min(coverage, remaining)` instead of a product,
+fixes the tiling case exactly (notches to 0 on the cube scene) and then
+OVER-claims wherever fragments genuinely overlap rather than tile (ink 1.009).
+Depth does not separate the two cases: each fragment's depth is measured at its
+own clipped centroid, and for two triangles sharing an edge those sit on
+opposite sides of it, so the distances do not tie. Subdividing into more cells
+shrinks the error only by converging back towards atomic units -- that is, back
+to sample points.
+
+THE GENERAL STATEMENT, which now has two independent implementations behind it:
+a fragment's CLAIM and its OCCLUSION must be the same quantity, and only ATOMIC
+sub-pixel ownership guarantees that. Eight sample points under a top-left fill
+rule are atomic, which is why the shipped representation is consistent. The
+magnitude quantizing to eighths is the PRICE of that consistency, not an
+oversight to be engineered away, and any replacement has to supply atomicity
+first and exactness second.
+
+One real gain is stranded here: cells fix sub-pixel erosion outright (`thin` ink
+0.855 -> 0.999), because a sliver's area lands in a cell instead of being dropped
+for containing no sample. It is not separable -- harvesting it alone hands a
+sliver a claim it cannot occlude, which is the halo the sliver policies already
+measured in ss16.2. A representation that is atomic AND finite-area (per-cell
+ownership, one owner per cell chosen by a fill rule, with the owner carrying the
+cell's exact area) is the shape of a fourth attempt; it would need the fill rule
+kept, not retired as ss21.4 supposed.
+
+21.9 Surface-grouped coverage — the third attempt (INCOMPLETE, default OFF)
+-----------------------------------------------------------------------------
+ss21.3 and ss21.8 both end at the same wall. This section starts from the
+question that reframes it: analytic anti-aliasing is a solved problem in 2D, so
+what is different here?
+
+THE ANSWER IS THE UNIT OF WORK, NOT THE FORMULA. FreeType, Skia, stb_truetype,
+font-rs and Pathfinder all compute exact coverage, and they all rasterize one
+CLOSED PATH at a time -- usually by signed-area accumulation along a scanline.
+There is no occlusion inside a path, so there is no partition problem to solve.
+Triangulate that same glyph and rasterize the triangles separately and the
+problem appears immediately; they simply never do that.
+
+For 3D meshes nobody computes exact analytic coverage. What ships instead:
+
+  * hardware MSAA -- 4/8/16 atomic sample points, a coverage bitmask, a fill
+    rule. This is our design; our eight fixed-point samples ARE 8x MSAA in
+    software.
+  * Carpenter's A-buffer (1984), the origin of the whole family -- a 4x8
+    subpixel BITMASK.
+  * TAA -- one jittered sample per pixel per frame, accumulated over time.
+  * FXAA / SMAA -- edge detection and blur.
+
+Every one is atomic samples or temporal accumulation. The point representation
+is not a compromise we failed to escape; it is the industry answer, and the
+eighth quantization is its documented price.
+
+What we do differently, and what is worth fixing, is that coverage is computed
+PER TRIANGLE and a surface then has to be reassembled from the pieces. The fill
+rule, the partition and the per-sample transmittance all exist to perform that
+reassembly. Our bezier circuits never pay it -- they SDF a whole outline, the
+2D-rasterizer situation -- which is why the circuit side has always been in
+better shape than the triangle side.
+
+THE DESIGN. Give each fragment its source primitive, and then:
+
+    within one surface, exact clipped areas ADD      (an interior edge stops
+                                                      existing; summing over a
+                                                      tiling is exact, which is
+                                                      property 3 of
+                                                      _aa_clip_area_check)
+    between surfaces, coverage COMPOSITES            (what a 2D renderer does
+                                                      between shapes)
+
+with one refinement: a closed mesh's two SHEETS must be kept apart. Front and
+back of a sphere both cover a silhouette pixel and cover the SAME part of it, so
+their areas must not add -- the object's coverage is its larger sheet. The
+facing bit separates them exactly and for free, which is what ss15 built it for.
+
+WHAT IS BUILT (all of it gated, default off):
+
+  * `tri_obj`, a per-triangle source-primitive id, rebuilt at merge from the
+    concatenation order of `_geom` and threaded to BOTH resolve kernels. ss18
+    deleted the original; this is the piece that has to exist before any
+    surface-grouped scheme can be attempted, and it exists again.
+  * `_ss_pixel` in this mode emits the exact clipped area as the fragment's
+    coverage and puts ONLY the facing bit in the mask lane.
+  * The resolve replaces the whole `svis` array with four scalars -- `rem`
+    (transmittance ahead of the current object), `sheet_cov`, `obj_cov` and
+    `obj_absorb` -- plus the current object and facing. Cheaper than the array
+    it replaces, not more expensive.
+  * The depth walk flushes an object when the id changes, and starts a new sheet
+    when the facing changes within one object. A fragment contributes
+    `max(obj_cov, sheet_cov + area) - max(obj_cov, sheet_cov)`, which sums
+    exactly within a sheet and yields zero for a hidden back sheet.
+
+STATUS: THE ACCOUNTING IS WRONG AND THE FAULT IS NOT ISOLATED.
+
+    mesh scene: L1 1.18 against 0.16 aliased, ink 0.784, 1531 interior notches
+
+Six fix-and-measure cycles each corrected a real bug without moving the result
+materially. The bugs are worth recording because three of them are traps rather
+than typos:
+
+  * `tri_mat_id` is NOT an object id. It identifies the material, so two objects
+    sharing one material merge into a single "surface" and the max() rule throws
+    one of them away. This was used first as a zero-plumbing proxy; it is not
+    one. Use `tri_obj`.
+  * An earlier revision packed four per-cell areas into the mask lane. Bit 16 of
+    that packing is cell 2's low bit and is also `_AA_BACKFACE_BIT`, so the
+    sheet grouping read a facing bit that was effectively random.
+  * The z-winner's in-kernel default and the host prefill both mean "fully
+    covered" and were set to all-ones. All-ones sets bit 16, so every fragment
+    that does not write its own mask -- every circuit, every z-winner -- read as
+    back-facing.
+
+THE NEXT STEP IS INSTRUMENTATION, NOT ANOTHER GUESS. Dump `sid`, facing, `cov`,
+`contrib`, `rem`, `obj_absorb` per fragment for one known pixel and compare
+against a walk computed by hand. Six rounds of inference between renders found
+three real bugs and did not find this one; the remaining candidates (run
+boundaries, the z-winner's position in the walk, interaction with the reflection
+and pool paths that consume `weight`) are all cheap to eliminate from a dump and
+expensive to eliminate by guessing.
+
+
+21.10 CURRENT STATE AND NEXT STEPS — 2026-08-12
+-------------------------------------------------
+WHAT SHIPS. Circuit coverage is the exact angle-aware half-plane area
+(`ALGAN_ANALYTIC_AA_EXACT`, default ON). The resolve reads every fragment
+through one `_coverage_slots` call, with the `areal` branch gone. Everything
+else is unchanged, and the whole of ss21 is byte-identical to the pre-change
+renderer with that one flag off -- verified by SHA256 on the fast render, which
+covers the resolve rewrite, a `@ti.func` arity change, a template re-encoding
+and the triangle machinery in one shot.
+
+WHAT IS GATED OFF, and none of it should be turned on without reading its
+section first:
+
+    ALGAN_ANALYTIC_AA_BEZ_WEDGE=1   two-segment circuit boundary   ss21.6
+    ALGAN_ANALYTIC_AA_EXACT_TRI=1   surface-grouped triangles      ss21.9
+
+THE RULE THAT GOVERNS ALL OF IT, now with three implementations behind it: a
+fragment's CLAIM and its OCCLUSION must be the same quantity, and only ATOMIC
+sub-pixel ownership guarantees that. Exact area breaks it directly. Cells look
+like they escape it and do not, because a cell is not atomic. Surface grouping
+is the one formulation that can hold it -- interior edges stop existing rather
+than being partitioned -- which is why it is the attempt left standing.
+
+NEXT STEPS, in the order I would take them:
+
+  1. FINISH ss21.9 with a per-fragment dump. The plumbing is done and the theory
+     is sound; what is left is a bug. This is the highest-value item because it
+     removes per-triangle quantization from every silhouette in every scene.
+  2. THE CIRCUIT WEDGE (ss21.6) needs a per-segment inward side that does not
+     depend on the query. Compute it at flatten time, where the contour's
+     traversal is known, and carry it on the edge record -- `edges_2d` is
+     already 5 wide with column 4 holding `border_visible`, so this needs a
+     sixth column or a sign packed into an existing one. Note that even-odd fill
+     means a hole's contour may be wound either way, so "left of the direction"
+     is not sufficient on its own; the parity just off the edge midpoint is.
+  3. RE-EXAMINE `ANALYTIC_AA_BEZ_MIN_HALF_WIDTH`. At the shipped 0.3 it dilates
+     a filled circuit by twice what the aa=4 reference does, and that costs
+     about TWICE the L1 that the choice of AA filter does (ss21.2). It is an
+     appearance decision about stroke weight, not an L1 one, so it wants a human
+     looking at rendered Tex rather than a number.
+  4. `shapes_and_timeline` in tests/full_renders was ALREADY stale at HEAD when
+     this work started -- its render differs from its baseline deterministically
+     (max 170) on unmodified code. It was deliberately left failing rather than
+     re-baselined, because doing so would bake in an unreviewed change that is
+     not part of this work.
+
+TOOLING ADDED, and the reason the last third of this work went faster than the
+first two thirds:
+
+  * `benchmarks/_aa_iter.py` -- ONE frame per arm via `Scene.save_frame`, scored
+    against cached supersampled references. Five scenes, each isolating one
+    thing the model must get right (slant, stem, corner, glyph, mesh), reporting
+    L1, ink, interior notches and max deviation. About twelve seconds a render
+    against fifteen minutes for the video gates. Build the references once with
+    `--ref`; arms are selected by environment variable so switching between them
+    never edits code or invalidates the kernel cache.
+  * `benchmarks/_aa_cell_check.py`, `benchmarks/_aa_wedge_check.py` -- standalone
+    validation of the area primitives against an f64 polygon clip, in the manner
+    of `_aa_clip_area_check.py`. Both caught real bugs that a render-level A/B
+    would only have shown as a worse number. VALIDATE A PRIMITIVE STANDALONE
+    BEFORE WIRING IT: skipping that step for `_two_halfplane_area` cost two
+    render cycles to rediscover what a fifteen-second harness said immediately.
+
+A NOTE ON THE GATES, because it cost real time here: `_analytic_aa_bez_check.py`
+and `_aa_match_aa2.py` were both DEAD when this work started, importing
+`render_to_file` and `RenderSettings` which the public API no longer has, so
+neither had run since that change. `_aa_clip_area_check.py` was separately
+broken by ruff's `from __future__ import annotations`, which turns Taichi kernel
+annotations into strings (`benchmarks/*` now carries an I002 ignore so that
+cannot recur). All three are repaired. `benchmarks/_rt2_i64_atomic_smoke.py` has
+the same future-import breakage and has not been touched.

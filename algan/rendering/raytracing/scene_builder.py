@@ -1335,7 +1335,18 @@ def _merge_scene(primitives):
 
         num_colored = sum(int(keep_idx[id(p)].numel()) for p in plain_triangles)
         scene["num_colored_triangles"] = num_colored
-        scene["tri_pos"] = _cat_collections(_geom("_rt_tri_pos"), 1, "triangle merge")
+        _tri_parts = _geom("_rt_tri_pos")
+        # Per-triangle SOURCE-PRIMITIVE id. Analytic coverage needs to know which
+        # triangles are pieces of one surface: within a surface their exact
+        # clipped areas ADD (an interior edge then stops existing), between
+        # surfaces they composite. Constant over time, so no time axis -- the
+        # merge order is exactly the concatenation order of _geom.
+        _tri_counts = [int(t.shape[1]) for t in _tri_parts]
+        scene["tri_obj"] = torch.repeat_interleave(
+            torch.arange(len(_tri_counts), dtype=torch.int32, device=device),
+            torch.tensor(_tri_counts, dtype=torch.int64, device=device),
+        ).contiguous()
+        scene["tri_pos"] = _cat_collections(_tri_parts, 1, "triangle merge")
         scene["tri_norm"] = _cat_collections(_geom("_rt_tri_norm"), 1, "triangle merge")
         scene["tri_mat_id"] = _cat_collections(
             _geom("_rt_tri_mat_id"), 1, "triangle merge"
@@ -1488,6 +1499,7 @@ def _merge_scene(primitives):
         scene["num_colored_triangles"] = 0
         scene["has_material_textures"] = False
         scene["tri_mat_id"] = torch.zeros((1, 1), dtype=torch.int32, device=device)
+        scene["tri_obj"] = torch.zeros((1,), dtype=torch.int32, device=device)
         scene["tri_mat"] = torch.zeros((1, 1, MAT_W), device=device)
         scene["tri_bvh"] = _empty_scene_part(device)
         scene["tri_opaque_bvh"] = scene["tri_bvh"]

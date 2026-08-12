@@ -22,6 +22,7 @@ from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raster_taichi import (
+    _AA_CELLS_FULL as AA_CELLS_FULL,
     _AA_MASK_ALL as AA_MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -1081,6 +1082,9 @@ def prepare_sparse_raster_coverage(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
+    # 2 selects the CELL representation in the resolve (see _tri_cells).
+    if aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
+        aa_tri = 2
     # The sample-less-triangle policy rides along in the value the GEOMETRY
     # kernels see, so each policy compiles (and caches) its own _ss_pixel. The
     # resolve and the shadow-event build keep the plain 0/1 flag: the policy
@@ -1088,7 +1092,7 @@ def prepare_sparse_raster_coverage(
     # Sliver policy AND the exact-area choice ride in the geometry kernels'
     # template value, so every combination gets its own compiled variant and
     # its own offline-cache entry (see _sliver_mode / _tri_exact).
-    aa_tri_ss = aa_tri * (
+    aa_tri_ss = (1 if aa_tri else 0) * (
         1
         + rt_settings.analytic_aa_sliver_mode()
         + (4 if rt_settings.ANALYTIC_AA_EXACT_TRI else 0)
@@ -1484,6 +1488,7 @@ def shade_sparse_raster_coverage(
             merged["textures"],
             int(merged["num_colored_triangles"]),
             col_row_arr,
+            merged["tri_obj"],
             merged["circuit_meta"],
             merged["circuit_colors"],
             merged["circuit_border_colors"],
@@ -1598,6 +1603,7 @@ def shade_sparse_raster_coverage(
         merged["textures"],
         int(merged["num_colored_triangles"]),
         col_row_arr,
+        merged["tri_obj"],
         merged["tri_mat_id"],
         merged["tri_mat"],
         merged["circuit_meta"],
@@ -1809,11 +1815,14 @@ def raster_iteration_zero(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
+    # 2 selects the CELL representation in the resolve (see _tri_cells).
+    if aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
+        aa_tri = 2
     # Policy in the geometry kernels' value only (see the sparse path).
     # Sliver policy AND the exact-area choice ride in the geometry kernels'
     # template value, so every combination gets its own compiled variant and
     # its own offline-cache entry (see _sliver_mode / _tri_exact).
-    aa_tri_ss = aa_tri * (
+    aa_tri_ss = (1 if aa_tri else 0) * (
         1
         + rt_settings.analytic_aa_sliver_mode()
         + (4 if rt_settings.ANALYTIC_AA_EXACT_TRI else 0)
@@ -2087,6 +2096,7 @@ def raster_iteration_zero(
             merged["textures"],
             int(merged["num_colored_triangles"]),
             col_row_arr,
+            merged["tri_obj"],
             merged["circuit_meta"],
             merged["circuit_colors"],
             merged["circuit_border_colors"],
@@ -2201,6 +2211,7 @@ def raster_iteration_zero(
         merged["textures"],
         int(merged["num_colored_triangles"]),
         col_row_arr,
+        merged["tri_obj"],
         merged["tri_mat_id"],
         merged["tri_mat"],
         merged["circuit_meta"],
