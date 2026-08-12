@@ -701,105 +701,62 @@ ANALYTIC_AA_SLIVER = os.environ.get("ALGAN_ANALYTIC_AA_SLIVER", "drop")
 ANALYTIC_AA_EXACT = os.environ.get("ALGAN_ANALYTIC_AA_EXACT", "1") == "1"
 
 # Model a circuit's local boundary with the TWO nearest segments (a strip or a
-# corner) instead of one half-plane. Default OFF -- the machinery is built and
-# its area primitive is validated, but the model is not yet correct. MEASURED
-# against the single half-plane, dilation matched:
-#
-#     config    1 segment   2 segments
-#     text        0.1155      0.1231
-#     slant       0.1093      0.2467     <- a plain square, all convex corners
-#     border      0.0850      0.1916
-#
-# WHY it is not ready: a second segment has no orientation of its own. The
-# inside/outside parity is a property of the QUERY, so it orients only the
-# NEAREST segment; every other segment's inward normal has to be recovered from
-# the contour's handedness, calibrated as sign(cross(dir1, n1)). That
-# calibration needs n1 to be segment 1's true normal -- and at a corner the
-# closest point on segment 1 is its ENDPOINT, so n1 points at the vertex
-# instead, the sign is arbitrary, and the second half-plane flips. Corners are
-# exactly the pixels this exists to fix, so restricting it to interior
-# closest-points is circular.
-#
-# What is already sound and worth keeping: `_two_halfplane_area` (validated
-# standalone to 0.0115 against an f64 polygon clip), the second-nearest tracking
-# in `_bezier_point_metrics`, and the convex/reflex and strip/nested case splits.
-# What is missing is a reliable per-segment orientation. See DESIGN ss21.6.
-ANALYTIC_AA_BEZ_WEDGE = os.environ.get("ALGAN_ANALYTIC_AA_BEZ_WEDGE", "0") == "1"
+# corner) instead of one half-plane -- THE ORIENTED WEDGE
+# (DESIGN_analytic_aa_v2.md ss5). Default ON (2026-08-13): both walls' inward
+# sides come from storage (edges_2d column 5, written by the flatten-time
+# parity probe), which retires the ss21.6 handedness calibration that flipped
+# at exactly the corners the model exists for. Convex vs reflex is which RAY
+# of its line each wall segment occupies, read off the closest points against
+# the apex. Validated standalone to 0.0017/0.0010 (convex/reflex worst
+# coverage error over 600 random corners, benchmarks/_aa_wedge_check.py); at
+# matched dilation the wedge beats both the box and the lone-exact arms on
+# stem/corner/glyph and improves slant -- the ss21.2 stem failure
+# (text -6.8% vs the box filter) is gone.
+ANALYTIC_AA_BEZ_WEDGE = os.environ.get("ALGAN_ANALYTIC_AA_BEZ_WEDGE", "1") == "1"
 
-# Exact-area coverage for FLAT TRIANGLES. Now selects SURFACE accounting: the
-# resolve groups fragments by source primitive (`tri_obj`, built at merge) and
-# facing, SUMS exact clipped areas within a sheet, and composites between
-# surfaces. Two earlier revisions selected a single exact area against the
-# sample mask, and then four packed per-cell areas.
-#
-# ALL THREE ARE DEFAULT OFF. The first two failed for the reason set out below;
-# the third is INCOMPLETE -- the accounting is wired end to end but has a bug
-# that has not been isolated (mesh scene: L1 1.18 against 0.16 aliased, ink
-# 0.784, 1531 interior notches). Its scaffolding is left in place because the
-# plumbing it needed -- a real per-triangle object id reaching both resolve
-# kernels -- is the part that was missing and is now built. The next step is
-# instrumentation, not another guess: dump sid / facing / cov / contrib / rem
-# per fragment for one pixel and compare against a hand-computed walk.
-#
-#   config   notches: points / exact-area / cells      ink: points / cells
-#   tri            13 /   5920 /   6942                1.000 / 0.946
-#   seam            5 /   6996 /   8308                1.000 / 0.972
-#   trans           7 /   6866 /   6734                1.000 / 0.897
-#   thin            0 /      0 /      0                0.855 / 0.999
-#
-# THE RULE BOTH BREAK: a fragment's CLAIM and its OCCLUSION must be the same
-# quantity, or the pixel stops summing to one. Only ATOMIC ownership guarantees
-# that -- a sub-pixel unit that belongs entirely to one fragment. Eight sample
-# points with a top-left fill rule are exactly that, which is why the shipped
-# representation is consistent, and quantizing the magnitude to eighths is the
-# price of it, not an oversight.
-#
-# Exact area breaks the rule directly: claim and occlusion differ by up to 1/N,
-# and reconciling them needs a per-sample density above 1 on an ordinary
-# boundary pixel, which can only be clamped away, losing energy.
-#
-# Cells look like they escape it -- their areas are exact, no cell can exceed 1,
-# and they do sum correctly -- but a cell is NOT atomic. Two triangles that split
-# one cell own DISJOINT parts of it, and fractional coverage cannot say so, so
-# they composite multiplicatively to 1 - a*b and leak the difference. Front-to-
-# back accumulation (min(coverage, remaining)) fixes exactly that and then
-# over-claims wherever fragments genuinely overlap instead of tiling; depth does
-# not separate the two cases, because each fragment's depth is measured at its
-# own clipped centroid and those sit on opposite sides of the shared edge.
-# Subdividing further only converges back to atomic units, i.e. to sample points.
-#
-# The one real gain, and it is not separable: cells fix sub-pixel erosion
-# outright (`thin` ink 0.855 -> 0.999), because a sliver's area lands in a cell
-# instead of being dropped for containing no sample. Harvesting that alone would
-# hand a sliver a claim it cannot occlude, which is the halo the sliver policies
-# already measured (ss16.2).
-#
-# Historical detail of the single-exact-area variant:
-#
-#     config   notches box -> exact    ink      whole-frame L1
-#     tri          13 ->  5920     1.000 -> 0.891     -730%
-#     seam          5 ->  6996     1.000 -> 0.953     -655%
-#     trans         7 ->  6866     1.000 -> 0.776    -1418%
-#     thin          0 ->     0     0.855 -> 0.530     -157%
-#
-# WHY, and why it is not a bug: a fragment's claim and its occlusion have to be
-# the SAME quantity or the pixel stops summing to one. With eight point samples
-# both are |M|/N -- quantized to eighths, but consistent, and a tiling sums to
-# exactly 1. Taking the magnitude from the exact area instead makes them differ
-# by up to 1/N, and reconciling them needs a per-sample density A*N/|M| that
-# EXCEEDS 1 whenever A*N > |M| -- which is the normal state of a boundary pixel,
-# not an edge case. Clamping it (a sample cannot be covered twice) can only ever
-# lose energy, so every boundary fragment under-claims, a shared edge no longer
-# sums to 1, and the background leaks through as interior notches. On a dense
-# mesh every pixel is a boundary pixel for several triangles, so it compounds.
-#
-# The fix is not a better clamp: it is to stop sampling the pixel at POINTS. A
-# small number of CELLS tiling the pixel, each carrying the exact clipped area
-# within it, gives all three properties at once -- the claim sums to A exactly,
-# no cell exceeds 1, and a tiling still partitions -- and would retire the
-# top-left fill rule, whose whole job is to fake the partition that exact areas
-# have for free. See DESIGN_analytic_aa.md ss21.
-ANALYTIC_AA_EXACT_TRI = os.environ.get("ALGAN_ANALYTIC_AA_EXACT_TRI", "0") == "1"
+# The ss21.3/21.8/21.9 exact-triangle formulations (single exact area vs the
+# mask, packed cells, scalar surface accounting) are DELETED, not parked:
+# DESIGN_analytic_aa_v2.md's run-corrected representation (ANALYTIC_AA_RUN)
+# supersedes them, and its ss8 Phase D note plus DESIGN_analytic_aa.md ss21
+# keep the record of what was measured and why they failed. The rule they all
+# broke: a fragment's CLAIM and its OCCLUSION must be the same quantity, and
+# only atomic sub-pixel ownership guarantees it -- the run rule keeps atomic
+# masks for everything contended and corrects magnitude per RUN, where areas
+# provably sum.
+
+# RUN-CORRECTED triangle coverage (DESIGN_analytic_aa_v2.md ss4): the shipped
+# 8-sample fill-rule masks stay the atomic ownership substrate for everything
+# contended, and the exact clipped area is layered on top where nothing is --
+# fragments carry ``_pixel_clip_area`` in ``frag_cov``, sample-less slivers are
+# emitted as area donors at their clipped centroid, and the resolve corrects
+# each uncontended RUN (consecutive same-(surface, facing) fragments over
+# uniform per-sample transmittance) by the single scalar ``E / Q``. Every
+# contended case falls back to the shipped per-sample behavior bit-for-bit --
+# the uniform-svis gate IS the "no overlap" predicate. Subordinate to
+# ANALYTIC_AA / ANALYTIC_AA_TRI; the sliver policy knob is inert under it
+# (sliver behavior is fixed by the design, not configurable).
+# Default ON (2026-08-13) on the v2 ss7.2 ladder: static mesh L1
+# 0.0355 -> 0.0292 against the aa=4 reference, tri video 0.119 -> 0.107 at
+# edge levels 620/621, seam notches inside the documented band, trans
+# improves, thin gains its reachable share (0.857 -> 0.884; the 0.99 target
+# was calibrated on the rejected cells accounting -- see the ss8 Phase D
+# note). Worst-case cost is +6.6% frame device on sub-pixel-diced meshes;
+# RUN=0 is byte-identical to the pre-v2 renderer.
+ANALYTIC_AA_RUN = os.environ.get("ALGAN_ANALYTIC_AA_RUN", "1") == "1"
+
+# The corr > 1 accounting rule (v2 ss4.4), the design's one open empirical
+# question, decided by harness: "clamp" scales the run's per-sample writes by
+# corr and clamps each at zero (claim exact, leftover keeps a bounded residual
+# of the shed error); "redistribute" additionally pushes the clamped residue
+# onto the run's unowned samples (leftover exact, weirder per-sample
+# semantics). Compile-time template value; both stay byte-identical while
+# ANALYTIC_AA_RUN is off.
+# Measured (v2 ss4.4, decided by harness as designed): redistribute wins --
+# tri L1 0.107 vs clamp's 0.110 with edge levels 620 against the aa=4
+# reference's own 621, seam notches 9 vs 12, trans/thin at parity. Exact
+# leftovers cost two registers and a run-end scale.
+ANALYTIC_AA_RUN_RULES = ("clamp", "redistribute")
+ANALYTIC_AA_RUN_RULE = os.environ.get("ALGAN_ANALYTIC_AA_RUN_RULE", "redistribute")
 
 # Sub-pixel samples for what coverage CANNOT antialias analytically: the image
 # seen inside a reflection or through refracting glass. Coverage resolves a
@@ -918,18 +875,23 @@ def set_analytic_aa(
     sliver=None,
     secondary=None,
     exact=None,
-    exact_tri=None,
+    run=None,
+    run_rule=None,
 ):
     """Toggle analytic anti-aliasing (see ``ANALYTIC_AA``)."""
     global ANALYTIC_AA, ANALYTIC_AA_BEZ, ANALYTIC_AA_TRI, ANALYTIC_AA_SEAM
     global ANALYTIC_AA_SLIVER, ANALYTIC_AA_SECONDARY_SAMPLES, ANALYTIC_AA_EXACT
-    global ANALYTIC_AA_EXACT_TRI
+    global ANALYTIC_AA_RUN, ANALYTIC_AA_RUN_RULE
     if secondary is not None:
         ANALYTIC_AA_SECONDARY_SAMPLES = int(secondary)
     if exact is not None:
         ANALYTIC_AA_EXACT = bool(exact)
-    if exact_tri is not None:
-        ANALYTIC_AA_EXACT_TRI = bool(exact_tri)
+    if run is not None:
+        ANALYTIC_AA_RUN = bool(run)
+    if run_rule is not None:
+        if run_rule not in ANALYTIC_AA_RUN_RULES:
+            raise ValueError(f"run_rule must be one of {ANALYTIC_AA_RUN_RULES}")
+        ANALYTIC_AA_RUN_RULE = run_rule
     ANALYTIC_AA = bool(enabled)
     if bezier is not None:
         ANALYTIC_AA_BEZ = bool(bezier)

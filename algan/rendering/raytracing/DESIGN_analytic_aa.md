@@ -4,6 +4,13 @@ Status (§19 is the current front line: analytic AA now beats supersampled
 `anti_alias_level = 2` on 8 of 11 feature configs and falls 7-9% short on the
 other three, all of them reflection/refraction/specular CONTENT).
 
+PLAN OF RECORD, 2026-08-12: the next round is designed in
+`DESIGN_analytic_aa_v2.md` — exact UNCONTENDED coverage (run-corrected
+triangle magnitudes on top of the shipped sample masks, plus the circuit wedge
+oriented by flatten-time per-edge inward sides). §21 below is its evidence
+base and stays as the record of what was measured and why three exact-coverage
+formulations failed.
+
 **PHASES 1 AND 2 SHIPPED** under the opt-in master toggle
 `ALGAN_ANALYTIC_AA` (still default OFF). Bezier circuits (§13) and flat
 triangles (§14–§16) are both covered, `ALGAN_ANALYTIC_AA_TRI` is now default ON,

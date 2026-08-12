@@ -553,12 +553,14 @@ In order, because the first item inverts the sign of everything after it:
 
 6.1 New surface
 ---------------
-    ALGAN_ANALYTIC_AA_RUN (default 0)   Triangle run-corrected coverage: exact
-                                        area emission + run rule + sliver
+    ALGAN_ANALYTIC_AA_RUN (default 1    Triangle run-corrected coverage: exact
+    since the Phase E flip)             area emission + run rule + sliver
                                         donation. Subordinate to
                                         ALGAN_ANALYTIC_AA / _TRI.
+    ALGAN_ANALYTIC_AA_RUN_RULE          "redistribute" (default; rule B) or
+                                        "clamp" (rule A) for corr > 1 (§4.4).
     ALGAN_ANALYTIC_AA_BEZ_WEDGE         Existing flag, re-scoped to the
-                                        ORIENTED wedge; flips default per §5.5.
+                                        ORIENTED wedge; default ON per §5.5.
 
 Both live in `raytracing/settings.py` with setters beside `set_analytic_aa`,
 read LIVE at call time (`rt_settings.X` — importing by value freezes them
@@ -655,6 +657,23 @@ was already stale at HEAD (max dev 170, deterministic) and stays un-rebaselined
   merge order; a one-line assert in the dump proves it). Read-only, no
   behavior change.
 
+  BUILT (2026-08-13), and the assert DISPROVED the belief, twice over: the
+  scene batcher merges every same-identifier mob into ONE collection primitive
+  (two plain spheres shared sid 0), and a diced logical-PN row's patch moves
+  from frame to frame with the adaptive levels, so a time-invariant per-part
+  id cannot express the mapping at all. `tri_obj` is now built per MEMBER at
+  pack time ([1, N] for flat collections, [T, N] for diced PN via the dice's
+  own counts/offsets) and offset per primitive at merge — a primitive's kept
+  and promoted slices share its offset, so constant-property promotion cannot
+  split a surface in two. Proven by `benchmarks/_aa_dump_check.py` (golden
+  walk to 4e-9, resolve/shadow lockstep, per-sphere sids), byte-identical by
+  stashed-HEAD hash. `benchmarks/_aa_iter.py` was rebuilt (the ss21 original
+  and its cached refs were lost to a truncated write); shipped-arm baselines
+  at 320x180, refs aa=4: slant .1828/ink 1.014, stem .4011/1.315,
+  corner .2623/1.038/12n, glyph .3008/1.366, mesh .0355/1.000, thin
+  .0617/0.857 — and at the §5.5.1 matched dilation (0.15), exact vs box:
+  slant .0347/.0386, stem .1255/.1264, corner .0680/.0750, glyph .1269/.1259.
+
   Phase B — The circuit wedge (§5). Self-contained: one host column, one
   metrics arity change, one kernel branch rewrite, no resolve involvement.
   Ships on its own gates; earliest visible win (R2).
@@ -668,9 +687,99 @@ was already stale at HEAD (max dev 170, deterministic) and stays un-rebaselined
   Phase D — The run rule (§4.2) in BOTH walks, rules A and B for §4.4 behind
   a sub-toggle. The dump decides A/B; `_aa_iter` and the §7.2 ladder gate it.
 
+  BUILT (2026-08-13). One shared scan (`_aa_run_scan`) and one shared
+  corrected write (`_run_svis_write`) serve both walks; rules A/B ride in
+  `aa_tri` as 3/4 (`ALGAN_ANALYTIC_AA_RUN_RULE`). Findings, all by harness:
+
+  * §4.4 is DECIDED: rule B (redistribute). tri video L1 0.119 → 0.107 with
+    edge levels 620 against the aa=4 reference's own 621 (R1's continuous
+    gradation, measured); rule A reads 0.110/609. seam notches 6 → 9 (B)
+    vs 12 (A), inside the documented 8–17 mis-sort band; trans 0.058 → 0.056;
+    static mesh L1 0.0355 → 0.0292. The golden walk reproduces the corrected
+    kernels to 2.5e-8 and the two walks stay in lockstep.
+  * The designed corr clamp [0.5, 2] was WRONG and is replaced by the tiling
+    bound `corr = min(E, 1) / Q`: a sub-pixel rod that owns one sample but
+    covers several samples' worth of area needs corr well above 2 (the §4.2
+    bound argument covers one silhouette boundary, not a strip), E above 1 is
+    a mis-scan and is capped, and rule B keeps the occlusion side exact under
+    large corr where rule A would leak (E - Q) · v as double-counted light.
+  * The §7.2 thin target (ink ≥ 0.99) is UNREACHABLE within this design's own
+    safety rules, and the dump shows why precisely: at a 0.22 px closed tube
+    the front-sheet run works perfectly (six donors + one owner, claim = E
+    exactly), but HALF the band's ink is carried by the tube's back-facing
+    wall — genuinely visible geometry at sub-sample scale, not the redundant
+    back sheet §4.2 assumes — whose run correctly starts non-uniform because
+    the sheets do overlap at the owned sample. Its signature is identical to
+    a thick surface's occluded back sheet, so any positional claim is the
+    measured halo catastrophe (ss16.2). Rods ≳ 0.45 px sit at or above
+    parity; the 0.22 px tube keeps its front half. thin ink lands at 0.884
+    (from 0.857); the video thin config is at parity (L1 0.097 → 0.098). The
+    0.99 number was calibrated on the cells experiment, whose non-atomic
+    accounting is exactly what v2 rejects; a future two-sided-visibility
+    rule is the only sound route past it.
+  * The `_analytic_aa_bez_check` triangle "shipped" arms had been silently
+    measuring the PARKED cells mode (`exact_tri` coupled to the circuit
+    exact arm — trans read 1.449, the documented cells breakage). Decoupled;
+    every number above is against the true points baseline.
+  * COST, on the named worst case (the sub-pixel-diced `meshes` A/B, 720p):
+    raster kernels +27% device (count 0.088→0.094, write 0.082→0.121,
+    resolve 0.056→0.070 warm seconds over 8 frames) ≈ +6.6% of frame device;
+    fragments +8.7% (donors). The ±2% sub-budget is MISSED there and met
+    nowhere near it on ordinary content (the clip work prices only stored
+    boundary fragments); R5's actual bar — the 1.27x win over aa=2 supersampling
+    must survive — holds at ~1.19x worst-case. §4.8's costing was wrong in one
+    place: the point representation never clipped, so "the cost the ss21.3/21.8
+    experiments already paid" was not in the shipped baseline. What was tried
+    and measured: per-candidate clipping (count +36%/write +42%), post-cull
+    recompute in WRITE (worse — divergence + duplicated setup, write +91%),
+    and the shipped compromise — COUNT/Z never clip (sampled keep decisions,
+    identical branches in WRITE), WRITE clips stored fragments cheapest-first
+    (fully-inside shoelace / one-cutting-edge closed form / full clip), donors
+    behind a one-sided oriented reject with a moment-free clip in COUNT. The
+    residual is register pressure from the clip code's presence, not executed
+    instructions; the prepared follow-ups are a dedicated exact-lane post-pass
+    over the stored stream and §4.8's 4-sample arbitration.
+
   Phase E — Flip decisions: BEZ_WEDGE default per §5.5.4; ANALYTIC_AA_RUN
   default on its gates; delete the parked code (§6.3); re-baseline with eyes
   on diffs.
+
+  BUILT (2026-08-13). Both defaults ON. `_aa_match_aa2` under the flip:
+  every config the flip touches passes (mesh 0.88x of aa2's error, text
+  0.85x, thin 0.32x, trans 0.93x, shadow 0.92x, softshadow 1.00x; wall 0.91x
+  of aa2), and the one apparent shrink — `shapes` at 1.03x — is PRE-EXISTING
+  at HEAD (wedge-off measures 0.331 vs aa2's 0.322 too; the ss19 "8/11"
+  record had already drifted before this work, and spec/flat/glass keep
+  their documented minified-secondary-content shortfall). The dense tile
+  path was exercised under the defaults (`--dense` tri/text healthy). The
+  parked cells/scalar accounting is deleted per §6.3 (aa_tri value 2
+  retired, not reissued); the kill-switch matrix holds after the deletion:
+  WEDGE=0+RUN=0 is hash-identical to pre-v2 HEAD, ANALYTIC_AA=0 untouched.
+
+  ONE REAL BUG shipped between Phases D and E and was caught by the
+  full-render ladder (text_and_media died with CUDA_ERROR_ILLEGAL_ADDRESS,
+  pinned in minutes by ALGAN_TI_DEBUG=1's bounds checks: a float bit-pattern
+  walked as a primitive id, i.e. an UNINITIALIZED fragment row). The Phase D
+  perf pass had given COUNT a moment-free donor clip while WRITE kept the
+  centroid form — so a donor's barycentrics differed between the two kernels,
+  and on TEXTURED primitives the keep decision samples the texture's ALPHA at
+  those barycentrics: the decisions diverged, count's totals mis-sized
+  write's slots, and the walk read garbage. The standing rule it sharpens:
+  count/write agreement is not just "same predicate" — it is same predicate
+  over BIT-IDENTICAL inputs, and a coordinate that feeds a texture fetch is
+  such an input. Both kernels now share the centroid donor form.
+
+  The §9 sigma-probe cost question is CLOSED by measurement on a six-line
+  720p Text page: the shipped masked-with-early-exit form costs +0.26s per
+  BATCH (T=1 static text probes once per batch, so video renders amortize it
+  per frame; the level-0 pass dominates and is memory-bandwidth-bound). Two
+  rewrites measured WORSE and are not worth revisiting without new structure:
+  per-circuit slicing (+0.5s — hundreds of host syncs from .nonzero/.tolist
+  per circuit per eps round) and a sync-free all-levels form (+1.1s — the
+  early-exit compaction was load-bearing: level 0 resolves ~99% of edges, so
+  probing all six levels unconditionally sextuples the dominant pass). The
+  §9 per-(circuit, frame) cache remains the prepared follow-up if text-heavy
+  save_frame latency ever matters.
 
   Phase F (optional, separately justified) — the 4-sample arbitration
   experiment (§4.8), only after E has soaked.

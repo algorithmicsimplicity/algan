@@ -16,13 +16,15 @@ write directly into an arena view.
 
 from __future__ import annotations
 
+import os
+
 import torch
 
 from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raster_taichi import (
-    _AA_CELLS_FULL as AA_CELLS_FULL,
+    _AA_DUMP_COLS as AA_DUMP_COLS,
     _AA_MASK_ALL as AA_MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -43,6 +45,87 @@ from algan.rendering.raytracing.raster_taichi import (
 from algan.rendering.raytracing.raytrace_kernels_taichi import (
     DEPTH_TIE_EPSILON,
 )
+
+# Per-fragment walk dump (DESIGN_analytic_aa_v2.md ss7.1). Debug-only:
+# ``ALGAN_AA_DUMP="px,py,frame"`` (kernel pixel coordinates -- an output PNG's
+# row y is kernel row ``height - 1 - y``) makes both walk kernels record one
+# row per fragment they process at that pixel, printed after the launch and
+# kept here for the golden-walk harness (``benchmarks/_aa_dump_check.py``) to
+# recompute and diff. Read live per launch; the kernels compile the dump path
+# out entirely when it is off, so the production kernels are untouched.
+_AA_DUMP_ROWS = 512
+LAST_AA_DUMP = {}
+
+
+def _aa_dump_request():
+    """The requested (px, py, frame) from ``ALGAN_AA_DUMP``, or ``None``."""
+    spec = os.environ.get("ALGAN_AA_DUMP", "")
+    if not spec:
+        return None
+    try:
+        px, py, f = (int(v) for v in spec.split(","))
+    except ValueError:
+        return None
+    return px, py, f
+
+
+def _aa_dump_buffer(req, device):
+    """A fresh dump buffer with the control row filled.
+
+    A plain torch allocation, never an arena tensor: this is a diagnostic and
+    must not perturb the runtime memory model's view of a chunk's footprint.
+    """
+    buf = torch.zeros((_AA_DUMP_ROWS, AA_DUMP_COLS), dtype=torch.float32,
+                      device=device)
+    buf[0, 0] = float(req[0])
+    buf[0, 1] = float(req[1])
+    buf[0, 2] = float(req[2])
+    return buf
+
+
+_AA_DUMP_PLACEHOLDERS = {}
+
+
+def _aa_dump_arg(device):
+    """The 1-row stand-in the kernels take when the dump is off."""
+    t = _AA_DUMP_PLACEHOLDERS.get(device)
+    if t is None:
+        t = torch.zeros((1, AA_DUMP_COLS), dtype=torch.float32, device=device)
+        _AA_DUMP_PLACEHOLDERS[device] = t
+    return t
+
+
+_AA_DUMP_NOTES = {0: "", 1: "eff-skip", 2: "bounce", 3: "occl", 4: "far-clip",
+                  5: "invalid", 6: "seam-skip"}
+_AA_DUMP_KINDS = {0: "tri", 1: "bez", 2: "z-tri", 3: "z-bez"}
+
+
+def _aa_dump_emit(tag, buf):
+    """Print the walk dump and stash it (numpy) for the harness."""
+    rows = buf.cpu().numpy()
+    n = min(int(rows[0, 3]), rows.shape[0] - 1)
+    LAST_AA_DUMP[tag] = rows[1 : 1 + n].copy()
+    if n <= 0:
+        return
+    px, py, f = int(rows[0, 0]), int(rows[0, 1]), int(rows[0, 2])
+    print(f"[aa-dump:{tag}] pixel ({px},{py}) frame {f}: {n} rows")
+    for r in rows[1 : 1 + n]:
+        if r[0] < 0:
+            svis = " ".join(f"{v:.4f}" for v in r[16:24])
+            print(f"[aa-dump:{tag}]   end bounced={int(r[1])} done={int(r[2])}"
+                  f" processed={int(r[3])} vis_all={r[4]:.5f}"
+                  f" acc=({r[5]:.4f},{r[6]:.4f},{r[7]:.4f},{r[8]:.4f})"
+                  f" w=({r[9]:.4f},{r[10]:.4f},{r[11]:.4f}) svis=[{svis}]")
+            continue
+        kind = _AA_DUMP_KINDS.get(int(r[1]), "?")
+        note = _AA_DUMP_NOTES.get(int(r[2]), "?")
+        svis = " ".join(f"{v:.4f}" for v in r[16:24])
+        print(f"[aa-dump:{tag}]   q={int(r[0]):3d} {kind:5s} {note:9s}"
+              f" ref={int(r[3])} sid={int(r[4])} face={int(r[5])}"
+              f" msk={int(r[6]):02x} cov={r[7]:.5f} pop={int(r[8])}"
+              f" corr={r[9]:.5f} eff={r[10]:.5f} a_mat={r[11]:.4f}"
+              f" alpha={r[12]:.5f} ts={r[13]:.4f} rmax={r[14]:.4f}"
+              f" t={r[15]:.5f} svis=[{svis}]")
 
 
 def precompute_triangle_projection(
@@ -1082,21 +1165,25 @@ def prepare_sparse_raster_coverage(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
-    # 2 selects the CELL representation in the resolve (see _tri_cells).
-    if aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
-        aa_tri = 2
+    # 3/4 select the RUN-CORRECTED representation under rule A (clamp) /
+    # B (redistribute) for corr > 1 (DESIGN_analytic_aa_v2.md ss4.4; see
+    # _tri_run_mode). Value 2 belonged to the deleted cells accounting.
+    if aa_tri and rt_settings.ANALYTIC_AA_RUN:
+        aa_tri = 4 if rt_settings.ANALYTIC_AA_RUN_RULE == "redistribute" else 3
     # The sample-less-triangle policy rides along in the value the GEOMETRY
     # kernels see, so each policy compiles (and caches) its own _ss_pixel. The
-    # resolve and the shadow-event build keep the plain 0/1 flag: the policy
-    # reaches them as a per-fragment mask bit, so they compile once.
-    # Sliver policy AND the exact-area choice ride in the geometry kernels'
-    # template value, so every combination gets its own compiled variant and
-    # its own offline-cache entry (see _sliver_mode / _tri_exact).
-    aa_tri_ss = (1 if aa_tri else 0) * (
-        1
-        + rt_settings.analytic_aa_sliver_mode()
-        + (4 if rt_settings.ANALYTIC_AA_EXACT_TRI else 0)
-    )
+    # resolve and the shadow-event build keep the plain mode value: the policy
+    # reaches them as a per-fragment mask bit, so they compile once per mode.
+    # Sliver policy AND the representation ride in the geometry kernels'
+    # template value (1 + sliver + 4 * repr), so every combination gets its
+    # own compiled variant and its own offline-cache entry (see _sliver_mode /
+    # _tri_repr). The sliver knob is INERT under run mode (v2 ss4.1): pin it
+    # to drop so it cannot fork pointless cache entries.
+    aa_tri_ss = 0
+    if aa_tri:
+        aa_tri_ss = 1 + (
+            2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode()
+        ) + 4 * min(aa_tri - 1, 2)
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
@@ -1263,8 +1350,17 @@ def prepare_sparse_raster_coverage(
         if aa_bez or aa_tri:
             # A partially covering opaque hit does not hide what is behind it,
             # so it must not terminate its pixel's run: it stays an ordinary
-            # alpha fragment (its alpha already carries the coverage).
-            opaque_s = opaque_s & (cov_s >= AA_FULL_COVERAGE)
+            # alpha fragment (its alpha already carries the coverage). Under
+            # the run representation the test is the SAMPLED claim, matching
+            # the prepass and the resolve's magnitude (v2 ss4.1): a full-mask
+            # fragment occludes every sample whatever its exact area says.
+            if aa_tri >= 3:
+                full_s = (msk_s & AA_MASK_ALL) == AA_MASK_ALL
+                opaque_s = opaque_s & torch.where(
+                    ref_s >= 0, full_s, cov_s >= AA_FULL_COVERAGE
+                )
+            else:
+                opaque_s = opaque_s & (cov_s >= AA_FULL_COVERAGE)
         pix_s = key_s >> 32
         covered, counts = torch.unique_consecutive(pix_s, return_counts=True)
 
@@ -1443,6 +1539,7 @@ def shade_sparse_raster_coverage(
     has_bez = 1 if int(merged.get("num_circuits", 0)) > 0 else 0
     ss = 1 if rt_settings.RASTER_SS else 0
     tri_pos = merged["tri_pos"]
+    dump_req = _aa_dump_request()
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     # Vestigial by design: the dense path folds the nearest opaque hit into a
     # separate z-winner that raster_first_shade / raster_shadow_event_build
@@ -1468,6 +1565,11 @@ def shade_sparse_raster_coverage(
         # One row when it is off, so the argument always exists.
         event_dp = _arena_tensor(
             memory, (max_events if sec_aa > 1 else 1, 6), torch.float32
+        )
+        sdump_buf = (
+            _aa_dump_buffer(dump_req, zbuf.device)
+            if dump_req
+            else _aa_dump_arg(zbuf.device)
         )
         raster_shadow_event_build(
             num_covered,
@@ -1524,7 +1626,11 @@ def shade_sparse_raster_coverage(
             event_dp,
             event_msk,
             event_count,
+            1 if dump_req else 0,
+            sdump_buf,
         )
+        if dump_req:
+            _aa_dump_emit("shadow", sdump_buf)
         num_events = int(event_count.item())
         shadow_vis = _arena_tensor(
             memory, (max(1, num_events), max(1, int(num_lights))), torch.float32, 1.0
@@ -1585,6 +1691,11 @@ def shade_sparse_raster_coverage(
     else:
         shadow_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
 
+    rdump_buf = (
+        _aa_dump_buffer(dump_req, zbuf.device)
+        if dump_req
+        else _aa_dump_arg(zbuf.device)
+    )
     raster_first_shade(
         num_covered,
         run_offsets,
@@ -1652,7 +1763,11 @@ def shade_sparse_raster_coverage(
         frag_shadow_id,
         z_shadow_id,
         shadow_vis,
+        1 if dump_req else 0,
+        rdump_buf,
     )
+    if dump_req:
+        _aa_dump_emit("resolve", rdump_buf)
     return covered_idx
 
 
@@ -1816,19 +1931,16 @@ def raster_iteration_zero(
     aa_tri = (
         1 if (rt_settings.analytic_aa_tri_active() and tri_screen.shape[2] >= 13) else 0
     )
-    # 2 selects the CELL representation in the resolve (see _tri_cells).
-    if aa_tri and rt_settings.ANALYTIC_AA_EXACT_TRI:
-        aa_tri = 2
-    # Policy in the geometry kernels' value only (see the sparse path).
-    # Sliver policy AND the exact-area choice ride in the geometry kernels'
-    # template value, so every combination gets its own compiled variant and
-    # its own offline-cache entry (see _sliver_mode / _tri_exact).
-    aa_tri_ss = (1 if aa_tri else 0) * (
-        1
-        + rt_settings.analytic_aa_sliver_mode()
-        + (4 if rt_settings.ANALYTIC_AA_EXACT_TRI else 0)
-    )
+    # 3/4 = run-corrected A/B; as in the sparse path.
+    if aa_tri and rt_settings.ANALYTIC_AA_RUN:
+        aa_tri = 4 if rt_settings.ANALYTIC_AA_RUN_RULE == "redistribute" else 3
+    aa_tri_ss = 0
+    if aa_tri:
+        aa_tri_ss = 1 + (
+            2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode()
+        ) + 4 * min(aa_tri - 1, 2)
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
+    dump_req = _aa_dump_request()
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
     geo_args = (
@@ -2078,6 +2190,11 @@ def raster_iteration_zero(
         event_dp = _arena_tensor(
             memory, (max_events if sec_aa > 1 else 1, 6), torch.float32
         )
+        sdump_buf = (
+            _aa_dump_buffer(dump_req, zbuf.device)
+            if dump_req
+            else _aa_dump_arg(zbuf.device)
+        )
         raster_shadow_event_build(
             int(tn_primary),
             run_offsets,
@@ -2133,7 +2250,11 @@ def raster_iteration_zero(
             event_dp,
             event_msk,
             event_count,
+            1 if dump_req else 0,
+            sdump_buf,
         )
+        if dump_req:
+            _aa_dump_emit("shadow", sdump_buf)
         num_events = int(event_count.item())
         shadow_vis = _arena_tensor(
             memory, (max(1, num_events), max(1, int(num_lights))), torch.float32, 1.0
@@ -2194,6 +2315,11 @@ def raster_iteration_zero(
     else:
         shadow_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
 
+    rdump_buf = (
+        _aa_dump_buffer(dump_req, zbuf.device)
+        if dump_req
+        else _aa_dump_arg(zbuf.device)
+    )
     raster_first_shade(
         int(tn_primary),
         run_offsets,
@@ -2261,7 +2387,11 @@ def raster_iteration_zero(
         frag_shadow_id,
         z_shadow_id,
         shadow_vis,
+        1 if dump_req else 0,
+        rdump_buf,
     )
+    if dump_req:
+        _aa_dump_emit("resolve", rdump_buf)
     # The resolve ran and wrote pix_accum, so the composite must read it.
     # Hand the covered list to the caller: under post-process tonemapping the
     # composite is a linear blend that is a no-op on empty pixels, so it can

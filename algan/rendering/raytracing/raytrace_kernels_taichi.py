@@ -330,6 +330,11 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
     ccv = 0.0
     e1x = 0.0
     e1y = 0.0
+    # Flatten-time inward sign of the nearest / second-nearest edge (edges_2d
+    # column 5, DESIGN_analytic_aa_v2.md ss5.2): +-1 says which perpendicular
+    # of the edge's direction points into the drawn region, 0 unknown. Only
+    # the wedge branch consumes it; the column exists on every build.
+    sg1 = 0.0
     # Second-nearest candidate, which is what turns a thin stroke from a
     # half-plane into a STRIP: one distance can only describe an edge running to
     # infinity, and a glyph stem is two walls a fraction of a pixel apart.
@@ -338,6 +343,7 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
     scv = 0.0
     e2x = 0.0
     e2y = 0.0
+    sg2 = 0.0
     if ((query_radius > 0.0) and (u + query_radius >= min_u)
             and (u - query_radius <= max_u)
             and (v + query_radius >= min_v)
@@ -385,20 +391,23 @@ def _bezier_point_metrics(circuit, te, u, v, query_radius, num_circuits,
                         scv = ccv
                         e2x = e1x
                         e2y = e1y
+                        sg2 = sg1
                         min_dist_sq = dsq
                         ccu = cx
                         ccv = cy
                         e1x = dx
                         e1y = dy
+                        sg1 = edges_2d[te, e, 5]
                     elif dsq < sec_dist_sq:
                         sec_dist_sq = dsq
                         scu = cx
                         scv = cy
                         e2x = dx
                         e2y = dy
+                        sg2 = edges_2d[te, e, 5]
 
-    return (crossings, min_dist_sq, ccu, ccv, e1x, e1y,
-            sec_dist_sq, scu, scv, e2x, e2y)
+    return (crossings, min_dist_sq, ccu, ccv, e1x, e1y, sg1,
+            sec_dist_sq, scu, scv, e2x, e2y, sg2)
 
 
 @ti.func
@@ -1569,8 +1578,9 @@ def _nearest_bezier_hit(refit: ti.template(), ro, rd, inv_rd, f, ff, t_prev,
                                 query_radius = _circuit_query_radius(
                                     border_w, outline_w, filled)
                                 te = f % num_edge_frames
-                                (crossings, min_dist_sq, _ccu, _ccv, _e1x, _e1y,
-                                     _s2, _s2u, _s2v, _e2x, _e2y) = _bezier_point_metrics(
+                                (crossings, min_dist_sq, _ccu, _ccv, _e1x,
+                                     _e1y, _sg1, _s2, _s2u, _s2v, _e2x, _e2y,
+                                     _sg2) = _bezier_point_metrics(
                                     circuit, te, u, v, query_radius,
                                     circuit_meta.shape[1], edges_2d, edge_accel)
                                 inside, in_border = _circuit_point_region(
@@ -2837,8 +2847,9 @@ def _collect_hits(refit: ti.template(),
                                     query_radius = _circuit_query_radius(
                                         border_w, outline_w, filled)
                                     te = f % num_edge_frames
-                                    (crossings, min_dist_sq, _ccu, _ccv, _e1x, _e1y,
-                                     _s2, _s2u, _s2v, _e2x, _e2y) = _bezier_point_metrics(
+                                    (crossings, min_dist_sq, _ccu, _ccv, _e1x,
+                                     _e1y, _sg1, _s2, _s2u, _s2v, _e2x, _e2y,
+                                     _sg2) = _bezier_point_metrics(
                                         circuit, te, u, v, query_radius,
                                         circuit_meta.shape[1], edges_2d, edge_accel)
                                     inside, in_border = _circuit_point_region(
