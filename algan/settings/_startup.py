@@ -10,6 +10,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# Raise the CUDA driver's JIT cache ceiling before anything can initialise a
+# CUDA context (the torch import below probes one). Algan's Taichi kernels JIT
+# to several hundred MB of ComputeCache entries; at the driver's default cap
+# the cache sits in permanent LRU eviction and every fresh process re-JITs
+# multi-second kernel modules (~12s measured on the debug scene's variant set).
+# ``setdefault`` so an explicit user value always wins.
+os.environ.setdefault("CUDA_CACHE_MAXSIZE", "4294967296")
+
 import torch
 
 from algan.errors import AlganConfigurationError

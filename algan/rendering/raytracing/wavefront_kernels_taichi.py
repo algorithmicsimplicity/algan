@@ -59,6 +59,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     finalize_pixel_color,
 )
 from algan.rendering.raytracing.shading_taichi import (
+    _MID_DEFAULT,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
@@ -2235,7 +2236,33 @@ def wavefront_shade(
                     if ti.static((shadows != 0) and (deferred_shadows == 0)):
                         ff = ti.cast(f, ti.f32)
                         pixel_size_per_t = pixel_world_scale[f]
+                        # Shadow visibility is skipped exactly where it cannot
+                        # reach the output: an UNLIT hit never consumes ``vis``
+                        # (passthrough shading; scatters take no ``vis``), and
+                        # in the lit built-in stages every ``vis``-gated term
+                        # carries the light colour as a factor, so a
+                        # zero-colour light row (not yet spawned, or despawned)
+                        # contributes exactly 0 whatever its visibility. The
+                        # default stage weights its base fade by ``vis`` even
+                        # for zero-colour lights, and user pipelines may read
+                        # ``vis`` arbitrarily -- both keep the exact fan for
+                        # every light.
+                        do_fan = 0
+                        fan_exact = 1
                         if (htype == 1) or (htype == 2):
+                            pid_s = 0
+                            if htype == 1:
+                                pid_s = tri_mat_id[f % tri_mat_id.shape[0],
+                                                   prim]
+                            else:
+                                pid_s = pn_mat_id[f % pn_mat_id.shape[0],
+                                                  prim]
+                            if pid_s != _MID_UNLIT:
+                                do_fan = 1
+                                if ((pid_s != _MID_DEFAULT)
+                                        and (pid_s < _USER_PIPELINE_BASE)):
+                                    fan_exact = 0
+                        if do_fan == 1:
                             # Smooth shading normal and the *geometric* face
                             # normal of the hit facet/patch.
                             snrm = ti.math.vec3(0.0, 0.0, 0.0)
@@ -2278,7 +2305,11 @@ def wavefront_shade(
                             sorigin = spos + fnrm * (10.0 * MIN_HIT_DISTANCE)
                             tl = f % light_pos.shape[0]
                             for li in range(num_lights):
-                                if li < MAX_SHADOW_LIGHTS:
+                                if (li < MAX_SHADOW_LIGHTS) and (
+                                        (fan_exact == 1)
+                                        or (light_col[tl, li, 0] != 0.0)
+                                        or (light_col[tl, li, 1] != 0.0)
+                                        or (light_col[tl, li, 2] != 0.0)):
                                     lp = ti.math.vec3(light_pos[tl, li, 0],
                                                       light_pos[tl, li, 1],
                                                       light_pos[tl, li, 2])

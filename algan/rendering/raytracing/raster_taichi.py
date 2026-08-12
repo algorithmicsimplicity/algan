@@ -77,7 +77,9 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shadow_occluded,
 )
 from algan.rendering.raytracing.shading_taichi import (
+    _MID_DEFAULT,
     _MID_UNLIT,
+    _USER_PIPELINE_BASE,
     _orient_hit_normals,
     _reflect_frame,
 )
@@ -2503,6 +2505,7 @@ def raster_shadow_event_build(
         tri_tex_meta: ti.types.ndarray(), textures: ti.types.ndarray(),
         num_colored_triangles: ti.i32, col_row: ti.types.ndarray(),
         tri_obj: ti.types.ndarray(),
+        tri_mat_id: ti.types.ndarray(),
         circuit_meta: ti.types.ndarray(), circuit_colors: ti.types.ndarray(),
         circuit_border_colors: ti.types.ndarray(),
         edges_2d: ti.types.ndarray(), edge_accel: ti.types.ndarray(),
@@ -2733,64 +2736,82 @@ def raster_shadow_event_build(
                 transmission = _tri_transmission_g(
                     0, f, ref, w0, a, b, tri_extra, col_row, tri_uvs,
                     tri_tex_meta, textures, num_colored_triangles)
-                # This exact accepted triangle event receives one sparse shadow
-                # queue entry, irrespective of raw list position/depth.
-                eid = ti.atomic_add(event_count[0], 1)
-                if from_z:
-                    z_shadow_id[r] = eid
-                else:
-                    frag_shadow_id[idx] = eid
-                # Rebuilt from the fragment's own barycentrics, so a partially
-                # covering fragment's shadow origin sits on ITS triangle rather
-                # than wherever the centre ray reaches its centroid-measured
-                # depth (see _tri_surface_point). Off analytic coverage every
-                # fragment is a full centre hit and the two agree exactly, so
-                # that path stays byte-identical.
-                hp = ro + t_hit * rd
-                srd = rd
-                if ti.static(aa_tri):
-                    hp = _tri_surface_point(f, ref, w0, a, b, tri_pos)
-                    if cov < AA_FULL_COVERAGE:
-                        srd = (hp - ro).normalized()
-                # The facing test must use the SAME ray the resolve does
-                # (``surf_rd`` in raster_first_shade). Both kernels decide which
-                # side of this fragment the viewer is on -- the resolve to
-                # orient the shading and reflection normal, this one to pick the
-                # side the shadow origin is offset towards. Inside the ~0.04
-                # degree band where the two rays straddle the horizon they can
-                # disagree, and then the shadow origin is pushed THROUGH the
-                # surface and the ray self-shadows the pixel it came from.
-                snrm, fnrm = _tri_shadow_normals(
-                    f, ref, a, b, srd, tri_pos, tri_norm, tri_uvs,
-                    tri_tex_meta, textures, num_colored_triangles)
-                for k in ti.static(range(3)):
-                    event_pos[eid, k] = hp[k]
-                    event_snrm[eid, k] = snrm[k]
-                    event_fnrm[eid, k] = fnrm[k]
-                event_frame[eid] = f
-                # Shadow visibility is sampled only at sub-pixel positions the
-                # triangle fragment owns. A terminal z-winner owns all four
-                # positions; an areal sliver has no discrete position and uses
-                # all four as the least-biased representation of its area.
-                shadow_msk = 0xF
-                if ti.static(aa_tri):
-                    if (not from_z) and (not sliver):
-                        shadow_msk, _shadow_n = _sec_positions(
-                            msk & _AA_MASK_ALL, 4)
-                event_msk[eid] = shadow_msk
-                if ti.static(sec_aa > 1):
-                    # Footprint for sub-pixel shadow sampling: coverage cannot
-                    # antialias a shadow EDGE, because visibility is a binary
-                    # query at one point per fragment (ss7). The trace resolves
-                    # it by moving that point over the pixel.
-                    dpx, dpy = _pixel_footprint(
-                        f, px, py, gen_meta, hp, fnrm, cam_origin,
-                        screen_point, pixel_basis_x, pixel_basis_y)
-                    for k in ti.static(range(3)):
-                        event_dp[eid, k] = dpx[k]
-                        event_dp[eid, 3 + k] = dpy[k]
-                if (reflectivity >= 0.0) or (transmission > 1e-4):
-                    normal = snrm
+                # An UNLIT triangle's shading never consumes per-light
+                # visibility (the resolve's pipeline passes its colour
+                # through), so no shadow event is reserved for it: its
+                # fragment keeps id -1 and the resolve's all-lit default.
+                # The transport walk may still need this fragment's shading
+                # normal for path bending, so that part is kept.
+                pid_e = tri_mat_id[f % tri_mat_id.shape[0], ref]
+                need_bend_normal = (reflectivity >= 0.0) \
+                    or (transmission > 1e-4)
+                if (pid_e != _MID_UNLIT) or need_bend_normal:
+                    # Rebuilt from the fragment's own barycentrics, so a
+                    # partially covering fragment's shadow origin sits on ITS
+                    # triangle rather than wherever the centre ray reaches its
+                    # centroid-measured depth (see _tri_surface_point). Off
+                    # analytic coverage every fragment is a full centre hit and
+                    # the two agree exactly, so that path stays byte-identical.
+                    hp = ro + t_hit * rd
+                    srd = rd
+                    if ti.static(aa_tri):
+                        hp = _tri_surface_point(f, ref, w0, a, b, tri_pos)
+                        if cov < AA_FULL_COVERAGE:
+                            srd = (hp - ro).normalized()
+                    # The facing test must use the SAME ray the resolve does
+                    # (``surf_rd`` in raster_first_shade). Both kernels decide
+                    # which side of this fragment the viewer is on -- the
+                    # resolve to orient the shading and reflection normal, this
+                    # one to pick the side the shadow origin is offset towards.
+                    # Inside the ~0.04 degree band where the two rays straddle
+                    # the horizon they can disagree, and then the shadow origin
+                    # is pushed THROUGH the surface and the ray self-shadows
+                    # the pixel it came from.
+                    snrm, fnrm = _tri_shadow_normals(
+                        f, ref, a, b, srd, tri_pos, tri_norm, tri_uvs,
+                        tri_tex_meta, textures, num_colored_triangles)
+                    if pid_e != _MID_UNLIT:
+                        # This exact accepted triangle event receives one
+                        # sparse shadow queue entry, irrespective of raw list
+                        # position/depth.
+                        eid = ti.atomic_add(event_count[0], 1)
+                        if from_z:
+                            z_shadow_id[r] = eid
+                        else:
+                            frag_shadow_id[idx] = eid
+                        for k in ti.static(range(3)):
+                            event_pos[eid, k] = hp[k]
+                            event_snrm[eid, k] = snrm[k]
+                            event_fnrm[eid, k] = fnrm[k]
+                        event_frame[eid] = f
+                        # Shadow visibility is sampled only at sub-pixel
+                        # positions the triangle fragment owns. A terminal
+                        # z-winner owns all four positions; an areal sliver has
+                        # no discrete position and uses all four as the
+                        # least-biased representation of its area. The event's
+                        # material pipeline id rides in the bits above the
+                        # 4-bit position mask so the trace can skip zero-colour
+                        # light rows exactly where visibility cannot matter.
+                        shadow_msk = 0xF
+                        if ti.static(aa_tri):
+                            if (not from_z) and (not sliver):
+                                shadow_msk, _shadow_n = _sec_positions(
+                                    msk & _AA_MASK_ALL, 4)
+                        event_msk[eid] = shadow_msk | (pid_e << 8)
+                        if ti.static(sec_aa > 1):
+                            # Footprint for sub-pixel shadow sampling: coverage
+                            # cannot antialias a shadow EDGE, because
+                            # visibility is a binary query at one point per
+                            # fragment (ss7). The trace resolves it by moving
+                            # that point over the pixel.
+                            dpx, dpy = _pixel_footprint(
+                                f, px, py, gen_meta, hp, fnrm, cam_origin,
+                                screen_point, pixel_basis_x, pixel_basis_y)
+                            for k in ti.static(range(3)):
+                                event_dp[eid, k] = dpx[k]
+                                event_dp[eid, 3 + k] = dpy[k]
+                    if need_bend_normal:
+                        normal = snrm
 
             if ti.static(aa_bez or aa_tri):
                 mat_alpha = ti.math.clamp(alpha, 0.0, 1.0)
@@ -2968,6 +2989,17 @@ def raster_shadow_trace(
             dpx = ti.math.vec3(event_dp[e, 0], event_dp[e, 1], event_dp[e, 2])
             dpy = ti.math.vec3(event_dp[e, 3], event_dp[e, 4], event_dp[e, 5])
         tl = f % light_pos.shape[0]
+        # The event's material pipeline id (packed above the 4-bit sub-pixel
+        # position mask at build time). For the lit built-in stages every
+        # visibility-gated term carries the light colour as a factor, so a
+        # zero-colour light row (not yet spawned, or despawned) keeps its
+        # all-lit default without tracing; the default stage weights its base
+        # fade by visibility even for zero-colour lights, and user pipelines
+        # may read it arbitrarily -- both keep the exact fan for every light.
+        pid_e = event_msk[e] >> 8
+        fan_exact = 1
+        if (pid_e != _MID_DEFAULT) and (pid_e < _USER_PIPELINE_BASE):
+            fan_exact = 0
         for li in range(num_lights):
             visibility = 1.0
             lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
@@ -2992,7 +3024,10 @@ def raster_shadow_trace(
                     and (ltype != _LT_ENV_SH) and (ldist > 1e-5):
                 wi = to_light / ldist
                 valid = 1
-            if valid == 1:
+            if (valid == 1) and ((fan_exact == 1)
+                                 or (light_col[tl, li, 0] != 0.0)
+                                 or (light_col[tl, li, 1] != 0.0)
+                                 or (light_col[tl, li, 2] != 0.0)):
                 ns = 1
                 b1 = ti.math.vec3(0.0, 0.0, 0.0)
                 b2 = ti.math.vec3(0.0, 0.0, 0.0)
