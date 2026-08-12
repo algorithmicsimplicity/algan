@@ -231,6 +231,103 @@ _AA_SAMPLE_WEIGHT = 1.0 / _AA_NUM_SAMPLES
 _AA_SORT4 = ((0, 1), (2, 3), (0, 2), (1, 3), (1, 2))
 
 
+# Per-fragment debug dump (ALGAN_AA_DUMP="px,py,frame"; DESIGN_analytic_aa_v2.md
+# ss7.1). Both walk kernels write one row per fragment they process at the
+# requested pixel into a host-provided float buffer, so a golden host-side walk
+# can recompute the pixel from the exact inputs the kernel saw and diff every
+# column -- and the two walks' dumps can be diffed against each other, which is
+# what catches a resolve/shadow-event desync on day one. Compiled out (a
+# ``ti.static`` template flag) unless requested; the buffer's row 0 carries the
+# target (px, py, frame) and the atomic row counter, so the feature costs one
+# kernel argument.
+#
+# Row layout (_AA_DUMP_COLS wide):
+#   [0] q      fragment index in the walk (the terminal row uses -1)
+#   [1] kind   0 tri, 1 bez, 2 z-tri, 3 z-bez
+#   [2] note   0 committed, 1 eff-skip, 2 bounce break, 3 occluded-glass
+#              break, 4 far-clip break, 5 invalid, 6 seam skip
+#   [3] ref    primitive / circuit id
+#   [4] sid    surface id: tri_obj[ref] for a triangle, -1 - circuit for bez
+#   [5] facing 1 when the fragment's backface bit is set
+#   [6] msk    sample-mask low bits
+#   [7] cov    frag_cov as emitted
+#   [8] pop    popcount(msk)
+#   [9] corr   the run correction applied (1.0 outside run mode)
+#   [10] eff   effective coverage after per-sample transmittance (and corr)
+#   [11] mat_alpha  material alpha before coverage
+#   [12] alpha      committed alpha (mat_alpha * eff)
+#   [13] trans_share
+#   [14] refl_max
+#   [15] t_hit
+#   [16:24] svis after this fragment committed
+# Terminal row: [-1, bounced, done, processed, vis_all, acc0, acc1, acc2,
+#                acc3, w0, w1, w2, 0, 0, 0, 0, svis...]
+_AA_DUMP_COLS = 24
+
+
+@ti.func
+def _aa_dump_match(dump_out: ti.template(), px, py, f):
+    """Whether this thread's pixel is the one the dump targets (row 0)."""
+    return ((px == ti.cast(dump_out[0, 0] + 0.5, ti.i32))
+            and (py == ti.cast(dump_out[0, 1] + 0.5, ti.i32))
+            and (f == ti.cast(dump_out[0, 2] + 0.5, ti.i32)))
+
+
+@ti.func
+def _aa_dump_reserve(dump_out: ti.template()):
+    """Atomically reserve the next dump row; -1 when the buffer is full."""
+    r = ti.cast(ti.atomic_add(dump_out[0, 3], 1.0) + 0.5, ti.i32) + 1
+    if r >= dump_out.shape[0]:
+        r = -1
+    return r
+
+
+@ti.func
+def _aa_dump_frag(dump_out: ti.template(), q, kind, note, ref, sid, facing,
+                  msk, cov, pop, corr, eff, mat_alpha, alpha, trans_share,
+                  refl_max, t_hit, svis):
+    r = _aa_dump_reserve(dump_out)
+    if r >= 0:
+        dump_out[r, 0] = ti.cast(q, ti.f32)
+        dump_out[r, 1] = ti.cast(kind, ti.f32)
+        dump_out[r, 2] = ti.cast(note, ti.f32)
+        dump_out[r, 3] = ti.cast(ref, ti.f32)
+        dump_out[r, 4] = ti.cast(sid, ti.f32)
+        dump_out[r, 5] = ti.cast(facing, ti.f32)
+        dump_out[r, 6] = ti.cast(msk & _AA_MASK_ALL, ti.f32)
+        dump_out[r, 7] = cov
+        dump_out[r, 8] = ti.cast(pop, ti.f32)
+        dump_out[r, 9] = corr
+        dump_out[r, 10] = eff
+        dump_out[r, 11] = mat_alpha
+        dump_out[r, 12] = alpha
+        dump_out[r, 13] = trans_share
+        dump_out[r, 14] = refl_max
+        dump_out[r, 15] = t_hit
+        for s in ti.static(range(_AA_NUM_SAMPLES)):
+            dump_out[r, 16 + s] = svis[s]
+
+
+@ti.func
+def _aa_dump_terminal(dump_out: ti.template(), bounced, done, processed,
+                      vis_all, acc, weight, svis):
+    r = _aa_dump_reserve(dump_out)
+    if r >= 0:
+        dump_out[r, 0] = -1.0
+        dump_out[r, 1] = 1.0 if bounced else 0.0
+        dump_out[r, 2] = 1.0 if done else 0.0
+        dump_out[r, 3] = ti.cast(processed, ti.f32)
+        dump_out[r, 4] = vis_all
+        for k in ti.static(range(4)):
+            dump_out[r, 5 + k] = acc[k]
+        for k in ti.static(range(3)):
+            dump_out[r, 9 + k] = weight[k]
+        for k in ti.static(range(4)):
+            dump_out[r, 12 + k] = 0.0
+        for s in ti.static(range(_AA_NUM_SAMPLES)):
+            dump_out[r, 16 + s] = svis[s]
+
+
 def _sliver_mode(aa):
     """Sample-less-triangle policy carried in the ``aa`` template value.
 
@@ -2522,7 +2619,8 @@ def raster_shadow_event_build(
         event_pos: ti.types.ndarray(), event_snrm: ti.types.ndarray(),
         event_fnrm: ti.types.ndarray(), event_frame: ti.types.ndarray(),
         event_dp: ti.types.ndarray(), event_msk: ti.types.ndarray(),
-        event_count: ti.types.ndarray()):
+        event_count: ti.types.ndarray(),
+        dump: ti.template(), dump_out: ti.types.ndarray()):
     """Build an exact sparse queue of accepted primary triangle shade events.
 
     The ordered transport walk mirrors ``raster_first_shade`` through seam
@@ -2566,6 +2664,9 @@ def raster_shadow_event_build(
         ro, rd = _generate_ray(f, px, py, gen_meta[0], gen_meta[1],
                                gen_meta[2], gen_meta[3], cam_origin,
                                screen_point, pixel_basis_x, pixel_basis_y)
+        dmatch = False
+        if ti.static(dump):
+            dmatch = _aa_dump_match(dump_out, px, py, f)
         # Mirrors raster_first_shade's transport state exactly, including the
         # per-sample transmittance (see its docstring). Any divergence here
         # desynchronizes every shadow id from its fragment.
@@ -2614,6 +2715,11 @@ def raster_shadow_event_build(
             tie = False
             contrib = 0.0
             a_s = 0.0
+            # Dump-only locals; see raster_first_shade for the scoping note.
+            d_mat = 0.0
+            d_face = 0
+            d_kind = 0
+            d_sid = 0
             if not from_z:
                 t_hit = _frag_t(frag_key[idx])
                 ref = frag_ref[idx]
@@ -2635,7 +2741,15 @@ def raster_shadow_event_build(
                     circuit_meta, circuit_colors, edges_2d, edge_accel,
                     gen_meta[2], gen_meta[3], aa_bez)
             q += 1
+            if ti.static(dump):
+                if (msk & _AA_BACKFACE_BIT) != 0:
+                    d_face = 1
             if valid == 0:
+                if ti.static(dump):
+                    if dmatch:
+                        _aa_dump_frag(dump_out, q - 1, 2, 5, ref, 0, 0, 0,
+                                      cov, 0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                                      t_hit, svis)
                 continue
             processed += 1
             w0 = 1.0 - a - b
@@ -2645,8 +2759,23 @@ def raster_shadow_event_build(
                     if ti.min(w0, ti.min(a, b)) < TRIANGLE_EDGE_EPSILON:
                         edge_hit = 1
                 if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+                    if ti.static(dump):
+                        if dmatch:
+                            _aa_dump_frag(dump_out, q - 1, 0, 6, ref, 0,
+                                          d_face, msk, cov,
+                                          _popcount_samples(msk), 1.0, 0.0,
+                                          0.0, 0.0, 0.0, 0.0, t_hit, svis)
                     continue
                 seam_t = t_hit if edge_hit == 1 else -1e30
+
+            if ti.static(dump):
+                if is_bez:
+                    d_kind = 1
+                if from_z:
+                    d_kind += 2
+                d_sid = -1 - ref
+                if not is_bez:
+                    d_sid = tri_obj[ref]
 
             eff = cov
             if ti.static(aa_grp):
@@ -2700,6 +2829,12 @@ def raster_shadow_event_build(
                         vis += slots[s] * svis[s]
                     eff = vis * _AA_SAMPLE_WEIGHT * dens
                 if eff <= MIN_ALPHA:
+                    if ti.static(dump):
+                        if dmatch:
+                            _aa_dump_frag(dump_out, q - 1, d_kind, 1, ref,
+                                          d_sid, d_face, msk, cov,
+                                          _popcount_samples(msk), 1.0, eff,
+                                          0.0, 0.0, 0.0, 0.0, t_hit, svis)
                     continue
 
             alpha = 0.0
@@ -2797,6 +2932,8 @@ def raster_shadow_event_build(
                 alpha = mat_alpha * eff
                 if ti.static(aa_grp):
                     a_s = mat_alpha * dens
+                if ti.static(dump):
+                    d_mat = mat_alpha
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             transmission = ti.math.clamp(transmission, 0.0, 1.0)
             R, diel_pass = _material_reflectance(
@@ -2828,6 +2965,13 @@ def raster_shadow_event_build(
             one3 = ti.math.vec3(1.0, 1.0, 1.0)
             if is_glass:
                 if (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
+                    if ti.static(dump):
+                        if dmatch:
+                            _aa_dump_frag(dump_out, q - 1, d_kind, 2, ref,
+                                          d_sid, d_face, msk, cov,
+                                          _popcount_samples(msk), 1.0, eff,
+                                          d_mat, alpha, trans_share,
+                                          refl_max, t_hit, svis)
                     break
                 if ti.static(aa_grp):
                     for s in ti.static(range(_AA_NUM_SAMPLES)):
@@ -2863,6 +3007,13 @@ def raster_shadow_event_build(
                 else:
                     weight *= cover3 + trans_energy * tint
             elif (refl_max > MIN_ALPHA) and (refl_max >= cover_pass):
+                if ti.static(dump):
+                    if dmatch:
+                        _aa_dump_frag(dump_out, q - 1, d_kind, 2, ref,
+                                      d_sid, d_face, msk, cov,
+                                      _popcount_samples(msk), 1.0, eff,
+                                      d_mat, alpha, trans_share, refl_max,
+                                      t_hit, svis)
                 break
             else:
                 if ti.static(aa_grp):
@@ -2892,6 +3043,12 @@ def raster_shadow_event_build(
                         weight *= one3 + (num / ti.max(pm, 1e-6) - one3) * frac
                 else:
                     weight *= cover3 + trans_energy * tint
+            if ti.static(dump):
+                if dmatch:
+                    _aa_dump_frag(dump_out, q - 1, d_kind, 0, ref, d_sid,
+                                  d_face, msk, cov, _popcount_samples(msk),
+                                  1.0, eff, d_mat, alpha, trans_share,
+                                  refl_max, t_hit, svis)
             cur_w = weight
             if ti.static(aa_grp):
                 vis_all = 0.0
@@ -2903,6 +3060,15 @@ def raster_shadow_event_build(
                 cur_w = weight * (vis_all * _AA_SAMPLE_WEIGHT)
             if ti.max(cur_w[0], ti.max(cur_w[1], cur_w[2])) < MIN_WEIGHT:
                 break
+        if ti.static(dump):
+            if dmatch:
+                d_vis = 0.0
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    d_vis += svis[s]
+                _aa_dump_terminal(dump_out, False, processed >= total,
+                                  processed, d_vis * _AA_SAMPLE_WEIGHT,
+                                  ti.math.vec4(0.0, 0.0, 0.0, 0.0), weight,
+                                  svis)
 
 
 @ti.kernel
@@ -3109,7 +3275,8 @@ def raster_first_shade(
         rs_int: ti.types.ndarray(), rs_pix: ti.types.ndarray(),
         pix_accum: ti.types.ndarray(), rs_alloc: ti.types.ndarray(),
         frag_shadow_id: ti.types.ndarray(), z_shadow_id: ti.types.ndarray(),
-        shadow_vis: ti.types.ndarray()):
+        shadow_vis: ti.types.ndarray(),
+        dump: ti.template(), dump_out: ti.types.ndarray()):
     """Resolve + shade each pixel's complete straight-line hit list.
 
     One thread per tile pixel walks its sorted transparent run front-to-back
@@ -3257,6 +3424,9 @@ def raster_first_shade(
                                gen_meta[2], gen_meta[3],
                                cam_origin, screen_point,
                                pixel_basis_x, pixel_basis_y)
+        dmatch = False
+        if ti.static(dump):
+            dmatch = _aa_dump_match(dump_out, px, py, f)
         # Which part of the reflection lobe this pixel's taps sample. Hoisted
         # out of the fragment walk because it depends on the PIXEL alone.
         g_roff = 0.5
@@ -3316,6 +3486,13 @@ def raster_first_shade(
             tie = False
             contrib = 0.0
             a_s = 0.0
+            # Dump-only locals, declared unconditionally so Taichi's block
+            # scoping accepts the assignments inside static-dump regions; the
+            # constants are dead (and eliminated) in non-dump builds.
+            d_mat = 0.0
+            d_face = 0
+            d_kind = 0
+            d_sid = 0
             if q < nrun:
                 t_hit = _frag_t(frag_key[idx])
                 prim_raw = frag_ref[idx]
@@ -3336,9 +3513,23 @@ def raster_first_shade(
                 if is_z_bez:
                     prim_raw = _pack_bez_ref(zprim, in_border)
             q += 1
+            if ti.static(dump):
+                if (msk & _AA_BACKFACE_BIT) != 0:
+                    d_face = 1
             if valid == 0:
+                if ti.static(dump):
+                    if dmatch:
+                        _aa_dump_frag(dump_out, q - 1, 2, 5, prim_raw, 0, 0,
+                                      0, cov, 0, 1.0, 0.0, 0.0, 0.0, 0.0,
+                                      0.0, t_hit, svis)
                 continue
             if (far_clip > 0.0) and (base_dist + t_hit > far_clip):
+                if ti.static(dump):
+                    if dmatch:
+                        _aa_dump_frag(dump_out, q - 1, 0, 4, prim_raw, 0,
+                                      d_face, msk, cov,
+                                      _popcount_samples(msk), 1.0, 0.0, 0.0,
+                                      0.0, 0.0, 0.0, t_hit, svis)
                 done = True
                 break
             processed += 1
@@ -3367,8 +3558,23 @@ def raster_first_shade(
                     if ti.min(w0, ti.min(a, b)) < TRIANGLE_EDGE_EPSILON:
                         edge_hit = 1
                 if (edge_hit == 1) and (t_hit - seam_t <= DEPTH_TIE_EPSILON):
+                    if ti.static(dump):
+                        if dmatch:
+                            _aa_dump_frag(dump_out, q - 1, 0, 6, prim_raw, 0,
+                                          d_face, msk, cov,
+                                          _popcount_samples(msk), 1.0, 0.0,
+                                          0.0, 0.0, 0.0, 0.0, t_hit, svis)
                     continue
                 seam_t = t_hit if edge_hit == 1 else -1e30
+
+            if ti.static(dump):
+                if is_bez:
+                    d_kind = 1
+                if from_z:
+                    d_kind += 2
+                d_sid = -1 - prim_raw
+                if not is_bez:
+                    d_sid = tri_obj[prim_raw]
 
             # PER-SAMPLE TRANSMITTANCE (see the docstring). ``eff`` is how much
             # of the pixel's light actually reaches this fragment: the sum, over
@@ -3435,6 +3641,12 @@ def raster_first_shade(
                 if eff <= MIN_ALPHA:
                     # Nothing still reaches the samples this fragment covers:
                     # something opaque in front of it already has them.
+                    if ti.static(dump):
+                        if dmatch:
+                            _aa_dump_frag(dump_out, q - 1, d_kind, 1,
+                                          prim_raw, d_sid, d_face, msk, cov,
+                                          _popcount_samples(msk), 1.0, eff,
+                                          0.0, 0.0, 0.0, 0.0, t_hit, svis)
                     continue
 
             color = ti.math.vec4(0.0, 0.0, 0.0, 0.0)
@@ -3559,6 +3771,8 @@ def raster_first_shade(
                 alpha = mat_alpha * eff
                 if ti.static(aa_grp):
                     a_s = mat_alpha * dens
+                if ti.static(dump):
+                    d_mat = mat_alpha
             alpha = ti.math.clamp(alpha, 0.0, 1.0)
             T = ti.math.clamp(T, 0.0, 1.0)
 
@@ -3744,6 +3958,13 @@ def raster_first_shade(
                     seam_t = -1e30
                     bounces_left -= 1
                     bounced = True
+                    if ti.static(dump):
+                        if dmatch:
+                            _aa_dump_frag(dump_out, q - 1, d_kind, 2,
+                                          prim_raw, d_sid, d_face, msk, cov,
+                                          _popcount_samples(msk), 1.0, eff,
+                                          d_mat, alpha, trans_share,
+                                          refl_max, t_hit, svis)
                     break
                 else:
                     # The pass-through outweighs the reflection, so it keeps the
@@ -3937,6 +4158,13 @@ def raster_first_shade(
                 seam_t = -1e30
                 bounces_left -= 1
                 bounced = True
+                if ti.static(dump):
+                    if dmatch:
+                        _aa_dump_frag(dump_out, q - 1, d_kind, 2, prim_raw,
+                                      d_sid, d_face, msk, cov,
+                                      _popcount_samples(msk), 1.0, eff,
+                                      d_mat, alpha, trans_share, refl_max,
+                                      t_hit, svis)
                 break
             else:
                 if ti.static(aa_grp):
@@ -3967,6 +4195,12 @@ def raster_first_shade(
                 else:
                     weight *= cover3 + trans_energy * tint
 
+            if ti.static(dump):
+                if dmatch:
+                    _aa_dump_frag(dump_out, q - 1, d_kind, 0, prim_raw,
+                                  d_sid, d_face, msk, cov,
+                                  _popcount_samples(msk), 1.0, eff, d_mat,
+                                  alpha, trans_share, refl_max, t_hit, svis)
             cur_w = weight
             if ti.static(aa_grp):
                 vis_all = 0.0
@@ -3996,6 +4230,15 @@ def raster_first_shade(
 
         if processed >= MAX_SURFACES_PER_RAY:
             done = True
+
+        if ti.static(dump):
+            if dmatch:
+                d_vis = 0.0
+                for s in ti.static(range(_AA_NUM_SAMPLES)):
+                    d_vis += svis[s]
+                _aa_dump_terminal(dump_out, bounced, done, processed,
+                                  d_vis * _AA_SAMPLE_WEIGHT, acc, weight,
+                                  svis)
 
         if bounced and not done:
             if ti.static(prefill):
