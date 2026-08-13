@@ -2031,7 +2031,8 @@ def _bezier_normal(f, circuit, circuit_meta: ti.template()):
 
 
 @ti.func
-def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, pos,
+def _shade_tri_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
+                   f, prim, a, b, rd, pos,
                    tri_pos: ti.template(), shade_normal,
                    tri_mat_id: ti.template(), tri_mat: ti.template(),
                    light_pos: ti.template(), light_col: ti.template(),
@@ -2054,7 +2055,10 @@ def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, pos,
     pixel-centre one, so that expression does not name a point on the triangle
     (see ``raster_taichi._tri_surface_point``). Ray-traced callers pass exactly
     ``ro + t_hit * rd`` and are unchanged. ``rd`` is still the view ray and only
-    supplies the view DIRECTION, whose sub-pixel error is ~0.05 degrees."""
+    supplies the view DIRECTION, whose sub-pixel error is ~0.05 degrees.
+
+    ``pids_present`` is the compile-time bitmask of the material pipeline ids
+    the batch's TRIANGLES carry (see ``shading_taichi._run_frag_pipeline``)."""
     tp = f % tri_pos.shape[0]
     v0 = ti.math.vec3(tri_pos[tp, prim, 0], tri_pos[tp, prim, 1],
                       tri_pos[tp, prim, 2])
@@ -2064,14 +2068,16 @@ def _shade_tri_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, pos,
                       tri_pos[tp, prim, 8])
     face_n = (v1 - v0).cross(v2 - v0)
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
-    return _run_frag_pipeline(frag_pipelines, prim, f, pos, -rd, shade_normal,
+    return _run_frag_pipeline(frag_pipelines, pids_present,
+                              prim, f, pos, -rd, shade_normal,
                               face_n, rgb,
                               albedo[3], light_pos, light_col, num_lights,
                               tri_mat_id, tri_mat, shadows, vis)
 
 
 @ti.func
-def _shade_pn_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
+def _shade_pn_hit(frag_pipelines: ti.template(), pids_present: ti.template(),
+                  f, prim, a, b, rd, t_hit, ro,
                   pn_ctrl: ti.template(), shade_normal,
                   pn_mat_id: ti.template(), pn_mat: ti.template(),
                   light_pos: ti.template(), light_col: ti.template(),
@@ -2079,7 +2085,10 @@ def _shade_pn_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
     """Per-fragment material shading of a confirmed PN-patch hit. Like
     :func:`_shade_tri_hit` (caller-supplied normal-mapped ``shade_normal``) but
     the geometric face normal is the cross product of the patch's parametric
-    tangents at (u, v) = (a, b)."""
+    tangents at (u, v) = (a, b). ``pids_present`` is the compile-time bitmask
+    of the ids the batch's PN PATCHES carry -- separate from the triangle one,
+    so a scene whose meshes and patches use different materials still resolves
+    each site to a single stage."""
     tp = f % pn_ctrl.shape[0]
     su = ti.math.vec3(0.0, 0.0, 0.0)
     sv = ti.math.vec3(0.0, 0.0, 0.0)
@@ -2093,7 +2102,8 @@ def _shade_pn_hit(frag_pipelines: ti.template(), f, prim, a, b, rd, t_hit, ro,
     face_n = su.cross(sv)
     pos = ro + t_hit * rd
     rgb = ti.math.vec3(albedo[0], albedo[1], albedo[2])
-    return _run_frag_pipeline(frag_pipelines, prim, f, pos, -rd, shade_normal,
+    return _run_frag_pipeline(frag_pipelines, pids_present,
+                              prim, f, pos, -rd, shade_normal,
                               face_n, rgb,
                               albedo[3], light_pos, light_col, num_lights,
                               pn_mat_id, pn_mat, shadows, vis)
@@ -3313,7 +3323,9 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
     would have folded into an earlier translucent edge hit within
     ``DEPTH_TIE_EPSILON``, and an opaque blocker past
     ``MAX_SURFACES_PER_RAY`` peeled surfaces -- in both the any-hit's full
-    occlusion is the physically correct answer.
+    occlusion is the physically correct answer. 4 replaces the march with
+    :func:`_shadow_gather_occluded`, the same peel rebuilt on the KBUF
+    gather (one traversal per KBUF surfaces instead of per surface).
     """
     inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                           _safe_inverse(rd[2]))
@@ -3331,19 +3343,34 @@ def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
                 circuit_meta, edges_2d, edge_accel),
             ti.f32)
     else:
-        occluded = _shadow_march_occluded(
-            refit, anyhit, ro, rd, inv_rd, f, ff, max_t,
-            pixel_size_per_t, base_dist, layer_offset_triangles,
-            layer_offset_pn,
-            has_tri, has_pn, has_bez,
-            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-            t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
-            textures, num_colored_triangles,
-            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-            p_first_leaf, pn_ctrl, pn_obb, pn_colors,
-            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-            b_first_leaf, circuit_meta, circuit_colors,
-            circuit_border_colors, edges_2d, edge_accel)
+        if ti.static(anyhit == 4):
+            occluded = _shadow_gather_occluded(
+                refit, ro, rd, inv_rd, f, ff, max_t,
+                pixel_size_per_t, base_dist, layer_offset_triangles,
+                layer_offset_pn,
+                has_tri, has_pn, has_bez,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
+                textures, num_colored_triangles,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
+                p_first_leaf, pn_ctrl, pn_obb, pn_colors,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+                b_first_leaf, circuit_meta, circuit_colors,
+                circuit_border_colors, edges_2d, edge_accel)
+        else:
+            occluded = _shadow_march_occluded(
+                refit, anyhit, ro, rd, inv_rd, f, ff, max_t,
+                pixel_size_per_t, base_dist, layer_offset_triangles,
+                layer_offset_pn,
+                has_tri, has_pn, has_bez,
+                t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
+                textures, num_colored_triangles,
+                p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
+                p_first_leaf, pn_ctrl, pn_obb, pn_colors,
+                b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+                b_first_leaf, circuit_meta, circuit_colors,
+                circuit_border_colors, edges_2d, edge_accel)
     return occluded
 
 
@@ -3459,6 +3486,168 @@ def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
                     break
         t_prev = t_hit
         layer_prev = hit_layer
+    return 1.0 - transmitted
+
+
+@ti.func
+def _shadow_gather_occluded(refit: ti.template(),
+                            ro, rd, inv_rd, f, ff,
+                            max_t,
+                            pixel_size_per_t, base_dist,
+                            layer_offset_triangles, layer_offset_pn,
+                            has_tri: ti.template(), has_pn: ti.template(),
+                            has_bez: ti.template(),
+                            t_nodes: ti.template(),
+                            t_node_miss: ti.template(),
+                            t_leaf_prim: ti.template(),
+                            t_leaf_tspan: ti.template(),
+                            t_first_leaf, tri_pos: ti.template(),
+                            tri_colors: ti.template(),
+                            tri_uvs: ti.template(),
+                            tri_tex_meta: ti.template(),
+                            textures: ti.template(),
+                            num_colored_triangles: ti.i32,
+                            p_nodes: ti.template(),
+                            p_node_miss: ti.template(),
+                            p_leaf_prim: ti.template(),
+                            p_leaf_tspan: ti.template(),
+                            p_first_leaf, pn_ctrl: ti.template(),
+                            pn_obb: ti.template(),
+                            pn_colors: ti.template(),
+                            b_nodes: ti.template(),
+                            b_node_miss: ti.template(),
+                            b_leaf_prim: ti.template(),
+                            b_leaf_tspan: ti.template(),
+                            b_first_leaf, circuit_meta: ti.template(),
+                            circuit_colors: ti.template(),
+                            circuit_border_colors: ti.template(),
+                            edges_2d: ti.template(),
+                            edge_accel: ti.template()):
+    """The ordered shadow march rebuilt on the KBUF gather (shadow mode 4).
+
+    Where :func:`_shadow_march_occluded` restarts a full three-tree
+    traversal per peeled surface, each traversal here gathers the up-to-
+    ``KBUF`` nearest hits with :func:`_collect_hits` and drains them in the
+    same transitive :func:`_comes_after` order the march peels in, with the
+    identical seam merge, alpha accumulation and early exits. A k-surface
+    translucent stack therefore costs ``ceil((k+1)/KBUF)`` traversals
+    instead of ``k+1``, while an all-opaque blocked ray stays at one (its
+    first buffer opens with an interval-opaque hit whose alpha is 1).
+
+    The light cap rides in as the gather's initial opaque window
+    (``initial_opq_t = max_t``): node-visit windows close at ``max_t`` +
+    ``DEPTH_TIE_EPSILON`` exactly like the march's ``t_cap``, and
+    acceptance drops precisely the hits whose depth bin lies beyond the
+    light's -- hits the march breaks on before applying any of them. Hits
+    inside the light's own depth bin are still gathered and terminate the
+    drain through the same ``t >= max_t`` test as the march.
+
+    Divergence from the march is confined to a corner shared with the
+    camera peel (which composites from the same gather + opaque window): a
+    surface behind an interval-opaque edge hit that the drain seam-merges
+    into an earlier coincident edge hit was pruned by the opaque window,
+    where the march would have peeled on through the merged surface.
+    """
+    transmitted = 1.0
+    t_prev = 0.0
+    layer_prev = 1e30
+    seam_t = -1e30
+    step = 0
+    alive = 1
+    while (alive == 1) and (step < MAX_SURFACES_PER_RAY):
+        kb_t = ti.Vector([0.0] * KBUF)
+        kb_layer = ti.Vector([0.0] * KBUF)
+        kb_prim = ti.Vector([0] * KBUF)
+        kb_flags = ti.Vector([0] * KBUF)
+        kb_a = ti.Vector([0.0] * KBUF)
+        kb_b = ti.Vector([0.0] * KBUF)
+        num_hits = _collect_hits(
+            refit, ro, rd, inv_rd, f, ff, t_prev, layer_prev,
+            pixel_size_per_t, base_dist, layer_offset_triangles,
+            layer_offset_pn,
+            kb_t, kb_layer, kb_prim, kb_flags, kb_a, kb_b,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+            tri_pos,
+            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+            pn_ctrl, pn_obb,
+            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+            circuit_meta, edges_2d, edge_accel, has_tri, has_pn, has_bez,
+            max_t, -1e30)
+        if num_hits == 0:
+            alive = 0
+        drained = 0
+        while (alive == 1) and (drained < num_hits) \
+                and (step < MAX_SURFACES_PER_RAY):
+            step += 1
+            # Nearest unconsumed slot, scalar-tracked with ti.static
+            # selects so the kb_* vectors are never dynamically indexed
+            # (a dynamic vector index spills the whole vector to local
+            # memory -- see the wavefront_shade drain).
+            sel = 0
+            sel_found = 0
+            t_hit = 0.0
+            hit_layer = 0.0
+            for q in ti.static(range(KBUF)):
+                if (q < num_hits) and (kb_prim[q] >= 0):
+                    if sel_found == 0:
+                        sel = q
+                        t_hit = kb_t[q]
+                        hit_layer = kb_layer[q]
+                        sel_found = 1
+                    elif _comes_after(t_hit, hit_layer,
+                                      kb_t[q], kb_layer[q]):
+                        sel = q
+                        t_hit = kb_t[q]
+                        hit_layer = kb_layer[q]
+            prim = 0
+            flags = 0
+            a = 0.0
+            b = 0.0
+            for q in ti.static(range(KBUF)):
+                if q == sel:
+                    prim = kb_prim[q]
+                    flags = kb_flags[q]
+                    a = kb_a[q]
+                    b = kb_b[q]
+                    kb_prim[q] = -1
+            drained += 1
+            if t_hit >= max_t:
+                alive = 0
+            else:
+                hit_type = flags & 3
+                edge_hit = (flags >> 2) & 1
+                border = (flags >> 3) & 1
+                seam_eps = PN_SEAM_DEPTH_EPSILON if hit_type == 2 \
+                    else DEPTH_TIE_EPSILON
+                if (edge_hit == 1) and (t_hit - seam_t <= seam_eps):
+                    t_prev = t_hit
+                    layer_prev = hit_layer
+                else:
+                    seam_t = t_hit if edge_hit == 1 else -1e30
+                    alpha = 0.0
+                    if hit_type == 1:
+                        alpha = _flat_triangle_alpha(
+                            f, prim, 1.0 - a - b, a, b, tri_colors, tri_uvs,
+                            tri_tex_meta, textures, num_colored_triangles)
+                    elif hit_type == 2:
+                        alpha = _triangle_alpha(f, prim, 1.0 - a - b, a, b,
+                                                pn_colors)
+                    else:
+                        alpha = _circuit_alpha(prim, f, a, b, border,
+                                               circuit_meta, circuit_colors,
+                                               circuit_border_colors)
+                    alpha = ti.math.clamp(alpha, 0.0, 1.0)
+                    transmitted *= 1.0 - alpha
+                    if alpha >= 1.0:
+                        alive = 0
+                    else:
+                        t_prev = t_hit
+                        layer_prev = hit_layer
+        # A short buffer proves every remaining hit inside the light's
+        # depth window was gathered and drained; the march's next step
+        # would find nothing (or only beyond-light hits it breaks on).
+        if (alive == 1) and (num_hits < KBUF):
+            alive = 0
     return 1.0 - transmitted
 
 

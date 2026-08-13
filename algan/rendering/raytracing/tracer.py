@@ -69,7 +69,7 @@ from algan.rendering.taichi_runtime import (
 from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
-from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE
+from algan.rendering.raytracing.shading_taichi import ALL_PIDS, _USER_PIPELINE_BASE
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
 # path (used by benchmarks/_wf_mem_trim_ab.py to confirm the trim actually fired).
@@ -77,6 +77,10 @@ _MEM_TRIM_ENGAGED = [0]
 # Number of tile attempts discarded and retried after the shared continuation
 # allocator reported overflow. Kept as a list for low-overhead in-process tests.
 _WAVEFRONT_POOL_RETRIES = [0]
+# Diagnostics: the material-pipeline gate masks of the most recently rendered
+# batch (ALL_PIDS = ungated), so an A/B can confirm the gate actually engaged
+# instead of inferring it from timings (benchmarks/_frag_pid_gate_ab.py).
+_FRAG_PID_LAST = {"tri": ALL_PIDS, "pn": ALL_PIDS}
 from algan.logging.logger import get_logger
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 
@@ -1082,15 +1086,20 @@ def render_batch_raytraced(
     # (every visible primitive carries the opaque leaf flag, so a miss proves
     # the ray lit). Uncertain texture alpha keeps the fallback: such
     # primitives are not opaque-flagged, and their shadow attenuation only
-    # the march can evaluate.
+    # the march can evaluate. 4 = gather-march: the ordered peel rebuilt on
+    # the KBUF gather, valid for any batch (the drain evaluates translucent
+    # attenuation exactly like the march), so it needs no translucent gate.
     if shadow_flag and rt_settings.SHADOW_ANYHIT:
-        batch_has_translucent = (
-            merged.get("tri_has_translucent", True)
-            or merged.get("pn_has_translucent", True)
-            or merged.get("bez_has_translucent", True)
-            or merged.get("has_uncertain_texture_alpha", True)
-        )
-        shadow_flag = 2 if batch_has_translucent else 3
+        if rt_settings.SHADOW_ANYHIT == "gather":
+            shadow_flag = 4
+        else:
+            batch_has_translucent = (
+                merged.get("tri_has_translucent", True)
+                or merged.get("pn_has_translucent", True)
+                or merged.get("bez_has_translucent", True)
+                or merged.get("has_uncertain_texture_alpha", True)
+            )
+            shadow_flag = 2 if batch_has_translucent else 3
     # Composed custom fragment-shader pipelines injected into the shade kernel as
     # a flat ti.template() tuple; empty () keeps the built-in / vertex-shaded
     # kernel specialization unchanged (see shading_taichi._run_frag_pipeline).
@@ -2001,6 +2010,14 @@ def raytrace_render_wavefront(
         and not mem_trim
         and not merged.get("textured_active", False)
     )
+    # Compile-time material gating of the shade kernels: the pipeline ids this
+    # batch's triangles / PN patches carry, as a bitmask template, so the
+    # stages it cannot reach are never compiled in (rt_settings.FRAG_PID_GATE;
+    # ALL_PIDS = ungated). Per geometry type, because the two shade sites are
+    # separate funcs -- a mesh scene's flat triangles and its PN patches each
+    # get their own gate.
+    tri_pids = _frag_pid_mask(merged, "tri", has_tri)
+    pn_pids = _frag_pid_mask(merged, "pn", has_pn)
     # Hybrid raster front-end: replace iteration zero with an opaque typed
     # visibility buffer plus ordered transparent fragment runs. PN patches are
     # conservatively routed to the classic path without altering their geometry.
@@ -2316,6 +2333,8 @@ def raytrace_render_wavefront(
                     int(frag_flag),
                     frag_pipelines,
                     frag_scatters,
+                    int(tri_pids),
+                    int(pn_pids),
                     int(shadow_flag),
                     int(refraction_flag),
                     bvh_refit,
@@ -2459,6 +2478,7 @@ def raytrace_render_wavefront(
                                 col_row_arr,
                                 frag_flag,
                                 frag_pipelines,
+                                int(tri_pids),
                                 int(rt_settings.WF_SKIP_UNLIT_NORMAL),
                                 refraction_flag,
                                 time_start,
@@ -2648,6 +2668,7 @@ def raytrace_render_wavefront(
                     col_row_arr,
                     frag_flag,
                     frag_pipelines,
+                    int(tri_pids),
                     int(rt_settings.WF_SKIP_UNLIT_NORMAL),
                     refraction_flag,
                     time_start,
@@ -2812,6 +2833,8 @@ def raytrace_render_wavefront(
                     int(frag_flag),
                     frag_pipelines,
                     frag_scatters,
+                    int(tri_pids),
+                    int(pn_pids),
                     int(shadow_flag),
                     int(refraction_flag),
                     bvh_refit,
@@ -3168,6 +3191,38 @@ def _scene_has_custom_scatter(merged):
                 return True
     merged["has_custom_scatter"] = False
     return False
+
+
+def _frag_pid_mask(merged, prefix, active, _record=True):
+    """Compile-time bitmask of the material pipeline ids ``prefix`` geometry
+    carries in this batch (bit ``p`` = pipeline id ``p``), for the shade
+    kernels' compile-time material gating (see ``rt_settings.FRAG_PID_GATE``
+    and ``shading_taichi._run_frag_pipeline``).
+
+    ``ALL_PIDS`` -- every stage compiled in, i.e. the ungated kernel -- is
+    returned whenever the gate is off, the geometry type is absent from the
+    kernel (``active``), or the merged scene predates the host-side id list;
+    the mask must never *miss* an id the kernel can read, and the merge-time
+    list is the only source that costs no device reduction here.
+
+    The ids come from ``scene_builder``'s ``torch.unique`` over the very
+    ``{prefix}_mat_id`` table the kernel indexes, so the mask is exact --
+    except under the Family-A memory trim, whose compacted table can only
+    drop primitives, leaving the mask a (still safe) superset.
+    """
+    mask = ALL_PIDS
+    material_ids = merged.get(f"{prefix}_material_ids")
+    if rt_settings.FRAG_PID_GATE and active and material_ids:
+        mask = 0
+        for pid in material_ids:
+            pid = int(pid)
+            if pid < 0:
+                mask = ALL_PIDS
+                break
+            mask |= 1 << pid
+    if _record:
+        _FRAG_PID_LAST[prefix] = mask
+    return mask
 
 
 def _raytrace_render_wavefront_sorted(

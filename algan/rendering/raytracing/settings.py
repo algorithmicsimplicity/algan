@@ -195,6 +195,35 @@ PROMOTE_CONSTANTS = os.environ.get("ALGAN_PROMOTE_CONSTANTS", "1") == "1"
 # ALGAN_WF_SKIP_UNLIT_NORMAL=0 disables it (for A/B and validation).
 WF_SKIP_UNLIT_NORMAL = os.environ.get("ALGAN_WF_SKIP_UNLIT_NORMAL", "1") == "1"
 
+# Compile-time material-pipeline gating. The per-hit material dispatch
+# (``shading_taichi._run_frag_pipeline``) is inlined into the shade kernels
+# with every built-in stage reachable -- including ``_stage_physical``'s
+# clearcoat + sheen lobes -- so a scene of plain diffuse triangles still pays
+# their register footprint in the occupancy-starved shade kernel. When on, the
+# host hands each shade kernel a bitmask of the pipeline ids the batch's
+# triangles / PN patches actually carry (built at merge time as
+# ``{tri,pn}_material_ids``, no device reduction) and the absent stages are
+# never compiled in; a batch that carries exactly one id drops the per-hit id
+# fetch and compare as well. Byte-identical by construction: the mask is a
+# superset of the ids the kernel can read, so only unreachable branches go.
+# Costs one Taichi kernel variant per distinct (tri, pn) material combination.
+#
+# Measured (kernel-profiler device time, benchmarks/_frag_pid_gate_profile.py):
+# 1.4x on ``raster_first_shade`` for a scene mixing several materials, and
+# NOTHING for a single-material scene or for ``wavefront_shade`` -- only the
+# raster resolve sits close enough to its occupancy cliff for the dropped
+# stages to matter. Hence experimental and off by default rather than on:
+# ALGAN_FRAG_PID_GATE=1 opts in.
+FRAG_PID_GATE = os.environ.get("ALGAN_FRAG_PID_GATE", "0") == "1"
+
+
+def set_frag_pid_gate(enabled):
+    """Toggle compile-time material-pipeline gating of the shade kernels (see
+    ``FRAG_PID_GATE``). Takes effect at the next render batch.
+    """
+    global FRAG_PID_GATE
+    FRAG_PID_GATE = bool(enabled)
+
 
 # Fused primary-ray generation on the general wavefront. The classic pipeline
 # opens every tile with a standalone ``wavefront_generate_rays`` pass that
@@ -440,15 +469,32 @@ def set_merge_dedup_time(enabled):
 # blocker past MAX_SURFACES_PER_RAY peels); the any-hit's answer is the
 # physically correct one in both. Experimental while the pixel suites
 # qualify it; ALGAN_SHADOW_ANYHIT=1 opts in.
-SHADOW_ANYHIT = os.environ.get("ALGAN_SHADOW_ANYHIT", "0") == "1"
+#
+# ALGAN_SHADOW_ANYHIT=gather selects the gather-march instead: the same
+# ordered shadow peel rebuilt on the KBUF gather (_collect_hits), so a
+# k-surface translucent stack costs ceil((k+1)/KBUF) traversals instead of
+# k+1 while all-opaque rays stay at one. Valid for any batch (the drain
+# evaluates translucent attenuation exactly like the march); shares the
+# march's output up to the seam-merge corner the camera peel also has.
+SHADOW_ANYHIT = (
+    "gather"
+    if os.environ.get("ALGAN_SHADOW_ANYHIT", "0").strip().lower() == "gather"
+    else os.environ.get("ALGAN_SHADOW_ANYHIT", "0") == "1"
+)
 
 
 def set_shadow_anyhit(enabled):
-    """Toggle the opaque any-hit shadow early-out (see ``SHADOW_ANYHIT``).
-    Takes effect at the next render batch.
+    """Select the shadow-query early-out mode (see ``SHADOW_ANYHIT``).
+
+    ``True`` enables the opaque any-hit walks, the string ``"gather"`` the
+    KBUF gather-march, ``False`` the classic ordered march. Takes effect at
+    the next render batch.
     """
     global SHADOW_ANYHIT
-    SHADOW_ANYHIT = bool(enabled)
+    if isinstance(enabled, str) and enabled.strip().lower() == "gather":
+        SHADOW_ANYHIT = "gather"
+    else:
+        SHADOW_ANYHIT = bool(enabled)
 
 
 # Build the dedicated opaque-only STBVHs only when a rollout that walks them

@@ -3554,6 +3554,11 @@ def raster_first_shade(
         num_lights: int,
         layer_offsets: ti.types.ndarray(),
         frag_shading: ti.template(), frag_pipelines: ti.template(),
+        # Compile-time bitmask of the material pipeline ids the batch's
+        # triangles carry (circuits never enter the fragment pipeline), so
+        # unused materials are not compiled into this kernel; see
+        # ``shading_taichi._run_frag_pipeline``.
+        tri_pids: ti.template(),
         refraction: ti.template(), skip_unlit_normal: ti.template(),
         ss_enabled: ti.template(), has_bez: ti.template(),
         aa_bez: ti.template(), aa_tri: ti.template(), aa_grp: ti.template(),
@@ -4113,7 +4118,8 @@ def raster_first_shade(
                     # earned nothing on any config while costing 4x the shading
                     # -- the residual it was aimed at turned out to be the
                     # un-antialiased ray-cast fallback instead (ss19).
-                    color = _shade_tri_hit(frag_pipelines, f, prim, a, b,
+                    color = _shade_tri_hit(frag_pipelines, tri_pids,
+                                           f, prim, a, b,
                                            surf_rd, surf_pos,
                                            tri_pos, sn,
                                            tri_mat_id, tri_mat,

@@ -1573,10 +1573,6 @@ def _merge_scene(primitives):
         )
     scene["num_triangles"] = scene["tri_pos"].shape[1] if triangles else 0
 
-    # Vestigial key from the retired knot temporal-compression experiment
-    # (in-kernel reconstruction of per-frame triangle positions); nothing
-    # reads it any more.
-    scene["tri_tc"] = None
     # Any triangle whose material can produce a nonzero Fresnel lobe (mirrors
     # _material_reflectance: per-corner metalness in tri_extra cols 0/2/4, -1
     # = non-PBR sentinel with R = 0 exactly; metalness 0 still reflects when

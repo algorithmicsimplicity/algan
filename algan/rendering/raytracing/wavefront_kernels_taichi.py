@@ -2062,6 +2062,13 @@ def wavefront_shade(
         # transmitted ray for surfaces with a refractive index (extra cols 6-8).
         frag_shading: ti.template(), frag_pipelines: ti.template(),
         frag_scatters: ti.template(),
+        # Compile-time bitmasks of the material pipeline ids the batch's
+        # triangles / PN patches carry: the materials a scene does not use are
+        # not compiled into this kernel at all, and a single-material batch
+        # drops the per-hit id fetch and compare with them (see
+        # ``shading_taichi._run_frag_pipeline``). ``ALL_PIDS`` keeps every
+        # stage, which is the ungated kernel.
+        tri_pids: ti.template(), pn_pids: ti.template(),
         shadows: ti.template(),
         refraction: ti.template(),
         refit: ti.template(),
@@ -2535,7 +2542,8 @@ def wavefront_shade(
                         # A traversal hit IS the centre ray's intersection, so
                         # the position it always used is passed through
                         # unchanged (see _shade_tri_hit).
-                        color = _shade_tri_hit(frag_pipelines, f, prim, a, b, rd,
+                        color = _shade_tri_hit(frag_pipelines, tri_pids,
+                                               f, prim, a, b, rd,
                                                ro + t_hit * rd, tri_pos, sn,
                                                tri_mat_id, tri_mat,
                                                light_pos, light_col, num_lights,
@@ -2550,7 +2558,8 @@ def wavefront_shade(
                         else:
                             sn = _pn_hit_normal(f, prim, a, b, pn_norm, pn_ctrl,
                                                 pn_extra, textures)
-                        color = _shade_pn_hit(frag_pipelines, f, prim, a, b, rd,
+                        color = _shade_pn_hit(frag_pipelines, pn_pids,
+                                              f, prim, a, b, rd,
                                               t_hit, ro, pn_ctrl, sn,
                                               pn_mat_id, pn_mat,
                                               light_pos, light_col, num_lights,

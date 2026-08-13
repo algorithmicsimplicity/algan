@@ -754,6 +754,32 @@ _BUILTIN_STAGE_FNS = (_stage_default, _stage_unlit, _stage_lambert,
                       _stage_phong, _stage_standard, _stage_physical)
 _BUILTIN_PIPELINE_FNS = {}
 
+# "Every pipeline id may be present" -- the ungated kernel. All bits of the
+# two's-complement -1 are set, so the gating below keeps every stage without
+# needing a special case (see ``_run_frag_pipeline``).
+ALL_PIDS = -1
+
+
+def solo_pid(pids_present, num_user_pipelines):
+    """The one pipeline id a batch can hit, or -1 when more than one can.
+
+    ``pids_present`` is the host's compile-time bitmask of the material
+    pipeline ids the batch's primitives carry (bit ``p`` = id ``p``);
+    :data:`ALL_PIDS` means "unknown, assume all". A batch whose triangles (or
+    PN patches) all share one material lets the shade kernel call that
+    material's stage unconditionally -- no per-hit id fetch and no compare.
+    """
+    mask = int(pids_present)
+    if mask < 0:
+        return -1
+    top = _USER_PIPELINE_BASE + int(num_user_pipelines)
+    if mask >> top:
+        # An id with no injected pipeline behind it: keep the runtime switch
+        # (it matches nothing and passes the colour through, as before).
+        return -1
+    live = [pid for pid in range(top) if (mask >> pid) & 1]
+    return live[0] if len(live) == 1 else -1
+
 
 def builtin_pipeline_fn(pid):
     """Composed single-stage pipeline func for built-in material id ``pid``
@@ -769,7 +795,7 @@ def builtin_pipeline_fn(pid):
 
 
 @ti.func
-def _run_frag_pipeline(frag_pipelines: ti.template(),
+def _run_frag_pipeline(frag_pipelines: ti.template(), pids_present: ti.template(),
                        prim, f, pos, view_dir, n_interp, face_n, albedo, glow,
                        light_pos: ti.template(), light_col: ti.template(),
                        num_lights, pid_arr: ti.template(),
@@ -782,50 +808,112 @@ def _run_frag_pipeline(frag_pipelines: ti.template(),
     index the injected ``frag_pipelines`` tuple. ``albedo`` is the interpolated
     raw base RGB (``glow`` the passthrough 4th channel). Returns the shaded
     RGB + glow as a ``vec4``.
+
+    ``pids_present`` (compile-time) is the host's bitmask of the ids this
+    batch's primitives actually carry, and selects one of three dispatches:
+
+    * :data:`ALL_PIDS` (the default) -- the classic chain over every built-in
+      material, byte-for-byte the pre-gating kernel.
+    * exactly one reachable id -- that stage called unconditionally, with no
+      id fetch and no compare at all (see :func:`solo_pid`).
+    * otherwise -- a compare per *reachable* id only.
+
+    The last two exist because this dispatch is inlined into the hottest
+    kernel there is, and every stage the compiler can reach costs it, whether
+    or not the scene uses that material.  Gating is byte-identical by
+    construction: the mask comes from the merge-time id list of the very
+    array indexed here, so it can only drop branches that never fire.
     """
-    pid = pid_arr[f % pid_arr.shape[0], prim]
     out = ti.math.vec3(albedo[0], albedo[1], albedo[2])
     g = glow
-    if pid == _MID_DEFAULT:
-        r = _stage_default(pos, view_dir, n_interp, face_n, out, g,
-                           params, f, prim, 0,
+    solo = ti.static(solo_pid(pids_present, len(frag_pipelines)))
+    if ti.static(solo >= 0):
+        if ti.static(solo == _MID_UNLIT):
+            pass  # passthrough: colour returned unchanged (raw or baked).
+        elif ti.static(solo < _USER_PIPELINE_BASE):
+            stage = ti.static(_BUILTIN_STAGE_FNS[solo])
+            r = stage(pos, view_dir, n_interp, face_n, out, g,
+                      params, f, prim, 0,
+                      light_pos, light_col, num_lights, shadows, vis)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        else:
+            fn = ti.static(frag_pipelines[solo - _USER_PIPELINE_BASE])
+            r = fn(pos, view_dir, n_interp, face_n, out, g,
+                   params, f, prim,
+                   light_pos, light_col, num_lights, shadows, vis)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+    elif ti.static(pids_present == ALL_PIDS):
+        # UNGATED: the classic hand-written chain, kept verbatim rather than
+        # folded into the loop below. The two are semantically identical, but
+        # this one is the shape the default render has always compiled, and a
+        # kernel this hot is not the place to change the emitted branch
+        # structure for cosmetics.
+        pid = pid_arr[f % pid_arr.shape[0], prim]
+        if pid == _MID_DEFAULT:
+            r = _stage_default(pos, view_dir, n_interp, face_n, out, g,
+                               params, f, prim, 0,
+                               light_pos, light_col, num_lights, shadows, vis)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        elif pid == _MID_LAMBERT:
+            r = _stage_lambert(pos, view_dir, n_interp, face_n, out, g,
+                               params, f, prim, 0,
+                               light_pos, light_col, num_lights, shadows, vis)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        elif pid == _MID_PHONG:
+            r = _stage_phong(pos, view_dir, n_interp, face_n, out, g,
+                             params, f, prim, 0,
+                             light_pos, light_col, num_lights, shadows, vis)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        elif pid == _MID_STANDARD:
+            r = _stage_standard(pos, view_dir, n_interp, face_n, out, g,
+                                params, f, prim, 0,
+                                light_pos, light_col, num_lights, shadows, vis)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        elif pid == _MID_PHYSICAL:
+            r = _stage_physical(pos, view_dir, n_interp, face_n, out, g,
+                                params, f, prim, 0,
+                                light_pos, light_col, num_lights, shadows, vis)
+            out = ti.math.vec3(r[0], r[1], r[2])
+            g = r[3]
+        elif pid == _MID_UNLIT:
+            pass  # passthrough: colour returned unchanged (raw or baked).
+        else:
+            for pi in ti.static(range(len(frag_pipelines))):
+                if pid == _USER_PIPELINE_BASE + pi:
+                    fn = ti.static(frag_pipelines[pi])
+                    r = fn(pos, view_dir, n_interp, face_n, out, g,
+                           params, f, prim,
                            light_pos, light_col, num_lights, shadows, vis)
-        out = ti.math.vec3(r[0], r[1], r[2])
-        g = r[3]
-    elif pid == _MID_LAMBERT:
-        r = _stage_lambert(pos, view_dir, n_interp, face_n, out, g,
-                           params, f, prim, 0,
-                           light_pos, light_col, num_lights, shadows, vis)
-        out = ti.math.vec3(r[0], r[1], r[2])
-        g = r[3]
-    elif pid == _MID_PHONG:
-        r = _stage_phong(pos, view_dir, n_interp, face_n, out, g,
-                         params, f, prim, 0,
-                         light_pos, light_col, num_lights, shadows, vis)
-        out = ti.math.vec3(r[0], r[1], r[2])
-        g = r[3]
-    elif pid == _MID_STANDARD:
-        r = _stage_standard(pos, view_dir, n_interp, face_n, out, g,
-                            params, f, prim, 0,
-                            light_pos, light_col, num_lights, shadows, vis)
-        out = ti.math.vec3(r[0], r[1], r[2])
-        g = r[3]
-    elif pid == _MID_PHYSICAL:
-        r = _stage_physical(pos, view_dir, n_interp, face_n, out, g,
-                            params, f, prim, 0,
-                            light_pos, light_col, num_lights, shadows, vis)
-        out = ti.math.vec3(r[0], r[1], r[2])
-        g = r[3]
-    elif pid == _MID_UNLIT:
-        pass  # passthrough: colour returned unchanged (raw or baked).
+                    out = ti.math.vec3(r[0], r[1], r[2])
+                    g = r[3]
     else:
+        pid = pid_arr[f % pid_arr.shape[0], prim]
+        # GATED: only the ids the batch carries get a branch. _MID_UNLIT never
+        # needs one -- matching nothing leaves the colour unchanged, which is
+        # its whole semantics.
+        for mid in ti.static(range(len(_BUILTIN_STAGE_FNS))):
+            if ti.static(mid != _MID_UNLIT and ((pids_present >> mid) & 1)):
+                stage = ti.static(_BUILTIN_STAGE_FNS[mid])
+                if pid == mid:
+                    r = stage(pos, view_dir, n_interp, face_n, out, g,
+                              params, f, prim, 0,
+                              light_pos, light_col, num_lights, shadows, vis)
+                    out = ti.math.vec3(r[0], r[1], r[2])
+                    g = r[3]
         for pi in ti.static(range(len(frag_pipelines))):
-            if pid == _USER_PIPELINE_BASE + pi:
+            if ti.static((pids_present >> (_USER_PIPELINE_BASE + pi)) & 1):
                 fn = ti.static(frag_pipelines[pi])
-                r = fn(pos, view_dir, n_interp, face_n, out, g,
-                       params, f, prim,
-                       light_pos, light_col, num_lights, shadows, vis)
-                out = ti.math.vec3(r[0], r[1], r[2])
-                g = r[3]
+                if pid == _USER_PIPELINE_BASE + pi:
+                    r = fn(pos, view_dir, n_interp, face_n, out, g,
+                           params, f, prim,
+                           light_pos, light_col, num_lights, shadows, vis)
+                    out = ti.math.vec3(r[0], r[1], r[2])
+                    g = r[3]
     #out = ti.math.clamp(out, 0.0, 1.0)
     return ti.math.vec4(out[0], out[1], out[2], g)
