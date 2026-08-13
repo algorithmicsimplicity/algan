@@ -501,6 +501,17 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         transmission = getattr(self, "transmission", None)
         if transmission is not None:
             opaque = opaque & (transmission[..., 0] <= 1e-6).all(-1)
+        # ...and a colour texture that cannot be proven alpha-opaque makes
+        # every hit's alpha texture-dependent, so the primitive must not
+        # carry the interval-opaque BVH leaf flag: the traversal gather
+        # prunes hits behind an opaque-flagged hit, which for a cut-out
+        # texture (an ImageMob sticker) deleted the scene visible through
+        # its transparent texels on the classic/secondary-ray path, and the
+        # shadow any-hit early-out would turn the same texels into false
+        # full occlusion. Mirrors scene_builder._texture_alpha_is_opaque.
+        if texture is not None and texture.shape[-1] >= 4:
+            if not bool((texture[..., 3] >= 1.0 - 1e-6).all()):
+                opaque = torch.zeros_like(opaque)
 
         (lo, hi, visible, opaque), _ = _unify_time(
             [lo, hi, visible.unsqueeze(-1), opaque.unsqueeze(-1)], error_context
@@ -1484,24 +1495,25 @@ def _bezier_connection_visibility(corners, next_segment_inds):
     return (segment_ends - next_starts).norm(p=2, dim=-1) <= 1e-5
 
 
-def _circuit_parity(qx, qy, ex0, ey0, ex1, ey1, same_circuit):
-    """Even-odd crossing parity of ``(qx, qy)`` against masked edges.
+def _circuit_parity_gathered(qx, qy, ex0, ey0, ex1, ey1, valid):
+    """Even-odd crossing parity of each query against its gathered edge set.
 
-    ``qx``/``qy`` are ``[T, Q]`` query points, the edge tensors ``[T, V]``,
-    ``same_circuit`` a ``[Q, V]`` bool restricting each query to its own
-    circuit. The predicate is exactly the kernel's
+    ``qx``/``qy`` are ``[T, Q]`` query points; the edge tensors are the
+    query's own circuit's edges gathered to ``[T, Q, K]`` with a ``[Q, K]``
+    slot-validity mask (padding slots duplicate a real edge of the circuit
+    and are masked out of the count). The predicate is exactly the kernel's
     (``_bezier_point_metrics``): a +x ray, ``(y0 > v) != (y1 > v)`` and
     ``x_cross > u`` -- degenerate 1e9 edges can never satisfy the y-straddle.
-    Returns ``[T, Q]`` bool (odd = inside).
+    Returns ``[T, Q]`` bool (odd = inside). The parity is an exact integer
+    count over per-pair-identical arithmetic, so it is bit-identical to a
+    masked probe of all page edges over the same (query, edge) pairs.
     """
-    y0 = ey0.unsqueeze(1)  # [T, 1, V]
-    y1 = ey1.unsqueeze(1)
     v = qy.unsqueeze(-1)  # [T, Q, 1]
-    straddle = (y0 > v) != (y1 > v)
-    denom = y1 - y0
+    straddle = (ey0 > v) != (ey1 > v)
+    denom = ey1 - ey0
     denom = torch.where(denom == 0, torch.ones_like(denom), denom)
-    x_cross = ex0.unsqueeze(1) + (v - y0) * (ex1.unsqueeze(1) - ex0.unsqueeze(1)) / denom
-    hit = straddle & (x_cross > qx.unsqueeze(-1)) & same_circuit.unsqueeze(0)
+    x_cross = ex0 + (v - ey0) * (ex1 - ex0) / denom
+    hit = straddle & (x_cross > qx.unsqueeze(-1)) & valid.unsqueeze(0)
     return hit.sum(-1) % 2 == 1
 
 
@@ -1518,8 +1530,15 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     fill rule, so a hole's contour gets signs pointing out of the hole
     regardless of its winding.
 
-    Pairwise per circuit, chunked over query edges to bound the [T, Q, V]
-    scratch. Lands in animate/prep; only run when the wedge is live.
+    Each query is probed against its own circuit's edges only, gathered per
+    circuit (CSR over the sorted edge ids): O(T * sum_c Vc^2) instead of the
+    all-page-edges O(T * V^2) probe -- orders of magnitude on a text page of
+    many small glyph contours. Queries are bucketed by circuit-size class so
+    a page's one big contour does not set the gather width for every glyph,
+    and chunked to bound the [T, Q, K] scratch. Bit-identical to the masked
+    full probe: the same (query, edge) pairs are evaluated with the same
+    arithmetic, and the crossing parity is an exact integer count. Lands in
+    animate/prep; only run when the wedge is live.
     """
     T, V = edges.shape[0], edges.shape[1]
     device = edges.device
@@ -1539,6 +1558,17 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     lny = dx * inv_len
     circ = vert_circuit.to(device)
 
+    # Edge ids grouped by circuit (circuits need not be contiguous in V).
+    order = torch.argsort(circ, stable=True)
+    counts_all = torch.bincount(circ, minlength=int(circ.max()) + 1)
+    starts_all = torch.cumsum(counts_all, 0) - counts_all
+    edge_start = starts_all[circ]  # [V] own circuit's start in sorted order
+    edge_count = counts_all[circ]  # [V] own circuit's edge count
+    # Power-of-two size class per edge: within a bucket the gather width is
+    # at most 2x any member's circuit size, keeping total work within 2x of
+    # sum_c Vc^2.
+    size_class = torch.ceil(torch.log2(edge_count.to(torch.float64))).to(torch.long)
+
     sigma = torch.zeros((T, V), device=device)
     unresolved = ~degen
     # Six halvings reach eps ~1.6e-3 of the edge length: a stem's two long
@@ -1546,31 +1576,44 @@ def _circuit_edge_inward_signs(edges, vert_circuit):
     # 0.02-unit stem needs eps*|e| < 0.01), and an unresolved wall falls back
     # to the single half-plane exactly where the wedge was meant to help.
     eps = 0.05
+    budget = 4_000_000
     for _attempt in range(6):
         idx = unresolved.any(0).nonzero(as_tuple=True)[0]
         if idx.numel() == 0:
             break
-        budget = 4_000_000
-        chunk = max(1, budget // max(T * V, 1))
-        for start in range(0, idx.numel(), chunk):
-            sel = idx[start : start + chunk]
-            # The same-circuit mask is built per chunk ([Q, V]): a full [V, V]
-            # mask is ~a gigabyte on a text-heavy page (30k+ edges) and was a
-            # native OOM abort in the text_and_media full render.
-            same_sel = circ[sel].view(-1, 1) == circ.view(1, -1)
-            off_x = (eps * length * lnx)[:, sel]
-            off_y = (eps * length * lny)[:, sel]
-            qx, qy = mx[:, sel], my[:, sel]
-            left = _circuit_parity(
-                qx + off_x, qy + off_y, ex0, ey0, ex1, ey1, same_sel
-            )
-            right = _circuit_parity(
-                qx - off_x, qy - off_y, ex0, ey0, ex1, ey1, same_sel
-            )
-            valid = (left != right) & unresolved[:, sel]
-            s = torch.where(left, 1.0, -1.0)
-            sigma[:, sel] = torch.where(valid, s, sigma[:, sel])
-            unresolved[:, sel] &= ~valid
+        for cls in torch.unique(size_class[idx]):
+            idx_b = idx[size_class[idx] == cls]
+            K = int(edge_count[idx_b].max())
+            chunk = max(1, budget // max(T * K, 1))
+            for start in range(0, idx_b.numel(), chunk):
+                sel = idx_b[start : start + chunk]
+                cnt = edge_count[sel]  # [Q]
+                slots = torch.arange(K, device=device)  # [K]
+                slot_valid = slots.view(1, -1) < cnt.view(-1, 1)  # [Q, K]
+                # Padding slots re-read the circuit's last edge and are
+                # masked out of the parity count by slot_valid.
+                gidx = edge_start[sel].view(-1, 1) + torch.minimum(
+                    slots.view(1, -1), (cnt - 1).view(-1, 1)
+                )
+                flat = order[gidx].view(-1)  # [Q * K] gathered edge ids
+                Q = sel.numel()
+                gex0 = ex0[:, flat].view(T, Q, K)
+                gey0 = ey0[:, flat].view(T, Q, K)
+                gex1 = ex1[:, flat].view(T, Q, K)
+                gey1 = ey1[:, flat].view(T, Q, K)
+                off_x = (eps * length * lnx)[:, sel]
+                off_y = (eps * length * lny)[:, sel]
+                qx, qy = mx[:, sel], my[:, sel]
+                left = _circuit_parity_gathered(
+                    qx + off_x, qy + off_y, gex0, gey0, gex1, gey1, slot_valid
+                )
+                right = _circuit_parity_gathered(
+                    qx - off_x, qy - off_y, gex0, gey0, gex1, gey1, slot_valid
+                )
+                settled = (left != right) & unresolved[:, sel]
+                s = torch.where(left, 1.0, -1.0)
+                sigma[:, sel] = torch.where(settled, s, sigma[:, sel])
+                unresolved[:, sel] &= ~settled
         eps *= 0.5
     return sigma
 
@@ -1762,8 +1805,13 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
             # Bound the largest temporary by projected control-point count.
             # The subcurve construction and projection use several arrays of
             # this shape, so a lower budget than the old single-pass sampler is
-            # intentionally used here.
-            chunk = max(1, int(5e5 // max(num_active * num_subdivisions * 4, 1)))
+            # intentionally used here. The per-chunk reduction is a pure
+            # ``torch.maximum`` over frames, so the chunk size cannot change
+            # the result -- the budget only trades transient prep memory
+            # (~16 B per control point across the temporaries, ~30 MB at 2e6)
+            # against per-chunk dispatch overhead, which at the old 5e5 came
+            # to thousands of tiny launches per text-heavy batch.
+            chunk = max(1, int(2e6 // max(num_active * num_subdivisions * 4, 1)))
             for frame_start in range(0, T, chunk):
                 frame_end = min(frame_start + chunk, T)
                 if Tc == 1:

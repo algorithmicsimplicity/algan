@@ -369,7 +369,10 @@ WF_MEM_TRIM = os.environ.get("ALGAN_WF_MEM_TRIM", "0") == "1"
 # class of deviation as ALGAN_BVH_BLOCK_F16 / tightness changes), bounded by
 # benchmarks/_rt2_refit_parity.py. Ignored (classic trees are built) under
 # the unsupported legacy textured / sorted-material orchestrators, which are
-# not plumbed for the refit walk. Default OFF while validating.
+# not plumbed for the refit walk. Default ON (ALGAN_BVH_REFIT=0 restores the
+# classic per-batch STBVH instance trees); note that while on, the triangle
+# ``builder`` selection (e.g. "split") applies only where the classic trees
+# are still built.
 BVH_REFIT = os.environ.get("ALGAN_BVH_REFIT", "1") == "1"
 
 
@@ -403,6 +406,71 @@ def set_bvh_defer(enabled):
     BVH_DEFER = bool(enabled)
 
 
+# Collapse temporally-constant merged tables (materials, normals, colours,
+# per-vertex extras, UV tables and the 2-D edge tables) to a single frame at
+# merge time; every consumer reads their time axis as ``f % shape[0]``. The
+# rendered pixels are unchanged for a given batch window, but the collapse
+# shrinks the merged scene the arena planner measures, so batch windows can
+# differ from an uncollapsed run on memory-tight scenes (re-windowed output
+# differs at the epsilon level, the same class as any window change).
+# ALGAN_MERGE_DEDUP_TIME=0 restores the full time bands (byte-level A/B
+# against pre-collapse baselines).
+MERGE_DEDUP_TIME = os.environ.get("ALGAN_MERGE_DEDUP_TIME", "1") == "1"
+
+
+def set_merge_dedup_time(enabled):
+    """Toggle the merge-time collapse of temporally-constant tables (see
+    ``MERGE_DEDUP_TIME``). Takes effect at the next batch's scene merge.
+    """
+    global MERGE_DEDUP_TIME
+    MERGE_DEDUP_TIME = bool(enabled)
+
+
+# Opaque any-hit shadow early-out. The deterministic shadow query is an
+# ordered closest-hit march that restarts a full three-tree traversal per
+# peeled surface; but any interval-opaque blocker (main-tree leaf flag:
+# classic ``leaf_tspan`` bit 31 / refit link bit 30) forces the final
+# occlusion to exactly 1.0 no matter what lies in front of it. When on, the
+# shadow query first runs a cheap unordered any-hit walk over just the
+# opaque-flagged leaves and returns full occlusion on the first hit; batches
+# that provably contain no translucent geometry skip the march entirely (a
+# miss then proves the ray lit). Not strictly byte-identical in two corner
+# cases the march itself gets wrong (an opaque edge hit seam-merged into a
+# coincident translucent edge within DEPTH_TIE_EPSILON, and an opaque
+# blocker past MAX_SURFACES_PER_RAY peels); the any-hit's answer is the
+# physically correct one in both. Experimental while the pixel suites
+# qualify it; ALGAN_SHADOW_ANYHIT=1 opts in.
+SHADOW_ANYHIT = os.environ.get("ALGAN_SHADOW_ANYHIT", "0") == "1"
+
+
+def set_shadow_anyhit(enabled):
+    """Toggle the opaque any-hit shadow early-out (see ``SHADOW_ANYHIT``).
+    Takes effect at the next render batch.
+    """
+    global SHADOW_ANYHIT
+    SHADOW_ANYHIT = bool(enabled)
+
+
+# Build the dedicated opaque-only STBVHs only when a rollout that walks them
+# (WF_OPAQUE_CLOSEST / WF_OPAQUE_PREPASS) is live at build time; otherwise
+# alias the main tree -- same kernel ABI, and the opaque-tree reads are
+# compiled out by the same templates that gate those rollouts. Saves the
+# second per-geometry build (~40% of per-batch BVH build time) and its
+# arena bytes. ALGAN_OPAQUE_BVH_SKIP_DEAD=0 restores the unconditional
+# builds (byte-level A/B: the skip also shrinks the merged scene the arena
+# planner measures).
+OPAQUE_BVH_SKIP_DEAD = os.environ.get("ALGAN_OPAQUE_BVH_SKIP_DEAD", "1") == "1"
+
+
+def set_opaque_bvh_skip_dead(enabled):
+    """Toggle skipping the dedicated opaque-only STBVH builds while no
+    rollout consumes them (see ``OPAQUE_BVH_SKIP_DEAD``). Takes effect at
+    the next batch's scene merge.
+    """
+    global OPAQUE_BVH_SKIP_DEAD
+    OPAQUE_BVH_SKIP_DEAD = bool(enabled)
+
+
 def refit_bvh_active():
     """Live effective value of the refit-BVH toggle: the legacy textured /
     sorted-material orchestrators walk the classic tree only.
@@ -422,7 +490,8 @@ def refit_bvh_active():
 # simply falls back to classic primary traversal. The straight-ray safety limit
 # is MAX_SURFACES_PER_RAY (currently 256), not literally unbounded. Custom
 # scatter, mem-trim, in-place AA, near clipping and legacy routes still fall
-# back to classic. Default OFF while validating.
+# back to classic. Default ON (ALGAN_HYBRID_RASTER=0 restores the classic
+# iteration-zero wavefront).
 HYBRID_RASTER = os.environ.get("ALGAN_HYBRID_RASTER", "1") == "1"
 
 

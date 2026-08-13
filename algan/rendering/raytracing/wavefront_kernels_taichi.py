@@ -59,6 +59,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     finalize_pixel_color,
 )
 from algan.rendering.raytracing.shading_taichi import (
+    _MID_DEFAULT,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
@@ -109,10 +110,65 @@ def compact_ray_slots(
 # Light type ids of the extended packed light rows (see
 # algan.rendering.lights and scene_builder._pack_lights). Only the ids the
 # shadow code branches on are needed here.
+_LT_POINT = 0
 _LT_DIRECTIONAL = 1
 _LT_AMBIENT = 2
 _LT_HEMISPHERE = 3
+_LT_SPOT = 4
+_LT_AREA_SAMPLE = 5
 _LT_ENV_SH = 6
+
+
+@ti.func
+def _light_zero_radiance(light_col: ti.template(), tl, li, ltype, to_light,
+                         ldist):
+    """1 when light ``li``'s evaluated radiance at this fragment is exactly
+    zero from geometry alone: beyond its range fade, outside its spot cone's
+    outer angle, or behind its (one-sided) area sample.
+
+    Reproduces ``_light_eval``'s attenuation factors with the same arithmetic
+    on the same inputs (``to_light``/``ldist`` are the fan site's
+    ``lp - spos`` and its norm, bitwise the stage's ``d``), so "exactly zero"
+    here is exactly zero there and the fragment's shadow fan cannot influence
+    any stage whose vis-multiplied terms all carry ``lc`` as a factor
+    (lambert/phong/standard/physical). NOT valid for ``_stage_default``:
+    its base-colour fade accumulates a vis-weighted ``w`` even at
+    ``lc == 0`` -- callers gate on the hit's pipeline id. Underflowed (but
+    not bitwise-zero) multipliers are treated as live: that only traces a
+    fan whose result multiplies zero, never the reverse."""
+    zero = 0
+    if light_col.shape[2] > 3:
+        if (ltype == _LT_POINT) or (ltype == _LT_SPOT) \
+                or (ltype == _LT_AREA_SAMPLE):
+            rng = light_col[tl, li, 5]
+            if rng > 0.0:
+                q = ti.math.clamp(ldist / rng, 0.0, 1.0)
+                q2 = q * q
+                fade = ti.math.clamp(1.0 - q2 * q2, 0.0, 1.0)
+                if fade * fade == 0.0:
+                    zero = 1
+            if (zero == 0) and ((ltype == _LT_SPOT)
+                                or (ltype == _LT_AREA_SAMPLE)):
+                ld = to_light.normalized()
+                if ltype == _LT_SPOT:
+                    sd = ti.math.vec3(light_col[tl, li, 6],
+                                      light_col[tl, li, 7],
+                                      light_col[tl, li, 8])
+                    cos_outer = light_col[tl, li, 9]
+                    cos_inner = light_col[tl, li, 10]
+                    c = (-ld).dot(sd)
+                    t = ti.math.clamp(
+                        (c - cos_outer)
+                        / ti.max(cos_inner - cos_outer, 1e-6), 0.0, 1.0)
+                    if t * t * (3.0 - 2.0 * t) == 0.0:
+                        zero = 1
+                else:
+                    an = ti.math.vec3(light_col[tl, li, 6],
+                                      light_col[tl, li, 7],
+                                      light_col[tl, li, 8])
+                    if ti.max((-ld).dot(an), 0.0) == 0.0:
+                        zero = 1
+    return zero
 
 # Golden-angle increment of the deterministic soft-shadow sample fan.
 _GOLDEN_ANGLE = 2.3999632297286533
@@ -257,52 +313,77 @@ def _flat_triangle_extra(f, prim, w0, w1, w2, tri_extra: ti.template(),
 
 
 @ti.func
-def _flat_corner_ior(f, prim, w0, w1, w2, extra: ti.template(),
-                     tri_uvs: ti.template(), tri_tex_meta: ti.template(),
-                     textures: ti.template(), num_colored_triangles: ti.i32):
-    """Index of refraction of a triangle hit: per-vertex (``_corner_ior``)
-    unless the material map's bitmask marks it texture-driven (bit 2 /
-    channel 2)."""
+def _flat_corner_ior_transmission(f, prim, w0, w1, w2, extra: ti.template(),
+                                  tri_uvs: ti.template(),
+                                  tri_tex_meta: ti.template(),
+                                  textures: ti.template(),
+                                  num_colored_triangles: ti.i32):
+    """(IOR, transmission) of a triangle hit: per-vertex (``_corner_ior`` /
+    ``_corner_transmission``) unless the material map's bitmask marks the
+    property texture-driven (bit 2 / channel 2, bit 3 / channel 3). One
+    fused map fetch serves both properties -- the separate per-property
+    fetches sampled the same texels of the same map."""
     # See _flat_triangle_extra: a promoted constant-material triangle has no
-    # per-vertex extra row, so its IOR is read from the material map (bit 4);
-    # the guard is a no-op (always true) for every non-promoted batch.
+    # per-vertex extra row, so these come from the material map instead; the
+    # guard is a no-op (always true) for every non-promoted batch.
     ior = 1.0
-    if prim < extra.shape[1]:
-        ior = _corner_ior(f, prim, w0, w1, w2, extra)
-    if prim >= num_colored_triangles:
-        idx = prim - num_colored_triangles
-        if tri_tex_meta[idx, 3] >= 0:
-            if (tri_tex_meta[idx, 9] & 4) != 0:
-                u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
-                m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 3],
-                                     tri_tex_meta[idx, 4],
-                                     tri_tex_meta[idx, 5], textures)
-                ior = m[2]
-    return ior
-
-
-@ti.func
-def _flat_corner_transmission(f, prim, w0, w1, w2, extra: ti.template(),
-                              tri_uvs: ti.template(),
-                              tri_tex_meta: ti.template(),
-                              textures: ti.template(),
-                              num_colored_triangles: ti.i32):
-    """Transmission of a triangle hit: per-vertex (``_corner_transmission``)
-    unless the material map's bitmask marks it texture-driven (bit 3 /
-    channel 3). Mirrors ``_flat_corner_ior``."""
     transmission = 0.0
     if prim < extra.shape[1]:
+        ior = _corner_ior(f, prim, w0, w1, w2, extra)
         transmission = _corner_transmission(f, prim, w0, w1, w2, extra)
     if prim >= num_colored_triangles:
         idx = prim - num_colored_triangles
         if tri_tex_meta[idx, 3] >= 0:
-            if (tri_tex_meta[idx, 9] & 8) != 0:
+            flags = tri_tex_meta[idx, 9]
+            if (flags & 12) != 0:
                 u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
                 m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 3],
                                      tri_tex_meta[idx, 4],
                                      tri_tex_meta[idx, 5], textures)
+                if (flags & 4) != 0:
+                    ior = m[2]
+                if (flags & 8) != 0:
+                    transmission = m[3]
+    return ior, transmission
+
+
+@ti.func
+def _flat_triangle_material(f, prim, w0, w1, w2, tri_extra: ti.template(),
+                            tri_uvs: ti.template(),
+                            tri_tex_meta: ti.template(),
+                            textures: ti.template(),
+                            num_colored_triangles: ti.i32):
+    """(reflectivity, roughness, IOR, transmission) of a triangle hit with a
+    single material-map fetch. Exactly ``_flat_triangle_extra`` +
+    ``_flat_corner_ior_transmission`` with the redundant repeat samples of
+    the same map removed; in a fully constant-promoted batch every hit takes
+    the map path, so the separate fetches tripled the texel traffic."""
+    reflectivity = 0.0
+    roughness = 0.0
+    ior = 1.0
+    transmission = 0.0
+    if prim < tri_extra.shape[1]:
+        reflectivity, roughness = _triangle_extra(f, prim, w0, w1, w2,
+                                                  tri_extra)
+        ior = _corner_ior(f, prim, w0, w1, w2, tri_extra)
+        transmission = _corner_transmission(f, prim, w0, w1, w2, tri_extra)
+    if prim >= num_colored_triangles:
+        idx = prim - num_colored_triangles
+        if tri_tex_meta[idx, 3] >= 0:
+            flags = tri_tex_meta[idx, 9]
+            u, v = _tri_uv(f, idx, w0, w1, w2, tri_uvs)
+            m = _sample_tex_vec5(f, u, v, tri_tex_meta[idx, 3],
+                                 tri_tex_meta[idx, 4], tri_tex_meta[idx, 5],
+                                 textures)
+            if (flags & 1) != 0:
+                reflectivity = m[0]
+            if (flags & 2) != 0:
+                roughness = m[1]
+            if (flags & 4) != 0:
+                ior = m[2]
+            if (flags & 8) != 0:
                 transmission = m[3]
-    return transmission
+    return reflectivity, roughness, ior, transmission
 
 
 @ti.func
@@ -415,40 +496,31 @@ def _flat_triangle_extra_trim(f, prim, w0, w1, w2, tri_extra: ti.template(),
 
 
 @ti.func
-def _flat_corner_ior_trim(f, prim, w0, w1, w2, tri_extra: ti.template(),
-                          col_row: ti.template(), tri_uvs: ti.template(),
-                          tex_meta: ti.template(), textures: ti.template()):
+def _flat_corner_ior_transmission_trim(f, prim, w0, w1, w2,
+                                       tri_extra: ti.template(),
+                                       col_row: ti.template(),
+                                       tri_uvs: ti.template(),
+                                       tex_meta: ti.template(),
+                                       textures: ti.template()):
+    """Trim-layout twin of ``_flat_corner_ior_transmission`` (one fused map
+    fetch for both properties)."""
     ior = 1.0
-    cr = col_row[prim]
-    if cr >= 0:
-        ior = _corner_ior(f, cr, w0, w1, w2, tri_extra)
-    if tex_meta[prim, 3] >= 0:
-        if (tex_meta[prim, 9] & 4) != 0:
-            u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
-            m = _sample_tex_vec5(f, u, v, tex_meta[prim, 3], tex_meta[prim, 4],
-                                 tex_meta[prim, 5], textures)
-            ior = m[2]
-    return ior
-
-
-@ti.func
-def _flat_corner_transmission_trim(f, prim, w0, w1, w2,
-                                   tri_extra: ti.template(),
-                                   col_row: ti.template(),
-                                   tri_uvs: ti.template(),
-                                   tex_meta: ti.template(),
-                                   textures: ti.template()):
     transmission = 0.0
     cr = col_row[prim]
     if cr >= 0:
+        ior = _corner_ior(f, cr, w0, w1, w2, tri_extra)
         transmission = _corner_transmission(f, cr, w0, w1, w2, tri_extra)
     if tex_meta[prim, 3] >= 0:
-        if (tex_meta[prim, 9] & 8) != 0:
+        flags = tex_meta[prim, 9]
+        if (flags & 12) != 0:
             u, v = _tri_uv(f, prim, w0, w1, w2, tri_uvs)
             m = _sample_tex_vec5(f, u, v, tex_meta[prim, 3], tex_meta[prim, 4],
                                  tex_meta[prim, 5], textures)
-            transmission = m[3]
-    return transmission
+            if (flags & 4) != 0:
+                ior = m[2]
+            if (flags & 8) != 0:
+                transmission = m[3]
+    return ior, transmission
 
 
 @ti.func
@@ -540,37 +612,47 @@ def _tri_extra_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
 
 
 @ti.func
-def _tri_ior_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
-               tri_extra: ti.template(), col_row: ti.template(),
-               tri_uvs: ti.template(), tex_meta: ti.template(),
-               textures: ti.template(), num_colored: ti.template()):
+def _tri_ior_transmission_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
+                            tri_extra: ti.template(), col_row: ti.template(),
+                            tri_uvs: ti.template(), tex_meta: ti.template(),
+                            textures: ti.template(), num_colored: ti.template()):
     ior = 1.0
+    transmission = 0.0
     if ti.static(mem_trim != 0):
-        ior = _flat_corner_ior_trim(
+        ior, transmission = _flat_corner_ior_transmission_trim(
             f, prim, w0, w1, w2, tri_extra, col_row, tri_uvs, tex_meta,
             textures)
     else:
-        ior = _flat_corner_ior(
+        ior, transmission = _flat_corner_ior_transmission(
             f, prim, w0, w1, w2, tri_extra, tri_uvs, tex_meta, textures,
             num_colored)
-    return ior
+    return ior, transmission
 
 
 @ti.func
-def _tri_transmission_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
-                        tri_extra: ti.template(), col_row: ti.template(),
-                        tri_uvs: ti.template(), tex_meta: ti.template(),
-                        textures: ti.template(), num_colored: ti.template()):
+def _tri_material_g(mem_trim: ti.template(), f, prim, w0, w1, w2,
+                    tri_extra: ti.template(), col_row: ti.template(),
+                    tri_uvs: ti.template(), tex_meta: ti.template(),
+                    textures: ti.template(), num_colored: ti.template()):
+    """All four material properties of a triangle hit in one call: a single
+    map fetch on the baseline path (the adjacent per-property calls it
+    replaces fetched the same map up to three times per hit)."""
+    reflectivity = 0.0
+    roughness = 0.0
+    ior = 1.0
     transmission = 0.0
     if ti.static(mem_trim != 0):
-        transmission = _flat_corner_transmission_trim(
+        reflectivity, roughness = _flat_triangle_extra_trim(
+            f, prim, w0, w1, w2, tri_extra, col_row, tri_uvs, tex_meta,
+            textures)
+        ior, transmission = _flat_corner_ior_transmission_trim(
             f, prim, w0, w1, w2, tri_extra, col_row, tri_uvs, tex_meta,
             textures)
     else:
-        transmission = _flat_corner_transmission(
+        reflectivity, roughness, ior, transmission = _flat_triangle_material(
             f, prim, w0, w1, w2, tri_extra, tri_uvs, tex_meta, textures,
             num_colored)
-    return transmission
+    return reflectivity, roughness, ior, transmission
 
 
 @ti.func
@@ -656,41 +738,29 @@ def _pn_hit_extra(f, prim, w0, w1, w2, pn_extra: ti.template(),
 
 
 @ti.func
-def _pn_hit_ior(f, prim, w0, w1, w2, pn_extra: ti.template(),
-                textures: ti.template()):
-    """Index of refraction of a PN hit: per-vertex (``_corner_ior``) unless the
-    material map's bitmask marks it texture-driven (bit 2 / channel 2)."""
+def _pn_hit_ior_transmission(f, prim, w0, w1, w2, pn_extra: ti.template(),
+                             textures: ti.template()):
+    """(IOR, transmission) of a PN hit: per-vertex (``_corner_ior`` /
+    ``_corner_transmission``) unless the material map's bitmask marks the
+    property texture-driven (bit 2 / channel 2, bit 3 / channel 3). One
+    fused map fetch serves both properties."""
     ior = _corner_ior(f, prim, w0, w1, w2, pn_extra)
-    te = f % pn_extra.shape[0]
-    moff = ti.cast(pn_extra[te, prim, _PN_META + 3], ti.i32)
-    if moff >= 0:
-        if (ti.cast(pn_extra[te, prim, _PN_META + 9], ti.i32) & 4) != 0:
-            u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
-            m = _sample_tex_vec5(f, u, v, moff,
-                                 ti.cast(pn_extra[te, prim, _PN_META + 4], ti.i32),
-                                 ti.cast(pn_extra[te, prim, _PN_META + 5], ti.i32),
-                                 textures)
-            ior = m[2]
-    return ior
-
-
-@ti.func
-def _pn_hit_transmission(f, prim, w0, w1, w2, pn_extra: ti.template(),
-                         textures: ti.template()):
-    """Transmission of a PN hit: per-vertex (``_corner_transmission``) unless
-    the material map's bitmask marks it texture-driven (bit 3 / channel 3)."""
     transmission = _corner_transmission(f, prim, w0, w1, w2, pn_extra)
     te = f % pn_extra.shape[0]
     moff = ti.cast(pn_extra[te, prim, _PN_META + 3], ti.i32)
     if moff >= 0:
-        if (ti.cast(pn_extra[te, prim, _PN_META + 9], ti.i32) & 8) != 0:
+        flags = ti.cast(pn_extra[te, prim, _PN_META + 9], ti.i32)
+        if (flags & 12) != 0:
             u, v = _pn_uv(te, prim, w0, w1, w2, pn_extra)
             m = _sample_tex_vec5(f, u, v, moff,
                                  ti.cast(pn_extra[te, prim, _PN_META + 4], ti.i32),
                                  ti.cast(pn_extra[te, prim, _PN_META + 5], ti.i32),
                                  textures)
-            transmission = m[3]
-    return transmission
+            if (flags & 4) != 0:
+                ior = m[2]
+            if (flags & 8) != 0:
+                transmission = m[3]
+    return ior, transmission
 
 
 @ti.func
@@ -1922,7 +1992,7 @@ def wavefront_shadow(
                                         if (fnrm.dot(wi) > 1e-3) and \
                                                 (snrm.dot(wi) > 1e-4):
                                             occ = _shadow_occluded(
-                                                refit, sorigin, wi, f, ff,
+                                                refit, 1, sorigin, wi, f, ff,
                                                 ldist - 20.0 * MIN_HIT_DISTANCE,
                                                 pixel_size_per_t, base_dist,
                                                 layer_offset_triangles,
@@ -2125,39 +2195,46 @@ def wavefront_shade(
             bounced = False
             done = False
             drained = 0
-            ro_seg = ro
-            rd_seg = rd
-            inv_rd_seg = ti.math.vec3(_safe_inverse(rd[0]),
-                                      _safe_inverse(rd[1]),
-                                      _safe_inverse(rd[2]))
-            weight_seg = weight
-            t_seg_end = 0.0
             ff = ti.cast(f, ti.f32)
+            pixel_size_per_t = pixel_world_scale[f]
             while drained < num_hits:
+                # Nearest unconsumed slot. The best slot's (t, layer) ride in
+                # scalars and the extraction below is a ti.static select, so
+                # the kb_* vectors are never dynamically indexed (a dynamic
+                # vector index spills the whole vector to local memory).
                 sel = 0
                 sel_found = 0
+                t_hit = 0.0
+                hit_layer = 0.0
                 for q in ti.static(range(KBUF)):
                     if (q < num_hits) and (kb_prim[q] >= 0):
                         if sel_found == 0:
                             sel = q
+                            t_hit = kb_t[q]
+                            hit_layer = kb_layer[q]
                             sel_found = 1
-                        elif _comes_after(kb_t[sel], kb_layer[sel],
+                        elif _comes_after(t_hit, hit_layer,
                                           kb_t[q], kb_layer[q]):
                             sel = q
-                t_hit = kb_t[sel]
-                t_seg_end = t_hit
-                hit_layer = kb_layer[sel]
-                prim = kb_prim[sel]
-                flags = kb_flags[sel]
-                a = kb_a[sel]
-                b = kb_b[sel]
+                            t_hit = kb_t[q]
+                            hit_layer = kb_layer[q]
                 if (far_clip > 0.0) and (base_dist + t_hit > far_clip):
                     # Past the camera's far distance. Hits drain front-to-back,
                     # so everything left is farther still -- retire the ray to
                     # the background/environment.
                     done = True
                     break
-                kb_prim[sel] = -1
+                prim = 0
+                flags = 0
+                a = 0.0
+                b = 0.0
+                for q in ti.static(range(KBUF)):
+                    if q == sel:
+                        prim = kb_prim[q]
+                        flags = kb_flags[q]
+                        a = kb_a[q]
+                        b = kb_b[q]
+                        kb_prim[q] = -1
                 drained += 1
                 processed += 1
                 htype = flags & 3
@@ -2233,8 +2310,6 @@ def wavefront_shade(
                                         & 1) != 0:
                                     vis[li] = 0.0
                     if ti.static((shadows != 0) and (deferred_shadows == 0)):
-                        ff = ti.cast(f, ti.f32)
-                        pixel_size_per_t = pixel_world_scale[f]
                         # Shadow visibility is skipped exactly where it cannot
                         # reach the output: an UNLIT hit never consumes ``vis``
                         # (passthrough shading; scatters take no ``vis``), and
@@ -2247,6 +2322,7 @@ def wavefront_shade(
                         # the exact fan for every light.
                         do_fan = 0
                         fan_exact = 1
+                        fan_geom = 0
                         if (htype == 1) or (htype == 2):
                             pid_s = 0
                             if htype == 1:
@@ -2259,6 +2335,13 @@ def wavefront_shade(
                                 do_fan = 1
                                 if pid_s < _USER_PIPELINE_BASE:
                                     fan_exact = 0
+                                    # Geometric zero-radiance culling is only
+                                    # valid for stages whose vis terms all
+                                    # carry lc (see _light_zero_radiance);
+                                    # the default stage's base fade is not
+                                    # one of them.
+                                    if pid_s != _MID_DEFAULT:
+                                        fan_geom = 1
                         if do_fan == 1:
                             # Smooth shading normal and the *geometric* face
                             # normal of the hit facet/patch.
@@ -2340,6 +2423,18 @@ def wavefront_shade(
                                             and (ldist > 1e-5):
                                         wi = to_light / ldist
                                         valid = 1
+                                    # A light past its range, a fragment
+                                    # outside a spot cone, an area sample's
+                                    # backface: exactly zero radiance here,
+                                    # so the fan's result multiplies zero.
+                                    # Skipping leaves vis[li] at its all-lit
+                                    # default, exactly like the zero-colour
+                                    # skip above.
+                                    if (valid == 1) and (fan_geom == 1):
+                                        if _light_zero_radiance(
+                                                light_col, tl, li, ltype,
+                                                to_light, ldist) == 1:
+                                            valid = 0
                                     if valid == 1:
                                         # Soft shadows: a fixed golden-angle fan
                                         # of samples across the emitter disk
@@ -2389,7 +2484,8 @@ def wavefront_shade(
                                                     and (snrm.dot(wis) > 1e-4):
                                                 n_valid += 1.0
                                                 occ_sum += _shadow_occluded(
-                                                    refit, sorigin, wis, f, ff,
+                                                    refit, shadows,
+                                                    sorigin, wis, f, ff,
                                                     ldn - 20.0
                                                     * MIN_HIT_DISTANCE,
                                                     pixel_size_per_t, base_dist,
@@ -2467,32 +2563,20 @@ def wavefront_shade(
                     alpha = ti.math.clamp(alpha, 0.0, 1.0)
 
                     ior = 0.0
-                    if htype == 1:
-                        ior = _tri_ior_g(
-                            mem_trim, f, prim, 1.0 - a - b, a, b,
-                            tri_extra, col_row, tri_uvs, tri_tex_meta,
-                            textures, num_colored_triangles)
-                    elif htype == 2:
-                        ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
-                                          pn_extra, textures)
-                    else:
-                        if ti.static(has_bez != 0):
-                            ior = circuit_meta[f % circuit_meta.shape[0],
-                                               prim, _M_IOR]
-
                     T = 0.0
                     if htype == 1:
-                        T = _tri_transmission_g(
+                        ior, T = _tri_ior_transmission_g(
                             mem_trim, f, prim, 1.0 - a - b, a, b,
                             tri_extra, col_row, tri_uvs, tri_tex_meta,
                             textures, num_colored_triangles)
                     elif htype == 2:
-                        T = _pn_hit_transmission(f, prim, 1.0 - a - b, a, b,
-                                                 pn_extra, textures)
+                        ior, T = _pn_hit_ior_transmission(
+                            f, prim, 1.0 - a - b, a, b, pn_extra, textures)
                     else:
                         if ti.static(has_bez != 0):
-                            T = circuit_meta[f % circuit_meta.shape[0],
-                                             prim, _M_TRANSMISSION]
+                            cmr = f % circuit_meta.shape[0]
+                            ior = circuit_meta[cmr, prim, _M_IOR]
+                            T = circuit_meta[cmr, prim, _M_TRANSMISSION]
                     T = ti.math.clamp(T, 0.0, 1.0)
 
                     # The surface normal is consumed only by the PBR Fresnel
@@ -2833,31 +2917,20 @@ def wavefront_shade(
                         sni = _bezier_normal(f, prim, circuit_meta)
                         sfn = sni
                     s_ior = 0.0
-                    if htype == 1:
-                        s_ior = _tri_ior_g(
-                            mem_trim, f, prim, 1.0 - a - b, a, b, tri_extra,
-                            col_row, tri_uvs, tri_tex_meta, textures,
-                            num_colored_triangles)
-                    elif htype == 2:
-                        s_ior = _pn_hit_ior(f, prim, 1.0 - a - b, a, b,
-                                            pn_extra, textures)
-                    else:
-                        if ti.static(has_bez != 0):
-                            s_ior = circuit_meta[f % circuit_meta.shape[0],
-                                                 prim, _M_IOR]
                     s_trans = 0.0
                     if htype == 1:
-                        s_trans = _tri_transmission_g(
+                        s_ior, s_trans = _tri_ior_transmission_g(
                             mem_trim, f, prim, 1.0 - a - b, a, b, tri_extra,
                             col_row, tri_uvs, tri_tex_meta, textures,
                             num_colored_triangles)
                     elif htype == 2:
-                        s_trans = _pn_hit_transmission(
+                        s_ior, s_trans = _pn_hit_ior_transmission(
                             f, prim, 1.0 - a - b, a, b, pn_extra, textures)
                     else:
                         if ti.static(has_bez != 0):
-                            s_trans = circuit_meta[f % circuit_meta.shape[0],
-                                                   prim, _M_TRANSMISSION]
+                            cmr = f % circuit_meta.shape[0]
+                            s_ior = circuit_meta[cmr, prim, _M_IOR]
+                            s_trans = circuit_meta[cmr, prim, _M_TRANSMISSION]
                     hit_point = ro + t_hit * rd
                     zero3 = ti.math.vec3(0.0, 0.0, 0.0)
                     contrib = ti.math.vec4(0.0, 0.0, 0.0, 0.0)

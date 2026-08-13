@@ -1230,6 +1230,10 @@ def prepare_sparse_raster_coverage(
         count_parts = []
         for kind, pairs, opaque in specs:
             counts = _arena_tensor(memory, (pairs.shape[0],), torch.int32, 0)
+            # Per-pair acceptance bits (bit j = chunk pixel j survived): the
+            # write pass replays these instead of recomputing the acceptance
+            # chain (see raster_tri_count).
+            accepts = _arena_tensor(memory, (pairs.shape[0],), torch.int32, 0)
             if kind == "bez":
                 raster_bez_count(
                     pairs,
@@ -1243,6 +1247,7 @@ def prepare_sparse_raster_coverage(
                     aa_hw,
                     0,
                     counts,
+                    accepts,
                 )
             else:
                 raster_tri_count(
@@ -1260,8 +1265,9 @@ def prepare_sparse_raster_coverage(
                     aa_tri_ss,
                     0,
                     counts,
+                    accepts,
                 )
-            count_parts.append((kind, pairs, opaque, counts))
+            count_parts.append((kind, pairs, opaque, counts, accepts))
 
         counts_all = (
             torch.cat([s[3] for s in count_parts], 0)
@@ -1291,7 +1297,7 @@ def prepare_sparse_raster_coverage(
         opaque_u = _arena_tensor(memory, (num_frags,), torch.bool, False)
         pair_cursor = 0
         frag_cursor = 0
-        for kind, pairs, opaque, counts in count_parts:
+        for kind, pairs, opaque, counts, accepts in count_parts:
             npairs = int(pairs.shape[0])
             offsets = prefix[pair_cursor : pair_cursor + npairs].to(torch.int32)
             n_spec = int(counts.to(torch.int64).sum().item())
@@ -1312,6 +1318,7 @@ def prepare_sparse_raster_coverage(
                     frag_ref_u,
                     frag_ab_u,
                     frag_cov_u,
+                    accepts,
                 )
             else:
                 raster_tri_write(
@@ -1334,6 +1341,7 @@ def prepare_sparse_raster_coverage(
                     frag_ab_u,
                     frag_cov_u,
                     frag_msk_u,
+                    accepts,
                 )
             if opaque and n_spec:
                 opaque_u[frag_cursor : frag_cursor + n_spec].fill_(True)
@@ -1514,8 +1522,17 @@ def shade_sparse_raster_coverage(
     c0, c1 = int(covered_start), int(covered_end)
     num_covered = c1 - c0
     covered_idx = coverage["covered_idx"][c0:c1]
-    event_start = int(coverage["run_offsets"][c0].item())
-    event_end = int(coverage["run_offsets"][c1].item())
+    # Slice boundaries come from a host mirror of run_offsets, copied once
+    # per coverage (one queue drain) instead of two synchronizing ``.item()``
+    # reads per slice -- a chunk resolves tens of slices, and each drain
+    # stalls the prep/render overlap. The mirror stays valid across the
+    # OOM-retry loop (coverage is immutable once discovered).
+    ro_host = coverage.get("run_offsets_host")
+    if ro_host is None:
+        ro_host = coverage["run_offsets"].cpu()
+        coverage["run_offsets_host"] = ro_host
+    event_start = int(ro_host[c0])
+    event_end = int(ro_host[c1])
     num_frags = event_end - event_start
     frag_key = coverage["frag_key"][event_start:event_end]
     frag_ref = coverage["frag_ref"][event_start:event_end]
@@ -1687,6 +1704,7 @@ def shade_sparse_raster_coverage(
                 event_dp,
                 sec_aa,
                 shadow_vis,
+                int(shadow_flag),
             )
     else:
         shadow_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
@@ -1740,7 +1758,11 @@ def shade_sparse_raster_coverage(
         sec_aa,
         float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
         int(rt_settings.glossy_reflection_mode()),
-        int(shadow_flag),
+        # Boolean here on purpose: this kernel only ever tests shadows != 0
+        # (visibility itself was traced by raster_shadow_trace), so folding
+        # the any-hit mode (2/3) to 1 keeps one compiled variant instead of
+        # one per mode of the pipeline's biggest kernel.
+        1 if shadow_flag else 0,
         0,
         1,
         covered_idx,
@@ -2019,8 +2041,13 @@ def raster_iteration_zero(
 
     bcounts = []
     tcounts = []
+    baccepts = []
+    taccepts = []
     for bpairs, partial_only in bez_specs:
         counts_b = _arena_tensor(memory, (bpairs.shape[0],), torch.int32, 0)
+        # Acceptance bits the write pass replays (see raster_tri_count);
+        # valid because nothing touches zbuf between count and write.
+        accept_b = _arena_tensor(memory, (bpairs.shape[0],), torch.int32, 0)
         raster_bez_count(
             bpairs,
             int(bpairs.shape[0]),
@@ -2033,10 +2060,13 @@ def raster_iteration_zero(
             aa_hw,
             partial_only,
             counts_b,
+            accept_b,
         )
         bcounts.append(counts_b)
+        baccepts.append(accept_b)
     for tpairs, partial_only in tri_specs:
         counts_t = _arena_tensor(memory, (tpairs.shape[0],), torch.int32, 0)
+        accept_t = _arena_tensor(memory, (tpairs.shape[0],), torch.int32, 0)
         raster_tri_count(
             tpairs,
             int(tpairs.shape[0]),
@@ -2052,8 +2082,10 @@ def raster_iteration_zero(
             aa_tri_ss,
             partial_only,
             counts_t,
+            accept_t,
         )
         tcounts.append(counts_t)
+        taccepts.append(accept_t)
 
     count_parts = list(bcounts) + list(tcounts)
     num_frags = 0
@@ -2089,7 +2121,9 @@ def raster_iteration_zero(
         # Coverage lane + sample mask, pre-filled full (see the sparse path).
         frag_cov_u = _arena_tensor(memory, (num_frags,), torch.float32, 1.0)
         frag_msk_u = _arena_tensor(memory, (num_frags,), torch.int32, AA_MASK_ALL)
-        for (bpairs, partial_only), offsets in zip(bez_specs, bez_offsets):
+        for (bpairs, partial_only), offsets, accept_b in zip(
+            bez_specs, bez_offsets, baccepts
+        ):
             raster_bez_write(
                 bpairs,
                 int(bpairs.shape[0]),
@@ -2106,8 +2140,11 @@ def raster_iteration_zero(
                 frag_ref_u,
                 frag_ab_u,
                 frag_cov_u,
+                accept_b,
             )
-        for (tpairs, partial_only), offsets in zip(tri_specs, tri_offsets):
+        for (tpairs, partial_only), offsets, accept_t in zip(
+            tri_specs, tri_offsets, taccepts
+        ):
             raster_tri_write(
                 tpairs,
                 int(tpairs.shape[0]),
@@ -2128,6 +2165,7 @@ def raster_iteration_zero(
                 frag_ab_u,
                 frag_cov_u,
                 frag_msk_u,
+                accept_t,
             )
         order = _exact_fragment_order(frag_key_u, frag_ref_u, layer_offset_triangles)
         frag_key = _arena_tensor(memory, (num_frags,), torch.int64)
@@ -2311,6 +2349,7 @@ def raster_iteration_zero(
                 event_dp,
                 sec_aa,
                 shadow_vis,
+                int(shadow_flag),
             )
     else:
         shadow_vis = _arena_tensor(memory, (1, 1), torch.float32, 1.0)
@@ -2364,7 +2403,8 @@ def raster_iteration_zero(
         rt_settings.effective_analytic_aa_secondary_samples(),
         float(rt_settings.ANALYTIC_AA_SECONDARY_MIN_ENERGY),
         int(rt_settings.glossy_reflection_mode()),
-        int(shadow_flag),
+        # Boolean on purpose -- see the sparse-path raster_first_shade call.
+        1 if shadow_flag else 0,
         1 if prefill else 0,
         1 if use_covered else 0,
         covered_idx,

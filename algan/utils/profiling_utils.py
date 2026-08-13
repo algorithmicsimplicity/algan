@@ -166,11 +166,11 @@ class StageTimers:
         try:
             yield
         finally:
-            # t1 = time.perf_counter()# - t0
-            # _sync_devices()
-            torch.cuda.synchronize()
-            # t2 = time.perf_counter()
-            ti.sync()
+            # Same main-thread guard as the entry sync: an unconditional sync
+            # here made every hooked prep call on the prefetch worker wait out
+            # the render thread's GPU queue, inflating prep wall ~50x (and
+            # perturbing the run it was measuring).
+            _sync_devices()
             t3 = time.perf_counter()
             tls.stack_level -= 1
             t = t3 - t0
@@ -481,6 +481,20 @@ def install_pipeline_hooks():
             "project_to_screen",
             "PN triangles: shade + pack (project_to_screen)",
         )
+    # LogicalPNTrianglePrimitive overrides project_to_screen (dice + shade +
+    # pack) without calling the base method, so the base-class wrap above
+    # never fires for it and all Surface dicing cost was invisible.
+    if hasattr(rtp, "LogicalPNTrianglePrimitive"):
+        _try_wrap(
+            rtp.LogicalPNTrianglePrimitive,
+            "project_to_screen",
+            "logical PN: dice + shade + pack (project_to_screen)",
+        )
+        _try_wrap(
+            rtp.LogicalPNTrianglePrimitive,
+            "_dice_logical_pn",
+            "logical PN:   - _dice_logical_pn",
+        )
 
     # Scene merge + BVH builds. ``_merge_scene`` is timed by hand so the merged
     # scene can be captured on the batch's first (uncached) merge. NOTE:
@@ -518,6 +532,22 @@ def install_pipeline_hooks():
     _try_wrap(scb, "build_stbvh", "  - STBVH build (in merge)")
     _try_wrap(
         stbvh_mod, "segment_primitives_in_time", "  - STBVH temporal segmentation"
+    )
+    # The builders that actually run by default were unhooked (BVH_REFIT is
+    # default ON, and the bezier edge table is built every bezier batch),
+    # leaving their cost inside the merge total with no line of their own.
+    import algan.rendering.raytracing.bezier_acceleration as bezacc_mod
+    import algan.rendering.raytracing.refit_bvh as refit_mod
+
+    _try_wrap(refit_mod, "build_refit_bvh", "  - refit-BVH build (in merge)")
+    _try_wrap(scb, "build_refit_bvh", "  - refit-BVH build (in merge)")
+    _try_wrap(
+        bezacc_mod,
+        "build_bezier_edge_acceleration",
+        "  - bezier edge accel (in merge)",
+    )
+    _try_wrap(
+        scb, "build_bezier_edge_acceleration", "  - bezier edge accel (in merge)"
     )
 
     # Render-chunk internals (again: wrap the refs tracer actually calls).

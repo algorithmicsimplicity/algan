@@ -77,6 +77,7 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shadow_occluded,
 )
 from algan.rendering.raytracing.shading_taichi import (
+    _MID_DEFAULT,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
@@ -91,6 +92,7 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _LT_ENV_SH,
     _LT_HEMISPHERE,
     _GOLDEN_ANGLE,
+    _light_zero_radiance,
     _material_reflectance,
     _offset_transmitted_origin,
     _refract_ray,
@@ -98,9 +100,9 @@ from algan.rendering.raytracing.wavefront_kernels_taichi import (
     _sample_env_map,
     _tri_color_g,
     _tri_extra_g,
-    _tri_ior_g,
+    _tri_ior_transmission_g,
+    _tri_material_g,
     _tri_normal_g,
-    _tri_transmission_g,
 )
 
 # Candidate pixels per (prim, chunk) pair: one fine-raster thread tests at
@@ -2051,13 +2053,20 @@ def raster_tri_count(
         ss_enabled: ti.template(), layer_offset_triangles: ti.f32,
         z_cull: ti.template(), zbuf: ti.types.ndarray(),
         aa: ti.template(), partial_only: ti.template(),
-        pair_count: ti.types.ndarray()):
+        pair_count: ti.types.ndarray(),
+        pair_accept: ti.types.ndarray()):
     """Count surviving nonzero-alpha transparent triangle fragments.
 
     ``partial_only`` (analytic coverage only): emit just the partially covered
     fragments, so the host can run this pass over the proven-opaque candidates
     as well -- their fully covered pixels already sit in the z-prepass and only
     their silhouette pixels need to blend.
+
+    ``pair_accept[p]`` records the per-pixel acceptance decisions as a bitmask
+    (bit ``j`` = chunk pixel ``j`` survived; ``RASTER_CHUNK`` is 32, one i32).
+    The write pass replays these bits instead of recomputing the whole
+    acceptance chain -- most importantly the texture-sampling alpha fetch --
+    so this kernel IS the acceptance authority the write contract points at.
     """
     for p in range(num_pairs):
         prim = pairs[p, 0]
@@ -2071,6 +2080,7 @@ def raster_tri_count(
             f, prim, ss_enabled, tri_pos, tri_screen, cam_origin, aa)
         layer = ti.cast(layer_offset_triangles, ti.i32) + prim
         cnt = 0
+        bits = 0
         for j in range(RASTER_CHUNK):
             ok, lp, t, w1, w2, cov, msk = _pair_pixel(
                 prim, f, x0, y0, bw, bh, off, j, time_start, width, height,
@@ -2099,7 +2109,9 @@ def raster_tri_count(
                         alpha *= cov
                     if alpha > MIN_ALPHA:
                         cnt += 1
+                        bits |= 1 << j
         pair_count[p] = cnt
+        pair_accept[p] = bits
 
 
 @ti.kernel
@@ -2120,11 +2132,19 @@ def raster_tri_write(
         aa: ti.template(), partial_only: ti.template(),
         frag_key: ti.types.ndarray(),
         frag_ref: ti.types.ndarray(), frag_ab: ti.types.ndarray(),
-        frag_cov: ti.types.ndarray(), frag_msk: ti.types.ndarray()):
+        frag_cov: ti.types.ndarray(), frag_msk: ti.types.ndarray(),
+        pair_accept: ti.types.ndarray()):
     """Emit exact-distance triangle records; alpha-zero texels are discarded.
 
-    Acceptance must mirror :func:`raster_tri_count` exactly -- its counts sized
-    these slots.
+    Acceptance replays ``pair_accept`` -- the per-pixel decision bits the
+    count pass recorded -- rather than recomputing the acceptance chain, so
+    the two passes cannot diverge and this pass never touches the colour /
+    texture arrays at all. Emission order per pair is ascending chunk pixel,
+    exactly the order the recompute produced. The record's geometry lanes
+    (lp/t/w1/w2/cov/msk) still come from the exact ``_pair_pixel`` evaluation
+    (mode 1: the cov lane carries the exact area for masked fragments; the
+    count's acceptance used the sampled share, which the bits already bake
+    in).
     """
     for p in range(num_pairs):
         prim = pairs[p, 0]
@@ -2136,56 +2156,24 @@ def raster_tri_write(
         off = pairs[p, 6]
         use_ss, sm, vm, cam_o, il = _ss_setup(
             f, prim, ss_enabled, tri_pos, tri_screen, cam_origin, aa)
-        layer = ti.cast(layer_offset_triangles, ti.i32) + prim
         w = pair_offset[p]
+        bits = pair_accept[p]
         for j in range(RASTER_CHUNK):
-            ok, lp, t, w1, w2, cov, msk = _pair_pixel(
-                prim, f, x0, y0, bw, bh, off, j, time_start, width, height,
-                tile_start, tile_pixels, half_w, half_h, use_ss, sm, vm, cam_o,
-                il, cam_origin, screen_point, pixel_basis_x, pixel_basis_y, aa,
-                1)
-            if ok != 0:
-                keep = True
-                if ti.static(partial_only):
-                    if ti.static(_tri_run(aa)):
-                        # Mirror of raster_tri_z's sampled-claim keying: only
-                        # full-MASK fragments sit in the prepass, so only they
-                        # are excluded here.
-                        keep = (msk & _AA_MASK_ALL) != _AA_MASK_ALL
-                    else:
-                        keep = cov < AA_FULL_COVERAGE
-                before_z = True
-                if ti.static(z_cull):
-                    before_z = _order_key(t, layer) < zbuf[lp]
-                if keep and before_z:
-                    w0 = 1.0 - w1 - w2
-                    _color, alpha = _tri_color_g(
-                        0, f, prim, w0, w1, w2, tri_colors, col_row,
-                        tri_uvs, tri_tex_meta, textures,
-                        num_colored_triangles)
-                    if ti.static(_tri_run(aa)):
-                        # WRITE's cov lane carries the exact area for masked
-                        # fragments; the keep decision recomputes the SAMPLED
-                        # share so both kernels take IDENTICAL branches --
-                        # count sized these slots.
-                        keep_c = cov
-                        if (msk & _AA_MASK_ALL) != 0:
-                            keep_c = (ti.cast(
-                                _popcount_samples(msk), ti.f32)
-                                * _AA_SAMPLE_WEIGHT)
-                        alpha *= keep_c
-                    elif ti.static(aa):
-                        alpha *= cov
-                    if alpha > MIN_ALPHA:
-                        tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
-                        frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
-                        frag_ref[w] = prim
-                        frag_ab[w, 0] = w1
-                        frag_ab[w, 1] = w2
-                        if ti.static(aa):
-                            frag_cov[w] = cov
-                            frag_msk[w] = msk
-                        w += 1
+            if ((bits >> j) & 1) != 0:
+                ok, lp, t, w1, w2, cov, msk = _pair_pixel(
+                    prim, f, x0, y0, bw, bh, off, j, time_start, width,
+                    height, tile_start, tile_pixels, half_w, half_h, use_ss,
+                    sm, vm, cam_o, il, cam_origin, screen_point,
+                    pixel_basis_x, pixel_basis_y, aa, 1)
+                tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
+                frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
+                frag_ref[w] = prim
+                frag_ab[w, 0] = w1
+                frag_ab[w, 1] = w2
+                if ti.static(aa):
+                    frag_cov[w] = cov
+                    frag_msk[w] = msk
+                w += 1
 
 
 @ti.kernel
@@ -2203,7 +2191,8 @@ def raster_bez_count(
         z_cull: ti.template(), zbuf: ti.types.ndarray(),
         aa: ti.template(), aa_min_half_width: ti.f32,
         partial_only: ti.template(),
-        pair_count: ti.types.ndarray()):
+        pair_count: ti.types.ndarray(),
+        pair_accept: ti.types.ndarray()):
     """Count surviving nonzero-alpha translucent circuit fragments.
 
     ``partial_only`` (compile-time, analytic coverage only): emit ONLY the
@@ -2211,6 +2200,9 @@ def raster_bez_count(
     proven-opaque candidate pairs as well -- their fully covered pixels are
     already in the z-prepass, and their silhouette pixels are exactly the ones
     that need to blend.
+
+    ``pair_accept[p]`` records the per-pixel acceptance bits the write pass
+    replays (see :func:`raster_tri_count`).
     """
     for p in range(num_pairs):
         circuit = pairs[p, 0]
@@ -2221,6 +2213,7 @@ def raster_bez_count(
         bh = pairs[p, 5]
         off = pairs[p, 6]
         cnt = 0
+        bits = 0
         for j in range(RASTER_CHUNK):
             ok, lp, t, u, v, ib, cov = _bez_pair_pixel(
                 circuit, f, x0, y0, bw, bh, off, j, time_start, width, height,
@@ -2243,7 +2236,9 @@ def raster_bez_count(
                         alpha *= cov
                     if alpha > MIN_ALPHA:
                         cnt += 1
+                        bits |= 1 << j
         pair_count[p] = cnt
+        pair_accept[p] = bits
 
 
 @ti.kernel
@@ -2264,13 +2259,17 @@ def raster_bez_write(
         partial_only: ti.template(),
         frag_key: ti.types.ndarray(),
         frag_ref: ti.types.ndarray(), frag_ab: ti.types.ndarray(),
-        frag_cov: ti.types.ndarray()):
+        frag_cov: ti.types.ndarray(),
+        pair_accept: ti.types.ndarray()):
     """Emit circuit records with the border weight packed into ``frag_ref``.
 
-    Must mirror :func:`raster_bez_count`'s acceptance exactly -- the counts sized
-    this pass's slots.  ``frag_cov`` is the analytic coverage lane, pre-filled
-    with 1.0 by the host so geometry without analytic coverage (flat triangles
-    today) needs no write of its own.
+    Acceptance replays the count pass's ``pair_accept`` bits (see
+    :func:`raster_tri_write`) -- the passes cannot diverge, and this one
+    skips the colour sampling entirely; the exact ``_bez_pair_pixel``
+    evaluation still supplies the record's geometry lanes.  ``frag_cov`` is
+    the analytic coverage lane, pre-filled with 1.0 by the host so geometry
+    without analytic coverage (flat triangles today) needs no write of its
+    own.
     """
     for p in range(num_pairs):
         circuit = pairs[p, 0]
@@ -2281,35 +2280,23 @@ def raster_bez_write(
         bh = pairs[p, 5]
         off = pairs[p, 6]
         w = pair_offset[p]
+        bits = pair_accept[p]
         for j in range(RASTER_CHUNK):
-            ok, lp, t, u, v, ib, cov = _bez_pair_pixel(
-                circuit, f, x0, y0, bw, bh, off, j, time_start, width, height,
-                tile_start, tile_pixels, half_w, half_h, cam_origin,
-                screen_point, pixel_basis_x, pixel_basis_y, pixel_world_scale,
-                circuit_meta, circuit_colors, edges_2d, edge_accel,
-                aa, aa_min_half_width)
-            if ok != 0:
-                keep = True
-                if ti.static(partial_only):
-                    keep = cov < AA_FULL_COVERAGE
-                before_z = True
-                if ti.static(z_cull):
-                    before_z = _order_key(t, circuit) < zbuf[lp]
-                if keep and before_z:
-                    _color, alpha = _sample_circuit_color_blend(
-                        circuit, f, u, v, ib, circuit_meta, circuit_colors,
-                        circuit_border_colors)
-                    if ti.static(aa):
-                        alpha *= cov
-                    if alpha > MIN_ALPHA:
-                        tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
-                        frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
-                        frag_ref[w] = _pack_bez_ref(circuit, ib)
-                        frag_ab[w, 0] = u
-                        frag_ab[w, 1] = v
-                        if ti.static(aa):
-                            frag_cov[w] = cov
-                        w += 1
+            if ((bits >> j) & 1) != 0:
+                ok, lp, t, u, v, ib, cov = _bez_pair_pixel(
+                    circuit, f, x0, y0, bw, bh, off, j, time_start, width,
+                    height, tile_start, tile_pixels, half_w, half_h,
+                    cam_origin, screen_point, pixel_basis_x, pixel_basis_y,
+                    pixel_world_scale, circuit_meta, circuit_colors,
+                    edges_2d, edge_accel, aa, aa_min_half_width)
+                tb = ti.cast(ti.bit_cast(t, ti.u32), ti.i64)
+                frag_key[w] = (ti.cast(lp, ti.i64) << 32) | tb
+                frag_ref[w] = _pack_bez_ref(circuit, ib)
+                frag_ab[w, 0] = u
+                frag_ab[w, 1] = v
+                if ti.static(aa):
+                    frag_cov[w] = cov
+                w += 1
 
 
 # Sub-pixel positions for continuation-ray supersampling, by sample count. At 4
@@ -3106,13 +3093,7 @@ def raster_shadow_event_build(
                     0, f, ref, w0, a, b, tri_colors, col_row, tri_uvs,
                     tri_tex_meta, textures, num_colored_triangles)
                 albedo = ti.math.vec3(color[0], color[1], color[2])
-                reflectivity, _rough = _tri_extra_g(
-                    0, f, ref, w0, a, b, tri_extra, col_row, tri_uvs,
-                    tri_tex_meta, textures, num_colored_triangles)
-                ior = _tri_ior_g(
-                    0, f, ref, w0, a, b, tri_extra, col_row, tri_uvs,
-                    tri_tex_meta, textures, num_colored_triangles)
-                transmission = _tri_transmission_g(
+                reflectivity, _rough, ior, transmission = _tri_material_g(
                     0, f, ref, w0, a, b, tri_extra, col_row, tri_uvs,
                     tri_tex_meta, textures, num_colored_triangles)
                 # An UNLIT triangle's shading never consumes per-light
@@ -3378,7 +3359,7 @@ def raster_shadow_trace(
         refit: ti.template(),
         has_tri: ti.template(), has_pn: ti.template(), has_bez: ti.template(),
         event_dp: ti.types.ndarray(), sec_aa: ti.template(),
-        shadow_vis: ti.types.ndarray()):
+        shadow_vis: ti.types.ndarray(), shadow_anyhit: ti.template()):
     """Trace the dedicated sparse any-hit shadow queue exactly.
 
     A zero-radius point/spot/directional light emits one hard-shadow ray.
@@ -3397,7 +3378,17 @@ def raster_shadow_trace(
     for a soft one the existing fan is simply spread over those positions too,
     which costs nothing.
     """
-    for e in range(num_events):
+    # One thread per (event, light) cell: every cell's fan is independent
+    # (its result lands in its own ``shadow_vis[e, li]`` and all per-light
+    # state initializes inside the body), so flattening the light loop into
+    # the launch grid multiplies parallelism by ``num_lights`` while keeping
+    # each cell's arithmetic -- including the serial golden-angle sample loop,
+    # whose float accumulation order is part of the output contract --
+    # bit-for-bit identical. The per-event setup is recomputed per cell
+    # (pure loads, negligible next to a single occlusion march).
+    for idx in range(num_events * num_lights):
+        e = idx // num_lights
+        li = idx - e * num_lights
         f = event_frame[e]
         ff = ti.cast(f, ti.f32)
         spos = ti.math.vec3(event_pos[e, 0], event_pos[e, 1], event_pos[e, 2])
@@ -3422,104 +3413,117 @@ def raster_shadow_trace(
         # exact fan for every light.
         pid_e = event_msk[e] >> 8
         fan_exact = 1
+        fan_geom = 0
         if pid_e < _USER_PIPELINE_BASE:
             fan_exact = 0
-        for li in range(num_lights):
-            visibility = 1.0
-            lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
-                              light_pos[tl, li, 2])
-            ltype = 0
-            radius = 0.0
-            if light_col.shape[2] > 3:
-                ltype = ti.cast(light_col[tl, li, 3] + 0.5, ti.i32)
-                if light_col.shape[2] > 11:
-                    radius = light_col[tl, li, 11]
-            to_light = lp - spos
-            ldist = to_light.norm()
-            wi = ti.math.vec3(0.0, 0.0, 0.0)
-            valid = 0
-            if ltype == _LT_DIRECTIONAL:
-                wi = -ti.math.vec3(light_col[tl, li, 6],
-                                   light_col[tl, li, 7],
-                                   light_col[tl, li, 8])
-                ldist = 1e7
-                valid = 1
-            elif (ltype != _LT_AMBIENT) and (ltype != _LT_HEMISPHERE) \
-                    and (ltype != _LT_ENV_SH) and (ldist > 1e-5):
-                wi = to_light / ldist
-                valid = 1
-            if (valid == 1) and ((fan_exact == 1)
-                                 or (light_col[tl, li, 0] != 0.0)
-                                 or (light_col[tl, li, 1] != 0.0)
-                                 or (light_col[tl, li, 2] != 0.0)):
-                ns = 1
-                b1 = ti.math.vec3(0.0, 0.0, 0.0)
-                b2 = ti.math.vec3(0.0, 0.0, 0.0)
-                if radius > 0.0:
-                    ns = SOFT_SHADOW_SAMPLES
-                    aref = ti.math.vec3(1.0, 0.0, 0.0)
-                    if ti.abs(wi[0]) > 0.9:
-                        aref = ti.math.vec3(0.0, 1.0, 0.0)
-                    b1 = wi.cross(aref).normalized()
-                    b2 = wi.cross(b1)
-                if ti.static(sec_aa > 1):
-                    # A hard light needs the sub-pixel positions to be separate
-                    # rays; a soft one already has enough rays and just spreads
-                    # its fan over them.
-                    ns = ti.max(ns, 4)
+            # Geometric zero-radiance culling is only valid for stages whose
+            # vis terms all carry lc (see _light_zero_radiance); the default
+            # stage's base fade is not one of them.
+            if pid_e != _MID_DEFAULT:
+                fan_geom = 1
+        visibility = 1.0
+        lp = ti.math.vec3(light_pos[tl, li, 0], light_pos[tl, li, 1],
+                          light_pos[tl, li, 2])
+        ltype = 0
+        radius = 0.0
+        if light_col.shape[2] > 3:
+            ltype = ti.cast(light_col[tl, li, 3] + 0.5, ti.i32)
+            if light_col.shape[2] > 11:
+                radius = light_col[tl, li, 11]
+        to_light = lp - spos
+        ldist = to_light.norm()
+        wi = ti.math.vec3(0.0, 0.0, 0.0)
+        valid = 0
+        if ltype == _LT_DIRECTIONAL:
+            wi = -ti.math.vec3(light_col[tl, li, 6],
+                               light_col[tl, li, 7],
+                               light_col[tl, li, 8])
+            ldist = 1e7
+            valid = 1
+        elif (ltype != _LT_AMBIENT) and (ltype != _LT_HEMISPHERE) \
+                and (ltype != _LT_ENV_SH) and (ldist > 1e-5):
+            wi = to_light / ldist
+            valid = 1
+        # A light past its range, a fragment outside a spot cone, an
+        # area sample's backface: exactly zero radiance here, so the
+        # fan's result multiplies zero. Skipping leaves the event's
+        # all-lit default, exactly like the zero-colour skip below.
+        if (valid == 1) and (fan_geom == 1):
+            if _light_zero_radiance(light_col, tl, li, ltype, to_light,
+                                    ldist) == 1:
+                valid = 0
+        if (valid == 1) and ((fan_exact == 1)
+                             or (light_col[tl, li, 0] != 0.0)
+                             or (light_col[tl, li, 1] != 0.0)
+                             or (light_col[tl, li, 2] != 0.0)):
+            ns = 1
+            b1 = ti.math.vec3(0.0, 0.0, 0.0)
+            b2 = ti.math.vec3(0.0, 0.0, 0.0)
+            if radius > 0.0:
+                ns = SOFT_SHADOW_SAMPLES
+                aref = ti.math.vec3(1.0, 0.0, 0.0)
+                if ti.abs(wi[0]) > 0.9:
+                    aref = ti.math.vec3(0.0, 1.0, 0.0)
+                b1 = wi.cross(aref).normalized()
+                b2 = wi.cross(b1)
+            if ti.static(sec_aa > 1):
+                # A hard light needs the sub-pixel positions to be separate
+                # rays; a soft one already has enough rays and just spreads
+                # its fan over them.
+                ns = ti.max(ns, 4)
 
-                occ_sum = 0.0
-                n_valid = 0.0
-                for s in range(ns):
-                    wis = wi
-                    ldn = ldist
-                    ok = 1
-                    sorg = sorigin
-                    if ti.static(sec_aa > 1):
-                        sorg = _sub_pixel_origin(sorigin, dpx, dpy, s)
-                        if ((event_msk[e] >> (s & 3)) & 1) == 0:
-                            ok = 0
-                    off = ti.math.vec3(0.0, 0.0, 0.0)
-                    if radius > 0.0:
-                        ang = _GOLDEN_ANGLE * s
-                        rr = radius * ti.sqrt(
-                            (ti.cast(s, ti.f32) + 0.5)
-                            / ti.cast(ns, ti.f32))
-                        off = (ti.cos(ang) * b1 + ti.sin(ang) * b2) * rr
-                        if ltype == _LT_DIRECTIONAL:
-                            wis = (wi + off).normalized()
-                    if ltype != _LT_DIRECTIONAL:
-                        # Moving the origin over the pixel changes both the
-                        # direction and finite distance to a point/spot/area
-                        # emitter. Retaining the centre ray here makes the
-                        # samples non-convergent and can trace past the light.
-                        tls = lp + off - sorg
-                        ldn = tls.norm()
-                        if ldn > 1e-5:
-                            wis = tls / ldn
-                        else:
-                            ok = 0
-                    if (ok == 1) and (fnrm.dot(wis) > 1e-3) \
-                            and (snrm.dot(wis) > 1e-4):
-                        n_valid += 1.0
-                        occ_sum += _shadow_occluded(
-                            refit, sorg, wis, f, ff,
-                            ldn - 20.0 * MIN_HIT_DISTANCE,
-                            pixel_world_scale[
-                                f % pixel_world_scale.shape[0]], 0.0,
-                            layer_offset_triangles, layer_offset_pn,
-                            has_tri, has_pn, has_bez,
-                            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
-                            t_first_leaf, tri_pos, tri_colors, tri_uvs,
-                            tri_tex_meta, textures, num_colored_triangles,
-                            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
-                            p_first_leaf, pn_ctrl, pn_obb, pn_colors,
-                            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
-                            b_first_leaf, circuit_meta, circuit_colors,
-                            circuit_border_colors, edges_2d, edge_accel)
-                if n_valid > 0.0:
-                    visibility = 1.0 - occ_sum / n_valid
-            shadow_vis[e, li] = visibility
+            occ_sum = 0.0
+            n_valid = 0.0
+            for s in range(ns):
+                wis = wi
+                ldn = ldist
+                ok = 1
+                sorg = sorigin
+                if ti.static(sec_aa > 1):
+                    sorg = _sub_pixel_origin(sorigin, dpx, dpy, s)
+                    if ((event_msk[e] >> (s & 3)) & 1) == 0:
+                        ok = 0
+                off = ti.math.vec3(0.0, 0.0, 0.0)
+                if radius > 0.0:
+                    ang = _GOLDEN_ANGLE * s
+                    rr = radius * ti.sqrt(
+                        (ti.cast(s, ti.f32) + 0.5)
+                        / ti.cast(ns, ti.f32))
+                    off = (ti.cos(ang) * b1 + ti.sin(ang) * b2) * rr
+                    if ltype == _LT_DIRECTIONAL:
+                        wis = (wi + off).normalized()
+                if ltype != _LT_DIRECTIONAL:
+                    # Moving the origin over the pixel changes both the
+                    # direction and finite distance to a point/spot/area
+                    # emitter. Retaining the centre ray here makes the
+                    # samples non-convergent and can trace past the light.
+                    tls = lp + off - sorg
+                    ldn = tls.norm()
+                    if ldn > 1e-5:
+                        wis = tls / ldn
+                    else:
+                        ok = 0
+                if (ok == 1) and (fnrm.dot(wis) > 1e-3) \
+                        and (snrm.dot(wis) > 1e-4):
+                    n_valid += 1.0
+                    occ_sum += _shadow_occluded(
+                        refit, shadow_anyhit, sorg, wis, f, ff,
+                        ldn - 20.0 * MIN_HIT_DISTANCE,
+                        pixel_world_scale[
+                            f % pixel_world_scale.shape[0]], 0.0,
+                        layer_offset_triangles, layer_offset_pn,
+                        has_tri, has_pn, has_bez,
+                        t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+                        t_first_leaf, tri_pos, tri_colors, tri_uvs,
+                        tri_tex_meta, textures, num_colored_triangles,
+                        p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
+                        p_first_leaf, pn_ctrl, pn_obb, pn_colors,
+                        b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+                        b_first_leaf, circuit_meta, circuit_colors,
+                        circuit_border_colors, edges_2d, edge_accel)
+            if n_valid > 0.0:
+                visibility = 1.0 - occ_sum / n_valid
+        shadow_vis[e, li] = visibility
 
 
 @ti.kernel
@@ -4115,12 +4119,9 @@ def raster_first_shade(
                                            tri_mat_id, tri_mat,
                                            light_pos, light_col,
                                            num_lights, color, shadows, vis)
-                ior = _tri_ior_g(0, f, prim, w0, a, b, tri_extra, col_row,
-                                 tri_uvs, tri_tex_meta, textures,
-                                 num_colored_triangles)
-                T = _tri_transmission_g(0, f, prim, w0, a, b, tri_extra,
-                                        col_row, tri_uvs, tri_tex_meta,
-                                        textures, num_colored_triangles)
+                ior, T = _tri_ior_transmission_g(
+                    0, f, prim, w0, a, b, tri_extra, col_row, tri_uvs,
+                    tri_tex_meta, textures, num_colored_triangles)
 
             if ti.static(aa_bez or aa_tri):
                 # Coverage is a partial-occlusion factor, so it rides on alpha:

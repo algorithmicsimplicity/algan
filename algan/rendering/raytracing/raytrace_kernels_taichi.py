@@ -2898,7 +2898,377 @@ def _collect_hits(refit: ti.template(),
 
 
 @ti.func
-def _shadow_occluded(refit: ti.template(), ro, rd, f, ff, max_t,
+def _anyhit_opaque_tri(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
+                       nodes: ti.template(), leaf_prim: ti.template(),
+                       leaf_tspan: ti.template(), first_leaf,
+                       tri_pos: ti.template()) -> ti.i32:
+    """1 if ANY interval-opaque triangle (classic ``leaf_tspan`` bit 31 /
+    refit link bit 30) is hit with ``MIN_HIT_DISTANCE < t < max_t``.
+
+    Any-hit: no ordering state, near-first descent, exits on the first
+    accepted hit. Non-opaque leaves are skipped before intersection, so the
+    walk is cheap even when the scene stacks translucent surfaces. The
+    intersection predicate is exactly the nearest-walk's, so an accepted hit
+    here is one the ordered shadow march would (eventually) consume.
+
+    ``t_lo`` is purely a traversal-pruning hint (the node-visit window's
+    lower edge) -- acceptance deliberately stays ``(MIN_HIT_DISTANCE,
+    max_t)``, so a caller that already marched a prefix of the ray can pass
+    the marched depth without changing which answer is correct.
+    """
+    hit = 0
+    tp = f % tri_pos.shape[0]
+    row0 = 0
+    if ti.static(refit != 0):
+        row0 = _refit_row0(f, first_leaf, nodes)
+    g_sp = 0
+    g_st = ti.Vector([0] * _GROUP_STACK)
+    g_cur = 0
+    g_pend, g_near = _group_test(
+        refit, row0, 0, f, ro, inv_rd, t_lo,
+        max_t + DEPTH_TIE_EPSILON, nodes)
+    while hit == 0:
+        if g_pend == 0:
+            if g_sp == 0:
+                break
+            g_sp -= 1
+            saved = g_st[g_sp]
+            g_cur = saved >> BVH_ARITY
+            saved_mask = saved & _GROUP_MASK
+            fresh_mask, g_near = _group_test(
+                refit, row0, g_cur, f, ro, inv_rd, t_lo,
+                max_t + DEPTH_TIE_EPSILON, nodes)
+            g_pend = saved_mask & fresh_mask
+        else:
+            g_c = _nearest_pending_child(g_pend, g_near)
+            g_pend &= ~(1 << g_c)
+            descend = 0
+            child_blk = 0
+            l_prim = -1
+            l_base = 0
+            if ti.static(refit != 0):
+                w = _refit_link(row0 + g_cur, g_c, nodes)
+                if w >= 0:
+                    descend = 1
+                    child_blk = w
+                elif ((w >> 30) & 1) != 0:
+                    l_prim = w & _REFIT_PRIM_MASK
+            else:
+                g_child = BVH_ARITY * g_cur + 1 + g_c
+                if g_child >= first_leaf:
+                    l_base = (g_child - first_leaf) * LEAF_SIZE
+                else:
+                    descend = 1
+                    child_blk = g_child
+            if descend == 0:
+                for j in ti.static(range(1 if refit != 0 else LEAF_SIZE)):
+                    prim = l_prim
+                    if ti.static(refit == 0):
+                        prim = -1
+                        p0 = leaf_prim[l_base + j]
+                        tspan = leaf_tspan[l_base + j]
+                        # Bit 31 (sign) flags interval-opaque instances.
+                        if ((p0 >= 0) and (tspan < 0)
+                                and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            prim = p0
+                    if (hit == 0) and (prim >= 0):
+                        v0 = ti.math.vec3(tri_pos[tp, prim, 0],
+                                          tri_pos[tp, prim, 1],
+                                          tri_pos[tp, prim, 2])
+                        v1 = ti.math.vec3(tri_pos[tp, prim, 3],
+                                          tri_pos[tp, prim, 4],
+                                          tri_pos[tp, prim, 5])
+                        v2 = ti.math.vec3(tri_pos[tp, prim, 6],
+                                          tri_pos[tp, prim, 7],
+                                          tri_pos[tp, prim, 8])
+                        e1 = v1 - v0
+                        e2 = v2 - v0
+                        pv = rd.cross(e2)
+                        det = e1.dot(pv)
+                        if ti.abs(det) > 1e-12:
+                            inv_det = 1.0 / det
+                            tvec = ro - v0
+                            w1 = tvec.dot(pv) * inv_det
+                            qv = tvec.cross(e1)
+                            w2 = rd.dot(qv) * inv_det
+                            if ((w1 >= -BARYCENTRIC_EPSILON)
+                                    and (w2 >= -BARYCENTRIC_EPSILON)
+                                    and (w1 + w2 <= 1.0 + BARYCENTRIC_EPSILON)):
+                                t = e2.dot(qv) * inv_det
+                                if (t > MIN_HIT_DISTANCE) and (t < max_t):
+                                    hit = 1
+            else:
+                if g_pend != 0:
+                    g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                    g_sp += 1
+                g_cur = child_blk
+                g_pend, g_near = _group_test(
+                    refit, row0, g_cur, f, ro, inv_rd, t_lo,
+                    max_t + DEPTH_TIE_EPSILON, nodes)
+    return hit
+
+
+@ti.func
+def _anyhit_opaque_pn(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
+                      nodes: ti.template(), leaf_prim: ti.template(),
+                      leaf_tspan: ti.template(), first_leaf,
+                      pn_ctrl: ti.template(),
+                      pn_obb: ti.template()) -> ti.i32:
+    """PN-patch arm of the opaque any-hit walk (see
+    :func:`_anyhit_opaque_tri`); keeps the OBB pre-cull so the matrix-pencil
+    solve still only runs for rays that can actually touch a patch.
+    """
+    hit = 0
+    tp = f % pn_ctrl.shape[0]
+    po = f % pn_obb.shape[0]
+    row0 = 0
+    if ti.static(refit != 0):
+        row0 = _refit_row0(f, first_leaf, nodes)
+    g_sp = 0
+    g_st = ti.Vector([0] * _GROUP_STACK)
+    g_cur = 0
+    g_pend, g_near = _group_test(
+        refit, row0, 0, f, ro, inv_rd, t_lo,
+        max_t + DEPTH_TIE_EPSILON, nodes)
+    while hit == 0:
+        if g_pend == 0:
+            if g_sp == 0:
+                break
+            g_sp -= 1
+            saved = g_st[g_sp]
+            g_cur = saved >> BVH_ARITY
+            saved_mask = saved & _GROUP_MASK
+            fresh_mask, g_near = _group_test(
+                refit, row0, g_cur, f, ro, inv_rd, t_lo,
+                max_t + DEPTH_TIE_EPSILON, nodes)
+            g_pend = saved_mask & fresh_mask
+        else:
+            g_c = _nearest_pending_child(g_pend, g_near)
+            g_pend &= ~(1 << g_c)
+            descend = 0
+            child_blk = 0
+            l_prim = -1
+            l_base = 0
+            if ti.static(refit != 0):
+                w = _refit_link(row0 + g_cur, g_c, nodes)
+                if w >= 0:
+                    descend = 1
+                    child_blk = w
+                elif ((w >> 30) & 1) != 0:
+                    l_prim = w & _REFIT_PRIM_MASK
+            else:
+                g_child = BVH_ARITY * g_cur + 1 + g_c
+                if g_child >= first_leaf:
+                    l_base = (g_child - first_leaf) * LEAF_SIZE
+                else:
+                    descend = 1
+                    child_blk = g_child
+            if descend == 0:
+                for j in ti.static(range(1 if refit != 0 else LEAF_SIZE)):
+                    prim = l_prim
+                    if ti.static(refit == 0):
+                        prim = -1
+                        p0 = leaf_prim[l_base + j]
+                        tspan = leaf_tspan[l_base + j]
+                        if ((p0 >= 0) and (tspan < 0)
+                                and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            prim = p0
+                    if ((hit == 0) and (prim >= 0)
+                            and (ti.static(not _PN_OBB_ON) or not _obb_misses(
+                                ro, rd, po, prim, pn_obb,
+                                t_lo,
+                                max_t + DEPTH_TIE_EPSILON))):
+                        cnt, ts, us, vs = _pn_intersect(ro, rd, tp, prim,
+                                                        pn_ctrl)
+                        for r in ti.static(range(4)):
+                            if r < cnt:
+                                t = ts[r]
+                                if (t > MIN_HIT_DISTANCE) and (t < max_t):
+                                    hit = 1
+            else:
+                if g_pend != 0:
+                    g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                    g_sp += 1
+                g_cur = child_blk
+                g_pend, g_near = _group_test(
+                    refit, row0, g_cur, f, ro, inv_rd, t_lo,
+                    max_t + DEPTH_TIE_EPSILON, nodes)
+    return hit
+
+
+@ti.func
+def _anyhit_opaque_bez(refit: ti.template(), ro, rd, inv_rd, f, t_lo, max_t,
+                       pixel_size_per_t, base_dist,
+                       nodes: ti.template(), leaf_prim: ti.template(),
+                       leaf_tspan: ti.template(), first_leaf,
+                       circuit_meta: ti.template(),
+                       edges_2d: ti.template(),
+                       edge_accel: ti.template()) -> ti.i32:
+    """Bezier-circuit arm of the opaque any-hit walk (see
+    :func:`_anyhit_opaque_tri`). A circuit's opaque flag already requires the
+    fill AND (when shown) the border to be fully opaque, so any drawn-region
+    hit on a flagged circuit absorbs the ray.
+    """
+    hit = 0
+    num_meta_frames = circuit_meta.shape[0]
+    num_edge_frames = edges_2d.shape[0]
+    row0 = 0
+    if ti.static(refit != 0):
+        row0 = _refit_row0(f, first_leaf, nodes)
+    g_sp = 0
+    g_st = ti.Vector([0] * _GROUP_STACK)
+    g_cur = 0
+    g_pend, g_near = _group_test(
+        refit, row0, 0, f, ro, inv_rd, t_lo,
+        max_t + DEPTH_TIE_EPSILON, nodes)
+    while hit == 0:
+        if g_pend == 0:
+            if g_sp == 0:
+                break
+            g_sp -= 1
+            saved = g_st[g_sp]
+            g_cur = saved >> BVH_ARITY
+            saved_mask = saved & _GROUP_MASK
+            fresh_mask, g_near = _group_test(
+                refit, row0, g_cur, f, ro, inv_rd, t_lo,
+                max_t + DEPTH_TIE_EPSILON, nodes)
+            g_pend = saved_mask & fresh_mask
+        else:
+            g_c = _nearest_pending_child(g_pend, g_near)
+            g_pend &= ~(1 << g_c)
+            descend = 0
+            child_blk = 0
+            l_prim = -1
+            l_base = 0
+            if ti.static(refit != 0):
+                w = _refit_link(row0 + g_cur, g_c, nodes)
+                if w >= 0:
+                    descend = 1
+                    child_blk = w
+                elif ((w >> 30) & 1) != 0:
+                    l_prim = w & _REFIT_PRIM_MASK
+            else:
+                g_child = BVH_ARITY * g_cur + 1 + g_c
+                if g_child >= first_leaf:
+                    l_base = (g_child - first_leaf) * LEAF_SIZE
+                else:
+                    descend = 1
+                    child_blk = g_child
+            if descend == 0:
+                for j in ti.static(range(1 if refit != 0 else LEAF_SIZE)):
+                    circuit = l_prim
+                    if ti.static(refit == 0):
+                        circuit = -1
+                        p0 = leaf_prim[l_base + j]
+                        tspan = leaf_tspan[l_base + j]
+                        if ((p0 >= 0) and (tspan < 0)
+                                and ((tspan & 0xFFFF) <= f)
+                                and (f <= ((tspan >> 16) & 0x7FFF))):
+                            circuit = p0
+                    if (hit == 0) and (circuit >= 0):
+                        tm = f % num_meta_frames
+                        n = ti.math.vec3(
+                            circuit_meta[tm, circuit, _M_NORMAL],
+                            circuit_meta[tm, circuit, _M_NORMAL + 1],
+                            circuit_meta[tm, circuit, _M_NORMAL + 2])
+                        denom = rd.dot(n)
+                        if ti.abs(denom) > 1e-9:
+                            center = ti.math.vec3(
+                                circuit_meta[tm, circuit, _M_CENTER],
+                                circuit_meta[tm, circuit, _M_CENTER + 1],
+                                circuit_meta[tm, circuit, _M_CENTER + 2])
+                            t = (center - ro).dot(n) / denom
+                            if (t > MIN_HIT_DISTANCE) and (t < max_t):
+                                hp = ro + t * rd - center
+                                bu = ti.math.vec3(
+                                    circuit_meta[tm, circuit, _M_BASIS_U],
+                                    circuit_meta[tm, circuit, _M_BASIS_U + 1],
+                                    circuit_meta[tm, circuit, _M_BASIS_U + 2])
+                                bv = ti.math.vec3(
+                                    circuit_meta[tm, circuit, _M_BASIS_V],
+                                    circuit_meta[tm, circuit, _M_BASIS_V + 1],
+                                    circuit_meta[tm, circuit, _M_BASIS_V + 2])
+                                u = hp.dot(bu)
+                                v = hp.dot(bv)
+                                pixel_size = pixel_size_per_t * (base_dist + t)
+                                border_w = (
+                                    circuit_meta[tm, circuit, _M_BORDER_W]
+                                    * pixel_size)
+                                outline_w = 0.6 * pixel_size
+                                filled = (circuit_meta[tm, circuit, _M_FILLED]
+                                          > 0.5)
+                                query_radius = _circuit_query_radius(
+                                    border_w, outline_w, filled)
+                                te = f % num_edge_frames
+                                (crossings, min_dist_sq, _ccu, _ccv, _e1x,
+                                     _e1y, _sg1, _s2, _s2u, _s2v, _e2x, _e2y,
+                                     _sg2) = _bezier_point_metrics(
+                                    circuit, te, u, v, query_radius,
+                                    circuit_meta.shape[1], edges_2d,
+                                    edge_accel)
+                                inside, in_border = _circuit_point_region(
+                                    border_w, outline_w, filled, crossings,
+                                    min_dist_sq)
+                                if inside:
+                                    hit = 1
+            else:
+                if g_pend != 0:
+                    g_st[g_sp] = (g_cur << BVH_ARITY) | g_pend
+                    g_sp += 1
+                g_cur = child_blk
+                g_pend, g_near = _group_test(
+                    refit, row0, g_cur, f, ro, inv_rd, t_lo,
+                    max_t + DEPTH_TIE_EPSILON, nodes)
+    return hit
+
+
+@ti.func
+def _shadow_anyhit_opaque(refit: ti.template(),
+                          has_tri: ti.template(), has_pn: ti.template(),
+                          has_bez: ti.template(),
+                          ro, rd, inv_rd, f, t_lo, max_t,
+                          pixel_size_per_t, base_dist,
+                          t_nodes: ti.template(), t_leaf_prim: ti.template(),
+                          t_leaf_tspan: ti.template(), t_first_leaf,
+                          tri_pos: ti.template(),
+                          p_nodes: ti.template(), p_leaf_prim: ti.template(),
+                          p_leaf_tspan: ti.template(), p_first_leaf,
+                          pn_ctrl: ti.template(), pn_obb: ti.template(),
+                          b_nodes: ti.template(), b_leaf_prim: ti.template(),
+                          b_leaf_tspan: ti.template(), b_first_leaf,
+                          circuit_meta: ti.template(),
+                          edges_2d: ti.template(),
+                          edge_accel: ti.template()) -> ti.i32:
+    """1 if any interval-opaque primitive of any geometry type blocks the
+    shadow ray before ``max_t``. Trees are tried triangle -> PN -> bezier,
+    each skipped entirely on a hit in an earlier one. ``t_lo`` prunes the
+    node-visit window only (see :func:`_anyhit_opaque_tri`).
+    """
+    hit = 0
+    if ti.static(has_tri != 0):
+        hit = _anyhit_opaque_tri(refit, ro, rd, inv_rd, f, t_lo, max_t,
+                                 t_nodes, t_leaf_prim, t_leaf_tspan,
+                                 t_first_leaf, tri_pos)
+    if ti.static(has_pn != 0):
+        if hit == 0:
+            hit = _anyhit_opaque_pn(refit, ro, rd, inv_rd, f, t_lo, max_t,
+                                    p_nodes, p_leaf_prim, p_leaf_tspan,
+                                    p_first_leaf, pn_ctrl, pn_obb)
+    if ti.static(has_bez != 0):
+        if hit == 0:
+            hit = _anyhit_opaque_bez(refit, ro, rd, inv_rd, f, t_lo, max_t,
+                                     pixel_size_per_t, base_dist,
+                                     b_nodes, b_leaf_prim, b_leaf_tspan,
+                                     b_first_leaf, circuit_meta, edges_2d,
+                                     edge_accel)
+    return hit
+
+
+@ti.func
+def _shadow_occluded(refit: ti.template(), anyhit: ti.template(),
+                     ro, rd, f, ff, max_t,
                      pixel_size_per_t, base_dist, layer_offset_triangles,
                      layer_offset_pn,
                      has_tri: ti.template(), has_pn: ti.template(),
@@ -2927,21 +3297,110 @@ def _shadow_occluded(refit: ti.template(), ro, rd, f, ff, max_t,
     transmittance calculation. A fully opaque hit exits immediately. Mesh
     seams still merge their duplicate edge hit so a thin surface cannot
     attenuate twice along a shared edge.
+
+    ``anyhit`` (compile-time, from the host's shadow mode) engages the
+    opaque any-hit early-out: 3 (chosen when the batch provably contains no
+    translucent geometry, so any march hit would be fully opaque and a miss
+    proves the ray lit) runs ONLY :func:`_shadow_anyhit_opaque` -- the march
+    is compiled out entirely. 2 (mixed batches) marches normally and, after
+    the FIRST partially transparent surface, spends one any-hit walk over
+    the remaining range: an opaque blocker further along forces the final
+    occlusion to exactly 1.0 no matter what lies between, so a hit retires
+    the ray without peeling the translucent stack, while lit rays and rays
+    blocked by their first surface never pay for the walk at all. Not
+    strictly byte-identical to the plain march in two corner cases the
+    early-out deliberately overrules: an opaque edge hit the seam merge
+    would have folded into an earlier translucent edge hit within
+    ``DEPTH_TIE_EPSILON``, and an opaque blocker past
+    ``MAX_SURFACES_PER_RAY`` peeled surfaces -- in both the any-hit's full
+    occlusion is the physically correct answer.
     """
     inv_rd = ti.math.vec3(_safe_inverse(rd[0]), _safe_inverse(rd[1]),
                           _safe_inverse(rd[2]))
+    occluded = 0.0
+    if ti.static(anyhit == 3):
+        occluded = ti.cast(
+            _shadow_anyhit_opaque(
+                refit, has_tri, has_pn, has_bez, ro, rd, inv_rd, f,
+                -DEPTH_TIE_EPSILON, max_t,
+                pixel_size_per_t, base_dist,
+                t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf, tri_pos,
+                p_nodes, p_leaf_prim, p_leaf_tspan, p_first_leaf, pn_ctrl,
+                pn_obb,
+                b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                circuit_meta, edges_2d, edge_accel),
+            ti.f32)
+    else:
+        occluded = _shadow_march_occluded(
+            refit, anyhit, ro, rd, inv_rd, f, ff, max_t,
+            pixel_size_per_t, base_dist, layer_offset_triangles,
+            layer_offset_pn,
+            has_tri, has_pn, has_bez,
+            t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan,
+            t_first_leaf, tri_pos, tri_colors, tri_uvs, tri_tex_meta,
+            textures, num_colored_triangles,
+            p_nodes, p_node_miss, p_leaf_prim, p_leaf_tspan,
+            p_first_leaf, pn_ctrl, pn_obb, pn_colors,
+            b_nodes, b_node_miss, b_leaf_prim, b_leaf_tspan,
+            b_first_leaf, circuit_meta, circuit_colors,
+            circuit_border_colors, edges_2d, edge_accel)
+    return occluded
+
+
+@ti.func
+def _shadow_march_occluded(refit: ti.template(), anyhit: ti.template(),
+                           ro, rd, inv_rd, f, ff,
+                           max_t,
+                           pixel_size_per_t, base_dist,
+                           layer_offset_triangles, layer_offset_pn,
+                           has_tri: ti.template(), has_pn: ti.template(),
+                           has_bez: ti.template(),
+                           t_nodes: ti.template(), t_node_miss: ti.template(),
+                           t_leaf_prim: ti.template(),
+                           t_leaf_tspan: ti.template(),
+                           t_first_leaf, tri_pos: ti.template(),
+                           tri_colors: ti.template(), tri_uvs: ti.template(),
+                           tri_tex_meta: ti.template(),
+                           textures: ti.template(),
+                           num_colored_triangles: ti.i32,
+                           p_nodes: ti.template(), p_node_miss: ti.template(),
+                           p_leaf_prim: ti.template(),
+                           p_leaf_tspan: ti.template(),
+                           p_first_leaf, pn_ctrl: ti.template(),
+                           pn_obb: ti.template(),
+                           pn_colors: ti.template(),
+                           b_nodes: ti.template(), b_node_miss: ti.template(),
+                           b_leaf_prim: ti.template(),
+                           b_leaf_tspan: ti.template(),
+                           b_first_leaf, circuit_meta: ti.template(),
+                           circuit_colors: ti.template(),
+                           circuit_border_colors: ti.template(),
+                           edges_2d: ti.template(),
+                           edge_accel: ti.template()):
+    """The classic ordered closest-hit shadow march (the pre-any-hit body of
+    :func:`_shadow_occluded`, byte-identical at ``anyhit`` 0/1; 2 adds the
+    deferred opaque any-hit early-out documented there)."""
     transmitted = 1.0
     t_prev = 0.0
     layer_prev = 1e30
     seam_t = -1e30
     step = 0
+    behind_checked = 0
     while step < MAX_SURFACES_PER_RAY:
         step += 1
+        # Cap the walk at the light: t_cap only tightens the node-visit
+        # window to min(best_t, t_cap) + DEPTH_TIE_EPSILON (hit acceptance is
+        # not capped), so every subtree beyond the light is pruned while any
+        # hit the t_hit >= max_t break below would have consumed is still
+        # found -- candidates that differ between capped and uncapped walks
+        # all lie beyond max_t, where the caller breaks either way.
+        # Byte-identical; directional lights pass max_t = 1e7 and lose only
+        # the (empty) beyond-horizon descent.
         (found, t_hit, hit_layer, prim, hit_type, a, b, border,
          edge_hit) = _nearest_surface_g(
             refit, has_tri, has_pn, has_bez,
             ro, rd, inv_rd, f, ff, t_prev, layer_prev,
-            1e30,
+            max_t,
             pixel_size_per_t, base_dist, layer_offset_triangles,
             layer_offset_pn,
             t_nodes, t_node_miss, t_leaf_prim, t_leaf_tspan, t_first_leaf,
@@ -2971,6 +3430,33 @@ def _shadow_occluded(refit: ti.template(), ro, rd, f, ff, max_t,
         transmitted *= 1.0 - alpha
         if alpha >= 1.0:
             break
+        if ti.static(anyhit == 2):
+            # Deferred opaque any-hit: the ray just peeled a partially
+            # transparent surface, committing the march to the whole
+            # translucent stack. One unordered walk over the remaining
+            # range answers "is any opaque blocker back there" -- a hit
+            # forces the final occlusion to exactly 1.0 (everything in
+            # between only multiplies onto a factor that ends at zero) and
+            # retires the ray; a miss proves the stack all-translucent.
+            # Runs at most once per ray, and never for rays that are lit
+            # or blocked by their first surface. ``t_hit`` only prunes the
+            # walk's node window; acceptance is unchanged, so coincident
+            # same-depth-bin opaque hits ordered after this one by layer
+            # are still found.
+            if behind_checked == 0:
+                behind_checked = 1
+                if _shadow_anyhit_opaque(
+                        refit, has_tri, has_pn, has_bez, ro, rd, inv_rd, f,
+                        t_hit - DEPTH_TIE_EPSILON, max_t,
+                        pixel_size_per_t, base_dist,
+                        t_nodes, t_leaf_prim, t_leaf_tspan, t_first_leaf,
+                        tri_pos,
+                        p_nodes, p_leaf_prim, p_leaf_tspan, p_first_leaf,
+                        pn_ctrl, pn_obb,
+                        b_nodes, b_leaf_prim, b_leaf_tspan, b_first_leaf,
+                        circuit_meta, edges_2d, edge_accel) == 1:
+                    transmitted = 0.0
+                    break
         t_prev = t_hit
         layer_prev = hit_layer
     return 1.0 - transmitted

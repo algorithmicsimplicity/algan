@@ -1075,6 +1075,22 @@ def render_batch_raytraced(
     ) and samples <= 1
     frag_flag = 1 if det_frag else 0
     shadow_flag = 1 if det_shadows else 0
+    # Opaque any-hit shadow early-out (compile-time mode of the shadow
+    # query; see rt_settings.SHADOW_ANYHIT): 2 = any-hit pre-pass over the
+    # opaque-flagged leaves with the ordered march as fallback; 3 = any-hit
+    # only, valid when the batch provably contains no translucent geometry
+    # (every visible primitive carries the opaque leaf flag, so a miss proves
+    # the ray lit). Uncertain texture alpha keeps the fallback: such
+    # primitives are not opaque-flagged, and their shadow attenuation only
+    # the march can evaluate.
+    if shadow_flag and rt_settings.SHADOW_ANYHIT:
+        batch_has_translucent = (
+            merged.get("tri_has_translucent", True)
+            or merged.get("pn_has_translucent", True)
+            or merged.get("bez_has_translucent", True)
+            or merged.get("has_uncertain_texture_alpha", True)
+        )
+        shadow_flag = 2 if batch_has_translucent else 3
     # Composed custom fragment-shader pipelines injected into the shade kernel as
     # a flat ti.template() tuple; empty () keeps the built-in / vertex-shaded
     # kernel specialization unchanged (see shading_taichi._run_frag_pipeline).
@@ -1961,8 +1977,13 @@ def raytrace_render_wavefront(
         with memory.scope("batch_metadata", col_row_placeholder=1):
             col_row_arr = memory.get_tensor((1,), i32)
         col_row_arr.zero_()
+    # ``opaque_bvh_skipped``: the merge aliased the opaque trees to the main
+    # ones because neither rollout was live when it ran -- keep them off for
+    # this batch even if a toggle flipped since (the dedicated trees do not
+    # exist to walk).
     opaque_closest = int(
         rt_settings.WF_OPAQUE_CLOSEST
+        and not merged.get("opaque_bvh_skipped", False)
         and merged.get("all_visible_opaque", False)
         and not refraction_flag
         and len(frag_scatters) == 0
@@ -1971,6 +1992,7 @@ def raytrace_render_wavefront(
     )
     opaque_prepass = int(
         rt_settings.WF_OPAQUE_PREPASS
+        and not merged.get("opaque_bvh_skipped", False)
         and merged.get("has_any_opaque", False)
         and merged.get("has_any_translucent", False)
         and not merged.get("has_uncertain_texture_alpha", False)

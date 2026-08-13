@@ -719,6 +719,19 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames, device)
     record a deferral (placeholder trees + retained build inputs) for batches
     that provably never traverse one (see ``_bvh_deferral_eligible``).
     """
+    # The dedicated opaque-only trees are consumed solely under the
+    # WF_OPAQUE_CLOSEST / WF_OPAQUE_PREPASS rollouts (both default OFF): the
+    # tracer's opaque_closest/opaque_prepass templates compile every read out
+    # otherwise. With neither live (read at merge time), alias the main tree
+    # instead of building a second one -- ~40% of the per-batch BVH build.
+    # ``opaque_bvh_skipped`` lets the tracer keep those features off for a
+    # batch merged without real opaque trees if a toggle flips mid-render.
+    opq_live = (
+        not SETTINGS.raytracing.OPAQUE_BVH_SKIP_DEAD
+        or SETTINGS.raytracing.WF_OPAQUE_CLOSEST
+        or SETTINGS.raytracing.WF_OPAQUE_PREPASS
+    )
+    scene["opaque_bvh_skipped"] = not opq_live
     if pn_inputs is not None:
         lo, hi, opaque = pn_inputs
         scene["pn_bvh"] = _build_accel(
@@ -730,7 +743,7 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames, device)
         )
         if not scene["pn_has_opaque"]:
             scene["pn_opaque_bvh"] = _empty_scene_part(device)
-        elif not scene["pn_has_translucent"]:
+        elif not scene["pn_has_translucent"] or not opq_live:
             scene["pn_opaque_bvh"] = scene["pn_bvh"]
         else:
             scene["pn_opaque_bvh"] = _build_opaque_bvh(
@@ -774,7 +787,7 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames, device)
         )
         if not scene["tri_has_opaque"]:
             scene["tri_opaque_bvh"] = _empty_scene_part(device)
-        elif not scene["tri_has_translucent"]:
+        elif not scene["tri_has_translucent"] or not opq_live:
             scene["tri_opaque_bvh"] = scene["tri_bvh"]
         else:
             scene["tri_opaque_bvh"] = _build_opaque_bvh(
@@ -796,7 +809,7 @@ def _finalize_bvhs(scene, tri_inputs, pn_inputs, bez_inputs, num_frames, device)
         )
         if not scene["bez_has_opaque"]:
             scene["bez_opaque_bvh"] = _empty_scene_part(device)
-        elif not scene["bez_has_translucent"]:
+        elif not scene["bez_has_translucent"] or not opq_live:
             scene["bez_opaque_bvh"] = scene["bez_bvh"]
         else:
             scene["bez_opaque_bvh"] = _build_opaque_bvh(
@@ -821,6 +834,13 @@ def build_deferred_bvhs(merged):
         return
     refit = bool(merged.get("bvh_deferred_refit"))
     num_frames = int(merged["num_frames"])
+    # Same opaque-tree skip as _finalize_bvhs (read live at this build).
+    opq_live = (
+        not SETTINGS.raytracing.OPAQUE_BVH_SKIP_DEAD
+        or SETTINGS.raytracing.WF_OPAQUE_CLOSEST
+        or SETTINGS.raytracing.WF_OPAQUE_PREPASS
+    )
+    merged["opaque_bvh_skipped"] = not opq_live
     if merged.get("num_triangles", 0) > 0 and merged.get("tri_frame_lo") is not None:
         lo = merged["tri_frame_lo"]
         hi = merged["tri_frame_hi"]
@@ -836,7 +856,7 @@ def build_deferred_bvhs(merged):
         )
         if not merged["tri_has_opaque"]:
             merged["tri_opaque_bvh"] = _empty_scene_part(lo.device, refit=refit)
-        elif not merged["tri_has_translucent"]:
+        elif not merged["tri_has_translucent"] or not opq_live:
             merged["tri_opaque_bvh"] = merged["tri_bvh"]
         else:
             merged["tri_opaque_bvh"] = _build_opaque_bvh(
@@ -864,7 +884,7 @@ def build_deferred_bvhs(merged):
         )
         if not merged["bez_has_opaque"]:
             merged["bez_opaque_bvh"] = _empty_scene_part(lo.device, refit=refit)
-        elif not merged["bez_has_translucent"]:
+        elif not merged["bez_has_translucent"] or not opq_live:
             merged["bez_opaque_bvh"] = merged["bez_bvh"]
         else:
             merged["bez_opaque_bvh"] = _build_opaque_bvh(
@@ -1288,6 +1308,10 @@ def _merge_scene(primitives):
             p for p in triangles if getattr(p, "_rt_tri_uvs", None) is not None
         ]
         keep_idx, promo_idx, promo_meta = {}, {}, {}
+        # See _sel below: identity-ness memoized per index tensor. Seeded
+        # here for the promotion-inactive arange (identity by construction,
+        # no device sync needed at all).
+        _sel_identity = {}
         for p in plain_triangles:
             if promote:
                 k, pr, meta = _split_promotable(p, _append_texture, device, scene)
@@ -1296,10 +1320,18 @@ def _merge_scene(primitives):
                 k = torch.arange(Np, device=device)
                 pr = torch.zeros((0,), dtype=torch.long, device=device)
                 meta = torch.zeros((0, 10), dtype=torch.int32, device=device)
+                _sel_identity[id(k)] = True
             keep_idx[id(p)] = k
             promo_idx[id(p)] = pr
             promo_meta[id(p)] = meta
 
+        # Whether an index tensor is the identity selection is a property of
+        # the tensor alone, and every per-primitive index is reused for ~18
+        # different arrays below -- memoize the (synchronizing) device->host
+        # equality test per index object (``_sel_identity``, seeded above) so
+        # each primitive drains the queue at most once, not once per array.
+        # The key tensors are held alive by keep_idx/promo_idx for the whole
+        # merge, so id() keys are stable.
         def _sel(arr, idx):
             # Index the primitive axis (dim 1) by ``idx``. Only an *identity*
             # selection (every prim, in order) may return the original tensor
@@ -1309,10 +1341,15 @@ def _merge_scene(primitives):
             # _split_promotable), so it must still be applied: skipping it would
             # leave the geometry in source order while ``promo_meta`` is in
             # group order, pairing each triangle with another group's maps.
-            if idx.numel() == arr.shape[1] and bool(
-                (idx == torch.arange(idx.numel(), device=idx.device)).all()
-            ):
-                return arr
+            if idx.numel() == arr.shape[1]:
+                identity = _sel_identity.get(id(idx))
+                if identity is None:
+                    identity = bool(
+                        (idx == torch.arange(idx.numel(), device=idx.device)).all()
+                    )
+                    _sel_identity[id(idx)] = identity
+                if identity:
+                    return arr
             return arr.index_select(1, idx.to(arr.device))
 
         def _geom(name):
@@ -1484,6 +1521,18 @@ def _merge_scene(primitives):
                 (1, 10), -1, dtype=torch.int32, device=device
             )
 
+        # Collapse temporally-constant triangle tables to one frame. Every
+        # consumer reads their time axis as ``f % shape[0]`` (kernels) or
+        # ``_expand_frames`` (raster host tables), and _build_mem_trim below
+        # is T-agnostic, so a batch whose materials/normals/colours do not
+        # animate stores one row instead of T -- tri_mat alone is [T, N, 26],
+        # tens of MB of identical frames on ordinary scenes (rigid motion
+        # lives in tri_pos, which is deliberately not collapsed).
+        if SETTINGS.raytracing.MERGE_DEDUP_TIME:
+            for _k in ("tri_norm", "tri_mat_id", "tri_mat", "tri_colors",
+                       "tri_extra", "tri_uvs"):
+                scene[_k] = _dedup_time(scene[_k])
+
         # Per-(frame, prim) visibility/opacity masks for the hybrid raster
         # front-end (settings.HYBRID_RASTER): candidate emission skips
         # invisible triangles and routes proven-opaque ones to the z-prepass.
@@ -1621,6 +1670,12 @@ def _merge_scene(primitives):
         scene["pn_mat"] = _cat_mat_blocks(
             [p._rt_pn_mat for p in pn_patches], "pn merge"
         )
+        # Same time-band collapse as the triangle tables (consumers all read
+        # ``f % shape[0]``); pn_ctrl/pn_obb stay full-T with the geometry.
+        if SETTINGS.raytracing.MERGE_DEDUP_TIME:
+            for _k in ("pn_norm", "pn_extra", "pn_colors", "pn_mat_id",
+                       "pn_mat"):
+                scene[_k] = _dedup_time(scene[_k])
         lo = _cat_collections([p._rt_frame_lo for p in pn_patches], 1, "pn merge")
         hi = _cat_collections([p._rt_frame_hi for p in pn_patches], 1, "pn merge")
         opaque = _cat_collections(
@@ -1745,6 +1800,17 @@ def _merge_scene(primitives):
         scene["edges_2d"] = _cat_collections(
             [p._rt_edges for p in beziers], 1, "bezier merge"
         )
+        # Same time-band collapse as the triangle tables (consumers all read
+        # ``f % shape[0]``). edges_2d holds LOCAL-plane coordinates, so text
+        # that only moves/rotates/fades keeps it constant; collapsing it
+        # before build_bezier_edge_acceleration below also builds the accel
+        # tables for one frame instead of T (its header stride is
+        # ``f % edges_2d.shape[0]``, so the two stay consistent by
+        # construction).
+        if SETTINGS.raytracing.MERGE_DEDUP_TIME:
+            for _k in ("circuit_meta", "circuit_colors",
+                       "circuit_border_colors", "edges_2d"):
+                scene[_k] = _dedup_time(scene[_k])
         # Degenerate sampled edges use the exact sentinel row installed by
         # BezierCircuitPrimitives._build_circuit_geometry.  A batch containing
         # no other edge cannot pass the circuit intersection/winding test even
