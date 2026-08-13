@@ -144,6 +144,19 @@ depending on the materialization window, so byte-identity across re-windowed
 state is unattainable. A failure writes a diff video to the suite's
 `output_errors/`.
 
+The second thing the tolerance absorbs is **split pixels**. A pixel that spawns
+three or more branches — reflective or refractive geometry under analytic AA,
+where each covered pixel takes several sub-pixel reflection taps — sums those
+branches into `pix_accum` with `ti.atomic_add` in GPU scheduling order, and
+float addition is not associative, so such a scene renders slightly differently
+every run. The effect is bounded at one channel value by the `u8` truncation in
+the compositor (measured: `|d| = 1` on tens of samples out of 165M, absorbed
+entirely by the video encoder), which is why the render suites are not flaky
+from it. It does mean a scene like that cannot be a *byte-identical* A/B parity
+fixture; `AGENTS_DETAILED.md` covers how to pick one, and
+`benchmarks/_split_determinism_check.py` measures a scene's own run-to-run
+floor.
+
 On Windows, run render work **one process at a time** — a killed or timed-out
 run orphans children that keep the output mp4s locked.
 

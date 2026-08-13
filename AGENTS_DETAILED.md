@@ -378,6 +378,50 @@ For performance changes:
 
 Use focused parity/benchmark scripts under `benchmarks/` when present. The default path should remain output-compatible unless the change intentionally modifies rendering. If adding an experimental optimization, provide a kill switch and keep capability checks, memory estimation, and fallback behavior coherent.
 
+### Split pixels are not byte-reproducible: pick A/B fixtures accordingly
+
+Some scenes render slightly differently every run, with no change to the code
+or the settings, so they cannot serve as byte-identical A/B fixtures.
+
+Every branch of a pixel commits its premultiplied colour and its leftover
+background throughput into the shared per-pixel accumulator `pix_accum` with
+`ti.atomic_add` (`wavefront_kernels_taichi.py` ~3063-3095, `raster_taichi.py`
+~4655-4665). Float atomic add is *commutative but not associative*, and the
+order in which branches of one pixel reach the accumulator is GPU scheduling
+order, which varies run to run. A pixel carrying one or two branches is
+therefore still bit-exact; a pixel carrying **three or more** is not.
+
+Multi-branch pixels come from the shared continuation pool, which is only used
+when `_split_pool_ratio` exceeds 1 — reflective/refractive geometry *and*
+analytic AA (or `ANALYTIC_AA_SECONDARY_SAMPLES > 1`, which puts N sub-pixel
+reflection taps on one pixel). Measured on 3 cubes + 2 spheres + a reflective
+ground at MD over 60 frames (`benchmarks/_split_determinism_check.py`): every
+tile's `pix_accum` digest differs between two runs in one process, while the
+merged scene tensors feeding the kernels hash identically. Turning off any one
+ingredient — `max_bounces=0`, `analytic_aa=False`, or all-unlit materials —
+makes the digests match and the frames byte-identical.
+
+The output effect is bounded and small. `wf_composite_accum` truncates to `u8`
+(~line 1324), so a reassociation difference can move a channel by at most 1: the
+measured spread is `|d| = 1` on tens of channel samples out of 165M, and the
+encoded mp4 came out bit-identical. This is a parity-fixture constraint, not a
+rendering defect.
+
+Practical rules:
+
+- Do not use a scene with reflective/refractive geometry under analytic AA as a
+  byte-identical parity fixture. Establish the arm's own run-to-run floor first,
+  or pin one of the ingredients off.
+- A *larger* difference than `|d| = 1` is NOT this mechanism. Branches are never
+  silently dropped: a continuation that does not fit raises the pool's overflow
+  flag, and the host discards and retries the tile with fewer primaries
+  (deterministically — verified by starving the pool to force 13 retries, which
+  changed nothing). Suspect the change under test instead.
+- The fix, if byte-identical A/B on reflective scenes is ever needed, is to
+  accumulate in fixed point: integer atomic add *is* associative and
+  commutative, so the sum stops depending on arrival order. That trades a scale
+  factor and a conversion for reproducibility; it has not been needed so far.
+
 For source-only correctness checks, at minimum run import/compile checks on modified non-Taichi modules. For visual renderer changes, render a minimal `SMOKE_TEST` scene or a single diagnostic frame. Do not run a long benchmark merely to prove that code imports.
 
 ## API-change discipline

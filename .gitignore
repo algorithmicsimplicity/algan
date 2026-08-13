@@ -1,5 +1,6 @@
 # Algan videos
 **/output_errors/
+benchmarks/_*_out/
 **/algan_outputs/
 algan_outputs/
 algan_outputs
