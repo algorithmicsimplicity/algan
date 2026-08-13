@@ -256,11 +256,17 @@ with Seq():
     # ``become`` morphs position as well as shape, so the targets are built
     # where the morphing Mob already is.
     with Sync(run_time=1.2):
-        morph.become(Circle(radius=0.7, color=TEAL).move(LEFT * 4.2 + DOWN * 1.4))
+        morph.become(
+            Circle(radius=0.7, color=TEAL, add_to_scene=False).move(
+                LEFT * 4.2 + DOWN * 1.4
+            )
+        )
         counter.set_value(37.5)
     with Sync(run_time=1.2):
         morph.become(
-            Polygon(*STAR_POINTS, color=ORANGE).move(LEFT * 4.2 + DOWN * 1.4)
+            Polygon(*STAR_POINTS, color=ORANGE, add_to_scene=False).move(
+                LEFT * 4.2 + DOWN * 1.4
+            )
         )
         counter.set_value(-4.0)
     draw_border_then_fill([drawn], run_time=1.4)

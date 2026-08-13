@@ -74,7 +74,7 @@ def test_point_cloud_mob_produces_render_primitives(scene, name):
     primitives = cloud.get_render_primitives()
     assert primitives
     assert sum(primitive.corners.numel() for primitive in primitives) > 0
-    assert cloud.get_memory_used_per_timestep() > 0
+    assert cloud._get_memory_used_per_timestep() > 0
 
 
 def test_dot3d_and_point_cloud_spheres_use_automatic_resolution(scene):
@@ -137,6 +137,6 @@ def test_point_cloud_memory_estimate_scales_with_sphere_count(scene):
         ).spawn()
 
     assert (
-        four_points.get_memory_used_per_timestep()
-        == 4 * one_point.get_memory_used_per_timestep()
+        four_points._get_memory_used_per_timestep()
+        == 4 * one_point._get_memory_used_per_timestep()
     )

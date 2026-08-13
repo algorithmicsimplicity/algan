@@ -28,7 +28,7 @@ Tier 1 — **full standard applies** (everything in this document):
 - Any function that appears in a tutorial, a docs example, or `README.md`.
 
 Tier 2 — **summary line + Parameters/Returns where non-obvious**: public-named helpers that users
-can reach but are not taught (`get_forward_basis`, `setattr_without_record`, `refresh_history`).
+can reach but are not taught (`get_forward_basis`, `_setattr_without_record`, `refresh_history`).
 Prefer fixing the naming: if a method is not meant for users, rename it with a leading `_` rather
 than writing a user-facing docstring for it. If it cannot be renamed (subclass hook, historical
 name), say so in one line: `"""Internal: ..."""`.
@@ -215,7 +215,11 @@ it frequently is not.
 
 A number without a unit is a support ticket.
 
-- **Angles are in degrees** everywhere in Algan. Say "in degrees" in every angle parameter.
+- **Angles are in degrees** throughout Algan's native API. Say "in degrees" in every angle
+  parameter. The Manim-parity surfaces that take **radians** — `RegularPolygon.start_angle`,
+  `Line.path_arc`, `Wiggle.rotation_angle`, `ManimCompatMob.rotate`, and the `u_range` /
+  `v_range` parametric domains on `Sphere` / `Cone` / `Cylinder` / `Torus` — must say
+  "in radians" and name the reason, because they contradict the default.
 - **Distances** are in world units unless the method name says screen (`move_to_screen_position`,
   `move_to_edge`); for screen-space parameters say so and give the range ("``x`` and ``y`` in
   screen units, where ``(0, 0)`` is the center").

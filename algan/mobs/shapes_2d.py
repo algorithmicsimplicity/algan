@@ -283,7 +283,7 @@ class TriangleVertices(Mob):
         self.normals = None if target.normals is None else target.normals.clone()
         return self
 
-    def get_memory_used_per_timestep(self):
+    def _get_memory_used_per_timestep(self):
         n = self.location.shape[-2]
         # Source/animation-device state only: location(3) + color(5) +
         # normal(3), plus the primitive's cloned color(5). Ray-tracing bounds,

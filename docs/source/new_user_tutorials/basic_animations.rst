@@ -112,7 +112,7 @@ because they say what you mean:
     mob.rotate(360, OUT)
     mob.rotate(360, UP)
     mob.rotate(360, OUT, about_point=ORIGIN)
-    mob = mob.become(Circle())
+    mob = mob.become(Circle(add_to_scene=False))
 
     Scene.save_video()
 
@@ -126,7 +126,10 @@ The methods used above:
   Mob around in an arc -- ``mob.rotate(180, OUT, about_point=ORIGIN)`` swings it
   half way around the origin.
 * :meth:`~algan.animatable_base.mob_morph.MobMorphMixin.become` morphs the Mob into a different Mob. It returns the
-  resulting Mob, so assign it back: ``mob = mob.become(Circle())``.
+  resulting Mob, so assign it back: ``mob = mob.become(Circle(add_to_scene=False))``.
+  Build the target with ``add_to_scene=False``: it is only there to say what shape
+  to become, and is never drawn itself. Without that flag Algan registers it as a
+  Mob you meant to show, and warns that you never spawned it.
 
 Two more you will use constantly:
 

@@ -986,7 +986,7 @@ class TriangulatedBezierCircuit(Mob):
                 except AttributeError:
                     continue
                 if value.shape[-2] == 1 and row_count > 1:
-                    mob.setattr_and_rebatch_without_record(
+                    mob._setattr_and_rebatch_without_record(
                         attr,
                         value.expand(
                             *value.shape[:-2], row_count, value.shape[-1]

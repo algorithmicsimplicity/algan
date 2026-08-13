@@ -436,7 +436,7 @@ def install_pipeline_hooks():
 
     _try_wrap(bzc, "build_render_primitives_batched", "build_render_primitives_batched")
     _try_wrap(Scene, "get_batch_of_primitives", "Scene.get_batch_of_primitives")
-    _try_wrap(Animatable, "get_attr_inds", "get_attr_inds")
+    _try_wrap(Animatable, "_get_attr_inds", "_get_attr_inds")
     from algan.animation_timeline.timeline import AnimationTimeline, AttributeTimeline
 
     _try_wrap(AttributeTimeline, "modify", "AttributeTimeline.modify")

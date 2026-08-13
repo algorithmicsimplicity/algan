@@ -293,7 +293,7 @@ class BezierCircuitCubic(Mob):
                     value = value.expand(
                         *value.shape[:-2], count, value.shape[-1]
                     ).contiguous()
-                mob.setattr_and_rebatch_without_record(attr, value)
+                mob._setattr_and_rebatch_without_record(attr, value)
 
             texture_point_count = max(mob.num_texture_points, 1)
             grid_locations = (
@@ -341,7 +341,7 @@ class BezierCircuitCubic(Mob):
                         value = value.repeat(
                             *([1] * (value.dim() - 2)), count, 1
                         ).contiguous()
-                    texture_mob.setattr_and_rebatch_without_record(attr, value)
+                    texture_mob._setattr_and_rebatch_without_record(attr, value)
 
             mob.control_points.parent_batch_sizes = point_counts
             mob.parent_batch_sizes = torch.tensor((count,), dtype=torch.long)
@@ -451,14 +451,14 @@ class BezierCircuitCubic(Mob):
         old_size = int(round(old_points**0.5))
         new_locations = points.reshape(*points.shape[:-4], -1, 3)
         for texture_mob in (self.texture_points, self.border_texture_points):
-            texture_mob.setattr_and_rebatch_without_record("location", new_locations)
+            texture_mob._setattr_and_rebatch_without_record("location", new_locations)
 
             # Every attribute stored one value per texture point has to follow
             # the new grid; otherwise later writes can no longer broadcast.
             for attr, value in old_values[texture_mob].items():
                 if attr == "location" or value.shape[-2] != objects * old_points:
                     continue
-                texture_mob.setattr_and_rebatch_without_record(
+                texture_mob._setattr_and_rebatch_without_record(
                     attr, _resample_texture_grid(value, old_size, size)
                 )
 
@@ -487,7 +487,7 @@ class BezierCircuitCubic(Mob):
     def get_default_color(self):
         return PURPLE
 
-    def get_memory_used_per_timestep(self):
+    def _get_memory_used_per_timestep(self):
         # Called for every circuit every render batch just to size batches;
         # the shape reads below go through the animated-attribute machinery,
         # so cache the result against the global structure version (row

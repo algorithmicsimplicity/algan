@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 from collections import defaultdict
 
 import torch
@@ -24,6 +25,7 @@ from algan.animation_timeline.animation_contexts import (
     Off,
     Seq,
     Sync,
+    _reject_context_kwargs,
 )
 from algan.constants.spatial import *
 from algan.geometry.geometry import (
@@ -33,6 +35,7 @@ from algan.geometry.geometry import (
 )
 from algan.utils.animation_utils import animate_lagged_by_location
 from algan.utils.tensor_utils import (
+    cast_to_direction,
     cast_to_tensor,
     dot_product,
     squish,
@@ -328,7 +331,7 @@ class Mob(
             change1 * (2 - interpolation) + (interpolation - 1) * change2
         )
 
-        self.setattr_and_record_modification(
+        self._setattr_and_record_modification(
             key, interpolated_value, include_descendants=recursive
         )
         return self
@@ -744,14 +747,14 @@ class Mob(
             attr, include_descendants=recursive, copy=False
         )
         new_value = current_value + change
-        return self.setattr_and_record_modification(
+        return self._setattr_and_record_modification(
             attr, new_value, include_descendants=recursive
         )
 
     @animated_function(animated_args={"interpolation": 0.0})
     def _apply_set(self, attr, value, recursive=True, interpolation=1.0):
         new_value = value * interpolation
-        return self.setattr_and_record_modification(
+        return self._setattr_and_record_modification(
             attr, new_value, include_descendants=recursive
         )
 
@@ -809,7 +812,9 @@ class Mob(
     @location.setter
     def location(self, location: torch.Tensor):
         recursive = not self._prevent_recursive_sets
-        value = cast_to_tensor(location)
+        # The funnel for move, move_to, set_location and set(location=...): a
+        # scalar would broadcast to the (1, 1, 1) diagonal instead of raising.
+        value = cast_to_direction("location", location)
         attr = "location"
 
         current_value = self.get_animated_attribute(
@@ -1160,6 +1165,30 @@ class Mob(
             timeline.register_updater_history_split(descendant_map)
             return self
 
+    # Public properties that ``set`` would technically accept but that are
+    # plumbing rather than animatable state.
+    _NON_SETTABLE_PUBLIC_PROPERTIES = frozenset({"animation_manager"})
+
+    def _settable_property_names(self) -> set[str]:
+        """Names that :meth:`~.Mob.set` can meaningfully write on this Mob.
+
+        The registered animatable attributes, plus every public property with a
+        setter anywhere in this Mob's MRO. That second half is what surfaces
+        derived properties such as ``border_color``, which forwards to the
+        border texture instead of owning a timeline of its own -- ``set`` has
+        always accepted those, but never used to name them.
+        """
+        names = set(self.animatable_attrs)
+        for klass in type(self).__mro__:
+            # Snapshot the class dict: register_attrs_as_animatable attaches
+            # properties to classes while Mobs are being constructed.
+            for name, member in list(vars(klass).items()):
+                if name.startswith("_") or name in self._NON_SETTABLE_PUBLIC_PROPERTIES:
+                    continue
+                if isinstance(member, property) and member.fset is not None:
+                    names.add(name)
+        return names
+
     def check_properties_are_valid(self, property_names):
         """Raise if any of the given names is not an animatable attribute.
 
@@ -1178,17 +1207,24 @@ class Mob(
             If any name is neither an attribute of this Mob nor a registered
             animatable attribute; the message lists what is available.
         """
-        # TODO: consider caching this union on the owning timeline.
-        available_attrs = {
-            *self.animatable_attrs,
+        settable = self._settable_property_names()
+        # attr_to_timeline is Scene-wide, so it also accepts an attribute owned
+        # by some other Mob in the Scene (where setting it does nothing). It
+        # gates the check as it always has, but is not advertised in the message.
+        accepted = {
+            *settable,
             *self.scene.timeline_manager.attr_to_timeline.keys(),
         }
         for p in property_names:
-            if not hasattr(self, p) and (p not in available_attrs):
-                raise AttributeError(
-                    f'"{p}" is not recognized as an animatable Mob property. '
-                    f"Available properties are: {self.animatable_attrs}."
-                )
+            if hasattr(self, p) or p in accepted:
+                continue
+            suggestion = difflib.get_close_matches(p, sorted(settable), n=1)
+            hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+            raise AttributeError(
+                f'"{p}" is not recognized as an animatable Mob property.'
+                f"{hint} Available properties are: "
+                f"{', '.join(sorted(settable))}."
+            )
 
     def set_non_recursive(self, **kwargs) -> Mob:
         """Set attributes on this Mob only, leaving its children untouched.
@@ -1266,6 +1302,7 @@ class Mob(
             Scene.save_video()
 
         """
+        _reject_context_kwargs(kwargs)
         self.check_properties_are_valid(kwargs.keys())
         with Sync(animation_manager=self.animation_manager):
             for key, value in kwargs.items():
@@ -1309,7 +1346,7 @@ class Mob(
         """
         self.opacity = torch.tensor((0.0,)).view(1)
 
-    def set_data_sub_inds(self, data_sub_inds: list[int] | slice):
+    def _set_data_sub_inds(self, data_sub_inds: list[int] | slice):
         """Internal: restrict this Mob to a subset of a batched Mob's rows.
 
         This is the machinery behind indexing (``mob[2]``, ``mob[1:4]``); prefer
@@ -1345,7 +1382,7 @@ class Mob(
         self.data_sub_inds = data_sub_inds
         self.parent_batch_sizes = sub_pbs
         for c in self.children:
-            c.set_data_sub_inds(data_sub_inds)
+            c._set_data_sub_inds(data_sub_inds)
 
     def __len__(self):
         return (
@@ -1388,5 +1425,5 @@ class Mob(
             add_to_scene=False, clone_data=False, recursive=True, animate_creation=False
         )
         # Set the data sub-indices for the cloned mob to point to the desired batch elements
-        cloned_mob.set_data_sub_inds([item] if isinstance(item, int) else item)
+        cloned_mob._set_data_sub_inds([item] if isinstance(item, int) else item)
         return cloned_mob

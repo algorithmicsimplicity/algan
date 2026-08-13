@@ -77,7 +77,7 @@ class PNMesh(Mob):
             **self.get_shader_params(),
         )
 
-    def get_memory_used_per_timestep(self):
+    def _get_memory_used_per_timestep(self):
         # Timeline state (position, normal, colour, opacity/glow and material)
         # plus the logical primitive's cloned position/normal/colour inputs.
         variables = 24 + sum(v.shape[-1] for v in self.get_shader_params().values())

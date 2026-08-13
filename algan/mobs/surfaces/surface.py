@@ -1992,7 +1992,7 @@ class Surface(Mob):
             new_location = squish(surface_function(base_grid), -3, -2)
             if new_location.dim() == 2:
                 new_location = new_location.unsqueeze(0)
-            self.grid.setattr_and_rebatch_without_record("location", new_location)
+            self.grid._setattr_and_rebatch_without_record("location", new_location)
 
             for attr, value in old_values.items():
                 if attr == "location":
@@ -2005,7 +2005,7 @@ class Surface(Mob):
                         grid_width,
                         grid_height,
                     )
-                self.grid.setattr_and_rebatch_without_record(attr, value)
+                self.grid._setattr_and_rebatch_without_record(attr, value)
 
             self.grid.batch_size = grid_width * grid_height
             self._memory_per_timestep_cache = None
@@ -2314,7 +2314,7 @@ class Surface(Mob):
         ).permute(0, 2, 3, 1)
         return squish(t, -3, -2).squeeze(0)
 
-    def get_memory_used_per_timestep(self) -> int:
+    def _get_memory_used_per_timestep(self) -> int:
         """Get this surface's render memory cost for one frame, in bytes.
 
         Grows with the surface's grid resolution, and is what the render loop uses to

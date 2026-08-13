@@ -93,7 +93,8 @@ class Settings:
             suggestion = difflib.get_close_matches(name, sorted(valid), n=1)
             hint = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
             raise AlganConfigurationError(
-                f"Unknown {cls.__name__} setting '{name}'.{hint}"
+                f"Unknown {cls.__name__} setting '{name}'.{hint} "
+                f"Valid settings are: {', '.join(sorted(valid))}."
             )
 
     def _validate(self):

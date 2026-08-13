@@ -144,7 +144,9 @@ with Off():
         start=LEFT * 0.8, end=RIGHT * 0.8, color=ORANGE, stroke_width=8
     ).move(RIGHT * 2.2 + UP * 1.3)
     right_angle = RightAngle(
-        Line(start=ORIGIN, end=RIGHT), Line(start=ORIGIN, end=UP), color=BLUE_A
+        Line(start=ORIGIN, end=RIGHT, add_to_scene=False),
+        Line(start=ORIGIN, end=UP, add_to_scene=False),
+        color=BLUE_A,
     ).move(RIGHT * 4.3 + UP * 1.3)
 
     grid = Square(side_length=1.3, color=BLUE).move(LEFT * 4.2 + DOWN * 1.4)

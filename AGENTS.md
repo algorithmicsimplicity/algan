@@ -100,7 +100,7 @@ mobs in that Scene — mobs hold no per-object animation storage:
 
 **CRITICAL:** timeline events must be recorded against an **entered-and-exited context**, never the top-level context — only `__exit__` syncs a context's rescaled timestamps, so events recorded on the top-level timespan all evaluate to time 0. The `animated_function` wrapper enters a child context automatically; anything recording events manually (see `add_updater`) must wrap itself in e.g. `with Off(record_funcs=False) as context:`.
 
-Structural batch rewrites (e.g. `become`'s batch expansion) go through `setattr_and_rebatch_without_record`, which re-allocates a mob's rows; recorded history stays with the old rows, so this is only valid on mobs with fresh history (`detach_history` provides that).
+Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr_and_rebatch_without_record`, which re-allocates a mob's rows; recorded history stays with the old rows, so this is only valid on mobs with fresh history (`detach_history` provides that).
 
 ### Mobs (`algan/mobs/`, `algan/animatable_base/`)
 

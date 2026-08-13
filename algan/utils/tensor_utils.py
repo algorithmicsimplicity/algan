@@ -9,6 +9,7 @@ from string import ascii_lowercase
 import numpy as np
 import torch
 
+from algan.errors import AlganConfigurationError
 from algan.settings._startup import _ANIMATION_DEVICE
 
 
@@ -54,6 +55,35 @@ def cast_to_tensor(x):
         # Non-numeric values (strings, arbitrary objects) pass through
         # unchanged by design; anything else should surface.
         return x
+
+
+def cast_to_direction(name, x):
+    """Cast a user-supplied 3-D vector argument to a ``[1, N, 3]`` tensor.
+
+    Like :func:`cast_to_tensor`, but rejects anything whose last dimension is
+    not 3. A bare scalar casts to shape ``[1, 1, 1]``, which broadcasts across
+    all three axes rather than failing, so without this ``mob.move(1)`` moves
+    diagonally to ``(1, 1, 1)`` instead of telling the user it wanted a vector.
+
+    Parameters
+    ----------
+    name
+        The user-facing parameter name, used in the error message.
+    x
+        The value to cast.
+
+    Raises
+    ------
+    AlganConfigurationError
+        If ``x`` is not a 3-D vector.
+    """
+    value = cast_to_tensor(x)
+    if not isinstance(value, torch.Tensor) or value.shape[-1] != 3:
+        raise AlganConfigurationError(
+            f"{name} must be a 3-D vector of shape (*, 3), such as RIGHT, "
+            f"UP * 2 or [1, 0, 0]; got {x!r}"
+        )
+    return value
 
 
 def cast_to_tensor_single(x):

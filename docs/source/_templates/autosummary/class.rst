@@ -7,7 +7,6 @@ Qualified name: ``{{ fullname | escape }}``
 .. autoclass:: {{ objname }}
    :show-inheritance:
    :members:
-   :private-members:
 
 
    {% block methods %}

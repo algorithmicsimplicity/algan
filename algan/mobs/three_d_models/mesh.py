@@ -373,7 +373,7 @@ class TriangleMesh(Mob):
             **self.grid.get_shader_params(),
         )
 
-    def get_memory_used_per_timestep(self):
+    def _get_memory_used_per_timestep(self):
         n_v = self.num_triangles * 3
         # Source-device location/color plus primitive corners/colors/normals.
         # Final ray-tracing arrays and BVHs are charged by the arena upload.

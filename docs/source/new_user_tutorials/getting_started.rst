@@ -104,6 +104,35 @@ what it did, which is handy in scripts:
     result = Scene.save_video("my_video")
     print(result.output_path, result.duration_seconds)
 
+Rendering Faster While You Work
+*******************************
+
+You have probably noticed that the run above took a while, and that almost none
+of that was your animation. Every fresh ``python my_first_algan.py`` re-imports
+the library and re-prepares Algan's GPU kernels before it can draw a single
+pixel. For a one-second Hello World, that fixed cost is most of the wait.
+
+You only have to pay it once. The render daemon keeps a warm process alive and
+re-runs your script on demand:
+
+.. code-block:: bash
+
+    uv run python -m algan.daemon my_first_algan.py --watch
+
+Leave that running in its own terminal. With ``--watch`` it re-renders every
+time you save the file; you can also press Enter in the daemon's terminal to
+force a re-render, or ``q`` to quit. The first render still pays the startup
+cost, but every one after it costs only the render itself -- around a second
+for a scene this size, against roughly a minute from cold.
+
+.. note::
+
+    The daemon is entirely optional, and everything in these tutorials works
+    with a plain ``uv run python my_first_algan.py``. It is worth starting as
+    soon as you are iterating on a scene rather than running it once. See
+    :doc:`../advanced_user_tutorials/performance_and_quality` for the rest of
+    its options.
+
 Video Settings
 **************
 

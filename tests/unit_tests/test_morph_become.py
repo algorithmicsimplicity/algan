@@ -478,7 +478,7 @@ def test_cubic_segment_padding_keeps_new_segments_on_the_source_contour(scene):
     )
     carrier = Square(scene=scene, add_to_scene=False)
 
-    expanded = carrier.expand_n_tensor(source, 3)
+    expanded = carrier._expand_n_tensor(source, 3)
 
     # Two source segments expand to five slots: [0, 0, 0, 1, 1]. Every
     # inserted segment stays collapsed at the preceding source endpoint rather

@@ -853,3 +853,154 @@ def test_text_write_is_the_glyph_wise_shorthand(monkeypatch):
     assert text.write() is text
     assert len(seen["mobs"]) == len(text.character_mobs)
     assert torch.allclose(seen["border_color"], algan.WHITE)
+
+
+# --- UX audit fixes -------------------------------------------------------
+
+
+def _stub_render(monkeypatch, scene):
+    """Render nothing, so a save_video call exercises only the authoring path."""
+
+    class Writer:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(scene, "render_audio_to_file", lambda *_a, **_k: None)
+    monkeypatch.setattr(algan_utils, "get_file_writer", lambda *_a, **_k: Writer())
+    monkeypatch.setattr(scene, "render_to_video", lambda *_a, **_k: None)
+
+
+def test_context_kwargs_on_a_method_point_at_the_context():
+    """``mob.move(RIGHT, run_time=2)`` is the Manim reflex; say what to write."""
+    square = Square().spawn()
+    with pytest.raises(TypeError, match=r"with Seq\(run_time=2\)"):
+        square.move(algan.RIGHT, run_time=2)
+    with pytest.raises(TypeError, match=r"with Seq\(run_time=2\)"):
+        square.set(color=algan.BLUE, run_time=2)
+    # lag_ratio must suggest Lag, which takes it positionally.
+    with pytest.raises(TypeError, match=r"with Lag\(0\.3\)"):
+        square.set(lag_ratio=0.3)
+
+
+def test_a_genuine_keyword_typo_still_raises():
+    """The context-kwarg catch must not swallow real mistakes."""
+    square = Square().spawn()
+    with pytest.raises(TypeError, match="path_arc"):
+        square.move(algan.RIGHT, path_arc=90)
+
+
+def test_property_typo_suggests_the_real_name_and_lists_settable_ones():
+    from algan.mobs.shapes_2d import Circle
+
+    with pytest.raises(AttributeError, match=r"Did you mean 'color'\?"):
+        Square().spawn().set(colour=algan.RED)
+    # border_color is accepted by set(), so it must be advertised by the error.
+    circle = Circle().spawn()
+    with pytest.raises(AttributeError, match="border_color"):
+        circle.set(bordercolour=algan.RED)
+    circle.set(border_color=algan.PINK)
+
+
+def test_unknown_setting_lists_the_valid_names():
+    with pytest.raises(AlganConfigurationError, match="frames_per_second"):
+        VideoSettings((8, 8), 4).set(fps=60)
+
+
+def test_vector_arguments_reject_scalars():
+    """A scalar broadcasts to the (1, 1, 1) diagonal instead of raising."""
+    square = Square().spawn()
+    for call in (
+        lambda: square.move(1),
+        lambda: square.move_to(1),
+        lambda: square.rotate(90, 1),
+        lambda: square.rotate(algan.OUT, 90),
+        lambda: square.move_to_edge(1),
+    ):
+        with pytest.raises(AlganConfigurationError):
+            call()
+    # ... while real vectors keep working.
+    square.move(algan.RIGHT)
+    square.move([0, 1, 0])
+    square.rotate(90, algan.OUT)
+
+
+def test_empty_output_path_is_rejected():
+    with pytest.raises(AlganConfigurationError, match="empty string"):
+        algan_utils._resolve_output_destination("", ".mp4")
+
+
+def test_never_spawned_mob_warns(monkeypatch, tmp_path):
+    from algan.errors import NeverSpawnedMobWarning
+    from algan.mobs.shapes_2d import Circle
+
+    scene = SceneManager.instance().current_scene
+    Square().spawn()
+    Circle()  # forgotten
+    _stub_render(monkeypatch, scene)
+    with pytest.warns(NeverSpawnedMobWarning, match="Circle"):
+        algan.Scene.save_video(
+            tmp_path / "forgot.mp4",
+            video_settings=VideoSettings((8, 8), 4, anti_alias_level=1),
+        )
+
+
+def test_add_to_scene_false_is_the_only_way_to_mark_reference_geometry(
+    monkeypatch, tmp_path, recwarn
+):
+    """Reference geometry is excluded by construction, not by a special case.
+
+    ``add_to_scene=False`` means "never intended to be shown", so such a Mob
+    never enters ``scene.actors`` and the warning cannot see it. A ``become``
+    target built without the flag is indistinguishable from a forgotten spawn,
+    and is meant to be reported.
+    """
+    from algan.errors import NeverSpawnedMobWarning
+    from algan.mobs.shapes_2d import Circle
+
+    scene = SceneManager.instance().current_scene
+    square = Square().spawn()
+    square.become(Circle(add_to_scene=False))
+    _stub_render(monkeypatch, scene)
+    algan.Scene.save_video(
+        tmp_path / "become.mp4",
+        video_settings=VideoSettings((8, 8), 4, anti_alias_level=1),
+    )
+    assert not [w for w in recwarn if issubclass(w.category, NeverSpawnedMobWarning)]
+
+
+def test_unflagged_become_target_is_reported(monkeypatch, tmp_path):
+    """Without the flag it is just an unspawned Mob, and says so."""
+    from algan.errors import NeverSpawnedMobWarning
+    from algan.mobs.shapes_2d import Circle
+
+    scene = SceneManager.instance().current_scene
+    Square().spawn().become(Circle())
+    _stub_render(monkeypatch, scene)
+    with pytest.warns(NeverSpawnedMobWarning, match="add_to_scene=False"):
+        algan.Scene.save_video(
+            tmp_path / "become_unflagged.mp4",
+            video_settings=VideoSettings((8, 8), 4, anti_alias_level=1),
+        )
+
+
+def test_angle_unit_constants_are_exported_with_algan_convention():
+    """Algan's DEGREES is 1, the reciprocal of Manim's -- guard the value."""
+    assert {"DEGREES", "RADIANS"} <= set(algan.__all__)
+    assert algan.DEGREES == 1.0
+    assert pytest.approx(180.0) == algan.PI * algan.RADIANS
+
+
+def test_internal_helpers_are_importable_but_not_star_exported():
+    """Trimmed from `from algan import *`, still public at their real path."""
+    from algan.geometry.geometry import project_onto_basis  # noqa: F401
+    from algan.utils.animation_utils import animate_lagged_by_location  # noqa: F401
+    from algan.utils.mob_utils import batch_mobs  # noqa: F401
+
+    for name in (
+        "project_onto_basis",
+        "animate_lagged_by_location",
+        "batch_mobs",
+        "get_orthonormal_vector",
+        "get_rotation_between_bases",
+    ):
+        assert name not in algan.__all__

@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Literal
 
 from algan.animation_timeline.animation_contexts import Off
-from algan.errors import AlganConfigurationError, LegacySceneDiscoveryWarning
+from algan.errors import (
+    AlganConfigurationError,
+    LegacySceneDiscoveryWarning,
+    NeverSpawnedMobWarning,
+    _user_stacklevel,
+)
 from algan.logging.logger import get_logger
 from algan.rendering.camera import Camera
 from algan.settings import SETTINGS
@@ -111,6 +116,12 @@ def _resolve_output_destination(file_path, default_extension: str) -> Path:
         file_path = SETTINGS.paths.output_filename
 
     raw_path = os.fspath(file_path)
+    if not str(raw_path).strip():
+        raise AlganConfigurationError(
+            "file_path must be a file name or path, such as 'my_video' or "
+            "'renders/final.mp4'; got an empty string. Pass None to use the "
+            "default output name."
+        )
     requested = Path(raw_path)
     if requested.suffix == "":
         requested = requested.with_suffix(default_extension)
@@ -207,6 +218,22 @@ def _render_scene_to_file(
         ):
             timeline_context.wait(1.0 / video_settings.frames_per_second)
 
+        # Must run before clear_scene below, which drops never-spawned actors
+        # from scene.actors and would leave nothing to report. Skipped when
+        # nothing spawned at all, because EmptySceneWarning already covers that.
+        if any(actor.is_spawned() for actor in scene.actors):
+            never_spawned = scene._never_spawned_root_mobs()
+            if never_spawned:
+                kinds = ", ".join(sorted({type(m).__name__ for m in never_spawned}))
+                warnings.warn(
+                    f"{len(never_spawned)} Mob(s) were never spawn()ed and will "
+                    f"not appear in the video ({kinds}). Call .spawn() on them, "
+                    "or build them with add_to_scene=False if they exist only "
+                    "as data.",
+                    NeverSpawnedMobWarning,
+                    stacklevel=_user_stacklevel(),
+                )
+
         # A fade-out is part of the requested output, so it is recorded on the
         # timeline whether or not the scene is being reset afterwards.
         if animate_fade_out:
@@ -281,7 +308,7 @@ def _render_scene_to_file(
         )
         duration = time.perf_counter() - start_time
         plan = getattr(scene, "last_render_plan", None)
-        logger.info(f"Finished rendering {destination.name}")
+        logger.info("Finished rendering %s in %.1f s", destination.name, duration)
         return RenderResult("rendered", destination, duration, plan)
     finally:
         if file_writer is not None:

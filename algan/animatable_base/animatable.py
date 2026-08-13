@@ -13,6 +13,7 @@ from algan.animation_timeline.animation_contexts import (
     AnimationManager,
     Off,
     Sync,
+    _reject_context_kwargs,
     active_scene_for_new_mob,
     animation_manager_bound,
 )
@@ -87,7 +88,7 @@ def animated_function(function=None, *, animated_args=None, unique_args=()):
                 # Mobs with nothing spawned in their subtree record nothing:
                 # no function events (this branch), and attribute writes go
                 # through the un-recorded path of
-                # setattr_and_record_modification, which never touches the
+                # _setattr_and_record_modification, which never touches the
                 # context. The throwaway context below is then pure overhead
                 # -- and mob construction performs thousands of these calls.
                 if not _opt_disabled("fastpath") and not (
@@ -627,7 +628,17 @@ class Animatable:
         """
         for attr in self.animatable_attrs:
 
-            def setattr_general(value, attr=attr, self=self, recursive=True):
+            def setattr_general(value, attr=attr, self=self, recursive=True, **kwargs):
+                if kwargs:
+                    # ``mob.move(RIGHT, run_time=2)`` lands here via
+                    # move -> move_to -> set_location. Catch the Manim timing
+                    # idiom with a message that names the fix; re-raise anything
+                    # else so genuine typos keep failing.
+                    _reject_context_kwargs(kwargs)
+                    raise TypeError(
+                        f"set_{attr}() got an unexpected keyword argument "
+                        f"'{next(iter(kwargs))}'"
+                    )
                 if recursive:
                     self.__setattr__(attr, value)
                 else:
@@ -644,7 +655,7 @@ class Animatable:
         timeline.add_mob_attr(self, key, value)
         return self
 
-    def setattr_without_record(self, key, value, include_descendants: bool = False):
+    def _setattr_without_record(self, key, value, include_descendants: bool = False):
         """Internal: write an animatable attribute without recording an animation.
 
         The value changes for every frame, past and future, because nothing is
@@ -671,10 +682,10 @@ class Animatable:
         timeline.modify_attribute(key, inds, value)
         return self
 
-    def setattr_and_rebatch_without_record(self, key, value):
+    def _setattr_and_rebatch_without_record(self, key, value):
         """Internal: overwrite an attribute, re-allocating rows if the shape changed.
 
-        Unlike :meth:`~.Animatable.setattr_without_record`, this copes with a value
+        Unlike :meth:`~.Animatable._setattr_without_record`, this copes with a value
         whose batch size differs from the current one. Recorded history stays with
         the old rows, so it is only valid for structural rewrites (the batch
         expansions in
@@ -764,7 +775,7 @@ class Animatable:
         """
         return self.lifespan.end() >= 0
 
-    def setattr_and_record_modification(
+    def _setattr_and_record_modification(
         self, key, value, include_descendants: bool = False
     ):
         """Internal: write an animatable attribute and record it on the timeline.
@@ -898,7 +909,7 @@ class Animatable:
         cache[key] = (STRUCTURE_VERSION[0], ranges)
         return ranges
 
-    def get_attr_inds(self, key, include_descendants: bool = False, value=None):
+    def _get_attr_inds(self, key, include_descendants: bool = False, value=None):
         """Internal: get this Mob's row indices in an attribute's shared buffer.
 
         Parameters
@@ -1372,7 +1383,7 @@ class Animatable:
             return func(*args, **kwargs)
         return HANDLED_FUNCTIONS[func](*args, **kwargs)
 
-    def get_memory_used_per_timestep(self) -> int:
+    def _get_memory_used_per_timestep(self) -> int:
         """Get this Mob's render memory cost for one frame, in bytes.
 
         Used by the render loop to size frame batches. The base class holds no

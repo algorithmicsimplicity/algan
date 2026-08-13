@@ -75,7 +75,7 @@ def batch_mobs(mobs, parent_batch_sizes=None, add_to_scene=True):
         for attr in batch_mob.animatable_attrs:
             if not all(hasattr(mob, attr) for mob in mobs):
                 continue
-            batch_mob.setattr_and_rebatch_without_record(
+            batch_mob._setattr_and_rebatch_without_record(
                 attr,
                 torch.cat(
                     [

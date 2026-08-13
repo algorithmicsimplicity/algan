@@ -114,7 +114,9 @@ with Off():
     # ``become`` morphs position as well as shape, so the target is built where
     # the formula already sits.
     series = Tex(
-        r"\sum_{n=1}^{\infty} \frac{1}{n^{2}} = \frac{\pi^{2}}{6}", font_size=42
+        r"\sum_{n=1}^{\infty} \frac{1}{n^{2}} = \frac{\pi^{2}}{6}",
+        font_size=42,
+        add_to_scene=False,
     )
     series.move(formula.get_center() - series.get_center())
 

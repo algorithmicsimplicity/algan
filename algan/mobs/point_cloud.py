@@ -154,9 +154,9 @@ class PMobject(Group):
             if id(child) not in registered and hasattr(child, "get_render_primitives")
         ]
 
-    def get_memory_used_per_timestep(self):
+    def _get_memory_used_per_timestep(self):
         return sum(
-            child.get_memory_used_per_timestep() for child in self._primitive_children()
+            child._get_memory_used_per_timestep() for child in self._primitive_children()
         )
 
     def get_render_primitives(self):

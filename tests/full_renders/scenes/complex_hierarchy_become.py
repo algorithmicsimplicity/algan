@@ -139,7 +139,11 @@ with Off():
         .rotate(18, RIGHT)
         .move(RIGHT * 3.15 + DOWN * 1.62)
     )
-    target_tree = Group(target_left, target_center, target_right, target_extra)
+    # Reference geometry: this tree only says what to become, and is never
+    # drawn itself. Its members have a parent, so flagging the root is enough.
+    target_tree = Group(
+        target_left, target_center, target_right, target_extra, add_to_scene=False
+    )
 
 with Seq():
     with Sync(run_time=0.6):

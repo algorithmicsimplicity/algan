@@ -365,7 +365,7 @@ class Cylinder(Surface):
             right_b = get_orthonormal_vector(up_b)
             forward_b = get_orthonormal_vector(up_b, right_b)
             self.move_to((start + end) * 0.5)
-            self.setattr_and_record_modification(
+            self._setattr_and_record_modification(
                 "basis",
                 torch.cat(
                     (
@@ -436,8 +436,8 @@ class Arrow3D(Mob):
         self.length = length
         self.add_children(self.tail, self.head)
 
-    def get_memory_used_per_timestep(self):
-        return sum(child.get_memory_used_per_timestep() for child in self.children)
+    def _get_memory_used_per_timestep(self):
+        return sum(child._get_memory_used_per_timestep() for child in self.children)
 
     def get_render_primitives(self):
         primitives = []
@@ -743,9 +743,9 @@ class Polyhedron(Mob):
             if hasattr(descendant, "get_render_primitives")
         ]
 
-    def get_memory_used_per_timestep(self):
+    def _get_memory_used_per_timestep(self):
         return sum(
-            mob.get_memory_used_per_timestep() for mob in self._face_primitive_mobs()
+            mob._get_memory_used_per_timestep() for mob in self._face_primitive_mobs()
         )
 
     def get_render_primitives(self):

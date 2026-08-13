@@ -21,13 +21,13 @@ Algan is an extremely versatile package. The following is an example `Scene` you
 ```python
 from algan import *
 
-circle = Circle()
+circle = Circle(add_to_scene=False)
+circle.set(border_color=PINK.set_opacity(0.5))
 square = Square()
-square.rotate(-3 * TAU / 8)
-circle.set(border_color=PINK, border_opacity=0.5)
+square.rotate(-135)  # Algan angles are in degrees, not radians
 
 square.spawn()
-square.become(circle)
+square = square.become(circle)
 
 Scene.save_video("example")
 ```

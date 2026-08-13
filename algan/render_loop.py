@@ -19,6 +19,7 @@ import contextlib
 import logging
 import math
 import os
+import sys
 import threading
 import time
 import warnings
@@ -29,6 +30,7 @@ import torch
 
 import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
+from algan.errors import _user_stacklevel
 from algan.logging.logger import get_logger
 from algan.rendering.memory_model import (
     AffineFrameCost,
@@ -56,6 +58,13 @@ from algan.utils.memory_utils import (
 
 logger = get_logger("scene")
 
+# Resolved once: stderr is not swapped mid-render, and isatty() on a redirected
+# handle is not free.
+_PROGRESS_IS_TTY = bool(getattr(sys.stderr, "isatty", lambda: False)())
+
+# Below this many frames, a non-interactive run reports no progress at all.
+_PROGRESS_MIN_LOGGED_FRAMES = 60
+
 #: Sentinel "class" marking an entry of grouped_primitives that already holds
 #: finished collections (merged bezier groups) rather than per-actor
 #: primitives awaiting concatenation.
@@ -68,6 +77,37 @@ _PREBUILT_COLLECTION = object()
 #: can at best halve the other half, so a shorter window buys little; below it
 #: the batch is frame-bound and the ordinary search is the cheaper answer.
 _ACTOR_SHARE_RETREAT = 0.5
+
+
+def _emit_render_progress(done, total):
+    """Report render progress on the frame the user is waiting for.
+
+    Deliberately hand-rolled rather than tqdm: Algan's output already goes
+    through ``logging`` to stderr, and a second stream writer would fight the
+    handler over the same line. On a terminal this rewrites one line in place;
+    everywhere else (pytest, CI, the render daemon) it degrades to a periodic
+    log line so captured output stays readable.
+    """
+    if not logger.isEnabledFor(logging.INFO):
+        return
+    if _PROGRESS_IS_TTY:
+        sys.stderr.write(
+            f"\rRendering {done}/{total} frames ({100 * done / total:5.1f}%)"
+        )
+        sys.stderr.flush()
+    elif total >= _PROGRESS_MIN_LOGGED_FRAMES and done % max(1, total // 10) == 0:
+        # Captured output gets at most ten lines, and short renders none: they
+        # finish before a progress report would tell anyone anything.
+        logger.info(
+            "Rendering %d/%d frames (%.0f%%)", done, total, 100 * done / total
+        )
+
+
+def _finish_render_progress():
+    """Close off an in-place progress line so the next log line starts clean."""
+    if _PROGRESS_IS_TTY and logger.isEnabledFor(logging.INFO):
+        sys.stderr.write("\n")
+        sys.stderr.flush()
 
 
 class EmptySceneWarning(Warning):
@@ -466,7 +506,7 @@ class RenderLoopMixin:
         # source fetch and one exact preflight.
         result = probe(upper)
         if result is not None:
-            logger.info(
+            logger.debug(
                 "Arena planner selected %s/%s fetched frames on its first "
                 "exact preflight.",
                 upper,
@@ -493,7 +533,7 @@ class RenderLoopMixin:
 
             best = duration
             if True:  # duration == high:
-                logger.info(
+                logger.debug(
                     "Arena planner selected %s/%s fetched frames without "
                     "rematerializing the batch.",
                     duration,
@@ -522,7 +562,7 @@ class RenderLoopMixin:
             raise OutOfRenderMemory(
                 "Render-arena fit was not monotone while selecting a batch."
             )
-        logger.info(
+        logger.debug(
             "Arena planner selected %s/%s fetched frames without "
             "rematerializing the batch.",
             best,
@@ -1537,6 +1577,35 @@ class RenderLoopMixin:
             for actor in self.actors
         )
 
+    def _never_spawned_root_mobs(self):
+        """Root actors whose whole subtree never spawned but which own geometry.
+
+        These are authored Mobs that will silently not appear in the video --
+        the commonest beginner mistake. Cheap: only the hierarchy and lifespan
+        timestamps are consulted, no primitives are built.
+
+        Reference geometry is excluded by construction rather than by a special
+        case: a Mob built with ``add_to_scene=False`` never enters ``actors``,
+        and that flag is exactly what marks a Mob as never intended to be shown.
+
+        Each remaining clause is load-bearing. ``not actor.parents`` collapses a
+        container and its children into one report (an unspawned ``Tex``
+        registers half a dozen actors). ``is_spawned_in_subtree`` rather than
+        ``is_spawned`` because containers are routinely left unspawned while
+        their children spawn individually. And the renderable test runs over
+        descendants because ``get_render_primitives`` lives on leaf classes --
+        a ``Text`` does not have it, its character batch does.
+        """
+        return [
+            actor
+            for actor in self.actors
+            if not actor.parents
+            and not actor.is_spawned_in_subtree()
+            and any(
+                hasattr(d, "get_render_primitives") for d in actor.get_descendants()
+            )
+        ]
+
     def get_batch_of_primitives(
         self, start_time_ind, max_end_time_ind, actors, max_mem_used
     ):
@@ -1554,7 +1623,7 @@ class RenderLoopMixin:
 
         # Precompute memory per timestep once to avoid redundant calls inside binary search loop
         actor_mem = {
-            actor: actor.get_memory_used_per_timestep() for actor in primitive_actors
+            actor: actor._get_memory_used_per_timestep() for actor in primitive_actors
         }
 
         # Binary search for the largest batch that fits the animation-device
@@ -2137,7 +2206,7 @@ class RenderLoopMixin:
                     _sync_devices()
                     s = time.time()
                     if retry_end_ind is not None:
-                        logger.info(
+                        logger.debug(
                             f"Fetching batch {current_time_ind}:{retry_end_ind}."
                         )
                         primitives, new_time_ind, render_state = fetch_batch(
@@ -2145,14 +2214,14 @@ class RenderLoopMixin:
                         )
                         retry_end_ind = None
                     elif pending is not None:
-                        logger.info(
+                        logger.debug(
                             f"Fetching batch {current_time_ind}:{pending_end_ind}."
                         )
                         primitives, new_time_ind, render_state = pending.result()
                         pending = None
                     else:
                         fetch_end_ind = fetch_end_for(current_time_ind)
-                        logger.info(
+                        logger.debug(
                             f"Fetching batch {current_time_ind}:{fetch_end_ind}."
                         )
                         primitives, new_time_ind, render_state = fetch_batch(
@@ -2160,7 +2229,7 @@ class RenderLoopMixin:
                         )
                     _sync_devices()
                     e = time.time()
-                    logger.info(f"Batch fetch took {e - s} seconds")
+                    logger.debug("Batch fetch took %.2f seconds", e - s)
                     # A fresh fetch selects a different actor set, and the
                     # actor set is what fixes the intercept of every cost the
                     # preflight weighs. Start its measurements over.
@@ -2211,7 +2280,7 @@ class RenderLoopMixin:
                             actors, current_time_ind, new_time_ind
                         )
                     if spawn_boundary is not None:
-                        logger.info(
+                        logger.debug(
                             "Batch is actor-bound (%.0f%% of a term's cost is "
                             "fixed by its actor set: %s); refetching %s:%s to "
                             "carry fewer actors.",
@@ -2336,8 +2405,9 @@ class RenderLoopMixin:
                         )
                     if len(primitives) > 0:
                         s = time.time()
-                        logger.info(
-                            f"Rendering {(new_time_ind - current_time_ind) / self.frames_per_second} seconds of video."
+                        logger.debug(
+                            "Rendering %.2f seconds of video.",
+                            (new_time_ind - current_time_ind) / self.frames_per_second,
                         )
                         produced_output = False
                         retry_after_render_failure = False
@@ -2426,15 +2496,18 @@ class RenderLoopMixin:
                         empty_cache(force_gc=False)
                         _sync_devices()
                         e = time.time()
-                        logger.info(
-                            f"{current_time_ind}:{new_time_ind}, took {e - s} seconds"
+                        logger.debug(
+                            "Rendered frames %d:%d in %.2f seconds",
+                            current_time_ind,
+                            new_time_ind,
+                            e - s,
                         )
                         if _rt_settings._note_batch_rendered(
                             new_time_ind - current_time_ind,
                             e - s,
                             end_time_ind - new_time_ind,
                         ):
-                            logger.info(
+                            logger.debug(
                                 "Adaptive gen-fused: forecasted remaining "
                                 "render time justifies compiling the fused "
                                 "generation kernels; fusing from the next "
@@ -2445,7 +2518,7 @@ class RenderLoopMixin:
                         # scene, or a stretch where nothing is spawned): still
                         # emit background-only frames so the output video
                         # covers the window instead of silently dropping it.
-                        logger.info(
+                        logger.debug(
                             f"No active actors in {current_time_ind}:"
                             f"{new_time_ind}; rendering background only."
                         )
@@ -2554,7 +2627,7 @@ class RenderLoopMixin:
                 warnings.warn(
                     "You are rendering an empty scene! Did you forget to spawn() your Mobs?",
                     EmptySceneWarning,
-                    stacklevel=2,
+                    stacklevel=_user_stacklevel(),
                 )
 
             self.file_path = file_path
@@ -2580,6 +2653,9 @@ class RenderLoopMixin:
                 if preserve_authoring_state
                 else contextlib.nullcontext()
             )
+            start_ind, end_ind = self.scene_times[-1]
+            total_frames = max(1, end_ind - start_ind)
+            frames_done = 0
             try:
                 # Wait for the writer process to complete
                 with preserve:
@@ -2591,7 +2667,13 @@ class RenderLoopMixin:
                     ):
                         for frame in frame_batch:
                             frame_queue.put(frame)
+                            # After the put: the queue is bounded and feeds the
+                            # encoder thread, so reporting first would run the
+                            # progress ahead of the actual encode.
+                            frames_done += 1
+                            _emit_render_progress(frames_done, total_frames)
             finally:
+                _finish_render_progress()
                 if previous_scene_times is not None:
                     self.scene_times[:] = previous_scene_times
 

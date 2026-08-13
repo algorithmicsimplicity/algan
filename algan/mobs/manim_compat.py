@@ -149,7 +149,7 @@ def _preserve_algan_state_unchanged_by_manim(
             # A structural Manim operation can change a point batch.  Do not
             # force old per-point state onto a differently-sized new geometry.
             continue
-        after.setattr_without_record(attr, current_value)
+        after._setattr_without_record(attr, current_value)
 
     for current_child, before_child, after_child in zip(
         current.children, before.children, after.children

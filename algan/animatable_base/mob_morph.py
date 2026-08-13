@@ -222,14 +222,14 @@ class MobMorphMixin:
                 continue
             location = descendant.location
             collapsed = point.to(location).expand_as(location).clone()
-            descendant.setattr_and_rebatch_without_record("location", collapsed)
+            descendant._setattr_and_rebatch_without_record("location", collapsed)
         return mob
 
     @staticmethod
     def _zero_hierarchy_opacity(mob):
         for descendant in mob.get_descendants():
             if hasattr(descendant, "opacity"):
-                descendant.setattr_and_rebatch_without_record(
+                descendant._setattr_and_rebatch_without_record(
                     "opacity", torch.zeros_like(descendant.opacity)
                 )
         return mob
@@ -255,9 +255,9 @@ class MobMorphMixin:
         for mob in placeholder.get_descendants():
             location = mob.location
             collapsed = center.to(location).expand_as(location).clone()
-            mob.setattr_and_rebatch_without_record("location", collapsed)
+            mob._setattr_and_rebatch_without_record("location", collapsed)
             if hasattr(mob, "opacity"):
-                mob.setattr_and_rebatch_without_record(
+                mob._setattr_and_rebatch_without_record(
                     "opacity", torch.zeros_like(mob.opacity)
                 )
         return placeholder
@@ -284,7 +284,7 @@ class MobMorphMixin:
                 self.scene.add_actor(descendant)
         return mob
 
-    def expand_n_list(self, lst, n: int, counterparts=None) -> list:
+    def _expand_n_list(self, lst, n: int, counterparts=None) -> list:
         """Pad a list of point tensors with counterpart-shaped degenerates.
 
         ``counterparts`` is optional for callers of the historical helper
@@ -326,7 +326,7 @@ class MobMorphMixin:
         )
         return aligned
 
-    def expand_n_children(self, n: int, counterparts=None) -> Mob:
+    def _expand_n_children(self, n: int, counterparts=None) -> Mob:
         """Add ``n`` counterpart-shaped, collapsed children.
 
         Padding a spawned source registers and instantly spawns the new parts;
@@ -372,7 +372,7 @@ class MobMorphMixin:
         bump_hierarchy_version()
         return self
 
-    def expand_n_tensor(
+    def _expand_n_tensor(
         self, value: torch.Tensor, n: int, counterparts=None
     ) -> torch.Tensor:
         """Pad a path's segment tensor with contour-continuous degenerates.
@@ -401,7 +401,7 @@ class MobMorphMixin:
             aligned.append(segment)
         return torch.stack(aligned, dim=-3)
 
-    def expand_n_batch(self, n: int) -> Mob:
+    def _expand_n_batch(self, n: int) -> Mob:
         """Grow an object batch by ``n``, re-batching all structural state."""
         if n <= 0:
             return self
@@ -441,7 +441,7 @@ class MobMorphMixin:
                 else:
                     seen.add(source_index)
                 expanded.append(source)
-            self.setattr_and_rebatch_without_record(
+            self._setattr_and_rebatch_without_record(
                 attr,
                 squish(torch.stack(expanded, dim=-3), -3, -2).unsqueeze(0),
             )
@@ -516,7 +516,7 @@ class MobMorphMixin:
             per_object = unsquish(value, -2, points_per_object)
             if per_object.shape[-3] != num_objects:
                 continue
-            self.setattr_and_rebatch_without_record(
+            self._setattr_and_rebatch_without_record(
                 attr,
                 squish(per_object.index_select(-3, permutation), -3, -2).unsqueeze(0),
             )
@@ -558,7 +558,7 @@ class MobMorphMixin:
             )
             if packed_count is not None:
                 value = value.flatten(-3, -2)
-            surface.grid.setattr_and_rebatch_without_record(attr, value)
+            surface.grid._setattr_and_rebatch_without_record(attr, value)
 
         surface.grid_width = int(width)
         surface.grid_height = int(height)
@@ -620,11 +620,11 @@ class MobMorphMixin:
         their_parents = get_parent_circuits(theirs)
         difference = len(their_parents) - len(my_parents)
         if difference > 0:
-            my_parents = mine.expand_n_list(
+            my_parents = mine._expand_n_list(
                 my_parents, difference, counterparts=their_parents
             )
         elif difference < 0:
-            their_parents = theirs.expand_n_list(
+            their_parents = theirs._expand_n_list(
                 their_parents, -difference, counterparts=my_parents
             )
 
@@ -636,11 +636,11 @@ class MobMorphMixin:
             their_paths = get_sub_circuits(their_parent)
             difference = len(their_paths) - len(my_paths)
             if difference > 0:
-                my_paths = mine.expand_n_list(
+                my_paths = mine._expand_n_list(
                     my_paths, difference, counterparts=their_paths
                 )
             elif difference < 0:
-                their_paths = theirs.expand_n_list(
+                their_paths = theirs._expand_n_list(
                     their_paths, -difference, counterparts=my_paths
                 )
 
@@ -649,11 +649,11 @@ class MobMorphMixin:
             for my_path, their_path in zip(my_paths, their_paths):
                 difference = their_path.shape[-3] - my_path.shape[-3]
                 if difference > 0:
-                    my_path = mine.expand_n_tensor(
+                    my_path = mine._expand_n_tensor(
                         my_path, difference, counterparts=their_path
                     )
                 elif difference < 0:
-                    their_path = theirs.expand_n_tensor(
+                    their_path = theirs._expand_n_tensor(
                         their_path, -difference, counterparts=my_path
                     )
                 aligned_mine.append(my_path)
@@ -668,14 +668,14 @@ class MobMorphMixin:
         my_count = mine.location.shape[-2] // 4
         their_count = theirs.location.shape[-2] // 4
         if segment_count > my_count:
-            mine.expand_n_batch(segment_count - my_count)
+            mine._expand_n_batch(segment_count - my_count)
         if segment_count > their_count:
-            theirs.expand_n_batch(segment_count - their_count)
-        mine.setattr_and_rebatch_without_record(
+            theirs._expand_n_batch(segment_count - their_count)
+        mine._setattr_and_rebatch_without_record(
             "location",
             squish(torch.cat(my_parent_batches, dim=-3), -3, -2).unsqueeze(0),
         )
-        theirs.setattr_and_rebatch_without_record(
+        theirs._setattr_and_rebatch_without_record(
             "location",
             squish(torch.cat(their_parent_batches, dim=-3), -3, -2).unsqueeze(0),
         )
@@ -701,9 +701,9 @@ class MobMorphMixin:
         their_children = theirs.get_non_component_children()
         difference = len(their_children) - len(my_children)
         if difference > 0:
-            mine.expand_n_children(difference, counterparts=their_children)
+            mine._expand_n_children(difference, counterparts=their_children)
         elif difference < 0:
-            theirs.expand_n_children(-difference, counterparts=my_children)
+            theirs._expand_n_children(-difference, counterparts=my_children)
 
         if mine.num_points_per_object == 4:
             self._align_cubic_geometry(mine, theirs)
@@ -712,9 +712,9 @@ class MobMorphMixin:
                 theirs.location.shape[-2] - mine.location.shape[-2]
             ) // mine.num_points_per_object
             if difference > 0:
-                mine.expand_n_batch(difference)
+                mine._expand_n_batch(difference)
             elif difference < 0:
-                theirs.expand_n_batch(-difference)
+                theirs._expand_n_batch(-difference)
             if minimize_movement:
                 theirs.reorder_batch_to_minimize_movement(mine)
 
@@ -973,9 +973,9 @@ class MobMorphMixin:
             target_soup.location.shape[-2] - source_soup.location.shape[-2]
         ) // 3
         if difference > 0:
-            source_soup.expand_n_batch(difference)
+            source_soup._expand_n_batch(difference)
         elif difference < 0:
-            target_soup.expand_n_batch(-difference)
+            target_soup._expand_n_batch(-difference)
         if minimize_movement:
             target_soup.reorder_batch_to_minimize_movement(source_soup)
 

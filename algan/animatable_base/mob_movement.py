@@ -17,6 +17,7 @@ from algan.settings import SETTINGS
 from algan.utils.tensor_utils import (
     broadcast_cross_product,
     broadcast_gather,
+    cast_to_direction,
     cast_to_tensor,
     dot_product,
 )
@@ -326,7 +327,9 @@ class MobMovementMixin:
 
             Scene.save_video()
         """
-        self.move_to(self.location + cast_to_tensor(displacement), **kwargs)
+        self.move_to(
+            self.location + cast_to_direction("displacement", displacement), **kwargs
+        )
         return self
 
     def move_next_to(
@@ -383,6 +386,7 @@ class MobMovementMixin:
             Align edges along one axis without changing the others.
         """
         buffer = _resolve_buffer(buffer)
+        direction = cast_to_direction("direction", direction)
         normalized_direction = F.normalize(direction, p=2, dim=-1)
         # Get the boundary point of the target_mob along the given direction
         target_edge_point = (
@@ -680,6 +684,7 @@ class MobMovementMixin:
             Move all the way off-screen.
         """
         buffer = _resolve_buffer(buffer)
+        edge = cast_to_direction("edge", edge)
         normalized_edge = F.normalize(edge, p=2, dim=-1)
         # Get the boundary point of this Mob that is furthest towards the 'edge' direction
         mob_boundary_point = self.get_boundary_in_direction(normalized_edge)

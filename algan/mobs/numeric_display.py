@@ -98,7 +98,7 @@ class NumericDisplay(Mob):
                     d.location = location
             super().__init__(**kwargs)
             self.register_attrs_as_animatable(["value"], NumericDisplay)
-            self.setattr_without_record("value", value)
+            self._setattr_without_record("value", value)
 
             parent_location, parent_basis = self.location, self.basis
 
@@ -159,7 +159,7 @@ class NumericDisplay(Mob):
         old_value = self.value
         interpolated_value = old_value * (1 - interpolation) + interpolation * value
         self.update_display(interpolated_value)
-        self.setattr_and_record_modification("value", value)
+        self._setattr_and_record_modification("value", value)
         return self
 
     def _required_integer_places(self, value):

@@ -15,6 +15,55 @@ from algan.sound.audio_effect import AudioEffect
 DEFAULT_RUN_TIME = 1
 DEFAULT_RATE_FUNC = rate_funcs.smooth
 
+# AnimationContext parameters -- not method arguments. Manim spells timing per
+# call (``mob.shift(RIGHT, run_time=2)``); Algan spells it with a with-block, so
+# one of these names arriving at a Mob method is always the same mistake. The
+# value is the context class to point the user at.
+_CONTEXT_ONLY_PARAMS = {
+    "run_time": "Seq",
+    "run_time_unit": "Seq",
+    "same_run_time": "Sync",
+    "lag_ratio": "Lag",
+    "rate_func": "Seq",
+    "rate_func_compose": "ComposeRateFunc",
+    "combine_rate_func": "Seq",
+    "priority_level": "Off",
+    "record_funcs": "Off",
+    "record_attr_modifications": "Off",
+    "spawn_at_end": "Seq",
+}
+
+
+def _reject_context_kwargs(kwargs):
+    """Raise a useful TypeError if ``kwargs`` carries animation-context timing.
+
+    Mob methods do not take ``run_time`` and friends; the surrounding
+    :class:`AnimationContext` does. Without this, such a call dies inside a
+    generated closure with a traceback that names neither the method the user
+    wrote nor the thing they should have written instead.
+    """
+    for name in kwargs:
+        context = _CONTEXT_ONLY_PARAMS.get(name)
+        if context is None:
+            continue
+        value = kwargs[name] if isinstance(kwargs, dict) else None
+        # Lag takes its ratio positionally; Seq/Sync hard-code it, so
+        # ``with Seq(lag_ratio=...)`` would itself raise.
+        if name == "lag_ratio":
+            call = f"Lag({value!r})" if value is not None else "Lag(0.5)"
+        elif name == "run_time" and value == 0:
+            call = "Off()"
+        elif value is not None:
+            call = f"{context}({name}={value!r})"
+        else:
+            call = f"{context}({name}=...)"
+        raise TypeError(
+            f"'{name}' sets the timing of an animation context, not of a "
+            f"single call. Wrap the call instead:\n\n"
+            f"    with {call}:\n"
+            f"        ...\n"
+        )
+
 
 class AnimationManager:
     """Per-Scene owner of the active animation-context stack.

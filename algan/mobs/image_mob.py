@@ -71,7 +71,7 @@ class ImageMob(Surface):
             **kwargs,
         )
         if not textured:
-            self.grid.setattr_without_record("color", surface_colors.flatten(-3, -2))
+            self.grid._setattr_without_record("color", surface_colors.flatten(-3, -2))
         if isinstance_if_loaded(rgba_array_or_file_path, _manim, "ImageMobject"):
             self.scale(torch.tensor((submob.width / 2, submob.height / 2, 1)).float())
             self.move_to(submob.get_center())

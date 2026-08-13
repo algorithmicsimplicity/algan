@@ -8,6 +8,32 @@ implementation-specific exceptions from Torch, Taichi, MoviePy, or FFmpeg.
 
 from __future__ import annotations
 
+import os
+import sys
+
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _user_stacklevel(default: int = 2) -> int:
+    """Frames from the caller out to the first frame outside algan.
+
+    ``warnings.warn(..., stacklevel=N)`` needs a hand-counted N, and the count
+    differs between call paths -- ``Scene.save_video`` goes through one more
+    frame than ``scene.save_video``. Walking out to the first non-algan frame
+    points the warning at the user's own line either way.
+
+    (``warnings.warn``'s ``skip_file_prefixes`` would do this directly, but it
+    is Python 3.12+ and Algan supports 3.9.)
+    """
+    frame = sys._getframe(1)
+    level = 1
+    while frame is not None:
+        if not os.path.abspath(frame.f_code.co_filename).startswith(_PACKAGE_DIR):
+            return level
+        frame = frame.f_back
+        level += 1
+    return default
+
 
 class AlganError(Exception):
     """Base class for user-facing Algan exceptions."""
@@ -57,6 +83,12 @@ class ApproximationWarning(AlganWarning):
     code = "ALGAN_APPROXIMATION"
 
 
+class NeverSpawnedMobWarning(AlganWarning):
+    """Warns that Mobs were authored but never spawned, so they do not appear."""
+
+    code = "ALGAN_NEVER_SPAWNED_MOB"
+
+
 __all__ = [
     "AlganError",
     "AlganConfigurationError",
@@ -66,4 +98,5 @@ __all__ = [
     "UnsupportedFeatureWarning",
     "LegacySceneDiscoveryWarning",
     "ApproximationWarning",
+    "NeverSpawnedMobWarning",
 ]

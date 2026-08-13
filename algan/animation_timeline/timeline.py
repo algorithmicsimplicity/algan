@@ -24,7 +24,7 @@ UPDATER_FOREVER = 1e12
 #: Global structure version, bumped whenever the mob hierarchy or any
 #: attribute timeline's row allocation changes. Version-checked caches of
 #: concatenated descendant row indexes (see
-#: :meth:`~algan.animatable_base.animatable.Animatable.get_attr_inds`) are
+#: :meth:`~algan.animatable_base.animatable.Animatable._get_attr_inds`) are
 #: invalidated by comparing against it, so they never have to be cleared
 #: explicitly.
 STRUCTURE_VERSION = [0]

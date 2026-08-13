@@ -98,6 +98,35 @@ recording and per-frame materialization every built-in attribute has -- after th
     Register the attributes **before** assigning them. Assigning first stores a plain
     Python value that the timeline knows nothing about.
 
+Helpers Outside the Star Import
+===============================
+
+``from algan import *`` is deliberately curated: it carries the names you need to
+author a scene, and leaves out lower-level helpers that would otherwise spend a name
+in every user's namespace. Those helpers are still public and still supported --
+import them from the module that defines them:
+
+.. code-block:: python
+
+    from algan.geometry.geometry import (
+        get_orthonormal_vector,
+        get_rotation_around_axis,
+        get_rotation_between_bases,
+        map_global_to_local_coords,
+        map_local_to_global_coords,
+        project_onto_basis,
+        rotate_vector_around_axis,
+    )
+    from algan.utils.animation_utils import animate_lagged_by_location
+    from algan.utils.mob_utils import batch_mobs
+
+These are the ones worth knowing about when writing a custom animation or Mob:
+the ``algan.geometry.geometry`` functions convert between world and Mob-local
+coordinate frames and build rotation matrices, ``animate_lagged_by_location``
+staggers an animation across a batch by where each element sits in space, and
+``batch_mobs`` packs several Mobs into one batched Mob so they animate as a single
+recorded operation.
+
 Adding a Render Primitive
 =========================
 

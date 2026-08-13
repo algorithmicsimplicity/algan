@@ -10,12 +10,18 @@ import torch.nn.functional as F
 
 from algan import animated_function
 from algan.constants.spatial import *
+from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import (
     get_rotation_around_axis,
     get_rotation_between_3d_vectors,
     rotate_vector_around_axis,
 )
-from algan.utils.tensor_utils import cast_to_tensor, squish, unsquish
+from algan.utils.tensor_utils import (
+    cast_to_direction,
+    cast_to_tensor,
+    squish,
+    unsquish,
+)
 
 
 class MobOrientationMixin:
@@ -103,11 +109,20 @@ class MobOrientationMixin:
 
             Scene.save_video()
         """
-        axis = F.normalize(cast_to_tensor(axis), p=2, dim=-1)
+        # num_degrees has already been through cast_to_tensor in prepare_kwargs,
+        # so a swapped rotate(OUT, 90) arrives here as a (*, 3) angle and a
+        # scalar axis. Catching it here names the parameters; left alone it
+        # surfaces as an IndexError from deep inside the rotation matrix build.
+        if isinstance(num_degrees, torch.Tensor) and num_degrees.shape[-1] != 1:
+            raise AlganConfigurationError(
+                "num_degrees must be an angle in degrees, not a vector; the "
+                "signature is rotate(num_degrees, axis)"
+            )
+        axis = F.normalize(cast_to_direction("axis", axis), p=2, dim=-1)
         rotation_matrix = get_rotation_around_axis(num_degrees, axis, dim=-1)
         self.basis = squish(unsquish(self.basis, -1, 3) @ rotation_matrix, -2, -1)
         if about_point is not None:
-            self.orbit(num_degrees, axis, about_point)
+            self.orbit(num_degrees, axis, cast_to_direction("about_point", about_point))
         return self
 
     @animated_function(
@@ -154,8 +169,8 @@ class MobOrientationMixin:
         """
         if about_point is None:
             return self
-        axis = F.normalize(cast_to_tensor(axis), p=2, dim=-1)
-        about_point = cast_to_tensor(about_point)
+        axis = F.normalize(cast_to_direction("axis", axis), p=2, dim=-1)
+        about_point = cast_to_direction("about_point", about_point)
         self.location = (
             rotate_vector_around_axis(
                 self.location - about_point,

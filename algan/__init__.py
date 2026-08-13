@@ -302,6 +302,22 @@ _INTERNAL_EXPORT_NAMES = frozenset(
         "MANIM_OPENGL_MOBJECT_NAMES",
         "MANIM_PRIVATE_MOBJECT_NAMES",
         "MANIM_EXTERNAL_TOOL_MOBJECT_NAMES",
+        # Helpers that are genuinely useful when writing custom animations, but
+        # too specialised to spend a name in every user's namespace. They stay
+        # importable from the module that defines them -- see
+        # docs/source/advanced_user_tutorials/extending_algan.rst.
+        "project_onto_basis",  # algan.geometry.geometry
+        "map_global_to_local_coords",  # algan.geometry.geometry
+        "map_local_to_global_coords",  # algan.geometry.geometry
+        "rotate_vector_around_axis",  # algan.geometry.geometry
+        "get_rotation_around_axis",  # algan.geometry.geometry
+        "get_rotation_between_bases",  # algan.geometry.geometry
+        "get_orthonormal_vector",  # algan.geometry.geometry
+        "batch_mobs",  # algan.utils.mob_utils
+        "animate_lagged_by_location",  # algan.utils.animation_utils
+        "render_all_funcs",  # algan.utils.algan_utils (or Scene.render_all_funcs)
+        "null_shader",  # algan.rendering.shaders.pbr_shaders
+        "DEFAULT_RATE_FUNC",  # algan.animation_timeline.animation_contexts
     }
 )
 

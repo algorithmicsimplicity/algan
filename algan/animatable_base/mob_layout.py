@@ -15,7 +15,12 @@ from algan.animation_timeline.animation_contexts import Sync
 from algan.constants.spatial import *
 from algan.errors import AlganConfigurationError
 from algan.geometry.geometry import project_point_onto_line
-from algan.utils.tensor_utils import broadcast_gather, cast_to_tensor, dot_product
+from algan.utils.tensor_utils import (
+    broadcast_gather,
+    cast_to_direction,
+    cast_to_tensor,
+    dot_product,
+)
 
 # Refinement budget for fit_to_screen_rectangle. The scale converges
 # superlinearly, but re-centering under perspective only converges linearly, so
@@ -820,7 +825,10 @@ class MobLayoutMixin:
         :meth:`~algan.animatable_base.mob_layout.MobLayoutMixin.get_boundary_edge_point`
             The true extreme point, which may be off-axis.
         """
-        direction = F.normalize(direction, p=2, dim=-1)
+        # Funnels get_length_in_direction, move_inline_with_*, move_next_to and
+        # Group.arrange_in_line, all of which otherwise fail with a bare
+        # AttributeError on 'int' when handed a scalar.
+        direction = F.normalize(cast_to_direction("direction", direction), p=2, dim=-1)
         edge_point = self.get_boundary_edge_point(direction)
 
         # Get the logical center of the Mob (or its current location if no complex center is defined)

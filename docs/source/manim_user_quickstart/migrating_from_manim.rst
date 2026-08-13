@@ -83,6 +83,53 @@ Use ``Seq``, ``Lag``, and ``Off`` for sequential, overlapping, and instantaneous
 changes. ``run_time`` controls a context's total duration; ``run_time_unit``
 controls the default duration of each child animation.
 
+Angles are in degrees
+=====================
+
+Manim measures angles in radians. Algan measures them in **degrees**, and this is
+the easiest difference to miss, because a radian value is a perfectly legal
+argument -- it simply produces a very small rotation instead of raising:
+
+==============================  =============================================
+Manim                           Algan
+==============================  =============================================
+``mob.rotate(PI / 2)``          ``mob.rotate(90)``
+``mob.rotate(TAU)``             ``mob.rotate(360)``
+``mob.rotate(-3 * TAU / 8)``    ``mob.rotate(-135)``
+==============================  =============================================
+
+If you would rather not convert in your head, multiply by ``DEGREES`` or
+``RADIANS``. Both are exported by ``from algan import *``, and both yield the
+degrees that Algan's API expects:
+
+.. code-block:: python
+
+    square.rotate(180 * DEGREES)  # 180 degrees
+    square.rotate(PI * RADIANS)   # pi radians -- the same half turn
+
+.. important::
+
+    Algan's ``DEGREES`` is the reciprocal of Manim's. Manim's native unit is
+    radians, so its ``DEGREES`` converts degrees *to* radians; Algan's native unit
+    is already degrees, so ``DEGREES`` is 1. Copying ``rotate(90 * DEGREES)`` from
+    a Manim script gives 90 degrees in Algan and 1.57 in Manim -- both correct, for
+    different reasons.
+
+A few Manim-parity surfaces keep Manim's radians on purpose. These take
+**radians**, not degrees:
+
+* :class:`~algan.mobs.manim_mob.ManimMob` and the other Manim-compatibility mobs
+  override ``rotate`` to forward straight to Manim, so ``angle`` there is in
+  radians.
+* ``RegularPolygon(start_angle=...)`` and ``Line(path_arc=...)``.
+* ``Wiggle(rotation_angle=...)``.
+* The ``u_range`` / ``v_range`` parametric domains of :class:`~algan.mobs.shapes_3d.Sphere`,
+  ``Cone``, ``Cylinder`` and ``Torus`` -- these are parameter intervals rather
+  than rotations.
+
+Everything else -- including ``rotate``, ``orbit``, ``move(path_arc_angle=...)``,
+camera field of view and Euler angles, and light cone angles -- is in degrees.
+
 Transforms
 ==========
 
