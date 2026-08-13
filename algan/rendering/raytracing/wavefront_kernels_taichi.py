@@ -59,7 +59,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     finalize_pixel_color,
 )
 from algan.rendering.raytracing.shading_taichi import (
-    _MID_DEFAULT,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
@@ -2239,14 +2238,13 @@ def wavefront_shade(
                         # Shadow visibility is skipped exactly where it cannot
                         # reach the output: an UNLIT hit never consumes ``vis``
                         # (passthrough shading; scatters take no ``vis``), and
-                        # in the lit built-in stages every ``vis``-gated term
-                        # carries the light colour as a factor, so a
-                        # zero-colour light row (not yet spawned, or despawned)
-                        # contributes exactly 0 whatever its visibility. The
-                        # default stage weights its base fade by ``vis`` even
-                        # for zero-colour lights, and user pipelines may read
-                        # ``vis`` arbitrarily -- both keep the exact fan for
-                        # every light.
+                        # in every built-in stage a zero-colour light row (not
+                        # yet spawned, or despawned) contributes nothing
+                        # whatever its visibility -- the lit stages' terms all
+                        # carry the light colour as a factor, and the default
+                        # stage skips zero-colour rows outright. Only user
+                        # pipelines, which may read ``vis`` arbitrarily, keep
+                        # the exact fan for every light.
                         do_fan = 0
                         fan_exact = 1
                         if (htype == 1) or (htype == 2):
@@ -2259,8 +2257,7 @@ def wavefront_shade(
                                                   prim]
                             if pid_s != _MID_UNLIT:
                                 do_fan = 1
-                                if ((pid_s != _MID_DEFAULT)
-                                        and (pid_s < _USER_PIPELINE_BASE)):
+                                if pid_s < _USER_PIPELINE_BASE:
                                     fan_exact = 0
                         if do_fan == 1:
                             # Smooth shading normal and the *geometric* face

@@ -122,6 +122,13 @@ class Light(Mob):
 
     light_type = LIGHT_POINT
 
+    #: Aux-column range ``(start, stop)`` carrying RADIANCE (not geometry):
+    #: those columns must scale with the light's per-frame opacity at
+    #: materialization, so a light outside its lifespan is a genuinely inert
+    #: all-zero row (its RGB columns already scale with opacity). ``None``
+    #: when every emitted quantity lives in the RGB columns.
+    _AUX_RADIANCE_COLS = None
+
     def __init__(self, *args, intensity=1.0, **kwargs):
         self.intensity = _finite_number("intensity", intensity, minimum=0.0)
         kwargs["add_to_scene"] = False
@@ -369,6 +376,11 @@ class HemisphereLight(Light):
     """
 
     light_type = LIGHT_HEMISPHERE
+
+    # Ground colour (aux columns 9:12) is emitted radiance: without opacity
+    # scaling, a not-yet-spawned or despawned hemisphere light would keep
+    # lighting downward-facing surfaces from its aux row alone.
+    _AUX_RADIANCE_COLS = (9, 12)
 
     def __init__(self, *args, ground_color=None, up=UP, **kwargs):
         if not args and "location" not in kwargs:

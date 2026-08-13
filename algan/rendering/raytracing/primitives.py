@@ -315,19 +315,38 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
                     # path, which their presence forces on; the per-vertex
                     # shader convention only knows point lights.
                     continue
+                # A zero-colour frame row is a light outside its lifespan (or
+                # genuinely black) and must contribute nothing -- exactly as
+                # if the light were not in the list. The legacy default shader
+                # lerps toward the light colour with a colour-independent
+                # weight, so without this gate a not-yet-spawned light would
+                # darken vertex-shaded mobs, and the output would depend on
+                # whether a batch boundary happened to include the light.
+                light_color = light_source.light_color
+                live = (light_color != 0).any(dim=-1, keepdim=True)
+                if not bool(live.any()):
+                    continue
                 with self.memory.temp():
-                    self.colors[..., :d] = self.shader(
+                    shaded = self.shader(
                         self.memory,
                         self.corners,
                         self.normals,
                         self.colors[..., :d],
                         camera.ray_origin,
                         light_source.origin,
-                        light_source.light_color,
+                        light_color,
                         1,
                         1,
                         *param_values,
                     )
+                    if bool(live.all()):
+                        # Every frame is live: plain assignment, bit-identical
+                        # to the ungated path.
+                        self.colors[..., :d] = shaded
+                    else:
+                        self.colors[..., :d] = torch.where(
+                            live, shaded, self.colors[..., :d]
+                        )
 
     def _pack_material(self):
         """Per-primitive material id ``[1, N]`` and the canonical material

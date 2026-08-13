@@ -444,22 +444,46 @@ def _stage_default(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     out = in_rgb
     acc = ti.math.vec3(0.0, 0.0, 0.0)
     wsum = 0.0
+    tl0 = f % light_col.shape[0]
     for li in range(num_lights):
-        ld, lc, _spec_w, frac = _light_eval(light_pos, light_col, f, li, pos, n)
-        v = _light_vis(shadows, vis, li)
-        d = ti.max(ld.dot(n), 0.0)
-        w = d * d * d * d * d * 0.5 * v
-        acc += lc * w
-        # The base fade-out counts each row by its *power fraction* (1/K for an
-        # area light's K emitter samples, 1 otherwise), so one area light
-        # displaces at most as much base colour as one point light would --
-        # while ``acc`` (whose per-sample radiance already carries the 1/K)
-        # sums back to the full light colour. Without this, a fully-occluded
-        # umbra under a many-sample area light would revert toward the raw
-        # albedo (which can be *brighter* than the dimly-lit surroundings, a
-        # "bright shadow"), because the K dim samples each faded the base as a
-        # whole light while only delivering 1/K of the colour.
-        wsum += w * frac
+        # A zero-colour light row is a light outside its lifespan (or
+        # genuinely black) and must not fade the base colour: it either was
+        # filtered out of the batch's light list entirely, or belongs to a
+        # batch straddling its spawn -- and the output must not depend on
+        # which of those happened. Gated on the RAW row colour (not the
+        # evaluated ``lc``) so live-light modifiers (spot cones, decay)
+        # keep their existing fade behaviour. Hemisphere / environment-SH
+        # rows radiate from their aux columns even with zero RGB (a black-sky
+        # hemisphere still has a ground colour), so they are always kept --
+        # their out-of-lifespan rows are inert anyway (the aux radiance
+        # columns scale with opacity at materialization).
+        row_live = 0
+        if ((light_col[tl0, li, 0] != 0.0)
+                or (light_col[tl0, li, 1] != 0.0)
+                or (light_col[tl0, li, 2] != 0.0)):
+            row_live = 1
+        elif light_col.shape[2] > 3:
+            lt0 = ti.cast(light_col[tl0, li, 3] + 0.5, ti.i32)
+            if (lt0 == _LT_HEMISPHERE) or (lt0 == _LT_ENV_SH):
+                row_live = 1
+        if row_live == 1:
+            ld, lc, _spec_w, frac = _light_eval(light_pos, light_col, f, li,
+                                                pos, n)
+            v = _light_vis(shadows, vis, li)
+            d = ti.max(ld.dot(n), 0.0)
+            w = d * d * d * d * d * 0.5 * v
+            acc += lc * w
+            # The base fade-out counts each row by its *power fraction* (1/K
+            # for an area light's K emitter samples, 1 otherwise), so one area
+            # light displaces at most as much base colour as one point light
+            # would -- while ``acc`` (whose per-sample radiance already
+            # carries the 1/K) sums back to the full light colour. Without
+            # this, a fully-occluded umbra under a many-sample area light
+            # would revert toward the raw albedo (which can be *brighter*
+            # than the dimly-lit surroundings, a "bright shadow"), because
+            # the K dim samples each faded the base as a whole light while
+            # only delivering 1/K of the colour.
+            wsum += w * frac
     out = out * (1.0 - ti.min(wsum, 1.0)) + acc
     return ti.math.vec4(out[0], out[1], out[2], in_glow)
 

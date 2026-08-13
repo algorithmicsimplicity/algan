@@ -188,6 +188,11 @@ def _slice_render_state(render_state, start, end, total_frames):
             (sliced(origin), sliced(color), sliced(aux))
             for origin, color, aux in render_state["lights"]
         ],
+        # The kept light objects stay aligned with ``lights``. A light that
+        # overlaps the fetched window but not this prefix keeps its (all-zero)
+        # rows -- zero rows are inert everywhere, so the prefix renders the
+        # same as a fresh fetch of it would.
+        "light_objects": render_state.get("light_objects"),
     }
 
 
@@ -997,8 +1002,16 @@ class RenderLoopMixin:
             camera.output_screen_width = self.num_pixels_screen_width
             camera.output_screen_height = self.num_pixels_screen_height
             camera.analytic_raster = projection_analytic
+            # The snapshot carries only lights whose lifespan intersects this
+            # window (see _materialize_render_state); everything downstream of
+            # here -- vertex shading, the packed light rows, the route
+            # decision -- must consume the same filtered list, or the zipped
+            # snapshot tensors would land on the wrong light objects.
+            render_lights = render_state.get("light_objects")
+            if render_lights is None:
+                render_lights = self.light_sources
             for light, (origin, light_color, aux) in zip(
-                self.light_sources, render_state["lights"]
+                render_lights, render_state["lights"]
             ):
                 light.origin = origin
                 light.light_color = light_color
@@ -1055,7 +1068,7 @@ class RenderLoopMixin:
                 scratch = ManualMemory(0, device=source_device, managed=False)
                 try:
                     primitive.memory = scratch
-                    primitive.project_to_screen(camera, self.light_sources)
+                    primitive.project_to_screen(camera, render_lights)
                 finally:
                     primitive.memory = original_memory
             if _measuring:
@@ -1112,7 +1125,7 @@ class RenderLoopMixin:
             aa = effective_anti_alias_level(
                 merged_host,
                 self.video_settings.anti_alias_level,
-                light_sources=self.light_sources,
+                light_sources=render_lights,
                 environment_map=env_map,
                 near_clip=float(getattr(camera, "near", 0.0) or 0.0),
                 far_clip=float(getattr(camera, "far", 0.0) or 0.0),
@@ -1207,7 +1220,7 @@ class RenderLoopMixin:
                     camera.screen_point,
                     camera.screen_basis,
                     anti_alias_level=self.video_settings.anti_alias_level,
-                    light_sources=self.light_sources,
+                    light_sources=render_lights,
                     memory=self.memory,
                     post_processes=post_processes,
                 )
@@ -1847,6 +1860,17 @@ class RenderLoopMixin:
         instead of writing camera attributes means the render thread never
         reads animated state -- by the time a batch renders, prep for the
         *next* batch may be mutating that state on a worker thread.
+
+        Lights whose lifespan never intersects the frame window are left out
+        of the snapshot entirely (``light_objects`` carries the kept objects,
+        aligned with ``lights``): an unspawned or already-despawned light
+        contributes nothing, so packing it would only cost per-light kernel
+        work in every batch after its despawn. A light that is live for part
+        of the window is kept; its out-of-lifespan frames materialize
+        zero-colour rows, which every lighting path treats as inert (the
+        shadow fans and the default shaders skip zero-colour rows), so the
+        output does not depend on where batch boundaries happen to fall
+        relative to a light's spawn.
         """
         camera = self.camera
         # Batch preparation is CPU/source-device work.  Keeping this snapshot
@@ -1855,8 +1879,25 @@ class RenderLoopMixin:
         # batch is still resident there.
         camera_location = camera.location
         device = camera_location.device
+        fps = self.frames_per_second
+        window_start_time = start_ind / fps
+        window_end_time = end_ind / fps
         lights = []
+        light_objects = []
         for light in self.light_sources:
+            # Same lifespan-overlap test as the render loop's actor filter:
+            # start < 0 means never spawned, end < 0 means never despawned.
+            try:
+                spawn_time = float(light.lifespan.start())
+                despawn_time = float(light.lifespan.end())
+            except (AttributeError, TypeError, ValueError):
+                spawn_time = 0.0
+                despawn_time = -1.0
+            if spawn_time < 0 or spawn_time > window_end_time:
+                continue
+            if 0 <= despawn_time < window_start_time:
+                continue
+            light_objects.append(light)
             loc = light.location
             col = light.color[..., :-1] * light.color[..., -1:] * light.opacity
             intensity = float(getattr(light, "intensity", 1.0))
@@ -1876,6 +1917,18 @@ class RenderLoopMixin:
                     (col_f / k if k > 1 else col_f).unsqueeze(-2).expand(-1, k, -1)
                 )
                 aux = light.build_aux(loc_f)  # [T, K, 13]
+                radiance_cols = getattr(light, "_AUX_RADIANCE_COLS", None)
+                if radiance_cols is not None:
+                    # Radiance-bearing aux columns (a hemisphere's ground
+                    # colour) scale with the light's per-frame opacity, like
+                    # the RGB columns above -- so frames outside the light's
+                    # lifespan pack a genuinely all-zero (inert) row rather
+                    # than a row that keeps emitting from its aux columns.
+                    a, b = radiance_cols
+                    opacity = light.opacity
+                    aux[..., a:b] = aux[..., a:b] * opacity.reshape(
+                        opacity.shape[0], 1, 1
+                    )
                 lights.append(
                     (pos_rows.to(device), col_rows.to(device), aux.to(device))
                 )
@@ -1892,6 +1945,7 @@ class RenderLoopMixin:
             "screen_point": camera.screen.location.unsqueeze(-2).to(device),
             "screen_basis": camera.get_render_screen_basis().to(device),
             "lights": lights,
+            "light_objects": light_objects,
         }
 
     def get_frames(

@@ -77,7 +77,6 @@ from algan.rendering.raytracing.raytrace_kernels_taichi import (
     _shadow_occluded,
 )
 from algan.rendering.raytracing.shading_taichi import (
-    _MID_DEFAULT,
     _MID_UNLIT,
     _USER_PIPELINE_BASE,
     _orient_hit_normals,
@@ -3414,15 +3413,16 @@ def raster_shadow_trace(
             dpy = ti.math.vec3(event_dp[e, 3], event_dp[e, 4], event_dp[e, 5])
         tl = f % light_pos.shape[0]
         # The event's material pipeline id (packed above the 4-bit sub-pixel
-        # position mask at build time). For the lit built-in stages every
-        # visibility-gated term carries the light colour as a factor, so a
-        # zero-colour light row (not yet spawned, or despawned) keeps its
-        # all-lit default without tracing; the default stage weights its base
-        # fade by visibility even for zero-colour lights, and user pipelines
-        # may read it arbitrarily -- both keep the exact fan for every light.
+        # position mask at build time). In every built-in stage a zero-colour
+        # light row (not yet spawned, or despawned) contributes nothing
+        # whatever its visibility -- the lit stages' terms all carry the light
+        # colour as a factor, and the default stage skips zero-colour rows
+        # outright -- so such rows keep their all-lit default without tracing.
+        # Only user pipelines, which may read visibility arbitrarily, keep the
+        # exact fan for every light.
         pid_e = event_msk[e] >> 8
         fan_exact = 1
-        if (pid_e != _MID_DEFAULT) and (pid_e < _USER_PIPELINE_BASE):
+        if pid_e < _USER_PIPELINE_BASE:
             fan_exact = 0
         for li in range(num_lights):
             visibility = 1.0

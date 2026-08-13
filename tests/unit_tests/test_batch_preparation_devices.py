@@ -58,7 +58,9 @@ def test_render_state_snapshot_uses_camera_source_device():
         screen=SimpleNamespace(location=torch.zeros((2, 1, 3))),
         get_render_screen_basis=lambda: torch.eye(3).expand(2, -1, -1),
     )
-    scene = SimpleNamespace(camera=camera, light_sources=[])
+    # frames_per_second converts the frame window to times for the light
+    # lifespan filter (lights outside the window are left out of the snapshot).
+    scene = SimpleNamespace(camera=camera, light_sources=[], frames_per_second=10)
 
     state = RenderLoopMixin._materialize_render_state(scene, 0, 2)
 
