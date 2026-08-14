@@ -31,7 +31,7 @@ import torch
 import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
 from algan.errors import _user_stacklevel
-from algan.logging.logger import get_logger
+from algan.logging.logger import PERF, get_logger
 from algan.rendering.memory_model import (
     AffineFrameCost,
     ChunkMemoryModel,
@@ -2487,11 +2487,18 @@ class RenderLoopMixin:
                             if produced_output or duration <= 1:
                                 raise
                             self._note_render_arena_underestimate()
-                            logger.warning(
-                                "Render failed despite arena preflight "
-                                f"({type(render_exc).__name__}: {render_exc}); "
-                                f"retrying {current_time_ind}:{new_time_ind} "
-                                "at half duration."
+                            # Not a failure: the model sizes a chunk from
+                            # the batch's first frames and cannot see a
+                            # scene that densifies later, so this retry is
+                            # the designed backstop. Saying "failed" here,
+                            # at WARNING, and repeating the exception's
+                            # advice to lower the resolution made a healthy
+                            # render look broken.
+                            logger.log(
+                                PERF,
+                                "Frame batch did not fit; retrying "
+                                f"{current_time_ind}:{new_time_ind} at half "
+                                "duration.",
                             )
                             # A prefetched successor starts at the old end and
                             # is invalid after this split. Drain and discard it
