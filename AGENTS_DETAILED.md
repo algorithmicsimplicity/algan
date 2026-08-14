@@ -15,12 +15,7 @@ Algan is a lazy animation system. User code records scene state, animated functi
 
 Run commands from the repository root.
 
-Use the repository virtual environment rather than system Python. Commands on this page are written with the POSIX interpreter path; substitute your platform's:
-
-| Platform | Interpreter |
-| --- | --- |
-| Linux / macOS | `.venv/bin/python` |
-| Windows (the normal development checkout) | `.venv\Scripts\python.exe` |
+Use the repository virtual environment rather than system Python. Commands on this page are written as `<venv-python>`; **`CLAUDE.md` defines the per-platform interpreter path** and is the only place it is written down.
 
 `uv run python` resolves the right one on every platform.
 
@@ -29,8 +24,8 @@ Use the repository virtual environment rather than system Python. Commands on th
 ### Tests
 
 ```text
-.venv/bin/python -m pytest -q --fast
-.venv/bin/python -m pytest -q
+<venv-python> -m pytest -q --fast
+<venv-python> -m pytest -q
 ```
 
 The first command is the development loop and the one to run after every change: everything not marked `slow`, held to a two-and-a-half-minute budget (112–147 s on CUDA over consecutive warm runs, median ~135 s), reporting where it landed against that budget when it finishes. Treat that report as meaningless until the third consecutive run — any change touching a kernel makes the first run pay a cold Taichi compile. It is the behavioural suite under `tests/unit_tests/` plus one pixel-compared render under `tests/fast/`. The second is everything, about twelve minutes, and adds the five dense render scenes under `tests/full_renders/` and the expensive references the budget excludes. Run it after touching the renderer and before pushing.
@@ -44,8 +39,8 @@ Do not run multiple render tests concurrently on Windows. Killed render processe
 ### Documentation
 
 ```text
-.venv/bin/python docs/make_and_open_docs.py
-.venv/bin/python docs/make_and_open_docs.py --skip-examples --no-open
+<venv-python> docs/make_and_open_docs.py
+<venv-python> docs/make_and_open_docs.py --skip-examples --no-open
 ```
 
 The normal Sphinx build renders embedded examples and is therefore slow. Use `--skip-examples` for structural/autodoc checks that do not need fresh videos. Documentation source is under `docs/source/`. Checked-in API stubs under `docs/source/reference/` must be kept consistent with public modules, classes, and methods.

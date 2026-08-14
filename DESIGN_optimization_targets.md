@@ -181,7 +181,7 @@ already been wrapping correctly all along (it just predated the helper), and
   / query -- the one that found P4's real bottleneck),
   `_event_duration_dist_s05.py` (why an interval index does or does not prune).
 * Re-baseline, only after looking at the frames:
-  `ALGAN_UPDATE_FULL_RENDER_BASELINES=1 .venv/bin/python -m pytest tests/full_renders -q`
+  `ALGAN_UPDATE_FULL_RENDER_BASELINES=1 <venv-python> -m pytest tests/full_renders -q`
 
 ## The shape of the problem
 

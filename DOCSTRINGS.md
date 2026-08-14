@@ -457,7 +457,7 @@ Before you commit a change to a Tier-1 function:
 - [ ] Cross-references use roles, code uses `code-block`, literals use double backticks.
 - [ ] If you changed a default, a unit, or a name, the docstring changed with it.
 - [ ] `docs/source/reference/` stubs updated if members were added or removed, and
-      `.venv/bin/python docs/make_and_open_docs.py --skip-examples --no-open` builds clean.
+      `<venv-python> docs/make_and_open_docs.py --skip-examples --no-open` builds clean.
 
 ## 15. Current state and migration order
 

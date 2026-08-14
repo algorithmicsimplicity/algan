@@ -16,7 +16,7 @@ git clone https://github.com/algorithmicsimplicity/algan
 cd algan
 uv venv
 uv sync --locked --all-extras --dev
-.venv/bin/python -m pytest -q --fast    # .venv\Scripts\python.exe on Windows
+<venv-python> -m pytest -q --fast    # interpreter path: see the development guide
 ```
 
 That skips the system dependencies, which differ per platform and which the

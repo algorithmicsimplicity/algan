@@ -1,14 +1,14 @@
 # Algan test suites
 
 Three directories, two suites. Always run them with the project venv — the
-system Python has no taichi. Commands below use the POSIX interpreter path
-(`.venv/bin/python`); on Windows that is `.venv\Scripts\python.exe`, and
-`uv run python` works on either.
+system Python has no taichi. Commands below are written as `<venv-python>`;
+`CLAUDE.md` defines the per-platform interpreter path, and `uv run python`
+works on either.
 
 ## The fast suite — run this one
 
 ```bash
-.venv/bin/python -m pytest -q --fast
+<venv-python> -m pytest -q --fast
 ```
 
 **This is the suite to run after every change.** It is everything *not* marked
@@ -60,7 +60,7 @@ What it gives up, and where that is covered instead:
 ## The full suite
 
 ```bash
-.venv/bin/python -m pytest -q
+<venv-python> -m pytest -q
 ```
 
 Everything, about twelve minutes on CUDA. Run it before pushing, after touching
@@ -233,11 +233,11 @@ Both render suites are re-baselined by rendering with the baselines writable,
 then **looking at the result** before committing:
 
 ```bash
-ALGAN_UPDATE_FULL_RENDER_BASELINES=1 .venv/bin/python -m pytest tests/full_renders -q
+ALGAN_UPDATE_FULL_RENDER_BASELINES=1 <venv-python> -m pytest tests/full_renders -q
 ```
 
 ```bash
-ALGAN_UPDATE_FAST_BASELINE=1 .venv/bin/python -m pytest tests/fast -q
+ALGAN_UPDATE_FAST_BASELINE=1 <venv-python> -m pytest tests/fast -q
 ```
 
 Both variables are read by the harnesses rather than by the package, so

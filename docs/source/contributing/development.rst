@@ -98,7 +98,8 @@ top, replacing ``pip3`` with ``uv pip`` in the command PyTorch gives you.
 Running the interpreter
 =======================
 
-Every command below is written for the virtual environment's interpreter:
+Every command below is written as ``<venv-python>``, meaning the virtual
+environment's interpreter:
 
 * Linux / macOS: ``.venv/bin/python``
 * Windows: ``.venv\Scripts\python.exe``
@@ -112,8 +113,8 @@ Testing
 
 .. code-block:: bash
 
-   .venv/bin/python -m pytest -q --fast   # the development loop, ~2 minutes
-   .venv/bin/python -m pytest -q          # everything, ~12 minutes
+   <venv-python> -m pytest -q --fast   # the development loop, ~2 minutes
+   <venv-python> -m pytest -q          # everything, ~12 minutes
 
 Run ``--fast`` after every change and the full suite before opening a pull
 request. ``--fast`` is everything not marked ``slow``, held to a
@@ -136,14 +137,14 @@ Documentation
 
 .. code-block:: bash
 
-   .venv/bin/python docs/make_and_open_docs.py
+   <venv-python> docs/make_and_open_docs.py
 
 This renders every embedded example video, so it is slow and needs a system
 ``ffmpeg``. For a structural or autodoc-only check:
 
 .. code-block:: bash
 
-   .venv/bin/python docs/make_and_open_docs.py --skip-examples --no-open
+   <venv-python> docs/make_and_open_docs.py --skip-examples --no-open
 
 Docstrings on the public API follow ``DOCSTRINGS.md``; read it before writing
 or editing one.
@@ -153,8 +154,8 @@ Linting
 
 .. code-block:: bash
 
-   .venv/bin/python -m ruff check --no-fix
-   .venv/bin/python -m ruff format --check
+   <venv-python> -m ruff check --no-fix
+   <venv-python> -m ruff format --check
 
 .. warning::
 
