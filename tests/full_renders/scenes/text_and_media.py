@@ -13,6 +13,11 @@ the working directory while a scene renders.
 
 from algan import *
 
+# Pinned so the render does not depend on the host's fonts;
+# tests/conftest.py registers the vendored faces.
+FONT = "Algan Test Sans"
+MONO_FONT = "Algan Test Mono"
+
 Scene.set_background_color(DARKER_GRAY)
 
 # --------------------------------------------------------------------------
@@ -32,17 +37,21 @@ with Off():
         font_size=44,
         weight="BOLD",
         color=WHITE,
+        font=FONT,
     ).move(UP * 3.0)
 
-    plain = Text("regular", font_size=34, color=BLUE_A).move(LEFT * 4.3 + UP * 1.8)
-    bold = Text("bold", font_size=34, weight="BOLD", color=GREEN_A).move(
+    plain = Text(
+        "regular", font_size=34, color=BLUE_A, font=FONT
+    ).move(LEFT * 4.3 + UP * 1.8)
+    bold = Text("bold", font_size=34, weight="BOLD", color=GREEN_A, font=FONT).move(
         LEFT * 4.3 + UP * 1.1
     )
-    italic = Text("italic", font_size=34, slant="ITALIC", color=ORANGE).move(
+    italic = Text("italic", font_size=34, slant="ITALIC", color=ORANGE, font=FONT).move(
         LEFT * 4.3 + UP * 0.4
     )
     markup = MarkupText(
-        '<span foreground="#ffd700">markup</span>', font_size=34
+        '<span foreground="#ffd700">markup</span>', font_size=34,
+        font=FONT,
     ).move(LEFT * 4.3 + DOWN * 0.3)
     # The mesh-backed variants: same glyphs, triangulated instead of packed as
     # bezier circuits, so they exercise the flat-triangle path for text.
@@ -65,7 +74,7 @@ with Off():
     matrix_tex.move(RIGHT * 0.3 + DOWN * 0.15 - matrix_tex.get_center())
 
     paragraph = (
-        Paragraph("wrapped lines", "share one Group", alignment="left")
+        Paragraph("wrapped lines", "share one Group", alignment="left", font=FONT)
         .scale(0.75)
         .move(RIGHT * 4.2 + UP * 1.5)
     )
@@ -73,6 +82,10 @@ with Off():
         Code(
             code_string="def f(x):\n    return x * 2",
             background="window",
+            # Code defaults to the "Monospace" fontconfig alias, which
+            # resolves to whatever the host installs; name the vendored
+            # family so this block is reproducible too.
+            paragraph_config={"font": MONO_FONT},
         )
         .scale(0.42)
         .move(RIGHT * 4.0 + DOWN * 0.4)
@@ -82,6 +95,7 @@ with Off():
         "Text / MarkupText / TextTriangulated / Tex / MathTex / Paragraph / Code",
         font_size=22,
         color=GRAY_A,
+        font=FONT,
     ).move(DOWN * 2.65)
 
 with Seq():
@@ -107,7 +121,7 @@ with Seq():
 with Off():
     written = Tex(r"\textrm{write}", font_size=52, color=YELLOW)
     written.move(LEFT * 0.2 + DOWN * 1.55 - written.get_center())
-    glyphs = Text("GLYPHS", font_size=46, color=WHITE)
+    glyphs = Text("GLYPHS", font_size=46, color=WHITE, font=FONT)
     glyphs.move(RIGHT * 3.9 + DOWN * 1.55 - glyphs.get_center())
     # ``text[i]`` is a lazy view onto glyph i of the packed batch.
     lifted = [glyphs[index] for index in range(3)]
@@ -183,13 +197,15 @@ with Off():
         .move(RIGHT * 3.9 + UP * 0.3)
     )
     media_labels = Group(
-        Text("textured / per-pixel ImageMob", font_size=21, color=GRAY_A).move(
+        Text(
+            "textured / per-pixel ImageMob", font_size=21, color=GRAY_A, font=FONT
+        ).move(
             LEFT * 3.7 + DOWN * 1.35
         ),
-        Text("glTF + PBR + normal map", font_size=21, color=GRAY_A).move(
+        Text("glTF + PBR + normal map", font_size=21, color=GRAY_A, font=FONT).move(
             DOWN * 1.9
         ),
-        Text("composed fragment shader", font_size=21, color=GRAY_A).move(
+        Text("composed fragment shader", font_size=21, color=GRAY_A, font=FONT).move(
             RIGHT * 3.9 + DOWN * 1.35
         ),
     )

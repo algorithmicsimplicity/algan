@@ -13,6 +13,10 @@ rather than primary visibility alone.
 
 from algan import *
 
+# Pinned so the render does not depend on the host's fonts;
+# tests/conftest.py registers the vendored faces.
+FONT = "Algan Test Sans"
+
 Scene.set_background_color(DARKER_GRAY)
 # Restored by the full-render harness after this scene renders.
 SETTINGS.raytracing.set(shadows=True)
@@ -35,6 +39,7 @@ with Off():
         font_size=42,
         weight="BOLD",
         color=WHITE,
+        font=FONT,
     ).move(UP * 2.9)
 
     lit = Group(
@@ -52,12 +57,12 @@ with Off():
     lit.move(UP * 1.3 - lit.get_center())
 
     lit_labels = Group(
-        Text("Basic", font_size=21, color=GRAY_A),
-        Text("Lambert", font_size=21, color=GRAY_A),
-        Text("Phong", font_size=21, color=GRAY_A),
-        Text("Standard", font_size=21, color=GRAY_A),
-        Text("Toon", font_size=21, color=GRAY_A),
-        Text("Normal", font_size=21, color=GRAY_A),
+        Text("Basic", font_size=21, color=GRAY_A, font=FONT),
+        Text("Lambert", font_size=21, color=GRAY_A, font=FONT),
+        Text("Phong", font_size=21, color=GRAY_A, font=FONT),
+        Text("Standard", font_size=21, color=GRAY_A, font=FONT),
+        Text("Toon", font_size=21, color=GRAY_A, font=FONT),
+        Text("Normal", font_size=21, color=GRAY_A, font=FONT),
     )
     for mob, label in zip(lit, lit_labels):
         label.move_to(mob.get_center() + DOWN * 0.85)
@@ -81,12 +86,12 @@ with Off():
     exotic.move(DOWN * 0.5 - exotic.get_center())
 
     exotic_labels = Group(
-        Text("Matcap", font_size=21, color=GRAY_A),
-        Text("Depth", font_size=21, color=GRAY_A),
-        Text("Physical", font_size=21, color=GRAY_A),
-        Text("GLASS", font_size=21, color=GRAY_A),
-        Text("MIRROR", font_size=21, color=GRAY_A),
-        Text("COPPER", font_size=21, color=GRAY_A),
+        Text("Matcap", font_size=21, color=GRAY_A, font=FONT),
+        Text("Depth", font_size=21, color=GRAY_A, font=FONT),
+        Text("Physical", font_size=21, color=GRAY_A, font=FONT),
+        Text("GLASS", font_size=21, color=GRAY_A, font=FONT),
+        Text("MIRROR", font_size=21, color=GRAY_A, font=FONT),
+        Text("COPPER", font_size=21, color=GRAY_A, font=FONT),
     )
     for mob, label in zip(exotic, exotic_labels):
         label.move_to(mob.get_center() + DOWN * 0.85)
@@ -157,6 +162,7 @@ with Off():
         "point / spot / rect-area / hemisphere lights  +  shadows",
         font_size=23,
         color=TEAL_A,
+        font=FONT,
     ).move(DOWN * 3.15)
 
 with Seq():
@@ -235,6 +241,7 @@ with Off():
         "glow + bloom + tonemapping                    opacity",
         font_size=23,
         color=TEAL_A,
+        font=FONT,
     ).move(DOWN * 3.15)
 
 with Seq():

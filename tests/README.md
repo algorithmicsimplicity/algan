@@ -154,16 +154,35 @@ between them are larger than the tolerance by design:
   differently per backend. Measured at up to 8% of a frame's pixels.
 - **Silhouettes and specular highlights** differ by up to ~75 channel values on
   edge pixels, from float ordering.
-- **`Text` and `MarkupText`** differ the most — up to ~230 — and this one is
-  *not* a device difference at all. `Text` defaults to `font=""`, so Pango
-  resolves whatever fontconfig offers, and the glyph advances themselves change
-  when the available fonts do. `Tex`/`MathTex` are unaffected: they go through
-  LaTeX and `dvisvgm` to outlines, and match across devices at zero shift.
+Text used to differ far more than either — up to ~230 — and that one was never
+a device difference at all. `Text` defaults to `font=""`, which Pango resolves
+through fontconfig, so the glyph advances changed with whatever the machine had
+installed. `Tex`/`MathTex` never had the problem: they go through LaTeX and
+`dvisvgm` to outlines and match across devices at zero shift, which is what
+identified fonts as the cause.
 
-The practical consequence: **a CPU baseline encodes the font set of the machine
-that made it.** If the container image's fonts change, `Text` shifts and the
-suite fails looking exactly like a renderer regression. When a text-only
-diff appears across every scene at once, suspect fonts before the renderer.
+## Fonts are vendored, not borrowed
+
+`tests/assets/fonts/` holds the **Algan Test Sans** and **Algan Test Mono**
+faces, and `tests/conftest.py` registers them with Pango before any scene runs.
+Every `Text`, `MarkupText` and `Paragraph` call in a scene names one of them
+(`font=FONT`), and `Code` names the mono family through its `paragraph_config` —
+its own default is the `"Monospace"` fontconfig alias, which is host-dependent
+in exactly the same way.
+
+This is what stops a container image with a different font set from shifting
+every glyph and failing the suite as if the renderer had regressed. It is
+enforced, not left to review: `test_scene_text_pins_a_vendored_font` fails on
+any Text-like call in a scene that does not pass `font=`, because one unpinned
+call reintroduces the drift for the whole scene.
+
+The faces are the Liberation fonts with their name tables rewritten. Renaming
+is deliberate — the SIL OFL reserves the upstream name, and a distinct family
+means a system installation of Liberation can never shadow the vendored files.
+See `tests/assets/fonts/LICENSE.txt`.
+
+**When adding a scene**, give its text `font=FONT` and declare
+`FONT = "Algan Test Sans"` under the star import, as the existing scenes do.
 
 ## Re-baselining
 
