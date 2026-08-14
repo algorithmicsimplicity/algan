@@ -4,9 +4,21 @@ import contextlib
 import copy
 import math
 
+import numpy as np
 import torch
 
 from algan.utils.tensor_utils import cast_to_tensor
+
+#: Torch -> numpy dtypes for :func:`_sparsely_written_zeros`. Only the dtypes an
+#: attribute buffer actually uses; anything else falls back to ``torch.zeros``.
+_NUMPY_DTYPES = {
+    torch.float32: np.float32,
+    torch.float64: np.float64,
+    torch.float16: np.float16,
+    torch.int64: np.int64,
+    torch.int32: np.int32,
+    torch.bool: np.bool_,
+}
 
 #: Name of the special kwarg that animated functions receive the per-frame
 #: elapsed time through (see :meth:`AnimationTimeline.set_state_to_times`).
@@ -79,8 +91,10 @@ _OPT_DISABLED = None
 
 
 def _opt_disabled(name):
-    """Bisect aid: ALGAN_OPT_DISABLE=fastpath,ranges,desccache,windows,torchquery
-    disables individual animation-prep optimizations (read once, first use).
+    """Bisect aid: ALGAN_OPT_DISABLE=fastpath,ranges,desccache,windows,torchquery,
+    timeslice,lazyzeros disables individual animation-prep optimizations (read
+    once, first use). ``benchmarks/_prep_timeslice_ab.py`` and its s05 companion
+    A/B the last two through this.
     """
     global _OPT_DISABLED
     if _OPT_DISABLED is None:
@@ -88,6 +102,92 @@ def _opt_disabled(name):
 
         _OPT_DISABLED = frozenset(os.environ.get("ALGAN_OPT_DISABLE", "").split(","))
     return name in _OPT_DISABLED
+
+
+#: Event counts at or below which a plain scan beats the interval index, whose
+#: tensor build is dominated by fixed per-op overhead at small sizes.
+_SMALL_EVENT_SCAN = 64
+
+
+def _event_interval_index(starts, ends):
+    """Index ``[start, end)`` events so a window query need not scan them all.
+
+    Both event lookups in :class:`FunctionTimeline` used to test every event the
+    scene ever recorded against every queried time. That is O(scene) per batch
+    and there are O(scene) batches, so O(n^2) over a render -- the same shape
+    ``_by_caller`` exists to avoid, and the same one that makes the cost
+    invisible on a short scene and dominant on a long one.
+
+    Two bounds, both implied by the activity test rather than heuristics:
+
+    * **From above**, via starts sorted ascending: an event that starts after
+      the last queried time cannot contain any of them.
+    * **From below**, via the running maximum end over that same order: it is
+      non-decreasing, so at any position where it is still at or below the
+      first queried time, *every* event up to there has already finished.
+
+    So the survivors are a superset of the answer and the exact test still
+    decides -- which keeps the result identical for unsorted ``times`` too,
+    since only the min and max are used here.
+
+    Kept in float64: the bounds are float32 and widening is exact, so neither
+    comparison can round a boundary the wrong way and drop a live event.
+    """
+    order = torch.argsort(starts, stable=True)
+    return (
+        order,
+        starts[order].double(),
+        torch.cummax(ends[order], 0).values.double(),
+    )
+
+
+def _events_overlapping(index, times):
+    """Event indices that may be active at ``times``, **ascending**.
+
+    The ascending sort is load-bearing, not tidiness: replay re-executes
+    functions in the order they were recorded, and this index works in
+    start-sorted order.
+    """
+    order, sorted_starts, running_max_end = index
+    hi = int(torch.searchsorted(sorted_starts, times.max().double(), right=True))
+    lo = int(torch.searchsorted(running_max_end, times.min().double(), right=True))
+    if lo >= hi:
+        return order[:0]
+    return order[lo:hi]
+
+
+def _contiguous_time_selector(inds):
+    """``inds`` as a ``slice`` when it selects one contiguous run of frames.
+
+    :meth:`AttributeTimeline.get` / :meth:`~AttributeTimeline.modify` read the
+    frame axis through ``active_time_inds``, and both already branch on it: a
+    ``slice`` reads a view and writes a slice-assign, a tensor pays an
+    advanced-index gather and a scatter. Outside replay the selector is
+    ``slice(None)``; the tensor path exists only while
+    :meth:`AnimationTimeline.set_state_to_times` is replaying recorded
+    functions, which is where the great majority of the calls are.
+
+    A replay window is the interval ``[start, replay_end)`` over the batch's
+    ascending frame times, so the selected indices are contiguous. That is
+    *tested* here rather than assumed, so a public caller passing unsorted
+    ``times`` -- or an updater's clone-grouped frame set, which is genuinely
+    scattered -- still gets the tensor path and the same answer.
+
+    ``inds`` must be **ascending**, which is what makes the span test exact: a
+    permutation of a contiguous run (``[0, 2, 1, 3]``) has the same first, last
+    and length as the run itself and would convert wrongly. Both call sites
+    satisfy it -- ``Tensor.nonzero`` returns indices in ascending order, and the
+    updater's per-signature groups are appended while iterating those same
+    ascending indices. Anything else plumbed in here needs checking against
+    that, not against the shape.
+    """
+    if inds.shape[0] == 0:
+        return inds
+    first = int(inds[0])
+    last = int(inds[-1])
+    if last - first + 1 == inds.shape[0]:
+        return slice(first, last + 1)
+    return inds
 
 
 class RowRanges:
@@ -370,6 +470,32 @@ def _prepare_array_state_queries(times, N, edits):
 _QUERY_CHUNK_BYTES = 32 << 20
 
 
+def _sparsely_written_zeros(shape, dtype, device):
+    """Zeros for a buffer only a minority of which will be written.
+
+    ``torch.zeros`` is ``empty`` + an explicit ``memset`` over the whole
+    allocation. The rematerialization buffer is ``[T, N, D]`` where ``N`` is
+    every row the scene ever allocated, and a render window writes ~30% of them
+    -- so the memset touches (and resident-faults) three times the pages the
+    batch will ever look at. ``np.zeros`` is ``calloc``, and an allocation this
+    size comes straight from the OS page allocator already zeroed, so only the
+    pages actually touched are ever charged. Measured on the reference scene's
+    shapes (``benchmarks/_p1_zerofill_ab.py``): the fill goes from 8-77 ms to
+    ~0.1 ms, and fill + scatter together 1.14-1.31x.
+
+    Byte-identical -- both produce zeros. CPU only: on CUDA the fill is a
+    device memset and numpy has nothing to offer. Falls back to ``torch.zeros``
+    for any dtype numpy cannot express (``bfloat16``), so the caller never has
+    to know which it got.
+    """
+    if device.type != "cpu" or _opt_disabled("lazyzeros"):
+        return torch.zeros(shape, dtype=dtype, device=device)
+    try:
+        return torch.from_numpy(np.zeros(shape, dtype=_NUMPY_DTYPES[dtype]))
+    except KeyError:
+        return torch.zeros(shape, dtype=dtype, device=device)
+
+
 def _query_row_states(times, index, rows=None):
     """Materialize ``rows`` (all rows when None) of one attribute at ``times``.
 
@@ -482,7 +608,7 @@ def generate_array_states(times, N, edits, *, active_rows=None, prepared=None):
     # Keep the full global row layout for animated-function replay. Rows
     # outside this window's working set stay zero and are never consumed by
     # primitive preparation for this batch.
-    out = torch.zeros((T, N, D), dtype=dtype, device=device)
+    out = _sparsely_written_zeros((T, N, D), dtype, device)
     if active_rows.numel():
         out.index_copy_(1, active_rows, _query_row_states(times, prepared, active_rows))
     return out
@@ -553,6 +679,20 @@ class AttributeTimeline:
         self.active_state = (
             self.current_state
         )  # pointer to active state used to fulfil get requests.
+        # Global row -> column in ``active_state``, or -1 for a row this window
+        # did not materialize. ``None`` means active_state is in global row
+        # order and no translation is needed (current_state, and the all-rows
+        # materialization public callers get). See _set_active_row_map.
+        self._active_row_map = None
+        # Backing store for that map, grown in place across batches so a
+        # window costs O(active rows) rather than O(every row ever allocated).
+        self._row_map_buffer = None
+        # Zero-copy numpy view of that buffer for scalar reads; see
+        # _set_active_row_map. None when the map is not on the CPU.
+        self._row_map_np = None
+        # The rows currently written into the map, so the next window can clear
+        # just those instead of rewriting the whole buffer.
+        self._mapped_rows = None
         self.active_time_inds = slice(None, None, None)
         self.rematerialized_times = None
         self.pointer = 0
@@ -630,6 +770,120 @@ class AttributeTimeline:
     def get_current_values(self):
         return self.current_state[:, : self.pointer]
 
+    def _set_active_row_map(self, active_rows):
+        """Point global rows at their columns in a compact ``active_state``.
+
+        ``active_state`` holds only the window's live rows, so every reader has
+        to go through this. The map itself is the one thing that stays
+        full-width -- but at 8 bytes a row against ``T * D * 4``, it is ~150x
+        smaller than the buffer it replaces on the reference scene, and it is
+        grown in place and rewritten only where it changed, so a batch costs
+        O(active rows) rather than O(every row ever allocated).
+
+        ``active_rows`` must be ascending (``rows_for_mob_ids`` coalesces runs
+        and the ``extra_rows`` union sorts), which is what makes the map
+        monotone -- and monotonicity is what lets :meth:`_compact_span` decide a
+        whole contiguous range from its two endpoints.
+        """
+        width = self.pointer + 1
+        rows = active_rows.to(dtype=torch.int64)
+        buffer = self._row_map_buffer
+        if (
+            buffer is None
+            or buffer.shape[0] < width
+            or buffer.device != rows.device
+        ):
+            buffer = torch.full(
+                (max(width, 1 if buffer is None else buffer.shape[0] * 2),),
+                -1,
+                dtype=torch.int64,
+                device=rows.device,
+            )
+            self._mapped_rows = None
+        if self._mapped_rows is not None and self._mapped_rows.numel():
+            buffer[self._mapped_rows] = -1
+        if rows.numel():
+            buffer[rows] = torch.arange(
+                rows.numel(), dtype=torch.int64, device=rows.device
+            )
+        self._row_map_buffer = buffer
+        self._mapped_rows = rows
+        self._active_row_map = buffer
+        # A zero-copy numpy view of the same memory, purely so _compact_span
+        # can read two scalars per accessor call without paying torch's
+        # ~10 us-per-element scalar extraction. That cost is invisible on the
+        # reference scene and dominates a suite of small scenes: it put the
+        # fast suite from 130 s to 184 s before this went in. Rebuilt here
+        # because a reallocation above invalidates the view; in-place writes
+        # (materialize_additional_rows) stay visible through it.
+        self._row_map_np = buffer.numpy() if buffer.device.type == "cpu" else None
+
+    def _clear_active_row_map(self):
+        """Return to global row order (``active_state`` indexed by row id)."""
+        if self._mapped_rows is not None and self._mapped_rows.numel():
+            self._row_map_buffer[self._mapped_rows] = -1
+        self._mapped_rows = None
+        self._active_row_map = None
+        self._row_map_np = None
+
+    def _compact_span(self, b, e):
+        """Columns for global rows ``[b, e)``, or ``None`` if not one run.
+
+        Endpoints are enough: the map is the rank of each row within the
+        ascending ``active_rows``, so if row ``b`` is live and row ``e - 1``
+        sits exactly ``e - 1 - b`` columns later, every row between them is
+        live and consecutive too.
+        """
+        row_map = self._active_row_map
+        if row_map is None:
+            return b, e
+        if e <= b:
+            return 0, 0
+        if e > row_map.shape[0]:
+            # Rows allocated after this window was materialized. The full-width
+            # buffer answered these with a silently truncated slice; the gather
+            # path below reads them as zero, which is what an unmaterialized
+            # row means everywhere else here.
+            return None
+        scalars = self._row_map_np if self._row_map_np is not None else row_map
+        first = int(scalars[b])
+        if first < 0 or int(scalars[e - 1]) != first + (e - 1 - b):
+            return None
+        return first, first + (e - b)
+
+    def _compact_index(self, rows):
+        """``(columns, live_mask)`` for arbitrary global ``rows``.
+
+        ``live_mask`` is ``None`` when every row is live (the common case), and
+        otherwise marks the rows this window did not materialize -- which read
+        as zero, exactly as they did when the buffer was full width and those
+        rows were left zeroed.
+        """
+        row_map = self._active_row_map
+        if row_map is None:
+            return rows, None
+        try:
+            mapped = row_map[rows]
+        except IndexError:
+            # See _compact_span: rows allocated after this materialization are
+            # not in the map at all, and read as zero rather than raising.
+            # Handled on the exception rather than by a bounds check, so the
+            # ordinary path does not pay a reduction over `rows` every call.
+            width = row_map.shape[0]
+            mapped = torch.where(
+                rows < width,
+                row_map[rows.clamp(max=width - 1)],
+                torch.full_like(rows, -1),
+            )
+        live = mapped >= 0
+        if bool(live.all()):
+            return mapped, None
+        # Left unclamped on purpose: every caller selects the live entries
+        # before indexing, and a clamped -1 would silently read column 0 --
+        # which is not even a valid index when the window materialized no rows
+        # at all and the buffer is [T, 0, D].
+        return mapped, live
+
     def get(self, key, copy=True):
         if isinstance(key, RowRanges):
             if (
@@ -643,13 +897,31 @@ class AttributeTimeline:
                 # the value into out-of-place arithmetic pass copy=False to skip
                 # it (the dominant cost during mob construction).
                 b, e = key.pairs[0]
-                block = self.active_state[:, b:e]
-                t = self.active_time_inds
-                if isinstance(t, slice):
-                    return block[t].clone() if copy else block[t]
-                return block[t.view(-1)]
+                span = self._compact_span(b, e)
+                if span is not None:
+                    block = self.active_state[:, span[0] : span[1]]
+                    t = self.active_time_inds
+                    if isinstance(t, slice):
+                        return block[t].clone() if copy else block[t]
+                    return block[t.view(-1)]
             key = key.tensor()
-        return self.active_state[self.active_time_inds, key]
+        columns, live = self._compact_index(key)
+        t = self.active_time_inds
+        if live is None:
+            return self.active_state[t, columns]
+        # Rows this window did not materialize read as zero, exactly as they
+        # did when the buffer was full width and those rows were left zeroed.
+        # Built as zeros and filled, rather than gathered and masked, because
+        # a window whose working set is empty leaves a [T, 0, D] buffer with no
+        # column to gather from at all.
+        n_times = self.active_state[t].shape[0] if isinstance(t, slice) else t.numel()
+        out = self.active_state.new_zeros(
+            (n_times, live.shape[0], self.active_state.shape[2])
+        )
+        kept = live.nonzero().view(-1)
+        if kept.numel():
+            out[:, kept] = self.active_state[t, columns[kept]]
+        return out
 
     def modify(self, key, value):
         # Replaying an animation modifies the temporary materialized buffer,
@@ -666,14 +938,32 @@ class AttributeTimeline:
             ):
                 # Contiguous rows: slice-assign instead of index-scatter.
                 b, e = key.pairs[0]
-                t = self.active_time_inds
-                if isinstance(t, slice):
-                    self.active_state[t, b:e] = value
-                else:
-                    self.active_state[t.view(-1), b:e] = value
-                return self
+                span = self._compact_span(b, e)
+                if span is not None:
+                    t = self.active_time_inds
+                    if isinstance(t, slice):
+                        self.active_state[t, span[0] : span[1]] = value
+                    else:
+                        self.active_state[t.view(-1), span[0] : span[1]] = value
+                    return self
             key = key.tensor()
-        self.active_state[self.active_time_inds, key] = value
+        columns, live = self._compact_index(key)
+        if live is None:
+            self.active_state[self.active_time_inds, columns] = value
+            return self
+        # Rows this window did not materialize have no column to write to.
+        # Dropping those writes matches the full-width buffer, where they
+        # landed in a row nothing would read: primitive preparation consumes
+        # only the working set, and a row discovered late comes back through
+        # materialize_additional_rows, which gives it a column first.
+        kept = live.nonzero().view(-1)
+        if kept.numel() == 0:
+            return self
+        if torch.is_tensor(value) and value.dim() >= 2 and value.shape[-2] == live.shape[0]:
+            # Per-row values: drop the rows whose writes are being discarded.
+            # A broadcast value (scalar, or a singleton row axis) passes through.
+            value = value.index_select(-2, kept)
+        self.active_state[self.active_time_inds, columns[kept]] = value
         return self
 
     def reassign_inds(self, mob_id, inds):
@@ -1076,13 +1366,28 @@ class AttributeTimeline:
                 active_rows = torch.unique(
                     torch.cat((active_rows, extra_rows)), sorted=True
                 )
-        self.active_state = generate_array_states(
-            times,
-            self.pointer + 1,
-            self._edits_sorted,
-            active_rows=active_rows,
-            prepared=self._prepared_queries(times),
-        )
+        compact = active_rows is not None and not _opt_disabled("compactstate")
+        if compact:
+            # Materialize only the window's live rows. The full-width
+            # [T, N, D] buffer this replaces was ~70% dead weight, and its
+            # commit is O(every row the scene ever allocated) per attribute per
+            # batch -- O(n^2) across a render even after the zero-fill itself
+            # stopped costing time. _set_active_row_map is what lets every
+            # reader keep addressing rows by global id.
+            active_rows = active_rows.to(device=times.device, dtype=torch.int64)
+            self.active_state = _query_row_states(
+                times, self._prepared_queries(times), active_rows
+            )
+            self._set_active_row_map(active_rows)
+        else:
+            self.active_state = generate_array_states(
+                times,
+                self.pointer + 1,
+                self._edits_sorted,
+                active_rows=active_rows,
+                prepared=self._prepared_queries(times),
+            )
+            self._clear_active_row_map()
         if self.record_end_points:
             t = times.view(-1, 1)
             if active_rows is None:
@@ -1093,7 +1398,13 @@ class AttributeTimeline:
                 rows = active_rows.to(self.active_state.device)
                 endpoint = self._end_points[:, rows].to(self.active_state.device)
                 mask = ((endpoint[..., 0] <= t) & (t < endpoint[..., 1])).unsqueeze(-1)
-                self.active_state[:, rows] *= mask
+                if compact:
+                    # The compact buffer is already in active_rows order, so
+                    # the mask lines up with it column for column -- no
+                    # gather-modify-scatter through the global layout.
+                    self.active_state *= mask
+                else:
+                    self.active_state[:, rows] *= mask
         self.rematerialized_times = times
         self.active_time_inds = slice(None, None, None)
         return self
@@ -1128,16 +1439,38 @@ class AttributeTimeline:
             queried = _query_row_states(
                 times, self._prepared_queries(times), device_rows
             )
-        self.active_state[:, device_rows] = queried
         if self.record_end_points:
             t = times.view(-1, 1)
             endpoint = self._end_points[:, rows].to(self.active_state.device)
             mask = ((endpoint[..., 0] <= t) & (t < endpoint[..., 1])).unsqueeze(-1)
-            self.active_state[:, device_rows] *= mask
+            queried = queried * mask
+        if self._active_row_map is None:
+            self.active_state[:, device_rows] = queried
+            return self
+        # Compact buffer: a row discovered here has no column yet. Append the
+        # ones that are new (this is the lazily-traced updater dependency path,
+        # so it is rare and small) and point the map at them; rows that already
+        # have a column are overwritten in place.
+        columns = self._active_row_map[device_rows]
+        existing = (columns >= 0).nonzero().view(-1)
+        if existing.numel():
+            self.active_state[:, columns[existing]] = queried[:, existing]
+        fresh = (columns < 0).nonzero().view(-1)
+        if fresh.numel():
+            width = int(self.active_state.shape[1])
+            new_rows = device_rows[fresh]
+            self.active_state = torch.cat(
+                (self.active_state, queried[:, fresh]), dim=1
+            )
+            self._active_row_map[new_rows] = torch.arange(
+                width, width + int(fresh.numel()), dtype=torch.int64
+            )
+            self._mapped_rows = torch.cat((self._mapped_rows, new_rows))
         return self
 
     def clear_buffers(self):
         self.active_state = self.current_state
+        self._clear_active_row_map()
         self.active_time_inds = slice(None, None, None)
         self.rematerialized_times = None
         return self
@@ -1414,6 +1747,7 @@ class FunctionTimeline:
         # so evaluating them for every event on every frame batch is a
         # per-batch O(events) property-call cost otherwise.
         self._window_cache = None
+        self._updater_window_cache = None
         # id(caller) -> the events recorded against it. A topology split
         # (Mob.detach_history) has to re-target every event belonging to the
         # subtree it replaces, and finding them by scanning the whole log is
@@ -1425,6 +1759,10 @@ class FunctionTimeline:
         self._by_caller = {}
 
     def add(self, function_application):
+        # Its position in ``function_applications``, so the replay-window
+        # resolver can say *which* events it touched instead of invalidating
+        # the whole bounds cache (see :meth:`invalidate_window_cache`).
+        function_application._window_slot = len(self.function_applications)
         self.function_applications.append(function_application)
         self._by_caller.setdefault(id(function_application.caller), []).append(
             function_application
@@ -1450,23 +1788,135 @@ class FunctionTimeline:
     def add_updater(self, updater):
         self.updaters.append(updater)
 
-    def invalidate_window_cache(self):
-        self._window_cache = None
+    def invalidate_window_cache(self, from_index=0):
+        """Drop cached event bounds from ``from_index`` on.
+
+        ``from_index`` is the lowest position in ``function_applications``
+        whose window may have moved; everything before it keeps its bounds and
+        :meth:`_windows` rebuilds only the tail. ``None`` means no function
+        window changed at all.
+
+        This exists because the resolver runs on *every* batch of a render (a
+        render records edits of its own, which un-resolves the timeline), so a
+        full invalidation meant re-walking every recorded event's span every
+        batch -- 58 ms a batch at 26 000 events, which was the entire cost of
+        the function lookup and swamped the query it feeds.
+
+        The updater cache is dropped wholesale regardless: the resolver does
+        not touch updater spans, but a context exit can rescale them without
+        changing their count, and the resolver running is the signal that
+        authoring happened. Rebuilding it is O(updaters), which is why this
+        stays cheap in practice and would want the same treatment on a scene
+        with very many updaters.
+        """
+        if from_index is not None:
+            cache = self._window_cache
+            if from_index <= 0 or cache is None or cache[0] <= from_index:
+                if from_index <= 0:
+                    self._window_cache = None
+            else:
+                # Keep the verified prefix; index set to None forces a rebuild.
+                self._window_cache = (
+                    from_index,
+                    cache[1][:from_index],
+                    cache[2][:from_index],
+                    None,
+                )
+        self._updater_window_cache = None
 
     def _windows(self):
+        # Length plus explicit invalidation, NOT the timing revision. Keying on
+        # TIMING_VERSION looks safer and is a trap: it is bumped whenever any
+        # timespan is configured, including for the transient mobs a render
+        # builds, so it changes *during* a render and rebuilt this on every
+        # batch. Recording invalidates through _resolve_replay_windows instead.
+        #
+        # Grown incrementally, because a render *does* record new events as it
+        # goes (the reference scene appends ~30-100 per batch). Rebuilding from
+        # scratch means walking every recorded event's TimelineEvent to resolve
+        # its span, which measured 53 ms a batch at 26 000 events and was the
+        # real cost of this lookup all along -- far more than the window test
+        # it was feeding. Only the appended tail is walked now; the tensor
+        # concat and the index rebuild over the whole array are vectorized and
+        # cost ~0.5 ms at that size.
+        n = len(self.function_applications)
         cache = self._window_cache
-        if cache is None or cache[0] != len(self.function_applications):
-            # float32 to match the dtype the per-event scalar comparisons
-            # used (python-float scalars compare in the tensor's dtype).
+        if cache is not None and cache[0] == n and cache[3] is not None:
+            return cache[1], cache[2], cache[3]
+        # float32 to match the dtype the per-event scalar comparisons
+        # used (python-float scalars compare in the tensor's dtype).
+        if cache is None or cache[0] > n:
+            appended = self.function_applications
+            prefix_starts = prefix_ends = None
+        else:
+            appended = self.function_applications[cache[0] :]
+            prefix_starts, prefix_ends = cache[1], cache[2]
+        starts = torch.tensor(
+            [f.time.start for f in appended], dtype=torch.float32
+        )
+        ends = torch.tensor(
+            [_replay_window_end(f) for f in appended], dtype=torch.float32
+        )
+        if prefix_starts is not None:
+            starts = torch.cat((prefix_starts, starts))
+            ends = torch.cat((prefix_ends, ends))
+        cache = self._window_cache = (
+            n,
+            starts,
+            ends,
+            _event_interval_index(starts, ends),
+        )
+        return cache[1], cache[2], cache[3]
+
+    def _updater_windows(self):
+        # float32 like _windows, and for the same reason: the per-event scalar
+        # comparison this replaces promoted each python-float bound into the
+        # queried times' dtype, which is float32 for every frame window the
+        # render loop builds. A caller passing float64 times now compares
+        # against a float32-rounded bound, exactly as the function lookup has
+        # always done.
+        #
+        # Same validity rule as _windows (length + invalidate_window_cache),
+        # and see the trap documented there about TIMING_VERSION.
+        key = len(self.updaters)
+        cache = self._updater_window_cache
+        if cache is None or cache[0] != key:
             starts = torch.tensor(
-                [f.time.start for f in self.function_applications], dtype=torch.float32
+                [f.time.start for f in self.updaters], dtype=torch.float32
             )
             ends = torch.tensor(
-                [_replay_window_end(f) for f in self.function_applications],
-                dtype=torch.float32,
+                [f.time.end for f in self.updaters], dtype=torch.float32
             )
-            cache = self._window_cache = (len(self.function_applications), starts, ends)
-        return cache[1], cache[2]
+            cache = self._updater_window_cache = (
+                key,
+                starts,
+                ends,
+                _event_interval_index(starts, ends),
+            )
+        return cache[1], cache[2], cache[3]
+
+    @staticmethod
+    def _active_in_window(events, starts, ends, times, index):
+        """The members of ``events`` active at ``times``, in recorded order.
+
+        ``index`` narrows the exact test to the events that can possibly be
+        active (see :func:`_event_interval_index`); ``None`` runs it over all of
+        them, which is what ``ALGAN_OPT_DISABLE=eventindex`` restores.
+        """
+        t = times.view(1, -1)
+        if index is None:
+            active = ((starts.view(-1, 1) <= t) & (t < ends.view(-1, 1))).any(1)
+            selected = active.nonzero().view(-1)
+        else:
+            candidates = _events_overlapping(index, times)
+            if candidates.numel() == 0:
+                return []
+            active = (
+                (starts[candidates].view(-1, 1) <= t)
+                & (t < ends[candidates].view(-1, 1))
+            ).any(1)
+            selected = candidates[active].sort().values
+        return [events[i] for i in selected.tolist()]
 
     def get_functions_for_times(self, times):
         if not self.function_applications:
@@ -1477,19 +1927,34 @@ class FunctionTimeline:
                 for f in self.function_applications
                 if ((f.time.start <= times) & (times < _replay_window_end(f))).any()
             ]
-        starts, ends = self._windows()
-        t = times.view(1, -1)
-        active = ((starts.view(-1, 1) <= t) & (t < ends.view(-1, 1))).any(1)
-        return [
-            self.function_applications[i] for i in active.nonzero().view(-1).tolist()
-        ]
+        starts, ends, index = self._windows()
+        return self._active_in_window(
+            self.function_applications,
+            starts,
+            ends,
+            times,
+            None if _opt_disabled("eventindex") else index,
+        )
 
     def get_updaters_for_times(self, times):
-        return [
-            f
-            for f in self.updaters
-            if ((f.time.start <= times) & (times < f.time.end)).any()
-        ]
+        if len(self.updaters) <= _SMALL_EVENT_SCAN or _opt_disabled("windows"):
+            # Below the threshold the index costs more than it saves: building
+            # and sorting its tensors is dominated by fixed per-op overhead,
+            # and most scenes have a handful of updaters or none. Measured at
+            # one updater: 0.45 ms a batch indexed against 0.14 ms scanned.
+            return [
+                f
+                for f in self.updaters
+                if ((f.time.start <= times) & (times < f.time.end)).any()
+            ]
+        starts, ends, index = self._updater_windows()
+        return self._active_in_window(
+            self.updaters,
+            starts,
+            ends,
+            times,
+            None if _opt_disabled("eventindex") else index,
+        )
 
 
 class AnimationTimeline:
@@ -1518,6 +1983,13 @@ class AnimationTimeline:
         self._resolved_prefix_count = 0
         self._resolved_prefix_seq = -1
         self._resolved_row_ends = {}
+        # Backing storage for _resolved_row_ends, kept across resolves so the
+        # checkpoint is grown in place instead of reallocated and copied on
+        # every batch. The dict above holds views into these. Whenever
+        # _resolved_row_ends is replaced from outside this class' incremental
+        # path, this MUST be cleared alongside it, or the views and their
+        # backing store disagree.
+        self._row_ends_capacity = {}
         self._active_edit_event = None
         self.last_recorded_event = None
         self._replay_windows_resolved = True
@@ -1745,6 +2217,7 @@ class AnimationTimeline:
             self._resolved_prefix_count = 0
             self._resolved_prefix_seq = -1
             self._resolved_row_ends = {}
+            self._row_ends_capacity = {}
         self._replay_windows_resolved = False
 
     def replay_inds(self, attr_name, mob_id, include_descendants, consume=False):
@@ -1840,8 +2313,12 @@ class AnimationTimeline:
         if self._replay_windows_resolved:
             return
         self._replay_windows_resolved = True
-        # Replay-window ends feed the cached event-window tensors.
-        self.function_timeline.invalidate_window_cache()
+        # Replay-window ends feed the cached event-window tensors, but this
+        # runs on every batch of a render and resumes from _resolved_prefix_count
+        # -- so it only ever assigns windows to events at the tail. The lowest
+        # slot it touches is collected below and handed to the cache, which
+        # keeps the (much larger) verified prefix.
+        touched_slot = None
 
         if self._edit_order_dirty:
             # Migration records reuse their source edit's sequence number and
@@ -1854,25 +2331,47 @@ class AnimationTimeline:
 
         # Latest replay-window end per buffer row, per attribute (float64 so
         # timestamps round-trip exactly).
+        #
+        # Grown in place rather than cloned. This runs on every batch of a
+        # render, and cloning the checkpoint allocated one float64 buffer per
+        # attribute sized by that attribute's *total* row count every time --
+        # 7.2 MB a batch on the reference scene across 9 attributes, and O(n^2)
+        # over a render, since both the row count and the batch count grow with
+        # the scene. Capacity doubles, so growth is amortized O(1) per row
+        # added and a steady-state batch allocates nothing at all.
+        #
+        # Mutating the checkpoint in place is safe because the update is a
+        # monotone max-assign: re-running a group over rows that already hold
+        # its result recomputes the same end, so a partially-applied suffix is
+        # simply re-applied. What it is *not* safe against is
+        # preserving_authoring_state's rollback, which snapshots this dict --
+        # that snapshot now copies (see there), moving one O(N) copy from every
+        # batch to once per render.
         row_ends = {}
+        capacity = self._row_ends_capacity
         for attr, timeline in self.attr_to_timeline.items():
-            cached = self._resolved_row_ends.get(attr)
-            if cached is None:
-                rows = torch.full((timeline.pointer,), -math.inf, dtype=torch.float64)
-            else:
-                rows = cached.clone()
-                if rows.shape[0] < timeline.pointer:
-                    rows = torch.cat(
-                        (
-                            rows,
-                            torch.full(
-                                (timeline.pointer - rows.shape[0],),
-                                -math.inf,
-                                dtype=torch.float64,
-                            ),
-                        )
-                    )
-            row_ends[attr] = rows
+            pointer = timeline.pointer
+            previous = self._resolved_row_ends.get(attr)
+            used = 0 if previous is None else previous.shape[0]
+            rows = capacity.get(attr)
+            if rows is None:
+                # No backing store: first resolve for this attribute, or a
+                # rollback dropped it and left the checkpoint values behind.
+                rows = torch.full(
+                    (max(pointer, used, 1),), -math.inf, dtype=torch.float64
+                )
+                if used:
+                    rows[:used] = previous
+            elif rows.shape[0] < pointer:
+                grown = torch.full(
+                    (max(pointer, rows.shape[0] * 2),), -math.inf, dtype=torch.float64
+                )
+                grown[:used] = rows[:used]
+                rows = grown
+            if used < pointer:
+                rows[used:pointer] = -math.inf
+            capacity[attr] = rows
+            row_ends[attr] = rows[:pointer]
 
         i = min(self._resolved_prefix_count, len(all_edits))
         while i < len(all_edits):
@@ -1898,8 +2397,16 @@ class AnimationTimeline:
                 row_ends[attr][e.indexes.view(-1)] = end
             if event is not None:
                 event.replay_end = end
+                slot = getattr(event, "_window_slot", None)
+                if slot is None:
+                    # Predates _window_slot (or was built outside add()): fall
+                    # back to invalidating everything rather than guessing.
+                    touched_slot = 0
+                elif touched_slot is None or slot < touched_slot:
+                    touched_slot = slot
             i = j
 
+        self.function_timeline.invalidate_window_cache(touched_slot)
         self._resolved_prefix_count = len(all_edits)
         self._resolved_prefix_seq = all_edits[-1][0] if all_edits else -1
         self._resolved_row_ends = row_ends
@@ -1947,7 +2454,12 @@ class AnimationTimeline:
             prefix_state = (
                 self._resolved_prefix_count,
                 self._resolved_prefix_seq,
-                self._resolved_row_ends,
+                # Copied, not aliased: _resolve_replay_windows grows this
+                # checkpoint in place across the render's batches, so keeping
+                # the dict alone would hand back views the render has since
+                # overwritten. This is the one O(rows) copy that pays for
+                # dropping the per-batch one -- once per render, not per batch.
+                {attr: rows.clone() for attr, rows in self._resolved_row_ends.items()},
             )
         known_mob_ids = frozenset(self.mob_id_to_lifespan)
         try:
@@ -1964,6 +2476,11 @@ class AnimationTimeline:
                     self._resolved_prefix_seq,
                     self._resolved_row_ends,
                 ) = prefix_state
+                # The restored checkpoint is a set of standalone copies, not
+                # views into the backing store the render just mutated, so that
+                # store has to go with it. The next resolve rebuilds it from
+                # these values.
+                self._row_ends_capacity = {}
                 # Prepared edit dictionaries and CSR indexes embed the
                 # transient replay_end values resolved by this render.  They
                 # must not survive after those values are rolled back; the
@@ -2048,7 +2565,40 @@ class AnimationTimeline:
         When supplied, built-in animations query only rows reachable from that
         set while keeping the full global-row buffer layout used by replay.
         Omitting it preserves the original all-row behavior for public callers.
+
+        Replay runs inside a non-recording context, because it calls each
+        recorded function's *undecorated* body: the ``record_funcs=False`` wrap
+        that ``animated_function`` normally applies is absent, so a recorded
+        function whose body calls another animated function
+        (``Cylinder.set_start_point`` -> ``_move_between_points`` ->
+        ``move_to``) would record a **new** event on every replay -- growing the
+        timeline without bound as batches are prepared, and re-resolving replay
+        windows every time. A render never saw this because its batch loop runs
+        inside the same context (:meth:`~algan.render_loop.RenderLoopMixin
+        .batch_prep_context`); doing it here means every caller is safe,
+        including the benchmarks and probes that drive prep directly.
+
+        The context matches the render's exactly, so entering it inside a
+        render is inert -- the values are already set and inherited.
         """
+        # Deferred: animation_contexts imports TimelineSpan from this module.
+        from algan.animation_timeline.animation_contexts import Off
+
+        manager = None
+        for mob in active_mobs or ():
+            manager = getattr(mob, "animation_manager", None)
+            if manager is not None:
+                break
+        with Off(
+            record_attr_modifications=False,
+            record_funcs=False,
+            priority_level=math.inf,
+            animation_manager=manager,
+        ):
+            return self._replay_state_to_times(times, active_mobs)
+
+    def _replay_state_to_times(self, times, active_mobs=None):
+        """:meth:`set_state_to_times`' body, run under its non-recording context."""
         self._resolve_replay_windows()
         functions = self.function_timeline.get_functions_for_times(times)
         updaters = self.function_timeline.get_updaters_for_times(times)
@@ -2076,8 +2626,13 @@ class AnimationTimeline:
             active_time_inds = ((s <= times) & (times < replay_end)).nonzero()
             if active_time_inds.numel() == 0:
                 continue
+            time_selector = (
+                active_time_inds
+                if _opt_disabled("timeslice")
+                else _contiguous_time_selector(active_time_inds)
+            )
             for timeline in self.attr_to_timeline.values():
-                timeline.set_active_time_inds(active_time_inds)
+                timeline.set_active_time_inds(time_selector)
 
             elapsed = times[active_time_inds.squeeze(-1)] - s
             a = (elapsed / (e - s + 1e-6)).view(-1, 1, 1)
@@ -2143,8 +2698,13 @@ class AnimationTimeline:
                 ]
 
             for signature, group_time_inds in groups:
+                group_selector = (
+                    group_time_inds
+                    if _opt_disabled("timeslice")
+                    else _contiguous_time_selector(group_time_inds)
+                )
                 for timeline in self.attr_to_timeline.values():
-                    timeline.set_active_time_inds(group_time_inds)
+                    timeline.set_active_time_inds(group_selector)
                 elapsed = times[group_time_inds.squeeze(-1)] - f.time.start
                 caller, args, kwargs = f.invocation_for_signature(signature)
                 previous_trace = self.begin_updater_dependency_trace(f)
