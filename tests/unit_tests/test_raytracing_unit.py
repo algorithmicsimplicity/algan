@@ -341,7 +341,11 @@ def _run_kernel(
             "(commit ceaf3c4); deterministic rendering is now the wavefront "
             "tracer, which these raw-tensor unit tests do not drive"
         )
-    torch.cuda.synchronize()
+    # Only CUDA needs an explicit barrier before the kernel's writes are read
+    # back through torch; calling it unconditionally raises "Found no NVIDIA
+    # driver" on a CPU-only machine, where DEVICE is already cpu.
+    if DEVICE.type == "cuda":
+        torch.cuda.synchronize()
     return out
 
 

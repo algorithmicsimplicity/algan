@@ -17,12 +17,31 @@ batches of frames, builds render primitives, and renders them.
 ## Commands
 
 ### Running Python
-Always use the local venv: `.venv/Scripts/python.exe`. The default system Python lacks taichi and the other pinned dependencies.
+Always use the local venv; the default system Python lacks taichi and the other pinned dependencies. Commands below are written with the POSIX path — substitute your platform's:
+
+| Platform | Interpreter |
+| --- | --- |
+| Linux / macOS | `.venv/bin/python` |
+| Windows | `.venv\Scripts\python.exe` |
+
+`uv run python` works on every platform if you would rather not think about it.
+
+### Cloud sessions (Claude Code on the web)
+A cloud session is a fresh Ubuntu 24.04 VM, **4 vCPUs / 16 GB RAM / 30 GB disk**, with no GPU and nothing installed beyond the base image. `.claude/hooks/session-start.sh` provisions it before you get control: apt build/LaTeX/ffmpeg packages, then `uv sync --locked --all-extras --dev`. It is a no-op on a local checkout. If a build or a Tex test fails with missing headers or a missing `latex`, read that script first — the environment is probably mid-provision or the apt step warned and continued.
+
+What is different here, and what it means for what you can conclude:
+- **No GPU.** `_auto_render_device` falls back to CPU and everything works, just slower. Renders and the suite both pass.
+- **Pixel comparisons silently do not run.** Baselines are per device and only `expected_outputs_cuda/` is committed, so `tests/fast` renders its scene and then skips the comparison (`no cpu fast-suite baseline is available`), and `tests/full_renders` skips outright. **A renderer change cannot be validated in a cloud session.** Say so rather than implying the suite covered it; that verification needs a CUDA machine.
+- **Do not re-baseline here.** `ALGAN_UPDATE_*_BASELINE=1` would write CPU frames, and CPU and CUDA renders are not bit-identical.
+- **`download.pytorch.org` is blocked** by the default Trusted network policy, so the CPU-only Torch wheels are unreachable and there is no CPU build of Torch on PyPI. The lockfile's CUDA build is installed instead (~5 GB of `nvidia-*` wheels) and runs fine on CPU. To avoid the download, set the environment's Network access to **Custom** at claude.ai/code, add `download.pytorch.org`, and keep "include default list of common package managers" checked.
+- **Watch the disk.** A full install lands around 12 GB of the 30 GB. `df` reports the allowance, not the machine, so "Avail 0" with low "Used" means the allowance is spent.
+
+Persistence: the container is ephemeral and nothing outside git survives it. Commit anything worth keeping. Repo-level config (`CLAUDE.md`, `.claude/settings.json`, the hook) is what carries over; the environment's own **setup script** and **environment variables**, configured in the environment dialog at claude.ai/code, persist separately and are snapshotted after their first run.
 
 ### Testing
 ```
-.venv/Scripts/python.exe -m pytest -q --fast    # THE development loop: 112-147s
-.venv/Scripts/python.exe -m pytest -q           # everything, ~12 min, before pushing
+.venv/bin/python -m pytest -q --fast    # THE development loop: 112-147s
+.venv/bin/python -m pytest -q           # everything, ~12 min, before pushing
 ```
 - **`--fast` is the suite to run after every change.** It is everything not marked `slow`, held to a two-and-a-half-minute budget, and it prints where it landed (`fast suite: 134s of its 150s budget (89%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
 - **Its self-reported time is junk until the third consecutive run.** Taichi charges a kernel variant to whichever test hits it first, so any change that touches a kernel makes run 1 pay a cold compile: a measured sequence right after adding two small kernels was 194s → 160s → 112s. Never mark a test `slow` off run 1 or 2.
@@ -37,7 +56,7 @@ Always use the local venv: `.venv/Scripts/python.exe`. The default system Python
 - **Cap any script whose tensor sizes come from parameters** rather than from a real scene: `benchmarks/_memory_cap.py`'s `cap_process_memory(gb)` (call it *before* importing torch). A mis-sized synthetic generator has exhausted system RAM and blue-screened this machine. Do **not** cap a real render — WDDM charges the VRAM arena against process commit, so a capped render segfaults inside CUDA instead of raising.
 
 ### Documentation
-- Build: `.venv/Scripts/python.exe docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
+- Build: `.venv/bin/python docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
 - Source in `docs/source/`. API stubs in `docs/source/reference/` are autosummary-generated.
 - **Docstrings on user-facing API follow `DOCSTRINGS.md`** — read it before writing or editing a public docstring. It is prescriptive, not a description of current code: NumPy style with types in annotations only (never repeated in the docstring), every default stated in prose, units/shapes mandatory, an `Animation` section stating recorded-vs-immediate and spawn-order constraints, and `.. algan::` examples that call `Scene.save_video()` exactly once.
 

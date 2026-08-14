@@ -10,12 +10,34 @@ raise verbosity, either:
 * call :func:`set_log_level` at any time, or
 * attach your own handlers to ``logging.getLogger("algan")`` after calling
   ``logger.handlers.clear()``.
+
+Levels are thresholds, not selectors: a level shows itself and everything more
+severe, so ``INFO`` also shows warnings and errors.
+
+Algan adds one level of its own, :data:`PERF`, between ``DEBUG`` and ``INFO``::
+
+    ALGAN_LOG_LEVEL=PERF        # or set_log_level("PERF")
+
+It carries the renderer's self-healing events -- the batch splits and pool
+retries it performs when a chunk does not fit. Those are the memory model
+working as designed, not faults, so they are below ``INFO`` and invisible by
+default; they used to be ``WARNING``, which made a healthy render look broken
+and was the only thing left on screen for anyone who set ``WARNING`` to quiet
+the progress output. Turn ``PERF`` on when a render is slower than expected and
+you want to see how it is being budgeted. Being below ``INFO``, it also means
+``DEBUG`` includes these messages.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+
+#: Renderer budget/recovery diagnostics: below ``INFO`` so they stay off by
+#: default, above ``DEBUG`` so turning them on does not also enable every other
+#: debug message in the package.
+PERF = 15
+logging.addLevelName(PERF, "PERF")
 
 logger = logging.getLogger("algan")
 if not logger.handlers:
@@ -72,7 +94,9 @@ def set_log_level(level):
     ----------
     level
         A standard ``logging`` level name or value, e.g. ``"WARNING"`` to
-        silence progress messages or ``"DEBUG"`` for extra detail.
+        silence progress messages or ``"DEBUG"`` for extra detail. Algan's own
+        ``"PERF"`` (see :data:`PERF`) sits between the two and adds the
+        renderer's budget and recovery diagnostics to the default output.
 
     Notes
     -----

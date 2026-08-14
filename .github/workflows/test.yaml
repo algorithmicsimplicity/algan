@@ -2,9 +2,21 @@ name: Test
 
 on:
   push:
-    branches: [master]
+    # 'developer/**' is the branch the next release is actually prepared on, so
+    # CI has to see it; until it does, the suite only ever runs locally.
+    #
+    # 'claude/**' is here to prove out the CPU render baselines on a GitHub
+    # runner before they gate anything that matters. Those baselines were
+    # generated on one machine and this is the first time they are checked on
+    # another, which is the whole question. Narrow or drop this pattern once
+    # that is settled -- a full run renders seven scenes and is not cheap.
+    branches: [master, 'developer/**', 'claude/**']
   pull_request:
-    branches: [master]
+    branches: [master, 'developer/**']
+  # Lets a run be started by hand from the Actions tab. Only takes effect once
+  # this file is on the default branch: GitHub reads workflow_dispatch from
+  # there, not from the ref being dispatched.
+  workflow_dispatch:
 
 # Cancel in-progress runs when pushing a new commit on the PR
 concurrency:
@@ -40,11 +52,15 @@ jobs:
             texlive-fonts-recommended \
             latexmk # or full texlive-full if needed
 
+      # apt supplies ffmpeg 6.1.1 on ubuntu-24.04, which is all moviepy and
+      # opencv need. A second step ran federicocarboni/setup-ffmpeg@v3 straight
+      # after this one; it fetched a static build by scraping an upstream readme
+      # for the version, that readme's format changed, and the action now fails
+      # with "AssertionError: Failed to read version from readme". Since apt has
+      # already installed ffmpeg by this point the step was redundant as well as
+      # broken, so it is gone rather than pinned.
       - name: Install ffmpeg
         run: sudo apt-get install -y ffmpeg
-
-      - name: Setup ffmpeg
-        uses: federicocarboni/setup-ffmpeg@v3
 
       - name: Install uv
         uses: ./.github/actions/install-uv
@@ -55,8 +71,16 @@ jobs:
       - name: Install the project
         run: uv sync --locked --all-extras --dev
 
+      # Scoped to the two suites whose baselines survive a change of machine.
+      # tests/full_renders is left out deliberately: measured on this runner
+      # against baselines rendered elsewhere, five of its six scenes differed by
+      # 29-204 channel values against a tolerance of 2, while tests/fast and
+      # shapes_and_timeline matched exactly. See tests/README.md.
+      #
+      # Named as paths rather than run with --fast on purpose: --fast would also
+      # drop test_raytracing_unit.py, which is portable and passes here.
       - name: Run tests
-        run: uv run pytest --cov=algan --cov-report=xml -n 1
+        run: uv run pytest tests/unit_tests tests/fast --cov=algan --cov-report=xml -n 1
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

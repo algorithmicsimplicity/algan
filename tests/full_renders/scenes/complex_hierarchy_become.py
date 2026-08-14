@@ -14,6 +14,10 @@ root still reaches every replacement descendant.
 
 from algan import *
 
+# Pinned so the render does not depend on the host's fonts;
+# tests/conftest.py registers the vendored faces.
+FONT = "Algan Test Sans"
+
 CHECKPOINT_TIMES = {
     "source_tree": 0.8,
     "mid_hierarchy_morph": 2.3,
@@ -53,17 +57,19 @@ with Off():
         font_size=38,
         weight="BOLD",
         color=WHITE,
+        font=FONT,
     ).move(UP * 3.05)
     subtitle = Text(
         "3 branches  ->  4 branches   |   primitives cross group boundaries",
         font_size=21,
         color=GRAY_A,
+        font=FONT,
     ).move(UP * 2.55)
     legend = Group(
-        Text("BEZIER", font_size=19, color=BLUE_A),
-        Text("SURFACE", font_size=19, color=TEAL_A),
-        Text("MESH", font_size=19, color=ORANGE),
-        Text("IMAGE", font_size=19, color=PURPLE_A),
+        Text("BEZIER", font_size=19, color=BLUE_A, font=FONT),
+        Text("SURFACE", font_size=19, color=TEAL_A, font=FONT),
+        Text("MESH", font_size=19, color=ORANGE, font=FONT),
+        Text("IMAGE", font_size=19, color=PURPLE_A, font=FONT),
     ).arrange_in_line(RIGHT, buffer=0.65)
     legend.move(DOWN * 3.05)
 

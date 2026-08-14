@@ -50,6 +50,10 @@ owns the Scene, the settings and the comparison.
 
 from algan import *
 
+# Pinned so the render does not depend on the host's fonts;
+# tests/conftest.py registers the vendored faces.
+FONT = "Algan Test Sans"
+
 Scene.set_background_color(DARKER_GRAY)
 
 # Five outer and five inner points: a re-entrant outline, so the fill rule and
@@ -83,7 +87,9 @@ with Off():
         intensity=0.6,
     ).spawn(animate=False)
 
-    title = Text("FAST SUITE", font_size=34, weight="BOLD", color=WHITE).move(UP * 2.9)
+    title = Text(
+        "FAST SUITE", font_size=34, weight="BOLD", color=WHITE, font=FONT
+    ).move(UP * 2.9)
 
     # Row 1 -- bezier circuits: filled, border-only, and non-convex.
     circuits = Group(
@@ -119,7 +125,9 @@ with Off():
 
     # Row 3 -- glyph circuits, built through the Manim geometry cache.
     formula = Tex(r"e^{i\pi}+1=0", color=YELLOW).scale(0.8).move(DOWN * 2.1)
-    caption = Text("circuits / meshes / glyphs", font_size=20, color=GRAY_A).move(
+    caption = Text(
+        "circuits / meshes / glyphs", font_size=20, color=GRAY_A, font=FONT
+    ).move(
         DOWN * 2.9
     )
 

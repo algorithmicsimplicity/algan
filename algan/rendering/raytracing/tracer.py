@@ -81,7 +81,7 @@ _WAVEFRONT_POOL_RETRIES = [0]
 # batch (ALL_PIDS = ungated), so an A/B can confirm the gate actually engaged
 # instead of inferring it from timings (benchmarks/_frag_pid_gate_ab.py).
 _FRAG_PID_LAST = {"tri": ALL_PIDS, "pn": ALL_PIDS}
-from algan.logging.logger import get_logger
+from algan.logging.logger import PERF, get_logger
 from algan.rendering.raytracing.utils import _expand_frames, _flat_frames, _pixel_bases
 
 # ``build_frag_pipelines`` is imported lazily in the render dispatch to avoid a
@@ -1258,7 +1258,7 @@ def render_batch_raytraced(
         # deterministic kernels loop the aa^2 sub-pixels serially per pixel, so
         # only the Monte Carlo path multiplies the thread count by the samples.)
         if samples > 1 and (end - start) * width * height * samples_eff >= 1 << 31:
-            logger.warning(f"Render OOM, splitting {start}:{end}")
+            logger.log(PERF, f"Reducing the frame batch to fit memory: {start}:{end}")
             if end - start <= 1:
                 raise OutOfRenderMemory(
                     "samples_per_pixel * resolution exceeds the ray tracer's "
@@ -1450,7 +1450,7 @@ def render_batch_raytraced(
                 exc
             ):
                 raise
-            logger.warning(f"Render OOM, splitting {start}:{end}")
+            logger.log(PERF, f"Reducing the frame batch to fit memory: {start}:{end}")
             memory.set_pointers(entry_pointers)
             # All this stuff is necessary to free local variables assigned during the previous render attempt.
             exc_type, exc_value, exc_traceback = sys.exc_info()
@@ -1742,8 +1742,9 @@ def _run_wavefront_tiles(
                             ) from exc
                         next_primary = max(1, attempt_primary // 2)
                         _WAVEFRONT_POOL_RETRIES[0] += 1
-                        logger.warning(
-                            "Hybrid raster tile allocation failed for "
+                        logger.log(
+                            PERF,
+                            "Hybrid raster tile did not fit for "
                             f"{tile_start}:{tile_start + attempt_primary}; "
                             f"retrying with {next_primary} primaries"
                         )
@@ -1765,8 +1766,9 @@ def _run_wavefront_tiles(
                             attempt_primary, int(rs_alloc[0].item()), pool
                         )
                         _WAVEFRONT_POOL_RETRIES[0] += 1
-                        logger.warning(
-                            "Wavefront continuation pool overflow for tile "
+                        logger.log(
+                            PERF,
+                            "Wavefront continuation pool overflowed for tile "
                             f"{tile_start}:{tile_start + attempt_primary}; "
                             f"retrying with {next_primary} primaries and the "
                             f"same {pool}-slot pool"

@@ -3,10 +3,11 @@ Installation
 
 .. _installation:
 
-Installing Algan locally via pip
-********************************
+Algan runs on Windows, macOS and Linux, and needs Python 3.9 - 3.13 plus a few
+system dependencies. :doc:`installation/uv` walks through all of it.
 
-See :doc:`local installation guide <installation/uv>`
+To work on Algan itself rather than install a release, see
+:doc:`contributing/development`.
 
 .. toctree::
    :hidden:

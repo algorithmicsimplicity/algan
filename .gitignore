@@ -15,7 +15,13 @@ __pycache__/
 *.so
 
 .agents
-.claude
+# Ignore personal Claude Code state, but track the shared project config: the
+# SessionStart hook is what makes Claude Code on the web able to build and test
+# this repo, so it has to be committed. Git will not look inside an ignored
+# directory, hence ignoring the contents rather than the directory itself.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 .codex
 .devcontainer
 

@@ -240,6 +240,45 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
     )
 
 
+#: Text classes whose glyph layout comes from a font the host supplies, and
+#: which therefore have to name one of the vendored families explicitly. ``Tex``
+#: and ``MathTex`` are deliberately absent: they go through LaTeX and dvisvgm to
+#: outlines and do not consult fontconfig at all.
+_FONT_BEARING_CLASSES = {"Text", "MarkupText", "Paragraph"}
+
+
+@pytest.mark.parametrize(
+    "scene_path", _scene_paths(), ids=lambda path: path.stem
+)
+def test_scene_text_pins_a_vendored_font(scene_path):
+    """Every Text-like call names a font, so renders do not depend on the host.
+
+    ``Text`` defaults to ``font=""``, which Pango resolves through fontconfig,
+    so the glyph advances change with whatever the machine has installed. That
+    is not hypothetical: before the fonts were vendored, the CPU and CUDA
+    baselines' Text differed by up to 230 channel values -- structurally, not by
+    a sub-pixel shift -- while their geometry agreed to a mean of 0.36.
+
+    One unpinned call is enough to reintroduce the drift for a whole scene, and
+    it would surface as a baseline failure that looks like a renderer
+    regression, so this is checked rather than left to review.
+    """
+    tree = ast.parse(scene_path.read_text(encoding="utf-8"), filename=str(scene_path))
+
+    unpinned = [
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in _FONT_BEARING_CLASSES
+        and not any(keyword.arg == "font" for keyword in node.keywords)
+    ]
+    assert not unpinned, (
+        f"{scene_path.name} has {len(unpinned)} {sorted(set(unpinned))} call(s) with no "
+        "font=; pass font=FONT so the render does not depend on the host's fonts"
+    )
+
+
 def test_every_exemption_names_something_that_still_exists():
     """A stale exemption would silently excuse a class that was renamed."""
     unknown = sorted(name for name in EXEMPT if not hasattr(algan, name))

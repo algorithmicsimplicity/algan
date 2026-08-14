@@ -1,12 +1,14 @@
 # Algan test suites
 
 Three directories, two suites. Always run them with the project venv — the
-system Python has no taichi.
+system Python has no taichi. Commands below use the POSIX interpreter path
+(`.venv/bin/python`); on Windows that is `.venv\Scripts\python.exe`, and
+`uv run python` works on either.
 
 ## The fast suite — run this one
 
 ```bash
-.venv/Scripts/python.exe -m pytest -q --fast
+.venv/bin/python -m pytest -q --fast
 ```
 
 **This is the suite to run after every change.** It is everything *not* marked
@@ -58,7 +60,7 @@ What it gives up, and where that is covered instead:
 ## The full suite
 
 ```bash
-.venv/Scripts/python.exe -m pytest -q
+.venv/bin/python -m pytest -q
 ```
 
 Everything, about twelve minutes on CUDA. Run it before pushing, after touching
@@ -134,17 +136,108 @@ what they are. Its docstring is worth reading before editing it: it is shaped
 by the kernel-variant cost, which is why it is one scene rather than several
 and why it contains no `Surface` geometry.
 
+## Baselines are per device
+
+Each render suite keeps one baseline directory per device —
+`expected_outputs_cuda/` and `expected_outputs_cpu/` — and the harness picks
+between them with `torch.cuda.is_available()`. A machine with no baseline
+directory for its device renders the scene and then skips the comparison, so
+**a suite that reports itself green on a new device may not have compared
+anything**; check for skips before believing it.
+
+Both sets are checked in. They are *not* interchangeable, and the differences
+between them are larger than the tolerance by design:
+
+- **PN surfaces** (`Sphere`, `Cylinder`, `Cone`, `Torus`, `Surface`) differ
+  across their interiors, because the subdivision-level criterion kernel runs
+  under Taichi's `fast_math` and flips borderline tessellation levels
+  differently per backend. Measured at up to 8% of a frame's pixels.
+- **Silhouettes and specular highlights** differ by up to ~75 channel values on
+  edge pixels, from float ordering.
+Text used to differ far more than either — up to ~230 — and that one was never
+a device difference at all. `Text` defaults to `font=""`, which Pango resolves
+through fontconfig, so the glyph advances changed with whatever the machine had
+installed. `Tex`/`MathTex` never had the problem: they go through LaTeX and
+`dvisvgm` to outlines and match across devices at zero shift, which is what
+identified fonts as the cause.
+
+## Baselines are per machine too, which decides what CI runs
+
+Per *device* understates it: the full-render baselines do not survive a change
+of CPU either. Measured, not assumed — a GitHub Actions `ubuntu-latest` runner
+rendered these scenes against baselines produced on another CPU:
+
+| Scene | Max deviation | |
+| --- | ---: | --- |
+| `tests/fast` | 0 | matched |
+| `shapes_and_timeline` | 0 | matched |
+| `text_and_media` | 29 | failed |
+| `complex_hierarchy_become` | 44 | failed |
+| `manim_compat_and_plots` | 50 | failed |
+| `solids_and_camera` | 53 | failed |
+| `materials_and_lighting` | 204 | failed |
+
+against a tolerance of 2. The split is not arbitrary: everything that matched is
+built from 2-D circuits and flat triangle meshes, and everything that moved
+carries PN surfaces, shadows, refraction or glTF — which is what
+`pn_criterion_kernel` under `fast_math` predicts, since which tessellation
+levels sit on a boundary depends on the CPU evaluating the criterion.
+
+So **CI runs `tests/unit_tests` and `tests/fast`**, the two that are portable,
+and `test_full_render_scene` skips itself when `CI` is set. Run it anyway with
+`ALGAN_RUN_FULL_RENDERS=1` — on the machine whose baselines these are, or to
+re-measure the spread.
+
+Neither obvious shortcut is worth taking. Raising the tolerance would have to
+reach ~204 to pass, which is far past where it stops catching regressions;
+re-baselining on a runner just moves the failure onto the developer's machine.
+The real fix, if this suite should ever gate CI, is making the level criterion
+independent of the host CPU — probably dropping `fast_math` on those kernels —
+which is a renderer change that moves every baseline including CUDA.
+
+One thing this measurement did confirm: the fast scene contains `Text` and
+`Tex` and matched exactly on a machine with a different font set, which is the
+evidence that vendoring the fonts works.
+
+## Fonts are vendored, not borrowed
+
+`tests/assets/fonts/` holds the **Algan Test Sans** and **Algan Test Mono**
+faces, and `tests/conftest.py` registers them with Pango before any scene runs.
+Every `Text`, `MarkupText` and `Paragraph` call in a scene names one of them
+(`font=FONT`), and `Code` names the mono family through its `paragraph_config` —
+its own default is the `"Monospace"` fontconfig alias, which is host-dependent
+in exactly the same way.
+
+This is what stops a container image with a different font set from shifting
+every glyph and failing the suite as if the renderer had regressed. It is
+enforced, not left to review: `test_scene_text_pins_a_vendored_font` fails on
+any Text-like call in a scene that does not pass `font=`, because one unpinned
+call reintroduces the drift for the whole scene.
+
+The faces are the Liberation fonts with their name tables rewritten. Renaming
+is deliberate — the SIL OFL reserves the upstream name, and a distinct family
+means a system installation of Liberation can never shadow the vendored files.
+See `tests/assets/fonts/LICENSE.txt`.
+
+**When adding a scene**, give its text `font=FONT` and declare
+`FONT = "Algan Test Sans"` under the star import, as the existing scenes do.
+
 ## Re-baselining
+
+Baselines are re-baselined **for the device you are on** — the environment
+variables below write to whichever `expected_outputs_<device>/` matches the
+current machine, so re-baselining on CPU cannot repair a CUDA baseline or vice
+versa.
 
 Both render suites are re-baselined by rendering with the baselines writable,
 then **looking at the result** before committing:
 
 ```bash
-ALGAN_UPDATE_FULL_RENDER_BASELINES=1 .venv/Scripts/python.exe -m pytest tests/full_renders -q
+ALGAN_UPDATE_FULL_RENDER_BASELINES=1 .venv/bin/python -m pytest tests/full_renders -q
 ```
 
 ```bash
-ALGAN_UPDATE_FAST_BASELINE=1 .venv/Scripts/python.exe -m pytest tests/fast -q
+ALGAN_UPDATE_FAST_BASELINE=1 .venv/bin/python -m pytest tests/fast -q
 ```
 
 Both variables are read by the harnesses rather than by the package, so

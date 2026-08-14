@@ -16,11 +16,43 @@ Four things live here because they are cross-cutting:
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
 from algan import SETTINGS
 from algan.scene_manager import SceneManager
+
+# The render scenes name this family explicitly instead of taking Pango's
+# default, because ``Text`` resolves ``font=""`` through fontconfig and the
+# glyph advances then change with whatever the machine happens to have
+# installed. That is not a hypothetical: the CPU and CUDA baselines were
+# rendered on different machines and their Text differed by up to 230 channel
+# values -- structurally, not by a sub-pixel shift -- while the geometry and the
+# dvisvgm-backed Tex agreed to a mean of 0.36.
+#
+# Registering the vendored faces makes text depend on bytes in the repository
+# rather than on the host, so a container image that changes its fonts can no
+# longer look like a renderer regression. See tests/assets/fonts/LICENSE.txt.
+FONT_DIR = Path(__file__).resolve().parent / "assets" / "fonts"
+TEST_FONT = "Algan Test Sans"
+
+
+def _register_test_fonts():
+    """Make the vendored faces visible to Pango for this process."""
+    import manimpango
+
+    for face in sorted(FONT_DIR.glob("*.ttf")):
+        if not manimpango.register_font(str(face)):
+            raise RuntimeError(f"could not register the vendored font {face}")
+    if TEST_FONT not in manimpango.list_fonts():
+        raise RuntimeError(
+            f"registered {FONT_DIR} but Pango still does not offer {TEST_FONT!r}; "
+            "the render scenes would silently fall back to a substitute font"
+        )
+
+
+_register_test_fonts()
 
 # The fast suite is meant to stay inside a two-and-a-half-minute development
 # loop. This is reported, not enforced: the number moves with machine load and

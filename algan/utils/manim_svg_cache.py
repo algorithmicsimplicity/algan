@@ -19,6 +19,19 @@ selects a file under ``SETTINGS.paths.cache_directory``; the value is the
 per-glyph point arrays + style, saved with :func:`torch.save` and rebuilt into
 lightweight VMobjects (no LaTeX, no ``svgelements`` parse, no deep copy).
 
+Manim 0.21 added ``SVGMobject.id_to_vgroup_dict``, which maps each SVG element
+id to a ``VGroup`` of the glyphs beneath it. ``MathTex._break_up_by_substrings``
+indexes it to split a formula into its ``tex_strings``, so a cache hit that
+rebuilt only the glyph tree left the dict empty and every ``Tex`` after the very
+first (i.e. every run once this cache is warm) died on ``KeyError: 'root'``.
+The recipe therefore also stores, per group id, the indices of its members in
+the top-level glyph list, and :func:`_rebuild` reconstructs the dict from them.
+Manim 0.19 has no such attribute; the group map is simply absent there, so both
+versions round-trip through the same cache. Recipes are tagged with
+:data:`_RECIPE_TAG` so entries written by an older Algan (or under a manim that
+did not need the map) are detected and transparently re-parsed rather than
+replayed into a broken mobject.
+
 The directory is bounded: each save evicts least-recently-used entries once the
 total exceeds a cap (default 512 MB, override via ``ALGAN_MANIM_SVG_CACHE_MB``).
 
@@ -46,6 +59,13 @@ from algan.settings import SETTINGS
 # that is only needed to *produce* the points (already done); ``submobjects``
 # and ``updaters`` are rebuilt structurally / reset fresh.
 _SKIP_KEYS = ("path_obj", "submobjects", "updaters")
+
+# Marks a recipe as ``(_RECIPE_TAG, nodes, groups)``. Recipes without it predate
+# the group map and are re-parsed when the running manim needs one. Bump the
+# suffix whenever the payload layout changes so old entries are re-parsed
+# instead of misread -- the cache key is content-addressed, not version-keyed,
+# so a manim upgrade otherwise reads a recipe written by the previous version.
+_RECIPE_TAG = "algan-manim-svg-recipe-v2"
 
 # Process-local memo of already-loaded recipes, keyed by the stable hash. This
 # replaces Manim's SVG_HASH_TO_MOB_MAP for the patched path: a cache hit rebuilds
@@ -112,9 +132,42 @@ def _extract_node(mob) -> tuple:
     return (cls.__module__, cls.__qualname__, state, children)
 
 
+def _extract_groups(svg_mob) -> dict[str, list[int]] | None:
+    """Snapshot ``id_to_vgroup_dict`` as indices into the top-level glyph list.
+
+    The VGroups hold *references* to the very glyphs in ``svg_mob.submobjects``
+    (``get_mobjects_from`` adds each leaf shape to both), which is what lets
+    ``MathTex`` re-parent them. Positions survive pickling where identity does
+    not, so store those and re-resolve them against the rebuilt glyphs.
+
+    Returns ``None`` on manim versions without the attribute (< 0.21).
+    """
+    id_to_vgroup = getattr(svg_mob, "id_to_vgroup_dict", None)
+    if id_to_vgroup is None:
+        return None
+    index_of = {id(sm): i for i, sm in enumerate(svg_mob.submobjects)}
+    return {
+        name: [index_of[id(m)] for m in vgroup.submobjects if id(m) in index_of]
+        for name, vgroup in id_to_vgroup.items()
+    }
+
+
 def _extract(svg_mob) -> tuple:
     """Recipe for an SVGMobject's parsed children (its top-level glyphs)."""
-    return tuple(_extract_node(sm) for sm in svg_mob.submobjects)
+    nodes = tuple(_extract_node(sm) for sm in svg_mob.submobjects)
+    return (_RECIPE_TAG, nodes, _extract_groups(svg_mob))
+
+
+def _parse_recipe(recipe) -> tuple[tuple, dict[str, list[int]] | None]:
+    """Split a stored recipe into ``(nodes, groups)``.
+
+    Untagged recipes are pre-group entries left by an older Algan; their first
+    element is a node 4-tuple rather than the string tag, so the two layouts are
+    never confusable.
+    """
+    if len(recipe) == 3 and recipe[0] == _RECIPE_TAG:
+        return recipe[1], recipe[2]
+    return recipe, None
 
 
 def _restore_value(v):
@@ -154,8 +207,28 @@ def _rebuild_node(node: tuple):
     return mob
 
 
-def _rebuild(svg_mob, recipe: tuple) -> None:
-    svg_mob.add(*[_rebuild_node(node) for node in recipe])
+def _rebuild(svg_mob, nodes: tuple, groups: dict[str, list[int]] | None) -> None:
+    """Replay a recipe onto ``svg_mob``: glyph tree first, then the group map.
+
+    Everything is constructed before anything is attached, so a rebuild that
+    raises part-way leaves ``svg_mob`` untouched for the caller to re-parse.
+    """
+    children = [_rebuild_node(node) for node in nodes]
+    rebuilt_groups = None
+    if groups is not None:
+        from manim.mobject.types.vectorized_mobject import VGroup
+
+        rebuilt_groups = {}
+        for name, indices in groups.items():
+            members = [children[i] for i in indices if 0 <= i < len(children)]
+            vgroup = VGroup()
+            if members:
+                vgroup.add(*members)
+            rebuilt_groups[name] = vgroup
+
+    svg_mob.add(*children)
+    if rebuilt_groups is not None:
+        svg_mob.id_to_vgroup_dict = rebuilt_groups
 
 
 def _load_disk(key: str):
@@ -224,32 +297,56 @@ def _save_disk(key: str, recipe: tuple) -> None:
     _enforce_cap()
 
 
-def _patched_init_svg_mobject(self, use_svg_cache: bool) -> None:
+def _patched_init_svg_mobject(self, use_svg_cache: bool):
     """Drop-in replacement for ``SVGMobject.init_svg_mobject``.
 
     Adds a persistent disk layer in front of the (still process-local) parse:
     memo -> disk -> generate. On a fresh parse the original glyph tree is kept
     untouched (byte-identical to the un-cached path) and its recipe is written
     to disk for later runs.
+
+    A recipe is only replayed when it can reproduce everything this manim reads
+    back off the mobject; otherwise it is discarded and re-parsed, which
+    re-saves it in the current format. That covers upgrading into a manim that
+    needs the group map, and glyph classes moving between manim versions (the
+    cache key is content-addressed, so an upgrade keeps hitting the same entry).
     """
     if not use_svg_cache:
         self.generate_mobject()
-        return
+        return self
 
     key = _stable_key(self)
+    # Manim >= 0.21 initialises this in __init__, before calling us.
+    needs_groups = hasattr(self, "id_to_vgroup_dict")
 
     recipe = _MEM_CACHE.get(key)
     if recipe is None:
         recipe = _load_disk(key)
-        if recipe is None:
-            # Cold: parse for real, then persist the result.
-            self.generate_mobject()
-            _MEM_CACHE[key] = _extract(self)
-            _save_disk(key, _MEM_CACHE[key])
-            return
-        _MEM_CACHE[key] = recipe
+        if recipe is not None:
+            _MEM_CACHE[key] = recipe
 
-    _rebuild(self, recipe)
+    if recipe is not None:
+        nodes, groups = _parse_recipe(recipe)
+        if groups is None and needs_groups:
+            # Pre-group entry from an older Algan: replaying it would leave
+            # id_to_vgroup_dict empty and break MathTex. Re-parse instead.
+            _MEM_CACHE.pop(key, None)
+        else:
+            try:
+                _rebuild(self, nodes, groups)
+                return self
+            except Exception as e:  # noqa: BLE001 - a stale recipe is recoverable
+                get_logger().warning(
+                    f"manim_svg_cache: could not replay {key[:12]} ({e}); reparsing"
+                )
+                _MEM_CACHE.pop(key, None)
+                self.submobjects = []
+
+    # Cold (or unusable recipe): parse for real, then persist the result.
+    self.generate_mobject()
+    _MEM_CACHE[key] = _extract(self)
+    _save_disk(key, _MEM_CACHE[key])
+    return self
 
 
 def _redirect_manim_dirs() -> None:

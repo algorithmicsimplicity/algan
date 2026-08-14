@@ -18,6 +18,10 @@ layout so neighbouring columns never collide.
 
 from algan import *
 
+# Pinned so the render does not depend on the host's fonts;
+# tests/conftest.py registers the vendored faces.
+FONT = "Algan Test Sans"
+
 Scene.set_background_color(DARKER_GRAY)
 
 
@@ -50,6 +54,7 @@ with Off():
         font_size=44,
         weight="BOLD",
         color=WHITE,
+        font=FONT,
     ).move(UP * 2.85)
 
     curved = Group(
@@ -81,11 +86,11 @@ with Off():
     curved_center = curved.get_center()
 
     curved_labels = Group(
-        Text("sphere", font_size=21, color=GRAY_A),
-        Text("cylinder", font_size=21, color=GRAY_A),
-        Text("cone", font_size=21, color=GRAY_A),
-        Text("torus", font_size=21, color=GRAY_A),
-        Text("parametric", font_size=21, color=GRAY_A),
+        Text("sphere", font_size=21, color=GRAY_A, font=FONT),
+        Text("cylinder", font_size=21, color=GRAY_A, font=FONT),
+        Text("cone", font_size=21, color=GRAY_A, font=FONT),
+        Text("torus", font_size=21, color=GRAY_A, font=FONT),
+        Text("parametric", font_size=21, color=GRAY_A, font=FONT),
     )
     for solid, label in zip(curved, curved_labels):
         label.move_to(solid.get_center() + DOWN * 1.05)
@@ -106,12 +111,12 @@ with Off():
     flat_center = flat.get_center()
 
     flat_labels = Group(
-        Text("cube", font_size=20, color=GRAY_A),
-        Text("prism", font_size=20, color=GRAY_A),
-        Text("tetra", font_size=20, color=GRAY_A),
-        Text("octa", font_size=20, color=GRAY_A),
-        Text("icosa", font_size=20, color=GRAY_A),
-        Text("dodeca", font_size=20, color=GRAY_A),
+        Text("cube", font_size=20, color=GRAY_A, font=FONT),
+        Text("prism", font_size=20, color=GRAY_A, font=FONT),
+        Text("tetra", font_size=20, color=GRAY_A, font=FONT),
+        Text("octa", font_size=20, color=GRAY_A, font=FONT),
+        Text("icosa", font_size=20, color=GRAY_A, font=FONT),
+        Text("dodeca", font_size=20, color=GRAY_A, font=FONT),
     )
     for solid, label in zip(flat, flat_labels):
         label.move_to(solid.get_center() + DOWN * 0.95)
@@ -200,6 +205,7 @@ with Off():
         "Arrow3D / Line3D / Dot3D / ConvexHull3D  +  camera orbit",
         font_size=23,
         color=TEAL_A,
+        font=FONT,
     ).move(DOWN * 3.05)
 
 with Seq():
@@ -232,6 +238,7 @@ with Off():
         "fit_to_screen_rectangle  +  wave_color  +  move_out_of_screen",
         font_size=23,
         color=TEAL_A,
+        font=FONT,
     ).move(DOWN * 3.05)
 
 with Seq():

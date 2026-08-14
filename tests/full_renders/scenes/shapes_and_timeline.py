@@ -20,6 +20,10 @@ import torch
 
 from algan import *
 
+# Pinned so the render does not depend on the host's fonts;
+# tests/conftest.py registers the vendored faces.
+FONT = "Algan Test Sans"
+
 Scene.set_background_color(DARKER_GRAY)
 
 # A non-convex circuit: five outer points and five inner points, so the fill
@@ -54,6 +58,7 @@ with Off():
         font_size=44,
         weight="BOLD",
         color=WHITE,
+        font=FONT,
     ).move(UP * 3.05)
 
     filled = Group(
@@ -67,12 +72,12 @@ with Off():
     filled.move(UP * 1.45 - filled.get_center())
 
     filled_labels = Group(
-        Text("circle", font_size=22, color=GRAY_A),
-        Text("square", font_size=22, color=GRAY_A),
-        Text("pentagon", font_size=22, color=GRAY_A),
-        Text("non-convex", font_size=22, color=GRAY_A),
-        Text("triangle", font_size=22, color=GRAY_A),
-        Text("rectangle", font_size=22, color=GRAY_A),
+        Text("circle", font_size=22, color=GRAY_A, font=FONT),
+        Text("square", font_size=22, color=GRAY_A, font=FONT),
+        Text("pentagon", font_size=22, color=GRAY_A, font=FONT),
+        Text("non-convex", font_size=22, color=GRAY_A, font=FONT),
+        Text("triangle", font_size=22, color=GRAY_A, font=FONT),
+        Text("rectangle", font_size=22, color=GRAY_A, font=FONT),
     )
     for shape, label in zip(filled, filled_labels):
         label.move_to(shape.get_center() + DOWN * 1.15)
@@ -101,12 +106,12 @@ with Off():
     outlined.move(DOWN * 0.65 - outlined.get_center())
 
     outlined_labels = Group(
-        Text("thin border", font_size=20, color=GRAY_A),
-        Text("thick border", font_size=20, color=GRAY_A),
-        Text("border + fill", font_size=20, color=GRAY_A),
-        Text("outlined star", font_size=20, color=GRAY_A),
-        Text("line", font_size=20, color=GRAY_A),
-        Text("dot", font_size=20, color=GRAY_A),
+        Text("thin border", font_size=20, color=GRAY_A, font=FONT),
+        Text("thick border", font_size=20, color=GRAY_A, font=FONT),
+        Text("border + fill", font_size=20, color=GRAY_A, font=FONT),
+        Text("outlined star", font_size=20, color=GRAY_A, font=FONT),
+        Text("line", font_size=20, color=GRAY_A, font=FONT),
+        Text("dot", font_size=20, color=GRAY_A, font=FONT),
     )
     for shape, label in zip(outlined, outlined_labels):
         label.move_to(shape.get_center() + DOWN * 0.86)
@@ -130,6 +135,7 @@ with Off():
         "Seq / Sync / Lag / Off  +  rate functions",
         font_size=24,
         color=TEAL_A,
+        font=FONT,
     ).move(DOWN * 2.5)
 
 with Seq():
@@ -168,6 +174,7 @@ with Off():
         "indication animations",
         font_size=24,
         color=TEAL_A,
+        font=FONT,
     ).move(DOWN * 3.0)
 
 with Seq():
@@ -238,6 +245,7 @@ with Off():
         "become            updater            counter            hand-drawn",
         font_size=20,
         color=GRAY_A,
+        font=FONT,
     ).move(DOWN * 3.0)
 
 with Seq():
@@ -347,12 +355,14 @@ with Off():
     )
 
     primitive_labels = Group(
-        Text("per-vertex colour", font_size=19, color=GRAY_A).move(
+        Text("per-vertex colour", font_size=19, color=GRAY_A, font=FONT).move(
             LEFT * 4.6 + DOWN * 0.85
         ),
-        Text("raw circuit", font_size=19, color=GRAY_A).move(LEFT * 2.3 + DOWN * 0.85),
-        Text("Quad", font_size=19, color=GRAY_A).move(DOWN * 0.85),
-        Text("QuadTriangulated", font_size=19, color=GRAY_A).move(
+        Text(
+            "raw circuit", font_size=19, color=GRAY_A, font=FONT
+        ).move(LEFT * 2.3 + DOWN * 0.85),
+        Text("Quad", font_size=19, color=GRAY_A, font=FONT).move(DOWN * 0.85),
+        Text("QuadTriangulated", font_size=19, color=GRAY_A, font=FONT).move(
             RIGHT * 2.6 + DOWN * 0.85
         ),
     )
@@ -420,12 +430,18 @@ with Off():
         ),
     ).move(RIGHT * 4.2 + UP * 0.55)
     point_labels = Group(
-        Text("DotCloud", font_size=20, color=GRAY_A).move(LEFT * 4.2 + DOWN * 0.75),
-        Text("PointCloudDot", font_size=20, color=GRAY_A).move(
+        Text(
+            "DotCloud", font_size=20, color=GRAY_A, font=FONT
+        ).move(LEFT * 4.2 + DOWN * 0.75),
+        Text("PointCloudDot", font_size=20, color=GRAY_A, font=FONT).move(
             LEFT * 1.4 + DOWN * 0.75
         ),
-        Text("TrueDot", font_size=20, color=GRAY_A).move(RIGHT * 1.4 + DOWN * 0.75),
-        Text("PGroup", font_size=20, color=GRAY_A).move(RIGHT * 4.2 + DOWN * 0.75),
+        Text(
+            "TrueDot", font_size=20, color=GRAY_A, font=FONT
+        ).move(RIGHT * 1.4 + DOWN * 0.75),
+        Text(
+            "PGroup", font_size=20, color=GRAY_A, font=FONT
+        ).move(RIGHT * 4.2 + DOWN * 0.75),
     )
 
 with Seq():

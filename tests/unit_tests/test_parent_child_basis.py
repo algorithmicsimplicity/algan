@@ -91,7 +91,10 @@ def test_rotation_between_bases_maps_a_sheared_basis_onto_the_target():
 
     change = get_rotation_between_bases(source, target)
 
-    torch.testing.assert_close(source @ change, target, atol=1e-6, rtol=0)
+    # 5e-6 matches the tolerance used above: the solve behind
+    # get_rotation_between_bases rounds differently across BLAS backends, and at
+    # 1e-6 this shear overshot by 1.01e-6 on Linux/x86 while passing on Windows.
+    torch.testing.assert_close(source @ change, target, atol=5e-6, rtol=0)
 
 
 def test_assigning_a_basis_to_itself_does_not_drift(scene):

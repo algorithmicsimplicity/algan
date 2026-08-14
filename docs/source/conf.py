@@ -67,6 +67,9 @@ redirects = {
     "installation/linux": "uv.html",
     "installation/macos": "uv.html",
     "installation/windows": "uv.html",
+    # Duplicates of installation/uv, removed so one page is canonical.
+    "installation/installation": "uv.html",
+    "new_user_tutorials/installation": "../installation/uv.html",
 }
 
 # generate documentation from type hints

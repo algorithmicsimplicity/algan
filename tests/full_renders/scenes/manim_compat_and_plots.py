@@ -18,6 +18,10 @@ Manim object behind, which the accompanying unit test pins as a known defect.
 
 from algan import *
 
+# Pinned so the render does not depend on the host's fonts;
+# tests/conftest.py registers the vendored faces.
+FONT = "Algan Test Sans"
+
 Scene.set_background_color(DARKER_GRAY)
 
 # --------------------------------------------------------------------------
@@ -37,6 +41,7 @@ with Off():
         font_size=42,
         weight="BOLD",
         color=WHITE,
+        font=FONT,
     ).move(UP * 3.05)
 
     axes = Axes(
@@ -109,6 +114,7 @@ with Off():
         "BarChart      IntegerMatrix      IntegerTable      Graph",
         font_size=22,
         color=TEAL_A,
+        font=FONT,
     ).move(DOWN * 3.15)
 
 with Seq():
@@ -163,6 +169,7 @@ with Off():
         "ApplyMatrix    MoveAlongPath    Homotopy    AnimatedBoundary",
         font_size=21,
         color=TEAL_A,
+        font=FONT,
     ).move(DOWN * 3.15)
 
 with Seq():
