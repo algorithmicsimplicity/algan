@@ -302,6 +302,36 @@ class RenderLoopMixin:
     #: list. Instance attribute on first write; see :meth:`_actor_window_index`.
     _actor_window_cache = None
 
+    def batch_prep_context(self):
+        """The context a render puts around **all** of its batch preparation.
+
+        Preparing a batch replays recorded animated functions, and replay calls
+        a recorded function's *undecorated* body -- so the
+        ``record_funcs=False`` wrap that ``animated_function`` normally applies
+        is absent. A recorded function whose body calls another animated
+        function (``Cylinder.set_start_point`` -> ``_move_between_points`` ->
+        ``move_to``) therefore **records a new event every time it is
+        replayed**. The render never sees this because its batch loop runs
+        inside this context.
+
+        Anything else that calls :meth:`get_batch_of_primitives` -- every prep
+        benchmark and probe in this repo -- must enter it too, or it silently
+        grows the timeline on every call: measured at +6 events per call on a
+        three-animation scene, and +31..99 per call on the reference scene.
+        That corrupts the thing being measured (it re-resolves replay windows
+        and invalidates the event-window caches every call, neither of which a
+        render does) as well as the Scene.
+
+        Exposed as a method rather than copied into each harness so there is
+        one definition to keep in step with the render loop.
+        """
+        return Off(
+            record_attr_modifications=False,
+            record_funcs=False,
+            priority_level=math.inf,
+            animation_manager=self.animation_manager,
+        )
+
     def _actor_window_index(self, actors):
         """Spawn/despawn bounds for ``actors``, indexed for window queries.
 
@@ -2212,12 +2242,7 @@ class RenderLoopMixin:
 
         _rt_settings._begin_render_job()
 
-        with Off(
-            record_attr_modifications=False,
-            record_funcs=False,
-            priority_level=math.inf,
-            animation_manager=self.animation_manager,
-        ):
+        with self.batch_prep_context():
             current_time_ind = start_time_ind
 
             max_animate_mem = int(

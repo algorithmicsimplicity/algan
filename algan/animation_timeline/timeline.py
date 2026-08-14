@@ -2565,7 +2565,40 @@ class AnimationTimeline:
         When supplied, built-in animations query only rows reachable from that
         set while keeping the full global-row buffer layout used by replay.
         Omitting it preserves the original all-row behavior for public callers.
+
+        Replay runs inside a non-recording context, because it calls each
+        recorded function's *undecorated* body: the ``record_funcs=False`` wrap
+        that ``animated_function`` normally applies is absent, so a recorded
+        function whose body calls another animated function
+        (``Cylinder.set_start_point`` -> ``_move_between_points`` ->
+        ``move_to``) would record a **new** event on every replay -- growing the
+        timeline without bound as batches are prepared, and re-resolving replay
+        windows every time. A render never saw this because its batch loop runs
+        inside the same context (:meth:`~algan.render_loop.RenderLoopMixin
+        .batch_prep_context`); doing it here means every caller is safe,
+        including the benchmarks and probes that drive prep directly.
+
+        The context matches the render's exactly, so entering it inside a
+        render is inert -- the values are already set and inherited.
         """
+        # Deferred: animation_contexts imports TimelineSpan from this module.
+        from algan.animation_timeline.animation_contexts import Off
+
+        manager = None
+        for mob in active_mobs or ():
+            manager = getattr(mob, "animation_manager", None)
+            if manager is not None:
+                break
+        with Off(
+            record_attr_modifications=False,
+            record_funcs=False,
+            priority_level=math.inf,
+            animation_manager=manager,
+        ):
+            return self._replay_state_to_times(times, active_mobs)
+
+    def _replay_state_to_times(self, times, active_mobs=None):
+        """:meth:`set_state_to_times`' body, run under its non-recording context."""
         self._resolve_replay_windows()
         functions = self.function_timeline.get_functions_for_times(times)
         updaters = self.function_timeline.get_updaters_for_times(times)

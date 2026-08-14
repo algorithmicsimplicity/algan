@@ -21,8 +21,8 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **T4** dice write-out (cheap half only) | **shipped** -- byte-exact, but only ~1.07x |
 | **P2** contiguous replay time-selector | **shipped** -- 1.62x on replay-time `get`/`modify` |
 | **P3** lazily-zeroed remat buffer | **shipped** -- 1.20x on `rematerialize_state_at_times` |
-| **P4** whole-scene per-batch scans (the O(n^2)) | **shipped** -- 11.63 s -> 0.39 s on s05, and the growth term removed |
-| **P5** replay-checkpoint in-place growth | **shipped** -- 7.2 MB/batch of O(N) allocation -> zero in steady state |
+| **P4** whole-scene per-batch scans | **shipped** -- honestly ~3.7 s of a ~500 s render (66x on the actor filter), not the 11.63 s first reported; see the correction under P4 |
+| **P5** replay-checkpoint in-place growth | **shipped, near-worthless** -- the clone it removes happens once per render, not once per batch; see the correction under P5 |
 | **P1** compact rematerialization buffer | **shipped** -- 1.37x on materialization + replay reads, and 604 MB/batch of buffers -> 204 MB |
 | **T5** sparse-coverage host chain | **next** -- the render thread's largest non-kernel item |
 | **T3**, **T6** | untouched; both shrank in share |
@@ -98,6 +98,53 @@ as-is. They are smaller and bezier-heavy, so they rank T2/T3/T5 usefully but say
 little about the PN targets, and their absolute shares do not match the table
 below.
 
+### The measurement trap that invalidated part of this document
+
+**Calling `Scene.get_batch_of_primitives` directly is not a faithful stand-in
+for a render, and every prep harness here does it.** Replay executes a recorded
+function's *undecorated* body (`f.function(f.caller, **kwargs)` in
+`set_state_to_times`), while the `animated_function` decorator normally runs
+that body inside `AnimationContext(record_funcs=False, ...)`. Replay does not
+reproduce that wrap, so a recorded function whose body calls another animated
+function -- `Cylinder.set_start_point` -> `_move_between_points` -> `move_to`
+is one -- **records a brand new event every time it is replayed**. Measured:
++6 events per call, 480% growth over four calls on one window
+(`benchmarks/_replay_records_check.py`).
+
+A real render suppresses this upstream and records nothing. Measured over a
+genuine 58-batch `save_video` of the reference scene
+(`videos/rl2/animations/_real_render_scans_s05.py`):
+
+| | direct `get_batch_of_primitives` probe | real `save_video` |
+| --- | --- | --- |
+| function applications | +31..99 per batch | **0 over 58 batches** |
+| `_resolve_replay_windows` | every batch | **once** |
+| `_windows` cache | rebuilt every batch | **1 rebuild, 57 hits** |
+
+Consequences, spelled out because two entries below were written from the wrong
+column: the per-batch re-resolve and the per-batch event-window rebuild **do not
+happen in a render**. Anything measured through a direct-call harness that
+depends on recording, resolving or window-cache state is measuring the harness.
+Stage costs that are unconditional per batch -- `rematerialize_state_at_times`,
+the accessors, the actor filter, the event lookups themselves -- are still real
+through such a harness, which is why P1/P2/P3 survive unchanged.
+
+**Both halves are now fixed**, so this section is history rather than a live
+hazard -- kept because the numbers it invalidated are quoted throughout:
+
+* `set_state_to_times` **enters the non-recording context itself**, so replay
+  records nothing for any caller. Verified: a direct, unwrapped
+  `get_batch_of_primitives` loop that previously added +6 events per call now
+  adds 0 (`benchmarks/_replay_records_check.py`, which asserts it).
+* The context has one definition,
+  :meth:`~algan.render_loop.RenderLoopMixin.batch_prep_context`, used by the
+  render loop and by every prep harness, so the two cannot drift.
+
+Two things worth knowing from the sweep: `benchmarks/_prep_profile.py` had
+already been wrapping correctly all along (it just predated the helper), and
+`tests/unit_tests/test_render_batch_sizing.py` only ever defines its *own* stub
+`get_batch_of_primitives` on a fake Scene, so it never touched this at all.
+
 ### Verifying a change to any of this
 
 * `pytest -q --fast` (~112-147 s) is the loop, **but it cannot see a PN level
@@ -118,8 +165,16 @@ below.
   `benchmarks/_event_index_parity.py` (the interval index, CPU),
   `benchmarks/_resolve_rollback_check.py` (the replay checkpoint survives a
   render unchanged -- read its note on how it avoids being vacuous).
+* **Real-render** probes, which are the only ones that can see recording,
+  resolve and cache behaviour honestly (see "The measurement trap" above):
+  `benchmarks/_replay_records_check.py` (replay re-records; quantifies it),
+  `benchmarks/_render_time_growth_check.py` (a real multi-batch render records
+  nothing and resolves once), `videos/rl2/animations/_real_render_scans_s05.py`
+  (the per-batch scans timed inside a genuine `save_video`).
 * Scaling probes, all in `videos/rl2/animations/`, all CPU-only prep with no
-  render, so they answer "does this grow with the scene or with the window":
+  render. **They drive `get_batch_of_primitives` directly, so their recording
+  and cache-invalidation behaviour is not a render's** -- read them for the
+  stage costs that are unconditional per batch, not for anything else:
   `_remat_scaling_s05.py` (materialization vs total rows N vs active rows R),
   `_quadratic_scans_s05.py` (the whole-scene per-batch scans),
   `_windows_rebuild_probe_s05.py` (splits a lookup into resolve / cache rebuild
@@ -515,9 +570,66 @@ for the current shares; the notes below are what is known about each.
 > large constant-factor cut plus removal of the *Python-side* growth term, not
 > a proof of sub-linearity. Merging the sorted tail instead of re-sorting is the
 > next step if a scene ever gets big enough to care.
+>
+> ### CORRECTION -- most of the table above is a harness artifact
+>
+> Everything above was measured through direct `get_batch_of_primitives` calls,
+> which re-record events and therefore re-resolve and rebuild the window cache
+> every batch (see "The measurement trap" near the top). **A real render does
+> neither.** Re-measured inside a genuine 58-batch `save_video` of s05, *with
+> the fix in place*:
+>
+> | scan | per batch | over the render |
+> | --- | --- | --- |
+> | `get_functions_for_times` | 5.84 ms | 0.34 s |
+> | `get_updaters_for_times` | 0.35 ms | 0.02 s |
+> | actor index build | 1.16 ms | 0.07 s |
+> | actor window queries (2/batch) | 38.95 ms | 2.26 s |
+> | **all three scans** | | **2.69 s of 504.3 s (0.5%)** |
+>
+> So the "11.63 s -> 0.39 s" figure is not a render-level saving. The harnesses
+> have since been fixed (they now enter `Scene.batch_prep_context`, as a render
+> does) and the same probe re-run: **the three scans total 2.59 ms/batch,
+> 0.20 s over the render**, against 151 ms/batch before the harness fix. Almost
+> all of the original "before" was the artifact.
+>
+> **The honest before/after**, both arms timed inside the render's own context
+> (`_actor_filter_before_after_s05.py`):
+>
+> | | per batch | over 77 batches |
+> | --- | --- | --- |
+> | pre-P4 actor filter expression | 48.16 ms | 3.71 s |
+> | post-P4 actor index | 0.73 ms | 0.06 s |
+> | | **66x** | **3.65 s saved** |
+>
+> So P4 is worth roughly **3.7 s of a ~500 s render (~0.7%)**, essentially all
+> of it the actor filter, which had no cache at all and re-walked every actor's
+> `TimelineEvent` chain every batch. The event lookups were a much smaller part than
+> claimed. Note even the 96 ms/batch originally measured for the filter was ~2x
+> inflated: recording during prep bumps the global timing revision, and
+> `actor.lifespan.start()` memoizes against it, so the artifact was invalidating
+> that memo too.
+>
+> Note also `actor_query` is now the largest of the four at 38.95 ms/batch,
+> against 0.91 ms measured for the whole filter in the harness -- a 40x gap.
+> Prep runs on the prefetch worker while the render thread holds the GPU, so
+> Python-level work there is far more expensive than the same code measured on
+> an idle main thread. **Treat every harness-measured prep number in this
+> document as a lower bound on its real cost, and the reverse for anything that
+> depends on recording.**
 
 ### P5 -- the replay checkpoint grows in place (shipped)
 
+> **CORRECTION FIRST: the premise of this item was wrong.** It was written from
+> a direct-`get_batch_of_primitives` harness, where recording during prep
+> un-resolves the timeline and makes the resolver re-run every batch. A real
+> render records nothing, so **`_resolve_replay_windows` resolves exactly once
+> per render** (measured: 1 resolve over 58 batches of s05). The clone this
+> removes therefore happened once per render, not once per batch, and the
+> change is worth ~7 MB and ~1.5 ms per render -- not the O(n^2) term claimed
+> below. It is kept because it is strictly better and already validated, but it
+> should not be counted as a win. The original (incorrect) reasoning follows.
+>
 > `_resolve_replay_windows` runs on **every batch** of a render (a render
 > records edits of its own, which un-resolves the timeline), and its prologue
 > rebuilt `_resolved_row_ends` by cloning one float64 buffer per attribute
@@ -695,10 +807,20 @@ size.
    small, its estimate unproven, and P3 suggests the same lazily-zeroed trick
    may apply; fold it in whenever the dice is open anyway), then **T6** (1.4%).
 
-**Scaling is no longer the problem it was.** P4 removed the per-batch
-whole-scene scans, P5 the per-batch O(N) checkpoint clone, and P1 the
-O(N)-per-attribute-per-batch buffer commit. What remains grows with the
-*window*, not the scene.
+**On scaling:** P4 removed the per-batch whole-scene event and actor scans, and
+P1 the O(N)-per-attribute-per-batch buffer commit. P5's target turned out not to
+be per-batch at all. Measured inside a real render, all the per-batch scans
+together are now 0.5%, so scaling is not the lever it looked like -- **the
+apparent O(n^2) was substantially an artifact of measuring through direct
+`get_batch_of_primitives` calls.** Before spending on scaling again, reproduce
+the concern inside a real `save_video`.
+
+**And a live one worth fixing on its own terms:** `actor_query` costs
+38.95 ms/batch in a real render against 0.91 ms measured for the entire actor
+filter in a harness. Prep runs on the prefetch worker while the render thread
+holds the GPU, and Python-level work there is far more expensive than the same
+code on an idle main thread. That gap, not the algorithmic shape, is where the
+prep pole's remaining cost lives -- and no harness in this repo can see it.
 
 Re-profile after each: on a two-pole pipeline the ranking moves as soon as one
 pole shrinks. And prefer a per-stage in-process A/B (`_prep_timeslice_ab_s05.py`)
