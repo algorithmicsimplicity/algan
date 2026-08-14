@@ -17,12 +17,19 @@ batches of frames, builds render primitives, and renders them.
 ## Commands
 
 ### Running Python
-Always use the local venv: `.venv/Scripts/python.exe`. The default system Python lacks taichi and the other pinned dependencies.
+Always use the local venv; the default system Python lacks taichi and the other pinned dependencies. Commands below are written with the POSIX path — substitute your platform's:
+
+| Platform | Interpreter |
+| --- | --- |
+| Linux / macOS | `.venv/bin/python` |
+| Windows | `.venv\Scripts\python.exe` |
+
+`uv run python` works on every platform if you would rather not think about it.
 
 ### Testing
 ```
-.venv/Scripts/python.exe -m pytest -q --fast    # THE development loop: 112-147s
-.venv/Scripts/python.exe -m pytest -q           # everything, ~12 min, before pushing
+.venv/bin/python -m pytest -q --fast    # THE development loop: 112-147s
+.venv/bin/python -m pytest -q           # everything, ~12 min, before pushing
 ```
 - **`--fast` is the suite to run after every change.** It is everything not marked `slow`, held to a two-and-a-half-minute budget, and it prints where it landed (`fast suite: 134s of its 150s budget (89%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
 - **Its self-reported time is junk until the third consecutive run.** Taichi charges a kernel variant to whichever test hits it first, so any change that touches a kernel makes run 1 pay a cold compile: a measured sequence right after adding two small kernels was 194s → 160s → 112s. Never mark a test `slow` off run 1 or 2.
@@ -37,7 +44,7 @@ Always use the local venv: `.venv/Scripts/python.exe`. The default system Python
 - **Cap any script whose tensor sizes come from parameters** rather than from a real scene: `benchmarks/_memory_cap.py`'s `cap_process_memory(gb)` (call it *before* importing torch). A mis-sized synthetic generator has exhausted system RAM and blue-screened this machine. Do **not** cap a real render — WDDM charges the VRAM arena against process commit, so a capped render segfaults inside CUDA instead of raising.
 
 ### Documentation
-- Build: `.venv/Scripts/python.exe docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
+- Build: `.venv/bin/python docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
 - Source in `docs/source/`. API stubs in `docs/source/reference/` are autosummary-generated.
 - **Docstrings on user-facing API follow `DOCSTRINGS.md`** — read it before writing or editing a public docstring. It is prescriptive, not a description of current code: NumPy style with types in annotations only (never repeated in the docstring), every default stated in prose, units/shapes mandatory, an `Animation` section stating recorded-vs-immediate and spawn-order constraints, and `.. algan::` examples that call `Scene.save_video()` exactly once.
 

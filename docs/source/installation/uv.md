@@ -110,23 +110,27 @@ Get it and follow the standard installation procedure.
 ::::{tab-item} Linux
 Given the large number of Linux distributions with different ways
 of installing packages, we cannot give detailed instructions for
-all package managers.
+all package managers. What you need is a *TeX Live* distribution
+(<https://www.tug.org/texlive/>), which every major distribution
+packages.
 
-In general we recommend to install a *TeX Live* distribution
-(<https://www.tug.org/texlive/>). For most Linux distributions,
-TeX Live has already been packaged such that it can be installed
-easily with your system package manager. Search the internet and
-your usual OS resources for detailed instructions.
+On Debian-based systems with the package manager `apt`, this is
+enough — it is the same set Algan's CI installs:
+```bash
+sudo apt install texlive-latex-base texlive-latex-extra \
+                 texlive-fonts-recommended latexmk
+```
+`texlive-latex-extra` pulls in `texlive-latex-recommended`, and the
+`dvisvgm` converter Algan uses to turn LaTeX output into glyph outlines
+arrives with `texlive-binaries`, so those do not need naming separately.
 
-For example, on Debian-based systems with the package manager `apt`,
-a full TeX Live distribution can be installed by running
-```bash
-sudo apt install texlive-full
-```
-For Fedora (managed via `dnf`), the corresponding command is
-```bash
-sudo dnf install texlive-scheme-full
-```
+For Fedora (managed via `dnf`) or Arch (`pacman`), install the
+equivalent LaTeX packages for your distribution; if you would rather not
+work out the mapping, the complete distribution (`texlive-scheme-full` on
+Fedora, `texlive-meta` on Arch) always works. It is a multi-gigabyte
+download that takes a while, which is the only reason we do not
+recommend it first.
+
 As soon as LaTeX is installed, continue with actually installing Algan
 itself.
 
@@ -136,8 +140,16 @@ itself.
 
 :::{dropdown} I know what I am doing and I would like to setup a minimal LaTeX installation
 You are welcome to use a smaller, more customizable LaTeX distribution like
-[TinyTeX](https://yihui.org/tinytex/). Algan overall requires the following
-LaTeX packages to be installed in your distribution:
+[TinyTeX](https://yihui.org/tinytex/).
+
+Algan's default TeX template is deliberately small — it needs only
+`standalone`, `babel`, `amsmath` and `amssymb`, plus the `latex` and
+`dvisvgm` binaries. Any distribution providing those renders every
+`Tex` and `MathTex` Algan builds on its own.
+
+The wider list below is what the *Manim* templates Algan can be pointed
+at may reach for. Install it if you supply your own
+`TexTemplate` with extra `\usepackage` lines, not otherwise:
 ```text
 amsmath babel-english cbfonts-fd cm-super count1to ctex doublestroke dvisvgm everysel
 fontspec frcursive fundus-calligra gnu-freefont jknapltx latex-bin
@@ -295,6 +307,20 @@ Some features require optional extras:
 
 If you completed the installation instructions with no errors, then you are ready to Alganimate!
 
+:::{note}
+**You do not need to install FFmpeg.** Algan encodes video through
+`imageio-ffmpeg`, which ships its own FFmpeg binary and is pulled in
+automatically, so rendering works on a machine with no system FFmpeg at all.
+
+Two caveats. Manim, which Algan builds text on, prints
+`Couldn't find ffmpeg or avconv` on startup when there is no FFmpeg on
+`PATH`; the warning is harmless and does not affect rendering. And building
+Algan's *documentation* does shell out to a system `ffmpeg`, so install one
+(`sudo apt install ffmpeg`, `brew install ffmpeg`, or the Windows builds at
+<https://ffmpeg.org/download.html>) if you intend to do that — see
+{doc}`../contributing/development`.
+:::
+
 :::{important}
 The very first time you render a scene, Algan compiles its GPU render
 kernels. This can take several minutes, during which the render will appear
@@ -313,3 +339,11 @@ into a new file `my-first-animation.py`, the import is resolved
 correctly and autocompletion is available.
 
 *Happy Alganimating!*
+
+## Installing from source
+
+The instructions above install a released Algan for *writing animations*. If
+you want to work on Algan itself — or run a version newer than the last
+release — clone the repository and install it from source instead. That setup,
+including the test suite and the documentation build, is covered in
+{doc}`../contributing/development`.

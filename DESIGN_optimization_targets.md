@@ -75,7 +75,7 @@ below.
   (chord counts + timing), `benchmarks/_pn_dice_scatter_ab.py` (byte-equality of
   every diced array), `benchmarks/_logical_pn_crack_check.py` (seam integrity).
 * Re-baseline, only after looking at the frames:
-  `ALGAN_UPDATE_FULL_RENDER_BASELINES=1 .venv/Scripts/python.exe -m pytest tests/full_renders -q`
+  `ALGAN_UPDATE_FULL_RENDER_BASELINES=1 .venv/bin/python -m pytest tests/full_renders -q`
 
 ## The shape of the problem
 

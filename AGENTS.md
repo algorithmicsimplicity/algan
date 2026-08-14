@@ -17,13 +17,20 @@ batches of frames, builds render primitives, and renders them.
 ## Commands
 
 ### Running Python
-Always use the local venv: `.venv/Scripts/python.exe`. The default system Python lacks taichi and the other pinned dependencies.
+Always use the local venv; the default system Python lacks taichi and the other pinned dependencies. Commands below are written with the POSIX path — substitute your platform's:
+
+| Platform | Interpreter |
+| --- | --- |
+| Linux / macOS | `.venv/bin/python` |
+| Windows | `.venv\Scripts\python.exe` |
+
+`uv run python` works on every platform if you would rather not think about it.
 
 ### Testing
 ```
-.venv/Scripts/python.exe -m pytest tests/unit_tests -q                        # fast, no rendering
-.venv/Scripts/python.exe -m pytest tests/run_test.py -q                       # render regression suite
-.venv/Scripts/python.exe -m pytest tests/run_test.py -q -k "test_basic_py"   # one test file
+.venv/bin/python -m pytest tests/unit_tests -q                        # fast, no rendering
+.venv/bin/python -m pytest tests/run_test.py -q                       # render regression suite
+.venv/bin/python -m pytest tests/run_test.py -q -k "test_basic_py"   # one test file
 ```
 - `tests/unit_tests/` is the fast behavioral suite; run it after every change.
 - Each file in `tests/test_files/` defines demo scenes and ends with `render_all_funcs(__name__)`; importing the module renders its scenes at `PREVIEW` settings into `tests/algan_outputs/`.
@@ -34,7 +41,7 @@ Always use the local venv: `.venv/Scripts/python.exe`. The default system Python
 - **Cap any script whose tensor sizes come from parameters** rather than from a real scene: `benchmarks/_memory_cap.py`'s `cap_process_memory(gb)` (call it *before* importing torch). A mis-sized synthetic generator has exhausted system RAM and blue-screened this machine. Do **not** cap a real render — WDDM charges the VRAM arena against process commit, so a capped render segfaults inside CUDA instead of raising.
 
 ### Documentation
-- Build: `.venv/Scripts/python.exe docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
+- Build: `.venv/bin/python docs/make_and_open_docs.py` (Sphinx; renders every embedded example video, so it is slow). Add `--skip-examples --no-open` for structural/autodoc checks.
 - Source in `docs/source/`. API stubs in `docs/source/reference/` are autosummary-generated.
 
 ### Building / Publishing

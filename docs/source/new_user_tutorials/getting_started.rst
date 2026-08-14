@@ -5,7 +5,7 @@ Getting Started
 .. note::
 
   Before proceeding, install Algan and make sure it is running properly by
-  following the detailed steps in :doc:`installation`.
+  following the detailed steps in :doc:`../installation`.
 
 .. important::
 
