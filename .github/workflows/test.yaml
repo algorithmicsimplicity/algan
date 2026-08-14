@@ -52,11 +52,15 @@ jobs:
             texlive-fonts-recommended \
             latexmk # or full texlive-full if needed
 
+      # apt supplies ffmpeg 6.1.1 on ubuntu-24.04, which is all moviepy and
+      # opencv need. A second step ran federicocarboni/setup-ffmpeg@v3 straight
+      # after this one; it fetched a static build by scraping an upstream readme
+      # for the version, that readme's format changed, and the action now fails
+      # with "AssertionError: Failed to read version from readme". Since apt has
+      # already installed ffmpeg by this point the step was redundant as well as
+      # broken, so it is gone rather than pinned.
       - name: Install ffmpeg
         run: sudo apt-get install -y ffmpeg
-
-      - name: Setup ffmpeg
-        uses: federicocarboni/setup-ffmpeg@v3
 
       - name: Install uv
         uses: ./.github/actions/install-uv
