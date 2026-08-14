@@ -2,9 +2,21 @@ name: Test
 
 on:
   push:
-    branches: [master]
+    # 'developer/**' is the branch the next release is actually prepared on, so
+    # CI has to see it; until it does, the suite only ever runs locally.
+    #
+    # 'claude/**' is here to prove out the CPU render baselines on a GitHub
+    # runner before they gate anything that matters. Those baselines were
+    # generated on one machine and this is the first time they are checked on
+    # another, which is the whole question. Narrow or drop this pattern once
+    # that is settled -- a full run renders seven scenes and is not cheap.
+    branches: [master, 'developer/**', 'claude/**']
   pull_request:
-    branches: [master]
+    branches: [master, 'developer/**']
+  # Lets a run be started by hand from the Actions tab. Only takes effect once
+  # this file is on the default branch: GitHub reads workflow_dispatch from
+  # there, not from the ref being dispatched.
+  workflow_dispatch:
 
 # Cancel in-progress runs when pushing a new commit on the PR
 concurrency:
