@@ -81,6 +81,21 @@ def _gpu_memory_pressure(threshold=0.8):
         return True
 
 
+#: Reclaimable torch cache below which a steady-state ``empty_cache`` call is
+#: not worth its cost (see :func:`empty_cache`). One HD frame buffer's worth.
+_MIN_RECLAIMABLE_BYTES = 128 << 20
+
+
+def _reclaimable_cuda_bytes():
+    """Bytes torch is holding cached and not currently using, or 0 off CUDA."""
+    if not torch.cuda.is_available():
+        return 0
+    try:
+        return int(torch.cuda.memory_reserved()) - int(torch.cuda.memory_allocated())
+    except Exception:
+        return 0
+
+
 def empty_cache(force_gc=True):
     """Reclaim freed memory back to the allocators.
 
@@ -90,15 +105,65 @@ def empty_cache(force_gc=True):
     *reference cycles* -- reference counting already frees the (explicitly
     nulled) geometry tensors immediately -- so it is skipped unless the GPU is
     actually under memory pressure (where reclaiming cyclic garbage matters for
-    avoiding OOM) or ``force_gc`` is set. ``torch.cuda.empty_cache()`` is cheap
-    (~ms) and always runs to return the freed blocks to the allocator.
+    avoiding OOM) or ``force_gc`` is set. A render additionally freezes the
+    authored scene out of collection entirely (:func:`scene_excluded_from_gc`),
+    which is what makes the surviving collections cheap.
+
+    ``torch.cuda.empty_cache()`` is *not* cheap: it drains the device and hands
+    every cached block back to the driver, which on Windows/WDDM costs tens of
+    milliseconds per call whether or not there is anything to hand back
+    (measured at ~79 ms a call, 33 s of a four-minute render, once the gc above
+    stopped dominating it). It is therefore gated on the same memory pressure
+    as the collection, plus a worthwhile amount actually being reclaimable --
+    or on the caller forcing it, which every failure/retry path does. This is
+    self-regulating: a cache left unreclaimed shows up as *driver-level* used
+    memory, so it raises the pressure that triggers the next reclaim.
+
+    Sizing decisions are unaffected either way:
+    :func:`get_num_available_bytes` reclaims unconditionally before it
+    measures, so every batch and chunk still sees the same free-byte figure.
     """
-    if force_gc or _gpu_memory_pressure():
+    pressured = force_gc or _gpu_memory_pressure()
+    if pressured:
         gc.collect()
-    if torch.cuda.is_available():
+    if (
+        torch.cuda.is_available()
+        and pressured
+        and (force_gc or _reclaimable_cuda_bytes() >= _MIN_RECLAIMABLE_BYTES)
+    ):
         torch.cuda.empty_cache()
     if torch.mps.is_available():
         torch.mps.empty_cache()
+
+
+@contextmanager
+def scene_excluded_from_gc():
+    """Keep the authored scene out of every collection made inside the block.
+
+    ``empty_cache`` runs ``gc.collect()`` several times per frame batch to break
+    the reference cycles a batch leaves behind before the device runs out of
+    memory, and a collection walks *every* tracked object in the process. An
+    authored scene is millions of them -- one per Mob, per recorded edit, per
+    retained tensor -- all live from the first frame to the last, so each
+    collection re-walked the whole scene to find the handful of cycles the batch
+    actually produced. Measured on this project's reference scene: 0.24 s per
+    call, ~100 s of a four-minute render, every second of it holding the GIL
+    against the batch-prep worker that is supposed to be running concurrently.
+
+    ``gc.freeze()`` moves everything that already exists into a permanent
+    generation collections skip, so the render's collections walk only what the
+    render itself allocated. Nothing leaks: the frozen objects are the scene,
+    which is live throughout the render, and ``gc.unfreeze()`` returns them to
+    the ordinary generations on the way out (including on an error, so a failed
+    render does not leave the process with collection disabled for its scene).
+    The one collection before freezing keeps pre-existing garbage collectable.
+    """
+    gc.collect()
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
 
 
 def ensure_render_headroom(device, min_free_fraction=0.15):

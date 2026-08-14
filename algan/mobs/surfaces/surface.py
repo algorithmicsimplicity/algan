@@ -1688,16 +1688,28 @@ class Surface(Mob):
 
             edits = []
             touches_surface = False
-            for attr, mob_id, recursive, indexes in event.recorded_edits:
+            # The EditRecord behind each entry is carried alongside it (see
+            # FunctionApplicationEvent.recorded_edit_records), so it does not
+            # have to be found by searching the attribute's whole edit log --
+            # which made a topology split cost the length of the scene so far,
+            # once per recorded edit of every event at the boundary.
+            records = event.recorded_edit_records
+            aligned = len(records) == len(event.recorded_edits)
+            for position, (attr, mob_id, recursive, indexes) in enumerate(
+                event.recorded_edits
+            ):
                 attr_timeline = timeline.attr_to_timeline[attr]
-                source = next(
-                    (
-                        edit
-                        for edit in attr_timeline.edits
-                        if edit.event is event and edit.indexes is indexes
-                    ),
-                    None,
-                )
+                if aligned:
+                    source = records[position]
+                else:
+                    source = next(
+                        (
+                            edit
+                            for edit in attr_timeline.edits
+                            if edit.event is event and edit.indexes is indexes
+                        ),
+                        None,
+                    )
                 if source is None:
                     edits = None
                     break
@@ -1945,7 +1957,11 @@ class Surface(Mob):
                 timeline.register_migrated_edit(attr, attr_timeline, source, record)
                 attr_timeline.invalidate_prepared_queries()
             event.recorded_edits = migrated_edits
-            event.caller = captured_event["caller"]
+            # Through the timeline, not by assignment: the caller index has to
+            # follow the move (see FunctionTimeline.retarget_caller).
+            timeline.function_timeline.retarget_caller(
+                event, captured_event["caller"]
+            )
             event.replay_end = None
 
     def _change_resolution(self, grid_width, grid_height, surface_function=None):
@@ -2454,7 +2470,11 @@ class Surface(Mob):
             )
 
         def compute_grid_color():
-            grid_color = self.grid.color.clone()
+            # Plain tensor, not the Color subclass the public property returns:
+            # geometry building only does arithmetic on these numbers, and a
+            # subclass sends every operation through __torch_function__ (see
+            # the matching note in BezierCircuitCubic.get_render_primitives).
+            grid_color = self.grid.get_animated_attribute("color").clone()
             grid_color[..., -1:] *= self.grid.opacity
             grid_color[..., -2:-1] += self.grid.glow
             return grid_color

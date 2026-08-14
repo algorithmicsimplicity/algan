@@ -822,6 +822,77 @@ def _validate_render_capabilities(
     return plan
 
 
+def _build_raster_tables(
+    merged,
+    memory,
+    cam_origin,
+    screen_point,
+    pixel_basis_x,
+    pixel_basis_y,
+    half_screen_w,
+    half_screen_h,
+    width,
+):
+    """Build the batch-wide raster projection / bounds tables, once per batch.
+
+    Allocated at the arena's persistent end: they cover the whole prepared
+    batch, every chunk of it reads the same rows, and the per-chunk reset only
+    rewinds the forward pointer. See the call site for the lifetime contract.
+    """
+    from algan.rendering.raytracing.raster_pipeline import (
+        precompute_circuit_screen_bounds,
+        precompute_triangle_projection,
+        precompute_triangle_screen_bounds,
+    )
+
+    tri_bounds = None
+    bez_bounds = None
+    with memory.scope(
+        "raster_precompute", aa_tri=int(rt_settings.analytic_aa_tri_active())
+    ):
+        tri_screen = precompute_triangle_projection(
+            merged,
+            cam_origin,
+            screen_point,
+            pixel_basis_x,
+            pixel_basis_y,
+            half_screen_w,
+            half_screen_h,
+            memory,
+            persist=True,
+        )
+        # Live reads (settings convention): each kill-switch falls back to
+        # the per-(tile, frame) pair emission inside raster_iteration_zero.
+        if rt_settings.RASTER_TRI_PRECOMPUTE and int(merged.get("num_triangles", 0)) > 0:
+            tri_bounds = precompute_triangle_screen_bounds(
+                merged,
+                tri_screen,
+                cam_origin,
+                screen_point,
+                pixel_basis_x,
+                pixel_basis_y,
+                half_screen_w,
+                half_screen_h,
+                width,
+                memory,
+                persist=True,
+            )
+        if rt_settings.RASTER_BEZ_PRECOMPUTE and int(merged.get("num_circuits", 0)) > 0:
+            bez_bounds = precompute_circuit_screen_bounds(
+                merged,
+                cam_origin,
+                screen_point,
+                pixel_basis_x,
+                pixel_basis_y,
+                half_screen_w,
+                half_screen_h,
+                width,
+                memory,
+                persist=True,
+            )
+    return tri_screen, tri_bounds, bez_bounds
+
+
 @_observe_render_kernel_compiles
 def render_batch_raytraced(
     primitives,
@@ -2140,62 +2211,37 @@ def raytrace_render_wavefront(
     tri_bounds = None
     bez_bounds = None
     if use_raster:
-        from algan.rendering.raytracing.raster_pipeline import (
-            precompute_circuit_screen_bounds,
-            precompute_triangle_projection,
-            precompute_triangle_screen_bounds,
-        )
-
         # Screen-space projection and bounds tables, sized
-        # [batch_frames, primitives, cols].  Note ``batch_frames`` is the whole
-        # prepared batch's frame count, not the render chunk's, so this term
-        # does NOT shrink when the chunk does -- see the calibration model.
-        with memory.scope(
-            "raster_precompute", aa_tri=int(rt_settings.analytic_aa_tri_active())
-        ):
-            tri_screen = precompute_triangle_projection(
+        # [batch_frames, primitives, cols]. ``batch_frames`` is the whole
+        # prepared batch's frame count, not the render chunk's, so these tables
+        # are the same for every chunk of a batch -- and a batch is routinely
+        # rendered in several chunks (four on this project's reference scene,
+        # more as the resolution rises and fewer frames fit the arena), which
+        # used to rebuild them from scratch every time.
+        #
+        # They are therefore built once per batch, from the arena's persistent
+        # end so the per-chunk forward reset does not reclaim them, and cached
+        # on the merged scene (which lives for the batch). The reverse pointer
+        # reached here is published alongside them so the render loop can hold
+        # the arena open across chunks exactly that far and no further (see
+        # RenderLoopMixin.render_primitive_batch).
+        cached_tables = merged.get("_raster_tables")
+        if cached_tables is not None:
+            tri_screen, tri_bounds, bez_bounds = cached_tables
+        else:
+            tri_screen, tri_bounds, bez_bounds = _build_raster_tables(
                 merged,
+                memory,
                 cam_origin,
                 screen_point,
                 pixel_basis_x,
                 pixel_basis_y,
                 half_screen_w,
                 half_screen_h,
-                memory,
+                width,
             )
-            # Live reads (settings convention): each kill-switch falls back to
-            # the per-(tile, frame) pair emission inside raster_iteration_zero.
-            if (
-                rt_settings.RASTER_TRI_PRECOMPUTE
-                and int(merged.get("num_triangles", 0)) > 0
-            ):
-                tri_bounds = precompute_triangle_screen_bounds(
-                    merged,
-                    tri_screen,
-                    cam_origin,
-                    screen_point,
-                    pixel_basis_x,
-                    pixel_basis_y,
-                    half_screen_w,
-                    half_screen_h,
-                    width,
-                    memory,
-                )
-            if (
-                rt_settings.RASTER_BEZ_PRECOMPUTE
-                and int(merged.get("num_circuits", 0)) > 0
-            ):
-                bez_bounds = precompute_circuit_screen_bounds(
-                    merged,
-                    cam_origin,
-                    screen_point,
-                    pixel_basis_x,
-                    pixel_basis_y,
-                    half_screen_w,
-                    half_screen_h,
-                    width,
-                    memory,
-                )
+            merged["_raster_tables"] = (tri_screen, tri_bounds, bez_bounds)
+            merged["_raster_tables_reverse_pointer"] = memory.get_pointers()[1]
 
     def _drain_sparse_secondary(
         active, state, rs_pix, pix_accum, rs_alloc, compactor, rs_vis

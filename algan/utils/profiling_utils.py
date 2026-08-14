@@ -59,6 +59,7 @@ Env knobs (all optional):
 from __future__ import annotations
 
 import cProfile
+import inspect
 import os
 import pstats
 import re
@@ -457,6 +458,22 @@ def install_pipeline_hooks():
         "BezierCircuitCubic.get_render_primitives",
     )
     _try_wrap(rpl, "raster_iteration_zero", "rasterizing")
+    # The sparse-coverage lifecycle (default route whenever the raster
+    # front-end and post-process tonemapping are both on) never goes through
+    # raster_iteration_zero, so without these its cost landed unattributed in
+    # "wavefront_loop excl". tracer imports both names *inside* the render
+    # function, so wrapping the module attribute is enough.
+    _try_wrap(rpl, "prepare_sparse_raster_coverage", "raster: sparse discovery")
+    _try_wrap(rpl, "shade_sparse_raster_coverage", "raster: sparse resolve")
+    _try_wrap(
+        rpl, "precompute_triangle_projection", "raster:   - precompute tri projection"
+    )
+    _try_wrap(
+        rpl, "precompute_triangle_screen_bounds", "raster:   - precompute tri bounds"
+    )
+    _try_wrap(
+        rpl, "precompute_circuit_screen_bounds", "raster:   - precompute bez bounds"
+    )
 
     # Geometry shading + packing.
     _try_wrap(
@@ -495,6 +512,45 @@ def install_pipeline_hooks():
             "_dice_logical_pn",
             "logical PN:   - _dice_logical_pn",
         )
+        _try_wrap(
+            rtp.LogicalPNTrianglePrimitive,
+            "_required_subdivision_levels",
+            "logical PN:     - subdivision levels",
+        )
+        # Level-search internals: the two climbing loops, the error criterion
+        # each of them evaluates, and the per-level bookkeeping that shows up
+        # as the difference between them.
+        for _attr, _label in (
+            ("_required_edge_levels", "logical PN:       - edge level search"),
+            ("_edge_chord_error", "logical PN:         - edge chord error"),
+            ("_required_patch_levels", "logical PN:       - patch level search"),
+            ("_patch_flatness_error", "logical PN:         - patch flatness error"),
+            ("_guarded_pixel_error", "logical PN:           - guarded pixel error"),
+        ):
+            # Instance methods only: TIMERS.wrap_function installs a plain
+            # function, which would feed ``self`` to a staticmethod as its
+            # first argument (``_triangle_counts`` is one).
+            _member = inspect.getattr_static(
+                rtp.LogicalPNTrianglePrimitive, _attr, None
+            )
+            if _member is not None and not isinstance(_member, staticmethod):
+                _try_wrap(rtp.LogicalPNTrianglePrimitive, _attr, _label)
+        # The dice's inner per-level work: patch evaluation, the boundary snap
+        # that keeps neighbouring patches watertight, and the per-attribute
+        # barycentric interpolation. ``primitives`` imports these by value, so
+        # wrap the name it actually calls.
+        for _name, _label in (
+            ("evaluate_logical_pn", "logical PN:     - evaluate patch"),
+            ("evaluate_logical_pn_normals", "logical PN:     - evaluate normals"),
+            ("snap_boundary_values", "logical PN:     - snap boundary"),
+            ("interpolate_patch_attribute", "logical PN:     - interpolate attrs"),
+            ("subdivision_vertex_uvs", "logical PN:     - subdivision tables"),
+            ("subdivision_triangle_indices", "logical PN:     - subdivision tables"),
+            ("subdivision_triangle_uvs", "logical PN:     - subdivision tables"),
+            ("subdivision_boundary_map", "logical PN:     - subdivision tables"),
+        ):
+            if hasattr(rtp, _name):
+                _try_wrap(rtp, _name, _label)
 
     # Scene merge + BVH builds. ``_merge_scene`` is timed by hand so the merged
     # scene can be captured on the batch's first (uncached) merge. NOTE:
@@ -553,6 +609,18 @@ def install_pipeline_hooks():
     # Render-chunk internals (again: wrap the refs tracer actually calls).
     _try_wrap(rtr, "_prefill_background", "background prefill")
     _try_wrap(rtr, "post_process_frames", "post-process (downsample/FXAA/glow)")
+    # Post-process internals. The bloom pass and the device-to-host handover
+    # are the two halves of it that scale with the frame buffer, and neither
+    # had a line of its own. ``post_processes`` holds the bloom function object
+    # itself (bound as a default argument before any hook runs), so time it
+    # from the inside instead.
+    import algan.rendering.post_processing.bloom as bloom_mod
+    import algan.rendering.post_processing.post_process as pp_mod
+
+    _try_wrap(bloom_mod, "fft_conv1d", "post:   - bloom fft conv")
+    _try_wrap(bloom_mod, "_downsample_bloom", "post:   - bloom downsample")
+    _try_wrap(pp_mod, "_finalize_on_device", "post:   - tonemap/finalize")
+    _try_wrap(pp_mod, "_frames_to_host", "post:   - device->host copy")
     _try_wrap(rtr, "raytrace_render_wavefront", "wavefront_loop")
     # _try_wrap(rtr, "_compact_active_rays", "wavefront: compact active rays")
     _try_wrap(KERNEL_REGISTRY, "render_kernel", "ray traced render total")
@@ -568,6 +636,18 @@ def install_pipeline_hooks():
     _try_wrap(
         RenderLoopMixin, "_drain_video_writer", "video encode tail (ffmpeg drain)"
     )
+    # Per-batch render-thread work outside the tracer: the arena preflight
+    # (which is what actually runs projection and the GPU merge on this
+    # thread), the scene upload, and the free-VRAM probe the preflight calls
+    # several times per batch. All were previously unattributed.
+    _try_wrap(
+        RenderLoopMixin, "_prepared_batch_fits_render_arena", "arena preflight (batch)"
+    )
+    _try_wrap(
+        RenderLoopMixin, "_prewarm_render_batch", "  - project_to_screen (prewarm)"
+    )
+    _try_wrap(scb, "copy_merged_scene_to_arena", "scene upload to arena")
+    _try_wrap(rl, "get_num_available_bytes", "free-VRAM probe (empty_cache)")
 
 
 def install_instrumentation():

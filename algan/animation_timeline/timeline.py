@@ -387,8 +387,6 @@ def _query_row_states(times, index, rows=None):
 
     if U == 0 or R == 0 or T == 0:
         return torch.zeros((T, R, D), dtype=sorted_values.dtype, device=head.device)
-    # Every element is written by the loop below.
-    out = torch.empty((T, R, D), dtype=sorted_values.dtype, device=head.device)
 
     if rows is None:
         ends = head[1:]
@@ -405,11 +403,29 @@ def _query_row_states(times, index, rows=None):
         index.unique_timestamps, times.contiguous(), right=True
     )
 
-    chunk = max(1, min(T, _QUERY_CHUNK_BYTES // max(1, R * 8)))
-    for start in range(0, T, chunk):
-        stop = min(start + chunk, T)
+    # A frame's answer depends on its time ONLY through that rank, so two
+    # frames of the window with no edit boundary between them read exactly the
+    # same rows of ``sorted_values``. A render window is a few seconds of a
+    # scene whose edits are authored in blocks, so it usually covers far fewer
+    # distinct boundaries than it has frames -- do the search and the (random
+    # access) value gather once per distinct rank and expand the result back
+    # over the frames, which is a contiguous per-frame copy. Bit-identical by
+    # construction: equal ranks select equal ``low``.
+    unique_ranks, inverse = torch.unique(query_ranks, return_inverse=True)
+    ranks = query_ranks
+    if int(unique_ranks.shape[0]) < T:
+        ranks = unique_ranks
+    else:
+        inverse = None
+    S = int(ranks.shape[0])
+    # Every element is written by the loop below.
+    out = torch.empty((S, R, D), dtype=sorted_values.dtype, device=head.device)
+
+    chunk = max(1, min(S, _QUERY_CHUNK_BYTES // max(1, R * 8)))
+    for start in range(0, S, chunk):
+        stop = min(start + chunk, S)
         low = torch.searchsorted(
-            keys, (bases.unsqueeze(0) + query_ranks[start:stop].unsqueeze(1)).view(-1)
+            keys, (bases.unsqueeze(0) + ranks[start:stop].unsqueeze(1)).view(-1)
         ).view(stop - start, R)
         empty = low >= ends
         values = sorted_values[low.clamp_(max=U - 1)]
@@ -418,6 +434,8 @@ def _query_row_states(times, index, rows=None):
         # recorded values cannot leak in as NaN).
         values.masked_fill_(empty.unsqueeze(-1), 0.0)
         out[start:stop] = values
+    if inverse is not None:
+        out = out.index_select(0, inverse)
     return out
 
 
@@ -1126,9 +1144,21 @@ class AttributeTimeline:
 
 
 class TimelineEvent:
+    """One timestamp on the timeline, resolved through its span's rescaling.
+
+    The resolved value is memoized against the global timing revision. A
+    render reads a mob's spawn and despawn timestamps for every actor of every
+    frame batch (and again for every attribute's endpoint table), and the value
+    cannot move unless something rescales a span -- which nothing does once the
+    scene is authored. Every writer of a span's timings bumps that revision, so
+    a stale entry is not reachable.
+    """
+
     def __init__(self, time, span):
         self.span = span
         self._time = time
+        self._cached_version = -1
+        self._cached_value = 0.0
 
     def __call__(self):
         return self.time
@@ -1139,20 +1169,53 @@ class TimelineEvent:
 
     @property
     def time(self):
-        return self.span.get_rescaled_time(self._time)
+        version = TIMING_VERSION[0]
+        if self._cached_version == version:
+            return self._cached_value
+        value = self.span.get_rescaled_time(self._time)
+        self._cached_value = value
+        self._cached_version = version
+        return value
 
     @time.setter
     def time(self, time):
         self._time = time
+        self._cached_version = -1
 
 
 class TimelineSpan:
     def __init__(self, start_time=0, end_time=0, current_time=0):
         self._rescaled_start = start_time
         self._rescaled_end = end_time
-        self.original_start = start_time
-        self.original_end = end_time
+        self._original_start = start_time
+        self._original_end = end_time
         self.current_time = current_time
+
+    # The four timing fields are properties rather than plain attributes so
+    # that every write is caught by the global timing revision: TimelineEvent
+    # memoizes its resolved timestamp against that revision, and the original
+    # bounds are part of the rescaling it resolves through. Writes that do not
+    # change the value do not bump, so the ratio-of-one rescale every replayed
+    # animation context performs leaves derived caches valid.
+    @property
+    def original_start(self):
+        return self._original_start
+
+    @original_start.setter
+    def original_start(self, value):
+        if value != self._original_start:
+            self._original_start = value
+            bump_timing_version()
+
+    @property
+    def original_end(self):
+        return self._original_end
+
+    @original_end.setter
+    def original_end(self, value):
+        if value != self._original_end:
+            self._original_end = value
+            bump_timing_version()
 
     def __call__(self):
         return self.original_start
@@ -1179,8 +1242,16 @@ class TimelineSpan:
 
     @start.setter
     def start(self, value):
-        self._rescaled_start = value
-        bump_timing_version()
+        # Only a change of value can invalidate anything derived from it, and
+        # rescaling by a ratio of one (what every context entered during
+        # animation replay does) writes the value back unchanged. Bumping
+        # regardless made the derived caches -- notably the per-attribute
+        # spawn/despawn endpoint table -- miss on every frame batch of a
+        # render, rebuilding a table that had not moved since the scene was
+        # authored.
+        if value != self._rescaled_start:
+            self._rescaled_start = value
+            bump_timing_version()
 
     @property
     def end(self):
@@ -1188,8 +1259,9 @@ class TimelineSpan:
 
     @end.setter
     def end(self, value):
-        self._rescaled_end = value
-        bump_timing_version()
+        if value != self._rescaled_end:
+            self._rescaled_end = value
+            bump_timing_version()
 
 
 class FunctionApplicationEvent:
@@ -1216,6 +1288,11 @@ class FunctionApplicationEvent:
         # execution order. A mob can be structurally rebatched later, so
         # replay must not rediscover its rows from the current hierarchy.
         self.recorded_edits = []
+        # The EditRecord behind each of those entries, positionally aligned.
+        # Only a topology split reads it (see Surface's boundary capture); it
+        # is kept here so that split does not have to find them by searching
+        # the attribute's entire edit log.
+        self.recorded_edit_records = []
 
 
 class UpdaterSpan:
@@ -1337,9 +1414,38 @@ class FunctionTimeline:
         # so evaluating them for every event on every frame batch is a
         # per-batch O(events) property-call cost otherwise.
         self._window_cache = None
+        # id(caller) -> the events recorded against it. A topology split
+        # (Mob.detach_history) has to re-target every event belonging to the
+        # subtree it replaces, and finding them by scanning the whole log is
+        # quadratic in the length of the scene -- one wave_color over a coarsely
+        # sampled mob splits once per part, and each split then walked every
+        # event authored so far. Keys stay live by construction: a bucket is
+        # dropped as soon as it empties, and while it is non-empty its events
+        # hold the caller they are keyed by.
+        self._by_caller = {}
 
     def add(self, function_application):
         self.function_applications.append(function_application)
+        self._by_caller.setdefault(id(function_application.caller), []).append(
+            function_application
+        )
+
+    def events_for_caller(self, caller):
+        """The recorded events whose caller *is* ``caller`` (identity)."""
+        return self._by_caller.get(id(caller), ())
+
+    def retarget_caller(self, event, new_caller):
+        """Hand one recorded event to a different caller, keeping the index."""
+        bucket = self._by_caller.get(id(event.caller))
+        if bucket is not None:
+            for index, existing in enumerate(bucket):
+                if existing is event:
+                    del bucket[index]
+                    break
+            if not bucket:
+                del self._by_caller[id(event.caller)]
+        event.caller = new_caller
+        self._by_caller.setdefault(id(new_caller), []).append(event)
 
     def add_updater(self, updater):
         self.updaters.append(updater)
@@ -1613,6 +1719,11 @@ class AnimationTimeline:
             event.recorded_edits.append(
                 (attr_name, mob_id, include_descendants, edit.indexes)
             )
+            # The EditRecord each entry came from, positionally aligned with
+            # recorded_edits. Recovering it by searching the attribute's whole
+            # edit log (which is what a topology split used to do, once per
+            # entry) is quadratic in how much the scene has recorded.
+            event.recorded_edit_records.append(edit)
         self._replay_windows_resolved = False
         return self
 

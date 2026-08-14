@@ -32,6 +32,10 @@ from algan.constants.color import BLACK, Color
 from algan.scene import Scene
 from algan.utils.tensor_utils import HANDLED_FUNCTIONS, cast_to_tensor
 
+#: Bumped whenever an animatable property is attached to a class, so per-class
+#: views of "what can this be told to set" can be cached across Mobs.
+ANIMATABLE_PROPERTY_VERSION = [0]
+
 
 def prepare_kwargs(self, func, args, kwargs, initial_args, unique_args):
     """Combine args and kwargs and record the call on this mob's timeline."""
@@ -252,6 +256,9 @@ class Animatable:
             self.animatable_attrs = []
         if my_class is None:
             my_class = self.__class__
+        # Attaching a property to a class changes what that class can be told
+        # to set, which is cached per class (Mob._settable_property_names).
+        ANIMATABLE_PROPERTY_VERSION[0] += 1
         for attr in attrs:
             self._add_property_getter_and_setter(attr, my_class)
         self.animatable_attrs.extend(
@@ -1117,7 +1124,20 @@ class Animatable:
         child_to_id = {c: i for i, c in enumerate(children)}
         id_to_child = dict(enumerate(children_clones))
 
+        # The per-attribute set_*/get_* accessors are instance-level closures
+        # over *this* mob, and the clone regenerates its own below. Copying
+        # them was two wasted deepcopy dispatches per animatable attribute on
+        # every cloned mob -- and a clone that somehow kept one would drive the
+        # original.
+        generated_accessors = frozenset(
+            name
+            for attr in self.animatable_attrs
+            for name in (f"set_{attr}", f"get_{attr}")
+        )
+
         for k, v in self.__dict__.items():
+            if k in generated_accessors:
+                continue
             if k in [
                 "id",
                 "animation_manager",

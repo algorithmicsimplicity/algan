@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from algan.animatable_base.animatable import (
+    ANIMATABLE_PROPERTY_VERSION,
     Animatable,
     animated_function,
 )
@@ -41,6 +42,10 @@ from algan.utils.tensor_utils import (
     squish,
     unsquish,
 )
+
+#: class -> (ANIMATABLE_PROPERTY_VERSION, settable property names contributed
+#: by the class's MRO). See Mob._settable_property_names.
+_SETTABLE_PROPERTY_CACHE: dict[type, tuple[int, set[str]]] = {}
 
 
 class Mob(
@@ -1143,16 +1148,19 @@ class Mob(
                         # rows).
                         attr_timeline.reassign_inds(orig.id, clone_inds)
                         attr_timeline.reassign_inds(clone.id, orig_inds)
-            for f in timeline.function_timeline.function_applications:
-                if (
-                    f.caller in descendant_map
+            # Only events recorded against this subtree can move, so they are
+            # looked up by caller rather than by scanning every event authored
+            # so far (see FunctionTimeline._by_caller).
+            function_timeline = timeline.function_timeline
+            for orig, clone in descendant_map.items():
+                for f in list(function_timeline.events_for_caller(orig)):
                     # Functions without captured row edits replay against the
                     # caller's current topology.  If such a function begins at
                     # the detach boundary, it belongs to the replacement mob,
                     # not the historical clone whose lifespan ends there.
-                    and not (not f.recorded_edits and f.time.start >= detach_time)
-                ):
-                    f.caller = descendant_map[f.caller]
+                    if not f.recorded_edits and f.time.start >= detach_time:
+                        continue
+                    function_timeline.retarget_caller(f, clone)
 
             for orig, clone in descendant_map.items():
                 # The clone inherits the original's spawn time (this mob is
@@ -1177,17 +1185,31 @@ class Mob(
         derived properties such as ``border_color``, which forwards to the
         border texture instead of owning a timeline of its own -- ``set`` has
         always accepted those, but never used to name them.
+
+        The MRO half is a property of the *class*, so it is cached per class
+        against the registration counter that
+        :meth:`~algan.animatable_base.animatable.Animatable.register_attrs_as_animatable`
+        bumps whenever it attaches another one -- walking every class dict in
+        the MRO on every ``set`` call was one of the more expensive things a
+        scene did while it was being authored.
         """
-        names = set(self.animatable_attrs)
-        for klass in type(self).__mro__:
-            # Snapshot the class dict: register_attrs_as_animatable attaches
-            # properties to classes while Mobs are being constructed.
-            for name, member in list(vars(klass).items()):
-                if name.startswith("_") or name in self._NON_SETTABLE_PUBLIC_PROPERTIES:
-                    continue
-                if isinstance(member, property) and member.fset is not None:
-                    names.add(name)
-        return names
+        version = ANIMATABLE_PROPERTY_VERSION[0]
+        klass = type(self)
+        cached = _SETTABLE_PROPERTY_CACHE.get(klass)
+        if cached is None or cached[0] != version:
+            names = set()
+            for base in klass.__mro__:
+                for name, member in list(vars(base).items()):
+                    if (
+                        name.startswith("_")
+                        or name in self._NON_SETTABLE_PUBLIC_PROPERTIES
+                    ):
+                        continue
+                    if isinstance(member, property) and member.fset is not None:
+                        names.add(name)
+            cached = (version, names)
+            _SETTABLE_PROPERTY_CACHE[klass] = cached
+        return cached[1] | set(self.animatable_attrs)
 
     def check_properties_are_valid(self, property_names):
         """Raise if any of the given names is not an animatable attribute.

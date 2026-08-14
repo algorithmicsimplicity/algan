@@ -558,18 +558,24 @@ class BezierCircuitCubic(Mob):
             ignored_dims=[-1],
         )
         num_control_points = 4  # cubic beziers
+        # Read the colour rows as plain tensors. ``mob.color`` hands back a
+        # :class:`~algan.constants.color.Color` so callers get its rgb / glow /
+        # opacity views, but a Tensor subclass routes *every* subsequent
+        # operation through ``__torch_function__``, and building one batch's
+        # circuits performs tens of thousands of them. Nothing below this point
+        # wants the views -- only the numbers.
         if self.control_points.parent_batch_sizes is None:
             return self._get_render_primitives(
                 unsquish(self.control_points.location, -2, num_control_points),
-                self.texture_points.color,
-                self.border_texture_points.color,
+                self.texture_points.get_animated_attribute("color"),
+                self.border_texture_points.get_animated_attribute("color"),
                 self.location,
                 self.basis,
                 *shader_vars,
             )
         x = self.control_points.location
-        tpc = self.texture_points.color
-        border_tpc = self.border_texture_points.color
+        tpc = self.texture_points.get_animated_attribute("color")
+        border_tpc = self.border_texture_points.get_animated_attribute("color")
         num_segments_per_circuit = (
             self.control_points.parent_batch_sizes // num_control_points
         )

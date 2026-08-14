@@ -1095,10 +1095,19 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         corner_uv = subdivision_triangle_uvs(level, device=device, dtype=dtype)
         weights = _sample_tensor(self._flatness_sample_weights, device, dtype)
         sample_uv = torch.einsum("sk,mka->msa", weights, corner_uv)
+        # The dice's own vertices and the interior sample points are evaluated
+        # in ONE pass over the concatenated parameters, as the edge criterion
+        # already does. The patch expression is elementwise in uv -- the same
+        # ten-term polynomial per parameter, whatever shape it arrives in -- so
+        # this is the identical arithmetic on the identical values, and at the
+        # low levels most meshes settle on, a second launch over a handful of
+        # points per patch was half the cost of the whole level search.
+        flat_sample_uv = sample_uv.reshape(-1, 2)
+        num_vertices = vertex_uv.shape[0]
+        combined_uv = torch.cat((vertex_uv, flat_sample_uv))
         chunk = max(
             1,
-            int(self.max_scratch_triangles)
-            // max(1, triangle_indices.shape[0] * weights.shape[0]),
+            int(self.max_scratch_triangles) // max(1, combined_uv.shape[0]),
         )
 
         error = torch.empty(selected.shape[0], device=device, dtype=dtype)
@@ -1106,17 +1115,23 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             rows = selected[start : start + chunk]
             frames, patches = rows[:, 0], rows[:, 1]
             controls = control_points[frames, patches].unsqueeze(0)
-            vertices = evaluate_logical_pn(controls, vertex_uv)[0]
+            evaluated = evaluate_logical_pn(controls, combined_uv)[0]
+            vertices = evaluated[:, :num_vertices]
+            # The sample points stay in their flat (microtriangle, sample)
+            # order and the approximation is flattened to match, rather than
+            # the exact points being reshaped back to [.., m, s, ..] -- that
+            # reshape is a copy of a strided slice, and the comparison below is
+            # elementwise with a max over both axes either way.
             approximated = torch.einsum(
                 "sk,pmkc->pmsc", weights, vertices[:, triangle_indices]
             )
             error[start : start + chunk] = self._guarded_pixel_error(
-                evaluate_logical_pn(controls, sample_uv)[0],
-                approximated,
+                evaluated[:, num_vertices:],
+                approximated.flatten(1, 2),
                 tuple(value.index_select(0, frames) for value in cam),
                 front_sign.index_select(0, frames),
                 screen_height,
-            ).amax(dim=(1, 2))
+            ).amax(dim=1)
         return error
 
     @staticmethod

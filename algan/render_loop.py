@@ -54,6 +54,7 @@ from algan.utils.memory_utils import (
     get_num_available_bytes,
     is_cuda_oom,
     note_nonarena_peak,
+    scene_excluded_from_gc,
 )
 
 logger = get_logger("scene")
@@ -1274,6 +1275,20 @@ class RenderLoopMixin:
                         max(0, self.memory.max_pointer - chunk_base),
                     )
 
+                # The tracer's raster projection / bounds tables span the whole
+                # prepared batch, so it builds them once (on this first chunk)
+                # at the arena's persistent end and every later chunk reads
+                # them. Hold the reverse pointer open exactly that far -- the
+                # tables and nothing else -- so the per-chunk rewind below stops
+                # reclaiming what the next chunk is about to rebuild
+                # identically. Published by the tracer rather than read off the
+                # arena, so an unrelated persistent allocation inside a chunk
+                # can never be retained by accident.
+                retained = device_scene.get("_raster_tables_reverse_pointer")
+                if retained is not None and retained < render_pointers[1]:
+                    render_pointers = (render_pointers[0], retained)
+                    bytes_remaining = retained - render_pointers[0]
+
                 self.memory.set_pointers(render_pointers)
                 current_ind = new_ind
                 if current_ind >= end_ind:
@@ -1612,19 +1627,29 @@ class RenderLoopMixin:
         """Build the largest renderable primitive batch within the memory budget."""
         max_end_time = max_end_time_ind / self.frames_per_second
         start_time = start_time_ind / self.frames_per_second
+        # Spawn/despawn timestamps are read several times each below (twice per
+        # actor in each of the two filters, and once per actor on every step of
+        # the duration search). Each read walks a TimelineEvent to its span and
+        # recomputes the context rescaling, which on a scene with tens of
+        # thousands of actors made this the single hottest function in batch
+        # preparation. Timing is fixed for the whole render, so read each
+        # actor's pair once and filter on the numbers.
+        lifespans = [(actor, actor.lifespan.start(), actor.lifespan.end())
+                     for actor in actors]
         primitive_actors = [
-            actor
-            for actor in actors
-            if (actor.lifespan.start() >= 0)
-            and (actor.lifespan.start() <= max_end_time)
-            and ((actor.lifespan.end() >= start_time) or actor.lifespan.end() < 0)
+            (actor, spawn)
+            for actor, spawn, despawn in lifespans
+            if spawn >= 0
+            and spawn <= max_end_time
+            and (despawn >= start_time or despawn < 0)
             and hasattr(actor, "get_render_primitives")
         ]
 
         # Precompute memory per timestep once to avoid redundant calls inside binary search loop
-        actor_mem = {
-            actor: actor._get_memory_used_per_timestep() for actor in primitive_actors
-        }
+        actor_mem = [
+            (spawn, actor._get_memory_used_per_timestep())
+            for actor, spawn in primitive_actors
+        ]
 
         # Binary search for the largest batch that fits the animation-device
         # budget.  The selected actor set grows monotonically with duration, so
@@ -1636,32 +1661,22 @@ class RenderLoopMixin:
             )
 
             def fits(duration):
-                selected_actors = [
-                    actor
-                    for actor in primitive_actors
-                    if (
-                        actor.lifespan.start()
-                        <= (start_time_ind + duration) / self.frames_per_second
-                    )
-                ]
-                mem_used = sum(actor_mem[actor] * duration for actor in selected_actors)
+                cutoff = (start_time_ind + duration) / self.frames_per_second
+                mem_used = sum(
+                    mem * duration for spawn, mem in actor_mem if spawn <= cutoff
+                )
                 return mem_used <= max_mem_used
 
             return _max_duration_that_fits(requested_duration, fits)
 
         duration = get_duration()
+        spawn_cutoff = (start_time_ind + duration) / self.frames_per_second
         actors = [
             actor
-            for actor in actors
-            if (actor.lifespan.start() >= 0)
-            and (
-                actor.lifespan.start()
-                <= (start_time_ind + duration) / self.frames_per_second
-            )
-            and (
-                (actor.lifespan.end() >= start_time_ind / self.frames_per_second)
-                or (actor.lifespan.end() < 0)
-            )
+            for actor, spawn, despawn in lifespans
+            if spawn >= 0
+            and spawn <= spawn_cutoff
+            and (despawn >= start_time or despawn < 0)
         ]
         time_inds = torch.arange(start_time_ind, start_time_ind + duration)
 
@@ -2036,7 +2051,11 @@ class RenderLoopMixin:
         try:
             # Rendering is inference-only, but the scope is local to Algan so
             # importing the library does not alter PyTorch autograd globally.
-            with torch.inference_mode():
+            # The scene is excluded from garbage collection for the duration:
+            # the per-batch reclaim only ever needs to find the cycles this
+            # render made, and walking the authored scene to find them cost
+            # more than the reclaim saved (see scene_excluded_from_gc).
+            with torch.inference_mode(), scene_excluded_from_gc():
                 yield from self._get_frames_impl(
                     start_time_ind,
                     end_time_ind,
@@ -2201,11 +2220,26 @@ class RenderLoopMixin:
             retry_end_ind = None
             retry_lower_duration = 0
             retry_upper_duration = None
+
+            def drain_pending():
+                """Finish and discard a prep the loop is about to invalidate.
+
+                Batch preparation writes the shared timeline buffers, so only
+                one may run at a time: anything that refetches on this thread
+                waits here first.
+                """
+                nonlocal pending
+                if pending is not None:
+                    with contextlib.suppress(Exception):
+                        pending.result()
+                    pending = None
+
             try:
                 while True:
                     _sync_devices()
                     s = time.time()
                     if retry_end_ind is not None:
+                        drain_pending()
                         logger.debug(
                             f"Fetching batch {current_time_ind}:{retry_end_ind}."
                         )
@@ -2220,6 +2254,7 @@ class RenderLoopMixin:
                         primitives, new_time_ind, render_state = pending.result()
                         pending = None
                     else:
+                        drain_pending()
                         fetch_end_ind = fetch_end_for(current_time_ind)
                         logger.debug(
                             f"Fetching batch {current_time_ind}:{fetch_end_ind}."
@@ -2230,6 +2265,16 @@ class RenderLoopMixin:
                     _sync_devices()
                     e = time.time()
                     logger.debug("Batch fetch took %.2f seconds", e - s)
+
+                    # NOTE: starting the successor's preparation here, before
+                    # the arena preflight, was measured and is a LOSS (+15% on
+                    # this project's reference scene). The preflight regularly
+                    # shortens the window it was handed, and preparation writes
+                    # the shared timeline buffers, so a speculative prep started
+                    # at the wrong boundary cannot simply be abandoned -- the
+                    # loop has to wait it out before it can prepare the right
+                    # one. That serialized wasted prep costs far more than the
+                    # preflight-length idle it was meant to fill.
                     # A fresh fetch selects a different actor set, and the
                     # actor set is what fixes the intercept of every cost the
                     # preflight weighs. Start its measurements over.
@@ -2397,7 +2442,8 @@ class RenderLoopMixin:
 
                     # Only prefetch the successor once the current duration is
                     # final. A speculative successor would start at the wrong
-                    # boundary while the binary preflight search is active.
+                    # boundary while the binary preflight search is active (and
+                    # see the measurement note above the preflight).
                     if executor is not None and new_time_ind < end_time_ind:
                         pending_end_ind = fetch_end_for(new_time_ind)
                         pending = executor.submit(
@@ -2450,10 +2496,7 @@ class RenderLoopMixin:
                             # A prefetched successor starts at the old end and
                             # is invalid after this split. Drain and discard it
                             # before rematerializing the smaller current batch.
-                            if pending is not None:
-                                with contextlib.suppress(Exception):
-                                    pending.result()
-                                pending = None
+                            drain_pending()
                             if primitives:
                                 primitives[0]._rt_device_scene = None
                                 primitives[0]._rt_prepared_host_scene = None

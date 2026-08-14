@@ -347,7 +347,20 @@ def post_process_frames(
         exposure=rt_settings.TONEMAP_EXPOSURE,
     )
 
-    # This is the intentional ownership boundary: the video writer needs data
-    # after the render arena is reset, so the final device-to-host copy is not a
-    # render-device tensor allocation.
-    return frame_out.cpu().flip(-3)
+    return _frames_to_host(frame_out)
+
+
+def _frames_to_host(frame_out):
+    """Hand finished frames back as host tensors, in top-down row order.
+
+    This is the intentional ownership boundary: the video writer needs the data
+    after the render arena is reset, so the device-to-host copy is deliberately
+    not a render-device tensor allocation.
+
+    The row flip happens before the transfer, not after: the composite writes
+    frames bottom-up and the writer wants them top-down, and reversing the rows
+    on the render device leaves the transfer itself one contiguous copy instead
+    of a strided host-side re-read of everything that just arrived. Identical
+    bytes either way -- a flip only reorders whole rows.
+    """
+    return frame_out.flip(-3).cpu()

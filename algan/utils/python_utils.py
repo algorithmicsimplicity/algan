@@ -5,8 +5,27 @@ from math import isqrt
 
 import torch
 
+#: Leaf types that are provably not tensors, carry no ``traversable`` flag and
+#: are not iterable, so :func:`traverse` can yield them without asking.
+_ATOMIC_TYPES = frozenset({float, int, bool, type(None)})
+
 
 def traverse(nested_iterable):
+    # Dispatch on the exact type first. Authoring a scene calls this millions
+    # of times, and the general test below costs two attribute probes plus an
+    # abstract-base ``isinstance`` (which goes through ABCMeta) per node. A
+    # plain list or tuple is never a tensor, never carries ``traversable`` and
+    # is always iterable, so it can recurse immediately; the scalar types are
+    # the reverse and can be yielded immediately. Subclasses miss both fast
+    # paths and take the general one, so behaviour is unchanged.
+    node_type = type(nested_iterable)
+    if node_type is list or node_type is tuple:
+        for _ in nested_iterable:
+            yield from traverse(_)
+        return
+    if node_type in _ATOMIC_TYPES:
+        yield nested_iterable
+        return
     if (
         isinstance(nested_iterable, torch.Tensor)
         or (hasattr(nested_iterable, "traversable") and not nested_iterable.traversable)

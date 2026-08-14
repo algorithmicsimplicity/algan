@@ -137,6 +137,7 @@ def precompute_triangle_projection(
     half_w,
     half_h,
     memory,
+    persist=False,
 ):
     """Prepare one compact projection record per frame and flat triangle.
 
@@ -172,7 +173,9 @@ def precompute_triangle_projection(
     )
     ntri = int(merged.get("num_triangles", 0))
     ncol = 13 if rt_settings.analytic_aa_tri_active() else 10
-    out = memory.get_tensor((max(1, frames), max(1, ntri), ncol), torch.float32)
+    out = memory.get_tensor(
+        (max(1, frames), max(1, ntri), ncol), torch.float32, persist=persist
+    )
     out.zero_()
     # Reported rather than inferred: ``frames`` here is the longest dynamic
     # input, not the batch's frame count (any input may be deduplicated to
@@ -626,6 +629,7 @@ def precompute_circuit_screen_bounds(
     half_h,
     width,
     memory,
+    persist=False,
 ):
     """Batched once-per-window screen bounds for bezier circuits.
 
@@ -730,16 +734,16 @@ def precompute_circuit_screen_bounds(
 
     ncirc = int(lo.shape[1])
     memory.note_scope_params(bez_bounds_cells=frames * ncirc)
-    pre_f = memory.get_tensor((frames, ncirc, 4), torch.float32)
+    pre_f = memory.get_tensor((frames, ncirc, 4), torch.float32, persist=persist)
     pre_f.copy_(
         torch.stack(((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1)
     )
-    pre_x = memory.get_tensor((frames, ncirc, 2), torch.int64)
+    pre_x = memory.get_tensor((frames, ncirc, 2), torch.int64, persist=persist)
     pre_x.copy_(torch.stack((x0, x1), -1))
     # all_front implies front_any (eight corners), so the bounded reach base
     # omits the redundant ``& front_any``: a clipped straddler kept a front
     # corner by construction.
-    pre_m = memory.get_tensor((frames, ncirc, 5), torch.bool)
+    pre_m = memory.get_tensor((frames, ncirc, 5), torch.bool, persist=persist)
     pre_m.copy_(
         torch.stack(
             (bounded, bounded & x_on, ~bounded & front_any, opaque, valid & ~opaque), -1
@@ -759,6 +763,7 @@ def precompute_triangle_screen_bounds(
     half_h,
     width,
     memory,
+    persist=False,
 ):
     """Batched once-per-window candidate screen bounds for flat triangles.
 
@@ -836,15 +841,15 @@ def precompute_triangle_screen_bounds(
     )
 
     memory.note_scope_params(tri_bounds_cells=frames * ntri)
-    pre_f = memory.get_tensor((frames, ntri, 4), torch.float32)
+    pre_f = memory.get_tensor((frames, ntri, 4), torch.float32, persist=persist)
     pre_f.copy_(
         torch.stack(((ymin - 1.0).floor(), (ymax + 1.0).ceil(), ymin, ymax), -1)
     )
-    pre_x = memory.get_tensor((frames, ntri, 2), torch.int64)
+    pre_x = memory.get_tensor((frames, ntri, 2), torch.int64, persist=persist)
     pre_x.copy_(torch.stack((x0, x1), -1))
     # ``bounded`` already implies not-behind, so its reach base omits the
     # redundant ``& not_behind``.
-    pre_m = memory.get_tensor((frames, ntri, 5), torch.bool)
+    pre_m = memory.get_tensor((frames, ntri, 5), torch.bool, persist=persist)
     pre_m.copy_(
         torch.stack(
             (bounded, bounded & x_on, ~bounded & not_behind, opaque, valid & ~opaque),
