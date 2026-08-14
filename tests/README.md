@@ -136,7 +136,41 @@ what they are. Its docstring is worth reading before editing it: it is shaped
 by the kernel-variant cost, which is why it is one scene rather than several
 and why it contains no `Surface` geometry.
 
+## Baselines are per device
+
+Each render suite keeps one baseline directory per device —
+`expected_outputs_cuda/` and `expected_outputs_cpu/` — and the harness picks
+between them with `torch.cuda.is_available()`. A machine with no baseline
+directory for its device renders the scene and then skips the comparison, so
+**a suite that reports itself green on a new device may not have compared
+anything**; check for skips before believing it.
+
+Both sets are checked in. They are *not* interchangeable, and the differences
+between them are larger than the tolerance by design:
+
+- **PN surfaces** (`Sphere`, `Cylinder`, `Cone`, `Torus`, `Surface`) differ
+  across their interiors, because the subdivision-level criterion kernel runs
+  under Taichi's `fast_math` and flips borderline tessellation levels
+  differently per backend. Measured at up to 8% of a frame's pixels.
+- **Silhouettes and specular highlights** differ by up to ~75 channel values on
+  edge pixels, from float ordering.
+- **`Text` and `MarkupText`** differ the most — up to ~230 — and this one is
+  *not* a device difference at all. `Text` defaults to `font=""`, so Pango
+  resolves whatever fontconfig offers, and the glyph advances themselves change
+  when the available fonts do. `Tex`/`MathTex` are unaffected: they go through
+  LaTeX and `dvisvgm` to outlines, and match across devices at zero shift.
+
+The practical consequence: **a CPU baseline encodes the font set of the machine
+that made it.** If the container image's fonts change, `Text` shifts and the
+suite fails looking exactly like a renderer regression. When a text-only
+diff appears across every scene at once, suspect fonts before the renderer.
+
 ## Re-baselining
+
+Baselines are re-baselined **for the device you are on** — the environment
+variables below write to whichever `expected_outputs_<device>/` matches the
+current machine, so re-baselining on CPU cannot repair a CUDA baseline or vice
+versa.
 
 Both render suites are re-baselined by rendering with the baselines writable,
 then **looking at the result** before committing:
