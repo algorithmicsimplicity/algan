@@ -10,18 +10,32 @@ system Python has no taichi.
 ```
 
 **This is the suite to run after every change.** It is everything *not* marked
-`slow`, and it holds itself to two minutes so it stays inside a development
-loop (measured 88–106 s on CUDA over consecutive runs, of which the render is
-40–47 s). It prints where it landed against that budget when it finishes:
+`slow`, and it holds itself to two and a half minutes so it stays inside a
+development loop (measured 112–147 s on CUDA over consecutive warm runs, median
+~135 s, of which the render is about 50 s). It prints where it landed against
+that budget when it finishes:
 
 ```
-fast suite: 88s of its 120s budget (73%)
+fast suite: 134s of its 150s budget (89%)
 ```
 
 That figure moves by a good fraction between runs, because most of the render's
 cost is Taichi specialising a kernel and that is sensitive to what the process
 did beforehand. It is reported rather than enforced for exactly that reason: a
 timing assertion here would be a flake.
+
+**Wait for the third consecutive run before believing the number.** Taichi's
+cost is per kernel variant, charged to whichever test reaches it first, so any
+change that touches a kernel makes the next run pay a cold compile that has
+nothing to do with the suite's size. A measured sequence immediately after
+adding two small kernels ran 194 s → 160 s → 112 s, and only the last is the
+suite. Marking a test `slow` off run 1 evicts coverage to pay for a compile that
+would not have happened again.
+
+The budget itself was 120 s until the behavioural suite grew from 419 to 466
+unit tests and every run started reporting itself over. Raising it is a
+deliberate trade of loop time for coverage, not a formality: if the number stops
+meaning anything, the suite creeps.
 
 Give it no path, so it uses the `testpaths` from `pyproject.toml`.
 
@@ -54,7 +68,7 @@ you changed lives here.
 | Directory | What it protects | Cost |
 | --- | --- | --- |
 | `tests/unit_tests/` | Behaviour that can break without raising: the timeline, the transform hierarchy, settings, batch sizing, materials, the public API surface. | ~60 s (~90 s including the `slow` ones) |
-| `tests/fast/` | One dense scene, rendered and compared pixel-wise: the renderer coverage the fast loop can afford. | 40–47 s |
+| `tests/fast/` | One dense scene, rendered and compared pixel-wise: the renderer coverage the fast loop can afford. | ~50 s |
 | `tests/full_renders/` | What the renderer actually draws across six dense scenes, compared pixel-wise against checked-in baselines. | ~12 minutes on CUDA |
 
 ## What `slow` means

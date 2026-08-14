@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from typing import NamedTuple
 
 import torch
 import torch.nn.functional as F
@@ -27,6 +28,11 @@ from algan.rendering.primitives.bezier_circuit_primitive import (
 )
 from algan.rendering.primitives.triangle_primitive import TrianglePrimitive
 from algan.rendering.raytracing import pn_control_points, pn_patch_coefficients
+from algan.rendering.raytracing.logical_pn_taichi import (
+    bezier_chord_hull_error,
+    pn_edge_chord_error,
+    pn_patch_flatness_error,
+)
 from algan.rendering.raytracing.pn_patch import pn_obb
 from algan.rendering.raytracing.raytrace_kernels_taichi import MIN_ALPHA
 from algan.rendering.raytracing.settings import (
@@ -65,6 +71,98 @@ def _sample_tensor(values, device, dtype):
         cached = torch.tensor(values, device=device, dtype=dtype)
         _SAMPLE_TENSOR_CACHE[key] = cached
     return cached
+
+
+class _PNCriterionInputs(NamedTuple):
+    """Kernel-ready inputs shared by both logical PN level searches.
+
+    Built once per dice (the searches call their criteria once per level) and
+    passed down; ``None`` in its place means the searches stay on torch.
+    """
+
+    control_points: torch.Tensor  # [Tc, P, 10, 3]
+    control_stride: int  # 0 when one control net serves every frame
+    edge_controls: torch.Tensor  # [Te, P, 3, 4, 3]
+    edge_stride: int
+    cam_origin: torch.Tensor  # [T, 3]
+    screen_point: torch.Tensor  # [T, 3]
+    screen_basis: torch.Tensor  # [T, 3, 3]
+    front_sign: torch.Tensor  # [T]
+
+
+def _frame_broadcast_base(value):
+    """Return ``(contiguous base, frame stride)`` of a per-frame tensor.
+
+    ``_expand_frames`` hands out stride-0 views for geometry every frame of the
+    batch shares -- a static mesh's control net is one copy however long the
+    batch is. A Taichi ndarray needs real memory, and materializing that
+    expansion would allocate the whole batch's worth of control points to say
+    the same thing many times over, so pass the one real frame down and let the
+    kernel multiply its frame index by the stride instead.
+    """
+    if value.shape[0] > 1 and value.stride(0) != 0:
+        return value.contiguous(), 1
+    return value[:1].contiguous(), 0
+
+
+def _scatter_diced_rows(output, values, targets):
+    """Write diced microtriangle rows into a ``[T, M, ...]`` output.
+
+    ``targets`` indexes the flattened ``(frame, column)`` pair, so the whole
+    write is one ``index_copy_`` over ``[T * M, ...]``. Every target row is
+    written exactly once -- the patches of a frame occupy disjoint column spans
+    -- so the copy needs no accumulation and its order does not matter.
+    """
+    trailing = output.shape[2:]
+    output.view(-1, *trailing).index_copy_(
+        0, targets, values.reshape(-1, *trailing)
+    )
+
+
+def _bezier_criterion_inputs(corners, cam_o, sp, sb):
+    """Kernel inputs for the bezier chord-count search, or ``None`` for torch.
+
+    Same gate as :func:`_pn_criterion_inputs` -- the two searches are the same
+    computation shape and share one toggle.
+    """
+    if not rt_settings.pn_criterion_kernel_active():
+        return None
+    tensors = (corners, cam_o, sp, sb)
+    if any(
+        value.device.type != "cuda" or value.dtype != torch.float32 for value in tensors
+    ):
+        return None
+    base, stride = _frame_broadcast_base(corners)
+    return (base, stride, cam_o.contiguous(), sp.contiguous(), sb.contiguous())
+
+
+def _pn_criterion_inputs(control_points, edge_controls, cam_o, sp, sb, front_sign):
+    """Kernel inputs for the level searches, or ``None`` to stay on torch.
+
+    The kernels only run where projection already runs on the render thread
+    against CUDA tensors (see ``settings.pn_criterion_kernel_active``); against
+    CPU tensors Taichi would stage every argument through VRAM, which is a
+    regression, not an optimization.
+    """
+    if not rt_settings.pn_criterion_kernel_active():
+        return None
+    tensors = (control_points, edge_controls, cam_o, sp, sb, front_sign)
+    if any(
+        value.device.type != "cuda" or value.dtype != torch.float32 for value in tensors
+    ):
+        return None
+    control_base, control_stride = _frame_broadcast_base(control_points)
+    edge_base, edge_stride = _frame_broadcast_base(edge_controls)
+    return _PNCriterionInputs(
+        control_base,
+        control_stride,
+        edge_base,
+        edge_stride,
+        cam_o.contiguous(),
+        sp.contiguous(),
+        sb.contiguous(),
+        front_sign.contiguous(),
+    )
 
 
 class RayTracedTrianglePrimitive(TrianglePrimitive):
@@ -873,8 +971,11 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         # side, exactly as the renderer's front test decides it.
         front_sign = torch.sign(((sp - cam_o) * sb[:, 2]).sum(-1))
         cam = (cam_o, sp, sb)
+        kernel = _pn_criterion_inputs(
+            control_points, edge_controls, cam_o, sp, sb, front_sign
+        )
         edge_levels, edge_capped = self._required_edge_levels(
-            edge_controls, cam, front_sign, screen_height
+            edge_controls, cam, front_sign, screen_height, kernel
         )
         levels, patch_capped = self._required_patch_levels(
             control_points,
@@ -882,6 +983,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             cam,
             front_sign,
             screen_height,
+            kernel,
         )
         if edge_capped or patch_capped:
             warnings.warn(
@@ -892,7 +994,9 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
             )
         return levels, edge_levels
 
-    def _required_edge_levels(self, edge_controls, cam, front_sign, screen_height):
+    def _required_edge_levels(
+        self, edge_controls, cam, front_sign, screen_height, kernel=None
+    ):
         """Per-boundary-curve subdivision levels, shape ``[T, P, 3]``.
 
         Each curve is judged on its canonically oriented cubic and nothing else
@@ -932,6 +1036,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 front_sign,
                 samples,
                 screen_height,
+                kernel,
             )
             candidates = active[(error * self._flatness_safety_factor) > threshold]
             if candidates.numel() == 0:
@@ -958,20 +1063,48 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return frames, patches, within - patches * 3
 
     def _edge_chord_error(
-        self, edge_controls, active, level, cam, front_sign, samples, screen_height
+        self,
+        edge_controls,
+        active,
+        level,
+        cam,
+        front_sign,
+        samples,
+        screen_height,
+        kernel=None,
     ):
         """Peak pixel deviation of each active curve from its chord polyline.
 
         The polyline has ``2 ** level`` chords; every chord is compared against
         the curve at ``_edge_sample_parameters``.  Work is streamed in chunks so
         scratch stays inside ``max_scratch_triangles`` however many curves are
-        still looking for a level.
+        still looking for a level -- the fused kernel keeps its intermediates in
+        registers and needs no chunking at all.
         """
         device = edge_controls.device
         dtype = edge_controls.dtype
         num_patches = edge_controls.shape[1]
         segments = 1 << level
         num_samples = samples.numel()
+        if kernel is not None:
+            error = torch.zeros(active.numel(), device=device, dtype=dtype)
+            if active.numel():
+                pn_edge_chord_error(
+                    kernel.edge_controls,
+                    kernel.edge_stride,
+                    active.to(torch.int32).contiguous(),
+                    samples,
+                    kernel.cam_origin,
+                    kernel.screen_point,
+                    kernel.screen_basis,
+                    kernel.front_sign,
+                    error,
+                    num_patches,
+                    segments,
+                    float(screen_height) / 2.0,
+                    self.screen_guard_factor * float(screen_height),
+                )
+            return error
         chunk = max(
             1,
             int(self.max_scratch_triangles) // max(1, segments * num_samples),
@@ -1011,7 +1144,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return error
 
     def _required_patch_levels(
-        self, control_points, start, cam, front_sign, screen_height
+        self, control_points, start, cam, front_sign, screen_height, kernel=None
     ):
         """Per-patch interior subdivision levels, shape ``[T, P]``.
 
@@ -1057,6 +1190,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 cam,
                 front_sign,
                 screen_height,
+                kernel,
             )
             failed = (error * self._flatness_safety_factor) > threshold
             if level == max_level:
@@ -1083,7 +1217,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return levels, bool(capped)
 
     def _patch_flatness_error(
-        self, control_points, selected, level, cam, front_sign, screen_height
+        self, control_points, selected, level, cam, front_sign, screen_height, kernel=None
     ):
         """Peak pixel deviation of each selected patch's level-``level`` dice,
         sampled at ``_flatness_sample_weights`` within every microtriangle.
@@ -1094,6 +1228,32 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         triangle_indices = subdivision_triangle_indices(level, device=device)
         corner_uv = subdivision_triangle_uvs(level, device=device, dtype=dtype)
         weights = _sample_tensor(self._flatness_sample_weights, device, dtype)
+        if kernel is not None:
+            # The kernel evaluates the patch at each microtriangle's own corners
+            # rather than at the shared subdivision vertices: a vertex is
+            # revisited by up to six threads, which is cheaper than the scratch
+            # buffer sharing it would need. ``subdivision_triangle_uvs`` is
+            # ``vertex_uv`` gathered through ``triangle_indices``, so the
+            # parameters -- and hence the points -- are the same either way.
+            error = torch.zeros(selected.shape[0], device=device, dtype=dtype)
+            if selected.shape[0]:
+                pn_patch_flatness_error(
+                    kernel.control_points,
+                    kernel.control_stride,
+                    # ``nonzero`` hands back a transposed view on CUDA, which a
+                    # Taichi ndarray cannot take.
+                    selected.to(torch.int32).contiguous(),
+                    corner_uv,
+                    weights,
+                    kernel.cam_origin,
+                    kernel.screen_point,
+                    kernel.screen_basis,
+                    kernel.front_sign,
+                    error,
+                    float(screen_height) / 2.0,
+                    self.screen_guard_factor * float(screen_height),
+                )
+            return error
         sample_uv = torch.einsum("sk,mka->msa", weights, corner_uv)
         # The dice's own vertices and the interior sample points are evaluated
         # in ONE pass over the concatenated parameters, as the edge criterion
@@ -1317,33 +1477,54 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                     p=2,
                     dim=-1,
                 )
-                target_rows = frames.unsqueeze(1).expand(-1, num_triangles)
-                target_columns = offsets[frames, patches].unsqueeze(1) + columns
+                # Each selected (frame, patch) writes a *contiguous run* of
+                # columns, which a two-index advanced-index scatter cannot
+                # exploit -- it lowers to an ``index_put_`` over a
+                # ``[chunk, num_triangles]`` destination. Folding (frame,
+                # column) into one row index makes every write a single
+                # ``index_copy_`` over the flattened ``[T * M, ...]`` output.
+                targets = (
+                    frames.unsqueeze(1) * max_triangles
+                    + offsets[frames, patches].unsqueeze(1)
+                    + columns
+                ).reshape(-1)
 
-                diced_corners[target_rows, target_columns] = positions[
-                    :, triangle_indices
-                ]
-                diced_normals[target_rows, target_columns] = vertex_normals[
-                    :, triangle_indices
-                ]
-                diced_colors[target_rows, target_columns] = interpolate_patch_attribute(
-                    colors[frames, patches], corner_uv
+                _scatter_diced_rows(
+                    diced_corners, positions[:, triangle_indices], targets
+                )
+                _scatter_diced_rows(
+                    diced_normals, vertex_normals[:, triangle_indices], targets
+                )
+                _scatter_diced_rows(
+                    diced_colors,
+                    interpolate_patch_attribute(colors[frames, patches], corner_uv),
+                    targets,
                 )
                 for name, output in diced_surface_params.items():
-                    output[target_rows, target_columns] = interpolate_patch_attribute(
-                        surface_sources[name][frames, patches], corner_uv
+                    _scatter_diced_rows(
+                        output,
+                        interpolate_patch_attribute(
+                            surface_sources[name][frames, patches], corner_uv
+                        ),
+                        targets,
                     )
                 for output, source in zip(diced_shader_params, shader_sources):
-                    output[target_rows, target_columns] = interpolate_patch_attribute(
-                        source[frames, patches], corner_uv
+                    _scatter_diced_rows(
+                        output,
+                        interpolate_patch_attribute(
+                            source[frames, patches], corner_uv
+                        ),
+                        targets,
                     )
                 if diced_uvs is not None:
-                    diced_uvs[target_rows, target_columns] = (
+                    _scatter_diced_rows(
+                        diced_uvs,
                         interpolate_patch_attribute(
                             uv_source[frames, patches], corner_uv
-                        )
+                        ),
+                        targets,
                     )
-                padding[target_rows, target_columns] = False
+                padding.view(-1).index_fill_(0, targets, False)
 
         self.corners = diced_corners
         self.normals = diced_normals
@@ -1810,12 +1991,38 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         )
         active = torch.arange(S, device=device)
         num_subdivisions = 1
+        kernel = _bezier_criterion_inputs(corners, cam_o, sp, sb)
 
         while active.numel() > 0:
             num_active = active.shape[0]
             max_error_squared = torch.zeros(
                 (num_active,), dtype=corners.dtype, device=device
             )
+            if kernel is not None:
+                # Fused: the subcurve split, both projections and the hull
+                # measurement never leave registers, so there is nothing to
+                # chunk and no per-frame scratch to size.
+                bezier_chord_hull_error(
+                    kernel[0],
+                    kernel[1],
+                    active.to(torch.int32).contiguous(),
+                    kernel[2],
+                    kernel[3],
+                    kernel[4],
+                    max_error_squared,
+                    T,
+                    num_subdivisions,
+                    screen_h / 2,
+                )
+                if num_subdivisions == self.max_samples_per_segment:
+                    break
+                resolved = max_error_squared <= tolerance_squared
+                chord_counts[active[resolved]] = num_subdivisions
+                active = active[~resolved]
+                num_subdivisions = min(
+                    num_subdivisions * 2, self.max_samples_per_segment
+                )
+                continue
 
             # Bound the largest temporary by projected control-point count.
             # The subcurve construction and projection use several arrays of

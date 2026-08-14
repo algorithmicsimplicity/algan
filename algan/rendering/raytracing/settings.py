@@ -1225,6 +1225,44 @@ def project_on_gpu_active():
     return _RENDER_DEVICE.type == "cuda"
 
 
+# --- logical PN / bezier subdivision-level criteria -------------------------
+# The level searches that decide how finely each logical PN patch and each
+# bezier segment is diced are reductions -- a few hundred thousand sample
+# points in, one peak-pixel-error scalar per patch out -- written as ~30
+# elementwise torch passes over large scratch. They are therefore bound by
+# device bandwidth, not arithmetic: measured 67.9s (8.5% of a reference
+# save_video) for the PN criterion and 18.4s (2.3%) for the bezier chord
+# search. With this on they run as fused Taichi kernels
+# (``logical_pn_taichi``) that keep every intermediate in registers.
+#
+# NOT byte-identical to the torch path: Taichi initialises with fast_math, so
+# borderline patches round to a neighbouring level. That moves geometry (inside
+# render_tolerance by construction), so a render baseline changes. Crack-
+# freeness is preserved -- shared boundary curves still reach a bit-identical
+# level, and the cross-thread reduction is order-independent ``max`` -- and is
+# regression-tested by benchmarks/_logical_pn_crack_check.py.
+#
+# ALGAN_PN_CRITERION_KERNEL=0 restores the torch path (for A/B). Only used when
+# projection runs on a CUDA render device: elsewhere the criterion's tensors
+# live on the CPU, where launching Taichi against them stages every argument
+# through VRAM (see generate_array_states' docstring), and projection may run
+# on the prefetch worker rather than the render thread.
+PN_CRITERION_KERNEL = os.environ.get("ALGAN_PN_CRITERION_KERNEL", "1") == "1"
+
+
+def set_pn_criterion_kernel(enabled):
+    """Toggle the fused subdivision-level criterion kernels (see
+    ``PN_CRITERION_KERNEL``).
+    """
+    global PN_CRITERION_KERNEL
+    PN_CRITERION_KERNEL = bool(enabled)
+
+
+def pn_criterion_kernel_active():
+    """True when the level searches should use their fused Taichi kernels."""
+    return PN_CRITERION_KERNEL and project_on_gpu_active()
+
+
 # Feature bitmask for the UNSUPPORTED legacy textured wavefront (see
 # WF_TEXTURED): each bit compiled one of the monolith's features back into the
 # (otherwise lean) textured shade kernel, so the marginal occupancy /

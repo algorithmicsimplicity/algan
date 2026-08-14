@@ -22,11 +22,17 @@ import pytest
 from algan import SETTINGS
 from algan.scene_manager import SceneManager
 
-# The fast suite is meant to stay inside a two-minute development loop. This is
-# reported, not enforced: the number moves with machine load and thermal state,
-# and a timing-based failure would be a flake. A run that exceeds it is a prompt
-# to mark the newest expensive test ``slow``.
-FAST_SUITE_BUDGET_SECONDS = 120.0
+# The fast suite is meant to stay inside a two-and-a-half-minute development
+# loop. This is reported, not enforced: the number moves with machine load and
+# thermal state, and a timing-based failure would be a flake. A run that exceeds
+# it is a prompt to mark the newest expensive test ``slow``.
+#
+# Raised from 120 s once the behavioural suite had grown past it (419 -> 466
+# unit tests), at which point every run reported itself over budget and the
+# warning stopped carrying information. Raise it again only after deciding the
+# coverage is worth the loop time -- the point of the number is that growth has
+# to be a decision.
+FAST_SUITE_BUDGET_SECONDS = 150.0
 
 # Small per-pixel drift is expected and tolerated: torch CPU rate-function
 # evaluation rounds differently depending on the materialization window, so

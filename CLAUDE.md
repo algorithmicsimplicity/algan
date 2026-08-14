@@ -21,10 +21,11 @@ Always use the local venv: `.venv/Scripts/python.exe`. The default system Python
 
 ### Testing
 ```
-.venv/Scripts/python.exe -m pytest -q --fast    # THE development loop: 88-106s
+.venv/Scripts/python.exe -m pytest -q --fast    # THE development loop: 112-147s
 .venv/Scripts/python.exe -m pytest -q           # everything, ~12 min, before pushing
 ```
-- **`--fast` is the suite to run after every change.** It is everything not marked `slow`, held to a two-minute budget, and it prints where it landed (`fast suite: 88s of its 120s budget (73%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
+- **`--fast` is the suite to run after every change.** It is everything not marked `slow`, held to a two-and-a-half-minute budget, and it prints where it landed (`fast suite: 134s of its 150s budget (89%)`). Pass no path — it uses `testpaths` from `pyproject.toml`.
+- **Its self-reported time is junk until the third consecutive run.** Taichi charges a kernel variant to whichever test hits it first, so any change that touches a kernel makes run 1 pay a cold compile: a measured sequence right after adding two small kernels was 194s → 160s → 112s. Never mark a test `slow` off run 1 or 2.
 - It covers the whole behavioural suite (`tests/unit_tests/`) plus **one real render compared pixel-wise** (`tests/fast/`). That render is the only thing in the loop that can see a renderer regression, and it is half the budget.
 - Run the **full** suite after touching the renderer, and before pushing. `tests/README.md` has the table of what `--fast` leaves out and where each item is covered instead.
 - `slow` means **outside the fast suite** — a budget decision, not a description. When the fast suite reports itself over budget, mark the *newly added* expensive test, not an old one.
@@ -149,8 +150,10 @@ Structural batch rewrites (e.g. `become`'s batch expansion) go through `_setattr
 These are read while Torch/Taichi initialize, so they must be set **before** `import algan` and have no runtime Python object: `ALGAN_ANIMATION_DEVICE`, `ALGAN_RENDER_DEVICE`, `ALGAN_HOME`, `ALGAN_CACHE_DIR`, `TI_OFFLINE_CACHE_FILE_PATH`, `ALGAN_SOFT_SHADOW_SAMPLES`, `ALGAN_HDR_BUFFER_F16`. `SETTINGS.computing.set(render_device=...)` raises with that instruction rather than a generic "unknown setting".
 
 ### Performance discipline
+- **`DESIGN_optimization_targets.md` is the plan of record for render performance.** It opens with a status table, how to reproduce the reference profile, and what to verify. Read it before starting (or resuming) optimization work, and update it when something lands.
 - Optimizations must target general moving scenes, not static-only fast paths.
 - The standard for optimizations is **byte-identical output** validated by an A/B parity script (see the `benchmarks/_*_check.py` / `_*_ab.py` conventions); features are gated behind settings toggles so the default path stays byte-identical.
+- One shipped exception, deliberately taken: the subdivision-level criterion kernels (`pn_criterion_kernel`, default on) run under Taichi's `fast_math`, so they flip a handful of borderline tessellation levels and **moved three full-render baselines**. Bit-identity is not recoverable per-kernel there. Note what this implies generally: a change to tessellation, projection or a level criterion is **invisible to `--fast`** — `tests/fast/scene.py` has no PN geometry — so it needs `pytest -q tests/full_renders`.
 - Wall-clock kernel timing is noisy (thermal throttling swings cross-process throughput ~2x); use in-process alternating A/B runs or kernel-profiler device times. `utils/profiling_utils.py` auto-hooks all Taichi kernels and pipeline stages.
 
 ### Dependencies
