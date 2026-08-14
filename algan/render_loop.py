@@ -298,6 +298,94 @@ class RenderLoopMixin:
     (mixed into :class:`~algan.scene.Scene`).
     """
 
+    #: Cached spawn/despawn bounds + interval index for the render's actor
+    #: list. Instance attribute on first write; see :meth:`_actor_window_index`.
+    _actor_window_cache = None
+
+    def _actor_window_index(self, actors):
+        """Spawn/despawn bounds for ``actors``, indexed for window queries.
+
+        Building this per batch is O(actors) with two ``TimelineEvent`` walks
+        each, and there are O(scene) batches -- O(n^2) over a render. Timing is
+        fixed for the whole render (which is what let the timestamps be read
+        once per batch in the first place), so it can be read once per *render*
+        instead, and sorted so a batch touches only the actors near its window.
+
+        Cached against the actor list's identity and length: a render builds
+        one list and reuses it for every batch, so a new render is a new list
+        and rebuilds. Holding the list in the cache is what makes identity a
+        safe key -- it cannot be freed and its id reused.
+
+        Deliberately *not* keyed on the global timing revision, which looks
+        like the safer choice and is a trap: it is bumped whenever a timespan
+        is configured, including for the transient mobs a render itself
+        creates, so it changes during a render and turned this cache into a
+        per-batch rebuild -- measured at 257 ms a batch against the 96 ms
+        unindexed scan it replaced. Timing is fixed for the duration of a
+        render, which is the same invariant that let the timestamps be read
+        once per batch before.
+
+        Actors that never spawned (``spawn < 0``) are dropped here rather than
+        tested per batch; ``despawn < 0`` means "never despawns" and becomes
+        ``+inf`` so the query is a plain interval overlap.
+        """
+        key = len(actors)
+        cache = self._actor_window_cache
+        if cache is not None and cache[0] is actors and cache[1] == key:
+            return cache[2]
+
+        rows = []
+        for actor in actors:
+            spawn = actor.lifespan.start()
+            if spawn < 0:
+                continue
+            despawn = actor.lifespan.end()
+            rows.append((actor, spawn, math.inf if despawn < 0 else despawn))
+        spawns = torch.tensor([r[1] for r in rows], dtype=torch.float64)
+        despawns = torch.tensor([r[2] for r in rows], dtype=torch.float64)
+        order = torch.argsort(spawns, stable=True)
+        index = (
+            [r[0] for r in rows],
+            spawns,
+            despawns,
+            order,
+            spawns[order],
+            torch.cummax(despawns[order], 0).values,
+        )
+        self._actor_window_cache = (actors, key, index)
+        return index
+
+    @staticmethod
+    def _actors_in_window(index, start_time, cutoff):
+        """Positions in ``index``'s actor list that overlap ``[start_time, cutoff]``.
+
+        Ascending, because the caller's downstream order (anchor priority) is
+        the authored actor order and must not change.
+
+        The bounds mirror the predicate exactly, including its boundaries:
+        ``spawn <= cutoff`` upward, and ``despawn >= start_time`` downward via
+        the running maximum despawn (non-decreasing, so everything before the
+        first position that reaches ``start_time`` has already despawned).
+        """
+        _, _, despawns, order, sorted_spawns, running_max_despawn = index
+        hi = int(
+            torch.searchsorted(
+                sorted_spawns, torch.tensor(cutoff, dtype=torch.float64), right=True
+            )
+        )
+        # right=False: the predicate keeps despawn == start_time.
+        lo = int(
+            torch.searchsorted(
+                running_max_despawn,
+                torch.tensor(start_time, dtype=torch.float64),
+                right=False,
+            )
+        )
+        if lo >= hi:
+            return order[:0]
+        candidates = order[lo:hi]
+        return candidates[despawns[candidates] >= start_time].sort().values
+
     def _prepare_merged_host_scene(self, primitive_batch):
         """Return the cached source-device scene used for upload/preflight."""
         first = primitive_batch[0]
@@ -1633,16 +1721,16 @@ class RenderLoopMixin:
         # recomputes the context rescaling, which on a scene with tens of
         # thousands of actors made this the single hottest function in batch
         # preparation. Timing is fixed for the whole render, so read each
-        # actor's pair once and filter on the numbers.
-        lifespans = [(actor, actor.lifespan.start(), actor.lifespan.end())
-                     for actor in actors]
+        # actor's pair once -- once per *render*, indexed by time, so a batch
+        # scans its own window rather than the whole scene (which was O(n^2)
+        # across a render, and is what _actor_window_index exists for).
+        index = self._actor_window_index(actors)
+        indexed_actors, spawns = index[0], index[1]
+        candidates = self._actors_in_window(index, start_time, max_end_time)
         primitive_actors = [
-            (actor, spawn)
-            for actor, spawn, despawn in lifespans
-            if spawn >= 0
-            and spawn <= max_end_time
-            and (despawn >= start_time or despawn < 0)
-            and hasattr(actor, "get_render_primitives")
+            (indexed_actors[i], float(spawns[i]))
+            for i in candidates.tolist()
+            if hasattr(indexed_actors[i], "get_render_primitives")
         ]
 
         # Precompute memory per timestep once to avoid redundant calls inside binary search loop
@@ -1672,11 +1760,8 @@ class RenderLoopMixin:
         duration = get_duration()
         spawn_cutoff = (start_time_ind + duration) / self.frames_per_second
         actors = [
-            actor
-            for actor, spawn, despawn in lifespans
-            if spawn >= 0
-            and spawn <= spawn_cutoff
-            and (despawn >= start_time or despawn < 0)
+            indexed_actors[i]
+            for i in self._actors_in_window(index, start_time, spawn_cutoff).tolist()
         ]
         time_inds = torch.arange(start_time_ind, start_time_ind + duration)
 
