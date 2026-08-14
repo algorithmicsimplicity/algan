@@ -29,10 +29,10 @@ Always use the local venv; the default system Python lacks taichi and the other 
 ```
 - `tests/unit_tests/` is the fast behavioral suite; run it after every change.
 - Each file in `tests/test_files/` defines demo scenes and ends with `render_all_funcs(__name__)`; importing the module renders its scenes at `PREVIEW` settings into `tests/algan_outputs/`.
-- Rendered videos are compared **pixel-wise** against `tests/expected_outputs_cuda/` (or `expected_outputs_cpu/` when CUDA is unavailable). Any pixel deviation > 2 fails; diff videos are written to `tests/output_errors/`.
+- Rendered videos are compared **pixel-wise** against baselines in each render suite's own directory — `tests/fast/expected_outputs_<device>/` and `tests/full_renders/expected_outputs_<device>/`, where `<device>` is `cuda` when CUDA is available and `cpu` otherwise. Both device sets are committed. Any pixel deviation > 2 fails; diff videos are written to that suite's `output_errors/`.
 - Small (≤2) pixel differences across runs are expected and tolerated: torch CPU rate-function evaluation rounds differently depending on materialization window, so exact byte-identity across re-windowed state is unattainable.
 - On Windows, run render work **one process at a time**: killed/timed-out background runs orphan child processes that keep output mp4s locked.
-- When a legitimate rendering change alters output, re-baseline by copying the new videos into `expected_outputs_cuda/` (this is normal practice here).
+- When a legitimate rendering change alters output, re-baseline with `ALGAN_UPDATE_FAST_BASELINE=1` / `ALGAN_UPDATE_FULL_RENDER_BASELINES=1` and **look at the result** before committing (this is normal practice here). Each run rewrites only the current device's directory, so a change that moves output needs a pass on CUDA *and* on CPU.
 - **Cap any script whose tensor sizes come from parameters** rather than from a real scene: `benchmarks/_memory_cap.py`'s `cap_process_memory(gb)` (call it *before* importing torch). A mis-sized synthetic generator has exhausted system RAM and blue-screened this machine. Do **not** cap a real render — WDDM charges the VRAM arena against process commit, so a capped render segfaults inside CUDA instead of raising.
 
 ### Documentation
