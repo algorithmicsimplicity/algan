@@ -55,6 +55,36 @@ UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
 # scene here renders inside.
 AVAILABLE_MEMORY_OVERRIDE = 1536 * 1024 * 1024
 
+# These baselines are per *machine*, not merely per device, so this suite gates
+# locally and on whichever machine rendered its baselines -- not across
+# machines, and therefore not in CI.
+#
+# Measured, rather than assumed: a GitHub Actions ubuntu-latest runner rendered
+# these scenes against baselines produced on another CPU and five of the six
+# missed, by 29 (text_and_media), 44 (complex_hierarchy_become), 50
+# (manim_compat_and_plots), 53 (solids_and_camera) and 204
+# (materials_and_lighting) channel values, against a tolerance of 2. The two
+# that matched -- shapes_and_timeline here, and tests/fast -- are the ones built
+# from 2-D circuits and flat triangle meshes. Everything that moved carries PN
+# surfaces, shadows, refraction or glTF, which is what ``pn_criterion_kernel``
+# running under Taichi's ``fast_math`` would predict: it flips borderline
+# tessellation levels, and which ones are borderline depends on the CPU.
+#
+# CI therefore runs tests/unit_tests and tests/fast, both of which are portable.
+# Raising the tolerance to cover this would have to reach ~204 and would swallow
+# the regressions the suite exists to catch, and re-baselining on a runner would
+# only move the failure onto the developer's machine.
+#
+# Set ALGAN_RUN_FULL_RENDERS=1 to run it anyway -- on a machine whose baselines
+# these are, or when deliberately re-measuring the cross-machine spread.
+IN_CI = os.getenv("CI") == "true"
+FORCE_FULL_RENDERS = os.getenv("ALGAN_RUN_FULL_RENDERS") == "1"
+SKIP_IN_CI_REASON = (
+    "full-render baselines are machine-specific (5/6 scenes differ by 29-204 "
+    "channel values across machines); CI covers tests/unit_tests and tests/fast. "
+    "Set ALGAN_RUN_FULL_RENDERS=1 to override."
+)
+
 SCENE_FILES = sorted(
     path for path in SCENES_DIR.glob("*.py") if not path.name.startswith("_")
 )
@@ -111,6 +141,7 @@ def test_there_is_at_least_one_full_render_scene():
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(IN_CI and not FORCE_FULL_RENDERS, reason=SKIP_IN_CI_REASON)
 @pytest.mark.parametrize("scene_path", SCENE_FILES, ids=lambda path: path.stem)
 def test_full_render_scene(
     scene_path: Path, render_environment, assert_video_matches_baseline

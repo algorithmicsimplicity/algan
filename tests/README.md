@@ -161,6 +161,44 @@ installed. `Tex`/`MathTex` never had the problem: they go through LaTeX and
 `dvisvgm` to outlines and match across devices at zero shift, which is what
 identified fonts as the cause.
 
+## Baselines are per machine too, which decides what CI runs
+
+Per *device* understates it: the full-render baselines do not survive a change
+of CPU either. Measured, not assumed — a GitHub Actions `ubuntu-latest` runner
+rendered these scenes against baselines produced on another CPU:
+
+| Scene | Max deviation | |
+| --- | ---: | --- |
+| `tests/fast` | 0 | matched |
+| `shapes_and_timeline` | 0 | matched |
+| `text_and_media` | 29 | failed |
+| `complex_hierarchy_become` | 44 | failed |
+| `manim_compat_and_plots` | 50 | failed |
+| `solids_and_camera` | 53 | failed |
+| `materials_and_lighting` | 204 | failed |
+
+against a tolerance of 2. The split is not arbitrary: everything that matched is
+built from 2-D circuits and flat triangle meshes, and everything that moved
+carries PN surfaces, shadows, refraction or glTF — which is what
+`pn_criterion_kernel` under `fast_math` predicts, since which tessellation
+levels sit on a boundary depends on the CPU evaluating the criterion.
+
+So **CI runs `tests/unit_tests` and `tests/fast`**, the two that are portable,
+and `test_full_render_scene` skips itself when `CI` is set. Run it anyway with
+`ALGAN_RUN_FULL_RENDERS=1` — on the machine whose baselines these are, or to
+re-measure the spread.
+
+Neither obvious shortcut is worth taking. Raising the tolerance would have to
+reach ~204 to pass, which is far past where it stops catching regressions;
+re-baselining on a runner just moves the failure onto the developer's machine.
+The real fix, if this suite should ever gate CI, is making the level criterion
+independent of the host CPU — probably dropping `fast_math` on those kernels —
+which is a renderer change that moves every baseline including CUDA.
+
+One thing this measurement did confirm: the fast scene contains `Text` and
+`Tex` and matched exactly on a machine with a different font set, which is the
+evidence that vendoring the fonts works.
+
 ## Fonts are vendored, not borrowed
 
 `tests/assets/fonts/` holds the **Algan Test Sans** and **Algan Test Mono**
