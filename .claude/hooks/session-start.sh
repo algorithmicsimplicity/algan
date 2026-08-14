@@ -31,13 +31,19 @@ log() { echo "[session-start] $*"; }
 # Kept to what the build and the test suite actually need. The LaTeX set is the
 # one CI installs: Algan's default TeX template only pulls standalone, babel,
 # amsmath and amssymb, and texlive-latex-extra brings texlive-latex-recommended
-# and dvisvgm along. texlive-full would be ~10 GB and half an hour for packages
-# Algan never loads.
+# along. texlive-full would be ~10 GB and half an hour for packages Algan never
+# loads.
+#
+# dvisvgm is listed explicitly and is not optional: Tex/MathTex shell out to it
+# to turn the dvi into the SVG the glyph outlines come from, so without it every
+# Tex mob raises FileNotFoundError and any scene containing one dies. It is only
+# a *Recommends* of texlive-latex-extra, and the install below passes
+# --no-install-recommends, so it does not arrive on its own.
 APT_PACKAGES=(
   build-essential python3-dev pkg-config   # compile manimpango / pycairo
   libcairo2-dev libpango1.0-dev            # their headers
   texlive-latex-base texlive-latex-extra   # Tex/Text mobs
-  texlive-fonts-recommended latexmk
+  texlive-fonts-recommended latexmk dvisvgm
   ffmpeg                                   # docs build only; silences a
 )                                          # harmless Manim startup warning
 
