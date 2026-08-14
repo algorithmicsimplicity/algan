@@ -1,18 +1,16 @@
 name: Test
 
 on:
+  # master is where development happens; stable carries the latest released
+  # version. stable is listed so that the release PR -- master into stable --
+  # is gated: pull_request filters on the *base* branch, so leaving it out
+  # would skip CI at exactly the moment it matters most.
+  #
+  # 'developer/**' is kept while the old development branch still exists.
   push:
-    # 'developer/**' is the branch the next release is actually prepared on, so
-    # CI has to see it; until it does, the suite only ever runs locally.
-    #
-    # 'claude/**' is here to prove out the CPU render baselines on a GitHub
-    # runner before they gate anything that matters. Those baselines were
-    # generated on one machine and this is the first time they are checked on
-    # another, which is the whole question. Narrow or drop this pattern once
-    # that is settled -- a full run renders seven scenes and is not cheap.
-    branches: [master, 'developer/**', 'claude/**']
+    branches: [master, stable, 'developer/**']
   pull_request:
-    branches: [master, 'developer/**']
+    branches: [master, stable, 'developer/**']
   # Lets a run be started by hand from the Actions tab. Only takes effect once
   # this file is on the default branch: GitHub reads workflow_dispatch from
   # there, not from the ref being dispatched.
