@@ -50,6 +50,10 @@ dependencies = [
     "svgelements>=1.0.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
+    # glTF/glB/OBJ/PLY parsing for ThreeDModelMob (algan.mobs.three_d_models).
+    # Unlike the FBX path this needs no native library, so it is a core
+    # dependency rather than an extra.
+    "trimesh>=4.0.0",
 ]
 
 
