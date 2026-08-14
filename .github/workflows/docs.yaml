@@ -1,0 +1,46 @@
+name: Docs
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  build:
+    name: Sphinx Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: ./.github/actions/install-uv
+
+      # graphviz: inheritance diagrams on the reference landing page.
+      # LaTeX + pango: Tex/Text glyph geometry, needed to import algan and to
+      # autodoc the text mobs.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            graphviz libpango1.0-dev texlive-latex-base texlive-latex-extra \
+            texlive-fonts-recommended latexmk dvisvgm ffmpeg
+
+      - run: uv sync --locked --all-extras --dev
+
+      # Structural build: autodoc, cross-references and toctrees, without
+      # rendering the embedded example videos (which needs a GPU budget this
+      # runner does not have). Warnings are errors so doc drift fails the PR.
+      - name: Build docs
+        run: |
+          uv run python -m sphinx -M html docs/source docs/build \
+            -d docs/build/doctrees-without-examples \
+            -t skip-manim -W --keep-going
+
+      - name: Upload built HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: docs/build/html
+          retention-days: 7

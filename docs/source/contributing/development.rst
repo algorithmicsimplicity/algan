@@ -127,10 +127,26 @@ omission is covered instead.
 .. note::
 
    Render tests compare frames pixel-wise against baselines checked in per
-   device, under ``expected_outputs_cuda/`` or ``expected_outputs_cpu/``. Only
-   CUDA baselines are currently committed, so on a CPU-only machine those
-   tests render the scene and then skip the comparison — a renderer regression
-   will not be caught there. Review renderer changes on a CUDA machine.
+   device, under ``expected_outputs_cuda/`` or ``expected_outputs_cpu/``. Both
+   sets are committed, so the comparison runs on a CPU-only machine too. CPU and
+   CUDA renders are not bit-identical, though, so re-baseline only for the device
+   you are on -- and a device with no baseline directory renders the scene and
+   silently skips the comparison.
+
+Re-baselining a render
+----------------------
+
+When a change legitimately alters rendered output, regenerate the baselines for
+your device and **look at the result** before committing it:
+
+.. code-block:: bash
+
+   ALGAN_UPDATE_FAST_BASELINE=1 .venv/bin/python -m pytest -q tests/fast
+   ALGAN_UPDATE_FULL_RENDER_BASELINES=1 .venv/bin/python -m pytest -q tests/full_renders
+
+Diff videos for a failing comparison land in that suite's ``output_errors/``.
+Small deviations (a channel or two) across runs are expected and tolerated;
+anything larger is a real change and needs an explanation in the pull request.
 
 Documentation
 =============

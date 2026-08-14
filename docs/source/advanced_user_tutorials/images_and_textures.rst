@@ -41,10 +41,19 @@ textured surface:
 Image paths are resolved against the working directory and then against the
 directory holding your script, so an image sitting beside your ``.py`` file loads
 regardless of where you launch Python from. The same resolution applies to
-:meth:`~algan.scene.Scene.set_background_color` and every texture argument below.
+:meth:`~algan.scene.Scene.set_background_color`,
+:meth:`~algan.scene.Scene.set_environment_map` and
+:class:`~algan.mobs.three_d_models.model_mob.ThreeDModelMob`.
 
 Instead of a path you can pass a ``[H, W, 4]`` or ``[H, W, 5]`` tensor, which is how
 you texture something with data you computed rather than loaded.
+
+.. important::
+
+    The per-material texture arguments on :class:`~algan.mobs.surfaces.surface.Surface`
+    -- ``color_texture``, ``roughness_texture``, ``normal_texture`` and the rest --
+    take **tensors only**. Handing one a file path raises ``TypeError``. Load the
+    image yourself first, with :func:`~algan.utils.file_utils.get_image`.
 
 Reshaping a textured surface
 ============================

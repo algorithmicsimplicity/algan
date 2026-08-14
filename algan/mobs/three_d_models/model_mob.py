@@ -49,7 +49,15 @@ def _eye4(device):
 
 
 def _load_scene_for(file_path):
-    """Dispatch to a parser backend by file extension."""
+    """Dispatch to a parser backend by file extension.
+
+    The path goes through :func:`~algan.utils.file_utils.resolve_asset_path`
+    first, so a model sitting beside the running script loads regardless of the
+    working directory -- the same rule images follow.
+    """
+    from algan.utils.file_utils import resolve_asset_path
+
+    file_path = resolve_asset_path(file_path)
     ext = os.path.splitext(file_path)[1].lower()
     if ext in _TRIMESH_EXTS:
         from algan.mobs.three_d_models.gltf_loader import load_scene

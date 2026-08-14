@@ -114,10 +114,10 @@ periodic and open-ended motion easy, and it does not depend on the frame rate:
 
 .. code-block:: python
 
-    import math
+    import torch
 
     # Bob up and down forever, once per second.
-    mob.add_updater(lambda self, t: self.move_to(start + UP * 0.3 * math.sin(t * 2 * PI)))
+    mob.add_updater(lambda self, t: self.move_to(start + UP * 0.3 * torch.sin(t * 2 * PI)))
 
     # Spin at a constant 90 degrees per second.
     mob.add_updater(lambda self, t: self.rotate(t * 90, UP))
@@ -127,6 +127,16 @@ than adding a bit each frame. Write updaters as a function of ``t`` from a fixed
 starting state rather than as incremental steps -- Algan may materialize frames
 in a different order than they are played, so an updater that accumulates gives
 inconsistent results.
+
+.. important::
+
+    ``t`` is a **torch tensor**, not a Python float. Algan evaluates an updater
+    for a whole batch of frames at once, so ``t`` arrives with shape
+    ``[frames, 1, 1]``. Use ``torch`` functions on it (``torch.sin``,
+    ``torch.exp``, ...); the ``math`` module raises ``ValueError: only one element
+    tensors can be converted to Python scalars`` as soon as the batch holds more
+    than one frame, and the error surfaces at render time rather than where you
+    wrote the updater.
 
 Longer updaters
 ===============

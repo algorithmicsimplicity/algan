@@ -8,9 +8,7 @@ outlines, not bitmaps -- so they stay crisp at any zoom and morph into other
 shapes like anything else.
 
 * :class:`~.Text` -- a string rendered with a font.
-* :class:`~.Tex` -- LaTeX, in text mode.
-* :class:`~.MathTex` -- LaTeX, in math mode.
-* :class:`~.Title` -- a Tex title with an underline.
+* :class:`~.Tex` -- LaTeX.
 * :class:`~.NumericDisplay` -- a number you can animate.
 
 Plain Text
@@ -78,19 +76,22 @@ one and stay with it. ``font_size`` is usually clearer for a fixed label;
 LaTeX
 =====
 
-:class:`~.Tex` takes text-mode LaTeX; :class:`~.MathTex` takes math-mode LaTeX,
-so you do not have to wrap everything in ``$``:
+:class:`~.Tex` compiles LaTeX in **math mode**, so you never have to wrap
+anything in ``$``:
 
 .. algan:: TextMathTex
 
     from algan import *
 
-    formula = MathTex(r"\frac{d}{dx}\left(x^2\right) = 2x", font_size=60).spawn()
+    formula = Tex(r"\frac{d}{dx}\left(x^2\right) = 2x", font_size=60).spawn()
     with Seq(run_time=2):
         formula.color = YELLOW
         formula.scale(1.3)
 
     Scene.save_video()
+
+For a run of ordinary prose inside a formula, wrap it in ``\text{...}`` as you
+would anywhere else in LaTeX.
 
 .. important::
 
@@ -104,8 +105,9 @@ backslashes.
 Animating parts of a formula
 ============================
 
-Pass several strings to :class:`~.Tex` or :class:`~.MathTex` and each becomes a
-separate child, which you can then animate independently:
+Pass several strings to :class:`~.Tex` and each becomes a separate **segment**,
+retrieved with :meth:`~algan.mobs.text.Tex.get_segment` and animated
+independently:
 
 .. algan:: TextTexParts
 
@@ -113,13 +115,22 @@ separate child, which you can then animate independently:
 
     formula = Tex("e^{i\\pi}", "+ 1", "= 0", font_size=90).spawn()
     with Lag(0.5):
-        for part in formula.children:
-            part.color = YELLOW
+        for i in range(len(formula.tex_strings)):
+            formula.get_segment(i).color = YELLOW
 
     Scene.save_video()
 
 This is the standard way to draw attention to one term of an equation: split the
-formula where you want the seams, then animate that child.
+formula where you want the seams, then animate that segment.
+
+.. note::
+
+    Segments are not ``children``. A multi-part :class:`~.Tex` keeps every glyph
+    in one packed batch, so ``formula.children`` has a single entry -- looping
+    over it colours the whole formula at once and any surrounding
+    :class:`~.Lag` has nothing to stagger. Reach for
+    :meth:`~algan.mobs.text.Tex.get_segment` whenever you want the pieces you
+    passed in, and index the Mob directly (``formula[3]``) for individual glyphs.
 
 Per-glyph animation
 ===================

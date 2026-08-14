@@ -273,9 +273,14 @@ Stage            What it adds
 
     ball = Sphere(radius=1, color=BLUE_E)
     ball.set_fragment_shader([standard_shader, fresnel_rim])
-    ball.rim_color = TEAL_A
+    ball.rim_color = (0.40, 0.90, 1.00)
     ball.rim_power = 3.0
     ball.spawn()
+
+Stage parameters are plain numbers and tuples of the width the stage declares --
+``rim_color`` is a width-3 RGB triple. Assigning a five-channel Algan colour
+constant such as ``TEAL_A`` to it raises; use ``TEAL_A[..., :3]`` if you want to
+derive one from the palette.
 
 A rim light is an authoring control rather than a BSDF term, which is why it
 lives here and not on
@@ -308,12 +313,14 @@ the scatter contract documented in
 .. note::
 
     Custom scatter and normal-mapped lighting run inside the deterministic ray
-    tracer's regular shade kernel. Algan also ships an alternative *sorted*
-    material-dispatch pipeline (one GPU kernel per material, as in Blender Cycles)
-    that renders identically; it is off by default because the regular kernel is
-    faster on the built-in materials. Force it on with
-    ``SETTINGS.raytracing.experimental.set(wavefront_sort_materials=True)`` if you
-    are experimenting with very many heavy material pipelines.
+    tracer's monolithic shade kernel, which is the only supported deterministic
+    shade path. An older *sorted* material-dispatch pipeline (one GPU kernel per
+    material, as in Blender Cycles) is no longer maintained and no longer works:
+    ``SETTINGS.raytracing.experimental.set(wavefront_sort_materials=True)`` raises
+    :class:`~algan.errors.UnsupportedFeatureError`.
+
+    Custom fragment-shader pipelines are also a deterministic-renderer feature --
+    see :ref:`renderer-capabilities`.
 
 See Also
 ========

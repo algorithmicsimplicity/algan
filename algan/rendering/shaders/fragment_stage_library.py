@@ -9,7 +9,7 @@ rather than replacing it, so it layers over a lit base material::
 
     ball = Sphere(radius=1, color=BLUE_E)
     ball.set_fragment_shader([standard_shader, fresnel_rim])   # lit, then rimmed
-    ball.rim_color = TEAL_A
+    ball.rim_color = (0.40, 0.90, 1.00)   # width-3 RGB, not a 5-channel Color
     ball.rim_power = 3.0
     ball.spawn()
 

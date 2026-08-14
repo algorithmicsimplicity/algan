@@ -201,10 +201,15 @@ proportional cost.
 
 .. note::
 
-   Deterministic shadows are hard/soft binary visibility and ignore transparency.
-   For fully physical soft shadows through translucent media, use the Monte Carlo
-   path tracer instead: ``SETTINGS.raytracing.set(samples_per_pixel=64)``. It is
-   far slower -- see :doc:`performance_and_quality`.
+   Deterministic shadow rays *do* respect transparency: the light is multiplied
+   through each occluder's opacity, so stacked translucent surfaces compound and a
+   fully opaque one blocks. Ambient and emissive terms are unaffected.
+
+   What the deterministic renderer cannot do is refractive transport -- caustics,
+   and light bent as it passes through glass. That is the reason to reach for the
+   Monte Carlo path tracer, at a large cost in time. Note that raising
+   ``samples_per_pixel`` above 1 also gives up most of this page: see
+   :ref:`renderer-capabilities`.
 
 .. admonition:: How many lights can cast shadows?
    :class: seealso
@@ -282,7 +287,7 @@ ambient:
         PointLight(location=LEFT * 6 + OUT * 2, color=WHITE, intensity=4).spawn()
         # Rim: from behind, slightly cool.
         DirectionalLight(location=IN * 8 + UP * 4, target=ORIGIN,
-                         color=(0.6, 0.7, 1.0)).spawn()
+                         color=Color((0.6, 0.7, 1.0))).spawn()
         # Ambient: stops the shadow side going pure black.
         AmbientLight(color=WHITE, intensity=0.25).spawn()
 
