@@ -504,17 +504,32 @@ def get_orthonormal_vector(*vectors):
     # well-conditioned choice for any input (even when an axis lies in the span of
     # ``vectors``). The *which* orthogonal direction does not matter to callers;
     # only that it is reproducible.
+    #
+    # All axes are projected in ONE batched pass over a new axis dim rather
+    # than a per-axis Python loop: the per-element arithmetic (projection
+    # chain, 3-element norm) and the sequential strictly-greater selection are
+    # unchanged, so the result is bit-identical while launching ~1/d as many
+    # ops. This is called per animated Cylinder point-move, thousands of times
+    # per window in an updater-heavy scene -- dispatch count is its whole cost.
+    d = v0.shape[-1]
+    seeds = torch.eye(d, dtype=v0.dtype, device=v0.device).expand(
+        v0.shape[:-1] + (d, d)
+    )
+    r = seeds
+    for vn in vectors:
+        vn = vn.unsqueeze(-2)
+        r = r - dot_product(r, vn) * vn
+    n = r.norm(p=2, dim=-1, keepdim=True)
+    # The original per-axis update started from zeros and took an axis only on
+    # a strictly greater norm (first-max-wins; NaN, being > nothing, is never
+    # taken and the zeros survive); replicate that exact chain over the axis
+    # dim rather than argmax, whose NaN and init rules both differ.
     best = torch.zeros_like(v0)
     best_norm = torch.zeros_like(v0[..., :1])
-    for axis in range(v0.shape[-1]):
-        r = torch.zeros_like(v0)
-        r[..., axis] = 1.0
-        for vn in vectors:
-            r = r - dot_product(r, vn) * vn
-        n = r.norm(p=2, dim=-1, keepdim=True)
-        take = n > best_norm
-        best = torch.where(take, r, best)
-        best_norm = torch.where(take, n, best_norm)
+    for axis in range(d):
+        take = n[..., axis, :] > best_norm
+        best = torch.where(take, r[..., axis, :], best)
+        best_norm = torch.where(take, n[..., axis, :], best_norm)
     return F.normalize(best, p=2, dim=-1)
 
 

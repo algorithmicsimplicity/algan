@@ -92,9 +92,10 @@ _OPT_DISABLED = None
 
 def _opt_disabled(name):
     """Bisect aid: ALGAN_OPT_DISABLE=fastpath,ranges,desccache,windows,torchquery,
-    timeslice,lazyzeros disables individual animation-prep optimizations (read
-    once, first use). ``benchmarks/_prep_timeslice_ab.py`` and its s05 companion
-    A/B the last two through this.
+    timeslice,lazyzeros,compactstate,rowdedup disables individual animation-prep
+    optimizations (read once, first use). ``benchmarks/_prep_timeslice_ab.py``
+    and its s05 companion A/B timeslice/lazyzeros through this;
+    ``benchmarks/_query_rowdedup_parity.py`` A/Bs rowdedup.
     """
     global _OPT_DISABLED
     if _OPT_DISABLED is None:
@@ -544,22 +545,58 @@ def _query_row_states(times, index, rows=None):
     else:
         inverse = None
     S = int(ranks.shape[0])
-    # Every element is written by the loop below.
+    # Every element is written below: constant rows by the broadcast
+    # assignment, the rest by the chunked loop.
     out = torch.empty((S, R, D), dtype=sorted_values.dtype, device=head.device)
 
-    chunk = max(1, min(S, _QUERY_CHUNK_BYTES // max(1, R * 8)))
-    for start in range(0, S, chunk):
-        stop = min(start + chunk, S)
-        low = torch.searchsorted(
-            keys, (bases.unsqueeze(0) + ranks[start:stop].unsqueeze(1)).view(-1)
-        ).view(stop - start, R)
-        empty = low >= ends
-        values = sorted_values[low.clamp_(max=U - 1)]
-        # Rows with no edit still live at t read as zero, exactly as the
-        # kernel wrote them (masked_fill, not a multiply, so non-finite
-        # recorded values cannot leak in as NaN).
-        values.masked_fill_(empty.unsqueeze(-1), 0.0)
-        out[start:stop] = values
+    # A row's answer depends on the rank only through where the search lands
+    # among its own few edits, and that landing index is monotone in the rank.
+    # Search every row once at the window's lowest and highest rank: where the
+    # two land on the same key position, every intermediate rank lands there
+    # too, so the row's value is constant across the whole window -- gather it
+    # once and broadcast. Only rows with an edit boundary strictly inside the
+    # window pay the per-rank search, and a batch window is a few seconds of a
+    # scene whose edits are authored in blocks, so those are a small minority
+    # of the rows the scene has accumulated. Bit-identical by construction:
+    # equal ``low`` selects equal values. The threshold is the search-count
+    # break-even (2R endpoint searches against S * n_const saved), so a window
+    # in which most rows are changing keeps the dense path.
+    chg_cols = None
+    if S > 1 and not _opt_disabled("rowdedup"):
+        low_lo = torch.searchsorted(keys, bases + ranks.amin())
+        low_hi = torch.searchsorted(keys, bases + ranks.amax())
+        const_mask = low_lo == low_hi
+        chg_cols = (~const_mask).nonzero().view(-1)
+        if int(chg_cols.shape[0]) * S > R * (S - 2):
+            chg_cols = None
+        else:
+            const_cols = const_mask.nonzero().view(-1)
+            low_c = low_lo.index_select(0, const_cols)
+            empty_c = low_c >= ends.index_select(0, const_cols)
+            vals_c = sorted_values[low_c.clamp_(max=U - 1)]
+            vals_c.masked_fill_(empty_c.unsqueeze(-1), 0.0)
+            out[:, const_cols] = vals_c
+            bases = bases.index_select(0, chg_cols)
+            ends = ends.index_select(0, chg_cols)
+
+    Rq = int(bases.shape[0])
+    if Rq:
+        chunk = max(1, min(S, _QUERY_CHUNK_BYTES // max(1, Rq * 8)))
+        for start in range(0, S, chunk):
+            stop = min(start + chunk, S)
+            low = torch.searchsorted(
+                keys, (bases.unsqueeze(0) + ranks[start:stop].unsqueeze(1)).view(-1)
+            ).view(stop - start, Rq)
+            empty = low >= ends
+            values = sorted_values[low.clamp_(max=U - 1)]
+            # Rows with no edit still live at t read as zero, exactly as the
+            # kernel wrote them (masked_fill, not a multiply, so non-finite
+            # recorded values cannot leak in as NaN).
+            values.masked_fill_(empty.unsqueeze(-1), 0.0)
+            if chg_cols is None:
+                out[start:stop] = values
+            else:
+                out[start:stop, chg_cols] = values
     if inverse is not None:
         out = out.index_select(0, inverse)
     return out
@@ -1665,6 +1702,8 @@ class UpdaterEvent:
         "dependency_mob_ids",
         "_history_clones",
         "_invocation_cache",
+        "_known_clone_ids",
+        "_known_clone_version",
     )
 
     def __init__(self, function, caller, args, kwargs, time):
@@ -1680,6 +1719,11 @@ class UpdaterEvent:
         # queried frame, including replacements nested below their caller.
         self._history_clones = {}
         self._invocation_cache = {}
+        # Per-mob memo of the clone ids the manager's registry holds for a
+        # dependency, so tracing an access does not re-walk the registry (see
+        # AnimationTimeline._register_known_history_clones).
+        self._known_clone_ids = {}
+        self._known_clone_version = -1
 
     def register_history_clone(self, original, clone):
         entry = self._history_clones.setdefault(id(original), (original, []))
@@ -2000,6 +2044,9 @@ class AnimationTimeline:
         self._materialization_times = None
         self._materialized_mob_ids = None
         self._updater_history_clones = {}
+        # Bumped whenever register_updater_history_split actually adds an
+        # entry; invalidates every UpdaterEvent's _known_clone_ids memo.
+        self._updater_clone_version = 0
 
     def set_active_edit_event(self, event):
         """Set the function application that subsequently recorded attribute
@@ -2063,16 +2110,33 @@ class AnimationTimeline:
         self._materialized_mob_ids.update(missing)
 
     def _register_known_history_clones(self, event, mob_ids):
-        # Registering a clone adds its id to the same dependency set.
+        # Registering a clone adds its id to the same dependency set. This
+        # runs on every traced updater access -- an updater body makes
+        # thousands per window -- so the walk over the registry is memoized
+        # per (event, mob): registration is idempotent, and
+        # register_updater_history_split (the only writer of the registry)
+        # bumps _updater_clone_version to invalidate the memo. The cached ids
+        # are still returned so the caller's materialization check sees the
+        # same set the walk produced.
+        if event._known_clone_version != self._updater_clone_version:
+            event._known_clone_ids = {}
+            event._known_clone_version = self._updater_clone_version
+        cache = event._known_clone_ids
         registered_ids = set()
         for mob_id in tuple(mob_ids):
-            for original, clone in self._updater_history_clones.get(mob_id, ()):
-                event.register_history_clone(original, clone)
-                registered_ids.add(clone.id)
+            ids = cache.get(mob_id)
+            if ids is None:
+                ids = set()
+                for original, clone in self._updater_history_clones.get(mob_id, ()):
+                    event.register_history_clone(original, clone)
+                    ids.add(clone.id)
+                cache[mob_id] = ids
+            registered_ids.update(ids)
         return registered_ids
 
     def register_updater_history_split(self, descendant_map):
         """Teach persistent updaters about rows handed to historical clones."""
+        changed = False
         for original, clone in descendant_map.items():
             entries = self._updater_history_clones.setdefault(original.id, [])
             if not any(
@@ -2080,6 +2144,9 @@ class AnimationTimeline:
                 for known_original, known_clone in entries
             ):
                 entries.append((original, clone))
+                changed = True
+        if changed:
+            self._updater_clone_version += 1
         for event in self.function_timeline.updaters:
             self._register_known_history_clones(event, event.dependency_mob_ids)
 

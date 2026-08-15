@@ -24,6 +24,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P4** whole-scene per-batch scans | **shipped** -- honestly ~3.7 s of a ~500 s render (66x on the actor filter), not the 11.63 s first reported; see the correction under P4 |
 | **P5** replay-checkpoint in-place growth | **shipped, near-worthless** -- the clone it removes happens once per render, not once per batch; see the correction under P5 |
 | **P1** compact rematerialization buffer | **shipped** -- 1.37x on materialization + replay reads, and 604 MB/batch of buffers -> 204 MB |
+| **P6** endpoint row dedup in `_query_row_states` | **shipped, minor** -- byte-identical, but only **1.051x on the query**: the old item-1 premise predated P1; see P6 |
 | **T5** sparse-coverage host chain | **next** -- the render thread's largest non-kernel item |
 | **T3**, **T6** | untouched; both shrank in share |
 
@@ -39,10 +40,23 @@ The re-profile this document demanded has been done (2026-08-14, warm run 2,
   the pole to cut.
 * **P1's premise was wrong**, and only a direct measurement showed it. See P1.
 
-Since then P1-P5 have all shipped, all in prep, so **the shares in this document
-are stale by that much and want a re-profile** before the next ranking decision.
-`_query_row_states` (42.7% of `rematerialize_state_at_times`) is the largest
-prep item nothing has touched.
+**That re-profile has now been done too** (2026-08-15, warm run 2,
+`save_video` = 396.7 s; table under "The shape of the problem") and it moved
+two things:
+
+* **P1 and P3 are confirmed end to end**: `rematerialize_state_at_times` went
+  from 94.1 s (24.6%) to **38.4 s (9.7%)**.
+* **`_query_row_states` is no longer the item its ranking claimed.** The 42.7%
+  measurement predated P1, which changed the query's calling convention (compact
+  live rows, ranks already deduped). Measured directly on s05
+  (`AB_OPT=rowdedup _prep_timeslice_ab_s05.py`): the endpoint row dedup that
+  collapses its searches ~S-fold buys **1.051x on the query, ~0.02 s/pass** --
+  the query is no longer search-bound. Shipped anyway (byte-identical, cost
+  bounded by its break-even bail; the T4 precedent), documented under P6.
+
+The largest prep items are now `set_state_to_times` own time (23.3%),
+`AttributeTimeline.get` outside replay (21.4%) and `get_batch_of_primitives`
+own time (21.3%) -- the "fewer calls, not faster ones" family.
 
 ### Reproducing the profile
 
@@ -160,6 +174,9 @@ already been wrapping correctly all along (it just predated the helper), and
   (chord counts + timing), `benchmarks/_pn_dice_scatter_ab.py` (byte-equality of
   every diced array), `benchmarks/_logical_pn_crack_check.py` (seam integrity),
   `benchmarks/_p1_zerofill_ab.py` (the lazily-zeroed buffer, CPU),
+  `benchmarks/_query_rowdedup_parity.py` (the endpoint row dedup, CPU: dense
+  path == dedup path == brute force, with every branch -- fast path, break-even
+  bail, S==1 skip -- asserted exercised, not assumed),
   `benchmarks/_prep_timeslice_ab.py` + `videos/rl2/animations/_prep_timeslice_ab_s05.py`
   (the prep optimizations, CPU, `ALGAN_OPT_DISABLE`-gated),
   `benchmarks/_event_index_parity.py` (the interval index, CPU),
@@ -179,7 +196,10 @@ already been wrapping correctly all along (it just predated the helper), and
   `_quadratic_scans_s05.py` (the whole-scene per-batch scans),
   `_windows_rebuild_probe_s05.py` (splits a lookup into resolve / cache rebuild
   / query -- the one that found P4's real bottleneck),
-  `_event_duration_dist_s05.py` (why an interval index does or does not prune).
+  `_event_duration_dist_s05.py` (why an interval index does or does not prune),
+  `_replay_loop_probe_s05.py` (splits `set_state_to_times` own time into
+  pre-loop lookups / remat / event bodies net of accessors / loop machinery --
+  the one that scoped item 1 of "What is left").
 * Re-baseline, only after looking at the frames:
   `ALGAN_UPDATE_FULL_RENDER_BASELINES=1 <venv-python> -m pytest tests/full_renders -q`
 
@@ -188,10 +208,10 @@ already been wrapping correctly all along (it just predated the helper), and
 The render is a two-thread pipeline, and **prep is now the larger pole by a
 clear margin**:
 
-| pole | stage | then | now |
-| --- | --- | --- | --- |
-| batch-prep worker | `Scene.get_batch_of_primitives` | 519 s (64.8%) | 299.4 s (**78.3%**) |
-| render thread | `ray traced render total` | ~543 s (67.7%) | 196.1 s (51.3%) |
+| pole | stage | original | 2026-08-14 | 2026-08-15 |
+| --- | --- | --- | --- | --- |
+| batch-prep worker | `Scene.get_batch_of_primitives` | 519 s (64.8%) | 299.4 s (78.3%) | 310.2 s (**78.2%**) |
+| render thread | `ray traced render total` | ~543 s (67.7%) | 196.1 s (51.3%) | 190.3 s (48.0%) |
 
 They still overlap, so neither number is the wall clock. But the old advice --
 "cutting only one pole buys almost nothing, work the two lists together" -- was
@@ -204,7 +224,28 @@ utilisation was 44% on the re-profile. The Taichi candidates below are worth
 doing because they are on the render thread's critical path, not because the
 device is saturated.
 
-### The re-profile, warm run 2 (`save_video` = 382.3 s)
+### The re-profile, warm run 2 (`save_video` = 396.7 s, 2026-08-15, post P1-P6)
+
+| item | measured | was (08-14) |
+| --- | --- | --- |
+| `set_state_to_times` own | 92.5 s (**23.3%**) | 19.7% |
+| `AttributeTimeline.get` (647 399 calls) | 84.9 s (**21.4%**) | 14.5% |
+| `get_batch_of_primitives` own | 84.6 s (**21.3%**) | 16.6% |
+| **T5** sparse-discovery *host* chain | ~39.9 s (~10.1%) of 91.8 s incl | ~9.9% |
+| `bloom fft conv` | 42.6 s (10.7%) | 11.7% |
+| `memory reclaim (gc + cuda cache)` | 39.9 s (10.1%) | 9.9% |
+| **P1** `rematerialize_state_at_times` | **38.4 s (9.7%)** | 24.6% -- P1+P3 confirmed |
+| `BezierCircuitCubic.get_render_primitives` own | 39.8 s (10.0%) | 7.5% |
+| **T3** `_build_circuit_geometry` | 19.2 s (4.8%) | 5.1% |
+| **T4** `_dice_logical_pn` own | 9.5 s (2.4%) | 2.7% |
+| **T6** precompute tables | 5.7 s (1.4%) | 1.4% |
+| **T1+T2** criterion kernels | 2.6 s (0.7%) | 0.6% |
+
+`arena preflight (batch)` reads 58.7 s inclusive but 0.4 s exclusive -- its
+children (`project_to_screen (prewarm)`, the bezier/PN packing stages) are
+already listed and should not be double-counted against it.
+
+### The previous re-profile, warm run 2 (`save_video` = 382.3 s, 2026-08-14)
 
 | item | measured | was |
 | --- | --- | --- |
@@ -763,6 +804,8 @@ time, and why the compact buffer's real payoff turned out to be the **memory**
   Hard constraint before designing: **this runs on the animation device (CPU)
   and must stay there** -- see the "Not worth a kernel" note about Taichi
   staging CPU tensors through VRAM.
+  **(Since re-scoped: this paragraph did not survive P1. The row dedup it
+  suggests shipped as P6 and bought 1.051x -- the query is write-bound now.)**
 
 **One thing measured and ruled out along the way:** reusing the buffer across
 batches instead of reallocating it. Batch prefetch forbids it -- prep for batch
@@ -770,6 +813,34 @@ b+1 runs on a worker while b renders, and it is the *reallocation* that keeps
 b's handed-out views valid. A shared buffer would have b+1 overwrite what b is
 still reading. (The compact buffer is still reallocated per batch; it is only
 the row *map* that is grown in place, and nothing hands out views into that.)
+
+### P6 -- endpoint row dedup in `_query_row_states` (shipped, minor)
+
+> **Shipped**, in `_query_row_states` (`timeline.py`), gated by
+> `ALGAN_OPT_DISABLE=rowdedup`. Byte-identical: parity against both the dense
+> path *and* a brute-force per-(time, row) evaluation straight from the edit
+> list (`benchmarks/_query_rowdedup_parity.py`, which asserts every branch was
+> exercised rather than assuming it); fast suite x3 (133.5 s on run 3, in
+> band) and the full render suite (7/7, pixel-identical) pass unchanged.
+>
+> The idea: the key position a row's search lands on is monotone in the query
+> rank, so searching each row once at the window's lowest and highest rank
+> identifies every row whose answer is constant across the whole window --
+> those need one search-pair and one value gather instead of S of each, and
+> the result is broadcast. Only rows with an edit boundary inside the window
+> pay the per-rank search. The engage test is the exact search-count
+> break-even (2R endpoint searches against S * n_const saved), so a
+> mostly-changing window keeps the dense path and the overhead is bounded.
+>
+> **Measured on s05: 1.051x on the query, ~0.02 s per 6-window pass**
+> (`AB_OPT=rowdedup _prep_timeslice_ab_s05.py`) -- not the win the ranking
+> predicted, and the miss is the finding. The "42.7% of remat, ~7M binary
+> searches" premise was measured *before* P1 shipped: with the buffer compact
+> (R = live rows only) and ranks already deduped, the query's cost is its
+> output writes and the rank->frame expansion, not the searches. Kept because
+> it is byte-exact and free where it does not help, but **do not count it as
+> a win, and do not spend more on search-count reductions here** -- the next
+> lever on remat, if it is ever worth one, is write traffic.
 
 ## Part 3 -- Authoring (90-110 s, outside `save_video`)
 
@@ -786,26 +857,50 @@ which every clone then deep-copies.
 
 ## What is left, in order
 
-Prep is 78.3% and the render thread 51.3%, so prep items come first at equal
-size.
+Prep is 78.2% and the render thread 48.0% (2026-08-15 re-profile, post P1-P6),
+so prep items still come first at equal size. Step 0 (re-profile) and the old
+item 1 (`_query_row_states`, resolved as P6 -- the premise was stale) are done.
 
-0. **Re-profile.** P1-P5 all landed since the 382.3 s run this document is
-   ranked against, and prep is where every one of them hit. The shares below
-   are stale by that much -- the same trap the previous revision fell into.
-1. **`_query_row_states`** -- 42.7% of `rematerialize_state_at_times`, ~10.5% of
-   `save_video`, and never previously named as a target. Now the largest single
-   item in prep, and untouched: P1 changed where its result is *stored*, not
-   how it is computed. CPU-only by constraint. Detailed under P1.
-2. **`set_state_to_times` own time** (19.7%) and the ~63% of
-   `AttributeTimeline.get` calls P2 did *not* touch (those made outside replay,
-   during the geometry build). The lever there is fewer calls, not faster ones.
-3. **T5** -- the sparse-discovery host chain, ~37.7 s (~9.9%): the six
+1. **`set_state_to_times` own time** -- 92.5 s (**23.3%**), the function-replay
+   loop's own overhead and the largest single item anywhere. **Measured into
+   its parts** (`videos/rl2/animations/_replay_loop_probe_s05.py`, 2026-08-15;
+   shares of the stage on a 6-window pass):
+
+   | part | share |
+   | --- | --- |
+   | **loop machinery residual** (window tests, `elapsed`/`a` interpolation, `torch.lerp`, kwargs dicts) | **59.3%** |
+   | `rematerialize` (tracked separately, not "own") | 31.1% |
+   | rate functions | 9.0% |
+   | event bodies **net of accessors** | 0.8% |
+   | selector + `set_active_time_inds` + pre-loop lookups | ~2% |
+
+   The bodies are free; the cost is ~830 us of small-tensor torch dispatches
+   *around* each of ~474 replayed events per window. The lever: the loop's
+   per-event inputs (`s`, `e`, `replay_end`) are **fixed for a render** (the
+   P4 invariant), so the window tests and the `elapsed`/`a` interpolants for
+   every event are one `[F, T]` elementwise pass instead of F small ones --
+   elementwise, so byte-safety is achievable; rate functions can be grouped
+   by shared function object (elementwise ones only) as a second step. Cache
+   the stacked event tensors per render with length + explicit invalidation,
+   **not** `TIMING_VERSION` (the P4 trap).
+2. **`AttributeTimeline.get` outside replay** -- 84.9 s (21.4%), 647k calls of
+   ~130 us of Python + dispatch each. About two thirds of calls happen during
+   the geometry build, not replay (harness: `get/full` 12 030 vs `get/replay`
+   6 527 per 6-window pass). The lever is **fewer calls** -- batching per-actor
+   reads in the primitive builders -- not faster ones.
+3. **`get_batch_of_primitives` own time** -- 84.6 s (21.3%), geometry-build
+   orchestration; overlaps item 2, measure them together.
+4. **T5** -- the sparse-discovery host chain, ~39.9 s (~10.1%): the six
    `index_select` gathers that share one permutation are one kernel. The
-   largest non-kernel item on the render thread, and the largest item left
-   anywhere now that the prep structural work is done.
-4. **T3** (5.1%), then **T4's remaining half** (the `allocate()` zero-fills --
+   largest render-thread item left.
+5. **T3** (4.8%), then **T4's remaining half** (the `allocate()` zero-fills --
    small, its estimate unproven, and P3 suggests the same lazily-zeroed trick
    may apply; fold it in whenever the dice is open anyway), then **T6** (1.4%).
+
+Ruled out this round: further search-count work in `_query_row_states` (P6:
+write-bound now), bloom as a Taichi kernel (measured far slower), and the
+`memory reclaim` gate (10.1% but small-VRAM-specific -- measure on a card with
+headroom before spending anything).
 
 **On scaling:** P4 removed the per-batch whole-scene event and actor scans, and
 P1 the O(N)-per-attribute-per-batch buffer commit. P5's target turned out not to
@@ -826,9 +921,6 @@ Re-profile after each: on a two-pole pipeline the ranking moves as soon as one
 pole shrinks. And prefer a per-stage in-process A/B (`_prep_timeslice_ab_s05.py`)
 to a whole-render wall-clock comparison -- the noise floor on this machine is
 larger than most of the items left on this list.
-
-Re-profile after each: on a two-pole pipeline the ranking moves as soon as one
-pole shrinks.
 
 ## Maintaining the shipped kernels
 
