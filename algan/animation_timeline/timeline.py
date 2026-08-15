@@ -654,6 +654,30 @@ def _generate_array_states_taichi(times, N, prepared, active_rows, T, D, dtype, 
     return out
 
 
+#: Ceiling on the *speculative* row capacity an :class:`AttributeTimeline`
+#: reserves before any Mob has claimed a row, in bytes. The reservation used to
+#: be a flat 256 rows, which is the right shape for the attributes the engine
+#: registers (``location`` D=3, ``color`` D=5, ``basis`` D=9) but is a *row*
+#: budget, so its cost scales with channel width. ``Surface.color_texture`` is
+#: ``H * W * 5`` channels wide, so 256 rows is gigabytes of speculative capacity
+#: for the one or two rows a textured Mob ever uses. Budgeting bytes instead
+#: leaves every narrow attribute at exactly 256 rows -- the break-even is
+#: D=1024, two orders of magnitude above the widest one registered -- and lets
+#: :meth:`AttributeTimeline.add` grow the wide ones on demand.
+_INITIAL_RESERVATION_BYTES = 1 << 20
+
+
+def _initial_buffer_rows(channels, requested):
+    """Rows to reserve up front for an attribute ``channels`` wide.
+
+    Never fewer than 2: ``add`` grows when ``new_pointer >= buffer_size``, so a
+    buffer of ``B`` rows holds ``B - 1`` and a 1-row reservation would
+    reallocate on the very first Mob.
+    """
+    row_bytes = max(1, int(channels)) * 4
+    return max(2, min(int(requested), _INITIAL_RESERVATION_BYTES // row_bytes))
+
+
 class AttributeTimeline:
     """
     A Scene-owned timeline recording every Mob row for one attribute.
@@ -674,7 +698,7 @@ class AttributeTimeline:
         self.attr_name = attr_name
         self.record_end_points = record_end_points
         self.current_state = torch.empty(
-            (1, buffer_size, channels)
+            (1, _initial_buffer_rows(channels, buffer_size), channels)
         )  # latest state after all edits.
         self.active_state = (
             self.current_state
@@ -1297,7 +1321,7 @@ class AttributeTimeline:
         if self._end_points_version == version:
             return self
 
-        self._end_points = torch.full((1, self.pointer + 1, 2), 1e12)
+        self._end_points = torch.full((1, self.pointer, 2), 1e12)
         starts, ends = self._endpoint_layouts()
         for column, endpoint_name, layout in (
             (0, "start", starts),
@@ -1348,7 +1372,7 @@ class AttributeTimeline:
         prepared = self._query_cache.get(key)
         if prepared is None:
             prepared = _prepare_array_state_queries(
-                times, self.pointer + 1, self._edits_sorted
+                times, self.pointer, self._edits_sorted
             )
             self._query_cache[key] = prepared
         return prepared
@@ -1380,9 +1404,18 @@ class AttributeTimeline:
             )
             self._set_active_row_map(active_rows)
         else:
+            # ``pointer`` is the number of rows in use, and it is also the
+            # exclusive bound on every row id in circulation: ``add`` hands out
+            # ``arange(pointer, new_pointer)`` and every edit, range and
+            # endpoint layout is built from those. Materializing ``pointer + 1``
+            # rows -- as this did -- appended a row nothing can address, which
+            # for a colour-texture timeline is a whole spare image per frame.
+            #
+            # The compact path above needs no equivalent: it is handed the live
+            # rows explicitly rather than a count.
             self.active_state = generate_array_states(
                 times,
-                self.pointer + 1,
+                self.pointer,
                 self._edits_sorted,
                 active_rows=active_rows,
                 prepared=self._prepared_queries(times),
@@ -1428,7 +1461,7 @@ class AttributeTimeline:
         if _opt_disabled("torchquery"):
             queried = generate_array_states(
                 times,
-                self.pointer + 1,
+                self.pointer,
                 self._edits_sorted,
                 active_rows=rows,
                 prepared=self._prepared_queries(times),
