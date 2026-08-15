@@ -447,19 +447,20 @@ class Surface(Mob):
         Deprecated compatibility argument. Logical PN topology is fixed at
         construction and is never resized during animation.
     color_texture
-        Optional color texture map ``[W, H, 5]`` (or ``[T, W, H, 5]`` for an
-        animated map), sampled bilinearly in-kernel by the ray tracer.
+        Optional color texture map ``[W, H, 5]`` -- one image, sampled
+        bilinearly in-kernel by the ray tracer. It is an ordinary animatable
+        attribute: assign a new map of the same shape to animate it.
     reflectivity_texture, roughness_texture, refractive_index_texture
         Optional per-texel material property maps, each ``[W, H, 1]`` (or
-        ``[W, H]``, or ``[T, W, H, 1]``). Like ``color_texture`` they are
+        ``[W, H]``). Like ``color_texture`` they are
         sampled bilinearly per fragment inside the ray tracing kernel (only
         the general wavefront tracer implements this; batches containing such
         maps are routed to it automatically, for both flat and curved PN
         triangles). Properties without a map keep the per-vertex system. Maps
         of different resolutions are resampled to a common resolution.
     normal_texture
-        Optional tangent-space normal map ``[W, H, 3]`` (or ``[T, W, H, 3]``),
-        with components in ``[-1, 1]``: x along increasing ``u``, y along
+        Optional tangent-space normal map ``[W, H, 3]``, with components in
+        ``[-1, 1]``: x along increasing ``u``, y along
         increasing ``v``, z along the smooth surface normal (``(0, 0, 1)`` =
         unperturbed). Perturbs the shading normal per fragment in-kernel.
         Note: under the default vertex-shaded pipeline lighting is baked at
@@ -470,7 +471,7 @@ class Surface(Mob):
         Optional glow strength/radius maps, each ``[W, H, 1]`` (or ``[W, H]``).
         These are consumed per-vertex by the glow accumulator, so they are
         baked to the surface grid resolution (raise ``grid_width``/
-        ``grid_height`` for more detail). Static only (no time dimension).
+        ``grid_height`` for more detail).
     *args, **kwargs
         Passed to :class:`~algan.animatable_base.mob.Mob`
 
@@ -789,8 +790,13 @@ class Surface(Mob):
         per-vertex colours instead. Assigning a texture whose resolution differs from
         the current one detaches history, since the two cannot be interpolated.
 
-        A time dimension is allowed (``[T, W, H, 5]``) for a texture that changes
-        during the animation.
+        Animation
+        ---------
+        An ordinary animatable attribute: assigning a new image is recorded as an
+        animation, interpolating texel by texel from the old texture to the new one
+        over the current context's duration (1 second by default). Assign inside
+        ``Off()`` to swap it instantly. The new image must match the current
+        resolution to interpolate -- see the note above about detaching history.
         """
         attr = getattr(self, "_color_texture_attr", None)
         if attr is None:
@@ -832,8 +838,21 @@ class Surface(Mob):
             return self
 
         texture = torch.as_tensor(texture)
-        if texture.dim() not in (3, 4) or texture.shape[-1] != 5:
-            raise ValueError("color_texture must have shape [W, H, 5] or [T, W, H, 5]")
+        if texture.dim() == 4:
+            # A texture is an ordinary animatable attribute: animate it by
+            # assigning a new image, not by handing over a sequence of them.
+            # This used to be accepted here and then fail deep in
+            # materialization with an unrelated tensor-size error.
+            raise ValueError(
+                "color_texture must be a single image [W, H, 5], not a sequence "
+                f"of them; got {tuple(texture.shape)}. To animate it, assign a "
+                "new [W, H, 5] image of the same resolution and Algan will "
+                "interpolate to it."
+            )
+        if texture.dim() != 3 or texture.shape[-1] != 5:
+            raise ValueError(
+                f"color_texture must have shape [W, H, 5], got {tuple(texture.shape)}"
+            )
         texture_height, texture_width = texture.shape[-3:-1]
         attr = f"color_texture_{texture_height * texture_width}"
 
