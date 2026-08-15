@@ -892,13 +892,16 @@ class Scene(RenderLoopMixin):
             time_stamp += self.animation_manager.context.timespan.current_time
         return time_stamp
 
-    def _render_still(self, destination, time_stamp):
+    def _render_still(self, destination, time_stamp, post_processes=None):
         """Render one frame at ``time_stamp`` and write it to ``destination``."""
         time_stamp = self._resolve_still_timestamp(time_stamp)
         time_ind = self._frame_index_for_timestamp(time_stamp)
+        # get_frames owns the post-processing default, so only forward an
+        # explicit choice rather than restating it here.
+        extra = {} if post_processes is None else {"post_processes": post_processes}
         frame = None
         with torch.inference_mode():
-            for batch in self.get_frames(time_ind, time_ind + 1):
+            for batch in self.get_frames(time_ind, time_ind + 1, **extra):
                 if batch.shape[0]:
                     frame = batch[-1]
         if frame is None:
@@ -921,6 +924,7 @@ class Scene(RenderLoopMixin):
         *,
         overwrite: bool = True,
         background_color=None,
+        post_processes=None,
     ) -> RenderResult | list[RenderResult]:
         """Render one or more still frames from this Scene.
 
@@ -957,6 +961,11 @@ class Scene(RenderLoopMixin):
             :meth:`~.Scene.set_background_color` for the callable's contract --
             it runs on the render device and is handed broadcastable grids, not
             scalars.
+        post_processes
+            Post-processing passes to apply to the frame, as in
+            :meth:`~.Scene.save_video`. Defaults to ``None``, meaning bloom.
+            Pass ``()`` for no post-processing, or a tuned pass such as
+            ``partial(bloom_filter, glow_spread=0.015)`` to narrow the glow.
 
         Returns
         -------
@@ -1031,7 +1040,7 @@ class Scene(RenderLoopMixin):
                         results.append(RenderResult("skipped", target))
                         continue
                     started = time.perf_counter()
-                    self._render_still(target, time_stamp)
+                    self._render_still(target, time_stamp, post_processes)
                     results.append(
                         RenderResult("rendered", target, time.perf_counter() - started)
                     )

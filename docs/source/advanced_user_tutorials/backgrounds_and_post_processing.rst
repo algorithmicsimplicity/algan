@@ -128,6 +128,7 @@ glow around bright areas), and you choose the set per render:
 
     Scene.save_video("out")                     # default: bloom
     Scene.save_video("out", post_processes=())  # nothing
+    Scene.save_frame("still", post_processes=())  # stills take the same argument
 
 Bloom and glow
 --------------
@@ -171,6 +172,19 @@ To customise it, pass the pass itself with different arguments:
 
 ``strength`` scales the effect, ``kernel_size`` and ``scale_factor`` trade quality
 for speed, and ``glow_spread`` sets how far the glow reaches.
+
+Bloom blurs the glow at two scales and sums them: a tight *rim* (``rim_frac``) that
+hugs the source outline, and a wide, faint *tail* (``glow_spread``, defaulting to
+10% of the frame height) weighted by ``tail_weight``. The tail is what makes a
+single glowing Mob look luminous rather than outlined -- but it accumulates. In a
+scene with many emitters the tails sum into a haze that fills the gaps between
+them, and raising ``glow`` to compensate only deepens it. When you want glow that
+is bright *and* local, narrow the tail and pay for it in strength:
+
+.. code-block:: python
+
+    tight = partial(bloom_filter, glow_spread=0.015, tail_weight=0.15, strength=60)
+    Scene.save_video("out", post_processes=(tight,))
 
 Anti-aliasing
 -------------

@@ -188,7 +188,7 @@ scene.save_video(file_path=None, video_settings=None, *, overwrite=True, reset=F
                  background_color=None, animate_fade_out=None, post_processes=None,
                  codec=None, audio_codec=None, ffmpeg_params=None)
 scene.save_frame(file_path=None, video_settings=None, at=None, *,
-                 overwrite=True, background_color=None)
+                 overwrite=True, background_color=None, post_processes=None)
 ```
 
 `Scene.save_video` carries the user-facing signature and documentation; `algan.utils.algan_utils._render_scene_to_file` carries the implementation. Keep them in sync — do not push parameters back into `*args, **kwargs`, because that is what made the signature invisible to `help()`, IDEs and autodoc.
