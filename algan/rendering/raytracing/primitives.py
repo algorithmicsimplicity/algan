@@ -605,9 +605,12 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         # its transparent texels on the classic/secondary-ray path, and the
         # shadow any-hit early-out would turn the same texels into false
         # full occlusion. Mirrors scene_builder._texture_alpha_is_opaque.
-        if texture is not None and texture.shape[-1] >= 4:
-            if not bool((texture[..., 3] >= 1.0 - 1e-6).all()):
-                opaque = torch.zeros_like(opaque)
+        if (
+            texture is not None
+            and texture.shape[-1] >= 4
+            and not bool((texture[..., 3] >= 1.0 - 1e-6).all())
+        ):
+            opaque = torch.zeros_like(opaque)
 
         (lo, hi, visible, opaque), _ = _unify_time(
             [lo, hi, visible.unsqueeze(-1), opaque.unsqueeze(-1)], error_context

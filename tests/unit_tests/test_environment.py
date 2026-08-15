@@ -60,7 +60,7 @@ def test_unknown_algan_environment_variables_are_sorted_and_warned():
 
 
 def test_all_registered_algan_environment_variables_are_accepted():
-    environ = {name: "unused" for name in ALGAN_ENVIRONMENT_VARIABLES}
+    environ = dict.fromkeys(ALGAN_ENVIRONMENT_VARIABLES, "unused")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         warn_for_unknown_algan_environment_variables(environ)

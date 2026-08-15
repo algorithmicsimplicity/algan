@@ -176,7 +176,6 @@ def _update_neural_net_idle(net, time_elapsed, local_origins, waypoints):
         )
         neuron.move_to(target)
 
-    forward = net.get_forward_direction()
     for neuron in net.layers[0]:
         for synapse in neuron.synapses:
             synapse.set_end_point(neuron.location)
@@ -625,84 +624,86 @@ class NeuralNetMLP(Mob):
             pulse_funcs = list(reversed(pulse_funcs))
             layers = list(reversed(layers))
 
-        with Seq(animation_manager=self.animation_manager):
-            with Lag(
+        with (
+            Seq(animation_manager=self.animation_manager),
+            Lag(
                 0.55, rate_func=identity, animation_manager=self.animation_manager
-            ):  # , run_time=run_time):
-                for layer in layers:
-                    with Sync(animation_manager=self.animation_manager):
-                        for neuron in layer:
-                            with Lag(0.5, animation_manager=self.animation_manager):
-                                for f in pulse_funcs:
-                                    f(neuron)
-                if output_generator is None:
-                    return
-                with Seq():
-                    # self.animation_manager.context.current_time = (
-                    #        self.animation_manager.context.current_time - 1.7
-                    # )
-                    with Off(animation_manager=self.animation_manager):
-                        output = output_generator().move_next_to(
-                            self.layers[-1][len(self.layers[-1]) // 2],
-                            self.get_forward_direction(),
-                            buffer=0,
-                        )
-                        output_colors = {
-                            id(part): part.color.clone()
-                            for part in output._wave_pulsed_parts()
-                        }
-                        for part in output._wave_pulsed_parts():
-                            # Hide through the per-sample color alpha, not the
-                            # primitive's scalar opacity. A filled circuit can
-                            # then materialize behind the same spatial wave as
-                            # its glow instead of globally brightening as its
-                            # one opacity value ramps up. Written non-recursively,
-                            # like the wave that restores it: a part whose helper
-                            # children carry colour rows of their own (a Text's
-                            # texture points) has more rows under a recursive set
-                            # than its own colour getter returns.
-                            part.set_non_recursive(color=part.color.set_opacity(0))
-                        output.spawn(animate=False)
+            ),  # , run_time=run_time):
+        ):
+            for layer in layers:
+                with Sync(animation_manager=self.animation_manager):
+                    for neuron in layer:
+                        with Lag(0.5, animation_manager=self.animation_manager):
+                            for f in pulse_funcs:
+                                f(neuron)
+            if output_generator is None:
+                return
+            with Seq():
+                # self.animation_manager.context.current_time = (
+                #        self.animation_manager.context.current_time - 1.7
+                # )
+                with Off(animation_manager=self.animation_manager):
+                    output = output_generator().move_next_to(
+                        self.layers[-1][len(self.layers[-1]) // 2],
+                        self.get_forward_direction(),
+                        buffer=0,
+                    )
+                    output_colors = {
+                        id(part): part.color.clone()
+                        for part in output._wave_pulsed_parts()
+                    }
+                    for part in output._wave_pulsed_parts():
+                        # Hide through the per-sample color alpha, not the
+                        # primitive's scalar opacity. A filled circuit can
+                        # then materialize behind the same spatial wave as
+                        # its glow instead of globally brightening as its
+                        # one opacity value ramps up. Written non-recursively,
+                        # like the wave that restores it: a part whose helper
+                        # children carry colour rows of their own (a Text's
+                        # texture points) has more rows under a recursive set
+                        # than its own colour getter returns.
+                        part.set_non_recursive(color=part.color.set_opacity(0))
+                    output.spawn(animate=False)
 
-                    def authored_color(part):
-                        # wave_color refines a part that is sampled too coarsely
-                        # to show the wave (a Surface's vertex grid, say), which
-                        # leaves the color captured above indexed by the old
-                        # sampling. Its first row still broadcasts over the new
-                        # one, which is exactly right for the uniformly colored
-                        # parts that refinement applies to.
-                        authored = output_colors[id(part)]
-                        if authored.shape[-2] != part.color.shape[-2]:
-                            authored = authored.reshape(-1, authored.shape[-1])[:1]
-                        return authored
+                def authored_color(part):
+                    # wave_color refines a part that is sampled too coarsely
+                    # to show the wave (a Surface's vertex grid, say), which
+                    # leaves the color captured above indexed by the old
+                    # sampling. Its first row still broadcasts over the new
+                    # one, which is exactly right for the uniformly colored
+                    # parts that refinement applies to.
+                    authored = output_colors[id(part)]
+                    if authored.shape[-2] != part.color.shape[-2]:
+                        authored = authored.reshape(-1, authored.shape[-1])[:1]
+                    return authored
 
-                    with Seq(run_time=1.5, animation_manager=self.animation_manager):
-                        output.wave_color(
-                            color + GLOW,
-                            direction=self.get_forward_direction(),
-                            wave_length=0.5,
-                            # The output can be a multi-colored composite. Each
-                            # part must settle to its own authored color, while
-                            # the shared pulse supplies the uniform glow peak.
-                            new_color=authored_color,
-                            # An output materializes at whatever resolution it
-                            # was authored with. Refining it here judges the
-                            # sampling against the output's own extent rather
-                            # than its size on screen, so a mob a few dozen
-                            # pixels wide is pushed to the 64-per-axis ceiling
-                            # for a wave that spans a handful of pixels -- and
-                            # with restore_resolution False it keeps that
-                            # geometry for the rest of the video.
-                            refine_resolution=False,
-                            # Restoring a refined Code panel creates a second
-                            # coplanar incarnation in a different render batch.
-                            # It can cover already-materialized glyphs until the
-                            # handoff frame. This output is newly created, so
-                            # retain its authored color grid as its stable
-                            # topology and avoid the handoff altogether.
-                            restore_resolution=False,
-                        )
-                    return output
+                with Seq(run_time=1.5, animation_manager=self.animation_manager):
+                    output.wave_color(
+                        color + GLOW,
+                        direction=self.get_forward_direction(),
+                        wave_length=0.5,
+                        # The output can be a multi-colored composite. Each
+                        # part must settle to its own authored color, while
+                        # the shared pulse supplies the uniform glow peak.
+                        new_color=authored_color,
+                        # An output materializes at whatever resolution it
+                        # was authored with. Refining it here judges the
+                        # sampling against the output's own extent rather
+                        # than its size on screen, so a mob a few dozen
+                        # pixels wide is pushed to the 64-per-axis ceiling
+                        # for a wave that spans a handful of pixels -- and
+                        # with restore_resolution False it keeps that
+                        # geometry for the rest of the video.
+                        refine_resolution=False,
+                        # Restoring a refined Code panel creates a second
+                        # coplanar incarnation in a different render batch.
+                        # It can cover already-materialized glyphs until the
+                        # handoff frame. This output is newly created, so
+                        # retain its authored color grid as its stable
+                        # topology and avoid the handoff altogether.
+                        restore_resolution=False,
+                    )
+                return output
 
 
 class SynapseV3(Cylinder):

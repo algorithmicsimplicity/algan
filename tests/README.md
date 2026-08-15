@@ -323,9 +323,15 @@ rather than quietly deleted.
 The render tier is gated on an environment variable rather than on `slow` alone,
 and the distinction matters: `slow` only drops a test from `--fast`, and CI names
 its paths explicitly instead of passing that flag (see the comment in
-`.github/workflows/test.yaml`). Rendering all ~82 documented scripts in one
-process peaked at **14.7 GB** and was OOM-killed, which is how it took a runner
-down before the gate was added. Run it deliberately, on a machine with headroom:
+`.github/workflows/test.yaml`). That gap is how this tier took a runner down
+once: before the texture-timeline fix it peaked at **14.7 GB** and was
+OOM-killed part way through.
+
+With that fixed it renders 77 examples in about **two minutes at 2.3 GB**, so the
+gate is now a time budget rather than a memory cliff — two minutes is most of the
+fast suite's allowance, and CI would pay it on every run. Worth revisiting if the
+render-time coverage is wanted in CI; measure a cold Taichi cache first, since
+the number above is from a warm one. Run it locally with:
 
 ```bash
 ALGAN_RUN_DOC_RENDERS=1 <venv-python> -m pytest -q tests/unit_tests/test_doc_examples.py -k renders

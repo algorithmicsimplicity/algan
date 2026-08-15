@@ -25,6 +25,8 @@ from algan.settings import SETTINGS
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raster_taichi import (
     _AA_DUMP_COLS as AA_DUMP_COLS,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as AA_MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (

@@ -32,12 +32,12 @@ import torch  # noqa: E402
 
 ti.init(arch=ti.cpu, default_fp=ti.f32)
 
+from algan.rendering.raytracing.primitives import (  # noqa: E402
+    _circuit_edge_inward_signs,
+)
 from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _halfplane_clip_area,
     _two_halfplane_area,
-)
-from algan.rendering.raytracing.primitives import (  # noqa: E402
-    _circuit_edge_inward_signs,
 )
 
 FAILS = []

@@ -29,12 +29,18 @@ what each block can actually support, in three tiers:
     sees a render-time failure -- an updater that raises when it is evaluated
     over a batch of frames, say.
 
-    It is expensive in memory as well as time: every example renders in this one
-    process, and the arenas do not all come back between them, so the whole tier
-    peaked at ~14.7 GB and was OOM-killed on a 16 GB machine. It therefore skips
-    unless ``ALGAN_RUN_DOC_RENDERS=1``. ``slow`` alone is not enough -- that only
-    excludes it from ``--fast``, and CI names its paths explicitly rather than
-    passing that flag, which is exactly how this tier took a runner down.
+    It used to be unrunnable: every example renders in this one process, and
+    before the texture-timeline fix a colour texture was sized by a fixed row
+    count rather than by its data, so the tier peaked at ~14.7 GB and was
+    OOM-killed on a 16 GB machine. With that fixed it costs 2.3 GB and about two
+    minutes for 77 examples, so the gate is now about *time*, not headroom.
+
+    Still opt-in, via ``ALGAN_RUN_DOC_RENDERS=1``, because two minutes is most of
+    the fast suite's whole budget and CI would pay it on every run -- and the
+    measurement above is on a warm Taichi cache, which a fresh runner is not.
+    ``slow`` alone would not hold it back: that only excludes a test from
+    ``--fast``, and CI names its paths explicitly rather than passing that flag,
+    which is exactly how this tier took a runner down once already.
 
 A block that is deliberately not runnable (an anti-example showing what raises,
 a Manim-side snippet in a migration comparison) opts out with a
@@ -74,9 +80,9 @@ _MARKER_LOOKBACK = 4
 # paths instead of passing --fast.
 RUN_DOC_RENDERS = os.getenv("ALGAN_RUN_DOC_RENDERS") == "1"
 SKIP_RENDERS_REASON = (
-    "rendering every documented example in one process peaked at ~14.7 GB and "
-    "was OOM-killed; the authoring tier covers these same scripts. Set "
-    "ALGAN_RUN_DOC_RENDERS=1 to run it anyway."
+    "rendering every documented example costs ~2 minutes and 2.3 GB, most of "
+    "the fast suite's budget, and CI would pay it every run; the authoring tier "
+    "covers the same scripts. Set ALGAN_RUN_DOC_RENDERS=1 to run it."
 )
 
 # Blocks that fail for a reason already being worked on. Keyed by the block id

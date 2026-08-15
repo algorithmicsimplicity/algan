@@ -69,7 +69,7 @@ from algan.rendering.taichi_runtime import (
 from algan.settings import SETTINGS
 
 rt_settings = SETTINGS.raytracing
-from algan.rendering.raytracing.shading_taichi import ALL_PIDS, _USER_PIPELINE_BASE
+from algan.rendering.raytracing.shading_taichi import _USER_PIPELINE_BASE, ALL_PIDS
 
 # Diagnostics: bumped each time the wavefront engages the Family A+B memory-trim
 # path (used by benchmarks/_wf_mem_trim_ab.py to confirm the trim actually fired).
