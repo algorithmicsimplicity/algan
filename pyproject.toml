@@ -50,6 +50,10 @@ dependencies = [
     "svgelements>=1.0.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
+    # Render progress bar (algan.render_loop). Already arrives transitively via
+    # manim and moviepy's proglog; named here because Algan imports it directly.
+    # 4.51 is where tqdm.contrib.logging.logging_redirect_tqdm appeared.
+    "tqdm>=4.51.0",
     # glTF/glB/OBJ/PLY parsing for ThreeDModelMob (algan.mobs.three_d_models).
     # Unlike the FBX path this needs no native library, so it is a core
     # dependency rather than an extra.
