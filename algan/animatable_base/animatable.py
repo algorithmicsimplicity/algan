@@ -12,6 +12,7 @@ from algan.animation_timeline.animation_contexts import (
     AnimationContext,
     AnimationManager,
     Off,
+    Seq,
     Sync,
     _reject_context_kwargs,
     active_scene_for_new_mob,
@@ -783,7 +784,7 @@ class Animatable:
         return self.lifespan.end() >= 0
 
     def _setattr_and_record_modification(
-        self, key, value, include_descendants: bool = False
+        self, key, value, include_descendants: bool = False, _scope=None
     ):
         """Internal: write an animatable attribute and record it on the timeline.
 
@@ -807,11 +808,18 @@ class Animatable:
             This object, so calls can be chained.
         """
         timeline = self.scene.timeline_manager
-        replay_inds = timeline.replay_inds(key, self.id, include_descendants)
+        # The replay discriminator: an explicit scope stands in for the
+        # recursion flag, and is matched by identity in ``recorded_edits`` --
+        # the same object flows back through replay as a recorded kwarg, so a
+        # scoped write replays over exactly the rows it wrote.
+        where = include_descendants if _scope is None else _scope
+        replay_inds = timeline.replay_inds(key, self.id, where)
         inds = (
             replay_inds
             if replay_inds is not None
-            else self._get_attr_ranges(key, include_descendants=include_descendants)
+            else self._get_attr_ranges(
+                key, include_descendants=include_descendants, _scope=_scope
+            )
         )
         timeline.capture_updater_write(key, inds, value)
 
@@ -823,7 +831,7 @@ class Animatable:
         ):
             timeline.modify_attribute(key, inds, value)
             if replay_inds is not None:
-                timeline.replay_inds(key, self.id, include_descendants, consume=True)
+                timeline.replay_inds(key, self.id, where, consume=True)
             return self
         ts = context.timespan
         # Reached only for mobs that are on screen (themselves or through a
@@ -831,11 +839,11 @@ class Animatable:
         nt = ts.current_time + context.run_time_unit
         ts.original_end = max(ts.original_end, nt)
         timeline.modify_attribute_and_record(
-            key, self.id, include_descendants, inds, value, ts.get_time(nt)
+            key, self.id, where, inds, value, ts.get_time(nt)
         )
         return self
 
-    def _get_attr_ranges(self, key, include_descendants=False, value=None):
+    def _get_attr_ranges(self, key, include_descendants=False, value=None, _scope=None):
         """This mob's rows of ``key``'s attribute buffer as a
         :class:`~algan.animation_timeline.timeline.RowRanges` (compressed [begin, end)
         runs; usually a single run, which the buffer reads/writes as a slice).
@@ -843,12 +851,25 @@ class Animatable:
         The descendant union is re-read for every recorded function replay of
         every frame batch, so it is cached against the global structure
         version (bumped on any hierarchy / row-allocation change).
+
+        ``_scope`` is the engine-internal third addressing mode: an explicit
+        :class:`~algan.animation_timeline.timeline.RowRanges` naming exactly the
+        rows to read/write, used to record **one** animated event over a chosen
+        subset of a subtree (see :meth:`_collated_subtree_scope`). It is
+        returned verbatim, so a read and its paired write address the same rows
+        by construction. Not part of the public API -- callers outside the
+        engine pass ``include_descendants`` and nothing else.
         """
         timeline = self.scene.timeline_manager
         inds = timeline.get_inds(key, self, value)
         # Trace after row allocation so a lazily introduced animatable
         # attribute can be materialized immediately on first updater access.
-        timeline.trace_updater_mob_access(self, include_descendants)
+        # An explicit scope spans descendants, so trace it as recursive.
+        timeline.trace_updater_mob_access(
+            self, True if _scope is not None else include_descendants
+        )
+        if _scope is not None:
+            return _scope
         attr_timeline = timeline.attr_to_timeline[key]
 
         def ranges_for_mob(mob):
@@ -916,6 +937,50 @@ class Animatable:
         cache[key] = (STRUCTURE_VERSION[0], ranges)
         return ranges
 
+    def _collated_subtree_scope(self, key, mobs):
+        """Rows of ``key`` belonging to ``mobs``, as one
+        :class:`~algan.animation_timeline.timeline.RowRanges`.
+
+        The address a *collated* write uses: one animated event covering a
+        chosen subset of a subtree, instead of one event per member. Pass the
+        result as ``_scope`` to :meth:`get_animated_attribute` and
+        :meth:`_setattr_and_record_modification` (or to
+        :meth:`~algan.animatable_base.mob.Mob._apply_change`, which threads it
+        through both and records it, so replay addresses the same rows).
+
+        Mirrors the descendant union in :meth:`_get_attr_ranges`, including its
+        ``_excluded_from_parent_attrs`` opt-out, but over an explicit list
+        rather than the whole subtree. Returns ``None`` when no member owns
+        rows for ``key``, which the caller should treat as "nothing to write".
+        """
+        timeline = self.scene.timeline_manager
+        attr_timeline = timeline.attr_to_timeline.get(key)
+        if attr_timeline is None:
+            return None
+        runs = []
+        tensors = []
+        contiguous = True
+        for mob in mobs:
+            if mob is not self and key in getattr(
+                mob, "_excluded_from_parent_attrs", ()
+            ):
+                continue
+            if mob.id not in attr_timeline.mob_id_to_inds:
+                continue
+            ranges = mob._get_attr_ranges(key)
+            if ranges is None:
+                continue
+            if ranges.pairs is None:
+                contiguous = False
+            tensors.append(ranges)
+            if contiguous:
+                runs.extend(ranges.pairs)
+        if not tensors:
+            return None
+        if contiguous:
+            return RowRanges.from_runs(runs) if runs else None
+        return RowRanges(None, tensor=torch.cat([r.tensor() for r in tensors]))
+
     def _get_attr_inds(self, key, include_descendants: bool = False, value=None):
         """Internal: get this Mob's row indices in an attribute's shared buffer.
 
@@ -940,7 +1005,12 @@ class Animatable:
         return None if ranges is None else ranges.tensor()
 
     def get_animated_attribute(
-        self, key, include_descendants: bool = False, default=None, copy: bool = True
+        self,
+        key,
+        include_descendants: bool = False,
+        default=None,
+        copy: bool = True,
+        _scope=None,
     ):
         """Get an animatable attribute's current authoring value.
 
@@ -972,14 +1042,19 @@ class Animatable:
         # A read must land on the rows the replayed function will write, which
         # are not necessarily the ones at the replay cursor -- see
         # AnimationTimeline.peek_replay_inds.
-        replay_inds = timeline.peek_replay_inds(key, self.id, include_descendants)
+        replay_inds = timeline.peek_replay_inds(
+            key, self.id, include_descendants if _scope is None else _scope
+        )
         if default is not None and replay_inds is None:
             self._prepare_buffers(key, default)
         inds = (
             replay_inds
             if replay_inds is not None
             else self._get_attr_ranges(
-                key, include_descendants=include_descendants, value=default
+                key,
+                include_descendants=include_descendants,
+                value=default,
+                _scope=_scope,
             )
         )
         return timeline.get_attr(key, inds, copy=copy)
@@ -1299,7 +1374,68 @@ class Animatable:
         self.animation_manager.context.on_create(self)
         return self
 
+    @staticmethod
+    def _is_standard_hook(node, hook_name):
+        """Whether ``node``'s entrance/exit is the plain opacity write.
+
+        The standard hooks carry ``_algan_collatable_hook`` (set where they are
+        defined, in :class:`~algan.animatable_base.mob.Mob`), because they are
+        the only ones whose effect is expressible as a single write over many
+        Mobs' rows at once.
+        """
+        hook = getattr(type(node), hook_name, None)
+        return bool(getattr(hook, "_algan_collatable_hook", False))
+
+    def _collatable_members(self, hook_name, is_participating):
+        """Classify, without changing anything, which Mobs of this subtree can
+        share one entrance/exit animation.
+
+        The walk **stops at any Mob with its own hook**, because a subclass hook
+        is entitled to claim its whole subtree and several do:
+        :meth:`~algan.mobs.text.Text.on_create` calls
+        ``_create_recursive(animate=False)`` to mark its glyphs spawned so they
+        do not also fade individually underneath its wave. Whatever this pass
+        leaves out -- claimed subtrees, subclass hooks, and the descendants of a
+        hook that turns out to claim nothing -- is picked up afterwards by the
+        unchanged per-Mob walk, which skips whatever already has its timestamp.
+        """
+        members = []
+
+        def walk(node):
+            if is_participating(node) and not self._is_standard_hook(node, hook_name):
+                return  # its own hook owns this Mob and, presumably, below it
+            if is_participating(node):
+                members.append(node)
+            for c in node.children:
+                walk(c)
+
+        walk(self)
+        return members
+
     def _create_recursive(self, animate=True):
+        if animate and not _opt_disabled("collate") and hasattr(self, "_apply_change"):
+            with Sync(animation_manager=self.animation_manager):
+                fresh = self._collatable_members(
+                    "on_create", lambda n: n.lifespan.start() < 0
+                )
+                if len(fresh) > 1:
+                    for node in fresh:
+                        node.lifespan.start = (
+                            node.animation_manager.context.get_current_time()
+                        )
+                        node.scene.timeline_manager.register_spawn(node, node.lifespan)
+                    self._collated_fade_in(fresh)
+                # Subclass entrances, and anything the pass above left out, run
+                # through the untouched walk -- which skips every Mob that now
+                # has a spawn time.
+                self._create_recursive_per_mob(animate)
+            return self
+        return self._create_recursive_per_mob(animate)
+
+    def _create_recursive_per_mob(self, animate=True):
+        """One recorded entrance per Mob: the pre-collation path, kept for a
+        single Mob, an unanimated spawn, and ``ALGAN_OPT_DISABLE=collate``.
+        """
         with Sync(animation_manager=self.animation_manager):
             lifespan = self.lifespan
             if lifespan.start() < 0:
@@ -1308,8 +1444,29 @@ class Animatable:
                 if animate:
                     self.on_create()
             for c in self.children:
-                c._create_recursive(animate)
+                c._create_recursive_per_mob(animate)
         return self
+
+    def _collated_fade_in(self, nodes):
+        """Fade ``nodes`` in with one recorded animation instead of one each.
+
+        :meth:`~algan.animatable_base.mob.Mob.on_create` fades a Mob from
+        transparent to *its own* opacity, so the collated form cannot animate
+        towards a single shared value. It captures the whole set's opacity as
+        one column vector, drops the set to zero without animating, and records
+        a single change back towards that vector -- so every row still travels
+        from 0 to the value it had, exactly as the per-Mob hooks would.
+        """
+        scope = self._collated_subtree_scope("opacity", nodes)
+        if scope is None:
+            return
+        targets = self.get_animated_attribute("opacity", copy=True, _scope=scope)
+        with Seq(animation_manager=self.animation_manager):
+            with Off(animation_manager=self.animation_manager):
+                self._setattr_and_record_modification(
+                    "opacity", torch.zeros_like(targets), _scope=scope
+                )
+            self._apply_change("opacity", targets, scope=scope)
 
     def despawn(self, animate: bool = True):
         """Remove the Mob from the video.
@@ -1347,6 +1504,37 @@ class Animatable:
         return self
 
     def _destroy_recursive(self, animate=True):
+        if animate and not _opt_disabled("collate") and hasattr(self, "_apply_change"):
+            with Sync(animation_manager=self.animation_manager):
+                live = self._collatable_members(
+                    "on_destroy",
+                    lambda n: n.lifespan.start() >= 0 and n.lifespan.end() < 0,
+                )
+                if len(live) > 1:
+                    # Write, *then* stamp the despawn times, in that order:
+                    # ``get_end_time()`` reads a timespan the exit animation
+                    # itself extends, so a despawn time taken beforehand lands
+                    # at the start of the fade and masks the Mob to zero from
+                    # its first frame instead of fading it. And stamp them here
+                    # rather than after the per-Mob walk below, so a subclass
+                    # exit that runs longer than this fade (Text's wave does)
+                    # does not stretch these Mobs' lifespans to match it.
+                    self._collated_fade_out(live)
+                    for node in live:
+                        node.lifespan.end = (
+                            node.animation_manager.context.get_end_time()
+                        )
+                        node.scene.timeline_manager.register_despawn(
+                            node, node.lifespan
+                        )
+                self._destroy_recursive_per_mob(animate)
+            return self
+        return self._destroy_recursive_per_mob(animate)
+
+    def _destroy_recursive_per_mob(self, animate=True):
+        """One recorded exit per Mob: the pre-collation path, kept for a single
+        Mob, an unanimated despawn, and ``ALGAN_OPT_DISABLE=collate``.
+        """
         with Sync(animation_manager=self.animation_manager):
             lifespan = self.lifespan
             # An unspawned container may still own independently spawned
@@ -1358,8 +1546,21 @@ class Animatable:
                 lifespan.end = self.animation_manager.context.get_end_time()
                 self.scene.timeline_manager.register_despawn(self, lifespan)
             for c in self.children:
-                c._destroy_recursive(animate)
+                c._destroy_recursive_per_mob(animate)
         return self
+
+    def _collated_fade_out(self, nodes):
+        """Fade ``nodes`` out with one recorded animation instead of one each.
+
+        The standard exit takes every row to zero, so unlike the entrance this
+        needs no captured target vector -- the change is simply the negation of
+        what is there now.
+        """
+        scope = self._collated_subtree_scope("opacity", nodes)
+        if scope is None:
+            return
+        current = self.get_animated_attribute("opacity", copy=True, _scope=scope)
+        self._apply_change("opacity", -current, scope=scope)
 
     def init(self):
         """Run this Mob's initialization hooks.
