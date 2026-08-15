@@ -26,7 +26,8 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P1** compact rematerialization buffer | **shipped** -- 1.37x on materialization + replay reads, and 604 MB/batch of buffers -> 204 MB |
 | **P6** endpoint row dedup in `_query_row_states` | **shipped, minor** -- byte-identical, but only **1.051x on the query**: the old item-1 premise predated P1; see P6 |
 | **P7** updater-trace clone memo + batched `get_orthonormal_vector` | **shipped** -- 1.042x on the whole replay stage and 1.23x on the updater section; **and it re-scoped item 1 again**: the replay loop's cost is the *updater bodies*, not the per-event machinery. See P7 |
-| **T5** sparse-coverage host chain | **next** -- the render thread's largest non-kernel item |
+| **P8** collating the per-descendant fan-out | **shipped** -- 99.5% of s05's 25 582 recorded events were per-descendant fan-out of a few hundred subtree-wide operations. Spawn/despawn now record **one** animation for the whole set: s05 25 582 -> 12 659 events, **1.64x on `set_state_to_times`**, 1.25x on prep. **Not byte-identical** -- it restores `Text`/`Tex` wave exits an ancestor's fade used to overwrite; two full-render baselines move. See P8 |
+| **T5** sparse-coverage host chain | the render thread's largest non-kernel item |
 | **T3**, **T6** | untouched; both shrank in share |
 
 The re-profile this document demanded has been done (2026-08-14, warm run 2,
@@ -195,6 +196,13 @@ already been wrapping correctly all along (it just predated the helper), and
   `benchmarks/_render_time_growth_check.py` (a real multi-batch render records
   nothing and resolves once), `videos/rl2/animations/_real_render_scans_s05.py`
   (the per-batch scans timed inside a genuine `save_video`).
+* **Where the recorded events come from** (P8), both in
+  `videos/rl2/animations/`: `_authored_funcs_s05.py` attributes every recorded
+  `FunctionApplicationEvent` to its authoring site, the algan-internal chain
+  that reached it, and the fan-out driver that multiplied it (authoring only,
+  no render); `_fanout_collate_ab_s05.py` A/Bs stock authoring against a
+  collated arm, one arm per process (`AB_ARM=A` / `B`, then `--report`), and
+  checks the arms are the same scene before comparing their times.
 * Scaling probes, all in `videos/rl2/animations/`, all CPU-only prep with no
   render. **They drive `get_batch_of_primitives` directly, so their recording
   and cache-invalidation behaviour is not a render's** -- read them for the
@@ -925,6 +933,189 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 >   when every residual is NaN. Both were caught by the bitwise A/B, not by the
 >   suites.
 
+### P8 -- collating the per-descendant fan-out (shipped)
+
+> **Shipped**, gated by `ALGAN_OPT_DISABLE=collate`.
+> `Animatable._create_recursive` / `_destroy_recursive` classify the subtree
+> first (`_collatable_members`), record **one** animation for every Mob whose
+> entrance/exit is the standard opacity write (`_collated_fade_in` /
+> `_collated_fade_out`), and then run the untouched per-Mob walk for whatever is
+> left. The collated write is addressed by an explicit `RowRanges` **scope** --
+> a third addressing mode threaded through `_get_attr_ranges`,
+> `get_animated_attribute` and `_setattr_and_record_modification` as the private
+> `_scope` argument, and carried by `Mob._apply_change`'s recorded `scope`
+> kwarg so replay lands on the rows the recording wrote. `Mob.map_animated_attribute`
+> is the same primitive as public API.
+>
+> | measured on s05 (prep only, CPU, 5 rounds) | before | after | |
+> | --- | --- | --- | --- |
+> | recorded events | 25 582 | 12 659 | **2.02x** |
+> | `set_state_to_times` | 2.527 s | 1.540 s | **1.64x** |
+> | `AttributeTimeline.get` (replay calls) | 6519 | 3803 | 1.29x on time |
+> | whole 6-window prep pass | 5.393 s | 4.325 s | 1.25x |
+> | fast suite (small scenes) | 166 s | 159 s | no small-scene tax |
+>
+> Estimated ~1.17x on the reference render (~60 s of 397 s) on the two-pole
+> model. **The remaining 4667 events are the `dim_mobs` family**, which is
+> video-project code, not engine code: it loops
+> `d.set_non_recursive(opacity=d.opacity * f)` over `get_descendants()` and can
+> now be one `map_animated_attribute('opacity', lambda o: o * f)` call. That is
+> the difference between this and the 3.20x the prototype measured.
+>
+> **It is not byte-identical, and the reason is a behaviour fix.** An ancestor's
+> `Mob.on_destroy` is a *recursive* opacity write, so despawning a group faded a
+> `Tex`'s glyphs uniformly on top of the diagonal wave its own `on_destroy`
+> records -- the wave was authored and then overwritten, and the text left as a
+> plain fade. Collated, a Mob with its own exit is excluded from the ancestor's
+> write and its wave is what plays. Verified frame by frame: the difference is
+> confined to that Mob's own rows, and both paths converge again once the exits
+> finish. `shapes_and_timeline` and `text_and_media` move; the diffs are glyphs
+> only (1.1% and 16% of frame area, nothing non-text at any frame).
+>
+> **Three traps, each of which cost a full render suite to find:**
+>
+> * **`context.get_end_time()` reads a timespan the exit animation itself
+>   extends.** Stamping despawn times before the collated write puts them at the
+>   *start* of the fade, which masks every Mob to zero from its first frame
+>   instead of fading it. Write, then stamp.
+> * **Stamping them after the per-Mob walk is just as wrong, and far subtler.**
+>   A subclass exit that runs longer than the fade (Text's wave does) then
+>   stretches every sibling's lifespan to match it. Nothing changes visually --
+>   they are already transparent -- but they stay in the batch's actor set, which
+>   re-windows the render and moved `materials_and_lighting` and
+>   `solids_and_camera` by up to 189 channel values of sub-visual speckle across
+>   56% of the frame. Both scenes pass once the stamp happens immediately after
+>   the collated write. **A lifespan that is longer than it needs to be is a
+>   rendering change, not just bookkeeping.**
+> * **A subclass hook may claim its own subtree** -- `Text.on_create` calls
+>   `_create_recursive(animate=False)` so its glyphs do not also fade in
+>   individually underneath its wave. So the classification pass must stop
+>   descending at any Mob with its own hook, and the per-Mob walk afterwards
+>   picks up anything a hook turns out not to claim.
+>
+> Guarded by `benchmarks/_collated_fanout_parity.py`: a strict scene that must
+> match **bit-exactly** per row and per frame on materialized state (it does),
+> plus the custom-exit scene where the difference is *required* to be confined to
+> that Mob's rows and to vanish once the exits finish. It asserts branch coverage
+> so it cannot go vacuous, and `--mutate` breaks the implementation and requires
+> the script to notice.
+
+#### The measurement that motivated it
+
+> **The measurement first.** `videos/rl2/animations/_authored_funcs_s05.py`
+> attributes every one of s05's 25 582 recorded events to its authoring site.
+> Almost none of them are distinct authored animations -- 99.5% are
+> *per-descendant fan-out* of a few hundred subtree-wide operations:
+>
+> | mechanism | events | share |
+> | --- | --- | --- |
+> | despawn fade-out -- one `on_destroy` per descendant | 8190 | 32.0% |
+> | spawn fade-in -- one `on_create` per descendant | 6495 | 25.4% |
+> | `set_non_recursive` in per-descendant loops in the video project | 6036 | 23.6% |
+> | wave/pulse colour -- one call per part, lagged | 4502 | 17.6% |
+> | everything else (moves, fits, `forward`, `NumericDisplay`) | 359 | 1.4% |
+>
+> By recorded function: **76.9% `Mob._apply_change`, 22.7%
+> `Mob.apply_absolute_change_two`**, 92 events in the whole scene anything
+> else. One `dim_mobs(...)` call at `s05:733` is **19.7% of the timeline**;
+> a single `spawn()` records up to 1376 events and a single `despawn()` 1246.
+>
+> The first three families all write **one uniform thing over a contiguous
+> subtree**, which the engine can already express as a single recursive event
+> (`_apply_change(..., recursive=True)` writes every descendant row and records
+> once). `videos/rl2/animations/_fanout_collate_ab_s05.py` A/Bs that:
+>
+> | | arm A (stock) | arm B (collated) | |
+> | --- | --- | --- | --- |
+> | recorded events | 25 582 | 7 992 | 3.20x |
+> | `opacity` edit records | 26 449 | 3 700 | 7.15x |
+> | rows those edits cover | 365 793 | 319 287 | 1.15x |
+> | **`set_state_to_times`** | **3.497 s** | **1.757 s** | **1.99x** |
+> | `rematerialize_state_at_times` | 0.756 s | 0.613 s | 1.23x |
+> | `AttributeTimeline.get` | 0.773 s | 0.527 s | 1.47x |
+> | whole 6-window prep pass | 7.177 s | 4.890 s | 1.47x |
+> | authoring | 84.1 s | 76.4 s | 1.10x |
+>
+> **1.99x on the replay stage, reproduced three times** (1.999x / 1.993x /
+> 1.991x on independent run pairs; the arms' per-round distributions do not
+> overlap). Extrapolated on the two-pole model -- prep 310.2 s of a 396.7 s
+> `save_video`, 86.5 s of it not overlapped, render thread 190.3 s -- that is
+> **~1.23-1.33x on the render (75-100 s)**, the lower figure counting only the
+> replay stage. Estimates, not measurements: they assume the saving scales and
+> that the poles overlap as they did on the reference profile.
+>
+> **Arm B is state-equivalent, and that is checked rather than asserted.**
+> Live-row state matches on all nine attributes to four decimals with zero
+> NaNs, the actor set selected per window is identical, and `get` calls made by
+> the *geometry* build are identical (12 030 both arms) -- all 2706 saved calls
+> are in replay. So nothing was deleted; the same rows are written by 3.4x
+> fewer records. How each family collates:
+>
+> * **spawn** -- arm A's `on_create` fades each descendant from 0 to *its own*
+>   opacity, which is why it is non-recursive. Arm B captures the subtree's
+>   per-row opacity vector, zeroes the subtree in one unrecorded write, and
+>   animates one recursive `_apply_change` whose `change` **is that per-row
+>   vector**, so each row still lands on its own value.
+> * **despawn** -- `Mob.on_destroy` is *already* a recursive write, so arm A's
+>   per-descendant calls re-write subsets of what the root already wrote: a row
+>   at depth d collects d+1 edits. Arm B calls it once at the root.
+> * **`dim_mobs`** -- `d.set_non_recursive(opacity=d.opacity * f)` per
+>   descendant becomes one recursive change of `cur * (f - 1)`. Note this half
+>   is a *user-code* change (or a new recursive scale-opacity API), not an
+>   engine one.
+>
+> **The three families are not equally safe, and only a per-family run shows
+> it.** The digest above compares *authored* state; `_materialized_digest`
+> compares `active_state` after each window -- the compact `[T, R, D]` buffer
+> the primitive builders actually read. Collating one family at a time:
+>
+> | family | events saved | materialized state |
+> | --- | --- | --- |
+> | `dim_mobs` (set family) | 5003 | **48/48 attribute-windows bit-identical** |
+> | spawn | 5159 | 43/48 bit-identical; sums equal at rel 0.0e+00 in all six windows, but the window-0 buffer is 28 773 rows against 28 766 -- a working-set (layout) difference, not a value one, as far as buffer-level sums can show |
+> | despawn | 7428 | 47/48 bit-identical; **window 1600 differs for real** -- opacity sums 502 504.0 vs 500 901.2 (rel 3.2e-03) |
+>
+> The event savings are exactly additive (5003 + 5159 + 7428 = 17 590), and the
+> saving per pass tracks events removed at ~1.3e-4 s/event: `dim` alone
+> measured 6.558 s against arm A's 7.177 s (0.62 s for 5003 events) where the
+> proportional prediction is 0.65 s. So allocate the 2.29 s roughly
+> despawn 0.97 s / spawn 0.67 s / dim 0.65 s.
+>
+> **Why despawn moves output**, and it is not a bug in the collated form:
+> `Mob.on_destroy` is already recursive, so arm A writes a row at depth d
+> *d+1 times* with overlapping edits, and `_resolve_replay_windows` extends
+> each edit's window over the earlier-executed ones it overlaps. One clean edit
+> resolves differently from a nest of redundant ones, so intermediate frames of
+> a fade differ even though the end state is identical. The collated result is
+> arguably the more correct one, but it is a **visual change: it needs
+> re-baselining and someone looking at the frames** (the T1 precedent).
+>
+> **What none of this proves.** Arm B is a harness patch, not an
+> implementation. It keeps the per-mob path for subclasses that override
+> `on_create` / `on_destroy` (251 + 164 calls -- Text/Tex wave in and out) and
+> falls back wholesale on partially-spawned subtrees (205 despawns), and both
+> have to survive into a real version. And buffer-level sums are not per-mob
+> equality: a parity script for this must compare per-row, per-frame.
+>
+> **Four traps, each of which cost a measurement:**
+>
+> * **`current_state` is `torch.empty`**, so a fingerprint over the whole
+>   buffer compares uninitialised rows -- it reported `glow` as NaN and
+>   `border_width` as 8.5e31 in *both* arms and flagged spurious differences on
+>   two more attributes. Compare only rows in `mob_id_to_inds`.
+> * **The whole-pass number is noise-dominated; the replay stage is not.** Arm
+>   A's rounds spread 6.35-10.35 s. The geometry-side residual duly shrank from
+>   1.49x to 1.17x as rounds went 3 -> 7, which is what a noise artifact looks
+>   like. Quote the stage, not the pass.
+> * **Two authored s05 timelines do not fit in RAM** (3.4 GB free of 16), so
+>   this is one arm per process rather than the in-process alternation
+>   `_prep_timeslice_ab_s05.py` uses. Run the arms alternately if drift is a
+>   worry.
+> * **Removing the fan-out is not the same experiment as collating it.**
+>   Deleting the events would leave mobs at opacity 0, change what is visible,
+>   and quietly measure a cheaper *scene*. The row-coverage row in the table
+>   above (1.15x, not 26x) is what rules that out.
+
 ## Part 3 -- Authoring (90-110 s, outside `save_video`)
 
 Diffuse: no single site above ~4%. The top costs are `AttributeTimeline.get`
@@ -944,12 +1135,20 @@ Prep is 78.2% and the render thread 48.0% (2026-08-15 re-profile, post P1-P6),
 so prep items still come first at equal size. Step 0 (re-profile) and the old
 item 1 (`_query_row_states`, resolved as P6 -- the premise was stale) are done.
 
-1. **`set_state_to_times` own time** -- 92.5 s (**23.3%**), still the largest
-   single item. **Now measured section by section** (P7), which killed the
-   plan the previous revision put here (a batched `[F, T]` window-test and
-   interpolant pass): that machinery is **~11% of the stage**, worth at most
-   ~2.5% of `save_video` even if perfectly eliminated. What is actually left,
-   in order:
+1. **Collate the per-descendant fan-out (P8)** -- measured at **1.99x on
+   `set_state_to_times`** and ~1.23-1.33x on the render, by far the largest
+   thing on this list, and the first item here whose lever is *upstream* of
+   the replay loop: it removes events rather than making them cheaper. It
+   needs a design (subclass `on_create` / `on_destroy` overrides, partially
+   spawned subtrees, and rendered-output parity are the open questions) and a
+   recursive scale-opacity API for the `dim_mobs` half. Read P8 before
+   starting.
+2. **`set_state_to_times` own time** -- 92.5 s (**23.3%**), the largest single
+   *profiled* item, and what P8 attacks from above. **Measured section by
+   section** (P7), which killed the plan an earlier revision put here (a
+   batched `[F, T]` window-test and interpolant pass): that machinery is
+   **~11% of the stage**, worth at most ~2.5% of `save_video` even if
+   perfectly eliminated. What is left inside the stage, in order:
 
    * **the updater section, 31.2%** -- the bodies themselves, now that P7 has
      taken the trace-registry walk and the orthonormal loop out of them. The
@@ -960,7 +1159,7 @@ item 1 (`_query_row_states`, resolved as P6 -- the premise was stale) are done.
      mobs an updater touches** (one `[T, M, 3]` write instead of M writes),
      which is a `Mob`-API change, not a timeline one, and needs its own
      design. Note the general form: this is the same "fewer calls, not faster
-     ones" family as item 2.
+     ones" family as items 1 and 3.
    * **rate functions, 6.7%** -- 2844 calls a pass, each on a small `[T,1,1]`
      tensor. Groupable by shared function object *only* for the elementwise
      ones; `torch.lerp` of the grouped result is not obviously byte-identical
@@ -969,17 +1168,19 @@ item 1 (`_query_row_states`, resolved as P6 -- the premise was stale) are done.
    * the ~11% of per-event machinery, which is now a *small* item rather than
      the headline -- and if it is ever done, the caching rule still holds:
      key on length + explicit invalidation, **not** `TIMING_VERSION` (P4).
-2. **`AttributeTimeline.get` outside replay** -- 84.9 s (21.4%), 647k calls of
+3. **`AttributeTimeline.get` outside replay** -- 84.9 s (21.4%), 647k calls of
    ~130 us of Python + dispatch each. About two thirds of calls happen during
    the geometry build, not replay (harness: `get/full` 12 030 vs `get/replay`
    6 527 per 6-window pass). The lever is **fewer calls** -- batching per-actor
-   reads in the primitive builders -- not faster ones.
-3. **`get_batch_of_primitives` own time** -- 84.6 s (21.3%), geometry-build
-   orchestration; overlaps item 2, measure them together.
-4. **T5** -- the sparse-discovery host chain, ~39.9 s (~10.1%): the six
+   reads in the primitive builders -- not faster ones. Note P8 does not touch
+   these: its 2706 saved `get` calls are all on the replay side, and the
+   geometry side is identical in both arms.
+4. **`get_batch_of_primitives` own time** -- 84.6 s (21.3%), geometry-build
+   orchestration; overlaps item 3, measure them together.
+5. **T5** -- the sparse-discovery host chain, ~39.9 s (~10.1%): the six
    `index_select` gathers that share one permutation are one kernel. The
    largest render-thread item left.
-5. **T3** (4.8%), then **T4's remaining half** (the `allocate()` zero-fills --
+6. **T3** (4.8%), then **T4's remaining half** (the `allocate()` zero-fills --
    small, its estimate unproven, and P3 suggests the same lazily-zeroed trick
    may apply; fold it in whenever the dice is open anyway), then **T6** (1.4%).
 

@@ -34,6 +34,7 @@ HERE = Path(__file__).resolve().parent
 SCENES_DIR = HERE / "scenes"
 OUTPUT_DIR = HERE / "algan_outputs"
 CACHE_DIR = HERE / "algan_cache"
+ERRORS_DIR = HERE / "output_errors"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EXPECTED_DIR = HERE / f"expected_outputs_{DEVICE}"
 UPDATE_BASELINES = os.getenv("ALGAN_UPDATE_FULL_RENDER_BASELINES") == "1"
@@ -88,6 +89,22 @@ SKIP_IN_CI_REASON = (
 SCENE_FILES = sorted(
     path for path in SCENES_DIR.glob("*.py") if not path.name.startswith("_")
 )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _clear_output_errors():
+    """Empty ``output_errors/`` once, before the first scene of a run.
+
+    Diff videos are named after their scene, so a scene that passes this run
+    leaves last run's diff sitting beside this run's. Clearing the directory up
+    front makes its contents mean exactly "what failed in the most recent run".
+
+    Module-scoped so the scenes of one run do not wipe each other's diffs. On
+    Windows a diff video left open in a player cannot be deleted; ``rmtree``
+    skips it rather than failing the suite over it, and the comparison fixture
+    recreates the directory when it next writes.
+    """
+    shutil.rmtree(ERRORS_DIR, ignore_errors=True)
 
 
 @pytest.fixture
@@ -178,6 +195,6 @@ def test_full_render_scene(
     assert_video_matches_baseline(
         output_path,
         expected_path,
-        HERE / "output_errors" / output_path.name,
+        ERRORS_DIR / output_path.name,
         fallback_fps=PREVIEW.frames_per_second,
     )

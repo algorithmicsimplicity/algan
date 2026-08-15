@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 from collections import defaultdict
+from collections.abc import Callable
 
 import torch
 import torch.nn.functional as F
@@ -746,14 +747,19 @@ class Mob(
         return self
 
     @animated_function(animated_args={"interpolation": 0.0})
-    def _apply_change(self, attr, change, recursive=True, interpolation=1.0):
+    def _apply_change(self, attr, change, recursive=True, interpolation=1.0, scope=None):
+        # ``scope`` (a RowRanges) addresses an explicit set of rows instead of
+        # this Mob's own / its whole subtree, which is what lets one recorded
+        # event carry a per-row change over many Mobs. It is an ordinary
+        # recorded kwarg, so replay hands the same object back and the read and
+        # the write both land on the rows the recording wrote.
         change = change * interpolation
         current_value = self.get_animated_attribute(
-            attr, include_descendants=recursive, copy=False
+            attr, include_descendants=recursive, copy=False, _scope=scope
         )
         new_value = current_value + change
         return self._setattr_and_record_modification(
-            attr, new_value, include_descendants=recursive
+            attr, new_value, include_descendants=recursive, _scope=scope
         )
 
     @animated_function(animated_args={"interpolation": 0.0})
@@ -801,6 +807,100 @@ class Mob(
         )
         change = value - current_value
         self._apply_change(attr, change, recursive=recursive)
+        return self
+
+    def map_animated_attribute(self, attr: str, func: Callable) -> Mob:
+        """Animate an attribute to a function of its own current value, across
+        this Mob and every descendant at once.
+
+        :meth:`~.Mob.set_animated_attribute` animates towards a value you supply.
+        This animates towards a value *derived from what each part already has*,
+        which is what you want for "half as bright as it is now" or "everything
+        a quarter of its current size" -- operations where each part has a
+        different starting point and a different target.
+
+        ``func`` receives every affected value stacked into one tensor of shape
+        ``(1, N, D)``, where ``N`` counts the rows this Mob and its descendants
+        own for ``attr`` and ``D`` is the attribute's width (1 for ``opacity``,
+        3 for ``location``, 4 for ``color``). It must return a tensor of that
+        same shape -- the target values, in the same order.
+
+        Reach for it instead of a Python loop over
+        :meth:`~.Mob.get_descendants`. A loop records one animation per
+        descendant, which on a large group is thousands of separate recorded
+        animations; this records **one**, and renders measurably faster for it.
+
+        Animation
+        ---------
+        Recorded as an animation: every affected value moves from what it is now
+        to its target over the current context's duration (1 second by default),
+        all together inside a :class:`~.Sync`. ``func`` is evaluated **once, at
+        the moment of the call** -- it computes the destination, it is not
+        re-run per frame. For a value that must be recomputed every frame, use
+        :meth:`~.Mob.add_updater` instead. Only spawned Mobs record; a Mob whose
+        subtree is not on screen is changed immediately and silently.
+
+        Parameters
+        ----------
+        attr
+            Name of the animatable attribute, e.g. ``"opacity"``, ``"color"``,
+            ``"location"``, ``"glow"``, ``"scale_coefficient"``.
+        func
+            Callable mapping the stacked current values to the stacked target
+            values, both of shape ``(1, N, D)``. It is passed a copy, so it may
+            modify its argument in place and return it.
+
+        Returns
+        -------
+        :class:`~.Mob`
+            This Mob, so calls can be chained.
+
+        Raises
+        ------
+        ValueError
+            If ``func`` returns a tensor whose shape is not the shape it was
+            given.
+        AttributeError
+            If ``attr`` is not an animatable attribute of this Mob.
+
+        See Also
+        --------
+        :meth:`~.Mob.set_animated_attribute` : Animate an attribute to a value
+            you supply, rather than to a function of the current one.
+        :meth:`~.Mob.add_updater` : Recompute a value every frame instead of
+            once.
+
+        Examples
+        --------
+        .. algan:: Example1MobMapAnimatedAttribute
+
+            from algan import *
+
+            row = Group([Square().move(LEFT * 2), Circle(), Triangle().move(RIGHT * 2)])
+            row.spawn()
+
+            # Dim everything to a tenth of however visible it already is,
+            # then take each part to a quarter of its current size.
+            row.map_animated_attribute('opacity', lambda o: o * 0.1)
+            row.map_animated_attribute('scale_coefficient', lambda s: s * 0.25)
+
+            Scene.save_video()
+        """
+        self.check_properties_are_valid((attr,))
+        current = self.get_animated_attribute(attr, include_descendants=True, copy=True)
+        target = cast_to_tensor(func(current))
+        if target.shape != current.shape:
+            raise ValueError(
+                f"map_animated_attribute({attr!r}, ...): func must return the "
+                f"shape it was given, {tuple(current.shape)}, but returned "
+                f"{tuple(target.shape)}."
+            )
+        # One recorded event carrying a per-row change, rather than one per
+        # descendant: _apply_change re-reads the same rows at replay and adds
+        # this change scaled by the interpolant, so each row travels from its
+        # own start to its own target.
+        with Sync(animation_manager=self.animation_manager):
+            self._apply_change(attr, target - current, recursive=True)
         return self
 
     @property
@@ -1355,6 +1455,12 @@ class Mob(
             self.opacity = opacity
             self._prevent_recursive_sets = prs
 
+    # Spawning a subtree records this entrance once for the whole set rather
+    # than once per Mob (Animatable._collated_fade_in). The marker is what
+    # says "this hook is a plain opacity write, so it can be collated"; an
+    # override does not inherit it and keeps its own per-Mob call.
+    on_create._algan_collatable_hook = True
+
     def on_destroy(self):
         """Play this Mob's despawn animation: a fade to transparent.
 
@@ -1367,6 +1473,12 @@ class Mob(
         default).
         """
         self.opacity = torch.tensor((0.0,)).view(1)
+
+    # See on_create: despawning a subtree collates these into one recorded
+    # animation. Note this write is *recursive*, so before collation a Mob at
+    # depth d had its rows written d+1 times over -- once by every ancestor's
+    # exit as well as its own.
+    on_destroy._algan_collatable_hook = True
 
     def _set_data_sub_inds(self, data_sub_inds: list[int] | slice):
         """Internal: restrict this Mob to a subset of a batched Mob's rows.
