@@ -13,6 +13,8 @@ Audio contexts
 Use :class:`~algan.animation_timeline.animation_contexts.Audio` to align an
 animation context with a sound file. Its duration is taken from the audio clip:
 
+.. algan-doc-check: skip -- needs music.wav, which does not ship with the docs
+
 .. code-block:: python
 
     from algan import *
@@ -58,6 +60,8 @@ Speech contexts
 :class:`~algan.animation_timeline.animation_contexts.Speech` is an Audio context
 whose clip is generated from a script segment:
 
+.. algan-doc-check: skip -- needs a system text-to-speech engine (eSpeak)
+
 .. code-block:: python
 
     from algan import *
@@ -81,6 +85,8 @@ Using recorded narration
 
 For recorded narration, configure the specific Scene's AudioManager rather than
 a process-global singleton:
+
+.. algan-doc-check: skip -- needs narration.wav/.txt, which do not ship with the docs
 
 .. code-block:: python
 

@@ -233,11 +233,11 @@ Pass an equirectangular image (a longitude × latitude panorama, sky at the top)
 :meth:`Scene.set_environment_map <.Scene.set_environment_map>`, also available as
 the top-level ``set_environment_map``:
 
-.. code-block:: python
+.. algan:: LightingEnvironmentMap
 
     from algan import *
 
-    set_environment_map("studio_panorama.jpg", intensity=1.0, ambient=True)
+    set_environment_map("world_map.png", intensity=1.0, ambient=True)
 
     # A mirror sphere reflects the environment; other objects are lit by it.
     mirror = Sphere().move(LEFT * 1.5).set_material(
@@ -247,6 +247,9 @@ the top-level ``set_environment_map``:
     Sphere().move(RIGHT * 1.5).spawn()
 
     Scene.save_video()
+
+Any equirectangular image works -- the world map here is just one that ships with
+these docs. A real studio panorama gives a much better result.
 
 - ``intensity`` scales the map's brightness.
 - ``ambient=True`` (the default) also lights surfaces from the map. Set it to

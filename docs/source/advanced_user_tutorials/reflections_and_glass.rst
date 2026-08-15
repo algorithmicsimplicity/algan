@@ -191,16 +191,19 @@ For any serious metal or glass work, an environment map is the highest-value cha
 you can make. It gives every reflective surface something to reflect and every
 refractive one something to bend, and it lights the whole scene:
 
-.. code-block:: python
+.. algan:: ReflectionsEnvironmentMap
 
     from algan import *
 
-    set_environment_map("studio_panorama.jpg", intensity=1.0, ambient=True)
+    set_environment_map("world_map.png", intensity=1.0, ambient=True)
 
     Sphere().set_material(
         MeshStandardMaterial(metalness=1.0, roughness=0.05)).spawn()
 
     Scene.save_video()
+
+Any equirectangular image works; a real studio panorama gives a far better result
+than the world map used here.
 
 See :doc:`lighting_and_shadows` for the details.
 

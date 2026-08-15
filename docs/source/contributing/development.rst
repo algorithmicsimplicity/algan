@@ -165,6 +165,31 @@ This renders every embedded example video, so it is slow and needs a system
 Docstrings on the public API follow ``DOCSTRINGS.md``; read it before writing
 or editing one.
 
+Documented code is tested
+-------------------------
+
+``tests/unit_tests/test_doc_examples.py`` extracts every Python block in
+``docs/source`` and checks it, so a renamed API cannot quietly leave the
+tutorials behind. Two of its three tiers run in the fast suite: a static pass
+over every block, and an execution pass over the blocks that are complete
+scripts with rendering stubbed out. The third tier actually renders them and is
+marked ``slow``.
+
+Prefer ``.. algan::`` over ``.. code-block:: python`` when an example is a
+complete script *and* its rendered result teaches the reader something -- the
+directive renders it during a full build and embeds the video. Keep
+``code-block`` for fragments, for anti-examples, and for anything needing an
+asset the repository does not carry; mark those last two so the test skips them:
+
+.. code-block:: rst
+
+   .. algan-doc-check: skip -- needs an asset that does not ship with the docs
+
+   .. code-block:: python
+
+The marker is an reStructuredText comment, so it never reaches the rendered
+page. ``tests/README.md`` documents the tiers and when to reach for each.
+
 Linting
 =======
 

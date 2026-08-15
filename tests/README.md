@@ -286,6 +286,39 @@ Organised by subsystem. The files worth knowing about:
   silently degrades rather than failing.
 - `test_raytracing_unit.py` — brute-force references for the tracer. Slow.
 - `test_render_coverage_audit.py` — keeps the render suite honest (above).
+- `test_doc_examples.py` — keeps `docs/` honest against `algan/` (below).
+
+### The documentation examples
+
+`test_doc_examples.py` extracts every Python block in `docs/source` and checks it
+in three tiers, because the blocks do not all support the same checking:
+
+| Tier | Covers | Catches | In `--fast` |
+| --- | --- | --- | --- |
+| `test_doc_example_uses_public_api` | every block, statically | a name or setting the docs still use after it was renamed or removed | yes, ~1 s |
+| `test_doc_example_authors_without_error` | blocks that are complete scripts, with rendering stubbed | anything that raises while *authoring*: wrong constructor arguments, a value of the wrong width, a method that is gone | yes, ~14 s |
+| `test_doc_example_renders` | the same scripts, rendered at `SMOKE_TEST` | render-time failures — an updater that raises once it is evaluated over a batch of frames | no, `slow` |
+
+Most documented code is a *fragment* — a few lines operating on an undefined
+`mob` — which can never be a runnable scene without inventing scaffolding around
+it. That is why tier 1 exists and why it only flags **capitalized** free names:
+classes and constants are what get renamed, and lowercase names are the reader's
+own variables.
+
+A block that is deliberately not runnable opts out with an reStructuredText
+comment on the line above it, which never reaches the rendered page:
+
+```rst
+.. algan-doc-check: skip -- needs an asset that does not ship with the docs
+
+.. code-block:: python
+```
+
+Use it for anti-examples showing what raises, Manim-side snippets in a migration
+comparison, and examples needing assets or system packages the repository does
+not carry. For a block broken by a bug that is already being worked on, add it to
+`KNOWN_BROKEN` in that module with a reason instead, so it is skipped loudly
+rather than quietly deleted.
 
 ### Known defects pinned as `xfail`
 

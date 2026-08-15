@@ -25,7 +25,7 @@ Manim:
 
 Algan:
 
-.. code-block:: python
+.. algan:: MigratingHelloSquare
 
     from algan import *
 
@@ -152,6 +152,8 @@ Text, TeX, and imported Manim mobjects
 Algan provides native :class:`~algan.mobs.text.Text` and
 :class:`~algan.mobs.text.Tex` mobs. For a compatible Manim vector mobject, wrap
 it in :class:`~algan.mobs.manim_mob.ManimMob`:
+
+.. algan-doc-check: skip -- needs diagram.svg, which does not ship with the docs
 
 .. code-block:: python
 
