@@ -129,20 +129,38 @@ DISC_C = Color("#071827")  # the dark interior of a neuron
 # swap happens abruptly around 55%, while red bleeds into gold only near the end.
 BEAMS = [
     {"start": "#1478FF", "end": "#63CEFF", "steps": 3, "lo": 0.0, "hi": 1.0},
-    {"start": "#EDF1FF", "end": "#FF3418", "steps": 9, "lo": 0.30, "hi": 0.62,
-     "glow_scale": 0.78},  # white blooms hardest at equal glow
+    {
+        "start": "#EDF1FF",
+        "end": "#FF3418",
+        "steps": 9,
+        "lo": 0.30,
+        "hi": 0.62,
+        "glow_scale": 0.78,
+    },  # white blooms hardest at equal glow
     {"start": "#FF3A18", "end": "#FFB733", "steps": 7, "lo": 0.35, "hi": 1.05},
 ]
 
 # Arrow geometry and colours, both measured off the reference.
 ARROW_IN = {
-    "tip": 715, "tail": 544, "head_len": 41, "head_half": 19, "shaft": 7.5,
-    "head": "#57EFFE", "neck_color": "#4EE8FD", "tail_color": "#1C527D",
+    "tip": 715,
+    "tail": 544,
+    "head_len": 41,
+    "head_half": 19,
+    "shaft": 7.5,
+    "head": "#57EFFE",
+    "neck_color": "#4EE8FD",
+    "tail_color": "#1C527D",
     "glow": 0.34,
 }
 ARROW_OUT = {
-    "tip": 2500, "tail": 2634, "head_len": 32, "head_half": 16, "shaft": 6.0,
-    "head": "#FEB483", "neck_color": "#F79E74", "tail_color": "#0A1220",
+    "tip": 2500,
+    "tail": 2634,
+    "head_len": 32,
+    "head_half": 16,
+    "shaft": 6.0,
+    "head": "#FEB483",
+    "neck_color": "#F79E74",
+    "tail_color": "#0A1220",
     "glow": 0.34,
 }
 
@@ -202,8 +220,10 @@ def _neuron(x: float, y: float, scene=None) -> list:
         a1 = a0 + step * 0.5  # 50% duty cycle
         parts.append(
             Line(
-                p(x + INNER_R * math.cos(a0), y + INNER_R * math.sin(a0)) + OUT * Z_RING,
-                p(x + INNER_R * math.cos(a1), y + INNER_R * math.sin(a1)) + OUT * Z_RING,
+                p(x + INNER_R * math.cos(a0), y + INNER_R * math.sin(a0))
+                + OUT * Z_RING,
+                p(x + INNER_R * math.cos(a1), y + INNER_R * math.sin(a1))
+                + OUT * Z_RING,
                 color=dash_color,
                 border_width=stroke(INNER_W),
                 **_scene(scene),
@@ -271,10 +291,12 @@ def _hotspot(x: float, y: float, hex_color: str, glow=HOTSPOT_GLOW, scene=None):
     return Circle(
         radius=HOTSPOT_R * PX,
         location=p(x, y) + OUT * (Z_RING + Z_CORE),
-        color=Color(_towards_white(Color(hex_color)[:3].tolist(), HOTSPOT_MIX),
-                    glow=glow),
-        border_color=Color(_towards_white(Color(hex_color)[:3].tolist(), HOTSPOT_MIX),
-                           glow=glow),
+        color=Color(
+            _towards_white(Color(hex_color)[:3].tolist(), HOTSPOT_MIX), glow=glow
+        ),
+        border_color=Color(
+            _towards_white(Color(hex_color)[:3].tolist(), HOTSPOT_MIX), glow=glow
+        ),
         border_width=stroke(1.0),
         **_scene(scene),
     )
@@ -288,9 +310,7 @@ def _quad(pts, **kwargs):
     own border in its own colour.
     """
     x = torch.stack([q.reshape(-1)[:2] for q in pts])
-    area = float(
-        (x[:, 0] * x.roll(-1, 0)[:, 1] - x.roll(-1, 0)[:, 0] * x[:, 1]).sum()
-    )
+    area = float((x[:, 0] * x.roll(-1, 0)[:, 1] - x.roll(-1, 0)[:, 0] * x[:, 1]).sum())
     if area > 0:  # normalize to the clockwise-on-screen winding that fills
         pts = pts[::-1]
     return Polygon(*pts, **kwargs)
@@ -306,7 +326,14 @@ def _arrow(spec, y, scene=None):
 
     parts = [
         _quad(
-            [q + OUT * Z_RING for q in (p(x_tip, y), p(x_neck, y - head_half), p(x_neck, y + head_half))],
+            [
+                q + OUT * Z_RING
+                for q in (
+                    p(x_tip, y),
+                    p(x_neck, y - head_half),
+                    p(x_neck, y + head_half),
+                )
+            ],
             color=Color(spec["head"], glow=glow),
             border_color=Color(spec["head"], glow=glow),
             border_width=stroke(1.0),
@@ -391,8 +418,9 @@ def laser_neural_net(scene=None) -> Group:
         # A bead where each fan leaves its source ring and where it lands.
         for ya in ys_a:
             spots.append(
-                _hotspot(xa + NODE_R, ya, spec["start"],
-                         glow=HOTSPOT_GLOW * 0.6, scene=scene)
+                _hotspot(
+                    xa + NODE_R, ya, spec["start"], glow=HOTSPOT_GLOW * 0.6, scene=scene
+                )
             )
         for yb in ys_b:
             spots.append(_hotspot(xb - NODE_R, yb, spec["end"], scene=scene))
@@ -421,9 +449,7 @@ REFERENCE = VideoSettings(resolution=(IMG_W, IMG_H), frames_per_second=1)
 #: the gaps between them, and the reference keeps those gaps black.  Narrowing
 #: the tail and paying for it with ``strength`` gives the reference's look: a
 #: hot, local halo over a dark field.
-TIGHT_BLOOM = partial(
-    bloom_filter, glow_spread=0.015, tail_weight=0.15, strength=60
-)
+TIGHT_BLOOM = partial(bloom_filter, glow_spread=0.015, tail_weight=0.15, strength=60)
 
 
 if __name__ == "__main__":
