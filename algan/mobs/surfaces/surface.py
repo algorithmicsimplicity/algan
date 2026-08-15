@@ -391,9 +391,7 @@ def get_render_primitives_batched(surfaces):
     ``ignore_normals`` False, and has identical grid dimensions and
     ``grid.location`` shape.
     """
-    grids = torch.stack(
-        [s._reshape_grid_for_render(s.grid.location) for s in surfaces]
-    )
+    grids = torch.stack([s._reshape_grid_for_render(s.grid.location) for s in surfaces])
     vertex_normals = grid_to_triangle_vertices(compute_grid_vertex_normals(grids))
     corners = grid_to_triangle_vertices(grids)
     return [
@@ -1959,9 +1957,7 @@ class Surface(Mob):
             event.recorded_edits = migrated_edits
             # Through the timeline, not by assignment: the caller index has to
             # follow the move (see FunctionTimeline.retarget_caller).
-            timeline.function_timeline.retarget_caller(
-                event, captured_event["caller"]
-            )
+            timeline.function_timeline.retarget_caller(event, captured_event["caller"])
             event.replay_end = None
 
     def _change_resolution(self, grid_width, grid_height, surface_function=None):
@@ -2465,9 +2461,7 @@ class Surface(Mob):
             if x.shape[-2] == 1:
                 x = x.expand(*x.shape[:-2], self.grid.location.shape[-2], -1)
             x = self._reshape_grid_for_render(x)
-            return self._flatten_packed_triangle_vertices(
-                grid_to_triangle_vertices(x)
-            )
+            return self._flatten_packed_triangle_vertices(grid_to_triangle_vertices(x))
 
         def compute_grid_color():
             # Plain tensor, not the Color subclass the public property returns:
@@ -2494,11 +2488,7 @@ class Surface(Mob):
             uvs = grid_to_triangle_vertices(base_grid)
             packed_grid_count = self._packed_grid_count()
             if packed_grid_count is not None:
-                uvs = (
-                    uvs.unsqueeze(0)
-                    .expand(packed_grid_count, -1, -1)
-                    .flatten(0, 1)
-                )
+                uvs = uvs.unsqueeze(0).expand(packed_grid_count, -1, -1).flatten(0, 1)
             uvs = uvs.unsqueeze(0)  # [1, num_triangles * 3, 2]
         if self.color_texture is not None:
             texture_map = (

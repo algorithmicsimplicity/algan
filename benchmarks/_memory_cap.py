@@ -136,16 +136,14 @@ def _cap_windows(limit):
     )
     if not ok:
         print(
-            f"memory cap: SetInformationJobObject failed "
-            f"({ctypes.get_last_error()})",
+            f"memory cap: SetInformationJobObject failed ({ctypes.get_last_error()})",
             file=sys.stderr,
         )
         return False
     ok = kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess())
     if not ok:
         print(
-            f"memory cap: AssignProcessToJobObject failed "
-            f"({ctypes.get_last_error()})",
+            f"memory cap: AssignProcessToJobObject failed ({ctypes.get_last_error()})",
             file=sys.stderr,
         )
         return False

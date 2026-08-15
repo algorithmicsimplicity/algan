@@ -372,7 +372,9 @@ class MobLayoutMixin:
         camera, origin, edge_x, edge_y = self._screen_frame()
         return camera.location, camera.get_forward_direction(), origin, edge_x, edge_y
 
-    def _project_to_screen_coords(self, points: torch.Tensor, frame=None) -> torch.Tensor:
+    def _project_to_screen_coords(
+        self, points: torch.Tensor, frame=None
+    ) -> torch.Tensor:
         """Normalized screen coordinates of world points, ``(*, N, 2)``.
 
         The inverse of :meth:`_screen_point_at_depth`: ``(0, 0)`` is the
@@ -492,9 +494,8 @@ class MobLayoutMixin:
         previous = None
         for _ in range(_SCREEN_FIT_REFINEMENT_PASSES):
             excess, drift = measure(log_scale, center)
-            if (
-                torch.all(excess.abs() < _SCREEN_FIT_TOLERANCE)
-                and torch.all(drift.abs() < _SCREEN_FIT_TOLERANCE)
+            if torch.all(excess.abs() < _SCREEN_FIT_TOLERANCE) and torch.all(
+                drift.abs() < _SCREEN_FIT_TOLERANCE
             ):
                 break
             if previous is None:

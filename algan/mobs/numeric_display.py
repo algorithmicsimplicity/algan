@@ -103,9 +103,7 @@ class NumericDisplay(Mob):
             parent_location, parent_basis = self.location, self.basis
 
             def to_local(point):
-                return map_global_to_local_coords(
-                    parent_location, parent_basis, point
-                )
+                return map_global_to_local_coords(parent_location, parent_basis, point)
 
             self._rightmost_integer_location = to_local(
                 self.digit_mobs[num_i - 1].character_mobs[0].location

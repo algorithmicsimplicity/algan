@@ -788,11 +788,7 @@ class AttributeTimeline:
         width = self.pointer + 1
         rows = active_rows.to(dtype=torch.int64)
         buffer = self._row_map_buffer
-        if (
-            buffer is None
-            or buffer.shape[0] < width
-            or buffer.device != rows.device
-        ):
+        if buffer is None or buffer.shape[0] < width or buffer.device != rows.device:
             buffer = torch.full(
                 (max(width, 1 if buffer is None else buffer.shape[0] * 2),),
                 -1,
@@ -959,7 +955,11 @@ class AttributeTimeline:
         kept = live.nonzero().view(-1)
         if kept.numel() == 0:
             return self
-        if torch.is_tensor(value) and value.dim() >= 2 and value.shape[-2] == live.shape[0]:
+        if (
+            torch.is_tensor(value)
+            and value.dim() >= 2
+            and value.shape[-2] == live.shape[0]
+        ):
             # Per-row values: drop the rows whose writes are being discarded.
             # A broadcast value (scalar, or a singleton row axis) passes through.
             value = value.index_select(-2, kept)
@@ -1459,9 +1459,7 @@ class AttributeTimeline:
         if fresh.numel():
             width = int(self.active_state.shape[1])
             new_rows = device_rows[fresh]
-            self.active_state = torch.cat(
-                (self.active_state, queried[:, fresh]), dim=1
-            )
+            self.active_state = torch.cat((self.active_state, queried[:, fresh]), dim=1)
             self._active_row_map[new_rows] = torch.arange(
                 width, width + int(fresh.numel()), dtype=torch.int64
             )
@@ -1851,9 +1849,7 @@ class FunctionTimeline:
         else:
             appended = self.function_applications[cache[0] :]
             prefix_starts, prefix_ends = cache[1], cache[2]
-        starts = torch.tensor(
-            [f.time.start for f in appended], dtype=torch.float32
-        )
+        starts = torch.tensor([f.time.start for f in appended], dtype=torch.float32)
         ends = torch.tensor(
             [_replay_window_end(f) for f in appended], dtype=torch.float32
         )

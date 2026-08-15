@@ -56,9 +56,7 @@ def test_activated_idle_synapse_follows_its_moving_neurons():
             for candidate in incarnations
         ]
     )
-    shown = locations.gather(
-        0, visible.argmax(0).view(1, -1, 1).expand(1, -1, 3)
-    )[0]
+    shown = locations.gather(0, visible.argmax(0).view(1, -1, 1).expand(1, -1, 3))[0]
     expected = (
         source.location.reshape(len(times), -1, 3)[:, 0]
         + target.location.reshape(len(times), -1, 3)[:, 0]

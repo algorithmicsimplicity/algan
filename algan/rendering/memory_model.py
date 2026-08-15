@@ -431,7 +431,9 @@ class PeakRatioModel:
 
     def _worst_ratio(self):
         points = self._points()
-        return max(peak / size for size, peak in points.items()) if points else self.seed
+        return (
+            max(peak / size for size, peak in points.items()) if points else self.seed
+        )
 
     def max_inputs_for(self, budget_bytes):
         """Largest input size whose predicted peak fits ``budget_bytes``.

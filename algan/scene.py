@@ -1100,6 +1100,7 @@ class Scene(RenderLoopMixin):
                 fade = torch.exp(-r2 * 4) * torch.ones_like(t)
                 return x.new_tensor((0.02, 0.03, 0.08)) * fade
 
+
             Scene.save_frame("shot", background_color=vignette)
         """
         if (background_color is None) or (self.background_is_set and not overwrite):

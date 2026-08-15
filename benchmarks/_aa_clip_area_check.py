@@ -242,9 +242,7 @@ def main():
     for _ in range(400):
         ang = rng.uniform(0.0, 2 * np.pi)
         scale = 10.0 ** rng.uniform(-3, 3)
-        hp.append(
-            (np.cos(ang) * scale, np.sin(ang) * scale, rng.uniform(-0.8, 0.8))
-        )
+        hp.append((np.cos(ang) * scale, np.sin(ang) * scale, rng.uniform(-0.8, 0.8)))
     # Plus a systematic sweep, which is where the branch boundaries live: the
     # trapezoid/corner switch at |d| = (a-b)/2 and the clears-the-square switch
     # at |d| = (a+b)/2 both move with the angle.

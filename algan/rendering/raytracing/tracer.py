@@ -863,7 +863,10 @@ def _build_raster_tables(
         )
         # Live reads (settings convention): each kill-switch falls back to
         # the per-(tile, frame) pair emission inside raster_iteration_zero.
-        if rt_settings.RASTER_TRI_PRECOMPUTE and int(merged.get("num_triangles", 0)) > 0:
+        if (
+            rt_settings.RASTER_TRI_PRECOMPUTE
+            and int(merged.get("num_triangles", 0)) > 0
+        ):
             tri_bounds = precompute_triangle_screen_bounds(
                 merged,
                 tri_screen,
@@ -1746,7 +1749,7 @@ def _run_wavefront_tiles(
                             PERF,
                             "Hybrid raster tile did not fit for "
                             f"{tile_start}:{tile_start + attempt_primary}; "
-                            f"retrying with {next_primary} primaries"
+                            f"retrying with {next_primary} primaries",
                         )
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary
@@ -1771,7 +1774,7 @@ def _run_wavefront_tiles(
                             "Wavefront continuation pool overflowed for tile "
                             f"{tile_start}:{tile_start + attempt_primary}; "
                             f"retrying with {next_primary} primaries and the "
-                            f"same {pool}-slot pool"
+                            f"same {pool}-slot pool",
                         )
                         learned_primary_cap = min(learned_primary_cap, next_primary)
                         attempt_primary = next_primary

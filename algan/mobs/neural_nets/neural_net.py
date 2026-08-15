@@ -106,9 +106,7 @@ def _make_idle_waypoints(walk_radii, direction, *, dtype, device):
     """Sample deterministic points in ellipsoids flattened along ``direction``."""
     _idle_rng.manual_seed(_IDLE_WALK_SEED)
     shape = (walk_radii.numel(), _IDLE_WAYPOINT_COUNT - 1, 3)
-    directions = torch.randn(
-        shape, dtype=dtype, device=device, generator=_idle_rng
-    )
+    directions = torch.randn(shape, dtype=dtype, device=device, generator=_idle_rng)
     directions = directions / directions.norm(dim=-1, keepdim=True).clamp_min(1e-8)
     radial_scale = torch.rand(
         (*shape[:-1], 1), dtype=dtype, device=device, generator=_idle_rng
@@ -116,10 +114,9 @@ def _make_idle_waypoints(walk_radii, direction, *, dtype, device):
     random_points = directions * radial_scale
     network_direction = torch.as_tensor(direction, dtype=dtype, device=device)
     network_direction = network_direction / network_direction.norm().clamp_min(1e-8)
-    parallel_components = (
-        (random_points * network_direction).sum(dim=-1, keepdim=True)
-        * network_direction
-    )
+    parallel_components = (random_points * network_direction).sum(
+        dim=-1, keepdim=True
+    ) * network_direction
     random_points = (
         random_points
         - parallel_components
@@ -213,8 +210,8 @@ gs = 0.75
 
 class Synapse(Cylinder):
     def __init__(self, grid_height=5, *args, **kwargs):
-        #grid_height = 20  # None
-        #grid_width = 12
+        # grid_height = 20  # None
+        # grid_width = 12
         grid_height = None
         grid_width = None
         if "color" in kwargs:
@@ -506,7 +503,11 @@ class NeuralNetMLP(Mob):
     ):
         with Seq():
             o = self.forward(
-                input_values, output_generator, run_time, reset=False, color=forward_color
+                input_values,
+                output_generator,
+                run_time,
+                reset=False,
+                color=forward_color,
             )  # .get_component_mobs())
             # o.move_next_to(label, -self.get_right_direction())
             self.backward(o, label, color=backward_color, run_time=run_time)
@@ -559,19 +560,19 @@ class NeuralNetMLP(Mob):
     def backward(
         self, output=None, label=None, color=PURE_BLUE * k + (1 - k) * WHITE, run_time=3
     ):
-        #with Seq():
+        # with Seq():
         #    self.activate(reverse=True, color=color, run_time=run_time)
         #    self.reset_input_synapses()
-        #return self
-        #with Seq(run_time=run_time, animation_manager=self.animation_manager):
+        # return self
+        # with Seq(run_time=run_time, animation_manager=self.animation_manager):
         with Lag(0.9, run_time=run_time):
             if label is not None:
                 with Lag(0.65, run_time=1, animation_manager=self.animation_manager):
                     zap(label, output, color=color)
                     zap(output, self.layers[-1][0].shell, color=color)
-            #self.animation_manager.context.timespan.current_time = (
+            # self.animation_manager.context.timespan.current_time = (
             #    self.animation_manager.context.timespan.current_time - 1.5
-            #)
+            # )
             with Seq():
                 self.activate(reverse=True, color=color)
                 self.reset_input_synapses()
@@ -637,9 +638,9 @@ class NeuralNetMLP(Mob):
                 if output_generator is None:
                     return
                 with Seq():
-                    #self.animation_manager.context.current_time = (
+                    # self.animation_manager.context.current_time = (
                     #        self.animation_manager.context.current_time - 1.7
-                    #)
+                    # )
                     with Off(animation_manager=self.animation_manager):
                         output = output_generator().move_next_to(
                             self.layers[-1][len(self.layers[-1]) // 2],

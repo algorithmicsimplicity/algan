@@ -127,13 +127,11 @@ def _rendered_screen_coords(scene, points):
     right, up, forward = unsquish(camera.get_render_screen_basis(), -1, 3).reshape(3, 3)
     screen = camera.screen.location.reshape(-1)
     eye = camera.location.reshape(-1)
-    aspect = (
-        scene.video_settings.resolution[0] / scene.video_settings.resolution[1]
-    )
+    aspect = scene.video_settings.resolution[0] / scene.video_settings.resolution[1]
     ray = points.reshape(-1, 3) - eye
-    on_plane = eye + ray * (torch.dot(screen - eye, forward) / (ray @ forward)).unsqueeze(
-        -1
-    )
+    on_plane = eye + ray * (
+        torch.dot(screen - eye, forward) / (ray @ forward)
+    ).unsqueeze(-1)
     offset = on_plane - screen
     return torch.stack(((offset @ right) / aspect + 1, (offset @ up) + 1), -1) * 0.5
 

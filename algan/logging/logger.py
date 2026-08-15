@@ -16,7 +16,7 @@ severe, so ``INFO`` also shows warnings and errors.
 
 Algan adds one level of its own, :data:`PERF`, between ``DEBUG`` and ``INFO``::
 
-    ALGAN_LOG_LEVEL=PERF        # or set_log_level("PERF")
+    ALGAN_LOG_LEVEL = PERF  # or set_log_level("PERF")
 
 It carries the renderer's self-healing events -- the batch splits and pool
 retries it performs when a chunk does not fit. Those are the memory model

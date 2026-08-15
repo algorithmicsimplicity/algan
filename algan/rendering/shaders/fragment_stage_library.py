@@ -8,8 +8,8 @@ rather than replacing it, so it layers over a lit base material::
     from algan import *
 
     ball = Sphere(radius=1, color=BLUE_E)
-    ball.set_fragment_shader([standard_shader, fresnel_rim])   # lit, then rimmed
-    ball.rim_color = (0.40, 0.90, 1.00)   # width-3 RGB, not a 5-channel Color
+    ball.set_fragment_shader([standard_shader, fresnel_rim])  # lit, then rimmed
+    ball.rim_color = (0.40, 0.90, 1.00)  # width-3 RGB, not a 5-channel Color
     ball.rim_power = 3.0
     ball.spawn()
 
@@ -40,15 +40,28 @@ __all__ = ["fresnel_rim", "glass_ball"]
 
 
 @ti.func
-def _stage_fresnel_rim(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
-                       params: ti.template(), f, prim, off,
-                       light_pos: ti.template(), light_col: ti.template(),
-                       num_lights, shadows: ti.template(), vis):
+def _stage_fresnel_rim(
+    pos,
+    view_dir,
+    n_interp,
+    face_n,
+    in_rgb,
+    in_glow,
+    params: ti.template(),
+    f,
+    prim,
+    off,
+    light_pos: ti.template(),
+    light_col: ti.template(),
+    num_lights,
+    shadows: ti.template(),
+    vis,
+):
     """Add ``rim_color * rim_gain * (1 - |N.V|) ** rim_power``."""
     tm = f % params.shape[0]
-    rim = ti.math.vec3(params[tm, prim, off + 0],
-                       params[tm, prim, off + 1],
-                       params[tm, prim, off + 2])
+    rim = ti.math.vec3(
+        params[tm, prim, off + 0], params[tm, prim, off + 1], params[tm, prim, off + 2]
+    )
     power = params[tm, prim, off + 3]
     gain = params[tm, prim, off + 4]
 
@@ -74,31 +87,46 @@ fresnel_rim = FragmentStage(
 
 
 @ti.func
-def _stage_glass_ball(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
-                      params: ti.template(), f, prim, off,
-                      light_pos: ti.template(), light_col: ti.template(),
-                      num_lights, shadows: ti.template(), vis):
+def _stage_glass_ball(
+    pos,
+    view_dir,
+    n_interp,
+    face_n,
+    in_rgb,
+    in_glow,
+    params: ti.template(),
+    f,
+    prim,
+    off,
+    light_pos: ti.template(),
+    light_col: ti.template(),
+    num_lights,
+    shadows: ti.template(),
+    vis,
+):
     """Studio glass-ball edge: two Fresnel lobes, a silhouette ring and two
     screen-space specular blobs, all added to the incoming colour.
     """
     tm = f % params.shape[0]
-    rim = ti.math.vec3(params[tm, prim, off + 0],
-                       params[tm, prim, off + 1],
-                       params[tm, prim, off + 2])
+    rim = ti.math.vec3(
+        params[tm, prim, off + 0], params[tm, prim, off + 1], params[tm, prim, off + 2]
+    )
     rim_power = params[tm, prim, off + 3]
-    edge = ti.math.vec3(params[tm, prim, off + 4],
-                        params[tm, prim, off + 5],
-                        params[tm, prim, off + 6])
+    edge = ti.math.vec3(
+        params[tm, prim, off + 4], params[tm, prim, off + 5], params[tm, prim, off + 6]
+    )
     edge_power = params[tm, prim, off + 7]
-    ring = ti.math.vec3(params[tm, prim, off + 8],
-                        params[tm, prim, off + 9],
-                        params[tm, prim, off + 10])
+    ring = ti.math.vec3(
+        params[tm, prim, off + 8], params[tm, prim, off + 9], params[tm, prim, off + 10]
+    )
     ring_center = params[tm, prim, off + 11]
     ring_width = params[tm, prim, off + 12]
     anisotropy = params[tm, prim, off + 13]
-    key = ti.math.vec3(params[tm, prim, off + 14],
-                       params[tm, prim, off + 15],
-                       params[tm, prim, off + 16])
+    key = ti.math.vec3(
+        params[tm, prim, off + 14],
+        params[tm, prim, off + 15],
+        params[tm, prim, off + 16],
+    )
     key_gain = params[tm, prim, off + 17]
     key_x = params[tm, prim, off + 18]
     key_y = params[tm, prim, off + 19]
@@ -128,8 +156,9 @@ def _stage_glass_ball(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     acc = in_rgb
     acc += rim * (ti.pow(fres, ti.max(rim_power, 1e-3)) * edge_w)
     acc += edge * (ti.pow(fres, ti.max(edge_power, 1e-3)) * edge_w)
-    acc += ring * (ti.exp(-((fres - ring_center)
-                            / ti.max(ring_width, 1e-3)) ** 2) * edge_w)
+    acc += ring * (
+        ti.exp(-(((fres - ring_center) / ti.max(ring_width, 1e-3)) ** 2)) * edge_w
+    )
 
     # On a sphere the shading normal's x/y components *are* the screen offset in
     # units of the radius, so the highlights are placed in those coordinates.
@@ -139,15 +168,19 @@ def _stage_glass_ball(pos, view_dir, n_interp, face_n, in_rgb, in_glow,
     dy = n[1] - key_y
     along = dx * sa + dy * (-ca)
     across = dx * ca + dy * sa
-    acc += key * (key_gain
-                  * ti.exp(-(along / ti.max(key_long, 1e-3)) ** 2
-                           - (across / ti.max(key_wide, 1e-3)) ** 2))
+    acc += key * (
+        key_gain
+        * ti.exp(
+            -((along / ti.max(key_long, 1e-3)) ** 2)
+            - (across / ti.max(key_wide, 1e-3)) ** 2
+        )
+    )
 
     ex = n[0] - fill_x
     ey = n[1] - fill_y
-    acc += key * (fill_gain
-                  * ti.exp(-(ex * ex + ey * ey)
-                           / ti.max(fill_size * fill_size, 1e-6)))
+    acc += key * (
+        fill_gain * ti.exp(-(ex * ex + ey * ey) / ti.max(fill_size * fill_size, 1e-6))
+    )
 
     return ti.math.vec4(acc[0], acc[1], acc[2], in_glow)
 

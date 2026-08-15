@@ -114,9 +114,7 @@ def _scatter_diced_rows(output, values, targets):
     -- so the copy needs no accumulation and its order does not matter.
     """
     trailing = output.shape[2:]
-    output.view(-1, *trailing).index_copy_(
-        0, targets, values.reshape(-1, *trailing)
-    )
+    output.view(-1, *trailing).index_copy_(0, targets, values.reshape(-1, *trailing))
 
 
 def _bezier_criterion_inputs(corners, cam_o, sp, sb):
@@ -702,12 +700,8 @@ class RayTracedTrianglePrimitive(TrianglePrimitive):
         elif counts:
             self._rt_tri_obj = (
                 torch.repeat_interleave(
-                    torch.arange(
-                        len(counts), dtype=torch.int32, device=corners.device
-                    ),
-                    torch.tensor(
-                        counts, dtype=torch.int64, device=corners.device
-                    ),
+                    torch.arange(len(counts), dtype=torch.int32, device=corners.device),
+                    torch.tensor(counts, dtype=torch.int64, device=corners.device),
                 )
                 .view(1, -1)
                 .contiguous()
@@ -1217,7 +1211,14 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
         return levels, bool(capped)
 
     def _patch_flatness_error(
-        self, control_points, selected, level, cam, front_sign, screen_height, kernel=None
+        self,
+        control_points,
+        selected,
+        level,
+        cam,
+        front_sign,
+        screen_height,
+        kernel=None,
     ):
         """Peak pixel deviation of each selected patch's level-``level`` dice,
         sampled at ``_flatness_sample_weights`` within every microtriangle.
@@ -1371,9 +1372,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 torch.tensor(counts_src, dtype=torch.int64, device=device),
             )
         else:
-            patch_source = torch.zeros(
-                (num_patches,), dtype=torch.int32, device=device
-            )
+            patch_source = torch.zeros((num_patches,), dtype=torch.int32, device=device)
         if patch_source.shape[0] != num_patches:
             raise RuntimeError(
                 "logical PN patch/source mismatch: "
@@ -1511,9 +1510,7 @@ class LogicalPNTrianglePrimitive(RayTracedTrianglePrimitive):
                 for output, source in zip(diced_shader_params, shader_sources):
                     _scatter_diced_rows(
                         output,
-                        interpolate_patch_attribute(
-                            source[frames, patches], corner_uv
-                        ),
+                        interpolate_patch_attribute(source[frames, patches], corner_uv),
                         targets,
                     )
                 if diced_uvs is not None:
@@ -2389,28 +2386,29 @@ class RayTracedBezierCircuitPrimitive(BezierCircuitPrimitive):
         # ``_pack_frame_visibility``); transmission only bears on opacity.
         transmissive = self.transmission[..., 0] > 1e-6
         (
-            lo,
-            hi,
-            visible,
-            fill_min,
-            border_alpha,
-            border_min,
-            border_on,
-            transmissive,
-        ), _ = (
-            _unify_time(
-                [
-                    lo,
-                    hi,
-                    visible.unsqueeze(-1),
-                    fill_min.unsqueeze(-1),
-                    border_alpha.unsqueeze(-1),
-                    border_min.unsqueeze(-1),
-                    border_on.unsqueeze(-1),
-                    transmissive.unsqueeze(-1),
-                ],
-                "bezier bounds/colors",
-            )
+            (
+                lo,
+                hi,
+                visible,
+                fill_min,
+                border_alpha,
+                border_min,
+                border_on,
+                transmissive,
+            ),
+            _,
+        ) = _unify_time(
+            [
+                lo,
+                hi,
+                visible.unsqueeze(-1),
+                fill_min.unsqueeze(-1),
+                border_alpha.unsqueeze(-1),
+                border_min.unsqueeze(-1),
+                border_on.unsqueeze(-1),
+                transmissive.unsqueeze(-1),
+            ],
+            "bezier bounds/colors",
         )
         visible = visible.squeeze(-1)
         # A circuit is opaque (prunes hits behind it while gathering) only if

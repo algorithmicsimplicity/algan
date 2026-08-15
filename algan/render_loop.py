@@ -99,9 +99,7 @@ def _emit_render_progress(done, total):
     elif total >= _PROGRESS_MIN_LOGGED_FRAMES and done % max(1, total // 10) == 0:
         # Captured output gets at most ten lines, and short renders none: they
         # finish before a progress report would tell anyone anything.
-        logger.info(
-            "Rendering %d/%d frames (%.0f%%)", done, total, 100 * done / total
-        )
+        logger.info("Rendering %d/%d frames (%.0f%%)", done, total, 100 * done / total)
 
 
 def _finish_render_progress():
@@ -2542,9 +2540,7 @@ class RenderLoopMixin:
                     # at half the size -- for every batch of the job, not just
                     # the first.
                     if primitives:
-                        arena_frames = (
-                            self._batch_frame_capacity() or 0
-                        )
+                        arena_frames = self._batch_frame_capacity() or 0
                         # Never below what just fit: the estimate reads the
                         # scene's frame-independent bytes as if they scaled, so
                         # it under-shoots (harmlessly) on a batch that fit.

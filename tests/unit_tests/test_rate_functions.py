@@ -119,7 +119,8 @@ def test_a_context_rate_func_reshapes_the_path_but_not_its_endpoints(name):
         times = torch.tensor([0.0, 0.5, 1.0])
         scene.timeline_manager.set_state_to_times(times)
         travelled = [
-            float(square.location[index].reshape(-1, 3)[:, 0].mean()) for index in range(3)
+            float(square.location[index].reshape(-1, 3)[:, 0].mean())
+            for index in range(3)
         ]
 
     assert travelled[0] == pytest.approx(0.0, abs=1e-3)

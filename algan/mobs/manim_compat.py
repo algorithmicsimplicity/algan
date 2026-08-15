@@ -202,19 +202,14 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
     the already-corresponding subobject graph.
     """
 
-    if isinstance(manim_mob, _manim.ImageMobject) and isinstance(
-        algan_mob, ImageMob
-    ):
+    if isinstance(manim_mob, _manim.ImageMobject) and isinstance(algan_mob, ImageMob):
         _sync_image_geometry_to_manim(algan_mob, manim_mob)
         return
 
     if isinstance(algan_mob, ManimMob):
         if len(manim_mob.points) > 0:
             points = (
-                algan_mob.control_points.location.reshape(-1, 3)
-                .detach()
-                .cpu()
-                .numpy()
+                algan_mob.control_points.location.reshape(-1, 3).detach().cpu().numpy()
             )
             # Parent transforms cannot change a Manim path's point count.  If
             # an Algan-only structural morph has done so, keeping the semantic
@@ -239,9 +234,9 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
             stroke_color, stroke_opacity = _uniform_color_and_opacity(
                 border_color, border_opacity_source
             )
-            stroke_width = float(
-                algan_mob.border_width.reshape(-1)[0].detach().cpu()
-            ) * 2
+            stroke_width = (
+                float(algan_mob.border_width.reshape(-1)[0].detach().cpu()) * 2
+            )
             manim_mob.set_stroke(
                 stroke_color,
                 width=stroke_width,
