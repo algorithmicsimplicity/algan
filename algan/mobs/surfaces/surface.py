@@ -799,6 +799,31 @@ class Surface(Mob):
             return None
         return self.get_animated_attribute(attr)
 
+    @property
+    def _has_color_texture(self):
+        """Whether a colour texture is set, without reading it.
+
+        ``color_texture is not None`` answers the same question by materializing
+        the whole image out of the timeline and cloning it. The render loop and
+        the primitive build ask it several times per frame batch, where the
+        texture is the widest attribute in the engine, so presence tests go
+        through this instead.
+        """
+        return getattr(self, "_color_texture_attr", None) is not None
+
+    def _color_texture_uncopied(self):
+        """The colour texture as a read-only view, or None.
+
+        Same value as :attr:`color_texture` but without the defensive clone the
+        public property makes. Only for callers that feed the result straight
+        into out-of-place arithmetic -- mutating it corrupts the timeline's
+        materialized state.
+        """
+        attr = getattr(self, "_color_texture_attr", None)
+        if attr is None:
+            return None
+        return self.get_animated_attribute(attr, copy=False)
+
     @color_texture.setter
     def color_texture(self, texture):
         previous_attr = getattr(self, "_color_texture_attr", None)
@@ -2073,7 +2098,7 @@ class Surface(Mob):
             or self.grid.data_sub_inds is not None
         ):
             return None
-        if self.color_texture is not None:
+        if self._has_color_texture:
             # Textured surfaces shade from the texture map rather than from
             # vertex colours, so a finer grid would buy geometry and no pixels.
             return None
@@ -2350,8 +2375,14 @@ class Surface(Mob):
         n_grid = self.grid.location.shape[-2]
         packed_grid_count = self._packed_grid_count()
         rendered_grid_count = 1 if packed_grid_count is None else packed_grid_count
+        # Computed before the cache test, and compared as part of the key: a
+        # texture can be assigned (or its resolution changed) after this surface
+        # was first priced, and a key that does not carry it would keep serving
+        # the texture-free estimate forever.
+        texture_bytes = self._color_texture_bytes_per_timestep()
+        key = (n_grid, rendered_grid_count, names, texture_bytes)
         cache = getattr(self, "_memory_per_timestep_cache", None)
-        if cache is not None and cache[0] == (n_grid, rendered_grid_count, names):
+        if cache is not None and cache[0] == key:
             return cache[1]
         n_tri = (
             rendered_grid_count
@@ -2374,12 +2405,42 @@ class Surface(Mob):
         shader_bytes = 0
         for _ in self.get_shader_params().values():
             shader_bytes += n_v * _.shape[-1] * 4
-        result = int(animation_and_intermediates + primitive_bytes + shader_bytes)
-        self._memory_per_timestep_cache = (
-            (n_grid, rendered_grid_count, names),
-            result,
+        result = int(
+            animation_and_intermediates + primitive_bytes + shader_bytes + texture_bytes
         )
+        self._memory_per_timestep_cache = (key, result)
         return result
+
+    def _color_texture_bytes_per_timestep(self) -> int:
+        """This surface's colour-texture cost for one frame, in bytes.
+
+        ``color_texture`` is an ordinary animated attribute whose channel width
+        is the whole flattened image (``H * W * 5``), so the timeline
+        materializes a full copy of it for every frame of a batch, and
+        :meth:`get_render_primitives` keeps one more copy of the same width
+        after premultiplying opacity. Every other term in
+        :meth:`_get_memory_used_per_timestep` is per grid point or per triangle,
+        and a textured Surface has almost none of either -- so without this the
+        batch sizer prices a 1774x887 image at a few kilobytes per frame and
+        puts an entire video in a single batch.
+
+        Rows orphaned by :meth:`~algan.animatable_base.mob.Mob.detach_history`
+        are materialized too but belong to no live Mob, so they are not
+        attributed here; the animation memory fraction absorbs them.
+
+        Returns
+        -------
+        int
+            Estimated bytes needed per frame, or 0 when untextured.
+        """
+        attr = getattr(self, "_color_texture_attr", None)
+        if attr is None:
+            return 0
+        timeline = self.scene.timeline_manager.attr_to_timeline.get(attr)
+        inds = None if timeline is None else timeline.mob_id_to_inds.get(self.id)
+        rows = 1 if inds is None else int(inds.numel())
+        texels = int(self.texture_height) * int(self.texture_width) * 5
+        return rows * texels * 4 * 2
 
     def _packed_grid_count(self):
         """Number of independent grids concatenated into ``self.grid``.
@@ -2484,8 +2545,9 @@ class Surface(Mob):
         material_texture_map = getattr(self, "material_texture", None)
         material_texture_flags = getattr(self, "material_texture_flags", 0)
         normal_texture_map = getattr(self, "normal_texture", None)
+        has_color_texture = self._has_color_texture
         if (
-            self.color_texture is not None
+            has_color_texture
             or material_texture_map is not None
             or normal_texture_map is not None
         ):
@@ -2500,11 +2562,14 @@ class Surface(Mob):
                     .flatten(0, 1)
                 )
             uvs = uvs.unsqueeze(0)  # [1, num_triangles * 3, 2]
-        if self.color_texture is not None:
+        if has_color_texture:
+            # Read the texels once, uncopied: this is the widest attribute in
+            # the engine, and mult_opacity is out-of-place (Color.prep_set
+            # clones), so the materialized state is never written through.
+            texels = self._color_texture_uncopied()
             texture_map = (
-                (self.color_texture)
-                .view(
-                    self.color_texture.shape[0],
+                texels.view(
+                    texels.shape[0],
                     self.texture_height,
                     self.texture_width,
                     5,

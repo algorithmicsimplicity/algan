@@ -1446,7 +1446,7 @@ class RenderLoopMixin:
             return False
         if type(actor).get_render_primitives is not Surface.get_render_primitives:
             return False
-        if actor.color_texture is not None or actor.ignore_normals:
+        if actor._has_color_texture or actor.ignore_normals:
             return False
         if (
             getattr(actor, "material_texture", None) is not None
