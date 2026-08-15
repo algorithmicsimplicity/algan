@@ -1,9 +1,20 @@
 name: Docs
 on:
   push:
-    branches: [master]
+    branches: [master, stable, 'developer/**']
+  # Deliberately unfiltered: `pull_request` filters on the *base* branch, and a
+  # docs PR is often stacked onto another feature branch rather than opened
+  # against master. Gating on the base would silently skip exactly the PRs this
+  # job exists to check. The build is a few minutes and renders nothing.
   pull_request:
-    branches: [master]
+  # Only takes effect once this file is on the default branch: GitHub reads
+  # workflow_dispatch from there, not from the ref being dispatched.
+  workflow_dispatch:
+
+# Cancel superseded runs on the same PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   build:
