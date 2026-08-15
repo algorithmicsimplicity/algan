@@ -159,3 +159,4 @@ third_party/*
 /tests/output_errors/
 /scratch/
 /tests/full_renders/output_errors/
+/.claude/

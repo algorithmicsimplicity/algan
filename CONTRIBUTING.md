@@ -24,5 +24,4 @@ install will fail without — the development guide lists them.
 
 Before making a large change, open or review an issue on the
 [issue tracker](https://github.com/algorithmicsimplicity/algan/issues) so the
-design and scope can be discussed. Repository-specific development rules are
-recorded in `AGENTS.md`.
+design and scope can be discussed.

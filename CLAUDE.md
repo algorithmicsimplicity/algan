@@ -20,7 +20,7 @@ batches of frames, builds render primitives, and renders them.
 Always use the local venv; the default system Python lacks taichi and the other pinned dependencies.
 
 **This is the one place the interpreter path is written down.** Commands in this
-file, `AGENTS.md`, `AGENTS_DETAILED.md`, `tests/README.md` and the design docs
+file, `AGENTS_DETAILED.md`, `tests/README.md` and the design docs
 are all written as `<venv-python>` — substitute your platform's:
 
 | Platform | `<venv-python>` |
