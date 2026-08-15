@@ -92,10 +92,11 @@ _OPT_DISABLED = None
 
 def _opt_disabled(name):
     """Bisect aid: ALGAN_OPT_DISABLE=fastpath,ranges,desccache,windows,torchquery,
-    timeslice,lazyzeros,compactstate,rowdedup disables individual animation-prep
-    optimizations (read once, first use). ``benchmarks/_prep_timeslice_ab.py``
-    and its s05 companion A/B timeslice/lazyzeros through this;
-    ``benchmarks/_query_rowdedup_parity.py`` A/Bs rowdedup.
+    timeslice,lazyzeros,compactstate,rowdedup,clonememo disables individual
+    animation-prep optimizations (read once, first use).
+    ``benchmarks/_prep_timeslice_ab.py`` and its s05 companion A/B
+    timeslice/lazyzeros through this; ``benchmarks/_query_rowdedup_parity.py``
+    A/Bs rowdedup; ``benchmarks/_updater_clone_memo_parity.py`` A/Bs clonememo.
     """
     global _OPT_DISABLED
     if _OPT_DISABLED is None:
@@ -2118,6 +2119,13 @@ class AnimationTimeline:
         # bumps _updater_clone_version to invalidate the memo. The cached ids
         # are still returned so the caller's materialization check sees the
         # same set the walk produced.
+        if _opt_disabled("clonememo"):
+            registered_ids = set()
+            for mob_id in tuple(mob_ids):
+                for original, clone in self._updater_history_clones.get(mob_id, ()):
+                    event.register_history_clone(original, clone)
+                    registered_ids.add(clone.id)
+            return registered_ids
         if event._known_clone_version != self._updater_clone_version:
             event._known_clone_ids = {}
             event._known_clone_version = self._updater_clone_version

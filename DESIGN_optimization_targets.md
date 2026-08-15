@@ -25,6 +25,7 @@ reference workload: `s05_learning_to_program_setup.py` at `LD` (864x486, 15 fps,
 | **P5** replay-checkpoint in-place growth | **shipped, near-worthless** -- the clone it removes happens once per render, not once per batch; see the correction under P5 |
 | **P1** compact rematerialization buffer | **shipped** -- 1.37x on materialization + replay reads, and 604 MB/batch of buffers -> 204 MB |
 | **P6** endpoint row dedup in `_query_row_states` | **shipped, minor** -- byte-identical, but only **1.051x on the query**: the old item-1 premise predated P1; see P6 |
+| **P7** updater-trace clone memo + batched `get_orthonormal_vector` | **shipped** -- 1.042x on the whole replay stage and 1.23x on the updater section; **and it re-scoped item 1 again**: the replay loop's cost is the *updater bodies*, not the per-event machinery. See P7 |
 | **T5** sparse-coverage host chain | **next** -- the render thread's largest non-kernel item |
 | **T3**, **T6** | untouched; both shrank in share |
 
@@ -177,6 +178,12 @@ already been wrapping correctly all along (it just predated the helper), and
   `benchmarks/_query_rowdedup_parity.py` (the endpoint row dedup, CPU: dense
   path == dedup path == brute force, with every branch -- fast path, break-even
   bail, S==1 skip -- asserted exercised, not assumed),
+  `benchmarks/_orthonormal_bitwise_ab.py` (the batched-axis orthonormal basis:
+  bit-pattern equality against the inlined pre-rewrite implementation, incl.
+  NaN and signed zero),
+  `benchmarks/_updater_clone_memo_parity.py` (the updater clone memo, CPU:
+  parity across `detach_history` splits, non-vacuity asserted, and a mutation
+  check that removes the invalidation and requires the comparison to fail),
   `benchmarks/_prep_timeslice_ab.py` + `videos/rl2/animations/_prep_timeslice_ab_s05.py`
   (the prep optimizations, CPU, `ALGAN_OPT_DISABLE`-gated),
   `benchmarks/_event_index_parity.py` (the interval index, CPU),
@@ -842,6 +849,82 @@ the row *map* that is grown in place, and nothing hands out views into that.)
 > a win, and do not spend more on search-count reductions here** -- the next
 > lever on remat, if it is ever worth one, is write traffic.
 
+### P7 -- the updater section, and what actually costs in replay (shipped)
+
+> **The measurement first, because it overturns the previous revision's item 1.**
+> `_replay_loop_probe_s05.py` now times each *section* of the replay loop
+> rather than lumping the residual together. Shares of `set_state_to_times`,
+> unprofiled run, after P7:
+>
+> | section | share |
+> | --- | --- |
+> | **updater section** (bodies + their accessor calls) | **31.2%** (was 43.9%) |
+> | `rematerialize` (tracked separately) | 23.4% |
+> | rate functions | 6.7% |
+> | `ev/interp` (elapsed, `a`, the `where`/clamp) | 3.5% |
+> | `ev/window` (mask + `nonzero`) | 3.2% |
+> | `ev/lerp` (kwargs + `cast_to_tensor` + `torch.lerp`) | 2.1% |
+> | `ev/select` (selector + `set_active_time_inds`) | 2.0% |
+> | event bodies net of accessors | 0.9% |
+> | pre-loop lookups, final reset | 0.3% |
+>
+> **The per-event machinery the previous revision proposed batching into one
+> `[F, T]` pass is ~11% of the stage in total, not 59%.** The earlier "59.3%
+> residual" was a residual, and it was mostly the *updater* loop, which that
+> revision's arithmetic silently folded into per-event overhead. A batched
+> window-test/interpolant pass is therefore worth at most ~2.5% of
+> `save_video`, before any of it is actually recovered -- not the ~14% claimed.
+> Two ranked items in a row have now died the same way (see P6); the rule that
+> keeps earning its keep is **measure the parts before designing for them**.
+>
+> Two fixes shipped against what the probe did find:
+>
+> * **The clone memo.** `_register_known_history_clones` ran on every traced
+>   updater Mob access -- 65 640 `register_history_clone` calls per pass -- to
+>   re-derive a mapping that changes only when `Mob.detach_history` runs. Now
+>   memoized per (event, mob id) behind a version counter that
+>   `register_updater_history_split`, the registry's only writer, bumps.
+>   **1.042x on the whole replay stage** (3.206 -> 3.076 s/pass,
+>   `AB_OPT=clonememo _prep_timeslice_ab_s05.py`), and
+>   `trace_updater_mob_access` 1.211 -> 0.262 s cumulative (4.6x).
+>   Gated `ALGAN_OPT_DISABLE=clonememo`.
+> * **Batched-axis `get_orthonormal_vector`.** It built the perpendicular basis
+>   with a Python loop over the three standard-basis seeds (~40 small
+>   dispatches) and is called per animated Cylinder point-move -- 1104 calls a
+>   pass on this scene, at ~1.08 ms each. All axes now project in one pass over
+>   a new axis dim. **Bit-identical** and **1.45x** on the updater's real shape.
+>
+> Together: updater section 2.276 -> 1.853 s and the updater body 4.970 ->
+> 3.927 s (1.27x), both arms measured under the same cProfile attribution.
+>
+> **Guards.** `benchmarks/_orthonormal_bitwise_ab.py` inlines the pre-rewrite
+> implementation and compares bit patterns (not just `==`, so a signed-zero
+> flip cannot pass) over 15 cases including axis-aligned seeds, spanning pairs,
+> zero vectors, NaN and float64. `benchmarks/_updater_clone_memo_parity.py`
+> compares full per-row state across windows of a scene that interleaves an
+> updater with `detach_history`, asserts the run actually registers clones,
+> bumps the version and hits the memo, **and mutates the invalidation away to
+> prove the check can fail** (it does: 78 of 120 location rows differ).
+> Fast suite x3 (127 s on run 3, in budget) and full renders 7/7 unchanged.
+>
+> **Three traps worth keeping:**
+>
+> * **The obvious mutant does not work.** Restoring the version counter *after*
+>   `register_updater_history_split` returns tests nothing: that function
+>   re-registers every updater's clones before it returns, while the counter is
+>   still bumped, so the damage is already undone. The mutant has to model a
+>   memo entry outliving the registry change -- i.e. remove the version check
+>   itself.
+> * **`cProfile` around the updater bodies inflates them ~20%** and dropped the
+>   probe's section coverage from 99.5% to 79.9%. It is now opt-in
+>   (`PROBE_CPROFILE=1`). Read a profiled run for *attribution* and an
+>   unprofiled one for *time*, never one for both.
+> * **`torch.where` chains are not `argmax`.** The batched rewrite must keep the
+>   original's zero-initialised, strictly-greater, first-max-wins selection:
+>   `argmax` differs on NaN, and starting from axis 0 instead of zeros differs
+>   when every residual is NaN. Both were caught by the bitwise A/B, not by the
+>   suites.
+
 ## Part 3 -- Authoring (90-110 s, outside `save_video`)
 
 Diffuse: no single site above ~4%. The top costs are `AttributeTimeline.get`
@@ -861,28 +944,31 @@ Prep is 78.2% and the render thread 48.0% (2026-08-15 re-profile, post P1-P6),
 so prep items still come first at equal size. Step 0 (re-profile) and the old
 item 1 (`_query_row_states`, resolved as P6 -- the premise was stale) are done.
 
-1. **`set_state_to_times` own time** -- 92.5 s (**23.3%**), the function-replay
-   loop's own overhead and the largest single item anywhere. **Measured into
-   its parts** (`videos/rl2/animations/_replay_loop_probe_s05.py`, 2026-08-15;
-   shares of the stage on a 6-window pass):
+1. **`set_state_to_times` own time** -- 92.5 s (**23.3%**), still the largest
+   single item. **Now measured section by section** (P7), which killed the
+   plan the previous revision put here (a batched `[F, T]` window-test and
+   interpolant pass): that machinery is **~11% of the stage**, worth at most
+   ~2.5% of `save_video` even if perfectly eliminated. What is actually left,
+   in order:
 
-   | part | share |
-   | --- | --- |
-   | **loop machinery residual** (window tests, `elapsed`/`a` interpolation, `torch.lerp`, kwargs dicts) | **59.3%** |
-   | `rematerialize` (tracked separately, not "own") | 31.1% |
-   | rate functions | 9.0% |
-   | event bodies **net of accessors** | 0.8% |
-   | selector + `set_active_time_inds` + pre-loop lookups | ~2% |
-
-   The bodies are free; the cost is ~830 us of small-tensor torch dispatches
-   *around* each of ~474 replayed events per window. The lever: the loop's
-   per-event inputs (`s`, `e`, `replay_end`) are **fixed for a render** (the
-   P4 invariant), so the window tests and the `elapsed`/`a` interpolants for
-   every event are one `[F, T]` elementwise pass instead of F small ones --
-   elementwise, so byte-safety is achievable; rate functions can be grouped
-   by shared function object (elementwise ones only) as a second step. Cache
-   the stacked event tensors per render with length + explicit invalidation,
-   **not** `TIMING_VERSION` (the P4 trap).
+   * **the updater section, 31.2%** -- the bodies themselves, now that P7 has
+     taken the trace-registry walk and the orthonormal loop out of them. The
+     remaining cost is per-Mob Python in the body: on this scene one updater
+     drives ~120 neurons and their synapses, and each `move_to` /
+     `set_start_point` / `move_between_points` is a separate animated call
+     with its own accessor round trip. The lever is **batching across the
+     mobs an updater touches** (one `[T, M, 3]` write instead of M writes),
+     which is a `Mob`-API change, not a timeline one, and needs its own
+     design. Note the general form: this is the same "fewer calls, not faster
+     ones" family as item 2.
+   * **rate functions, 6.7%** -- 2844 calls a pass, each on a small `[T,1,1]`
+     tensor. Groupable by shared function object *only* for the elementwise
+     ones; `torch.lerp` of the grouped result is not obviously byte-identical
+     across a regrouping, so this needs a bitwise A/B before it is worth
+     anything.
+   * the ~11% of per-event machinery, which is now a *small* item rather than
+     the headline -- and if it is ever done, the caching rule still holds:
+     key on length + explicit invalidation, **not** `TIMING_VERSION` (P4).
 2. **`AttributeTimeline.get` outside replay** -- 84.9 s (21.4%), 647k calls of
    ~130 us of Python + dispatch each. About two thirds of calls happen during
    the geometry build, not replay (harness: `get/full` 12 030 vs `get/replay`
