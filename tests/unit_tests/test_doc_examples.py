@@ -24,10 +24,17 @@ what each block can actually support, in three tiers:
     *authoring* a scene: wrong constructor arguments, a value of the wrong
     width, a method that no longer exists.
 
-``test_doc_example_renders`` (``slow``)
+``test_doc_example_renders`` (``slow``, opt-in)
     Actually renders those scripts at ``SMOKE_TEST``. This is the only tier that
     sees a render-time failure -- an updater that raises when it is evaluated
-    over a batch of frames, say -- and it is far too slow for the fast suite.
+    over a batch of frames, say.
+
+    It is expensive in memory as well as time: every example renders in this one
+    process, and the arenas do not all come back between them, so the whole tier
+    peaked at ~14.7 GB and was OOM-killed on a 16 GB machine. It therefore skips
+    unless ``ALGAN_RUN_DOC_RENDERS=1``. ``slow`` alone is not enough -- that only
+    excludes it from ``--fast``, and CI names its paths explicitly rather than
+    passing that flag, which is exactly how this tier took a runner down.
 
 A block that is deliberately not runnable (an anti-example showing what raises,
 a Manim-side snippet in a migration comparison) opts out with a
@@ -61,6 +68,16 @@ SKIP_MARKER = "algan-doc-check: skip"
 
 # How far above a directive to look for the marker.
 _MARKER_LOOKBACK = 4
+
+# The render tier is opt-in. See the module docstring: it is not merely slow, it
+# exhausts memory, and `slow` does not keep it out of CI because CI names its
+# paths instead of passing --fast.
+RUN_DOC_RENDERS = os.getenv("ALGAN_RUN_DOC_RENDERS") == "1"
+SKIP_RENDERS_REASON = (
+    "rendering every documented example in one process peaked at ~14.7 GB and "
+    "was OOM-killed; the authoring tier covers these same scripts. Set "
+    "ALGAN_RUN_DOC_RENDERS=1 to run it anyway."
+)
 
 # Blocks that fail for a reason already being worked on. Keyed by the block id
 # ("<path>:<line>") that the parametrization reports, so a failure names exactly
@@ -403,13 +420,18 @@ def test_doc_example_authors_without_error(example: DocExample):
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(not RUN_DOC_RENDERS, reason=SKIP_RENDERS_REASON)
 @pytest.mark.parametrize("example", COMPLETE, ids=_ids(COMPLETE))
 def test_doc_example_renders(example: DocExample):
     """Complete documented scripts render end to end at SMOKE_TEST.
 
-    Marked ``slow`` because it renders every example: this is the only tier
-    that catches a failure occurring during materialization or rasterization
-    rather than during authoring, and it costs far more than the fast suite's
-    whole budget.
+    The only tier that catches a failure occurring during materialization or
+    rasterization rather than during authoring. Opt in with
+    ``ALGAN_RUN_DOC_RENDERS=1``; see the module docstring for why it is not on
+    by default.
     """
     _run_example(example, render=True)
+    # Reclaim between examples. Every example renders in this one process and
+    # the arenas are not all released on scope exit, so without this the tier
+    # grows without bound and is killed part way through.
+    algan.empty_cache()

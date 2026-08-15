@@ -297,7 +297,7 @@ in three tiers, because the blocks do not all support the same checking:
 | --- | --- | --- | --- |
 | `test_doc_example_uses_public_api` | every block, statically | a name or setting the docs still use after it was renamed or removed | yes, ~1 s |
 | `test_doc_example_authors_without_error` | blocks that are complete scripts, with rendering stubbed | anything that raises while *authoring*: wrong constructor arguments, a value of the wrong width, a method that is gone | yes, ~14 s |
-| `test_doc_example_renders` | the same scripts, rendered at `SMOKE_TEST` | render-time failures — an updater that raises once it is evaluated over a batch of frames | no, `slow` |
+| `test_doc_example_renders` | the same scripts, rendered at `SMOKE_TEST` | render-time failures — an updater that raises once it is evaluated over a batch of frames | no — opt in with `ALGAN_RUN_DOC_RENDERS=1` |
 
 Most documented code is a *fragment* — a few lines operating on an undefined
 `mob` — which can never be a runnable scene without inventing scaffolding around
@@ -319,6 +319,17 @@ comparison, and examples needing assets or system packages the repository does
 not carry. For a block broken by a bug that is already being worked on, add it to
 `KNOWN_BROKEN` in that module with a reason instead, so it is skipped loudly
 rather than quietly deleted.
+
+The render tier is gated on an environment variable rather than on `slow` alone,
+and the distinction matters: `slow` only drops a test from `--fast`, and CI names
+its paths explicitly instead of passing that flag (see the comment in
+`.github/workflows/test.yaml`). Rendering all ~82 documented scripts in one
+process peaked at **14.7 GB** and was OOM-killed, which is how it took a runner
+down before the gate was added. Run it deliberately, on a machine with headroom:
+
+```bash
+ALGAN_RUN_DOC_RENDERS=1 <venv-python> -m pytest -q tests/unit_tests/test_doc_examples.py -k renders
+```
 
 ### Known defects pinned as `xfail`
 
