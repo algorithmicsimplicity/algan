@@ -71,6 +71,7 @@ dependencies = [
     { name = "taichi" },
     { name = "torch" },
     { name = "torchvision" },
+    { name = "tqdm" },
     { name = "trimesh", version = "4.12.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "trimesh", version = "5.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
 ]
@@ -155,6 +156,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.0.0" },
     { name = "torchaudio", marker = "extra == 'audio'", specifier = ">=2.0.0" },
     { name = "torchvision", specifier = ">=0.15.0" },
+    { name = "tqdm", specifier = ">=4.51.0" },
     { name = "transformers", marker = "extra == 'audio'", specifier = ">=4.30.0" },
     { name = "trimesh", specifier = ">=4.0.0" },
     { name = "types-decorator", marker = "extra == 'dev'", specifier = ">=5.1.8.20250121" },

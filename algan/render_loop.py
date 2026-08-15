@@ -27,6 +27,8 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
 import torch
+from tqdm import tqdm
+from tqdm.contrib.logging import logging_redirect_tqdm
 
 import algan.rendering.raytracing.settings as rt_settings_module
 from algan.animation_timeline.animation_contexts import Off
@@ -80,33 +82,70 @@ _PREBUILT_COLLECTION = object()
 _ACTOR_SHARE_RETREAT = 0.5
 
 
-def _emit_render_progress(done, total):
+@contextlib.contextmanager
+def _render_progress(total):
     """Report render progress on the frame the user is waiting for.
 
-    Deliberately hand-rolled rather than tqdm: Algan's output already goes
-    through ``logging`` to stderr, and a second stream writer would fight the
-    handler over the same line. On a terminal this rewrites one line in place;
-    everywhere else (pytest, CI, the render daemon) it degrades to a periodic
-    log line so captured output stays readable.
+    Yields a callable to invoke once per frame written.
+
+    On a terminal this is a tqdm bar, which buys the estimate the old in-place
+    percentage line never gave: renders run for minutes, and "22.9%" does not
+    tell you whether to wait. Everywhere else -- pytest, CI, the render daemon
+    -- it stays a periodic log line rather than tqdm's own non-TTY fallback,
+    which emits a line per update and buries a captured run in carriage
+    returns. This degrades to at most ten lines, and to silence for renders too
+    short for a progress report to tell anyone anything.
+
+    Whether to report at all is settled once, on entry, rather than per frame:
+    a bar is an object with a lifetime, so a level change mid-render can no
+    longer conjure or retire one.
     """
     if not logger.isEnabledFor(logging.INFO):
+        yield lambda: None
         return
-    if _PROGRESS_IS_TTY:
-        sys.stderr.write(
-            f"\rRendering {done}/{total} frames ({100 * done / total:5.1f}%)"
-        )
-        sys.stderr.flush()
-    elif total >= _PROGRESS_MIN_LOGGED_FRAMES and done % max(1, total // 10) == 0:
-        # Captured output gets at most ten lines, and short renders none: they
-        # finish before a progress report would tell anyone anything.
-        logger.info("Rendering %d/%d frames (%.0f%%)", done, total, 100 * done / total)
 
+    if not _PROGRESS_IS_TTY:
+        done = 0
+        step = max(1, total // 10)
 
-def _finish_render_progress():
-    """Close off an in-place progress line so the next log line starts clean."""
-    if _PROGRESS_IS_TTY and logger.isEnabledFor(logging.INFO):
-        sys.stderr.write("\n")
-        sys.stderr.flush()
+        def report_logged():
+            nonlocal done
+            done += 1
+            if total >= _PROGRESS_MIN_LOGGED_FRAMES and done % step == 0:
+                logger.info(
+                    "Rendering %d/%d frames (%.0f%%)", done, total, 100 * done / total
+                )
+
+        yield report_logged
+        return
+
+    bar = tqdm(
+        total=total,
+        desc="Rendering",
+        unit="frame",
+        file=sys.stderr,
+        dynamic_ncols=True,
+        # Global average rather than tqdm's default EWMA (smoothing=0.3).
+        # Frames do not arrive at a steady rate: the memory model sizes each
+        # batch at runtime and grows it geometrically, so a batch's frames land
+        # together and the next stalls while it preps, and an OOM retry
+        # re-renders a shrunken window. An EWMA tracks those bursts and swings
+        # the estimate hardest over the early batches, which is when people
+        # actually read it.
+        smoothing=0,
+    )
+    try:
+        # Route console logging through tqdm.write for the bar's lifetime, so a
+        # warning or a PERF batch-split mid-render prints above the bar instead
+        # of smearing it. Only handlers writing to stdout/stderr are swapped, so
+        # a user's file handler is left alone; a console handler that is not a
+        # StreamHandler at all (Manim's rich one) is out of reach and still
+        # collides. Algan's logger does not propagate, so it is redirected by
+        # name rather than reached through the root.
+        with logging_redirect_tqdm(loggers=[get_logger(), logging.root]):
+            yield lambda: bar.update(1)
+    finally:
+        bar.close()
 
 
 class EmptySceneWarning(Warning):
@@ -2811,10 +2850,9 @@ class RenderLoopMixin:
             )
             start_ind, end_ind = self.scene_times[-1]
             total_frames = max(1, end_ind - start_ind)
-            frames_done = 0
             try:
                 # Wait for the writer process to complete
-                with preserve:
+                with preserve, _render_progress(total_frames) as report_frame:
                     for frame_batch in self.get_frames(
                         *self.scene_times[-1],
                         background_color=background_color,
@@ -2826,10 +2864,8 @@ class RenderLoopMixin:
                             # After the put: the queue is bounded and feeds the
                             # encoder thread, so reporting first would run the
                             # progress ahead of the actual encode.
-                            frames_done += 1
-                            _emit_render_progress(frames_done, total_frames)
+                            report_frame()
             finally:
-                _finish_render_progress()
                 if previous_scene_times is not None:
                     self.scene_times[:] = previous_scene_times
 
