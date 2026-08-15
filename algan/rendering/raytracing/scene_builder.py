@@ -1529,8 +1529,14 @@ def _merge_scene(primitives):
         # tens of MB of identical frames on ordinary scenes (rigid motion
         # lives in tri_pos, which is deliberately not collapsed).
         if SETTINGS.raytracing.MERGE_DEDUP_TIME:
-            for _k in ("tri_norm", "tri_mat_id", "tri_mat", "tri_colors",
-                       "tri_extra", "tri_uvs"):
+            for _k in (
+                "tri_norm",
+                "tri_mat_id",
+                "tri_mat",
+                "tri_colors",
+                "tri_extra",
+                "tri_uvs",
+            ):
                 scene[_k] = _dedup_time(scene[_k])
 
         # Per-(frame, prim) visibility/opacity masks for the hybrid raster
@@ -1669,8 +1675,7 @@ def _merge_scene(primitives):
         # Same time-band collapse as the triangle tables (consumers all read
         # ``f % shape[0]``); pn_ctrl/pn_obb stay full-T with the geometry.
         if SETTINGS.raytracing.MERGE_DEDUP_TIME:
-            for _k in ("pn_norm", "pn_extra", "pn_colors", "pn_mat_id",
-                       "pn_mat"):
+            for _k in ("pn_norm", "pn_extra", "pn_colors", "pn_mat_id", "pn_mat"):
                 scene[_k] = _dedup_time(scene[_k])
         lo = _cat_collections([p._rt_frame_lo for p in pn_patches], 1, "pn merge")
         hi = _cat_collections([p._rt_frame_hi for p in pn_patches], 1, "pn merge")
@@ -1804,8 +1809,12 @@ def _merge_scene(primitives):
         # ``f % edges_2d.shape[0]``, so the two stay consistent by
         # construction).
         if SETTINGS.raytracing.MERGE_DEDUP_TIME:
-            for _k in ("circuit_meta", "circuit_colors",
-                       "circuit_border_colors", "edges_2d"):
+            for _k in (
+                "circuit_meta",
+                "circuit_colors",
+                "circuit_border_colors",
+                "edges_2d",
+            ):
                 scene[_k] = _dedup_time(scene[_k])
         # Degenerate sampled edges use the exact sentinel row installed by
         # BezierCircuitPrimitives._build_circuit_geometry.  A batch containing

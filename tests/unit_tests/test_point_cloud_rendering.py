@@ -108,15 +108,15 @@ def test_dot_cloud_spheres_have_disconnected_triangle_topology(scene):
     geometry = cloud.children[0]
     primitive = cloud.get_render_primitives()[0]
     triangles = primitive.corners.reshape(-1, 3, 3)
-    triangles_per_sphere = 2 * (geometry.grid_width - 1) * (
-        geometry.grid_height - 1
-    )
+    triangles_per_sphere = 2 * (geometry.grid_width - 1) * (geometry.grid_height - 1)
 
     assert len(triangles) == len(points) * triangles_per_sphere
 
     nearest_center = (
-        triangles.unsqueeze(-2) - points.reshape(1, 1, -1, 3)
-    ).norm(dim=-1).argmin(dim=-1)
+        (triangles.unsqueeze(-2) - points.reshape(1, 1, -1, 3))
+        .norm(dim=-1)
+        .argmin(dim=-1)
+    )
     assert torch.all(nearest_center == nearest_center[:, :1])
 
     deferred_primitive = get_render_primitives_batched([geometry])[0]

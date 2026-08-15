@@ -93,7 +93,6 @@ def _row_backed_animatable_state(mob: Mob) -> dict[str, torch.Tensor]:
     twice.  Restricting the snapshot to attributes with rows owned by ``mob``
     gives us the actual state that ``become`` can overwrite.
     """
-
     timeline_manager = mob.scene.timeline_manager
     state = {}
     for attr in dict.fromkeys(mob.animatable_attrs):
@@ -133,7 +132,6 @@ def _preserve_algan_state_unchanged_by_manim(
     recursive parent edit: that historical edit is not retroactively replayed on
     the new child.
     """
-
     current_state = _row_backed_animatable_state(current)
     before_state = _row_backed_animatable_state(before)
     after_state = _row_backed_animatable_state(after)
@@ -161,7 +159,6 @@ def _preserve_algan_state_unchanged_by_manim(
 
 def _uniform_color_and_opacity(color, opacity):
     """Return one Manim-compatible RGB string and effective opacity."""
-
     color = color.reshape(-1, color.shape[-1])[0]
     opacity = opacity.reshape(-1)[0]
     rgb = "#" + "".join(
@@ -173,7 +170,6 @@ def _uniform_color_and_opacity(color, opacity):
 
 def _sync_image_geometry_to_manim(algan_mob: ImageMob, manim_mob):
     """Push an ImageMob's current affine pose into its Manim ImageMobject."""
-
     location = algan_mob.location.reshape(-1, 3)[0].detach().cpu().numpy()
     basis = algan_mob.basis.reshape(-1, 3, 3)[0].detach().cpu().numpy()
     right, up = basis[0], basis[1]
@@ -201,20 +197,14 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
     We therefore update only geometry/style fields in place and recurse through
     the already-corresponding subobject graph.
     """
-
-    if isinstance(manim_mob, _manim.ImageMobject) and isinstance(
-        algan_mob, ImageMob
-    ):
+    if isinstance(manim_mob, _manim.ImageMobject) and isinstance(algan_mob, ImageMob):
         _sync_image_geometry_to_manim(algan_mob, manim_mob)
         return
 
     if isinstance(algan_mob, ManimMob):
         if len(manim_mob.points) > 0:
             points = (
-                algan_mob.control_points.location.reshape(-1, 3)
-                .detach()
-                .cpu()
-                .numpy()
+                algan_mob.control_points.location.reshape(-1, 3).detach().cpu().numpy()
             )
             # Parent transforms cannot change a Manim path's point count.  If
             # an Algan-only structural morph has done so, keeping the semantic
@@ -239,9 +229,9 @@ def _sync_manim_node_from_algan(algan_mob: Mob, manim_mob):
             stroke_color, stroke_opacity = _uniform_color_and_opacity(
                 border_color, border_opacity_source
             )
-            stroke_width = float(
-                algan_mob.border_width.reshape(-1)[0].detach().cpu()
-            ) * 2
+            stroke_width = (
+                float(algan_mob.border_width.reshape(-1)[0].detach().cpu()) * 2
+            )
             manim_mob.set_stroke(
                 stroke_color,
                 width=stroke_width,
@@ -438,13 +428,11 @@ class ManimCompatMob(ManimMob):
         as Axes keep their class-specific state while observing the current Algan
         pose and style.
         """
-
         _sync_manim_node_from_algan(self, self.manim_mobject)
         return self.manim_mobject
 
     def _prepare_manim_edit(self):
         """Return independent before/edit copies from a synchronized backing Mob."""
-
         self._sync_manim_from_algan()
         before = self.manim_mobject.copy()
         return before, before.copy()
@@ -457,7 +445,6 @@ class ManimCompatMob(ManimMob):
         glow, colors and any other timeline-backed attribute survive a later
         delegated geometry operation.
         """
-
         if before_source is None:
             self._sync_manim_from_algan()
             before_source = self.manim_mobject.copy()

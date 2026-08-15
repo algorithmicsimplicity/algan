@@ -8,6 +8,7 @@ Utilities
 
    ~utils.algan_utils
    ~utils.animation_utils
+   ~utils.file_utils
    ~utils.memory_utils
    ~utils.mob_utils
    ~utils.manim_svg_cache

@@ -40,9 +40,9 @@ with Off():
         font=FONT,
     ).move(UP * 3.0)
 
-    plain = Text(
-        "regular", font_size=34, color=BLUE_A, font=FONT
-    ).move(LEFT * 4.3 + UP * 1.8)
+    plain = Text("regular", font_size=34, color=BLUE_A, font=FONT).move(
+        LEFT * 4.3 + UP * 1.8
+    )
     bold = Text("bold", font_size=34, weight="BOLD", color=GREEN_A, font=FONT).move(
         LEFT * 4.3 + UP * 1.1
     )
@@ -50,7 +50,8 @@ with Off():
         LEFT * 4.3 + UP * 0.4
     )
     markup = MarkupText(
-        '<span foreground="#ffd700">markup</span>', font_size=34,
+        '<span foreground="#ffd700">markup</span>',
+        font_size=34,
         font=FONT,
     ).move(LEFT * 4.3 + DOWN * 0.3)
     # The mesh-backed variants: same glyphs, triangulated instead of packed as
@@ -199,9 +200,7 @@ with Off():
     media_labels = Group(
         Text(
             "textured / per-pixel ImageMob", font_size=21, color=GRAY_A, font=FONT
-        ).move(
-            LEFT * 3.7 + DOWN * 1.35
-        ),
+        ).move(LEFT * 3.7 + DOWN * 1.35),
         Text("glTF + PBR + normal map", font_size=21, color=GRAY_A, font=FONT).move(
             DOWN * 1.9
         ),

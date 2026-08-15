@@ -100,9 +100,7 @@ with Off():
         y_length=2.8,
         bar_colors=["#4c9eff", "#5cd65c", "#ffb14c", "#ff6f6f"],
     ).move(LEFT * 3.6 + UP * 0.3)
-    matrix = (
-        IntegerMatrix([[1, 2], [3, 4]]).scale(0.85).move(RIGHT * 0.4 + UP * 0.5)
-    )
+    matrix = IntegerMatrix([[1, 2], [3, 4]]).scale(0.85).move(RIGHT * 0.4 + UP * 0.5)
     table = IntegerTable([[1, 2], [3, 4]]).scale(0.6).move(RIGHT * 3.9 + UP * 0.4)
     graph = Graph(
         [1, 2, 3, 4],

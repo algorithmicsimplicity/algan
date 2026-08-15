@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from algan import Axes, BLUE, Group, Off, RIGHT, Scene, Star, UP
+from algan import BLUE, RIGHT, UP, Axes, Group, Off, Scene, Star
 
 
 def _tensor(value):

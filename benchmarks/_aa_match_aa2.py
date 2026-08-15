@@ -268,9 +268,7 @@ def render_once(cfg, aa_level, analytic, tag, reps=2):
         SceneManager.reset()
         set_fragment_shading(cfg in FRAG)
         set_ray_traced_shadows(cfg in SHADOWED)
-        rt_settings.set_analytic_aa(
-            analytic, bezier=True, triangles=True, exact=EXACT
-        )
+        rt_settings.set_analytic_aa(analytic, bezier=True, triangles=True, exact=EXACT)
         settings = VideoSettings(
             (BASE_W, BASE_H), frames_per_second=FPS, anti_alias_level=aa_level
         )

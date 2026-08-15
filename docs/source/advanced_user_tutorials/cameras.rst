@@ -183,24 +183,27 @@ Use :meth:`~algan.animatable_base.mob_movement.MobMovementMixin.move_to` or
 a Camera's box spans both it and its internal screen plane, so the camera would
 land half the screen distance too far back.
 
-If you want no perspective at all, see :ref:`Orthographic Projection
-<camera-orthographic>` below.
+If you want as little perspective as possible, see :ref:`Near-Orthographic
+Projection <camera-orthographic>` below.
 
 .. _camera-orthographic:
 
-Orthographic Projection
-=======================
+Near-Orthographic Projection
+============================
 
-An orthographic camera has no perspective at all: parallel lines stay parallel and
-distance does not change apparent size. That is what you want for technical
-diagrams, cross-sections, and anything where the viewer must compare sizes.
+Algan's renderer has no true parallel-ray orthographic projection.
+:meth:`~algan.rendering.camera.Camera.set_near_orthographic` approximates one the
+way a photographer does: it moves the camera a very long way from its screen and
+narrows the lens to match, so foreshortening shrinks to almost nothing. That is
+what you want for technical diagrams, cross-sections, and anything where the
+viewer must compare sizes.
 
 .. algan:: CameraOrthographic
 
     from algan import *
 
     with Off():
-        Scene.get_camera().set_to_orthographic()
+        Scene.get_camera().set_near_orthographic()
         cubes = Group([Cube(side_length=0.8, color=BLUE).move(IN * 1.6 * i + RIGHT * 0.9 * i)
                        for i in range(4)]).spawn()
 
@@ -209,12 +212,19 @@ diagrams, cross-sections, and anything where the viewer must compare sizes.
 
     Scene.save_video()
 
-All four cubes are the same apparent size however far away they are. Compare it
-with :ref:`the perspective version <camera-fov>` above.
+The four cubes are near enough the same apparent size to read as equal. Compare
+it with :ref:`the perspective version <camera-fov>` above.
 
-:meth:`~algan.rendering.camera.Camera.set_near_orthographic` gives a near-orthographic projection --
-a very long lens rather than a true parallel projection -- which keeps a little
-depth cue while staying nearly distortion-free.
+``set_near_orthographic(distance=...)`` takes the camera-to-screen distance, which
+defaults to ``1e5``. A smaller value keeps a little depth cue; a larger one flattens
+further.
+
+.. note::
+
+    :meth:`~algan.rendering.camera.Camera.set_to_orthographic` is a legacy name
+    for the same approximation. It warns and delegates to
+    :meth:`~algan.rendering.camera.Camera.set_near_orthographic`; call the latter
+    directly.
 
 Clipping Planes
 ===============

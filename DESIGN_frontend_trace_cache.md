@@ -359,20 +359,31 @@ def replay_cb(kernel_cxx):
     rt = self.runtime
     rt.inside_kernel, rt.current_kernel, rt.compiling_callable = True, self, kernel_cxx
     try:
-        h = [None] * trace.handle_count          # handle table, preallocated
-        ext = resolve_externs(kernel_cxx)        # kernel, ast_builder, config, dtypes
-        dbg = [DebugInfo(s) for s in trace.srcinfo]   # §5.4, if interning is legal
-        ops, argidx, argdata, fns = trace.ops, trace.argidx, trace.argdata, trace.fn_table
+        h = [None] * trace.handle_count  # handle table, preallocated
+        ext = resolve_externs(kernel_cxx)  # kernel, ast_builder, config, dtypes
+        dbg = [DebugInfo(s) for s in trace.srcinfo]  # §5.4, if interning is legal
+        ops, argidx, argdata, fns = (
+            trace.ops,
+            trace.argidx,
+            trace.argdata,
+            trace.fn_table,
+        )
         hi = 0
         for i in range(len(ops)):
             a = decode_args(argdata, argidx[i], argidx[i + 1], h, ext, dbg, trace)
             r = fns[ops[i]](*a)
             if r is not None:
-                h[hi] = r; hi += 1
+                h[hi] = r
+                hi += 1
     finally:
-        rt.inside_kernel = False; rt.current_kernel = None; rt.compiling_callable = None
+        rt.inside_kernel = False
+        rt.current_kernel = None
+        rt.compiling_callable = None
 
-taichi_kernel = impl.get_runtime().prog.create_kernel(replay_cb, kernel_name, self.autodiff_mode)
+
+taichi_kernel = impl.get_runtime().prog.create_kernel(
+    replay_cb, kernel_name, self.autodiff_mode
+)
 self.compiled_kernels[key] = taichi_kernel
 self.has_print = trace.meta["has_print"]
 ```

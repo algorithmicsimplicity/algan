@@ -259,7 +259,9 @@ with Seq():
     # Two updaters: one drives the hub, the other tracks the frame it defines.
     spin_id = hub.add_updater(lambda mob, time: mob.rotate(time * 200.0, OUT))
     orbit_id = satellite.add_updater(
-        lambda mob, time: mob.move_to(hub.get_center() + hub.get_right_direction() * 1.0)
+        lambda mob, time: mob.move_to(
+            hub.get_center() + hub.get_right_direction() * 1.0
+        )
     )
     # ``become`` morphs position as well as shape, so the targets are built
     # where the morphing Mob already is.
@@ -318,8 +320,17 @@ with Off():
     # Two cubic segments closing into a leaf shape.
     leaf_controls = torch.stack(
         (
-            torch.stack((LEFT * 0.7, LEFT * 0.3 + UP * 0.9, RIGHT * 0.3 + UP * 0.9, RIGHT * 0.7)),
-            torch.stack((RIGHT * 0.7, RIGHT * 0.3 + DOWN * 0.9, LEFT * 0.3 + DOWN * 0.9, LEFT * 0.7)),
+            torch.stack(
+                (LEFT * 0.7, LEFT * 0.3 + UP * 0.9, RIGHT * 0.3 + UP * 0.9, RIGHT * 0.7)
+            ),
+            torch.stack(
+                (
+                    RIGHT * 0.7,
+                    RIGHT * 0.3 + DOWN * 0.9,
+                    LEFT * 0.3 + DOWN * 0.9,
+                    LEFT * 0.7,
+                )
+            ),
         )
     )
     raw_circuit = BezierCircuitCubic(
@@ -358,9 +369,9 @@ with Off():
         Text("per-vertex colour", font_size=19, color=GRAY_A, font=FONT).move(
             LEFT * 4.6 + DOWN * 0.85
         ),
-        Text(
-            "raw circuit", font_size=19, color=GRAY_A, font=FONT
-        ).move(LEFT * 2.3 + DOWN * 0.85),
+        Text("raw circuit", font_size=19, color=GRAY_A, font=FONT).move(
+            LEFT * 2.3 + DOWN * 0.85
+        ),
         Text("Quad", font_size=19, color=GRAY_A, font=FONT).move(DOWN * 0.85),
         Text("QuadTriangulated", font_size=19, color=GRAY_A, font=FONT).move(
             RIGHT * 2.6 + DOWN * 0.85
@@ -430,18 +441,18 @@ with Off():
         ),
     ).move(RIGHT * 4.2 + UP * 0.55)
     point_labels = Group(
-        Text(
-            "DotCloud", font_size=20, color=GRAY_A, font=FONT
-        ).move(LEFT * 4.2 + DOWN * 0.75),
+        Text("DotCloud", font_size=20, color=GRAY_A, font=FONT).move(
+            LEFT * 4.2 + DOWN * 0.75
+        ),
         Text("PointCloudDot", font_size=20, color=GRAY_A, font=FONT).move(
             LEFT * 1.4 + DOWN * 0.75
         ),
-        Text(
-            "TrueDot", font_size=20, color=GRAY_A, font=FONT
-        ).move(RIGHT * 1.4 + DOWN * 0.75),
-        Text(
-            "PGroup", font_size=20, color=GRAY_A, font=FONT
-        ).move(RIGHT * 4.2 + DOWN * 0.75),
+        Text("TrueDot", font_size=20, color=GRAY_A, font=FONT).move(
+            RIGHT * 1.4 + DOWN * 0.75
+        ),
+        Text("PGroup", font_size=20, color=GRAY_A, font=FONT).move(
+            RIGHT * 4.2 + DOWN * 0.75
+        ),
     )
 
 with Seq():

@@ -211,8 +211,8 @@ for it before you start raising every light's intensity.
 Writing your own pass
 ---------------------
 
-A post-process is a callable taking the frame batch and returning it modified. Pass
-any number of them and they run in order:
+A post-process is a callable taking the frame batch and Algan's render arena, and
+returning the frames modified. Pass any number of them and they run in order:
 
 .. code-block:: python
 
@@ -225,9 +225,14 @@ any number of them and they run in order:
 
     Scene.save_video("out", post_processes=(bloom_filter, desaturate))
 
-Frames arrive as a torch tensor on the render device. Accept a ``memory`` keyword
-argument if you want to allocate from Algan's render arena rather than the torch
-allocator; see :doc:`performance_and_quality`.
+Frames arrive as a torch tensor on the render device.
+
+The ``memory`` keyword is **required**, not optional: Algan always calls a pass as
+``process(frames, memory=arena)``, so a pass declared as ``def desaturate(frames)``
+raises ``TypeError`` part way through the render. Give it a default of ``None`` and
+ignore it, as above, or accept ``**kwargs``. Use it when you want to allocate from
+Algan's render arena rather than the torch allocator; see
+:doc:`performance_and_quality`.
 
 See Also
 ========

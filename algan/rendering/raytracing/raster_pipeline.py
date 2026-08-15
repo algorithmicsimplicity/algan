@@ -25,6 +25,8 @@ from algan.settings import SETTINGS
 rt_settings = SETTINGS.raytracing
 from algan.rendering.raytracing.raster_taichi import (
     _AA_DUMP_COLS as AA_DUMP_COLS,
+)
+from algan.rendering.raytracing.raster_taichi import (
     _AA_MASK_ALL as AA_MASK_ALL,
 )
 from algan.rendering.raytracing.raster_taichi import (
@@ -75,8 +77,7 @@ def _aa_dump_buffer(req, device):
     A plain torch allocation, never an arena tensor: this is a diagnostic and
     must not perturb the runtime memory model's view of a chunk's footprint.
     """
-    buf = torch.zeros((_AA_DUMP_ROWS, AA_DUMP_COLS), dtype=torch.float32,
-                      device=device)
+    buf = torch.zeros((_AA_DUMP_ROWS, AA_DUMP_COLS), dtype=torch.float32, device=device)
     buf[0, 0] = float(req[0])
     buf[0, 1] = float(req[1])
     buf[0, 2] = float(req[2])
@@ -95,8 +96,15 @@ def _aa_dump_arg(device):
     return t
 
 
-_AA_DUMP_NOTES = {0: "", 1: "eff-skip", 2: "bounce", 3: "occl", 4: "far-clip",
-                  5: "invalid", 6: "seam-skip"}
+_AA_DUMP_NOTES = {
+    0: "",
+    1: "eff-skip",
+    2: "bounce",
+    3: "occl",
+    4: "far-clip",
+    5: "invalid",
+    6: "seam-skip",
+}
 _AA_DUMP_KINDS = {0: "tri", 1: "bez", 2: "z-tri", 3: "z-bez"}
 
 
@@ -112,20 +120,24 @@ def _aa_dump_emit(tag, buf):
     for r in rows[1 : 1 + n]:
         if r[0] < 0:
             svis = " ".join(f"{v:.4f}" for v in r[16:24])
-            print(f"[aa-dump:{tag}]   end bounced={int(r[1])} done={int(r[2])}"
-                  f" processed={int(r[3])} vis_all={r[4]:.5f}"
-                  f" acc=({r[5]:.4f},{r[6]:.4f},{r[7]:.4f},{r[8]:.4f})"
-                  f" w=({r[9]:.4f},{r[10]:.4f},{r[11]:.4f}) svis=[{svis}]")
+            print(
+                f"[aa-dump:{tag}]   end bounced={int(r[1])} done={int(r[2])}"
+                f" processed={int(r[3])} vis_all={r[4]:.5f}"
+                f" acc=({r[5]:.4f},{r[6]:.4f},{r[7]:.4f},{r[8]:.4f})"
+                f" w=({r[9]:.4f},{r[10]:.4f},{r[11]:.4f}) svis=[{svis}]"
+            )
             continue
         kind = _AA_DUMP_KINDS.get(int(r[1]), "?")
         note = _AA_DUMP_NOTES.get(int(r[2]), "?")
         svis = " ".join(f"{v:.4f}" for v in r[16:24])
-        print(f"[aa-dump:{tag}]   q={int(r[0]):3d} {kind:5s} {note:9s}"
-              f" ref={int(r[3])} sid={int(r[4])} face={int(r[5])}"
-              f" msk={int(r[6]):02x} cov={r[7]:.5f} pop={int(r[8])}"
-              f" corr={r[9]:.5f} eff={r[10]:.5f} a_mat={r[11]:.4f}"
-              f" alpha={r[12]:.5f} ts={r[13]:.4f} rmax={r[14]:.4f}"
-              f" t={r[15]:.5f} svis=[{svis}]")
+        print(
+            f"[aa-dump:{tag}]   q={int(r[0]):3d} {kind:5s} {note:9s}"
+            f" ref={int(r[3])} sid={int(r[4])} face={int(r[5])}"
+            f" msk={int(r[6]):02x} cov={r[7]:.5f} pop={int(r[8])}"
+            f" corr={r[9]:.5f} eff={r[10]:.5f} a_mat={r[11]:.4f}"
+            f" alpha={r[12]:.5f} ts={r[13]:.4f} rmax={r[14]:.4f}"
+            f" t={r[15]:.5f} svis=[{svis}]"
+        )
 
 
 def precompute_triangle_projection(
@@ -1186,9 +1198,11 @@ def prepare_sparse_raster_coverage(
     # to drop so it cannot fork pointless cache entries.
     aa_tri_ss = 0
     if aa_tri:
-        aa_tri_ss = 1 + (
-            2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode()
-        ) + 4 * min(aa_tri - 1, 2)
+        aa_tri_ss = (
+            1
+            + (2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode())
+            + 4 * min(aa_tri - 1, 2)
+        )
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     tri_pos = merged["tri_pos"]
     cam_args = (cam_origin, screen_point, pixel_basis_x, pixel_basis_y)
@@ -1966,9 +1980,11 @@ def raster_iteration_zero(
         aa_tri = 4 if rt_settings.ANALYTIC_AA_RUN_RULE == "redistribute" else 3
     aa_tri_ss = 0
     if aa_tri:
-        aa_tri_ss = 1 + (
-            2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode()
-        ) + 4 * min(aa_tri - 1, 2)
+        aa_tri_ss = (
+            1
+            + (2 if aa_tri >= 3 else rt_settings.analytic_aa_sliver_mode())
+            + 4 * min(aa_tri - 1, 2)
+        )
     aa_grp = 1 if ((aa_bez or aa_tri) and rt_settings.ANALYTIC_AA_SEAM) else 0
     dump_req = _aa_dump_request()
     tri_pos = merged["tri_pos"]

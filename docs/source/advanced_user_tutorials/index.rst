@@ -19,6 +19,7 @@ narration, and control over how Algan renders.
    transparent_backgrounds
    audio_and_speech
    animating_out_of_order
+   multi_scene_projects
    performance_and_quality
    settings
    extending_algan

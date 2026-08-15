@@ -286,6 +286,56 @@ Organised by subsystem. The files worth knowing about:
   silently degrades rather than failing.
 - `test_raytracing_unit.py` — brute-force references for the tracer. Slow.
 - `test_render_coverage_audit.py` — keeps the render suite honest (above).
+- `test_doc_examples.py` — keeps `docs/` honest against `algan/` (below).
+
+### The documentation examples
+
+`test_doc_examples.py` extracts every Python block in `docs/source` and checks it
+in three tiers, because the blocks do not all support the same checking:
+
+| Tier | Covers | Catches | In `--fast` |
+| --- | --- | --- | --- |
+| `test_doc_example_uses_public_api` | every block, statically | a name or setting the docs still use after it was renamed or removed | yes, ~1 s |
+| `test_doc_example_authors_without_error` | blocks that are complete scripts, with rendering stubbed | anything that raises while *authoring*: wrong constructor arguments, a value of the wrong width, a method that is gone | yes, ~14 s |
+| `test_doc_example_renders` | the same scripts, rendered at `SMOKE_TEST` | render-time failures — an updater that raises once it is evaluated over a batch of frames | no — opt in with `ALGAN_RUN_DOC_RENDERS=1` |
+
+Most documented code is a *fragment* — a few lines operating on an undefined
+`mob` — which can never be a runnable scene without inventing scaffolding around
+it. That is why tier 1 exists and why it only flags **capitalized** free names:
+classes and constants are what get renamed, and lowercase names are the reader's
+own variables.
+
+A block that is deliberately not runnable opts out with an reStructuredText
+comment on the line above it, which never reaches the rendered page:
+
+```rst
+.. algan-doc-check: skip -- needs an asset that does not ship with the docs
+
+.. code-block:: python
+```
+
+Use it for anti-examples showing what raises, Manim-side snippets in a migration
+comparison, and examples needing assets or system packages the repository does
+not carry. For a block broken by a bug that is already being worked on, add it to
+`KNOWN_BROKEN` in that module with a reason instead, so it is skipped loudly
+rather than quietly deleted.
+
+The render tier is gated on an environment variable rather than on `slow` alone,
+and the distinction matters: `slow` only drops a test from `--fast`, and CI names
+its paths explicitly instead of passing that flag (see the comment in
+`.github/workflows/test.yaml`). That gap is how this tier took a runner down
+once: before the texture-timeline fix it peaked at **14.7 GB** and was
+OOM-killed part way through.
+
+With that fixed it renders 77 examples in about **two minutes at 2.3 GB**, so the
+gate is now a time budget rather than a memory cliff — two minutes is most of the
+fast suite's allowance, and CI would pay it on every run. Worth revisiting if the
+render-time coverage is wanted in CI; measure a cold Taichi cache first, since
+the number above is from a warm one. Run it locally with:
+
+```bash
+ALGAN_RUN_DOC_RENDERS=1 <venv-python> -m pytest -q tests/unit_tests/test_doc_examples.py -k renders
+```
 
 ### Known defects pinned as `xfail`
 

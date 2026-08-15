@@ -18,3 +18,5 @@ Rendering
    ~rendering.primitives.primitive
    ~rendering.primitives.triangle_primitive
    ~rendering.primitives.bezier_circuit_primitive
+   ~rendering.post_processing
+   ~rendering.memory_model

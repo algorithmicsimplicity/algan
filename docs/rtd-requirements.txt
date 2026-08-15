@@ -1,2 +1,3 @@
-jupyterlab
-sphinxcontrib-programoutput
+# Read the Docs builds install this file. It intentionally defers to
+# docs/requirements.txt so there is one list to keep current.
+-r requirements.txt

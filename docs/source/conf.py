@@ -103,17 +103,6 @@ html_extra_path = ["robots.txt"]
 
 exclude_patterns: list[str] = []
 
-# -- Options for internationalization ----------------------------------------
-# Set the destination directory of the localized po files
-locale_dirs = ["../i18n/"]
-
-# Splits the text in more pot files.
-gettext_compact = False
-
-# Remove useless metadata from po files.
-gettext_last_translator = ""
-gettext_language_team = ""
-
 # -- Options for HTML output -------------------------------------------------
 
 # The theme to use for HTML and HTML Help pages.  See the documentation for
@@ -132,8 +121,9 @@ html_theme_options = {
     "source_repository": "https://github.com/algorithmicsimplicity/algan/",
     "source_branch": "main",
     "source_directory": "docs/source/",
-    "light_logo": "manim-logo-sidebar.svg",
-    "dark_logo": "manim-logo-sidebar-dark.svg",
+    # Placeholder marks -- swap the two SVGs in _static for real Algan artwork.
+    "light_logo": "algan-logo-sidebar.svg",
+    "dark_logo": "algan-logo-sidebar-dark.svg",
     "light_css_variables": {
         "color-content-foreground": "#000000",
         "color-background-primary": "#ffffff",

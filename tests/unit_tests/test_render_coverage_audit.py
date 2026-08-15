@@ -198,9 +198,7 @@ def test_authoring_features_are_covered_by_a_scene(feature, names):
     assert not missing, f"{feature} coverage is missing {missing}"
 
 
-@pytest.mark.parametrize(
-    "scene_path", _scene_paths(), ids=lambda path: path.stem
-)
+@pytest.mark.parametrize("scene_path", _scene_paths(), ids=lambda path: path.stem)
 def test_scene_file_follows_the_harness_conventions(scene_path):
     """Scenes author a Scene; they never render one, and never import the world.
 
@@ -215,9 +213,10 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
     imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            imported.add(f"from {node.module} import " + ",".join(
-                alias.name for alias in node.names
-            ))
+            imported.add(
+                f"from {node.module} import "
+                + ",".join(alias.name for alias in node.names)
+            )
         elif isinstance(node, ast.Import):
             imported.update(alias.name for alias in node.names)
     assert imported <= {"from algan import *", "torch"}, (
@@ -228,10 +227,12 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
     )
 
     called = {
-        node.func.id for node in ast.walk(tree)
+        node.func.id
+        for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     } | {
-        node.func.attr for node in ast.walk(tree)
+        node.func.attr
+        for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
     forbidden = {"render_all_funcs", "save_video", "save_frame"} & called
@@ -247,9 +248,7 @@ def test_scene_file_follows_the_harness_conventions(scene_path):
 _FONT_BEARING_CLASSES = {"Text", "MarkupText", "Paragraph"}
 
 
-@pytest.mark.parametrize(
-    "scene_path", _scene_paths(), ids=lambda path: path.stem
-)
+@pytest.mark.parametrize("scene_path", _scene_paths(), ids=lambda path: path.stem)
 def test_scene_text_pins_a_vendored_font(scene_path):
     """Every Text-like call names a font, so renders do not depend on the host.
 

@@ -100,8 +100,9 @@ with Off():
             border_color=GREEN_A,
             border_width=10,
         ),
-        RegularPolygon(5, radius=0.55, color=MAROON_A, border_color=WHITE,
-                       border_width=4),
+        RegularPolygon(
+            5, radius=0.55, color=MAROON_A, border_color=WHITE, border_width=4
+        ),
         Polygon(*STAR_POINTS, color=YELLOW),
     ).arrange_in_line(RIGHT, buffer=0.7)
     circuits.move(UP * 1.35 - circuits.get_center())
@@ -127,9 +128,7 @@ with Off():
     formula = Tex(r"e^{i\pi}+1=0", color=YELLOW).scale(0.8).move(DOWN * 2.1)
     caption = Text(
         "circuits / meshes / glyphs", font_size=20, color=GRAY_A, font=FONT
-    ).move(
-        DOWN * 2.9
-    )
+    ).move(DOWN * 2.9)
 
 with Seq():
     title.spawn()

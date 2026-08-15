@@ -201,10 +201,15 @@ proportional cost.
 
 .. note::
 
-   Deterministic shadows are hard/soft binary visibility and ignore transparency.
-   For fully physical soft shadows through translucent media, use the Monte Carlo
-   path tracer instead: ``SETTINGS.raytracing.set(samples_per_pixel=64)``. It is
-   far slower -- see :doc:`performance_and_quality`.
+   Deterministic shadow rays *do* respect transparency: the light is multiplied
+   through each occluder's opacity, so stacked translucent surfaces compound and a
+   fully opaque one blocks. Ambient and emissive terms are unaffected.
+
+   What the deterministic renderer cannot do is refractive transport -- caustics,
+   and light bent as it passes through glass. That is the reason to reach for the
+   Monte Carlo path tracer, at a large cost in time. Note that raising
+   ``samples_per_pixel`` above 1 also gives up most of this page: see
+   :ref:`renderer-capabilities`.
 
 .. admonition:: How many lights can cast shadows?
    :class: seealso
@@ -228,11 +233,11 @@ Pass an equirectangular image (a longitude × latitude panorama, sky at the top)
 :meth:`Scene.set_environment_map <.Scene.set_environment_map>`, also available as
 the top-level ``set_environment_map``:
 
-.. code-block:: python
+.. algan:: LightingEnvironmentMap
 
     from algan import *
 
-    set_environment_map("studio_panorama.jpg", intensity=1.0, ambient=True)
+    set_environment_map("world_map.png", intensity=1.0, ambient=True)
 
     # A mirror sphere reflects the environment; other objects are lit by it.
     mirror = Sphere().move(LEFT * 1.5).set_material(
@@ -242,6 +247,9 @@ the top-level ``set_environment_map``:
     Sphere().move(RIGHT * 1.5).spawn()
 
     Scene.save_video()
+
+Any equirectangular image works -- the world map here is just one that ships with
+these docs. A real studio panorama gives a much better result.
 
 - ``intensity`` scales the map's brightness.
 - ``ambient=True`` (the default) also lights surfaces from the map. Set it to
@@ -282,7 +290,7 @@ ambient:
         PointLight(location=LEFT * 6 + OUT * 2, color=WHITE, intensity=4).spawn()
         # Rim: from behind, slightly cool.
         DirectionalLight(location=IN * 8 + UP * 4, target=ORIGIN,
-                         color=(0.6, 0.7, 1.0)).spawn()
+                         color=Color((0.6, 0.7, 1.0))).spawn()
         # Ambient: stops the shadow side going pure black.
         AmbientLight(color=WHITE, intensity=0.25).spawn()
 

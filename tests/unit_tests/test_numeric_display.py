@@ -40,9 +40,9 @@ def test_numeric_display_grows_integer_slots(
     initial, target, num_decimal_places, expected
 ):
     with Scene() as scene:
-        display = NumericDisplay(
-            initial, num_decimal_places=num_decimal_places
-        ).spawn(animate=False)
+        display = NumericDisplay(initial, num_decimal_places=num_decimal_places).spawn(
+            animate=False
+        )
 
         display.value = target
 
@@ -52,9 +52,9 @@ def test_numeric_display_grows_integer_slots(
 
 def test_num_integer_places_is_a_minimum_not_a_limit():
     with Scene() as scene:
-        display = NumericDisplay(
-            7, num_decimal_places=1, num_integer_places=3
-        ).spawn(animate=False)
+        display = NumericDisplay(7, num_decimal_places=1, num_integer_places=3).spawn(
+            animate=False
+        )
 
         assert display.num_integer_places == 3
         assert _displayed_value(display) == "7.0"

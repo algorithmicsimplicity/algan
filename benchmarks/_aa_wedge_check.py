@@ -32,12 +32,12 @@ import torch  # noqa: E402
 
 ti.init(arch=ti.cpu, default_fp=ti.f32)
 
+from algan.rendering.raytracing.primitives import (  # noqa: E402
+    _circuit_edge_inward_signs,
+)
 from algan.rendering.raytracing.raster_taichi import (  # noqa: E402
     _halfplane_clip_area,
     _two_halfplane_area,
-)
-from algan.rendering.raytracing.primitives import (  # noqa: E402
-    _circuit_edge_inward_signs,
 )
 
 FAILS = []
@@ -204,9 +204,7 @@ def part2():
         # antiparallel (the nd/near-parallel gates take those in production).
         turn = np.deg2rad(rng.uniform(30, 150)) * (1 if trial % 2 else -1)
         d_in = np.array([np.cos(ang), np.sin(ang)])
-        rot = np.array(
-            [[np.cos(turn), -np.sin(turn)], [np.sin(turn), np.cos(turn)]]
-        )
+        rot = np.array([[np.cos(turn), -np.sin(turn)], [np.sin(turn), np.cos(turn)]])
         d_out = rot @ d_in
         apex = rng.uniform(-0.45, 0.45, 2)
         poly = _corner_polygon(apex, d_in, d_out)
@@ -251,10 +249,12 @@ def part2():
         if err > worst[key]:
             worst[key] = err
             if err > 0.2:
-                print(f"     worst[{key}] tr{trial}: cov {cov:.3f} ({tag}) "
-                      f"true {true_cov:.3f} apex {apex.round(3)} "
-                      f"turn {np.rad2deg(turn):.0f} sd ({sd1:.3f},{sd2:.3f}) "
-                      f"sg ({sg1},{sg2}) cin {centre_inside}")
+                print(
+                    f"     worst[{key}] tr{trial}: cov {cov:.3f} ({tag}) "
+                    f"true {true_cov:.3f} apex {apex.round(3)} "
+                    f"turn {np.rad2deg(turn):.0f} sd ({sd1:.3f},{sd2:.3f}) "
+                    f"sg ({sg1},{sg2}) cin {centre_inside}"
+                )
     check(worst["convex"] < 0.08, f"convex corners, worst |err| {worst['convex']:.4f}")
     check(worst["reflex"] < 0.08, f"reflex corners, worst |err| {worst['reflex']:.4f}")
     print(

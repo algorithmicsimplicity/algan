@@ -1317,7 +1317,7 @@ def _parse_sort_mode(v):
     return "auto"
 
 
-WAVEFRONT_SORT_MATERIALS = "0"#auto"
+WAVEFRONT_SORT_MATERIALS = "0"  # auto"
 
 
 def set_material_sorting(enabled):

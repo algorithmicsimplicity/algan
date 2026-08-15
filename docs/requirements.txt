@@ -1,3 +1,18 @@
+# Sphinx build dependencies for docs/.
+#
+# Algan itself must also be importable (conf.py imports algan and
+# algan.utils.docbuild), as must manim, whose manim_directive is registered as
+# an extension. Install the project first:
+#
+#     uv sync --all-extras --dev
+#
+# The inheritance diagrams on the reference landing page additionally need the
+# Graphviz `dot` binary, which is a system package rather than a wheel:
+#
+#     apt install graphviz    /    brew install graphviz    /    choco install graphviz
+#
+# Without it the build still succeeds, but those diagrams degrade to raw DOT.
+algan
 furo
 myst-parser
 sphinx>=7.3

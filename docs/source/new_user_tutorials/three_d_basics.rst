@@ -32,13 +32,13 @@ default camera sits at ``OUT * 7`` looking at the ``ORIGIN``, so moving somethin
 
 The four cubes are identical; the further ones look smaller because the default
 camera is a perspective camera. For technical diagrams where equal things must
-*look* equal, switch it to an orthographic camera, which has no perspective
-foreshortening at all:
+*look* equal, switch it to a near-orthographic camera, which flattens
+foreshortening to almost nothing:
 
 .. code-block:: python
 
     with Off():
-        Scene.get_camera().set_to_orthographic()
+        Scene.get_camera().set_near_orthographic()
 
 .. important::
 

@@ -425,7 +425,7 @@ class Mob(
                 # pulse. [1,1,D] tensors broadcast against however many
                 # attribute rows the (recursive) write covers.
                 new_color = None if new_color is None else cast_to_tensor(new_color)
-                #if opacity is not None:
+                # if opacity is not None:
                 #    o = cast_to_tensor(opacity)
                 #    color = color.set_opacity(o)
                 #    if new_color is not None:

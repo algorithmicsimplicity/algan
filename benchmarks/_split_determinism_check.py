@@ -359,10 +359,7 @@ def _report(tag: str, a: np.ndarray, b: np.ndarray) -> bool:
         return True
     over = [(t, int((diff > t).sum())) for t in (0, 1, 2, 4, 8, 16, 30)]
     print(f"    max|d| = {diff.max()}")
-    print(
-        "    "
-        + "  ".join(f">{t}: {c} ({100.0 * c / total:.3f}%)" for t, c in over)
-    )
+    print("    " + "  ".join(f">{t}: {c} ({100.0 * c / total:.3f}%)" for t, c in over))
     # Which frames, and does it grow over the animation?
     per_frame = diff.reshape(diff.shape[0], -1).max(axis=1)
     worst = int(per_frame.argmax())
@@ -404,7 +401,9 @@ def main(argv: list[str]) -> int:
         snapshot = SETTINGS.snapshot()
         if config:
             SETTINGS.raytracing.set(**config)
-        print(f"[{arm}] {RES[0]}x{RES[1]} {FRAMES}f  mode={mode} {config or 'defaults'}")
+        print(
+            f"[{arm}] {RES[0]}x{RES[1]} {FRAMES}f  mode={mode} {config or 'defaults'}"
+        )
         try:
             first = _render(f"{arm}_run1", mode)
             accum_first = list(getattr(_render, "last_accum", []))
@@ -412,9 +411,7 @@ def main(argv: list[str]) -> int:
             accum_second = list(getattr(_render, "last_accum", []))
             if HASH_ACCUM:
                 same = accum_first == accum_second
-                differing = sum(
-                    1 for x, y in zip(accum_first, accum_second) if x != y
-                )
+                differing = sum(1 for x, y in zip(accum_first, accum_second) if x != y)
                 print(
                     f"  {arm} pix_accum: {len(accum_first)} tiles hashed, "
                     f"{'ALL MATCH' if same else f'{differing} DIFFER'}"

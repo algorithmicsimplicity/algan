@@ -461,9 +461,16 @@ Before you commit a change to a Tier-1 function:
 
 ## 15. Current state and migration order
 
-Measured over `algan/animatable_base/*.py` and `algan/scene.py`: **84 of 179 public functions have
-no docstring at all.** Of those that do, the most common defect is an unstated default, followed by
-missing units and missing `Animation` semantics.
+Measured over `algan/animatable_base/*.py` and `algan/scene.py`: **23 of 185 public functions have
+no docstring at all**, and nearly all of those are nested helper closures (`wrapper_func`, `prop`,
+`guarded`, `pad`, `visit`) that are Tier 3 and need none. Every public method on `Mob` and `Scene`
+is documented. Of the docstrings that exist, the most common remaining defect is an unstated
+default, followed by missing units and missing `Animation` semantics.
+
+Steps 1 and 2 below are therefore done. The outstanding work is step 3: the shape constructors
+still carry summary-only docstrings with no `Parameters` section — `Cube` is 25 characters, and
+`Sphere` / `Cylinder` / `Cone` / `Torus` document none of their arguments, including the
+`u_range` / `v_range` domains that §4.3 specifically calls out.
 
 Fix in this order, since it tracks what users hit first:
 

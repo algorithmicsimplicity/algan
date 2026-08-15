@@ -602,9 +602,7 @@ def install_pipeline_hooks():
         "build_bezier_edge_acceleration",
         "  - bezier edge accel (in merge)",
     )
-    _try_wrap(
-        scb, "build_bezier_edge_acceleration", "  - bezier edge accel (in merge)"
-    )
+    _try_wrap(scb, "build_bezier_edge_acceleration", "  - bezier edge accel (in merge)")
 
     # Render-chunk internals (again: wrap the refs tracer actually calls).
     _try_wrap(rtr, "_prefill_background", "background prefill")
